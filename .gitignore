@@ -75,7 +75,9 @@ secrets.json
 # Claude-specific files
 CLAUDE.md
 
-# Project planning files (local only)
+# Project planning, context, and rules files (local only)
+.context/
+.rules/
 plan.md
 ideas.md
 scratch_notes.md
