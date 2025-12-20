@@ -467,9 +467,27 @@ flowchart TB
 | Orchestration | LangGraph | Multi-agent workflows, state management |
 | LLM Framework | LangChain | Model abstraction, tool calling |
 | Observability | LangFuse | Tracing, cost tracking, prompt management |
-| Database | PostgreSQL | State persistence, telemetry, feedback |
-| Cache | Redis | Session cache, rate limiting |
+| Knowledge DB | SQLite + FTS5 | Issues, PRs, papers with full-text search |
+| Session State | In-memory / SQLite | Single instance, simple persistence |
 | Vector Store | FAISS/Qdrant | Semantic search (future) |
+
+### Why SQLite with FTS5 for Knowledge Sources?
+
+For single-instance lab deployment, SQLite with FTS5 is the optimal choice:
+
+| Approach | Search Speed | Dependencies | Use Case |
+|----------|-------------|--------------|----------|
+| JSON files | O(n) linear | None | Tiny datasets (<1K) |
+| MongoDB | O(log n) indexed | External server | Multi-instance, large scale |
+| **SQLite + FTS5** | O(log n) indexed | None (stdlib) | **Single instance, 10K-1M records** |
+| PostgreSQL | O(log n) indexed | External server | Multi-instance, complex queries |
+
+**SQLite + FTS5 advantages:**
+- No external server (single file per project)
+- Full-text search with ranking (`bm25()`)
+- 100-1000x faster than JSON linear scan
+- Python stdlib (no extra dependencies)
+- Easy backup (just copy the file)
 
 ---
 
