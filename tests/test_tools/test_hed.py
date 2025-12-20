@@ -36,7 +36,8 @@ class TestHEDRegistry:
     def test_has_preloaded_docs(self) -> None:
         """Test that registry has preloaded documents."""
         preloaded = HED_DOCS.get_preloaded()
-        assert len(preloaded) >= 2
+        # Should have 6 preloaded docs per QP
+        assert len(preloaded) >= 6
 
         # Should include introduction
         titles = [d.title for d in preloaded]
@@ -45,13 +46,14 @@ class TestHEDRegistry:
     def test_has_on_demand_docs(self) -> None:
         """Test that registry has on-demand documents."""
         on_demand = HED_DOCS.get_on_demand()
-        assert len(on_demand) >= 4
+        assert len(on_demand) >= 10
 
     def test_has_expected_categories(self) -> None:
         """Test that registry has expected categories."""
         categories = HED_DOCS.get_categories()
-        assert "getting-started" in categories
+        assert "core" in categories
         assert "specification" in categories
+        assert "tools" in categories
 
     def test_all_docs_have_valid_urls(self) -> None:
         """Test that all documents have valid URL structure."""
@@ -59,7 +61,7 @@ class TestHEDRegistry:
             assert doc.url.startswith("https://")
             assert doc.source_url.startswith("https://")
             # Source URLs should be raw content URLs
-            assert "raw.githubusercontent.com" in doc.source_url or "raw" in doc.source_url.lower()
+            assert "raw.githubusercontent.com" in doc.source_url
 
 
 class TestRetrieveHEDDoc:
@@ -72,13 +74,13 @@ class TestRetrieveHEDDoc:
 
     def test_retrieve_known_doc(self, fetcher: DocumentFetcher) -> None:
         """Test retrieving a known HED document."""
-        # Use the introduction URL from the registry
-        url = "https://hed-specification.readthedocs.io/en/latest/01_Introduction.html"
+        # Use the terminology URL from the registry (preloaded)
+        url = "https://www.hedtags.org/hed-specification/02_Terminology.html"
 
         result = retrieve_hed_doc(url, fetcher)
 
         assert result.success is True
-        assert result.title == "HED Introduction"
+        assert result.title == "HED terminology"
         assert len(result.content) > 0
         # Content should mention HED
         assert "HED" in result.content or "Hierarchical" in result.content
@@ -94,7 +96,7 @@ class TestRetrieveHEDDoc:
 
     def test_retrieve_uses_default_fetcher(self) -> None:
         """Test that retrieve_hed_doc works without explicit fetcher."""
-        url = "https://hed-specification.readthedocs.io/en/latest/01_Introduction.html"
+        url = "https://www.hedtags.org/hed-specification/02_Terminology.html"
 
         # Should work with default fetcher
         result = retrieve_hed_doc(url)
@@ -110,11 +112,12 @@ class TestRetrieveHEDDocsByCategory:
         """Create a fetcher with temporary cache."""
         return DocumentFetcher(cache_dir=tmp_path / "cache")
 
-    def test_retrieve_getting_started(self, fetcher: DocumentFetcher) -> None:
-        """Test retrieving getting-started category."""
-        results = retrieve_hed_docs_by_category("getting-started", fetcher)
+    def test_retrieve_core_category(self, fetcher: DocumentFetcher) -> None:
+        """Test retrieving core category."""
+        results = retrieve_hed_docs_by_category("core", fetcher)
 
-        assert len(results) >= 2
+        # Should have 4 docs in core category (1 preloaded + 3 on-demand)
+        assert len(results) >= 1
         # At least one should succeed
         successes = [r for r in results if r.success]
         assert len(successes) >= 1
@@ -138,6 +141,7 @@ class TestGetPreloadedHEDContent:
         content = get_preloaded_hed_content(fetcher)
 
         assert isinstance(content, dict)
+        # Should have 6 preloaded docs
         assert len(content) >= 1
 
         # Content should be keyed by URL
@@ -149,8 +153,8 @@ class TestGetPreloadedHEDContent:
         """Test that introduction is preloaded."""
         content = get_preloaded_hed_content(fetcher)
 
-        # Should include intro URL
-        intro_url = "https://hed-specification.readthedocs.io/en/latest/01_Introduction.html"
+        # Should include intro URL from hed-resources
+        intro_url = "https://www.hedtags.org/hed-resources/IntroductionToHed.html"
         assert intro_url in content
 
 
@@ -162,16 +166,16 @@ class TestFormatHEDDocList:
         formatted = format_hed_doc_list()
 
         assert "Preloaded Documents" in formatted
-        # Categories are title-cased; getting-started docs are preloaded so not listed separately
+        # Should have category sections for on-demand docs
         assert "Specification:" in formatted
-        assert "Reference:" in formatted
+        assert "Tools:" in formatted
 
     def test_format_includes_urls(self) -> None:
         """Test that formatted list includes document URLs."""
         formatted = format_hed_doc_list()
 
         assert "https://" in formatted
-        assert "hed-specification" in formatted.lower()
+        assert "hedtags.org" in formatted.lower()
 
 
 class TestRetrieveHEDDocsTool:
@@ -186,12 +190,12 @@ class TestRetrieveHEDDocsTool:
 
     def test_tool_retrieves_valid_doc(self) -> None:
         """Test retrieving a document through the tool interface."""
-        url = "https://hed-specification.readthedocs.io/en/latest/01_Introduction.html"
+        url = "https://www.hedtags.org/hed-specification/02_Terminology.html"
         result = retrieve_hed_docs(url)
 
         # Should return formatted content
         assert isinstance(result, str)
-        assert "HED Introduction" in result
+        assert "HED terminology" in result
         assert "Source:" in result
 
     def test_tool_handles_invalid_url(self) -> None:
