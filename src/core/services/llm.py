@@ -10,11 +10,14 @@ from langfuse.langchain import CallbackHandler as LangfuseHandler
 
 from src.api.config import Settings, get_settings
 
+# OpenRouter API base URL
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
 
 class LLMService:
     """Service for creating and managing LLM instances with observability."""
 
-    # Model mappings for different providers
+    # Model mappings for direct OpenAI API
     OPENAI_MODELS = {
         "gpt-4o": "gpt-4o",
         "gpt-4o-mini": "gpt-4o-mini",
@@ -23,6 +26,7 @@ class LLMService:
         "gpt-3.5-turbo": "gpt-3.5-turbo",
     }
 
+    # Model mappings for direct Anthropic API
     ANTHROPIC_MODELS = {
         "claude-3-5-sonnet": "claude-3-5-sonnet-20241022",
         "claude-3-5-haiku": "claude-3-5-haiku-20241022",
@@ -31,11 +35,33 @@ class LLMService:
         "claude-3-haiku": "claude-3-haiku-20240307",
     }
 
-    # Default models for server-paid usage (cost-effective)
-    DEFAULT_CHEAP_MODEL = "gpt-4o-mini"
+    @property
+    def default_model(self) -> str:
+        """Get the default model from settings."""
+        return self.settings.default_model
 
-    # Quality models for BYOK users
-    DEFAULT_QUALITY_MODEL = "claude-3-5-sonnet"
+    @property
+    def test_model(self) -> str:
+        """Get the test model from settings."""
+        return self.settings.test_model
+
+    def get_test_model(
+        self,
+        api_key: str | None = None,
+        temperature: float | None = None,
+        streaming: bool = True,
+    ) -> BaseChatModel:
+        """Get a model instance configured for testing.
+
+        Convenience method that uses settings.test_model and settings.test_model_provider.
+        """
+        return self.get_model(
+            model_name=self.settings.test_model,
+            api_key=api_key,
+            temperature=temperature,
+            streaming=streaming,
+            provider=self.settings.test_model_provider,
+        )
 
     def __init__(self, settings: Settings | None = None) -> None:
         """Initialize the LLM service.
@@ -80,17 +106,23 @@ class LLMService:
         self,
         model_name: str | None = None,
         api_key: str | None = None,
-        temperature: float = 0.7,
+        temperature: float | None = None,
         streaming: bool = True,
+        provider: str | None = None,
     ) -> BaseChatModel:
         """Get a chat model instance.
 
         Args:
-            model_name: Model name (e.g., 'gpt-4o', 'claude-3-5-sonnet').
-                       If not provided, uses DEFAULT_CHEAP_MODEL.
+            model_name: Model name. Supports:
+                - OpenRouter format: 'provider/model' (e.g., 'openai/gpt-oss-120b')
+                - Direct OpenAI: 'gpt-4o', 'gpt-4o-mini', etc.
+                - Direct Anthropic: 'claude-3-5-sonnet', etc.
+                If not provided, uses settings.default_model.
             api_key: Optional API key override (for BYOK).
-            temperature: Model temperature.
+            temperature: Model temperature. If not provided, uses settings.llm_temperature.
             streaming: Whether to enable streaming.
+            provider: Optional provider preference for OpenRouter (e.g., 'Cerebras').
+                     If not provided, uses settings.default_model_provider.
 
         Returns:
             A configured chat model instance.
@@ -98,17 +130,29 @@ class LLMService:
         Raises:
             ValueError: If the model is not recognized or API key is missing.
         """
-        model_name = model_name or self.DEFAULT_CHEAP_MODEL
+        model_name = model_name or self.settings.default_model
+        temperature = temperature if temperature is not None else self.settings.llm_temperature
 
-        # Determine provider from model name
-        if model_name in self.OPENAI_MODELS:
+        # OpenRouter models contain "/" (e.g., "openai/gpt-oss-120b")
+        if "/" in model_name:
+            # Use provided provider or fall back to settings
+            effective_provider = (
+                provider if provider is not None else self.settings.default_model_provider
+            )
+            return self._get_openrouter_model(
+                model_name, api_key, temperature, streaming, effective_provider
+            )
+        # Direct OpenAI API
+        elif model_name in self.OPENAI_MODELS:
             return self._get_openai_model(model_name, api_key, temperature, streaming)
+        # Direct Anthropic API
         elif model_name in self.ANTHROPIC_MODELS:
             return self._get_anthropic_model(model_name, api_key, temperature, streaming)
         else:
             raise ValueError(
                 f"Unknown model: {model_name}. "
-                f"Available: {list(self.OPENAI_MODELS.keys()) + list(self.ANTHROPIC_MODELS.keys())}"
+                f"Use OpenRouter format 'provider/model' or one of: "
+                f"{list(self.OPENAI_MODELS.keys()) + list(self.ANTHROPIC_MODELS.keys())}"
             )
 
     def _get_openai_model(
@@ -147,6 +191,48 @@ class LLMService:
             api_key=key,
             temperature=temperature,
             streaming=streaming,
+        )
+
+    def _get_openrouter_model(
+        self,
+        model_name: str,
+        api_key: str | None,
+        temperature: float,
+        streaming: bool,
+        provider: str | None = None,
+    ) -> ChatOpenAI:
+        """Create a model via OpenRouter API.
+
+        OpenRouter provides access to many models through an OpenAI-compatible API.
+        Model names should be in format 'provider/model' (e.g., 'openai/gpt-oss-120b').
+
+        Args:
+            model_name: OpenRouter model ID (e.g., 'openai/gpt-oss-120b')
+            api_key: OpenRouter API key
+            temperature: Model temperature
+            streaming: Enable streaming responses
+            provider: Optional provider preference (e.g., 'Cerebras') for routing
+        """
+        key = api_key or self.settings.openrouter_api_key
+        if not key:
+            raise ValueError("OpenRouter API key required but not configured")
+
+        # Build extra body with provider preferences if specified
+        extra_body: dict | None = None
+        if provider:
+            extra_body = {"provider": {"order": [provider]}}
+
+        return ChatOpenAI(
+            model=model_name,
+            api_key=key,
+            base_url=OPENROUTER_BASE_URL,
+            temperature=temperature,
+            streaming=streaming,
+            default_headers={
+                "HTTP-Referer": "https://osc.earth/osa",
+                "X-Title": "Open Science Assistant",
+            },
+            extra_body=extra_body,
         )
 
     def get_config_with_tracing(

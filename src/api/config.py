@@ -39,6 +39,28 @@ class Settings(BaseSettings):
     openai_api_key: str | None = Field(default=None, description="OpenAI API key")
     anthropic_api_key: str | None = Field(default=None, description="Anthropic API key")
 
+    # Model Configuration (OpenRouter model format: provider/model-name)
+    default_model: str = Field(
+        default="openai/gpt-oss-120b",
+        description="Default model for production (OpenRouter format: provider/model)",
+    )
+    default_model_provider: str | None = Field(
+        default="Cerebras",
+        description="Provider preference for default model (e.g., Cerebras, Azure, etc.)",
+    )
+    test_model: str = Field(
+        default="openai/gpt-oss-120b",
+        description="Model for testing (OpenRouter format: provider/model)",
+    )
+    test_model_provider: str | None = Field(
+        default="Cerebras",
+        description="Provider preference for test model (e.g., Cerebras, Azure, etc.)",
+    )
+    llm_temperature: float = Field(
+        default=0.1,
+        description="Default temperature for LLM responses (0.0 - 1.0)",
+    )
+
     # Observability
     langfuse_public_key: str | None = Field(default=None, description="LangFuse public key")
     langfuse_secret_key: str | None = Field(default=None, description="LangFuse secret key")

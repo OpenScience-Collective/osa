@@ -25,10 +25,17 @@ class TestLLMServiceModelMappings:
         assert "claude-3-5-haiku" in LLMService.ANTHROPIC_MODELS
         assert "claude-3-opus" in LLMService.ANTHROPIC_MODELS
 
-    def test_default_models(self) -> None:
-        """LLMService should have sensible default models."""
-        assert LLMService.DEFAULT_CHEAP_MODEL == "gpt-4o-mini"
-        assert LLMService.DEFAULT_QUALITY_MODEL == "claude-3-5-sonnet"
+    def test_default_model_from_settings(self) -> None:
+        """LLMService should get default model from settings."""
+        settings = Settings(default_model="openai/gpt-oss-120b")
+        service = LLMService(settings=settings)
+        assert service.default_model == "openai/gpt-oss-120b"
+
+    def test_test_model_from_settings(self) -> None:
+        """LLMService should get test model from settings."""
+        settings = Settings(test_model="openai/gpt-oss-120b")
+        service = LLMService(settings=settings)
+        assert service.test_model == "openai/gpt-oss-120b"
 
 
 class TestLLMServiceInitialization:
@@ -92,12 +99,37 @@ class TestLLMServiceGetModel:
         model = service.get_model("claude-3-5-haiku")
         assert model is not None
 
-    def test_get_model_default(self) -> None:
-        """get_model should use default model when none specified."""
-        settings = Settings(openai_api_key="test-key")
+    def test_get_model_default_openrouter(self) -> None:
+        """get_model should use default OpenRouter model when none specified."""
+        settings = Settings(openrouter_api_key="test-key")
         service = LLMService(settings=settings)
-        model = service.get_model()  # No model name
+        model = service.get_model()  # Uses default_model from settings
         assert model is not None
+
+    def test_get_model_openrouter_with_provider(self) -> None:
+        """get_model should pass provider preference to OpenRouter."""
+        settings = Settings(
+            openrouter_api_key="test-key",
+            default_model="openai/gpt-oss-120b",
+            default_model_provider="Cerebras",
+        )
+        service = LLMService(settings=settings)
+        model = service.get_model()
+        assert model is not None
+        # The provider should be in extra_body
+        assert model.extra_body == {"provider": {"order": ["Cerebras"]}}
+
+    def test_get_test_model(self) -> None:
+        """get_test_model should use test model settings."""
+        settings = Settings(
+            openrouter_api_key="test-key",
+            test_model="openai/gpt-oss-120b",
+            test_model_provider="Cerebras",
+        )
+        service = LLMService(settings=settings)
+        model = service.get_test_model()
+        assert model is not None
+        assert model.extra_body == {"provider": {"order": ["Cerebras"]}}
 
     def test_get_model_temperature(self) -> None:
         """get_model should apply temperature setting."""
