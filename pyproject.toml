@@ -64,6 +64,7 @@ dev = [
     "ruff>=0.14.0",
     "pre-commit>=4.5.0",
     "mypy>=1.19.0",
+    "uv>=0.5.0",
 ]
 
 [project.scripts]
@@ -116,6 +117,7 @@ addopts = "-v --cov=src --cov-report=term-missing"
 markers = [
     "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "llm: marks tests that require real LLM API calls (requires OPENROUTER_API_KEY_FOR_TESTING)",
 ]
 
 [tool.coverage.run]
