@@ -1,9 +1,12 @@
 """Typer CLI for Open Science Assistant."""
 
+import threading
+import time
 from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
@@ -72,6 +75,233 @@ def health(
     except Exception as e:
         console.print(f"[red]Error connecting to API:[/red] {e}")
         raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
+# Server and Chat Commands
+# ---------------------------------------------------------------------------
+
+_server_thread: threading.Thread | None = None
+_server_started = threading.Event()
+
+
+def _run_server(host: str, port: int) -> None:
+    """Run the FastAPI server in a thread."""
+    import uvicorn
+
+    from src.api.main import app
+
+    # Signal that server is starting
+    config = uvicorn.Config(app, host=host, port=port, log_level="warning")
+    server = uvicorn.Server(config)
+
+    # Set the started event after a brief delay
+    def signal_started() -> None:
+        time.sleep(0.5)  # Give server time to bind
+        _server_started.set()
+
+    threading.Thread(target=signal_started, daemon=True).start()
+    server.run()
+
+
+def start_standalone_server(host: str = "127.0.0.1", port: int = 38428) -> str:
+    """Start the API server in standalone mode.
+
+    Returns the base URL of the running server.
+    """
+    global _server_thread
+
+    if _server_thread is not None and _server_thread.is_alive():
+        return f"http://{host}:{port}"
+
+    _server_started.clear()
+    _server_thread = threading.Thread(target=_run_server, args=(host, port), daemon=True)
+    _server_thread.start()
+
+    # Wait for server to start
+    _server_started.wait(timeout=5.0)
+    return f"http://{host}:{port}"
+
+
+@cli.command()
+def serve(
+    host: Annotated[
+        str,
+        typer.Option("--host", "-h", help="Host to bind to"),
+    ] = "0.0.0.0",
+    port: Annotated[
+        int,
+        typer.Option("--port", "-p", help="Port to bind to"),
+    ] = 38428,
+    reload: Annotated[
+        bool,
+        typer.Option("--reload", "-r", help="Enable auto-reload for development"),
+    ] = False,
+) -> None:
+    """Start the OSA API server."""
+    import uvicorn
+
+    console.print(f"[green]Starting OSA server on {host}:{port}[/green]")
+    console.print("[dim]Press Ctrl+C to stop[/dim]")
+
+    uvicorn.run(
+        "src.api.main:app",
+        host=host,
+        port=port,
+        reload=reload,
+    )
+
+
+@cli.command()
+def ask(
+    question: Annotated[
+        str,
+        typer.Argument(help="Question to ask the assistant"),
+    ],
+    assistant: Annotated[
+        str,
+        typer.Option("--assistant", "-a", help="Assistant to use: hed, bids, eeglab"),
+    ] = "hed",
+    standalone: Annotated[
+        bool,
+        typer.Option("--standalone", "-s", help="Run in standalone mode (no external server)"),
+    ] = True,
+    url: Annotated[
+        str | None,
+        typer.Option("--url", "-u", help="API URL (overrides standalone)"),
+    ] = None,
+) -> None:
+    """Ask a single question to the OSA assistant.
+
+    Example:
+        osa ask "What is HED?"
+        osa ask "How do I annotate events?" --assistant hed
+    """
+    config = load_config()
+
+    # Determine API URL
+    if url:
+        api_url = url
+    elif standalone:
+        with console.status("[bold green]Starting standalone server..."):
+            api_url = start_standalone_server()
+    else:
+        api_url = config.api_url
+
+    config.api_url = api_url
+    client = OSAClient(config)
+
+    # Show spinner while waiting for response
+    with console.status(f"[bold green]Asking {assistant} assistant..."):
+        try:
+            response = client.chat(
+                message=question,
+                assistant=assistant,
+                stream=False,
+            )
+
+            if "error" in response:
+                console.print(f"[red]Error:[/red] {response['error']}")
+                raise typer.Exit(code=1)
+
+            content = response.get("message", {}).get("content", "No response")
+
+            # Render as markdown
+            console.print()
+            console.print(Panel(Markdown(content), title=f"[bold]{assistant.upper()}[/bold]"))
+
+        except Exception as e:
+            console.print(f"[red]Error:[/red] {e}")
+            raise typer.Exit(code=1)
+
+
+@cli.command()
+def chat(
+    assistant: Annotated[
+        str,
+        typer.Option("--assistant", "-a", help="Assistant to use: hed, bids, eeglab"),
+    ] = "hed",
+    standalone: Annotated[
+        bool,
+        typer.Option("--standalone", "-s", help="Run in standalone mode (no external server)"),
+    ] = True,
+    url: Annotated[
+        str | None,
+        typer.Option("--url", "-u", help="API URL (overrides standalone)"),
+    ] = None,
+) -> None:
+    """Start an interactive chat session with the OSA assistant.
+
+    Example:
+        osa chat
+        osa chat --assistant hed
+        osa chat --url http://localhost:38428
+    """
+    config = load_config()
+
+    # Determine API URL
+    if url:
+        api_url = url
+    elif standalone:
+        with console.status("[bold green]Starting standalone server..."):
+            api_url = start_standalone_server()
+        console.print(f"[dim]Server running at {api_url}[/dim]")
+    else:
+        api_url = config.api_url
+
+    config.api_url = api_url
+    client = OSAClient(config)
+
+    console.print(
+        Panel(
+            f"[bold]OSA Chat[/bold] - {assistant.upper()} Assistant\n"
+            "[dim]Type 'quit' or 'exit' to end the session[/dim]",
+            border_style="blue",
+        )
+    )
+
+    session_id = None
+
+    while True:
+        try:
+            # Get user input
+            user_input = console.input("[bold green]You:[/bold green] ").strip()
+
+            if not user_input:
+                continue
+
+            if user_input.lower() in ("quit", "exit", "q"):
+                console.print("[dim]Goodbye![/dim]")
+                break
+
+            # Send message
+            with console.status("[bold green]Thinking..."):
+                response = client.chat(
+                    message=user_input,
+                    assistant=assistant,
+                    session_id=session_id,
+                    stream=False,
+                )
+
+            if "error" in response:
+                console.print(f"[red]Error:[/red] {response['error']}")
+                continue
+
+            # Update session ID for continuity
+            session_id = response.get("session_id")
+            content = response.get("message", {}).get("content", "No response")
+
+            # Print response
+            console.print()
+            console.print(f"[bold blue]{assistant.upper()}:[/bold blue]")
+            console.print(Markdown(content))
+            console.print()
+
+        except KeyboardInterrupt:
+            console.print("\n[dim]Interrupted. Goodbye![/dim]")
+            break
+        except Exception as e:
+            console.print(f"[red]Error:[/red] {e}")
 
 
 # Configuration subcommand group
