@@ -138,10 +138,14 @@ class TestStandaloneMode:
 
     def test_standalone_server_starts(self) -> None:
         """Test that standalone server can be started."""
-        from src.cli.main import start_standalone_server
+        import src.cli.main as cli_main
 
-        url = start_standalone_server(port=38429)
-        assert url == "http://127.0.0.1:38429"
+        # Reset global state
+        cli_main._server_thread = None
+        cli_main._server_started.clear()
+
+        url = cli_main.start_standalone_server(port=38430)
+        assert url == "http://127.0.0.1:38430"
 
         # Give server time to start
         time.sleep(1)
@@ -152,24 +156,32 @@ class TestStandaloneMode:
         response = httpx.get(f"{url}/health", timeout=5.0)
         assert response.status_code == 200
 
+        # Reset for next test
+        cli_main._server_thread = None
+        cli_main._server_started.clear()
+
     def test_cli_ask_command(self, api_key) -> None:
         """Test the CLI ask command in standalone mode."""
         from typer.testing import CliRunner
 
-        from src.cli.main import cli
+        import src.cli.main as cli_main
+
+        # Reset global state in case previous test left a server running
+        cli_main._server_thread = None
+        cli_main._server_started.clear()
 
         runner = CliRunner()
 
         # Set the API key in config
         result = runner.invoke(
-            cli,
+            cli_main.cli,
             ["config", "set", "--openrouter-key", api_key],
         )
         assert result.exit_code == 0
 
         # Run ask command
         result = runner.invoke(
-            cli,
+            cli_main.cli,
             ["ask", "What is HED? One sentence only.", "--standalone"],
             catch_exceptions=False,
         )
