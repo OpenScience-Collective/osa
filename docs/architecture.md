@@ -29,7 +29,7 @@ flowchart TB
 
     subgraph Tools["Tool System"]
         DocRetrieval["Document<br/>Retrieval"]
-        Validation["Validation<br/>Tools"]
+        Validation["Validation<br/>API Integrations"]
         Search["Knowledge<br/>Search"]
     end
 
@@ -470,6 +470,22 @@ flowchart TB
 | Knowledge DB | SQLite + FTS5 | Issues, PRs, papers with full-text search |
 | Session State | In-memory / SQLite | Single instance, simple persistence |
 | Vector Store | FAISS/Qdrant | Semantic search (future) |
+
+### External API Integrations
+
+OSA integrates with existing validator and tool APIs rather than hosting validation engines locally. This approach:
+- Reduces deployment complexity (no need to maintain validator dependencies)
+- Ensures validation logic is always up-to-date
+- Leverages existing, well-tested infrastructure
+
+| Service | API Endpoint | Integration |
+|---------|--------------|-------------|
+| HED Validation | https://hedtools.org/hed | String, sidecar, spreadsheet, BIDS validation |
+| BIDS Validator | https://bids-validator.github.io | Dataset structure validation |
+| OpenALEX | https://api.openalex.org | Academic paper search |
+| GitHub API | https://api.github.com | Issues, PRs, discussions |
+
+The assistant tools call these APIs on behalf of users, parsing results and presenting them in context.
 
 ### Why SQLite with FTS5 for Knowledge Sources?
 
