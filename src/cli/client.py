@@ -25,11 +25,11 @@ class OSAClient:
 
         # BYOK headers
         if self.config.openai_api_key:
-            headers["X-OpenAI-API-Key"] = self.config.openai_api_key
+            headers["X-OpenAI-Key"] = self.config.openai_api_key
         if self.config.anthropic_api_key:
-            headers["X-Anthropic-API-Key"] = self.config.anthropic_api_key
+            headers["X-Anthropic-Key"] = self.config.anthropic_api_key
         if self.config.openrouter_api_key:
-            headers["X-OpenRouter-API-Key"] = self.config.openrouter_api_key
+            headers["X-OpenRouter-Key"] = self.config.openrouter_api_key
 
         return headers
 
@@ -59,6 +59,45 @@ class OSAClient:
                 f"{self.base_url}/",
                 headers=self._get_headers(),
                 timeout=10.0,
+            )
+            response.raise_for_status()
+            return response.json()
+
+    def chat(
+        self,
+        message: str,
+        assistant: str = "hed",
+        session_id: str | None = None,
+        stream: bool = False,
+    ) -> dict[str, Any]:
+        """Send a chat message to the assistant.
+
+        Args:
+            message: The user's message.
+            assistant: Assistant to use (hed, bids, eeglab).
+            session_id: Optional session ID for conversation continuity.
+            stream: Whether to request streaming response.
+
+        Returns:
+            Chat response including assistant message and session ID.
+
+        Raises:
+            httpx.HTTPError on connection or HTTP errors.
+        """
+        payload = {
+            "message": message,
+            "assistant": assistant,
+            "stream": stream,
+        }
+        if session_id:
+            payload["session_id"] = session_id
+
+        with httpx.Client() as client:
+            response = client.post(
+                f"{self.base_url}/chat",
+                headers=self._get_headers(),
+                json=payload,
+                timeout=120.0,  # Longer timeout for LLM responses
             )
             response.raise_for_status()
             return response.json()
