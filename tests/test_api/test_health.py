@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.api.main import app
+from src.version import __version__
 
 
 @pytest.fixture
@@ -37,7 +38,7 @@ class TestHealthEndpoint:
         response = client.get("/health")
         data = response.json()
         assert "version" in data
-        assert data["version"] == "0.1.0"
+        assert data["version"] == __version__
 
     def test_health_returns_valid_timestamp(self, client: TestClient) -> None:
         """Health endpoint should return a valid ISO format timestamp."""
@@ -76,4 +77,4 @@ class TestRootEndpoint:
         response = client.get("/")
         data = response.json()
         assert "version" in data
-        assert data["version"] == "0.1.0"
+        assert data["version"] == __version__
