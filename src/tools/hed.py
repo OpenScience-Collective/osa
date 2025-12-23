@@ -154,7 +154,7 @@ HED_DOCS = DocRegistry(
         DocPage(
             title="HED online tools",
             url="https://www.hedtags.org/hed-resources/HedOnlineTools.html",
-            source_url="https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/HedOnlineTools.md",
+            source_url="https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/HedOnlineTools.html",
             category="tools",
         ),
         # === ON-DEMAND: Advanced (4 docs) ===
