@@ -5,6 +5,8 @@ from functools import lru_cache
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from src.version import __version__
+
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
@@ -18,7 +20,7 @@ class Settings(BaseSettings):
 
     # API Settings
     app_name: str = Field(default="Open Science Assistant", description="Application name")
-    app_version: str = Field(default="0.1.0", description="Application version")
+    app_version: str = Field(default=__version__, description="Application version")
     debug: bool = Field(default=False, description="Enable debug mode")
 
     # Server Settings

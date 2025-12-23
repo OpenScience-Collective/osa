@@ -1,6 +1,6 @@
 [project]
 name = "osa"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Open Science Assistant - An extensible AI assistant platform for open science projects"
 readme = "README.md"
 license = {text = "MIT"}
@@ -89,6 +89,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
+
+[tool.hatch.version]
+path = "src/version.py"
 
 [tool.ruff]
 line-length = 100

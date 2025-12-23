@@ -1,3 +1,5 @@
 """Open Science Assistant (OSA) - An extensible AI assistant platform for open science projects."""
 
-__version__ = "0.1.0"
+from src.version import __version__, __version_info__
+
+__all__ = ["__version__", "__version_info__"]
