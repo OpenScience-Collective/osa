@@ -185,8 +185,8 @@ class CachingLLMWrapper(BaseChatModel):
 # Current Anthropic models (for reference)
 # Note: Caching is enabled for ALL models by default; OpenRouter handles gracefully
 CACHEABLE_MODELS = {
-    "claude-opus-4.5": "anthropic/claude-opus-4-5",
-    "claude-sonnet-4.5": "anthropic/claude-sonnet-4-5",
+    "claude-opus-4.5": "anthropic/claude-opus-4.5",
+    "claude-sonnet-4.5": "anthropic/claude-sonnet-4.5",
     "claude-haiku-4.5": "anthropic/claude-haiku-4.5",
 }
 
