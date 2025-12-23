@@ -1,6 +1,9 @@
 """CLI configuration management using platformdirs."""
 
+import contextlib
 import json
+import os
+import uuid
 from pathlib import Path
 
 from platformdirs import user_config_dir, user_data_dir
@@ -82,3 +85,50 @@ def update_config(**kwargs: str | bool | None) -> CLIConfig:
 
     save_config(config)
     return config
+
+
+# User ID for cache optimization
+USER_ID_FILE = "user_id"
+
+
+def get_user_id() -> str:
+    """Get or generate a stable user ID for cache optimization.
+
+    This ID is used by OpenRouter for sticky cache routing to reduce costs.
+    It is NOT used for telemetry and is only transmitted to the LLM provider
+    for cache routing purposes.
+
+    The ID is generated once and persists in the config directory.
+
+    Returns:
+        16-character hexadecimal user ID
+    """
+    config_dir = get_config_dir()
+    user_id_path = config_dir / USER_ID_FILE
+
+    if user_id_path.exists():
+        try:
+            user_id = user_id_path.read_text().strip()
+            # Validate format (16 hex chars)
+            if len(user_id) == 16 and all(c in "0123456789abcdef" for c in user_id):
+                return user_id
+        except (OSError, UnicodeDecodeError):
+            pass  # File corrupted, regenerate
+
+    # Generate new user ID
+    user_id = uuid.uuid4().hex[:16]
+
+    # Save to file
+    with contextlib.suppress(OSError):
+        config_dir.mkdir(parents=True, exist_ok=True)
+        user_id_path.write_text(user_id)
+        # Readable by user only (Unix)
+        with contextlib.suppress(OSError, AttributeError):
+            os.chmod(user_id_path, 0o600)
+
+    return user_id
+
+
+def get_user_id_path() -> Path:
+    """Get the path to the user ID file."""
+    return get_config_dir() / USER_ID_FILE

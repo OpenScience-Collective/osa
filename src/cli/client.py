@@ -4,7 +4,7 @@ from typing import Any
 
 import httpx
 
-from src.cli.config import CLIConfig
+from src.cli.config import CLIConfig, get_user_id
 
 
 class OSAClient:
@@ -14,9 +14,17 @@ class OSAClient:
         """Initialize the client with configuration."""
         self.config = config
         self.base_url = config.api_url.rstrip("/")
+        self._user_id: str | None = None
+
+    @property
+    def user_id(self) -> str:
+        """Get the user ID for cache optimization (lazy-loaded)."""
+        if self._user_id is None:
+            self._user_id = get_user_id()
+        return self._user_id
 
     def _get_headers(self) -> dict[str, str]:
-        """Build request headers including API keys."""
+        """Build request headers including API keys and user ID."""
         headers: dict[str, str] = {"Content-Type": "application/json"}
 
         # Server API key
@@ -30,6 +38,9 @@ class OSAClient:
             headers["X-Anthropic-Key"] = self.config.anthropic_api_key
         if self.config.openrouter_api_key:
             headers["X-OpenRouter-Key"] = self.config.openrouter_api_key
+
+        # User ID for cache optimization
+        headers["X-User-ID"] = self.user_id
 
         return headers
 
