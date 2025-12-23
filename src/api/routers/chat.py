@@ -11,7 +11,8 @@ from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
 
 from src.agents.hed import HEDAssistant
-from src.core.services.llm import get_llm_service
+from src.api.config import get_settings
+from src.core.services.litellm_llm import create_openrouter_llm
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
@@ -130,6 +131,7 @@ def get_session(session_id: str) -> ChatSession | None:
 def create_assistant(
     assistant_type: str,
     api_key: str | None = None,
+    user_id: str | None = None,
     preload_docs: bool = True,
 ) -> HEDAssistant:
     """Create an assistant instance.
@@ -137,6 +139,7 @@ def create_assistant(
     Args:
         assistant_type: Type of assistant ('hed', 'bids', 'eeglab', 'general')
         api_key: Optional API key override (BYOK)
+        user_id: User ID for cache optimization (sticky routing)
         preload_docs: Whether to preload documents
 
     Returns:
@@ -145,10 +148,17 @@ def create_assistant(
     Raises:
         ValueError: If assistant type is not supported
     """
-    llm_service = get_llm_service()
+    settings = get_settings()
 
-    # Get model with optional BYOK
-    model = llm_service.get_model(api_key=api_key)
+    # Get model using LiteLLM with prompt caching support
+    model = create_openrouter_llm(
+        model=settings.default_model,
+        api_key=api_key or settings.openrouter_api_key,
+        temperature=settings.llm_temperature,
+        provider=settings.default_model_provider,
+        user_id=user_id,
+        # enable_caching auto-detects based on model (Anthropic models)
+    )
 
     # Currently only HED assistant is implemented
     if assistant_type == "hed":
@@ -176,6 +186,7 @@ def create_assistant(
 async def chat(
     request: ChatRequest,
     x_openrouter_key: Annotated[str | None, Header(alias="X-OpenRouter-Key")] = None,
+    x_user_id: Annotated[str | None, Header(alias="X-User-ID")] = None,
 ) -> ChatResponse | StreamingResponse:
     """Chat with an OSA assistant.
 
@@ -185,11 +196,18 @@ async def chat(
     **BYOK (Bring Your Own Key):**
     Pass your OpenRouter API key in the `X-OpenRouter-Key` header to use your own credits.
 
+    **Cache Optimization:**
+    Pass a stable user ID in the `X-User-ID` header for better cache hit rates.
+    This enables sticky routing and up to 90% cost reduction on Anthropic models.
+
     **Streaming:**
     Set `stream: true` to receive a streaming response (Server-Sent Events).
     """
     # Use BYOK if provided
     api_key = x_openrouter_key
+
+    # User ID for cache optimization (use session ID as fallback)
+    user_id = x_user_id
 
     # TODO: Add server API key validation when required
     # if x_api_key: validate_api_key(x_api_key)
@@ -197,12 +215,16 @@ async def chat(
     # Get or create session
     session = get_or_create_session(request.session_id, request.assistant)
 
+    # Use session ID as user_id if not provided
+    if not user_id:
+        user_id = session.session_id
+
     # Add user message to history
     session.add_user_message(request.message)
 
     if request.stream:
         return StreamingResponse(
-            stream_response(session, api_key),
+            stream_response(session, api_key, user_id),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -213,7 +235,7 @@ async def chat(
     else:
         # Non-streaming response
         try:
-            assistant = create_assistant(session.assistant, api_key)
+            assistant = create_assistant(session.assistant, api_key, user_id)
             result = await assistant.ainvoke(session.messages)
 
             # Extract response content
@@ -239,10 +261,11 @@ async def chat(
 async def stream_response(
     session: ChatSession,
     api_key: str | None,
+    user_id: str | None,
 ) -> AsyncGenerator[str, None]:
     """Stream assistant response as Server-Sent Events."""
     try:
-        assistant = create_assistant(session.assistant, api_key, preload_docs=True)
+        assistant = create_assistant(session.assistant, api_key, user_id, preload_docs=True)
 
         # Build the graph for streaming
         graph = assistant.build_graph()
