@@ -41,6 +41,10 @@ dependencies = [
     "langgraph-checkpoint-postgres>=3.0.0",
     "langfuse>=3.11.0",
 
+    # LiteLLM for prompt caching
+    "litellm>=1.50.0",
+    "langchain-litellm>=0.2.0",
+
     # External APIs
     "httpx>=0.28.0",
     "pygithub>=2.8.0",
