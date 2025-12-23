@@ -182,11 +182,11 @@ class CachingLLMWrapper(BaseChatModel):
         return await self.llm.ainvoke(cached_messages, **kwargs)
 
 
-# Anthropic models that support prompt caching
+# Current Anthropic models (for reference)
+# Note: Caching is enabled for ALL models by default; OpenRouter handles gracefully
 CACHEABLE_MODELS = {
     "claude-opus-4.5": "anthropic/claude-opus-4-5",
     "claude-sonnet-4.5": "anthropic/claude-sonnet-4-5",
-    "claude-sonnet-4": "anthropic/claude-sonnet-4",
     "claude-haiku-4.5": "anthropic/claude-haiku-4.5",
 }
 
