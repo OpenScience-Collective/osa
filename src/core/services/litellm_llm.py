@@ -50,8 +50,8 @@ def create_openrouter_llm(
         max_tokens: Maximum tokens to generate
         provider: Specific provider to use (e.g., "Cerebras", "Anthropic")
         user_id: User identifier for cache optimization (sticky routing)
-        enable_caching: Enable Anthropic prompt caching. If None (default),
-            auto-enables for Anthropic Claude models.
+        enable_caching: Enable prompt caching. If None (default), enabled for all models.
+            OpenRouter/LiteLLM gracefully handles models that don't support caching.
 
     Returns:
         LLM instance configured for OpenRouter
@@ -89,8 +89,9 @@ def create_openrouter_llm(
 
     # Determine if caching should be enabled
     if enable_caching is None:
-        # Auto-enable for Anthropic models
-        enable_caching = is_cacheable_model(model)
+        # Enable caching by default for all models
+        # OpenRouter/LiteLLM handles gracefully if model doesn't support it
+        enable_caching = True
 
     if enable_caching:
         return CachingLLMWrapper(llm=llm)
