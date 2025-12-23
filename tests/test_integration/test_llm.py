@@ -229,6 +229,6 @@ class TestPromptExamples:
         content = response.json()["message"]["content"].lower()
 
         # At least one expected term should be present
-        assert any(
-            term in content for term in expected_terms
-        ), f"Expected one of {expected_terms} in response: {content}"
+        assert any(term in content for term in expected_terms), (
+            f"Expected one of {expected_terms} in response: {content}"
+        )
