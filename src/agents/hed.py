@@ -13,6 +13,7 @@ from src.tools.hed import (
     get_preloaded_hed_content,
     retrieve_hed_doc,
 )
+from src.tools.hed_validation import get_hed_schema_versions, validate_hed_string
 
 # HED System Prompt - adapted from QP's hedAssistantSystemPrompt.ts
 HED_SYSTEM_PROMPT_TEMPLATE = """You are a technical assistant specialized in helping users with the Hierarchical Event Descriptors (HED) standard.
@@ -64,6 +65,34 @@ When providing examples of HED annotations:
 - Your annotations MUST be valid
 - Only use tags from the HED schema that follow HED rules
 - ALWAYS use the SHORT FORM of tags
+
+## CRITICAL: Validate Examples Before Showing to Users
+
+**Important Workflow for Providing Examples:**
+
+When you want to give the user an example HED annotation string:
+
+1. **Generate** the example based on documentation and your knowledge
+2. **VALIDATE** using the validate_hed_string tool BEFORE showing to user
+3. **If valid**: Present the example to the user
+4. **If invalid**:
+   - Fix the example based on the error messages
+   - OR use a known-good example from the documentation instead
+   - Validate again until correct
+5. **Never show invalid examples to users**
+
+This self-check process ensures you only provide correct examples to researchers,
+building trust and preventing users from adopting invalid annotation patterns.
+
+**Example workflow:**
+```
+User asks: "How do I annotate a visual stimulus?"
+Your internal process:
+1. Generate: "Sensory-event, Visual-presentation, Red"
+2. Call: validate_hed_string("Sensory-event, Visual-presentation, Red")
+3. If valid → Show to user
+4. If invalid → Fix based on errors OR find example in docs → Validate → Show
+```
 
 ## Key References
 
@@ -173,10 +202,10 @@ class HEDAssistant(ToolAgent):
         if preload_docs:
             self._preloaded_content = get_preloaded_hed_content()
 
-        # Initialize with the retrieve_hed_docs tool
+        # Initialize with HED tools: documentation retrieval and validation
         super().__init__(
             model=model,
-            tools=[retrieve_hed_docs],
+            tools=[retrieve_hed_docs, validate_hed_string, get_hed_schema_versions],
             system_prompt=None,  # We override get_system_prompt
         )
 
