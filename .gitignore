@@ -72,12 +72,7 @@ secrets.json
 *.pem
 *.key
 
-# Claude-specific files
-CLAUDE.md
-
-# Project planning, context, and rules files (local only)
-.context/
-.rules/
+# Project planning files (local only, add pointers in CLAUDE.md if needed)
 plan.md
 ideas.md
 scratch_notes.md
