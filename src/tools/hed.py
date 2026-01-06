@@ -18,6 +18,7 @@ HED_DOCS = DocRegistry(
             source_url="https://raw.githubusercontent.com/hed-standard/hed-specification/main/docs/source/HedAnnotationSemantics.md",
             preload=True,
             category="core",
+            description="Outlines the fundamental principles and rules for HED annotation syntax and structure.",
         ),
         # === PRELOADED: Schema (1 doc) ===
         DocPage(
@@ -26,6 +27,7 @@ HED_DOCS = DocRegistry(
             source_url="https://raw.githubusercontent.com/hed-standard/hed-specification/main/schemas_latest_json/HEDLatest.json",
             preload=True,
             category="schemas",
+            description="The latest version of the standard HED schema in JSON format, defining the hierarchical structure and vocabulary for HED tags.",
         ),
         # === PRELOADED: Specification (2 docs) ===
         DocPage(
@@ -34,6 +36,7 @@ HED_DOCS = DocRegistry(
             source_url="https://raw.githubusercontent.com/hed-standard/hed-specification/main/docs/source/02_Terminology.md",
             preload=True,
             category="specification",
+            description="Defines key terms and concepts used throughout the HED specification to ensure consistent understanding.",
         ),
         DocPage(
             title="Basic annotation",
@@ -41,6 +44,7 @@ HED_DOCS = DocRegistry(
             source_url="https://raw.githubusercontent.com/hed-standard/hed-specification/main/docs/source/04_Basic_annotation.md",
             preload=True,
             category="specification",
+            description="Covers the essential guidelines and methods for creating basic HED annotations for events.",
         ),
         # === PRELOADED: Introductory (2 docs) ===
         DocPage(
@@ -49,6 +53,7 @@ HED_DOCS = DocRegistry(
             source_url="https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/IntroductionToHed.md",
             preload=True,
             category="introductory",
+            description="Provides an overview of the Hierarchical Event Descriptors (HED) system, its purpose, and its applications in event annotation.",
         ),
         DocPage(
             title="How can you use HED?",
@@ -56,6 +61,7 @@ HED_DOCS = DocRegistry(
             source_url="https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/HowCanYouUseHed.md",
             preload=True,
             category="introductory",
+            description="Explains various use cases and scenarios where HED can be effectively applied for event annotation in research data.",
         ),
         # === ON-DEMAND: Specification Details (6 docs) ===
         DocPage(
@@ -63,36 +69,42 @@ HED_DOCS = DocRegistry(
             url="https://www.hedtags.org/hed-specification/03_HED_formats.html",
             source_url="https://raw.githubusercontent.com/hed-standard/hed-specification/main/docs/source/03_HED_formats.md",
             category="specification",
+            description="Describes the different formats in which HED schemas and annotations can be represented and stored.",
         ),
         DocPage(
             title="Advanced annotation",
             url="https://www.hedtags.org/hed-specification/05_Advanced_annotation.html",
             source_url="https://raw.githubusercontent.com/hed-standard/hed-specification/main/docs/source/05_Advanced_annotation.md",
             category="specification",
+            description="Discusses use of definitions, temporal scope, and other advanced annotation features.",
         ),
         DocPage(
             title="HED support of BIDS",
             url="https://www.hedtags.org/hed-specification/06_Infrastructure_and_tools.html#hed-support-of-bids",
             source_url="https://raw.githubusercontent.com/hed-standard/hed-specification/main/docs/source/06_Infrastructure_and_tools.md",
             category="specification",
+            description="Explains how HED integrates with the Brain Imaging Data Structure (BIDS) for standardized event annotation in neuroimaging datasets.",
         ),
         DocPage(
             title="Library schemas",
             url="https://www.hedtags.org/hed-specification/07_Library_schemas.html",
             source_url="https://raw.githubusercontent.com/hed-standard/hed-specification/main/docs/source/07_Library_schemas.md",
             category="specification",
+            description="Details the concept of library schemas in HED, which allow for domain-specific extensions to the base HED schema.",
         ),
         DocPage(
             title="HED errors",
             url="https://www.hedtags.org/hed-specification/Appendix_B.html",
             source_url="https://raw.githubusercontent.com/hed-standard/hed-specification/main/docs/source/Appendix_B.md",
             category="specification",
+            description="Lists and explains the various error codes and messages that can be encountered during HED annotation validation.",
         ),
         DocPage(
             title="Test cases",
             url="https://raw.githubusercontent.com/hed-standard/hed-specification/refs/heads/main/tests/javascriptTests.json",
             source_url="https://raw.githubusercontent.com/hed-standard/hed-specification/refs/heads/main/tests/javascriptTests.json",
             category="examples",
+            description="Examples of correct and incorrect HED annotations in JSON format for testing validation tools.",
         ),
         # === ON-DEMAND: Quickstarts (3 docs) ===
         DocPage(
@@ -100,18 +112,21 @@ HED_DOCS = DocRegistry(
             url="https://www.hedtags.org/hed-resources/HedAnnotationQuickstart.html",
             source_url="https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/HedAnnotationQuickstart.md",
             category="quickstart",
+            description="A step-by-step guide to quickly get started with HED annotation for events in datasets.",
         ),
         DocPage(
             title="BIDS annotation quickstart",
             url="https://www.hedtags.org/hed-resources/BidsAnnotationQuickstart.html",
             source_url="https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/BidsAnnotationQuickstart.md",
             category="quickstart",
+            description="A concise tutorial on how to apply HED annotations within the BIDS framework for neuroimaging data.",
         ),
         DocPage(
             title="HED annotation in NWB",
             url="https://www.hedtags.org/hed-resources/HedAnnotationInNWB.html",
             source_url="https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/HedAnnotationInNWB.md",
             category="quickstart",
+            description="A concise tutorial on how to apply HED annotations within the NWB framework for neurophysiology data.",
         ),
         # === ON-DEMAND: Core concepts (3 docs) ===
         DocPage(
@@ -119,18 +134,21 @@ HED_DOCS = DocRegistry(
             url="https://www.hedtags.org/ndx-hed/description.html",
             source_url="https://raw.githubusercontent.com/hed-standard/ndx-hed/refs/heads/main/docs/source/description.rst",
             category="core",
+            description="More detailed description of the ndx-hed extension architecture and usage for Neurodata Without Borders.",
         ),
         DocPage(
             title="HED conditions and design matrices",
             url="https://www.hedtags.org/hed-resources/HedConditionsAndDesignMatrices.html",
             source_url="https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/HedConditionsAndDesignMatrices.md",
             category="core",
+            description="Explains how to represent experimental conditions and design matrices using HED annotations for complex study designs.",
         ),
         DocPage(
             title="HED schemas",
             url="https://www.hedtags.org/hed-resources/HedSchemas.html",
             source_url="https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/HedSchemas.md",
             category="core",
+            description="Describes the structure and organization of HED schemas, including the standard schema and library schemas for specific domains.",
         ),
         # === ON-DEMAND: Tools (4 docs) ===
         DocPage(
@@ -138,24 +156,28 @@ HED_DOCS = DocRegistry(
             url="https://www.hedtags.org/hed-python/user_guide.html",
             source_url="https://raw.githubusercontent.com/hed-standard/hed-python/refs/heads/main/docs/user_guide.md",
             category="tools",
+            description="Comprehensive guide to using the HED Python library for annotating, validating, and processing HED tags in datasets.",
         ),
         DocPage(
             title="HED MATLAB tools",
             url="https://www.hedtags.org/hed-resources/HedMatlabTools.html",
             source_url="https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/HedMatlabTools.md",
             category="tools",
+            description="Instructions for utilizing the HED MATLAB toolbox to work with HED annotations within MATLAB environments.",
         ),
         DocPage(
             title="HED JavaScript tools",
             url="https://www.hedtags.org/hed-javascript/docs/",
             source_url="https://raw.githubusercontent.com/hed-standard/hed-javascript/refs/heads/main/README.md",
             category="tools",
+            description="Guide to using HED JavaScript libraries for client-side annotation and validation of HED tags in web applications.",
         ),
         DocPage(
             title="HED online tools",
             url="https://www.hedtags.org/hed-resources/HedOnlineTools.html",
-            source_url="https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/HedOnlineTools.html",
+            source_url="https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/HedOnlineTools.md",
             category="tools",
+            description="Overview of online tools available for HED annotation, validation, and schema browsing through web interfaces.",
         ),
         # === ON-DEMAND: Advanced (4 docs) ===
         DocPage(
@@ -163,24 +185,28 @@ HED_DOCS = DocRegistry(
             url="https://www.hedtags.org/hed-resources/HedSchemaDevelopersGuide.html",
             source_url="https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/HedSchemaDevelopersGuide.md",
             category="advanced",
+            description="Instructions and best practices for developers looking to create and maintain HED library schemas.",
         ),
         DocPage(
             title="HED validation guide",
             url="https://www.hedtags.org/hed-resources/HedValidationGuide.html",
             source_url="https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/HedValidationGuide.md",
             category="advanced",
+            description="Detailed instructions on how to validate HED annotations using various tools and best practices to ensure compliance with HED standards.",
         ),
         DocPage(
             title="HED search guide",
             url="https://www.hedtags.org/hed-resources/HedSearchGuide.html",
             source_url="https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/HedSearchGuide.md",
             category="advanced",
+            description="Instructions on how to effectively search and query HED tags within datasets using available tools.",
         ),
         DocPage(
             title="HED summary guide",
             url="https://www.hedtags.org/hed-resources/HedSummaryGuide.html",
             source_url="https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/HedSummaryGuide.md",
             category="advanced",
+            description="Guidance on generating and interpreting summaries of HED annotations in datasets to facilitate data analysis.",
         ),
         # === ON-DEMAND: Integration (1 doc) ===
         DocPage(
@@ -188,6 +214,7 @@ HED_DOCS = DocRegistry(
             url="https://www.hedtags.org/hed-resources/HedAndEEGLAB.html",
             source_url="https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/HedAndEEGLAB.md",
             category="integration",
+            description="Describes how to integrate HED annotations within the EEGLAB environment for EEG data analysis.",
         ),
         # === ON-DEMAND: Reference (2 docs) ===
         DocPage(
@@ -195,12 +222,14 @@ HED_DOCS = DocRegistry(
             url="https://www.hedtags.org/hed-resources/DocumentationSummary.html",
             source_url="https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/DocumentationSummary.md",
             category="reference",
+            description="An overview of all HED documentation resources, providing quick access to various guides, specifications, and tools.",
         ),
         DocPage(
             title="HED test datasets",
             url="https://www.hedtags.org/hed-resources/HedTestDatasets.html",
             source_url="https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/HedTestDatasets.md",
             category="reference",
+            description="A collection of datasets specifically designed for testing HED annotations and validation tools.",
         ),
     ],
 )
