@@ -190,11 +190,13 @@ def clean_markdown(
     if strip_html:
         text = strip_html_tags(text)
 
-    if simplify_links:
-        text = clean_markdown_links(text)
-
+    # Remove images BEFORE cleaning links, since image syntax ![...](...)
+    # can be matched by link pattern [...](...)
     if remove_images:
         text = remove_markdown_images(text)
+
+    if simplify_links:
+        text = clean_markdown_links(text)
 
     if clean_code:
         text = clean_code_blocks(text)
@@ -218,16 +220,22 @@ def extract_first_sentences(text: str, num_sentences: int = 3) -> str:
     Returns:
         First N sentences
     """
-    # Simple sentence splitter (splits on . ! ? followed by space or newline)
-    sentences = re.split(r"[.!?](?:\s+|\n+)", text)
+    # First, filter out header lines
+    lines = text.split("\n")
+    non_header_lines = [line for line in lines if not line.strip().startswith("#")]
+    text_without_headers = " ".join(non_header_lines)
+
+    # Split into sentences using lookbehind to preserve punctuation
+    # Splits after . ! ? when followed by space, but keeps the punctuation
+    sentences = re.split(r"(?<=[.!?])\s+", text_without_headers)
 
     # Take first N non-empty sentences
     selected = []
     for sent in sentences:
         sent = sent.strip()
-        if sent and not sent.startswith("#"):  # Skip headers
+        if sent:
             selected.append(sent)
             if len(selected) >= num_sentences:
                 break
 
-    return ". ".join(selected) + "." if selected else ""
+    return " ".join(selected) if selected else ""
