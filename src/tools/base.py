@@ -28,6 +28,9 @@ class DocPage:
     category: str = "general"
     """Category for organizing documents."""
 
+    description: str = ""
+    """Short (1-3 sentence) description of document content for search/discovery."""
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
@@ -36,6 +39,7 @@ class DocPage:
             "source_url": self.source_url,
             "preload": self.preload,
             "category": self.category,
+            "description": self.description,
         }
 
 
@@ -86,10 +90,16 @@ class DocRegistry:
         """Add a document to the registry."""
         self.docs.append(doc)
 
-    def format_doc_list(self, include_preloaded: bool = True) -> str:
+    def format_doc_list(
+        self, include_preloaded: bool = True, include_descriptions: bool = True
+    ) -> str:
         """Format a readable list of available documents.
 
         Used in tool descriptions to show what docs are available.
+
+        Args:
+            include_preloaded: Whether to include preloaded docs
+            include_descriptions: Whether to include document descriptions
         """
         lines: list[str] = []
 
@@ -99,6 +109,8 @@ class DocRegistry:
             lines.append("### Preloaded Documents (already available):")
             for doc in preloaded:
                 lines.append(f"- {doc.title}: {doc.url}")
+                if include_descriptions and doc.description:
+                    lines.append(f"  {doc.description}")
             lines.append("")
 
         # On-demand docs by category
@@ -110,6 +122,8 @@ class DocRegistry:
                 lines.append(f"### {category_name}:")
                 for doc in on_demand:
                     lines.append(f"- {doc.title}: {doc.url}")
+                    if include_descriptions and doc.description:
+                        lines.append(f"  {doc.description}")
                 lines.append("")
 
         return "\n".join(lines)
