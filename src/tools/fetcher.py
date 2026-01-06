@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from src.tools.base import DocPage, RetrievedDoc
+from src.tools.markdown_cleaner import clean_markdown
 
 
 @dataclass
@@ -44,6 +45,9 @@ class DocumentFetcher:
 
     user_agent: str = "OSA-DocumentFetcher/1.0"
     """User agent for HTTP requests."""
+
+    clean_markdown_content: bool = True
+    """Whether to clean and normalize markdown content."""
 
     _memory_cache: dict[str, CacheEntry] = field(default_factory=dict)
     """In-memory cache for fast access."""
@@ -157,10 +161,11 @@ class DocumentFetcher:
         # Check cache first
         cached = self.get_cached(doc.source_url)
         if cached is not None:
+            content = clean_markdown(cached) if self.clean_markdown_content else cached
             return RetrievedDoc(
                 title=doc.title,
                 url=doc.url,
-                content=cached,
+                content=content,
             )
 
         # Fetch from network
@@ -174,8 +179,12 @@ class DocumentFetcher:
                 response.raise_for_status()
                 content = response.text
 
-                # Cache the content
+                # Cache the raw content (before cleaning)
                 self._save_to_cache(doc.source_url, content)
+
+                # Clean markdown if enabled
+                if self.clean_markdown_content:
+                    content = clean_markdown(content)
 
                 return RetrievedDoc(
                     title=doc.title,
