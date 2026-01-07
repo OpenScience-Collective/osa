@@ -49,6 +49,7 @@ class TestDocPage:
             "source_url": "https://raw.example.com/test.md",
             "preload": True,
             "category": "reference",
+            "description": "",  # Default empty description
         }
 
 

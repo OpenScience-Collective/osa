@@ -132,11 +132,11 @@ class TestRetrieveHedDocsTool:
 
         This test requires network access.
         """
-        # Use a small doc that should fetch quickly
-        url = "https://www.hedtags.org/hed-resources/HedOnlineTools.html"
+        # Use a doc with verified working source URL
+        url = "https://www.hedtags.org/hed-specification/02_Terminology.html"
         result = retrieve_hed_docs.invoke({"url": url})
 
-        assert "HED online tools" in result
+        assert "HED terminology" in result
         # Check it's not an error response (starts with "Error retrieving")
         assert not result.startswith("Error retrieving")
 
