@@ -15,20 +15,14 @@ HED_DOCS = DocRegistry(
         DocPage(
             title="HED annotation semantics",
             url="https://www.hedtags.org/hed-resources/HedAnnotationSemantics.html",
-            source_url="https://raw.githubusercontent.com/hed-standard/hed-specification/main/docs/source/HedAnnotationSemantics.md",
+            source_url="https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/HedAnnotationSemantics.md",
             preload=True,
             category="core",
             description="Outlines the fundamental principles and rules for HED annotation syntax and structure.",
         ),
-        # === PRELOADED: Schema (1 doc) ===
-        DocPage(
-            title="HED standard schema (latest)",
-            url="https://raw.githubusercontent.com/hed-standard/hed-schemas/main/schemas_latest_json/HEDLatest.json",
-            source_url="https://raw.githubusercontent.com/hed-standard/hed-specification/main/schemas_latest_json/HEDLatest.json",
-            preload=True,
-            category="schemas",
-            description="The latest version of the standard HED schema in JSON format, defining the hierarchical structure and vocabulary for HED tags.",
-        ),
+        # NOTE: HED schema is NOT included here - it's too large (~890KB)
+        # Instead, use hed-lsp tool for schema lookups with autocomplete and semantic search
+        # See: /Users/yahya/Documents/git/HED/hed-lsp
         # === PRELOADED: Specification (2 docs) ===
         DocPage(
             title="HED terminology",
@@ -123,8 +117,8 @@ HED_DOCS = DocRegistry(
         ),
         DocPage(
             title="HED annotation in NWB",
-            url="https://www.hedtags.org/hed-resources/HedAnnotationInNWB.html",
-            source_url="https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/HedAnnotationInNWB.md",
+            url="https://www.hedtags.org/ndx-hed/",
+            source_url="https://raw.githubusercontent.com/hed-standard/ndx-hed/main/README.md",
             category="quickstart",
             description="A concise tutorial on how to apply HED annotations within the NWB framework for neurophysiology data.",
         ),
@@ -160,8 +154,8 @@ HED_DOCS = DocRegistry(
         ),
         DocPage(
             title="HED MATLAB tools",
-            url="https://www.hedtags.org/hed-resources/HedMatlabTools.html",
-            source_url="https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/HedMatlabTools.md",
+            url="https://www.hedtags.org/hed-matlab/",
+            source_url="https://raw.githubusercontent.com/hed-standard/hed-matlab/main/README.md",
             category="tools",
             description="Instructions for utilizing the HED MATLAB toolbox to work with HED annotations within MATLAB environments.",
         ),
@@ -174,16 +168,16 @@ HED_DOCS = DocRegistry(
         ),
         DocPage(
             title="HED online tools",
-            url="https://www.hedtags.org/hed-resources/HedOnlineTools.html",
-            source_url="https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/HedOnlineTools.md",
+            url="https://www.hedtags.org/hed-web/",
+            source_url="https://raw.githubusercontent.com/hed-standard/hed-web/main/README.md",
             category="tools",
             description="Overview of online tools available for HED annotation, validation, and schema browsing through web interfaces.",
         ),
         # === ON-DEMAND: Advanced (4 docs) ===
         DocPage(
             title="HED schema developers guide",
-            url="https://www.hedtags.org/hed-resources/HedSchemaDevelopersGuide.html",
-            source_url="https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/HedSchemaDevelopersGuide.md",
+            url="https://www.hedtags.org/hed-schemas/",
+            source_url="https://raw.githubusercontent.com/hed-standard/hed-schemas/main/README.md",
             category="advanced",
             description="Instructions and best practices for developers looking to create and maintain HED library schemas.",
         ),
@@ -211,8 +205,8 @@ HED_DOCS = DocRegistry(
         # === ON-DEMAND: Integration (1 doc) ===
         DocPage(
             title="HED and EEGLAB",
-            url="https://www.hedtags.org/hed-resources/HedAndEEGLAB.html",
-            source_url="https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/HedAndEEGLAB.md",
+            url="https://www.hedtags.org/hed-matlab/",
+            source_url="https://raw.githubusercontent.com/hed-standard/hed-matlab/main/README.md",
             category="integration",
             description="Describes how to integrate HED annotations within the EEGLAB environment for EEG data analysis.",
         ),
