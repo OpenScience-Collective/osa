@@ -41,22 +41,25 @@ class Settings(BaseSettings):
     openai_api_key: str | None = Field(default=None, description="OpenAI API key")
     anthropic_api_key: str | None = Field(default=None, description="Anthropic API key")
 
-    # Model Configuration (OpenRouter model format: provider/model-name)
+    # Model Configuration
+    # OpenRouter model format: creator/model-name (e.g., openai/gpt-oss-120b, qwen/qwen3-235b-a22b-2507)
+    # Provider is separate - specifies where the model runs (e.g., Cerebras for fast inference)
+    # See .context/research.md for benchmark details
     default_model: str = Field(
         default="openai/gpt-oss-120b",
-        description="Default model for production (OpenRouter format: provider/model)",
+        description="Default model (OpenRouter format: creator/model-name)",
     )
     default_model_provider: str | None = Field(
         default="Cerebras",
-        description="Provider preference for default model (e.g., Cerebras, Azure, etc.)",
+        description="Provider for routing (e.g., Cerebras for fast inference)",
     )
     test_model: str = Field(
         default="openai/gpt-oss-120b",
-        description="Model for testing (OpenRouter format: provider/model)",
+        description="Model for testing (OpenRouter format: creator/model-name)",
     )
     test_model_provider: str | None = Field(
         default="Cerebras",
-        description="Provider preference for test model (e.g., Cerebras, Azure, etc.)",
+        description="Provider for test model routing",
     )
     llm_temperature: float = Field(
         default=0.1,

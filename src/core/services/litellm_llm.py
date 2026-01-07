@@ -4,19 +4,26 @@ This module provides LLM access through LiteLLM, which natively supports
 Anthropic's prompt caching via the cache_control parameter. This reduces
 costs by up to 90% for repeated prompts with large static content.
 
+Default model: GPT-OSS-120B via Cerebras (fast inference with reliable tool calling)
+
 Usage:
     from src.core.services.litellm_llm import create_openrouter_llm
 
-    # Create LLM with caching enabled (auto for Anthropic models)
+    # Create LLM with default model via Cerebras
+    llm = create_openrouter_llm(
+        api_key=os.getenv("OPENROUTER_API_KEY"),
+    )
+
+    # Or specify a different model
     llm = create_openrouter_llm(
         model="anthropic/claude-haiku-4.5",
         api_key=os.getenv("OPENROUTER_API_KEY"),
-        user_id=get_user_id(),  # For sticky cache routing
+        enable_caching=True,  # For Anthropic prompt caching
     )
 
-    # Use with LangChain messages (cache_control added automatically to system)
+    # Use with LangChain messages
     response = await llm.ainvoke([
-        SystemMessage(content=large_system_prompt),
+        SystemMessage(content=system_prompt),
         HumanMessage(content=user_query),
     ])
 """
@@ -33,7 +40,7 @@ def create_openrouter_llm(
     api_key: str | None = None,
     temperature: float = 0.1,
     max_tokens: int | None = None,
-    provider: str | None = None,
+    provider: str | None = "Cerebras",
     user_id: str | None = None,
     enable_caching: bool | None = None,
 ) -> BaseChatModel:

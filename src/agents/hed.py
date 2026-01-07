@@ -235,14 +235,15 @@ class HEDAssistant(ToolAgent):
 
 
 def create_hed_assistant(
-    model_name: str = "claude-3-5-sonnet",
+    model_name: str | None = None,
     api_key: str | None = None,
     preload_docs: bool = True,
 ) -> HEDAssistant:
     """Convenience function to create a HED assistant.
 
     Args:
-        model_name: Name of the model to use.
+        model_name: Name of the model to use. If None, uses settings.default_model
+                   (default: qwen/qwen3-235b-a22b-2507 via Cerebras).
         api_key: Optional API key override (for BYOK).
         preload_docs: Whether to preload core docs.
 

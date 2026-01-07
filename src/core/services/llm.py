@@ -114,14 +114,14 @@ class LLMService:
 
         Args:
             model_name: Model name. Supports:
-                - OpenRouter format: 'provider/model' (e.g., 'openai/gpt-oss-120b')
+                - OpenRouter format: 'creator/model' (e.g., 'openai/gpt-oss-120b', 'qwen/qwen3-235b')
                 - Direct OpenAI: 'gpt-4o', 'gpt-4o-mini', etc.
                 - Direct Anthropic: 'claude-3-5-sonnet', etc.
                 If not provided, uses settings.default_model.
             api_key: Optional API key override (for BYOK).
             temperature: Model temperature. If not provided, uses settings.llm_temperature.
             streaming: Whether to enable streaming.
-            provider: Optional provider preference for OpenRouter (e.g., 'Cerebras').
+            provider: Optional provider for routing (e.g., 'Cerebras' for fast inference).
                      If not provided, uses settings.default_model_provider.
 
         Returns:
@@ -204,14 +204,15 @@ class LLMService:
         """Create a model via OpenRouter API.
 
         OpenRouter provides access to many models through an OpenAI-compatible API.
-        Model names should be in format 'provider/model' (e.g., 'openai/gpt-oss-120b').
+        Model names are in format 'creator/model' (e.g., 'openai/gpt-oss-120b').
+        Provider specifies where the model runs (e.g., 'Cerebras' for fast inference).
 
         Args:
-            model_name: OpenRouter model ID (e.g., 'openai/gpt-oss-120b')
+            model_name: OpenRouter model ID (creator/model format)
             api_key: OpenRouter API key
             temperature: Model temperature
             streaming: Enable streaming responses
-            provider: Optional provider preference (e.g., 'Cerebras') for routing
+            provider: Provider for routing (e.g., 'Cerebras' for fast inference)
         """
         key = api_key or self.settings.openrouter_api_key
         if not key:
