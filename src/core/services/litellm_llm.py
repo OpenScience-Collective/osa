@@ -131,6 +131,15 @@ class CachingLLMWrapper(BaseChatModel):
     def _llm_type(self) -> str:
         return "caching_llm_wrapper"
 
+    def bind_tools(self, tools: list, **kwargs):
+        """Bind tools to the underlying LLM.
+
+        Delegates tool binding to the underlying LLM and returns the bound model.
+        Note: Returns a RunnableBinding, not a CachingLLMWrapper, because
+        tool-bound models need to handle tool calls directly.
+        """
+        return self.llm.bind_tools(tools, **kwargs)
+
     def _add_cache_control(self, messages: list[BaseMessage]) -> list[dict]:
         """Transform messages to add cache_control to system messages.
 
