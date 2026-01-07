@@ -44,12 +44,22 @@ class ChatRequest(BaseModel):
     stream: bool = Field(default=True, description="Whether to stream the response")
 
 
+class ToolCallInfo(BaseModel):
+    """Information about a tool call made during response generation."""
+
+    name: str = Field(..., description="Tool name")
+    args: dict = Field(default_factory=dict, description="Tool arguments")
+
+
 class ChatResponse(BaseModel):
     """Response body for non-streaming chat."""
 
     session_id: str = Field(..., description="Session ID for follow-up messages")
     message: ChatMessage = Field(..., description="Assistant response")
     assistant: str = Field(..., description="Assistant that handled the request")
+    tool_calls: list[ToolCallInfo] = Field(
+        default_factory=list, description="Tools called during response generation"
+    )
 
 
 class SessionInfo(BaseModel):
@@ -245,6 +255,16 @@ async def chat(
                 if isinstance(last_msg, AIMessage):
                     response_content = last_msg.content
 
+            # Extract tool calls from result
+            tool_calls_info = []
+            for tc in result.get("tool_calls", []):
+                tool_calls_info.append(
+                    ToolCallInfo(
+                        name=tc.get("name", ""),
+                        args=tc.get("args", {}),
+                    )
+                )
+
             # Add to session history
             session.add_assistant_message(response_content)
 
@@ -252,6 +272,7 @@ async def chat(
                 session_id=session.session_id,
                 message=ChatMessage(role="assistant", content=response_content),
                 assistant=session.assistant,
+                tool_calls=tool_calls_info,
             )
 
         except Exception as e:

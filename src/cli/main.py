@@ -31,6 +31,22 @@ cli = typer.Typer(
 console = Console()
 
 
+def display_tool_calls(tool_calls: list[dict]) -> None:
+    """Display tool calls in a user-friendly format.
+
+    Args:
+        tool_calls: List of tool call info dicts with 'name' and 'args' keys.
+    """
+    if not tool_calls:
+        return
+
+    for tc in tool_calls:
+        name = tc.get("name", "unknown")
+        # Create a readable tool name (e.g., validate_hed_string -> Validate HED String)
+        readable_name = name.replace("_", " ").title()
+        console.print(f"[dim](Using tool: {readable_name})[/dim]")
+
+
 @cli.command()
 def version() -> None:
     """Show OSA version information."""
@@ -204,6 +220,12 @@ def ask(
                 console.print(f"[red]Error:[/red] {response['error']}")
                 raise typer.Exit(code=1)
 
+            # Display tool calls if any
+            tool_calls = response.get("tool_calls", [])
+            if tool_calls:
+                console.print()
+                display_tool_calls(tool_calls)
+
             content = response.get("message", {}).get("content", "No response")
 
             # Render as markdown
@@ -289,6 +311,13 @@ def chat(
 
             # Update session ID for continuity
             session_id = response.get("session_id")
+
+            # Display tool calls if any
+            tool_calls = response.get("tool_calls", [])
+            if tool_calls:
+                console.print()
+                display_tool_calls(tool_calls)
+
             content = response.get("message", {}).get("content", "No response")
 
             # Print response
