@@ -99,7 +99,7 @@ jobs:
             echo "Running integration tests with OpenRouter..."
             pytest tests/ -v -m "integration or llm" --timeout=180 --cov=src --cov-report=xml:coverage-integration.xml --cov-report=term-missing
           else
-            echo "OPENROUTER_API_KEY_FOR_TESTING not set, skipping integration tests"
+            echo "::warning::OPENROUTER_API_KEY_FOR_TESTING not set, skipping integration tests"
           fi
 
       - name: Upload integration coverage to Codecov
@@ -142,4 +142,4 @@ jobs:
           echo "All required checks passed!"
           echo "Lint: ${{ needs.lint.result }}"
           echo "Unit tests: ${{ needs.unit-tests.result }}"
-          echo "Integration tests: ${{ needs.integration-tests.result }}"
+          echo "Integration tests: ${{ needs.integration-tests.result }} (skipped on PRs)"

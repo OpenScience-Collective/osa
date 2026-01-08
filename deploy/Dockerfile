@@ -8,10 +8,11 @@ WORKDIR /app
 # Install uv for fast dependency installation
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-# Copy only dependency files first for better caching
+# Copy files needed for installation (version.py required by hatchling)
 COPY pyproject.toml ./
+COPY src/version.py ./src/version.py
 
-# Install dependencies
+# Install dependencies and package
 RUN uv pip install --system --no-cache .
 
 # Production image
@@ -34,12 +35,16 @@ ENV GIT_COMMIT=${GIT_COMMIT}
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
+# Create non-root user for security
+RUN useradd --create-home --shell /bin/bash appuser
+USER appuser
+
 # Default port
 EXPOSE 38428
 
-# Health check
+# Health check using Python (no curl dependency needed)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:38428/health || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:38428/health')" || exit 1
 
 # Run the application
 CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "38428"]

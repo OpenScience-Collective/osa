@@ -35,20 +35,19 @@ jobs:
             -e OPENROUTER_API_KEY=test-key-for-ci \
             osa-test:ci
 
-      - name: Wait for container to start
+      - name: Wait for container to be healthy
         run: |
-          echo "Waiting for container to initialize..."
-          sleep 30
-
-      - name: Smoke test - Check health endpoint
-        run: |
-          echo "Checking health endpoint..."
-          curl -f http://localhost:38428/health || {
-            echo "Health check failed! Container logs:"
-            docker logs osa-test
-            exit 1
-          }
-          echo "Health check passed!"
+          echo "Waiting for container to be healthy..."
+          for i in {1..60}; do
+            if curl -sf http://localhost:38428/health > /dev/null 2>&1; then
+              echo "Container is healthy after $i seconds"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Container failed to become healthy within 60 seconds"
+          docker logs osa-test
+          exit 1
 
       - name: Cleanup test container
         if: always()
