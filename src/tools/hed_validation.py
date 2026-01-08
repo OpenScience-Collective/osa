@@ -144,6 +144,97 @@ def validate_hed_string(hed_string: str, schema_version: str = "8.4.0") -> dict[
 
 
 @tool
+def suggest_hed_tags(search_terms: list[str], top_n: int = 10) -> dict[str, list[str]]:
+    """Suggest valid HED tags for natural language search terms.
+
+    Use this tool to find valid HED tags that match natural language descriptions.
+    This uses the hed-lsp semantic search to find relevant tags from the HED schema.
+
+    **Primary Use**: Convert natural language concepts to valid HED tags.
+
+    **Workflow**:
+    1. User describes events in natural language (e.g., "button press", "visual flash")
+    2. Call this tool to get valid HED tags for each concept
+    3. Use the suggested tags to construct valid HED annotation strings
+    4. Validate the final string with validate_hed_string before showing to user
+
+    Args:
+        search_terms: List of natural language terms to search for HED tags
+                     (e.g., ["button press", "visual stimulus", "response"])
+        top_n: Maximum number of suggestions per term (default: 10)
+
+    Returns:
+        dict mapping each search term to a list of suggested HED tags.
+        If hed-lsp is not available, returns empty lists with error message.
+
+    Example:
+        >>> result = suggest_hed_tags(["button press", "visual flash"])
+        >>> print(result)
+        {
+            "button press": ["Button", "Response-button", "Mouse-button", "Press"],
+            "visual flash": ["Flash", "Flickering", "Visual-presentation"]
+        }
+    """
+    import json
+    import os
+    import shutil
+    import subprocess
+
+    # Try to find hed-suggest CLI
+    # 1. Check if it's in PATH (global install)
+    # 2. Check configured path via HED_LSP_PATH env var
+    # 3. Check common local dev path
+    cli_path = shutil.which("hed-suggest")
+
+    if not cli_path:
+        # Check env var for local dev path
+        hed_lsp_path = os.environ.get("HED_LSP_PATH")
+        if hed_lsp_path:
+            candidate = os.path.join(hed_lsp_path, "server", "out", "cli.js")
+            if os.path.exists(candidate):
+                cli_path = candidate
+
+    if not cli_path:
+        # Check common local dev path
+        dev_path = os.path.expanduser("~/Documents/git/HED/hed-lsp/server/out/cli.js")
+        if os.path.exists(dev_path):
+            cli_path = dev_path
+
+    if not cli_path:
+        # Return empty results with error
+        return {term: [] for term in search_terms}
+
+    try:
+        # Build command
+        cmd = ["node", cli_path] if cli_path.endswith(".js") else [cli_path]
+        cmd.extend(["--json", "--top", str(top_n)])
+        cmd.extend(search_terms)
+
+        # Run CLI
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        if result.returncode != 0:
+            # CLI failed, return empty results
+            return {term: [] for term in search_terms}
+
+        # Parse JSON from stdout
+        output = json.loads(result.stdout)
+        return output
+
+    except subprocess.TimeoutExpired:
+        return {term: [] for term in search_terms}
+    except json.JSONDecodeError:
+        return {term: [] for term in search_terms}
+    except Exception:
+        return {term: [] for term in search_terms}
+
+
+@tool
 def get_hed_schema_versions() -> dict[str, Any]:
     """Get list of available HED schema versions from hedtools.org.
 

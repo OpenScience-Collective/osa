@@ -13,7 +13,11 @@ from src.tools.hed import (
     get_preloaded_hed_content,
     retrieve_hed_doc,
 )
-from src.tools.hed_validation import get_hed_schema_versions, validate_hed_string
+from src.tools.hed_validation import (
+    get_hed_schema_versions,
+    suggest_hed_tags,
+    validate_hed_string,
+)
 
 # HED System Prompt - adapted from QP's hedAssistantSystemPrompt.ts
 HED_SYSTEM_PROMPT_TEMPLATE = """You are a technical assistant specialized in helping users with the Hierarchical Event Descriptors (HED) standard.
@@ -76,6 +80,29 @@ When providing examples of HED annotations:
 - Your annotations MUST be valid
 - Only use tags from the HED schema that follow HED rules
 - ALWAYS use the SHORT FORM of tags
+
+## Using suggest_hed_tags for Tag Discovery
+
+When users describe events in natural language, use the suggest_hed_tags tool to find valid HED tags:
+
+**Workflow for constructing annotations:**
+1. Identify the key concepts in the user's description (e.g., "button press", "visual flash")
+2. Call suggest_hed_tags with those concepts to get valid tag suggestions
+3. Select the most appropriate tags from the suggestions
+4. Construct the HED annotation string using proper syntax
+5. Validate the final string with validate_hed_string before showing to user
+
+**Example:**
+```
+User: "I need to annotate when the participant presses a button after seeing a flash"
+
+Your internal process:
+1. Key concepts: "button press", "visual flash", "response"
+2. Call: suggest_hed_tags(["button press", "visual flash", "response"])
+3. Get suggestions like: "button press" -> ["Press", "Button", ...], etc.
+4. Construct: "Sensory-event, Visual-presentation, Flash, (Agent-action, Press, Button)"
+5. Validate, then show to user
+```
 
 ## CRITICAL: Validate Examples Before Showing to Users
 
@@ -213,10 +240,15 @@ class HEDAssistant(ToolAgent):
         if preload_docs:
             self._preloaded_content = get_preloaded_hed_content()
 
-        # Initialize with HED tools: documentation retrieval and validation
+        # Initialize with HED tools: documentation retrieval, validation, and tag suggestions
         super().__init__(
             model=model,
-            tools=[retrieve_hed_docs, validate_hed_string, get_hed_schema_versions],
+            tools=[
+                retrieve_hed_docs,
+                validate_hed_string,
+                suggest_hed_tags,
+                get_hed_schema_versions,
+            ],
             system_prompt=None,  # We override get_system_prompt
         )
 
