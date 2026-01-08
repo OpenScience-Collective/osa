@@ -14,10 +14,14 @@ if [ "$ENVIRONMENT" = "dev" ]; then
     REGISTRY_IMAGE="ghcr.io/openscience-collective/osa:dev"
     CONTAINER_NAME="osa-dev"
     HOST_PORT=38529
+    # Dev uses DEV_ROOT_PATH, defaults to /osa-dev
+    ROOT_PATH_OVERRIDE="${DEV_ROOT_PATH:-/osa-dev}"
 else
     REGISTRY_IMAGE="ghcr.io/openscience-collective/osa:latest"
     CONTAINER_NAME="osa"
     HOST_PORT=38528
+    # Prod uses ROOT_PATH from .env
+    ROOT_PATH_OVERRIDE=""
 fi
 
 CONTAINER_PORT=38528
@@ -54,12 +58,19 @@ run_container() {
     mkdir -p "${DATA_DIR}" 2>/dev/null || \
         echo "Warning: Could not create ${DATA_DIR}, data may not persist"
 
+    # Build environment overrides
+    ENV_OVERRIDE=""
+    if [ -n "$ROOT_PATH_OVERRIDE" ]; then
+        ENV_OVERRIDE="-e ROOT_PATH=${ROOT_PATH_OVERRIDE}"
+    fi
+
     docker run -d \
         --name "${CONTAINER_NAME}" \
         --restart unless-stopped \
         -p "127.0.0.1:${HOST_PORT}:${CONTAINER_PORT}" \
         -v "${DATA_DIR}:/app/data" \
         ${ENV_ARGS} \
+        ${ENV_OVERRIDE} \
         "${REGISTRY_IMAGE}" || error_exit "Failed to start container"
 }
 

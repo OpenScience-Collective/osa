@@ -53,11 +53,15 @@ if [ "$ENVIRONMENT" = "dev" ]; then
     CONTAINER_NAME="osa-dev"
     REGISTRY_IMAGE="ghcr.io/openscience-collective/osa:dev"
     HOST_PORT=38529
+    # Dev uses DEV_ROOT_PATH, defaults to /osa-dev
+    ROOT_PATH_OVERRIDE="${DEV_ROOT_PATH:-/osa-dev}"
 else
     IMAGE_NAME="osa:latest"
     CONTAINER_NAME="osa"
     REGISTRY_IMAGE="ghcr.io/openscience-collective/osa:latest"
     HOST_PORT=38528
+    # Prod uses ROOT_PATH from .env
+    ROOT_PATH_OVERRIDE=""
 fi
 
 CONTAINER_PORT=38528
@@ -163,11 +167,18 @@ deploy_update() {
 
     # Run the new container using the pulled image
     log "Starting new container on port ${HOST_PORT}..."
+    # Build environment overrides
+    ENV_OVERRIDE=""
+    if [ -n "$ROOT_PATH_OVERRIDE" ]; then
+        ENV_OVERRIDE="-e ROOT_PATH=${ROOT_PATH_OVERRIDE}"
+    fi
+
     docker run -d \
         --name "$CONTAINER_NAME" \
         --restart unless-stopped \
         -p "127.0.0.1:${HOST_PORT}:${CONTAINER_PORT}" \
         ${ENV_ARGS} \
+        ${ENV_OVERRIDE} \
         -v /var/log/osa:/var/log/osa \
         -v "${DATA_DIR}:/app/data" \
         "$REGISTRY_IMAGE"

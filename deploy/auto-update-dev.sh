@@ -8,6 +8,8 @@ HOST_PORT=38529
 CONTAINER_PORT=38528
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOCK_FILE="/tmp/osa-dev-update.lock"
+# Dev uses DEV_ROOT_PATH, defaults to /osa-dev
+ROOT_PATH_OVERRIDE="${DEV_ROOT_PATH:-/osa-dev}"
 
 # Prevent concurrent runs
 [ -f "$LOCK_FILE" ] && exit 0
@@ -44,6 +46,7 @@ if [ "$RUNNING_ID" != "$NEW_ID" ]; then
         -p "127.0.0.1:${HOST_PORT}:${CONTAINER_PORT}" \
         -v "${DATA_DIR}:/app/data" \
         $ENV_ARGS \
+        -e ROOT_PATH="${ROOT_PATH_OVERRIDE}" \
         "$REGISTRY_IMAGE" > /dev/null
 
     echo "[$(date '+%Y-%m-%d %H:%M')] Dev updated: ${NEW_ID:7:12}"
