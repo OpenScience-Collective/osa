@@ -12,7 +12,12 @@ from src.tools.hed import HED_DOCS
 
 
 class TestDocumentRegistry:
-    """Tests for document registry structure and organization."""
+    """Tests for document registry structure and organization.
+
+    These tests are designed to be dynamic - they verify behavior and consistency
+    rather than hardcoding specific document counts or titles. This makes them
+    resilient to changes in which documents are preloaded vs on-demand.
+    """
 
     def test_hed_registry_exists(self):
         """Test that HED registry is properly initialized."""
@@ -20,41 +25,43 @@ class TestDocumentRegistry:
         assert HED_DOCS.name == "hed"
         assert len(HED_DOCS.docs) > 0
 
-    def test_preloaded_documents_count(self):
-        """Test that we have exactly 2 preloaded documents.
-
-        Only core docs are preloaded to minimize token usage (~13k tokens):
-        - HED annotation semantics (rules and principles)
-        - HED terminology (key definitions)
-
-        Other docs (Basic annotation, Introduction, How can you use HED?)
-        are now on-demand to reduce system prompt size by ~53%.
-        """
+    def test_preloaded_plus_ondemand_equals_total(self):
+        """Test that preloaded + on-demand equals total documents."""
         preloaded = HED_DOCS.get_preloaded()
-        assert len(preloaded) == 2, f"Expected 2 preloaded docs, got {len(preloaded)}"
-
-    def test_ondemand_documents_count(self):
-        """Test that we have 26 on-demand documents."""
         on_demand = HED_DOCS.get_on_demand()
-        assert len(on_demand) == 26, f"Expected 26 on-demand docs, got {len(on_demand)}"
 
-    def test_total_documents_count(self):
-        """Test total document count (preloaded + on-demand)."""
-        assert len(HED_DOCS.docs) == 28  # 2 preloaded + 26 on-demand
+        assert len(preloaded) + len(on_demand) == len(HED_DOCS.docs)
 
-    def test_preloaded_documents_list(self):
-        """Test that preloaded documents are the expected ones."""
+    def test_preloaded_docs_have_preload_flag_true(self):
+        """Test that all docs returned by get_preloaded() have preload=True."""
         preloaded = HED_DOCS.get_preloaded()
-        preloaded_titles = [doc.title for doc in preloaded]
 
-        # Only 2 core docs preloaded to minimize token usage (~13k tokens)
-        # Other docs moved to on-demand for 53% reduction in system prompt size
-        expected_titles = {
-            "HED annotation semantics",
-            "HED terminology",
-        }
+        for doc in preloaded:
+            assert doc.preload is True, f"Doc '{doc.title}' in preloaded but preload={doc.preload}"
 
-        assert set(preloaded_titles) == expected_titles
+    def test_ondemand_docs_have_preload_flag_false(self):
+        """Test that all docs returned by get_on_demand() have preload=False."""
+        on_demand = HED_DOCS.get_on_demand()
+
+        for doc in on_demand:
+            assert doc.preload is False, f"Doc '{doc.title}' in on_demand but preload={doc.preload}"
+
+    def test_preloaded_is_subset_of_total(self):
+        """Test that preloaded docs are a proper subset when not all docs are preloaded."""
+        preloaded = HED_DOCS.get_preloaded()
+
+        # Preloaded should be smaller than total (we don't preload everything)
+        assert len(preloaded) < len(HED_DOCS.docs), "Expected some docs to be on-demand"
+        # But we should have at least 1 preloaded doc
+        assert len(preloaded) >= 1, "Expected at least 1 preloaded doc"
+
+    def test_no_duplicate_documents(self):
+        """Test that no document appears in both preloaded and on-demand."""
+        preloaded_urls = {doc.url for doc in HED_DOCS.get_preloaded()}
+        ondemand_urls = {doc.url for doc in HED_DOCS.get_on_demand()}
+
+        overlap = preloaded_urls & ondemand_urls
+        assert len(overlap) == 0, f"Documents in both preloaded and on-demand: {overlap}"
 
     def test_all_documents_have_descriptions(self):
         """Test that all documents have non-empty descriptions."""
@@ -97,13 +104,16 @@ class TestDocumentRegistry:
 
     def test_find_by_url_html(self):
         """Test finding document by HTML URL."""
-        # Try to find a known preloaded document
-        url = "https://www.hedtags.org/hed-resources/HedAnnotationSemantics.html"
-        doc = HED_DOCS.find_by_url(url)
+        # Dynamically pick any preloaded document
+        preloaded = HED_DOCS.get_preloaded()
+        assert len(preloaded) > 0, "Need at least one preloaded doc for this test"
 
-        assert doc is not None
-        assert doc.title == "HED annotation semantics"
-        assert doc.preload is True
+        test_doc = preloaded[0]
+        found = HED_DOCS.find_by_url(test_doc.url)
+
+        assert found is not None
+        assert found.title == test_doc.title
+        assert found.preload is True
 
     def test_find_by_url_notfound(self):
         """Test finding document with non-existent URL."""

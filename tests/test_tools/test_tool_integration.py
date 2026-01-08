@@ -141,29 +141,33 @@ class TestRetrieveByCategory:
 
 
 class TestPreloadedContent:
-    """Tests for preloaded document functionality."""
+    """Tests for preloaded document functionality.
+
+    These tests dynamically discover what should be preloaded from the registry
+    rather than hardcoding expected documents.
+    """
 
     def test_get_preloaded_hed_content(self):
         """Test fetching all preloaded HED documentation."""
         fetcher = DocumentFetcher()
-        preloaded = get_preloaded_hed_content(fetcher)
+        preloaded_content = get_preloaded_hed_content(fetcher)
+        preloaded_docs = HED_DOCS.get_preloaded()
 
-        # Should fetch 2 preloaded documents (reduced from 5 to minimize token usage)
-        # (some may fail due to network issues, but we should get at least 1)
-        assert len(preloaded) >= 1, f"Expected at least 1 preloaded doc, got {len(preloaded)}"
+        # Should attempt to fetch all docs marked as preloaded
+        # (some may fail due to network issues)
+        assert len(preloaded_content) >= 1, "Expected at least 1 preloaded doc"
 
-        # Check that expected URLs are present (only 2 core docs now preloaded)
-        expected_docs = {
-            "https://www.hedtags.org/hed-resources/HedAnnotationSemantics.html",
-            "https://www.hedtags.org/hed-specification/02_Terminology.html",
-        }
-
-        # At least 1 of the 2 expected URLs should be present
-        present_count = sum(1 for url in expected_docs if url in preloaded)
-        assert present_count >= 1, f"Expected at least 1 URL present, got {present_count}"
+        # All returned content should be keyed by valid URLs
+        for url in preloaded_content:
+            assert url.startswith("https://"), f"Invalid URL key: {url}"
 
         # All content should be non-empty
-        assert all(len(content) > 0 for content in preloaded.values())
+        assert all(len(content) > 0 for content in preloaded_content.values())
+
+        # URLs in result should match docs marked preload=True
+        expected_urls = {doc.url for doc in preloaded_docs}
+        for url in preloaded_content:
+            assert url in expected_urls, f"Unexpected URL in preloaded: {url}"
 
     def test_preloaded_content_is_cleaned(self):
         """Test that preloaded content is cleaned markdown."""

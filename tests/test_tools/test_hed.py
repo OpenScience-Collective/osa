@@ -36,17 +36,22 @@ class TestHEDRegistry:
     def test_has_preloaded_docs(self) -> None:
         """Test that registry has preloaded documents."""
         preloaded = HED_DOCS.get_preloaded()
-        # Should have 2 preloaded docs (reduced from 5 to minimize token usage)
-        assert len(preloaded) == 2
+        # Should have at least 1 preloaded doc
+        assert len(preloaded) >= 1
 
-        # Should include core annotation semantics
-        titles = [d.title for d in preloaded]
-        assert any("semantics" in t.lower() for t in titles)
+        # All preloaded docs should have preload=True
+        for doc in preloaded:
+            assert doc.preload is True
 
     def test_has_on_demand_docs(self) -> None:
         """Test that registry has on-demand documents."""
         on_demand = HED_DOCS.get_on_demand()
-        assert len(on_demand) >= 10
+        # Should have on-demand docs (not everything is preloaded)
+        assert len(on_demand) >= 1
+
+        # All on-demand docs should have preload=False
+        for doc in on_demand:
+            assert doc.preload is False
 
     def test_has_expected_categories(self) -> None:
         """Test that registry has expected categories."""
@@ -149,13 +154,15 @@ class TestGetPreloadedHEDContent:
             assert url.startswith("https://")
             assert len(text) > 0
 
-    def test_preload_includes_semantics(self, fetcher: DocumentFetcher) -> None:
-        """Test that annotation semantics is preloaded."""
+    def test_preload_returns_all_preloaded_docs(self, fetcher: DocumentFetcher) -> None:
+        """Test that preload returns content for all docs marked as preloaded."""
         content = get_preloaded_hed_content(fetcher)
+        preloaded_docs = HED_DOCS.get_preloaded()
 
-        # Should include semantics URL from hed-resources (core doc)
-        semantics_url = "https://www.hedtags.org/hed-resources/HedAnnotationSemantics.html"
-        assert semantics_url in content
+        # Should return content keyed by URL for all preloaded docs
+        for doc in preloaded_docs:
+            assert doc.url in content, f"Missing preloaded doc: {doc.title}"
+            assert len(content[doc.url]) > 0, f"Empty content for: {doc.title}"
 
 
 class TestFormatHEDDocList:

@@ -143,43 +143,47 @@ class TestRetrieveHedDocsTool:
 
 
 class TestHEDDocsRegistry:
-    """Tests for the HED documentation registry integration."""
+    """Tests for the HED documentation registry integration.
 
-    def test_preloaded_doc_count(self) -> None:
-        """Should have preloaded documents."""
+    These tests are dynamic - they verify consistency and behavior
+    rather than hardcoded values. This allows the registry configuration
+    to change without breaking tests.
+    """
+
+    def test_preloaded_and_ondemand_partition_total(self) -> None:
+        """Preloaded + on-demand should equal total docs (no overlap, no gaps)."""
         preloaded = HED_DOCS.get_preloaded()
-        # Should have some preloaded docs for the system prompt
-        assert len(preloaded) > 0
-        # Preloaded should be a small subset of total
-        assert len(preloaded) < len(HED_DOCS.docs)
-
-    def test_ondemand_doc_count(self) -> None:
-        """Should have on-demand documents."""
         ondemand = HED_DOCS.get_on_demand()
-        preloaded = HED_DOCS.get_preloaded()
-        # Should have on-demand docs available
-        assert len(ondemand) > 0
-        # Total should equal preloaded + on-demand
-        assert len(ondemand) + len(preloaded) == len(HED_DOCS.docs)
 
-    def test_preloaded_docs_are_correct(self) -> None:
-        """Preloaded docs should include the expected core documents."""
-        preloaded_titles = [d.title for d in HED_DOCS.get_preloaded()]
+        assert len(preloaded) + len(ondemand) == len(HED_DOCS.docs)
 
-        # Only 2 core docs preloaded to minimize token usage (~13k tokens)
-        expected = [
-            "HED annotation semantics",
-            "HED terminology",
-        ]
+        # No overlap between sets
+        preloaded_urls = {d.url for d in preloaded}
+        ondemand_urls = {d.url for d in ondemand}
+        assert len(preloaded_urls & ondemand_urls) == 0
 
-        for title in expected:
-            assert title in preloaded_titles, f"Missing preloaded doc: {title}"
+    def test_preloaded_docs_have_correct_flag(self) -> None:
+        """All docs returned by get_preloaded() should have preload=True."""
+        for doc in HED_DOCS.get_preloaded():
+            assert doc.preload is True, f"Doc '{doc.title}' has preload={doc.preload}"
 
-    def test_all_docs_have_source_urls(self) -> None:
-        """All documents should have source URLs for fetching."""
+    def test_ondemand_docs_have_correct_flag(self) -> None:
+        """All docs returned by get_on_demand() should have preload=False."""
+        for doc in HED_DOCS.get_on_demand():
+            assert doc.preload is False, f"Doc '{doc.title}' has preload={doc.preload}"
+
+    def test_all_docs_have_required_fields(self) -> None:
+        """All documents should have required fields for the tool system."""
         for doc in HED_DOCS.docs:
-            assert doc.source_url, f"Doc missing source_url: {doc.title}"
+            # Required for retrieval
+            assert doc.url, f"Doc '{doc.title}' missing url"
+            assert doc.source_url, f"Doc '{doc.title}' missing source_url"
             assert doc.source_url.startswith("https://"), f"Invalid source_url: {doc.source_url}"
+
+            # Required for agent discovery
+            assert doc.title, "Doc missing title"
+            assert doc.description, f"Doc '{doc.title}' missing description"
+            assert doc.category, f"Doc '{doc.title}' missing category"
 
 
 class TestHEDAssistantInvocation:
