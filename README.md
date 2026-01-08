@@ -34,6 +34,60 @@ uvicorn src.api.main:app --reload --port 38428
 osa --help
 ```
 
+## Optional: HED Tag Suggestions
+
+The HED assistant can suggest valid HED tags from natural language using the [hed-lsp](https://github.com/hed-standard/hed-lsp) CLI tool.
+
+### Installation
+
+```bash
+# Clone and build hed-lsp
+git clone https://github.com/hed-standard/hed-lsp.git
+cd hed-lsp/server
+npm install
+npm run compile
+```
+
+### Configuration
+
+Set the `HED_LSP_PATH` environment variable to point to your hed-lsp installation:
+
+```bash
+export HED_LSP_PATH=/path/to/hed-lsp
+```
+
+Or install globally:
+
+```bash
+cd hed-lsp/server
+npm link  # Makes hed-suggest available globally
+```
+
+### Usage
+
+The `suggest_hed_tags` tool will automatically find the CLI and convert natural language to valid HED tags:
+
+```python
+from src.tools.hed_validation import suggest_hed_tags
+
+result = suggest_hed_tags.invoke({
+    'search_terms': ['button press', 'visual flash'],
+    'top_n': 5
+})
+# {'button press': ['Button', 'Response-button', 'Mouse-button', 'Press', 'Push'],
+#  'visual flash': ['Flash', 'Flickering', 'Visual-presentation']}
+```
+
+The CLI can also be used directly:
+
+```bash
+hed-suggest "button press"
+# Button, Response-button, Mouse-button, Press, Push
+
+hed-suggest --json "button" "stimulus"
+# {"button": [...], "stimulus": [...]}
+```
+
 ## Development
 
 ```bash
