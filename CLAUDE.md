@@ -10,9 +10,9 @@ A precise, reliable AI assistant platform for researchers working with open scie
 2. **Create feature branch**: `git checkout -b feature/issue-N-short-description`
 3. **Implement** with atomic commits
 4. **Review** using `/pr-review-toolkit:review-pr` before creating PR
-5. **Create PR** with `gh pr create`
-6. **Address review feedback**, re-run review if needed
-7. **Merge** after approval
+5. **Address ALL review findings** - fix critical AND important issues, not just critical
+6. **Create PR** with `gh pr create`
+7. **Merge with merge commit**: `gh pr merge --merge --delete-branch` (NEVER squash)
 
 ```bash
 # Example workflow
@@ -21,8 +21,10 @@ git checkout -b feature/issue-7-interfaces       # Create branch
 # ... implement ...
 git add -A && git commit -m "feat: add X"       # Atomic commits
 /pr-review-toolkit:review-pr                     # Review before PR
+# FIX ALL ISSUES from review (critical + important)
 gh pr create --title "feat: add X" --body "Closes #7"
 git push -u origin feature/issue-7-interfaces
+gh pr merge --merge --delete-branch              # MERGE COMMIT, never squash
 ```
 
 ## Design Principles
@@ -91,7 +93,9 @@ src/
 - **Follow the Development Workflow** (see top of file)
 - Atomic commits, concise messages, no emojis
 - Feature branches from main, linked to issues
+- **NEVER squash merge** - always use merge commits to preserve history
 - Use PR review toolkit before creating PRs
+- **Address ALL review issues** (critical + important) before merging
 
 ### Code Exploration with Serena
 - **Use Serena MCP for efficient code exploration** via Language Server Protocol (LSP)
