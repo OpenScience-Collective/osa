@@ -52,6 +52,7 @@ def create_app() -> FastAPI:
         version=settings.app_version,
         description="An extensible AI assistant platform for open science projects",
         lifespan=lifespan,
+        root_path=settings.root_path,
         docs_url="/docs" if settings.debug else None,
         redoc_url="/redoc" if settings.debug else None,
     )
