@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from src.api.config import get_settings
-from src.api.routers import chat_router
+from src.api.routers import chat_router, hed_router
 
 
 class HealthResponse(BaseModel):
@@ -73,8 +73,11 @@ def create_app() -> FastAPI:
 
 def register_routes(app: FastAPI) -> None:
     """Register all application routes."""
-    # Include routers
-    app.include_router(chat_router)
+    # Assistant-specific routers
+    app.include_router(hed_router)  # /hed/chat, /hed/ask
+
+    # Legacy router for backwards compatibility (deprecated)
+    app.include_router(chat_router)  # /chat
 
     @app.get("/health", response_model=HealthResponse, tags=["System"])
     async def health_check() -> HealthResponse:

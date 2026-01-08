@@ -13,7 +13,8 @@ from pydantic import BaseModel, Field
 class CLIConfig(BaseModel):
     """CLI configuration stored in user config directory."""
 
-    api_url: str = Field(default="http://localhost:38428", description="OSA API URL")
+    # Port allocation: HEDit prod=38427, HEDit dev=38428, OSA prod=38528, OSA dev=38529
+    api_url: str = Field(default="http://localhost:38528", description="OSA API URL")
     api_key: str | None = Field(default=None, description="API key for authentication")
 
     # BYOK settings - users can provide their own LLM API keys

@@ -28,7 +28,7 @@ pre-commit install
 
 ```bash
 # Run development server
-uvicorn src.api.main:app --reload --port 38428
+uvicorn src.api.main:app --reload --port 38528
 
 # CLI usage
 osa --help
