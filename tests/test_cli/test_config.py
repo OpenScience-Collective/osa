@@ -41,7 +41,7 @@ class TestCLIConfig:
     def test_default_values(self) -> None:
         """CLIConfig should have sensible defaults."""
         config = CLIConfig()
-        assert config.api_url == "http://localhost:38428"
+        assert config.api_url == "http://localhost:38528"
         assert config.api_key is None
         assert config.openai_api_key is None
         assert config.anthropic_api_key is None
@@ -97,7 +97,7 @@ class TestLoadSaveConfig:
         with patch("src.cli.config.get_config_path") as mock_path:
             mock_path.return_value = temp_config_dir / "config.json"
             config = load_config()
-            assert config.api_url == "http://localhost:38428"
+            assert config.api_url == "http://localhost:38528"
 
     def test_save_and_load_config(self, temp_config_dir: Path) -> None:
         """save_config and load_config should round-trip correctly."""
@@ -132,7 +132,7 @@ class TestLoadSaveConfig:
             mock_path.return_value = config_path
             config = load_config()
             # Should return defaults
-            assert config.api_url == "http://localhost:38428"
+            assert config.api_url == "http://localhost:38528"
 
     def test_save_config_creates_parent_dirs(self, tmp_path: Path) -> None:
         """save_config should create parent directories if needed."""

@@ -24,8 +24,9 @@ class Settings(BaseSettings):
     debug: bool = Field(default=False, description="Enable debug mode")
 
     # Server Settings
+    # Port allocation: HEDit prod=38427, HEDit dev=38428, OSA prod=38528, OSA dev=38529
     host: str = Field(default="0.0.0.0", description="Server host")
-    port: int = Field(default=38428, description="Server port")
+    port: int = Field(default=38528, description="Server port")
 
     # CORS Settings
     cors_origins: list[str] = Field(

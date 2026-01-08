@@ -120,7 +120,7 @@ def _run_server(host: str, port: int) -> None:
     server.run()
 
 
-def start_standalone_server(host: str = "127.0.0.1", port: int = 38428) -> str:
+def start_standalone_server(host: str = "127.0.0.1", port: int = 38528) -> str:
     """Start the API server in standalone mode.
 
     Returns the base URL of the running server.
@@ -148,7 +148,7 @@ def serve(
     port: Annotated[
         int,
         typer.Option("--port", "-p", help="Port to bind to"),
-    ] = 38428,
+    ] = 38528,
     reload: Annotated[
         bool,
         typer.Option("--reload", "-r", help="Enable auto-reload for development"),
@@ -257,7 +257,7 @@ def chat(
     Example:
         osa chat
         osa chat --assistant hed
-        osa chat --url http://localhost:38428
+        osa chat --url http://localhost:38528
     """
     config = load_config()
 
