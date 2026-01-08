@@ -15,11 +15,11 @@ pre-commit install
 
 ## Development Server
 ```bash
-# Run FastAPI server with hot reload
-uvicorn src.api.main:app --reload --port 38428
+# Run FastAPI server with hot reload (port 38528 = OSA prod)
+uvicorn src.api.main:app --reload --port 38528
 
-# Access at: http://localhost:38428
-# Health check: http://localhost:38428/health
+# Access at: http://localhost:38528
+# Health check: http://localhost:38528/health
 ```
 
 ## CLI Usage
@@ -34,7 +34,7 @@ osa chat
 osa ask "your question here"
 
 # Start server
-osa serve --port 38428
+osa serve --port 38528
 ```
 
 ## Code Quality

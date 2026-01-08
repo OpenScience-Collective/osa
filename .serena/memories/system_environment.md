@@ -70,8 +70,10 @@ Key environment variables (stored in `.env`):
 - Other API keys as needed (see `.env.example`)
 
 ## Port Usage
-- **Development API Server**: 38428 (default for `osa serve`)
-- Can be changed with `--port` flag
+- **Production API Server**: 38528 (default for `osa serve`)
+- **Development API Server**: 38529 (for dev/testing)
+- Can be changed with `--port` flag or `PORT` environment variable
+- Port allocation: HEDit prod=38427, HEDit dev=38428, OSA prod=38528, OSA dev=38529
 
 ## Known Paths for Reference Projects
 - **HEDit** (deployment patterns): `/Users/yahya/Documents/git/annot-garden/hedit`
