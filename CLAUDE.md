@@ -39,14 +39,21 @@ gh pr merge --merge --delete-branch              # MERGE COMMIT, never squash
 ## Quick Start
 
 ```bash
-# Setup environment
-conda activate osa
+# Setup environment (uses uv for dependency management)
+uv sync
 
 # Development server
-uvicorn src.api.main:app --reload --port 38528
+uv run uvicorn src.api.main:app --reload --port 38528
+
+# Run tests
+uv run pytest tests/ -v
+
+# Linting
+uv run ruff check .
+uv run ruff format .
 
 # CLI usage
-osa --help
+uv run osa --help
 ```
 
 ## Project Structure
@@ -82,7 +89,7 @@ src/
 - **Dynamic tests**: Query registries/configs, don't hardcode values (see `.rules/testing_guidelines.md`)
 - **Coverage**: >70% minimum
 - **LLM testing**: Use exemplar scenarios from real cases
-- Run `pytest --cov` before committing
+- Run `uv run pytest --cov` before committing
 
 ### Code Style
 - ruff for formatting/linting (pre-commit hooks)
