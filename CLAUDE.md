@@ -2,6 +2,29 @@
 
 A precise, reliable AI assistant platform for researchers working with open science tools. Built for accuracy over scale; serving small research communities from lab servers.
 
+## Development Workflow
+
+**All development follows: Issue -> Feature Branch -> PR -> Review -> Merge**
+
+1. **Pick an issue** from GitHub Issues
+2. **Create feature branch**: `git checkout -b feature/issue-N-short-description`
+3. **Implement** with atomic commits
+4. **Review** using `/pr-review-toolkit:review-pr` before creating PR
+5. **Create PR** with `gh pr create`
+6. **Address review feedback**, re-run review if needed
+7. **Merge** after approval
+
+```bash
+# Example workflow
+gh issue list                                    # Find issue to work on
+git checkout -b feature/issue-7-interfaces       # Create branch
+# ... implement ...
+git add -A && git commit -m "feat: add X"       # Atomic commits
+/pr-review-toolkit:review-pr                     # Review before PR
+gh pr create --title "feat: add X" --body "Closes #7"
+git push -u origin feature/issue-7-interfaces
+```
+
 ## Design Principles
 
 - **Precision over features**: Researchers need accurate, citation-backed answers
@@ -54,6 +77,7 @@ src/
 
 ### Testing
 - **NO MOCKS**: Real tests with real data only
+- **Dynamic tests**: Query registries/configs, don't hardcode values (see `.rules/testing_guidelines.md`)
 - **Coverage**: >70% minimum
 - **LLM testing**: Use exemplar scenarios from real cases
 - Run `pytest --cov` before committing
@@ -64,8 +88,10 @@ src/
 - Docstrings for public APIs
 
 ### Git
+- **Follow the Development Workflow** (see top of file)
 - Atomic commits, concise messages, no emojis
-- Feature branches from main
+- Feature branches from main, linked to issues
+- Use PR review toolkit before creating PRs
 
 ### Code Exploration with Serena
 - **Use Serena MCP for efficient code exploration** via Language Server Protocol (LSP)
