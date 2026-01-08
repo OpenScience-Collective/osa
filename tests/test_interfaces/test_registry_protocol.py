@@ -6,7 +6,8 @@ Tests are parameterized and run against all registries defined in conftest.py.
 
 import pytest
 
-from src.interfaces import DocPageProtocol, DocRegistryProtocol
+from src.interfaces import DocPageProtocol, DocRegistryProtocol, RetrievedDocProtocol
+from src.tools.base import RetrievedDoc
 
 
 class TestRegistryProtocolCompliance:
@@ -178,3 +179,75 @@ class TestRegistryFormatting:
         formatted1 = registry.format_doc_list()
         formatted2 = registry.format_doc_list()
         assert formatted1 == formatted2
+
+
+class TestRetrievedDocProtocol:
+    """Tests that verify RetrievedDoc implements RetrievedDocProtocol."""
+
+    def test_retrieved_doc_implements_protocol(self) -> None:
+        """RetrievedDoc should implement RetrievedDocProtocol."""
+        doc = RetrievedDoc(
+            title="Test Doc",
+            url="https://example.com/test.html",
+            content="Test content",
+        )
+        assert isinstance(doc, RetrievedDocProtocol)
+
+    def test_success_property_true_when_no_error(self) -> None:
+        """success should be True when error is None."""
+        doc = RetrievedDoc(
+            title="Test Doc",
+            url="https://example.com/test.html",
+            content="Test content",
+            error=None,
+        )
+        assert doc.success is True
+
+    def test_success_property_false_when_error(self) -> None:
+        """success should be False when error is set."""
+        doc = RetrievedDoc(
+            title="Test Doc",
+            url="https://example.com/test.html",
+            content="",
+            error="Failed to fetch",
+        )
+        assert doc.success is False
+
+    def test_to_dict_includes_required_fields(self) -> None:
+        """to_dict should include title, url, and content."""
+        doc = RetrievedDoc(
+            title="Test Doc",
+            url="https://example.com/test.html",
+            content="Test content",
+        )
+        result = doc.to_dict()
+
+        assert isinstance(result, dict)
+        assert result["title"] == "Test Doc"
+        assert result["url"] == "https://example.com/test.html"
+        assert result["content"] == "Test content"
+
+    def test_to_dict_includes_error_when_present(self) -> None:
+        """to_dict should include error field when set."""
+        doc = RetrievedDoc(
+            title="Test Doc",
+            url="https://example.com/test.html",
+            content="",
+            error="Failed to fetch",
+        )
+        result = doc.to_dict()
+
+        assert "error" in result
+        assert result["error"] == "Failed to fetch"
+
+    def test_to_dict_excludes_error_when_none(self) -> None:
+        """to_dict should not include error field when None."""
+        doc = RetrievedDoc(
+            title="Test Doc",
+            url="https://example.com/test.html",
+            content="Test content",
+            error=None,
+        )
+        result = doc.to_dict()
+
+        assert "error" not in result

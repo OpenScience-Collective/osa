@@ -14,12 +14,14 @@ from src.interfaces.protocols import (
     AgentProtocol,
     DocPageProtocol,
     DocRegistryProtocol,
+    RetrievedDocProtocol,
     ToolProtocol,
 )
 
 __all__ = [
     "DocPageProtocol",
     "DocRegistryProtocol",
+    "RetrievedDocProtocol",
     "ToolProtocol",
     "AgentProtocol",
 ]
