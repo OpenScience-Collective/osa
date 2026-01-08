@@ -1,0 +1,145 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install linting tools
+        run: |
+          uv pip install --system ruff
+
+      - name: Lint with Ruff
+        run: ruff check src tests
+
+      - name: Format check with Ruff
+        run: ruff format --check src tests
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: |
+          uv pip install --system -e ".[dev]"
+
+      - name: Run unit tests (excluding integration and llm)
+        run: |
+          pytest tests/ -v -m "not integration and not llm" --cov=src --cov-report=xml:coverage-unit.xml --cov-report=term-missing
+
+      - name: Upload coverage to Codecov
+        if: matrix.python-version == '3.12'
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage-unit.xml
+          flags: unittests
+          name: codecov-unit
+          fail_ci_if_error: false
+          verbose: true
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    # Only run on push to main or manual dispatch (not PRs)
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: |
+          uv pip install --system -e ".[dev]"
+          uv pip install --system pytest-timeout
+
+      - name: Run integration tests
+        env:
+          OPENROUTER_API_KEY_FOR_TESTING: ${{ secrets.OPENROUTER_API_KEY_FOR_TESTING }}
+        run: |
+          if [ -n "$OPENROUTER_API_KEY_FOR_TESTING" ]; then
+            echo "Running integration tests with OpenRouter..."
+            pytest tests/ -v -m "integration or llm" --timeout=180 --cov=src --cov-report=xml:coverage-integration.xml --cov-report=term-missing
+          else
+            echo "OPENROUTER_API_KEY_FOR_TESTING not set, skipping integration tests"
+          fi
+
+      - name: Upload integration coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage-integration.xml
+          flags: integration
+          name: codecov-integration
+          fail_ci_if_error: false
+
+  all-tests:
+    name: All Tests Summary
+    runs-on: ubuntu-latest
+    needs: [lint, unit-tests, integration-tests]
+    if: always()
+
+    steps:
+      - name: Check lint result
+        if: needs.lint.result == 'failure'
+        run: |
+          echo "Lint check failed"
+          exit 1
+
+      - name: Check unit tests result
+        if: needs.unit-tests.result == 'failure'
+        run: |
+          echo "Unit tests failed"
+          exit 1
+
+      - name: Check integration tests result
+        if: needs.integration-tests.result == 'failure'
+        run: |
+          echo "Integration tests failed"
+          exit 1
+
+      - name: All checks passed
+        run: |
+          echo "All required checks passed!"
+          echo "Lint: ${{ needs.lint.result }}"
+          echo "Unit tests: ${{ needs.unit-tests.result }}"
+          echo "Integration tests: ${{ needs.integration-tests.result }}"
