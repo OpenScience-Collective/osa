@@ -21,9 +21,13 @@ class TestDocumentRegistry:
         assert len(HED_DOCS.docs) > 0
 
     def test_preloaded_documents_count(self):
-        """Test that we have exactly 6 preloaded documents."""
+        """Test that we have exactly 5 preloaded documents.
+
+        Note: HED schema was removed from preload because it's too large (~890KB).
+        Use hed-lsp tool for schema lookups instead.
+        """
         preloaded = HED_DOCS.get_preloaded()
-        assert len(preloaded) == 6, f"Expected 6 preloaded docs, got {len(preloaded)}"
+        assert len(preloaded) == 5, f"Expected 5 preloaded docs, got {len(preloaded)}"
 
     def test_ondemand_documents_count(self):
         """Test that we have 23 on-demand documents."""
@@ -32,16 +36,16 @@ class TestDocumentRegistry:
 
     def test_total_documents_count(self):
         """Test total document count (preloaded + on-demand)."""
-        assert len(HED_DOCS.docs) == 29  # 6 preloaded + 23 on-demand
+        assert len(HED_DOCS.docs) == 28  # 5 preloaded + 23 on-demand
 
     def test_preloaded_documents_list(self):
         """Test that preloaded documents are the expected ones."""
         preloaded = HED_DOCS.get_preloaded()
         preloaded_titles = [doc.title for doc in preloaded]
 
+        # Note: HED schema is NOT preloaded - use hed-lsp tool for schema lookups
         expected_titles = {
             "HED annotation semantics",
-            "HED standard schema (latest)",
             "HED terminology",
             "Basic annotation",
             "Introduction to HED",
@@ -60,7 +64,6 @@ class TestDocumentRegistry:
         """Test that all documents have categories."""
         valid_categories = {
             "core",
-            "schemas",
             "specification",
             "introductory",
             "quickstart",
@@ -310,8 +313,8 @@ class TestDocumentURLStructure:
         for doc in HED_DOCS.docs:
             # If it's a markdown doc, source should be .md
             if ".md" in doc.source_url:
-                # HTML version should be .html or similar
-                assert (".html" in doc.url) or ("hed-" in doc.url), (
+                # HTML version should be .html or similar (allow ndx- for NWB extensions)
+                assert (".html" in doc.url) or ("hed-" in doc.url) or ("ndx-" in doc.url), (
                     f"{doc.title}: HTML URL doesn't match markdown source"
                 )
 

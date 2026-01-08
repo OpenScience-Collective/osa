@@ -36,8 +36,8 @@ class TestHEDRegistry:
     def test_has_preloaded_docs(self) -> None:
         """Test that registry has preloaded documents."""
         preloaded = HED_DOCS.get_preloaded()
-        # Should have 6 preloaded docs per QP
-        assert len(preloaded) >= 6
+        # Should have 5 preloaded docs (schema removed, use hed-lsp tool instead)
+        assert len(preloaded) >= 5
 
         # Should include introduction
         titles = [d.title for d in preloaded]

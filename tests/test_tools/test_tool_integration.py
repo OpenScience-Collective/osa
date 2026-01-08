@@ -279,9 +279,10 @@ class TestDocumentDiscoveryByDescription:
 
         assert len(schema_docs) >= 2
 
-        # Should include the standard schema
+        # Should include schema documentation
+        # Note: actual schema is too large (~890KB), use hed-lsp tool for schema lookups instead
         schema_titles = {doc.title for doc in schema_docs}
-        assert "HED standard schema (latest)" in schema_titles
+        assert "HED schemas" in schema_titles or "Library schemas" in schema_titles
 
 
 class TestFetcherCaching:
