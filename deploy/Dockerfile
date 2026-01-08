@@ -1,50 +1,39 @@
 # OSA - Open Science Assistant
-# Multi-stage build for smaller image size
+# Compatible with HEDit deployment patterns
 
-FROM python:3.12-slim AS builder
-
-WORKDIR /app
-
-# Install uv for fast dependency installation
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-
-# Copy files needed for installation (version.py required by hatchling)
-COPY pyproject.toml ./
-COPY src/version.py ./src/version.py
-
-# Install dependencies and package
-RUN uv pip install --system --no-cache .
-
-# Production image
-FROM python:3.12-slim
+FROM python:3.12-slim-bullseye
 
 WORKDIR /app
 
-# Copy installed packages from builder
-COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
+# Environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    DEBIAN_FRONTEND=noninteractive
 
-# Copy application code
-COPY src/ ./src/
+# Install system dependencies (curl for healthcheck, consistent with HEDit)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-# Build arguments for versioning
+# Build argument for commit hash (set during CI build)
 ARG GIT_COMMIT=unknown
 ENV GIT_COMMIT=${GIT_COMMIT}
 
-# Environment variables
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONDONTWRITEBYTECODE=1
+# Install uv and dependencies
+COPY pyproject.toml README.md ./
+RUN pip install uv && \
+    uv pip install --system --no-cache ".[dev]"
 
-# Create non-root user for security
-RUN useradd --create-home --shell /bin/bash appuser
-USER appuser
+# Copy the application code
+COPY src/ ./src/
 
-# Default port
+# Expose the application port (38428, different from HEDit's 38427)
 EXPOSE 38428
 
-# Health check using Python (no curl dependency needed)
+# Health check (consistent with HEDit pattern)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:38428/health')" || exit 1
+    CMD curl -f http://localhost:38428/health || exit 1
 
 # Run the application
 CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "38428"]
