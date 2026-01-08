@@ -21,35 +21,37 @@ class TestDocumentRegistry:
         assert len(HED_DOCS.docs) > 0
 
     def test_preloaded_documents_count(self):
-        """Test that we have exactly 5 preloaded documents.
+        """Test that we have exactly 2 preloaded documents.
 
-        Note: HED schema was removed from preload because it's too large (~890KB).
-        Use hed-lsp tool for schema lookups instead.
+        Only core docs are preloaded to minimize token usage (~13k tokens):
+        - HED annotation semantics (rules and principles)
+        - HED terminology (key definitions)
+
+        Other docs (Basic annotation, Introduction, How can you use HED?)
+        are now on-demand to reduce system prompt size by ~53%.
         """
         preloaded = HED_DOCS.get_preloaded()
-        assert len(preloaded) == 5, f"Expected 5 preloaded docs, got {len(preloaded)}"
+        assert len(preloaded) == 2, f"Expected 2 preloaded docs, got {len(preloaded)}"
 
     def test_ondemand_documents_count(self):
-        """Test that we have 23 on-demand documents."""
+        """Test that we have 26 on-demand documents."""
         on_demand = HED_DOCS.get_on_demand()
-        assert len(on_demand) == 23, f"Expected 23 on-demand docs, got {len(on_demand)}"
+        assert len(on_demand) == 26, f"Expected 26 on-demand docs, got {len(on_demand)}"
 
     def test_total_documents_count(self):
         """Test total document count (preloaded + on-demand)."""
-        assert len(HED_DOCS.docs) == 28  # 5 preloaded + 23 on-demand
+        assert len(HED_DOCS.docs) == 28  # 2 preloaded + 26 on-demand
 
     def test_preloaded_documents_list(self):
         """Test that preloaded documents are the expected ones."""
         preloaded = HED_DOCS.get_preloaded()
         preloaded_titles = [doc.title for doc in preloaded]
 
-        # Note: HED schema is NOT preloaded - use hed-lsp tool for schema lookups
+        # Only 2 core docs preloaded to minimize token usage (~13k tokens)
+        # Other docs moved to on-demand for 53% reduction in system prompt size
         expected_titles = {
             "HED annotation semantics",
             "HED terminology",
-            "Basic annotation",
-            "Introduction to HED",
-            "How can you use HED?",
         }
 
         assert set(preloaded_titles) == expected_titles
@@ -96,11 +98,11 @@ class TestDocumentRegistry:
     def test_find_by_url_html(self):
         """Test finding document by HTML URL."""
         # Try to find a known preloaded document
-        url = "https://www.hedtags.org/hed-resources/IntroductionToHed.html"
+        url = "https://www.hedtags.org/hed-resources/HedAnnotationSemantics.html"
         doc = HED_DOCS.find_by_url(url)
 
         assert doc is not None
-        assert doc.title == "Introduction to HED"
+        assert doc.title == "HED annotation semantics"
         assert doc.preload is True
 
     def test_find_by_url_notfound(self):

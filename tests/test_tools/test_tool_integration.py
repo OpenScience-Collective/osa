@@ -148,23 +148,19 @@ class TestPreloadedContent:
         fetcher = DocumentFetcher()
         preloaded = get_preloaded_hed_content(fetcher)
 
-        # Should attempt to fetch 6 preloaded documents
-        # (some may fail due to network issues, but we should get most)
-        assert len(preloaded) >= 3, f"Expected at least 3 preloaded docs, got {len(preloaded)}"
+        # Should fetch 2 preloaded documents (reduced from 5 to minimize token usage)
+        # (some may fail due to network issues, but we should get at least 1)
+        assert len(preloaded) >= 1, f"Expected at least 1 preloaded doc, got {len(preloaded)}"
 
-        # Check that at least some expected URLs are present
+        # Check that expected URLs are present (only 2 core docs now preloaded)
         expected_docs = {
             "https://www.hedtags.org/hed-resources/HedAnnotationSemantics.html",
-            "https://raw.githubusercontent.com/hed-standard/hed-schemas/main/schemas_latest_json/HEDLatest.json",
             "https://www.hedtags.org/hed-specification/02_Terminology.html",
-            "https://www.hedtags.org/hed-specification/04_Basic_annotation.html",
-            "https://www.hedtags.org/hed-resources/IntroductionToHed.html",
-            "https://www.hedtags.org/hed-resources/HowCanYouUseHed.html",
         }
 
-        # At least half the expected URLs should be present
+        # At least 1 of the 2 expected URLs should be present
         present_count = sum(1 for url in expected_docs if url in preloaded)
-        assert present_count >= 3, f"Expected at least 3 URLs present, got {present_count}"
+        assert present_count >= 1, f"Expected at least 1 URL present, got {present_count}"
 
         # All content should be non-empty
         assert all(len(content) > 0 for content in preloaded.values())

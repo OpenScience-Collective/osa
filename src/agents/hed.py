@@ -1,7 +1,10 @@
 """HED Assistant - Specialized agent for Hierarchical Event Descriptors.
 
 This agent provides expertise on HED annotation, schemas, validation,
-and tool usage. It has access to 26 HED documents (6 preloaded, 20 on-demand).
+and tool usage. It has access to 28 HED documents (2 preloaded, 26 on-demand).
+
+Preloaded docs (~13k tokens) include HED annotation semantics and terminology.
+Other docs are fetched on-demand to minimize context usage.
 """
 
 from langchain_core.language_models import BaseChatModel
@@ -205,7 +208,7 @@ class HEDAssistant(ToolAgent):
     """Specialized assistant for HED (Hierarchical Event Descriptors).
 
     This agent has expertise in HED annotation, schemas, validation, and tools.
-    It preloads 6 core documents into the system prompt and can fetch 20 more on-demand.
+    It preloads 2 core documents (~13k tokens) and can fetch 26 more on-demand.
 
     Example:
         ```python

@@ -11,7 +11,7 @@ from src.tools.fetcher import DocumentFetcher, get_fetcher
 HED_DOCS = DocRegistry(
     name="hed",
     docs=[
-        # === PRELOADED: Core (1 doc) ===
+        # === PRELOADED: Core + Specification (2 docs, ~13k tokens) ===
         DocPage(
             title="HED annotation semantics",
             url="https://www.hedtags.org/hed-resources/HedAnnotationSemantics.html",
@@ -23,7 +23,7 @@ HED_DOCS = DocRegistry(
         # NOTE: HED schema is NOT included here - it's too large (~890KB)
         # Instead, use hed-lsp tool for schema lookups with autocomplete and semantic search
         # See: /Users/yahya/Documents/git/HED/hed-lsp
-        # === PRELOADED: Specification (2 docs) ===
+        # === Specification (1 preloaded, rest on-demand) ===
         DocPage(
             title="HED terminology",
             url="https://www.hedtags.org/hed-specification/02_Terminology.html",
@@ -36,16 +36,16 @@ HED_DOCS = DocRegistry(
             title="Basic annotation",
             url="https://www.hedtags.org/hed-specification/04_Basic_annotation.html",
             source_url="https://raw.githubusercontent.com/hed-standard/hed-specification/main/docs/source/04_Basic_annotation.md",
-            preload=True,
+            preload=False,  # Covered by HED annotation semantics
             category="specification",
             description="Covers the essential guidelines and methods for creating basic HED annotations for events.",
         ),
-        # === PRELOADED: Introductory (2 docs) ===
+        # === ON-DEMAND: Introductory (2 docs) ===
         DocPage(
             title="Introduction to HED",
             url="https://www.hedtags.org/hed-resources/IntroductionToHed.html",
             source_url="https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/IntroductionToHed.md",
-            preload=True,
+            preload=False,  # Can be fetched on demand for new users
             category="introductory",
             description="Provides an overview of the Hierarchical Event Descriptors (HED) system, its purpose, and its applications in event annotation.",
         ),
@@ -53,7 +53,7 @@ HED_DOCS = DocRegistry(
             title="How can you use HED?",
             url="https://www.hedtags.org/hed-resources/HowCanYouUseHed.html",
             source_url="https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/HowCanYouUseHed.md",
-            preload=True,
+            preload=False,  # Large doc (~11k tokens), fetch when discussing use cases
             category="introductory",
             description="Explains various use cases and scenarios where HED can be effectively applied for event annotation in research data.",
         ),

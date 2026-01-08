@@ -166,13 +166,10 @@ class TestHEDDocsRegistry:
         """Preloaded docs should include the expected core documents."""
         preloaded_titles = [d.title for d in HED_DOCS.get_preloaded()]
 
-        # NOTE: HED schema is NOT preloaded - use hed-lsp tool for schema lookups
+        # Only 2 core docs preloaded to minimize token usage (~13k tokens)
         expected = [
             "HED annotation semantics",
             "HED terminology",
-            "Basic annotation",
-            "Introduction to HED",
-            "How can you use HED?",
         ]
 
         for title in expected:

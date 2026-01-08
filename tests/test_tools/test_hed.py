@@ -36,12 +36,12 @@ class TestHEDRegistry:
     def test_has_preloaded_docs(self) -> None:
         """Test that registry has preloaded documents."""
         preloaded = HED_DOCS.get_preloaded()
-        # Should have 5 preloaded docs (schema removed, use hed-lsp tool instead)
-        assert len(preloaded) >= 5
+        # Should have 2 preloaded docs (reduced from 5 to minimize token usage)
+        assert len(preloaded) == 2
 
-        # Should include introduction
+        # Should include core annotation semantics
         titles = [d.title for d in preloaded]
-        assert any("Introduction" in t for t in titles)
+        assert any("semantics" in t.lower() for t in titles)
 
     def test_has_on_demand_docs(self) -> None:
         """Test that registry has on-demand documents."""
@@ -149,13 +149,13 @@ class TestGetPreloadedHEDContent:
             assert url.startswith("https://")
             assert len(text) > 0
 
-    def test_preload_includes_introduction(self, fetcher: DocumentFetcher) -> None:
-        """Test that introduction is preloaded."""
+    def test_preload_includes_semantics(self, fetcher: DocumentFetcher) -> None:
+        """Test that annotation semantics is preloaded."""
         content = get_preloaded_hed_content(fetcher)
 
-        # Should include intro URL from hed-resources
-        intro_url = "https://www.hedtags.org/hed-resources/IntroductionToHed.html"
-        assert intro_url in content
+        # Should include semantics URL from hed-resources (core doc)
+        semantics_url = "https://www.hedtags.org/hed-resources/HedAnnotationSemantics.html"
+        assert semantics_url in content
 
 
 class TestFormatHEDDocList:
