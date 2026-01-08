@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from src.api.config import get_settings
-from src.api.routers import chat_router, hed_router
+from src.api.routers import hed_router
 
 
 class HealthResponse(BaseModel):
@@ -73,11 +73,7 @@ def create_app() -> FastAPI:
 
 def register_routes(app: FastAPI) -> None:
     """Register all application routes."""
-    # Assistant-specific routers
-    app.include_router(hed_router)  # /hed/chat, /hed/ask
-
-    # Legacy router for backwards compatibility (deprecated)
-    app.include_router(chat_router)  # /chat
+    app.include_router(hed_router)
 
     @app.get("/health", response_model=HealthResponse, tags=["System"])
     async def health_check() -> HealthResponse:
@@ -100,7 +96,15 @@ def register_routes(app: FastAPI) -> None:
         return {
             "name": settings.app_name,
             "version": settings.app_version,
-            "docs": "/docs" if settings.debug else "Disabled in production",
+            "description": "AI assistant for open science tools",
+            "endpoints": {
+                "POST /hed/ask": "Ask a single question about HED",
+                "POST /hed/chat": "Multi-turn conversation about HED",
+                "GET /hed/sessions": "List active sessions",
+                "GET /hed/sessions/{session_id}": "Get session info",
+                "DELETE /hed/sessions/{session_id}": "Delete a session",
+                "GET /health": "Health check",
+            },
         }
 
 
