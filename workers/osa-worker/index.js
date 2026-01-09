@@ -118,6 +118,9 @@ function isAllowedOrigin(origin) {
   if (origin.endsWith('.hed-examples.org')) return true;
   if (origin.endsWith('.osc.earth')) return true;
 
+  // Allow Cloudflare Pages (for demo sites)
+  if (origin.endsWith('.pages.dev')) return true;
+
   // Allow localhost for development
   if (origin.startsWith('http://localhost:')) return true;
   if (origin.startsWith('http://127.0.0.1:')) return true;
