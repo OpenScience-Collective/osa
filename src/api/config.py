@@ -39,7 +39,10 @@ class Settings(BaseSettings):
     )
 
     # API Key Settings (for server-provided resources)
-    api_key: str | None = Field(default=None, description="Server API key for authentication")
+    api_keys: str | None = Field(
+        default=None, description="Server API keys for authentication (comma-separated)"
+    )
+    require_api_auth: bool = Field(default=True, description="Require API key authentication")
 
     # LLM Provider Settings (server defaults, can be overridden by BYOK)
     openrouter_api_key: str | None = Field(default=None, description="OpenRouter API key")

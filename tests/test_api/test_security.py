@@ -22,8 +22,9 @@ from src.api.security import (
 @pytest.fixture
 def app_with_auth() -> FastAPI:
     """Create a test app with a protected endpoint."""
-    # Set API key in environment for this test
-    os.environ["API_KEY"] = "test-secret-key"
+    # Set API keys in environment for this test
+    os.environ["API_KEYS"] = "test-secret-key"
+    os.environ["REQUIRE_API_AUTH"] = "true"
 
     # Clear the settings cache to pick up new env var
     from src.api.config import get_settings
@@ -47,7 +48,8 @@ def app_with_auth() -> FastAPI:
     yield app
 
     # Cleanup
-    del os.environ["API_KEY"]
+    del os.environ["API_KEYS"]
+    del os.environ["REQUIRE_API_AUTH"]
     get_settings.cache_clear()
 
 
@@ -60,9 +62,10 @@ def client_with_auth(app_with_auth: FastAPI) -> TestClient:
 @pytest.fixture
 def app_no_auth() -> FastAPI:
     """Create a test app without server authentication configured."""
-    # Ensure no API key is set
-    if "API_KEY" in os.environ:
-        del os.environ["API_KEY"]
+    # Ensure auth is disabled
+    if "API_KEYS" in os.environ:
+        del os.environ["API_KEYS"]
+    os.environ["REQUIRE_API_AUTH"] = "false"
 
     from src.api.config import get_settings
 
@@ -76,6 +79,7 @@ def app_no_auth() -> FastAPI:
 
     yield app
 
+    del os.environ["REQUIRE_API_AUTH"]
     get_settings.cache_clear()
 
 

@@ -20,9 +20,16 @@ async def verify_api_key(
     Returns the API key if valid, None if auth is disabled.
     Raises HTTPException if auth is enabled but key is invalid.
     """
-    # If no server API key is configured, authentication is disabled
-    if not settings.api_key:
+    # If auth is not required, skip verification
+    if not settings.require_api_auth:
         return None
+
+    # If no server API keys configured, authentication is disabled
+    if not settings.api_keys:
+        return None
+
+    # Parse comma-separated API keys
+    valid_keys = {k.strip() for k in settings.api_keys.split(",") if k.strip()}
 
     # If auth is enabled, require valid API key
     if not api_key:
@@ -32,7 +39,7 @@ async def verify_api_key(
             headers={"WWW-Authenticate": "ApiKey"},
         )
 
-    if api_key != settings.api_key:
+    if api_key not in valid_keys:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid API key",
