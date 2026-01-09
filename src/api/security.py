@@ -10,15 +10,27 @@ from src.api.config import Settings, get_settings
 # API key header for server authentication
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
+# Header extractors for BYOK (defined before verify_api_key which uses them)
+openai_key_header = APIKeyHeader(name="X-OpenAI-API-Key", auto_error=False)
+anthropic_key_header = APIKeyHeader(name="X-Anthropic-API-Key", auto_error=False)
+openrouter_key_header = APIKeyHeader(name="X-OpenRouter-API-Key", auto_error=False)
+
 
 async def verify_api_key(
     api_key: Annotated[str | None, Security(api_key_header)],
     settings: Annotated[Settings, Depends(get_settings)],
+    openai_key: Annotated[str | None, Security(openai_key_header)] = None,
+    anthropic_key: Annotated[str | None, Security(anthropic_key_header)] = None,
+    openrouter_key: Annotated[str | None, Security(openrouter_key_header)] = None,
 ) -> str | None:
     """Verify the API key if server authentication is enabled.
 
-    Returns the API key if valid, None if auth is disabled.
-    Raises HTTPException if auth is enabled but key is invalid.
+    Returns the API key if valid, None if auth is disabled or BYOK is used.
+    Raises HTTPException if auth is enabled but key is invalid (and no BYOK).
+
+    BYOK Policy: If user provides their own LLM API key (BYOK), they don't
+    need a server API key. This allows researchers to use their own keys
+    without requiring server authentication.
     """
     # If auth is not required, skip verification
     if not settings.require_api_auth:
@@ -28,6 +40,11 @@ async def verify_api_key(
     if not settings.api_keys:
         return None
 
+    # BYOK bypass: If user provides their own LLM key, skip server auth
+    # This allows researchers to use the service with their own API keys
+    if openai_key or anthropic_key or openrouter_key:
+        return None
+
     # Parse comma-separated API keys
     valid_keys = {k.strip() for k in settings.api_keys.split(",") if k.strip()}
 
@@ -35,7 +52,7 @@ async def verify_api_key(
     if not api_key:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="API key required",
+            detail="API key required (or provide your own LLM key via BYOK headers)",
             headers={"WWW-Authenticate": "ApiKey"},
         )
 
@@ -68,12 +85,6 @@ class BYOKHeaders:
         self.openai_key = openai_key
         self.anthropic_key = anthropic_key
         self.openrouter_key = openrouter_key
-
-
-# Header extractors for BYOK
-openai_key_header = APIKeyHeader(name="X-OpenAI-API-Key", auto_error=False)
-anthropic_key_header = APIKeyHeader(name="X-Anthropic-API-Key", auto_error=False)
-openrouter_key_header = APIKeyHeader(name="X-OpenRouter-API-Key", auto_error=False)
 
 
 async def get_byok_headers(
