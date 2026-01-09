@@ -25,7 +25,10 @@
     ],
     showExperimentalBadge: true,
     repoUrl: 'https://github.com/OpenScience-Collective/osa',
-    repoName: 'Open Science Assistant'
+    repoName: 'Open Science Assistant',
+    // Page context awareness - sends current page URL/title to help the assistant
+    // provide more contextually relevant answers
+    includePageContext: true
   };
 
   // State
@@ -917,6 +920,17 @@
     }
   }
 
+  // Get page context (URL and title) for contextual answers
+  function getPageContext() {
+    if (!CONFIG.includePageContext) {
+      return null;
+    }
+    return {
+      url: window.location.href,
+      title: document.title || null
+    };
+  }
+
   // Check backend health status
   async function checkBackendStatus() {
     const statusDot = document.querySelector('.osa-status-dot');
@@ -1191,6 +1205,12 @@
 
     try {
       const body = { question: question.trim() };
+
+      // Add page context if enabled
+      const pageContext = getPageContext();
+      if (pageContext) {
+        body.page_context = pageContext;
+      }
 
       // Add Turnstile token if available
       if (turnstileToken) {
