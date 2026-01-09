@@ -63,7 +63,12 @@ _server_started = threading.Event()
 
 def _run_server(host: str, port: int) -> None:
     """Run the FastAPI server in a thread."""
+    import os
+
     import uvicorn
+
+    # Disable API auth for standalone mode (local CLI use)
+    os.environ["REQUIRE_API_AUTH"] = "false"
 
     from src.api.main import app
 

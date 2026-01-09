@@ -31,13 +31,13 @@ class OSAClient:
         if self.config.api_key:
             headers["X-API-Key"] = self.config.api_key
 
-        # BYOK headers
+        # BYOK headers (match server's expected header names)
         if self.config.openai_api_key:
-            headers["X-OpenAI-Key"] = self.config.openai_api_key
+            headers["X-OpenAI-API-Key"] = self.config.openai_api_key
         if self.config.anthropic_api_key:
-            headers["X-Anthropic-Key"] = self.config.anthropic_api_key
+            headers["X-Anthropic-API-Key"] = self.config.anthropic_api_key
         if self.config.openrouter_api_key:
-            headers["X-OpenRouter-Key"] = self.config.openrouter_api_key
+            headers["X-OpenRouter-API-Key"] = self.config.openrouter_api_key
 
         # User ID for cache optimization
         headers["X-User-ID"] = self.user_id
@@ -103,9 +103,12 @@ class OSAClient:
         if session_id:
             payload["session_id"] = session_id
 
+        # Use assistant-specific endpoint (e.g., /hed/chat for HED assistant)
+        endpoint = f"/{assistant}/chat"
+
         with httpx.Client() as client:
             response = client.post(
-                f"{self.base_url}/chat",
+                f"{self.base_url}{endpoint}",
                 headers=self._get_headers(),
                 json=payload,
                 timeout=120.0,  # Longer timeout for LLM responses
