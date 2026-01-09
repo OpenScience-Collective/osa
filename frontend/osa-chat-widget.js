@@ -641,18 +641,17 @@
     }
 
     .osa-page-context-toggle {
-      padding: 8px 16px;
-      border-top: 1px solid var(--osa-border);
-      font-size: 12px;
+      padding: 6px 16px;
+      font-size: 11px;
       color: var(--osa-text-light);
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
     }
 
     .osa-page-context-toggle input[type="checkbox"] {
-      width: 14px;
-      height: 14px;
+      width: 11px;
+      height: 11px;
       margin: 0;
       cursor: pointer;
       accent-color: var(--osa-primary);
