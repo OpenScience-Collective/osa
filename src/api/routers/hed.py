@@ -62,9 +62,9 @@ class PageContext(BaseModel):
         """Ensure URL has valid scheme if provided."""
         if url is None:
             return url
-        # Validate URL has proper scheme
+        # Validate URL has proper scheme - reject invalid schemes explicitly
         if not url.startswith(("http://", "https://")):
-            return None  # Silently ignore invalid URLs rather than error
+            raise ValueError("URL must start with http:// or https://")
         return url
 
 

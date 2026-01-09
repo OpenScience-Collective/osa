@@ -8,6 +8,7 @@ Other docs are fetched on-demand to minimize context usage.
 """
 
 import ipaddress
+import logging
 import socket
 from dataclasses import dataclass
 from urllib.parse import urlparse
@@ -28,6 +29,8 @@ from src.tools.hed_validation import (
     suggest_hed_tags,
     validate_hed_string,
 )
+
+logger = logging.getLogger(__name__)
 
 # Maximum characters to return from fetched page content
 MAX_PAGE_CONTENT_LENGTH = 30000
@@ -220,48 +223,68 @@ def _format_ondemand_section() -> str:
     return "\n".join(lines)
 
 
-def is_safe_url(url: str) -> tuple[bool, str]:
+def is_safe_url(url: str) -> tuple[bool, str, str | None]:
     """Validate URL is safe to fetch (prevents SSRF attacks).
+
+    This function resolves DNS and returns the resolved IP to prevent
+    TOCTOU (Time-Of-Check-Time-Of-Use) attacks where DNS could return
+    different IPs between validation and fetch.
 
     Args:
         url: The URL to validate.
 
     Returns:
-        Tuple of (is_safe, error_message). error_message is empty if safe.
+        Tuple of (is_safe, error_message, resolved_ip).
+        - error_message is empty if safe
+        - resolved_ip is the IP address to use for fetching (prevents DNS rebinding)
     """
+    parsed = urlparse(url)
+
+    # Only allow http/https
+    if parsed.scheme not in ("http", "https"):
+        logger.warning("SSRF blocked: invalid scheme '%s' in URL: %s", parsed.scheme, url)
+        return False, "Only HTTP/HTTPS protocols are allowed", None
+
+    hostname = parsed.hostname
+    if not hostname:
+        logger.warning("SSRF blocked: empty hostname in URL: %s", url)
+        return False, "Invalid hostname", None
+
+    # Resolve hostname to IP to check for private ranges
     try:
-        parsed = urlparse(url)
+        resolved_ip = socket.gethostbyname(hostname)
+    except socket.gaierror as e:
+        # DNS resolution failed - treat as security error
+        logger.warning("SSRF blocked: DNS resolution failed for %s: %s", hostname, e)
+        return False, f"DNS resolution failed for {hostname}: {e}", None
+    except socket.herror as e:
+        logger.warning("SSRF blocked: host error for %s: %s", hostname, e)
+        return False, f"Host error for {hostname}: {e}", None
+    except TimeoutError as e:
+        logger.warning("SSRF blocked: DNS timeout for %s: %s", hostname, e)
+        return False, f"DNS resolution timed out for {hostname}", None
 
-        # Only allow http/https
-        if parsed.scheme not in ("http", "https"):
-            return False, "Only HTTP/HTTPS protocols are allowed"
+    try:
+        ip_obj = ipaddress.ip_address(resolved_ip)
+    except ValueError as e:
+        logger.warning("SSRF blocked: invalid IP address '%s': %s", resolved_ip, e)
+        return False, f"Invalid IP address: {resolved_ip}", None
 
-        hostname = parsed.hostname
-        if not hostname:
-            return False, "Invalid hostname"
+    # Block private/internal IPs to prevent SSRF
+    if ip_obj.is_private:
+        logger.warning("SSRF blocked: private IP %s for host %s", resolved_ip, hostname)
+        return False, f"Access to private IP ranges is not allowed: {resolved_ip}", None
+    if ip_obj.is_loopback:
+        logger.warning("SSRF blocked: loopback IP %s for host %s", resolved_ip, hostname)
+        return False, f"Access to loopback addresses is not allowed: {resolved_ip}", None
+    if ip_obj.is_link_local:
+        logger.warning("SSRF blocked: link-local IP %s for host %s", resolved_ip, hostname)
+        return False, f"Access to link-local addresses is not allowed: {resolved_ip}", None
+    if ip_obj.is_reserved:
+        logger.warning("SSRF blocked: reserved IP %s for host %s", resolved_ip, hostname)
+        return False, f"Access to reserved IP ranges is not allowed: {resolved_ip}", None
 
-        # Resolve hostname to IP to check for private ranges
-        try:
-            ip = socket.gethostbyname(hostname)
-            ip_obj = ipaddress.ip_address(ip)
-
-            # Block private/internal IPs to prevent SSRF
-            if ip_obj.is_private:
-                return False, f"Access to private IP ranges is not allowed: {ip}"
-            if ip_obj.is_loopback:
-                return False, f"Access to loopback addresses is not allowed: {ip}"
-            if ip_obj.is_link_local:
-                return False, f"Access to link-local addresses is not allowed: {ip}"
-            if ip_obj.is_reserved:
-                return False, f"Access to reserved IP ranges is not allowed: {ip}"
-
-        except socket.gaierror:
-            # Cannot resolve hostname - allow it, will fail at fetch time
-            pass
-
-        return True, ""
-    except Exception as e:
-        return False, f"URL validation failed: {e}"
+    return True, "", resolved_ip
 
 
 def _fetch_page_content_impl(url: str) -> str:
@@ -275,15 +298,18 @@ def _fetch_page_content_impl(url: str) -> str:
     Returns:
         The page content in markdown format, or an error message.
     """
+    # Validate URL for SSRF protection
+    if not url or not url.startswith(("http://", "https://")):
+        logger.warning("Page fetch blocked: invalid URL format: %s", url)
+        return f"Error: Invalid URL '{url}'. URL must start with http:// or https://"
+
+    is_safe, error_msg, resolved_ip = is_safe_url(url)
+    if not is_safe:
+        return f"Error: {error_msg}"
+
+    logger.info("Fetching page content from %s (resolved to %s)", url, resolved_ip)
+
     try:
-        # Validate URL for SSRF protection
-        if not url or not url.startswith(("http://", "https://")):
-            return f"Error: Invalid URL '{url}'. URL must start with http:// or https://"
-
-        is_safe, error_msg = is_safe_url(url)
-        if not is_safe:
-            return f"Error: {error_msg}"
-
         # Fetch the page (disable redirects to prevent redirect-based SSRF)
         with httpx.Client(timeout=10.0, follow_redirects=False) as client:
             response = client.get(url)
@@ -293,20 +319,39 @@ def _fetch_page_content_impl(url: str) -> str:
             max_redirects = 3
             while response.is_redirect and redirect_count < max_redirects:
                 redirect_url = response.headers.get("location")
-                if redirect_url:
-                    is_safe, error_msg = is_safe_url(redirect_url)
-                    if not is_safe:
-                        return f"Error: Redirect to unsafe URL blocked: {error_msg}"
-                    response = client.get(redirect_url)
-                    redirect_count += 1
-                else:
+                if not redirect_url:
+                    logger.warning("Redirect response missing Location header from %s", url)
                     break
+
+                # Handle relative redirects
+                if redirect_url.startswith("/"):
+                    parsed = urlparse(url)
+                    redirect_url = f"{parsed.scheme}://{parsed.netloc}{redirect_url}"
+
+                is_safe, error_msg, _ = is_safe_url(redirect_url)
+                if not is_safe:
+                    logger.warning(
+                        "SSRF blocked: redirect from %s to unsafe URL %s: %s",
+                        url,
+                        redirect_url,
+                        error_msg,
+                    )
+                    return f"Error: Redirect to unsafe URL blocked: {error_msg}"
+
+                logger.info("Following redirect to %s", redirect_url)
+                response = client.get(redirect_url)
+                redirect_count += 1
+
+            if response.is_redirect:
+                logger.warning("Too many redirects (>%d) from %s", max_redirects, url)
+                return f"Error: Too many redirects (exceeded {max_redirects})"
 
             response.raise_for_status()
 
         # Validate content type
         content_type = response.headers.get("content-type", "")
         if "text/html" not in content_type.lower():
+            logger.warning("Non-HTML content type from %s: %s", url, content_type)
             return f"Error: URL returned non-HTML content: {content_type}"
 
         # Convert HTML to markdown
@@ -318,16 +363,25 @@ def _fetch_page_content_impl(url: str) -> str:
 
         # Truncate if too long
         if len(content) > MAX_PAGE_CONTENT_LENGTH:
+            logger.info(
+                "Content from %s truncated from %d to %d chars",
+                url,
+                len(content),
+                MAX_PAGE_CONTENT_LENGTH,
+            )
             content = content[:MAX_PAGE_CONTENT_LENGTH] + "\n\n... [content truncated]"
 
         return f"# Content from {url}\n\n{content}"
 
     except httpx.HTTPStatusError as e:
+        logger.warning("HTTP error fetching %s: %d", url, e.response.status_code)
         return f"Error fetching {url}: HTTP {e.response.status_code}"
+    except httpx.TimeoutException:
+        logger.warning("Timeout fetching %s", url)
+        return f"Error: Request timed out fetching {url}"
     except httpx.RequestError as e:
+        logger.warning("Request error fetching %s: %s", url, e)
         return f"Error fetching {url}: {e}"
-    except Exception as e:
-        return f"Error processing {url}: {e}"
 
 
 @tool

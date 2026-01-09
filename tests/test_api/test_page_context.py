@@ -25,20 +25,23 @@ class TestPageContextModel:
         ctx = PageContext(url=None, title="Test")
         assert ctx.url is None
 
-    def test_invalid_scheme_becomes_none(self):
-        """Should convert invalid URL schemes to None."""
-        ctx = PageContext(url="ftp://example.com", title="Test")
-        assert ctx.url is None
+    def test_invalid_scheme_raises_error(self):
+        """Should raise error for invalid URL schemes."""
+        with pytest.raises(ValidationError) as exc_info:
+            PageContext(url="ftp://example.com", title="Test")
+        assert "URL must start with http://" in str(exc_info.value)
 
-    def test_file_scheme_becomes_none(self):
-        """Should convert file:// URLs to None."""
-        ctx = PageContext(url="file:///etc/passwd", title="Test")
-        assert ctx.url is None
+    def test_file_scheme_raises_error(self):
+        """Should raise error for file:// URLs."""
+        with pytest.raises(ValidationError) as exc_info:
+            PageContext(url="file:///etc/passwd", title="Test")
+        assert "URL must start with http://" in str(exc_info.value)
 
-    def test_javascript_scheme_becomes_none(self):
-        """Should convert javascript: URLs to None."""
-        ctx = PageContext(url="javascript:alert(1)", title="Test")
-        assert ctx.url is None
+    def test_javascript_scheme_raises_error(self):
+        """Should raise error for javascript: URLs."""
+        with pytest.raises(ValidationError) as exc_info:
+            PageContext(url="javascript:alert(1)", title="Test")
+        assert "URL must start with http://" in str(exc_info.value)
 
     def test_title_max_length(self):
         """Should enforce title max length."""
@@ -89,11 +92,10 @@ class TestAskRequestWithPageContext:
         assert req.page_context.title == "HED Tags"
 
     def test_request_with_invalid_url_in_page_context(self):
-        """Should handle invalid URL in page context."""
-        req = AskRequest(
-            question="What is HED?",
-            page_context={"url": "ftp://invalid", "title": "Test"},
-        )
-        # Invalid URL should be converted to None
-        assert req.page_context.url is None
-        assert req.page_context.title == "Test"
+        """Should raise error for invalid URL in page context."""
+        with pytest.raises(ValidationError) as exc_info:
+            AskRequest(
+                question="What is HED?",
+                page_context={"url": "ftp://invalid", "title": "Test"},
+            )
+        assert "URL must start with http://" in str(exc_info.value)
