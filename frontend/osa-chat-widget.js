@@ -14,7 +14,6 @@
     turnstileSiteKey: null,
     // Customizable branding
     title: 'HED Assistant',
-    subtitle: 'Hierarchical Event Descriptors',
     initialMessage: 'Hi! I\'m the HED Assistant. I can help with HED (Hierarchical Event Descriptors), annotation, validation, and related tools. What would you like to know?',
     placeholder: 'Ask about HED...',
     suggestedQuestions: [
@@ -768,11 +767,13 @@
     let inTable = false;
     let tableRows = [];
     let currentList = [];
+    let currentListType = null; // 'ul' or 'ol'
 
     const flushList = () => {
-      if (currentList.length > 0) {
-        result += '<ul>' + currentList.join('') + '</ul>';
+      if (currentList.length > 0 && currentListType) {
+        result += '<' + currentListType + '>' + currentList.join('') + '</' + currentListType + '>';
         currentList = [];
+        currentListType = null;
       }
     };
 
@@ -851,6 +852,8 @@
       // Handle bullet points (* item or - item)
       const bulletMatch = line.match(/^[\*\-]\s+(.+)$/);
       if (bulletMatch) {
+        if (currentListType !== 'ul') flushList();
+        currentListType = 'ul';
         currentList.push('<li>' + renderInlineMarkdown(bulletMatch[1]) + '</li>');
         continue;
       }
@@ -858,6 +861,8 @@
       // Handle numbered lists
       const numberedMatch = line.match(/^\d+\.\s+(.+)$/);
       if (numberedMatch) {
+        if (currentListType !== 'ol') flushList();
+        currentListType = 'ol';
         currentList.push('<li>' + renderInlineMarkdown(numberedMatch[1]) + '</li>');
         continue;
       }
@@ -1305,15 +1310,20 @@
       }
 
       const data = await response.json();
-      messages.push({ role: 'assistant', content: data.answer });
+      const answer = (data && typeof data.answer === 'string') ? data.answer : null;
+      if (!answer) {
+        throw new Error('Invalid response from server');
+      }
+      messages.push({ role: 'assistant', content: answer });
       saveHistory();
       updateStatusDisplay(true);
 
     } catch (error) {
       console.error('Chat error:', error);
       showError(container, error.message || 'Failed to get response');
-      // Remove the user message on error
+      // Remove the user message on error and sync localStorage
       messages.pop();
+      saveHistory();
       updateStatusDisplay(false);
     } finally {
       isLoading = false;
@@ -1382,10 +1392,12 @@
     if (isOpen) {
       chatWindow.classList.add('open');
       button.innerHTML = ICONS.close;
+      button.setAttribute('aria-label', 'Close chat');
       container.querySelector('.osa-chat-input input').focus();
     } else {
       chatWindow.classList.remove('open');
       button.innerHTML = ICONS.chat;
+      button.setAttribute('aria-label', 'Open chat');
     }
   }
 
