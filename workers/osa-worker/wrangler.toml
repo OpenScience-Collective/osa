@@ -13,7 +13,7 @@ ENVIRONMENT = "production"
 # KV namespace for rate limiting
 [[kv_namespaces]]
 binding = "RATE_LIMITER"
-id = "REPLACE_WITH_KV_ID"
+id = "8f8506b1a7fb400680a00014312c124d"
 
 # Development environment
 [env.dev]
