@@ -67,7 +67,11 @@ def _run_server(host: str, port: int) -> None:
 
     import uvicorn
 
-    # Disable API auth for standalone mode (local CLI use)
+    # Disable API auth for standalone mode (local CLI use only)
+    # This is safe because:
+    # 1. Server only binds to localhost (127.0.0.1)
+    # 2. User still needs to provide LLM API key (BYOK) for actual responses
+    # 3. Does NOT affect 'osa serve' which reads from .env
     os.environ["REQUIRE_API_AUTH"] = "false"
 
     from src.api.main import app
