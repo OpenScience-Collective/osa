@@ -8,7 +8,7 @@ from typing import Annotated
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from src.agents.hed import HEDAssistant
 from src.agents.hed import PageContext as AgentPageContext
@@ -48,11 +48,24 @@ class PageContext(BaseModel):
     url: str | None = Field(
         default=None,
         description="URL of the page where the assistant is embedded",
+        max_length=2048,  # Reasonable URL length limit
     )
     title: str | None = Field(
         default=None,
         description="Title of the page where the assistant is embedded",
+        max_length=500,  # Prevent DoS with huge titles
     )
+
+    @field_validator("url")
+    @classmethod
+    def validate_url_scheme(cls, url: str | None) -> str | None:
+        """Ensure URL has valid scheme if provided."""
+        if url is None:
+            return url
+        # Validate URL has proper scheme
+        if not url.startswith(("http://", "https://")):
+            return None  # Silently ignore invalid URLs rather than error
+        return url
 
 
 class AskRequest(BaseModel):

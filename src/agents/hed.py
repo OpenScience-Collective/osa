@@ -7,10 +7,15 @@ Preloaded docs (~13k tokens) include HED annotation semantics and terminology.
 Other docs are fetched on-demand to minimize context usage.
 """
 
+import ipaddress
+import socket
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
+import httpx
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import tool
+from markdownify import markdownify
 
 from src.agents.base import ToolAgent
 from src.tools.hed import (
@@ -23,6 +28,9 @@ from src.tools.hed_validation import (
     suggest_hed_tags,
     validate_hed_string,
 )
+
+# Maximum characters to return from fetched page content
+MAX_PAGE_CONTENT_LENGTH = 30000
 
 
 @dataclass
@@ -175,7 +183,7 @@ The user is asking this question from the following page:
 - **Page URL**: {page_url}
 - **Page Title**: {page_title}
 
-If the user's question seems related to the content of this page, you can use the fetch_page_content tool
+If the user's question seems related to the content of this page, you can use the fetch_current_page tool
 to retrieve the page content and provide more contextually relevant answers. This is especially useful when:
 - The user references "this page" or "this documentation"
 - The question seems to be about specific content that might be on the page
@@ -212,13 +220,54 @@ def _format_ondemand_section() -> str:
     return "\n".join(lines)
 
 
-@tool
-def fetch_page_content(url: str) -> str:
-    """Fetch and extract content from a web page.
+def is_safe_url(url: str) -> tuple[bool, str]:
+    """Validate URL is safe to fetch (prevents SSRF attacks).
 
-    Use this tool to retrieve the content of the page where the user is asking
-    their question from. This is useful when the user's question seems related
-    to the content of the page they are viewing.
+    Args:
+        url: The URL to validate.
+
+    Returns:
+        Tuple of (is_safe, error_message). error_message is empty if safe.
+    """
+    try:
+        parsed = urlparse(url)
+
+        # Only allow http/https
+        if parsed.scheme not in ("http", "https"):
+            return False, "Only HTTP/HTTPS protocols are allowed"
+
+        hostname = parsed.hostname
+        if not hostname:
+            return False, "Invalid hostname"
+
+        # Resolve hostname to IP to check for private ranges
+        try:
+            ip = socket.gethostbyname(hostname)
+            ip_obj = ipaddress.ip_address(ip)
+
+            # Block private/internal IPs to prevent SSRF
+            if ip_obj.is_private:
+                return False, f"Access to private IP ranges is not allowed: {ip}"
+            if ip_obj.is_loopback:
+                return False, f"Access to loopback addresses is not allowed: {ip}"
+            if ip_obj.is_link_local:
+                return False, f"Access to link-local addresses is not allowed: {ip}"
+            if ip_obj.is_reserved:
+                return False, f"Access to reserved IP ranges is not allowed: {ip}"
+
+        except socket.gaierror:
+            # Cannot resolve hostname - allow it, will fail at fetch time
+            pass
+
+        return True, ""
+    except Exception as e:
+        return False, f"URL validation failed: {e}"
+
+
+def _fetch_page_content_impl(url: str) -> str:
+    """Internal implementation to fetch page content.
+
+    This is not a tool - it's called by the dynamically created tool.
 
     Args:
         url: The URL of the page to fetch content from.
@@ -226,18 +275,39 @@ def fetch_page_content(url: str) -> str:
     Returns:
         The page content in markdown format, or an error message.
     """
-    import httpx
-    from markdownify import markdownify
-
     try:
-        # Validate URL
+        # Validate URL for SSRF protection
         if not url or not url.startswith(("http://", "https://")):
             return f"Error: Invalid URL '{url}'. URL must start with http:// or https://"
 
-        # Fetch the page
-        with httpx.Client(timeout=10.0, follow_redirects=True) as client:
+        is_safe, error_msg = is_safe_url(url)
+        if not is_safe:
+            return f"Error: {error_msg}"
+
+        # Fetch the page (disable redirects to prevent redirect-based SSRF)
+        with httpx.Client(timeout=10.0, follow_redirects=False) as client:
             response = client.get(url)
+
+            # Handle redirects manually with validation
+            redirect_count = 0
+            max_redirects = 3
+            while response.is_redirect and redirect_count < max_redirects:
+                redirect_url = response.headers.get("location")
+                if redirect_url:
+                    is_safe, error_msg = is_safe_url(redirect_url)
+                    if not is_safe:
+                        return f"Error: Redirect to unsafe URL blocked: {error_msg}"
+                    response = client.get(redirect_url)
+                    redirect_count += 1
+                else:
+                    break
+
             response.raise_for_status()
+
+        # Validate content type
+        content_type = response.headers.get("content-type", "")
+        if "text/html" not in content_type.lower():
+            return f"Error: URL returned non-HTML content: {content_type}"
 
         # Convert HTML to markdown
         content = markdownify(response.text, heading_style="ATX", strip=["script", "style"])
@@ -247,8 +317,8 @@ def fetch_page_content(url: str) -> str:
         content = "\n".join(line for line in lines if line)
 
         # Truncate if too long
-        if len(content) > 30000:
-            content = content[:30000] + "\n\n... [content truncated]"
+        if len(content) > MAX_PAGE_CONTENT_LENGTH:
+            content = content[:MAX_PAGE_CONTENT_LENGTH] + "\n\n... [content truncated]"
 
         return f"# Content from {url}\n\n{content}"
 
@@ -322,15 +392,34 @@ class HEDAssistant(ToolAgent):
         if preload_docs:
             self._preloaded_content = get_preloaded_hed_content()
 
-        # Build tools list - include fetch_page_content if page context is provided
+        # Build tools list
         tools = [
             retrieve_hed_docs,
             validate_hed_string,
             suggest_hed_tags,
             get_hed_schema_versions,
         ]
+
+        # Add fetch_current_page tool if page context is provided
+        # This creates a bound tool that only fetches the specific page URL,
+        # preventing the LLM from requesting arbitrary URLs (SSRF protection)
         if page_context and page_context.url:
-            tools.append(fetch_page_content)
+            page_url = page_context.url  # Capture in closure
+
+            @tool
+            def fetch_current_page() -> str:
+                """Fetch content from the page where the user is currently asking their question.
+
+                Use this tool when the user's question seems related to the content of the page
+                they are viewing. This will retrieve the page content and provide context for
+                answering questions about "this page" or "this documentation".
+
+                Returns:
+                    The page content in markdown format, or an error message.
+                """
+                return _fetch_page_content_impl(page_url)
+
+            tools.append(fetch_current_page)
 
         # Initialize with HED tools: documentation retrieval, validation, and tag suggestions
         super().__init__(
