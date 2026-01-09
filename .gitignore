@@ -119,5 +119,6 @@ dmypy.json
 # Node.js (for Cloudflare Workers)
 node_modules/
 package-lock.json
+bun.lock
 bun.lockb
 .wrangler/
