@@ -7,25 +7,25 @@
 (function() {
   'use strict';
 
-  // Configuration
+  // Configuration (can be customized via OSAChatWidget.setConfig)
   const CONFIG = {
     apiEndpoint: 'https://osa-worker.shirazi-10f.workers.dev',
     storageKey: 'osa-chat-history',
-    turnstileSiteKey: null, // Set when Turnstile is enabled
-  };
-
-  // Suggested questions for users
-  const SUGGESTED_QUESTIONS = [
-    'What is HED and how is it used?',
-    'How do I annotate an event with HED tags?',
-    'What tools are available for working with HED?',
-    'Explain this HED validation error.'
-  ];
-
-  // Initial greeting message
-  const INITIAL_MESSAGE = {
-    role: 'assistant',
-    content: 'Hi! I\'m the Open Science Assistant. I can help with HED (Hierarchical Event Descriptors), BIDS, and other open science tools. What would you like to know?'
+    turnstileSiteKey: null,
+    // Customizable branding
+    title: 'HED Assistant',
+    subtitle: 'Hierarchical Event Descriptors',
+    initialMessage: 'Hi! I\'m the HED Assistant. I can help with HED (Hierarchical Event Descriptors), annotation, validation, and related tools. What would you like to know?',
+    placeholder: 'Ask about HED...',
+    suggestedQuestions: [
+      'What is HED and how is it used?',
+      'How do I annotate an event with HED tags?',
+      'What tools are available for working with HED?',
+      'Explain this HED validation error.'
+    ],
+    showExperimentalBadge: true,
+    repoUrl: 'https://github.com/OpenScience-Collective/osa',
+    repoName: 'Open Science Assistant'
   };
 
   // State
@@ -34,13 +34,15 @@
   let messages = [];
   let turnstileToken = null;
   let turnstileWidgetId = null;
+  let backendOnline = null; // null = checking, true = online, false = offline
 
   // Icons (SVG)
   const ICONS = {
     chat: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>',
     close: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>',
     send: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>',
-    reset: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>'
+    reset: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>',
+    brain: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/></svg>'
   };
 
   // CSS Styles
@@ -55,7 +57,7 @@
       --osa-user-bg: #2563eb;
       --osa-user-text: #ffffff;
       --osa-assistant-bg: #f3f4f6;
-      --osa-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+      --osa-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       font-size: 14px;
       line-height: 1.5;
@@ -98,6 +100,8 @@
       max-width: calc(100vw - 40px);
       height: 520px;
       max-height: calc(100vh - 120px);
+      min-width: 300px;
+      min-height: 350px;
       background: var(--osa-bg);
       border-radius: 16px;
       box-shadow: var(--osa-shadow);
@@ -112,23 +116,87 @@
     }
 
     .osa-chat-header {
-      padding: 16px;
+      padding: 12px 16px;
       background: var(--osa-primary);
       color: white;
       display: flex;
       align-items: center;
-      justify-content: space-between;
+      gap: 12px;
     }
 
-    .osa-chat-header h3 {
-      margin: 0;
-      font-size: 16px;
+    .osa-chat-avatar {
+      width: 36px;
+      height: 36px;
+      background: rgba(255,255,255,0.2);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .osa-chat-avatar svg {
+      width: 20px;
+      height: 20px;
+    }
+
+    .osa-chat-title-area {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .osa-chat-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 15px;
       font-weight: 600;
+      margin: 0;
+    }
+
+    .osa-experimental-badge {
+      font-size: 9px;
+      font-weight: 600;
+      background: rgba(255,255,255,0.25);
+      padding: 2px 6px;
+      border-radius: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .osa-chat-status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      opacity: 0.9;
+      margin-top: 2px;
+    }
+
+    .osa-status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #22c55e;
+    }
+
+    .osa-status-dot.offline {
+      background: #ef4444;
+    }
+
+    .osa-status-dot.checking {
+      background: #f59e0b;
+      animation: osa-pulse 1.5s infinite;
+    }
+
+    @keyframes osa-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
     }
 
     .osa-header-actions {
       display: flex;
-      gap: 8px;
+      gap: 4px;
     }
 
     .osa-header-btn {
@@ -136,17 +204,23 @@
       border: none;
       color: white;
       cursor: pointer;
-      padding: 4px;
-      border-radius: 4px;
+      padding: 6px;
+      border-radius: 6px;
       display: flex;
       align-items: center;
       justify-content: center;
       opacity: 0.8;
-      transition: opacity 0.2s;
+      transition: opacity 0.2s, background 0.2s;
     }
 
     .osa-header-btn:hover {
       opacity: 1;
+      background: rgba(255,255,255,0.15);
+    }
+
+    .osa-header-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
     }
 
     .osa-header-btn svg {
@@ -160,38 +234,81 @@
       padding: 16px;
       display: flex;
       flex-direction: column;
-      gap: 12px;
+      gap: 16px;
     }
 
     .osa-message {
-      max-width: 85%;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .osa-message-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--osa-text-light);
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+
+    .osa-message-content {
       padding: 10px 14px;
       border-radius: 12px;
       word-wrap: break-word;
     }
 
-    .osa-message.user {
-      align-self: flex-end;
+    .osa-message.user .osa-message-content {
       background: var(--osa-user-bg);
       color: var(--osa-user-text);
+      align-self: flex-end;
       border-bottom-right-radius: 4px;
     }
 
-    .osa-message.assistant {
-      align-self: flex-start;
+    .osa-message.user {
+      align-items: flex-end;
+    }
+
+    .osa-message.assistant .osa-message-content {
       background: var(--osa-assistant-bg);
       color: var(--osa-text);
       border-bottom-left-radius: 4px;
     }
 
-    .osa-message.assistant code {
-      background: #e5e7eb;
+    /* Markdown styling */
+    .osa-message-content p {
+      margin: 0 0 8px 0;
+    }
+
+    .osa-message-content p:last-child {
+      margin-bottom: 0;
+    }
+
+    .osa-message-content h1, .osa-message-content h2, .osa-message-content h3,
+    .osa-message-content h4, .osa-message-content h5, .osa-message-content h6 {
+      margin: 16px 0 8px 0;
+      font-weight: 600;
+      line-height: 1.3;
+    }
+
+    .osa-message-content h1:first-child, .osa-message-content h2:first-child,
+    .osa-message-content h3:first-child {
+      margin-top: 0;
+    }
+
+    .osa-message-content h1 { font-size: 1.3em; }
+    .osa-message-content h2 { font-size: 1.2em; }
+    .osa-message-content h3 { font-size: 1.1em; }
+    .osa-message-content h4, .osa-message-content h5, .osa-message-content h6 { font-size: 1em; }
+
+    .osa-message-content code {
+      background: rgba(0,0,0,0.08);
       padding: 2px 6px;
       border-radius: 4px;
       font-size: 13px;
+      font-family: 'SF Mono', Monaco, 'Courier New', monospace;
     }
 
-    .osa-message.assistant pre {
+    .osa-message-content pre {
       background: #1f2937;
       color: #f9fafb;
       padding: 12px;
@@ -200,33 +317,103 @@
       margin: 8px 0;
     }
 
-    .osa-message.assistant pre code {
+    .osa-message-content pre code {
       background: transparent;
       padding: 0;
       color: inherit;
     }
 
+    .osa-message-content ul, .osa-message-content ol {
+      margin: 8px 0;
+      padding-left: 20px;
+    }
+
+    .osa-message-content li {
+      margin: 4px 0;
+    }
+
+    .osa-message-content a {
+      color: var(--osa-primary);
+      text-decoration: none;
+    }
+
+    .osa-message-content a:hover {
+      text-decoration: underline;
+    }
+
+    .osa-message-content hr {
+      border: none;
+      border-top: 1px solid var(--osa-border);
+      margin: 12px 0;
+    }
+
+    .osa-message-content strong {
+      font-weight: 600;
+    }
+
+    /* Table styling */
+    .osa-table-wrapper {
+      overflow-x: auto;
+      margin: 8px 0;
+    }
+
+    .osa-table {
+      border-collapse: collapse;
+      width: 100%;
+      font-size: 13px;
+    }
+
+    .osa-table th, .osa-table td {
+      border: 1px solid var(--osa-border);
+      padding: 8px 10px;
+      text-align: left;
+    }
+
+    .osa-table th {
+      background: rgba(0,0,0,0.04);
+      font-weight: 600;
+    }
+
+    .osa-table tr:nth-child(even) {
+      background: rgba(0,0,0,0.02);
+    }
+
     .osa-suggestions {
       padding: 12px 16px;
       border-top: 1px solid var(--osa-border);
+    }
+
+    .osa-suggestions-label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--osa-text-light);
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      margin-bottom: 8px;
+    }
+
+    .osa-suggestions-list {
       display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
+      flex-direction: column;
+      gap: 6px;
     }
 
     .osa-suggestion {
       background: var(--osa-assistant-bg);
       border: 1px solid var(--osa-border);
-      border-radius: 16px;
-      padding: 6px 12px;
-      font-size: 12px;
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 13px;
       cursor: pointer;
-      transition: background 0.2s;
+      transition: background 0.2s, border-color 0.2s;
       color: var(--osa-text);
+      text-align: left;
     }
 
     .osa-suggestion:hover {
       background: #e5e7eb;
+      border-color: #d1d5db;
     }
 
     .osa-chat-input {
@@ -267,6 +454,7 @@
       align-items: center;
       justify-content: center;
       transition: background 0.2s;
+      flex-shrink: 0;
     }
 
     .osa-send-btn:hover:not(:disabled) {
@@ -285,11 +473,29 @@
 
     .osa-loading {
       display: flex;
+      flex-direction: column;
       gap: 4px;
-      padding: 10px 14px;
     }
 
-    .osa-loading span {
+    .osa-loading-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--osa-text-light);
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+
+    .osa-loading-dots {
+      display: flex;
+      gap: 4px;
+      padding: 10px 14px;
+      background: var(--osa-assistant-bg);
+      border-radius: 12px;
+      border-bottom-left-radius: 4px;
+      width: fit-content;
+    }
+
+    .osa-loading-dot {
       width: 8px;
       height: 8px;
       background: var(--osa-text-light);
@@ -297,12 +503,30 @@
       animation: osa-bounce 1.4s infinite ease-in-out both;
     }
 
-    .osa-loading span:nth-child(1) { animation-delay: -0.32s; }
-    .osa-loading span:nth-child(2) { animation-delay: -0.16s; }
+    .osa-loading-dot:nth-child(1) { animation-delay: -0.32s; }
+    .osa-loading-dot:nth-child(2) { animation-delay: -0.16s; }
 
     @keyframes osa-bounce {
       0%, 80%, 100% { transform: scale(0); }
       40% { transform: scale(1); }
+    }
+
+    .osa-chat-footer {
+      padding: 8px 16px;
+      border-top: 1px solid var(--osa-border);
+      text-align: center;
+      font-size: 11px;
+      color: var(--osa-text-light);
+    }
+
+    .osa-chat-footer a {
+      color: var(--osa-text-light);
+      text-decoration: none;
+    }
+
+    .osa-chat-footer a:hover {
+      color: var(--osa-primary);
+      text-decoration: underline;
     }
 
     .osa-turnstile-container {
@@ -319,7 +543,213 @@
       background: #fef2f2;
       border-top: 1px solid #fecaca;
     }
+
+    .osa-resize-handle {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 20px;
+      height: 20px;
+      cursor: nwse-resize;
+      z-index: 10;
+    }
+
+    .osa-resize-handle::before {
+      content: '';
+      position: absolute;
+      top: 6px;
+      left: 6px;
+      width: 8px;
+      height: 8px;
+      border-left: 2px solid rgba(0,0,0,0.2);
+      border-top: 2px solid rgba(0,0,0,0.2);
+    }
   `;
+
+  // Escape HTML for user messages
+  function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  // Render inline markdown (bold, italic, links, plain URLs)
+  function renderInlineMarkdown(text) {
+    if (!text) return '';
+
+    let result = '';
+    let remaining = text;
+
+    while (remaining.length > 0) {
+      const boldMatch = remaining.match(/\*\*(.+?)\*\*/);
+      const italicMatch = remaining.match(/(?<!\*)\*([^*]+)\*(?!\*)/);
+      const linkMatch = remaining.match(/\[([^\]]+)\]\(([^)]+)\)/);
+      const urlMatch = remaining.match(/(?<!\]\()(https?:\/\/[^\s\)]+)/);
+
+      const boldIndex = boldMatch ? remaining.indexOf(boldMatch[0]) : -1;
+      const italicIndex = italicMatch ? remaining.indexOf(italicMatch[0]) : -1;
+      const linkIndex = linkMatch ? remaining.indexOf(linkMatch[0]) : -1;
+      const urlIndex = urlMatch ? remaining.indexOf(urlMatch[0]) : -1;
+
+      const indices = [boldIndex, italicIndex, linkIndex, urlIndex].filter(i => i !== -1);
+      if (indices.length === 0) {
+        result += escapeHtml(remaining);
+        break;
+      }
+      const minIndex = Math.min(...indices);
+
+      if (minIndex === boldIndex && boldMatch) {
+        if (boldIndex > 0) result += escapeHtml(remaining.substring(0, boldIndex));
+        result += '<strong>' + escapeHtml(boldMatch[1]) + '</strong>';
+        remaining = remaining.substring(boldIndex + boldMatch[0].length);
+      } else if (minIndex === italicIndex && italicMatch) {
+        if (italicIndex > 0) result += escapeHtml(remaining.substring(0, italicIndex));
+        result += '<em>' + escapeHtml(italicMatch[1]) + '</em>';
+        remaining = remaining.substring(italicIndex + italicMatch[0].length);
+      } else if (minIndex === linkIndex && linkMatch) {
+        if (linkIndex > 0) result += escapeHtml(remaining.substring(0, linkIndex));
+        result += '<a href="' + escapeHtml(linkMatch[2]) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(linkMatch[1]) + '</a>';
+        remaining = remaining.substring(linkIndex + linkMatch[0].length);
+      } else if (minIndex === urlIndex && urlMatch) {
+        if (urlIndex > 0) result += escapeHtml(remaining.substring(0, urlIndex));
+        result += '<a href="' + escapeHtml(urlMatch[0]) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(urlMatch[0]) + '</a>';
+        remaining = remaining.substring(urlIndex + urlMatch[0].length);
+      }
+    }
+
+    return result;
+  }
+
+  // Full markdown to HTML converter
+  function markdownToHtml(text) {
+    if (!text) return '';
+
+    const lines = text.split('\n');
+    let result = '';
+    let inCodeBlock = false;
+    let codeBlockContent = [];
+    let inTable = false;
+    let tableRows = [];
+    let currentList = [];
+
+    const flushList = () => {
+      if (currentList.length > 0) {
+        result += '<ul>' + currentList.join('') + '</ul>';
+        currentList = [];
+      }
+    };
+
+    const flushTable = () => {
+      if (tableRows.length > 0) {
+        let tableHtml = '<div class="osa-table-wrapper"><table class="osa-table">';
+        tableRows.forEach((row, idx) => {
+          const cells = row.split('|').filter(c => c.trim() !== '');
+          // Skip separator row (contains only dashes and colons)
+          if (cells.every(c => /^[\s\-:]+$/.test(c))) return;
+          const tag = idx === 0 ? 'th' : 'td';
+          tableHtml += '<tr>';
+          cells.forEach(cell => {
+            tableHtml += '<' + tag + '>' + renderInlineMarkdown(cell.trim()) + '</' + tag + '>';
+          });
+          tableHtml += '</tr>';
+        });
+        tableHtml += '</table></div>';
+        result += tableHtml;
+        tableRows = [];
+        inTable = false;
+      }
+    };
+
+    for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+      const line = lines[lineIdx];
+
+      // Handle code blocks
+      if (line.trim().startsWith('```')) {
+        if (inCodeBlock) {
+          result += '<pre><code>' + escapeHtml(codeBlockContent.join('\n')) + '</code></pre>';
+          codeBlockContent = [];
+          inCodeBlock = false;
+        } else {
+          flushList();
+          flushTable();
+          inCodeBlock = true;
+        }
+        continue;
+      }
+
+      if (inCodeBlock) {
+        codeBlockContent.push(line);
+        continue;
+      }
+
+      // Handle tables (lines with | characters)
+      if (line.includes('|') && (line.trim().startsWith('|') || line.match(/\|.*\|/))) {
+        flushList();
+        inTable = true;
+        tableRows.push(line);
+        continue;
+      } else if (inTable) {
+        flushTable();
+      }
+
+      // Handle horizontal rules
+      if (/^[-*_]{3,}\s*$/.test(line.trim())) {
+        flushList();
+        flushTable();
+        result += '<hr>';
+        continue;
+      }
+
+      // Handle headers
+      const headerMatch = line.match(/^(#{1,6})\s+(.+)$/);
+      if (headerMatch) {
+        flushList();
+        const level = headerMatch[1].length;
+        result += '<h' + level + '>' + renderInlineMarkdown(headerMatch[2]) + '</h' + level + '>';
+        continue;
+      }
+
+      // Handle bullet points (* item or - item)
+      const bulletMatch = line.match(/^[\*\-]\s+(.+)$/);
+      if (bulletMatch) {
+        currentList.push('<li>' + renderInlineMarkdown(bulletMatch[1]) + '</li>');
+        continue;
+      }
+
+      // Handle numbered lists
+      const numberedMatch = line.match(/^\d+\.\s+(.+)$/);
+      if (numberedMatch) {
+        currentList.push('<li>' + renderInlineMarkdown(numberedMatch[1]) + '</li>');
+        continue;
+      }
+
+      flushList();
+
+      if (line.trim()) {
+        // Handle inline code first
+        let processedLine = line.replace(/`([^`]+)`/g, function(match, code) {
+          return '<code>' + escapeHtml(code) + '</code>';
+        });
+        // Process inline markdown for non-code parts
+        processedLine = processedLine.replace(/(<code[^>]*>.*?<\/code>)|([^<]+)/g, function(match, codeTag, text) {
+          if (codeTag) return codeTag;
+          if (text) return renderInlineMarkdown(text);
+          return match;
+        });
+
+        result += '<p>' + processedLine + '</p>';
+      }
+    }
+
+    // Flush any remaining content
+    flushList();
+    flushTable();
+    if (inCodeBlock && codeBlockContent.length > 0) {
+      result += '<pre><code>' + escapeHtml(codeBlockContent.join('\n')) + '</code></pre>';
+    }
+
+    return result || text;
+  }
 
   // Load chat history from localStorage
   function loadHistory() {
@@ -332,7 +762,7 @@
       console.warn('Failed to load chat history:', e);
     }
     if (messages.length === 0) {
-      messages = [INITIAL_MESSAGE];
+      messages = [{ role: 'assistant', content: CONFIG.initialMessage }];
     }
   }
 
@@ -345,21 +775,52 @@
     }
   }
 
-  // Simple markdown to HTML converter
-  function markdownToHtml(text) {
-    return text
-      // Code blocks
-      .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
-      // Inline code
-      .replace(/`([^`]+)`/g, '<code>$1</code>')
-      // Bold
-      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-      // Italic
-      .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-      // Links
-      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
-      // Line breaks
-      .replace(/\n/g, '<br>');
+  // Check backend health status
+  async function checkBackendStatus() {
+    const statusDot = document.querySelector('.osa-status-dot');
+    const statusText = document.querySelector('.osa-status-text');
+
+    if (!statusDot || !statusText) return;
+
+    try {
+      const response = await fetch(`${CONFIG.apiEndpoint}/health`, {
+        method: 'GET',
+        signal: AbortSignal.timeout(5000)
+      });
+
+      if (response.ok) {
+        backendOnline = true;
+        statusDot.className = 'osa-status-dot';
+        statusText.textContent = 'Online';
+      } else {
+        backendOnline = false;
+        statusDot.className = 'osa-status-dot offline';
+        statusText.textContent = 'Offline';
+      }
+    } catch (e) {
+      backendOnline = false;
+      statusDot.className = 'osa-status-dot offline';
+      statusText.textContent = 'Offline';
+      console.warn('Backend health check failed:', e);
+    }
+  }
+
+  // Update status display
+  function updateStatusDisplay(online) {
+    const statusDot = document.querySelector('.osa-status-dot');
+    const statusText = document.querySelector('.osa-status-text');
+
+    if (!statusDot || !statusText) return;
+
+    if (online) {
+      backendOnline = true;
+      statusDot.className = 'osa-status-dot';
+      statusText.textContent = 'Online';
+    } else {
+      backendOnline = false;
+      statusDot.className = 'osa-status-dot offline';
+      statusText.textContent = 'Offline';
+    }
   }
 
   // Create and inject styles
@@ -369,17 +830,71 @@
     document.head.appendChild(style);
   }
 
+  // Setup resize functionality
+  function setupResize(chatWindow) {
+    const resizeHandle = chatWindow.querySelector('.osa-resize-handle');
+    if (!resizeHandle) return;
+
+    let isResizing = false;
+    let startX, startY, startWidth, startHeight;
+
+    resizeHandle.addEventListener('mousedown', (e) => {
+      isResizing = true;
+      startX = e.clientX;
+      startY = e.clientY;
+      startWidth = chatWindow.offsetWidth;
+      startHeight = chatWindow.offsetHeight;
+      e.preventDefault();
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (!isResizing) return;
+
+      // Resize from top-left corner (since window is anchored bottom-right)
+      const newWidth = startWidth - (e.clientX - startX);
+      const newHeight = startHeight - (e.clientY - startY);
+
+      // Set minimum and maximum sizes
+      if (newWidth >= 300 && newWidth <= 600) {
+        chatWindow.style.width = newWidth + 'px';
+      }
+      if (newHeight >= 350 && newHeight <= 800) {
+        chatWindow.style.height = newHeight + 'px';
+      }
+    });
+
+    document.addEventListener('mouseup', () => {
+      isResizing = false;
+    });
+  }
+
   // Create the widget DOM
   function createWidget() {
     const container = document.createElement('div');
     container.className = 'osa-chat-widget';
+
+    const experimentalBadge = CONFIG.showExperimentalBadge
+      ? '<span class="osa-experimental-badge">Experimental</span>'
+      : '';
+
     container.innerHTML = `
       <button class="osa-chat-button" aria-label="Open chat">
         ${ICONS.chat}
       </button>
       <div class="osa-chat-window">
+        <div class="osa-resize-handle"></div>
         <div class="osa-chat-header">
-          <h3>Open Science Assistant</h3>
+          <div class="osa-chat-avatar">${ICONS.brain}</div>
+          <div class="osa-chat-title-area">
+            <h3 class="osa-chat-title">
+              ${escapeHtml(CONFIG.title)}
+              ${experimentalBadge}
+            </h3>
+            <div class="osa-chat-status">
+              <span class="osa-status-dot checking"></span>
+              <span class="osa-status-text">Checking...</span>
+            </div>
+          </div>
           <div class="osa-header-actions">
             <button class="osa-header-btn osa-reset-btn" title="Clear chat">
               ${ICONS.reset}
@@ -390,18 +905,31 @@
           </div>
         </div>
         <div class="osa-chat-messages"></div>
-        <div class="osa-suggestions"></div>
+        <div class="osa-suggestions" style="display: none;">
+          <span class="osa-suggestions-label">Try asking:</span>
+          <div class="osa-suggestions-list"></div>
+        </div>
         <div class="osa-turnstile-container" style="display: none;"></div>
         <div class="osa-error" style="display: none;"></div>
         <div class="osa-chat-input">
-          <input type="text" placeholder="Ask about HED, BIDS, or other tools..." />
+          <input type="text" placeholder="${escapeHtml(CONFIG.placeholder)}" />
           <button class="osa-send-btn" aria-label="Send">
             ${ICONS.send}
           </button>
         </div>
+        <div class="osa-chat-footer">
+          <a href="${escapeHtml(CONFIG.repoUrl)}" target="_blank" rel="noopener noreferrer">
+            Powered by ${escapeHtml(CONFIG.repoName)}
+          </a>
+        </div>
       </div>
     `;
     document.body.appendChild(container);
+
+    // Setup resize
+    const chatWindow = container.querySelector('.osa-chat-window');
+    setupResize(chatWindow);
+
     return container;
   }
 
@@ -413,14 +941,28 @@
     messages.forEach(msg => {
       const msgEl = document.createElement('div');
       msgEl.className = `osa-message ${msg.role}`;
-      msgEl.innerHTML = msg.role === 'assistant' ? markdownToHtml(msg.content) : msg.content;
+
+      const label = msg.role === 'user' ? 'You' : CONFIG.title;
+      const content = msg.role === 'assistant' ? markdownToHtml(msg.content) : escapeHtml(msg.content);
+
+      msgEl.innerHTML = `
+        <span class="osa-message-label">${escapeHtml(label)}</span>
+        <div class="osa-message-content">${content}</div>
+      `;
       messagesEl.appendChild(msgEl);
     });
 
     if (isLoading) {
       const loadingEl = document.createElement('div');
-      loadingEl.className = 'osa-message assistant osa-loading';
-      loadingEl.innerHTML = '<span></span><span></span><span></span>';
+      loadingEl.className = 'osa-loading';
+      loadingEl.innerHTML = `
+        <span class="osa-loading-label">${escapeHtml(CONFIG.title)}</span>
+        <div class="osa-loading-dots">
+          <span class="osa-loading-dot"></span>
+          <span class="osa-loading-dot"></span>
+          <span class="osa-loading-dot"></span>
+        </div>
+      `;
       messagesEl.appendChild(loadingEl);
     }
 
@@ -430,13 +972,14 @@
   // Render suggestions
   function renderSuggestions(container) {
     const suggestionsEl = container.querySelector('.osa-suggestions');
+    const suggestionsListEl = container.querySelector('.osa-suggestions-list');
 
     // Only show suggestions if there's just the initial message
-    if (messages.length <= 1) {
-      suggestionsEl.innerHTML = SUGGESTED_QUESTIONS.map(q =>
-        `<button class="osa-suggestion">${q}</button>`
+    if (messages.length <= 1 && !isLoading) {
+      suggestionsListEl.innerHTML = CONFIG.suggestedQuestions.map(q =>
+        `<button class="osa-suggestion">${escapeHtml(q)}</button>`
       ).join('');
-      suggestionsEl.style.display = 'flex';
+      suggestionsEl.style.display = 'block';
     } else {
       suggestionsEl.style.display = 'none';
     }
@@ -463,9 +1006,11 @@
 
     const input = container.querySelector('.osa-chat-input input');
     const sendBtn = container.querySelector('.osa-send-btn');
+    const resetBtn = container.querySelector('.osa-reset-btn');
     input.value = '';
     input.disabled = true;
     sendBtn.disabled = true;
+    resetBtn.disabled = true;
 
     try {
       const body = { question: question.trim() };
@@ -491,16 +1036,19 @@
       const data = await response.json();
       messages.push({ role: 'assistant', content: data.answer });
       saveHistory();
+      updateStatusDisplay(true);
 
     } catch (error) {
       console.error('Chat error:', error);
       showError(container, error.message || 'Failed to get response');
       // Remove the user message on error
       messages.pop();
+      updateStatusDisplay(false);
     } finally {
       isLoading = false;
       input.disabled = false;
       sendBtn.disabled = false;
+      resetBtn.disabled = messages.length <= 1;
       input.focus();
       renderMessages(container);
       renderSuggestions(container);
@@ -530,7 +1078,8 @@
 
   // Reset chat
   function resetChat(container) {
-    messages = [INITIAL_MESSAGE];
+    if (messages.length <= 1 || isLoading) return;
+    messages = [{ role: 'assistant', content: CONFIG.initialMessage }];
     saveHistory();
     renderMessages(container);
     renderSuggestions(container);
@@ -539,15 +1088,15 @@
   // Toggle chat window
   function toggleChat(container) {
     isOpen = !isOpen;
-    const window = container.querySelector('.osa-chat-window');
+    const chatWindow = container.querySelector('.osa-chat-window');
     const button = container.querySelector('.osa-chat-button');
 
     if (isOpen) {
-      window.classList.add('open');
+      chatWindow.classList.add('open');
       button.innerHTML = ICONS.close;
       container.querySelector('.osa-chat-input input').focus();
     } else {
-      window.classList.remove('open');
+      chatWindow.classList.remove('open');
       button.innerHTML = ICONS.chat;
     }
   }
@@ -560,6 +1109,10 @@
 
     renderMessages(container);
     renderSuggestions(container);
+
+    // Update reset button state
+    const resetBtn = container.querySelector('.osa-reset-btn');
+    resetBtn.disabled = messages.length <= 1;
 
     // Event listeners
     container.querySelector('.osa-chat-button').addEventListener('click', () => toggleChat(container));
@@ -574,17 +1127,19 @@
       if (e.key === 'Enter') sendMessage(container, input.value);
     });
 
-    container.querySelector('.osa-suggestions').addEventListener('click', (e) => {
+    container.querySelector('.osa-suggestions-list').addEventListener('click', (e) => {
       if (e.target.classList.contains('osa-suggestion')) {
         sendMessage(container, e.target.textContent);
       }
     });
 
+    // Check backend status
+    checkBackendStatus();
+
     // Initialize Turnstile if the script is loaded
     if (window.turnstile) {
       initTurnstile(container);
     } else {
-      // Wait for Turnstile to load
       window.addEventListener('load', () => {
         if (window.turnstile) initTurnstile(container);
       });
@@ -602,6 +1157,9 @@
   window.OSAChatWidget = {
     setConfig: function(options) {
       Object.assign(CONFIG, options);
+    },
+    getConfig: function() {
+      return { ...CONFIG };
     }
   };
 })();
