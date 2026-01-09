@@ -1,5 +1,5 @@
 [project]
-name = "osa"
+name = "open-science-assistant"
 dynamic = ["version"]
 description = "Open Science Assistant - An extensible AI assistant platform for open science projects"
 readme = "README.md"

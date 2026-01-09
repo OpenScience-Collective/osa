@@ -20,31 +20,308 @@ from src.cli.config import (
     save_config,
 )
 
-# Create CLI app
-cli = typer.Typer(
-    name="osa",
-    help="Open Science Assistant - AI assistant for open science projects",
-    no_args_is_help=True,
-)
-
 # Rich console for formatted output
 console = Console()
 
+# Available assistants registry
+ASSISTANTS = {
+    "hed": {
+        "name": "HED",
+        "description": "Hierarchical Event Descriptors - annotation standard for neuroimaging",
+        "status": "available",
+    },
+    "bids": {
+        "name": "BIDS",
+        "description": "Brain Imaging Data Structure - data organization standard",
+        "status": "coming soon",
+    },
+    "eeglab": {
+        "name": "EEGLAB",
+        "description": "EEG analysis toolbox for MATLAB",
+        "status": "coming soon",
+    },
+}
+
 
 def display_tool_calls(tool_calls: list[dict]) -> None:
-    """Display tool calls in a user-friendly format.
-
-    Args:
-        tool_calls: List of tool call info dicts with 'name' and 'args' keys.
-    """
+    """Display tool calls in a user-friendly format."""
     if not tool_calls:
         return
-
     for tc in tool_calls:
         name = tc.get("name", "unknown")
-        # Create a readable tool name (e.g., validate_hed_string -> Validate HED String)
         readable_name = name.replace("_", " ").title()
         console.print(f"[dim](Using tool: {readable_name})[/dim]")
+
+
+# ---------------------------------------------------------------------------
+# Server management
+# ---------------------------------------------------------------------------
+
+_server_thread: threading.Thread | None = None
+_server_started = threading.Event()
+
+
+def _run_server(host: str, port: int) -> None:
+    """Run the FastAPI server in a thread."""
+    import uvicorn
+
+    from src.api.main import app
+
+    config = uvicorn.Config(app, host=host, port=port, log_level="warning")
+    server = uvicorn.Server(config)
+
+    def signal_started() -> None:
+        time.sleep(0.5)
+        _server_started.set()
+
+    threading.Thread(target=signal_started, daemon=True).start()
+    server.run()
+
+
+def start_standalone_server(host: str = "127.0.0.1", port: int = 38528) -> str:
+    """Start the API server in standalone mode."""
+    global _server_thread
+
+    if _server_thread is not None and _server_thread.is_alive():
+        return f"http://{host}:{port}"
+
+    _server_started.clear()
+    _server_thread = threading.Thread(target=_run_server, args=(host, port), daemon=True)
+    _server_thread.start()
+    _server_started.wait(timeout=5.0)
+    return f"http://{host}:{port}"
+
+
+# ---------------------------------------------------------------------------
+# Assistant command factory
+# ---------------------------------------------------------------------------
+
+
+def create_assistant_app(assistant_id: str, assistant_info: dict) -> typer.Typer:
+    """Create a Typer app for an assistant with ask and chat commands."""
+    app = typer.Typer(
+        help=f"{assistant_info['name']} Assistant - {assistant_info['description']}",
+        no_args_is_help=True,
+    )
+
+    @app.command()
+    def ask(
+        question: Annotated[
+            str,
+            typer.Argument(help="Question to ask the assistant"),
+        ],
+        standalone: Annotated[
+            bool,
+            typer.Option("--standalone", "-s", help="Run in standalone mode (no external server)"),
+        ] = True,
+        url: Annotated[
+            str | None,
+            typer.Option("--url", "-u", help="API URL (overrides standalone)"),
+        ] = None,
+    ) -> None:
+        """Ask a single question.
+
+        Example:
+            osa hed ask "What is HED?"
+            osa hed ask "How do I annotate events?"
+        """
+        if assistant_info["status"] != "available":
+            console.print(
+                f"[yellow]{assistant_info['name']} assistant is {assistant_info['status']}.[/yellow]"
+            )
+            raise typer.Exit(code=1)
+
+        config = load_config()
+
+        # Determine API URL
+        if url:
+            api_url = url
+        elif standalone:
+            with console.status("[bold green]Starting standalone server..."):
+                api_url = start_standalone_server()
+        else:
+            api_url = config.api_url
+
+        config.api_url = api_url
+        client = OSAClient(config)
+
+        with console.status(f"[bold green]Asking {assistant_info['name']} assistant..."):
+            try:
+                response = client.chat(
+                    message=question,
+                    assistant=assistant_id,
+                    stream=False,
+                )
+
+                if "error" in response:
+                    console.print(f"[red]Error:[/red] {response['error']}")
+                    raise typer.Exit(code=1)
+
+                tool_calls = response.get("tool_calls", [])
+                if tool_calls:
+                    console.print()
+                    display_tool_calls(tool_calls)
+
+                content = response.get("message", {}).get("content", "No response")
+                console.print()
+                console.print(
+                    Panel(Markdown(content), title=f"[bold]{assistant_info['name']}[/bold]")
+                )
+
+            except Exception as e:
+                console.print(f"[red]Error:[/red] {e}")
+                raise typer.Exit(code=1)
+
+    @app.command()
+    def chat(
+        standalone: Annotated[
+            bool,
+            typer.Option("--standalone", "-s", help="Run in standalone mode (no external server)"),
+        ] = True,
+        url: Annotated[
+            str | None,
+            typer.Option("--url", "-u", help="API URL (overrides standalone)"),
+        ] = None,
+    ) -> None:
+        """Start an interactive chat session.
+
+        Example:
+            osa hed chat
+            osa hed chat --url http://localhost:38528
+        """
+        if assistant_info["status"] != "available":
+            console.print(
+                f"[yellow]{assistant_info['name']} assistant is {assistant_info['status']}.[/yellow]"
+            )
+            raise typer.Exit(code=1)
+
+        config = load_config()
+
+        # Determine API URL
+        if url:
+            api_url = url
+        elif standalone:
+            with console.status("[bold green]Starting standalone server..."):
+                api_url = start_standalone_server()
+            console.print(f"[dim]Server running at {api_url}[/dim]")
+        else:
+            api_url = config.api_url
+
+        config.api_url = api_url
+        client = OSAClient(config)
+
+        console.print(
+            Panel(
+                f"[bold]OSA Chat[/bold] - {assistant_info['name']} Assistant\n"
+                "[dim]Type 'quit' or 'exit' to end the session[/dim]",
+                border_style="blue",
+            )
+        )
+
+        session_id = None
+
+        while True:
+            try:
+                user_input = console.input("[bold green]You:[/bold green] ").strip()
+
+                if not user_input:
+                    continue
+
+                if user_input.lower() in ("quit", "exit", "q"):
+                    console.print("[dim]Goodbye![/dim]")
+                    break
+
+                with console.status("[bold green]Thinking..."):
+                    response = client.chat(
+                        message=user_input,
+                        assistant=assistant_id,
+                        session_id=session_id,
+                        stream=False,
+                    )
+
+                if "error" in response:
+                    console.print(f"[red]Error:[/red] {response['error']}")
+                    continue
+
+                session_id = response.get("session_id")
+
+                tool_calls = response.get("tool_calls", [])
+                if tool_calls:
+                    console.print()
+                    display_tool_calls(tool_calls)
+
+                content = response.get("message", {}).get("content", "No response")
+                console.print()
+                console.print(f"[bold blue]{assistant_info['name']}:[/bold blue]")
+                console.print(Markdown(content))
+                console.print()
+
+            except KeyboardInterrupt:
+                console.print("\n[dim]Interrupted. Goodbye![/dim]")
+                break
+            except Exception as e:
+                console.print(f"[red]Error:[/red] {e}")
+
+    return app
+
+
+# ---------------------------------------------------------------------------
+# Main CLI
+# ---------------------------------------------------------------------------
+
+cli = typer.Typer(
+    name="osa",
+    help="Open Science Assistant - AI assistants for open science projects",
+    no_args_is_help=False,  # Allow bare `osa` to show assistants
+    invoke_without_command=True,
+)
+
+
+@cli.callback(invoke_without_command=True)
+def main_callback(ctx: typer.Context) -> None:
+    """Show available assistants when no command is given."""
+    if ctx.invoked_subcommand is None:
+        # Show available assistants
+        console.print(
+            Panel(
+                "[bold]Open Science Assistant[/bold]\nAI assistants for open science projects",
+                border_style="blue",
+            )
+        )
+        console.print()
+
+        table = Table(title="Available Assistants")
+        table.add_column("Assistant", style="cyan", no_wrap=True)
+        table.add_column("Description", style="white")
+        table.add_column("Status", style="green")
+
+        for assistant_id, info in ASSISTANTS.items():
+            status_style = "green" if info["status"] == "available" else "yellow"
+            table.add_row(
+                f"osa {assistant_id}",
+                info["description"],
+                f"[{status_style}]{info['status']}[/{status_style}]",
+            )
+
+        console.print(table)
+        console.print()
+        console.print("[dim]Usage: osa <assistant> <command> [options][/dim]")
+        console.print('[dim]Example: osa hed ask "What is HED?"[/dim]')
+        console.print()
+        console.print("[dim]Global commands: osa version, osa serve, osa config[/dim]")
+
+
+# Register assistant subcommands
+for assistant_id, assistant_info in ASSISTANTS.items():
+    cli.add_typer(
+        create_assistant_app(assistant_id, assistant_info),
+        name=assistant_id,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Global commands
+# ---------------------------------------------------------------------------
 
 
 @cli.command()
@@ -73,14 +350,14 @@ def health(
     try:
         result = client.health_check()
         status = result.get("status", "unknown")
-        version = result.get("version", "unknown")
+        ver = result.get("version", "unknown")
         environment = result.get("environment", "unknown")
 
         if status == "healthy":
             console.print(
                 Panel(
                     f"[green]Status:[/green] {status}\n"
-                    f"[blue]Version:[/blue] {version}\n"
+                    f"[blue]Version:[/blue] {ver}\n"
                     f"[yellow]Environment:[/yellow] {environment}",
                     title="[bold green]API Health[/bold green]",
                     border_style="green",
@@ -91,52 +368,6 @@ def health(
     except Exception as e:
         console.print(f"[red]Error connecting to API:[/red] {e}")
         raise typer.Exit(code=1)
-
-
-# ---------------------------------------------------------------------------
-# Server and Chat Commands
-# ---------------------------------------------------------------------------
-
-_server_thread: threading.Thread | None = None
-_server_started = threading.Event()
-
-
-def _run_server(host: str, port: int) -> None:
-    """Run the FastAPI server in a thread."""
-    import uvicorn
-
-    from src.api.main import app
-
-    # Signal that server is starting
-    config = uvicorn.Config(app, host=host, port=port, log_level="warning")
-    server = uvicorn.Server(config)
-
-    # Set the started event after a brief delay
-    def signal_started() -> None:
-        time.sleep(0.5)  # Give server time to bind
-        _server_started.set()
-
-    threading.Thread(target=signal_started, daemon=True).start()
-    server.run()
-
-
-def start_standalone_server(host: str = "127.0.0.1", port: int = 38528) -> str:
-    """Start the API server in standalone mode.
-
-    Returns the base URL of the running server.
-    """
-    global _server_thread
-
-    if _server_thread is not None and _server_thread.is_alive():
-        return f"http://{host}:{port}"
-
-    _server_started.clear()
-    _server_thread = threading.Thread(target=_run_server, args=(host, port), daemon=True)
-    _server_thread.start()
-
-    # Wait for server to start
-    _server_started.wait(timeout=5.0)
-    return f"http://{host}:{port}"
 
 
 @cli.command()
@@ -168,172 +399,10 @@ def serve(
     )
 
 
-@cli.command()
-def ask(
-    question: Annotated[
-        str,
-        typer.Argument(help="Question to ask the assistant"),
-    ],
-    assistant: Annotated[
-        str,
-        typer.Option("--assistant", "-a", help="Assistant to use: hed, bids, eeglab"),
-    ] = "hed",
-    standalone: Annotated[
-        bool,
-        typer.Option("--standalone", "-s", help="Run in standalone mode (no external server)"),
-    ] = True,
-    url: Annotated[
-        str | None,
-        typer.Option("--url", "-u", help="API URL (overrides standalone)"),
-    ] = None,
-) -> None:
-    """Ask a single question to the OSA assistant.
+# ---------------------------------------------------------------------------
+# Configuration subcommands
+# ---------------------------------------------------------------------------
 
-    Example:
-        osa ask "What is HED?"
-        osa ask "How do I annotate events?" --assistant hed
-    """
-    config = load_config()
-
-    # Determine API URL
-    if url:
-        api_url = url
-    elif standalone:
-        with console.status("[bold green]Starting standalone server..."):
-            api_url = start_standalone_server()
-    else:
-        api_url = config.api_url
-
-    config.api_url = api_url
-    client = OSAClient(config)
-
-    # Show spinner while waiting for response
-    with console.status(f"[bold green]Asking {assistant} assistant..."):
-        try:
-            response = client.chat(
-                message=question,
-                assistant=assistant,
-                stream=False,
-            )
-
-            if "error" in response:
-                console.print(f"[red]Error:[/red] {response['error']}")
-                raise typer.Exit(code=1)
-
-            # Display tool calls if any
-            tool_calls = response.get("tool_calls", [])
-            if tool_calls:
-                console.print()
-                display_tool_calls(tool_calls)
-
-            content = response.get("message", {}).get("content", "No response")
-
-            # Render as markdown
-            console.print()
-            console.print(Panel(Markdown(content), title=f"[bold]{assistant.upper()}[/bold]"))
-
-        except Exception as e:
-            console.print(f"[red]Error:[/red] {e}")
-            raise typer.Exit(code=1)
-
-
-@cli.command()
-def chat(
-    assistant: Annotated[
-        str,
-        typer.Option("--assistant", "-a", help="Assistant to use: hed, bids, eeglab"),
-    ] = "hed",
-    standalone: Annotated[
-        bool,
-        typer.Option("--standalone", "-s", help="Run in standalone mode (no external server)"),
-    ] = True,
-    url: Annotated[
-        str | None,
-        typer.Option("--url", "-u", help="API URL (overrides standalone)"),
-    ] = None,
-) -> None:
-    """Start an interactive chat session with the OSA assistant.
-
-    Example:
-        osa chat
-        osa chat --assistant hed
-        osa chat --url http://localhost:38528
-    """
-    config = load_config()
-
-    # Determine API URL
-    if url:
-        api_url = url
-    elif standalone:
-        with console.status("[bold green]Starting standalone server..."):
-            api_url = start_standalone_server()
-        console.print(f"[dim]Server running at {api_url}[/dim]")
-    else:
-        api_url = config.api_url
-
-    config.api_url = api_url
-    client = OSAClient(config)
-
-    console.print(
-        Panel(
-            f"[bold]OSA Chat[/bold] - {assistant.upper()} Assistant\n"
-            "[dim]Type 'quit' or 'exit' to end the session[/dim]",
-            border_style="blue",
-        )
-    )
-
-    session_id = None
-
-    while True:
-        try:
-            # Get user input
-            user_input = console.input("[bold green]You:[/bold green] ").strip()
-
-            if not user_input:
-                continue
-
-            if user_input.lower() in ("quit", "exit", "q"):
-                console.print("[dim]Goodbye![/dim]")
-                break
-
-            # Send message
-            with console.status("[bold green]Thinking..."):
-                response = client.chat(
-                    message=user_input,
-                    assistant=assistant,
-                    session_id=session_id,
-                    stream=False,
-                )
-
-            if "error" in response:
-                console.print(f"[red]Error:[/red] {response['error']}")
-                continue
-
-            # Update session ID for continuity
-            session_id = response.get("session_id")
-
-            # Display tool calls if any
-            tool_calls = response.get("tool_calls", [])
-            if tool_calls:
-                console.print()
-                display_tool_calls(tool_calls)
-
-            content = response.get("message", {}).get("content", "No response")
-
-            # Print response
-            console.print()
-            console.print(f"[bold blue]{assistant.upper()}:[/bold blue]")
-            console.print(Markdown(content))
-            console.print()
-
-        except KeyboardInterrupt:
-            console.print("\n[dim]Interrupted. Goodbye![/dim]")
-            break
-        except Exception as e:
-            console.print(f"[red]Error:[/red] {e}")
-
-
-# Configuration subcommand group
 config_app = typer.Typer(help="Manage CLI configuration")
 cli.add_typer(config_app, name="config")
 
@@ -347,9 +416,7 @@ def config_show() -> None:
     table.add_column("Setting", style="cyan")
     table.add_column("Value", style="green")
 
-    # Show all config fields
     for field, value in config.model_dump().items():
-        # Mask API keys for security
         if "api_key" in field.lower() and value:
             display_value = f"{value[:8]}..." if len(value) > 8 else "***"
         elif value is None:
