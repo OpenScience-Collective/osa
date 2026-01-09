@@ -118,6 +118,12 @@ function isAllowedOrigin(origin) {
   if (origin.endsWith('.hed-examples.org')) return true;
   if (origin.endsWith('.osc.earth')) return true;
 
+  // Allow specific Cloudflare Pages projects (not all .pages.dev)
+  if (origin === 'https://osa-demo.pages.dev') return true;
+  if (origin === 'https://develop.osa-demo.pages.dev') return true;
+  // Allow preview deployments (format: https://<hash>.osa-demo.pages.dev)
+  if (/^https:\/\/[a-f0-9]+\.osa-demo\.pages\.dev$/.test(origin)) return true;
+
   // Allow localhost for development
   if (origin.startsWith('http://localhost:')) return true;
   if (origin.startsWith('http://127.0.0.1:')) return true;

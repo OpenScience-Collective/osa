@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OSA Chat Widget Demo</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 40px 20px;
+      background: #f9fafb;
+      min-height: 100vh;
+    }
+    h1 {
+      color: #1f2937;
+      margin-bottom: 16px;
+    }
+    p {
+      color: #6b7280;
+      line-height: 1.6;
+    }
+    .info-box {
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      margin: 24px 0;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    .info-box h2 {
+      margin-top: 0;
+      color: #1f2937;
+    }
+    code {
+      background: #e5e7eb;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+    pre {
+      background: #1f2937;
+      color: #f9fafb;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+    pre code {
+      background: transparent;
+      color: inherit;
+    }
+    ul {
+      color: #4b5563;
+    }
+    li {
+      margin: 8px 0;
+    }
+    .feature-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+      margin: 16px 0;
+    }
+    .feature-item {
+      background: #f3f4f6;
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-size: 14px;
+      color: #374151;
+    }
+    .feature-item strong {
+      display: block;
+      color: #1f2937;
+      margin-bottom: 4px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Open Science Assistant</h1>
+  <p>A chat widget for HED, BIDS, and other open science tools.</p>
+
+  <div class="info-box">
+    <h2>Try it out</h2>
+    <p>Click the chat button in the bottom-right corner to start a conversation.</p>
+    <p>Ask questions about:</p>
+    <ul>
+      <li>HED (Hierarchical Event Descriptors)</li>
+      <li>HED validation and annotation</li>
+      <li>BIDS (Brain Imaging Data Structure)</li>
+    </ul>
+  </div>
+
+  <div class="info-box">
+    <h2>Features</h2>
+    <div class="feature-list">
+      <div class="feature-item">
+        <strong>Health Status</strong>
+        Shows real-time backend connectivity
+      </div>
+      <div class="feature-item">
+        <strong>Markdown Support</strong>
+        Tables, code blocks, lists, links
+      </div>
+      <div class="feature-item">
+        <strong>Resizable</strong>
+        Drag top-left corner to resize
+      </div>
+      <div class="feature-item">
+        <strong>Configurable</strong>
+        Customize title, messages, colors
+      </div>
+      <div class="feature-item">
+        <strong>Chat History</strong>
+        Persists across page reloads
+      </div>
+      <div class="feature-item">
+        <strong>Bot Protection</strong>
+        Optional Turnstile integration
+      </div>
+    </div>
+  </div>
+
+  <div class="info-box">
+    <h2>Basic Integration</h2>
+    <p>Add this to your website:</p>
+    <pre><code>&lt;script src="https://osa-demo.pages.dev/osa-chat-widget.js"&gt;&lt;/script&gt;</code></pre>
+  </div>
+
+  <div class="info-box">
+    <h2>Custom Configuration</h2>
+    <p>Customize the widget appearance and behavior:</p>
+    <pre><code>&lt;script src="https://osa-demo.pages.dev/osa-chat-widget.js"&gt;&lt;/script&gt;
+&lt;script&gt;
+  OSAChatWidget.setConfig({
+    // Branding
+    title: 'BIDS Assistant',
+    placeholder: 'Ask about BIDS...',
+    initialMessage: 'Hi! I can help with BIDS questions.',
+    showExperimentalBadge: true,
+
+    // Suggested questions
+    suggestedQuestions: [
+      'What is BIDS?',
+      'How do I organize my data?',
+      'Explain BIDS validation errors.'
+    ],
+
+    // Footer link
+    repoUrl: 'https://github.com/OpenScience-Collective/osa',
+    repoName: 'Open Science Assistant',
+
+    // Optional: Turnstile for bot protection
+    turnstileSiteKey: 'YOUR_SITE_KEY'
+  });
+&lt;/script&gt;</code></pre>
+  </div>
+
+  <div class="info-box">
+    <h2>Configuration Options</h2>
+    <ul>
+      <li><code>title</code> - Widget header title (default: "HED Assistant")</li>
+      <li><code>placeholder</code> - Input placeholder text</li>
+      <li><code>initialMessage</code> - First greeting message from the assistant</li>
+      <li><code>suggestedQuestions</code> - Array of clickable suggestion buttons</li>
+      <li><code>showExperimentalBadge</code> - Show/hide "Experimental" badge</li>
+      <li><code>repoUrl</code> - URL for the "Powered by" footer link</li>
+      <li><code>repoName</code> - Name shown in footer link</li>
+      <li><code>turnstileSiteKey</code> - Cloudflare Turnstile site key (optional)</li>
+      <li><code>apiEndpoint</code> - Backend API URL (default: OSA worker)</li>
+      <li><code>storageKey</code> - localStorage key for chat history</li>
+    </ul>
+  </div>
+
+  <div class="info-box">
+    <h2>API Endpoints</h2>
+    <p>The widget connects to:</p>
+    <ul>
+      <li><code>POST /hed/ask</code> - Single question</li>
+      <li><code>POST /hed/chat</code> - Multi-turn conversation</li>
+      <li><code>GET /health</code> - Backend status check</li>
+    </ul>
+    <p>Backend: <code>https://osa-worker.shirazi-10f.workers.dev</code></p>
+  </div>
+
+  <!-- Load the OSA Chat Widget -->
+  <script src="osa-chat-widget.js"></script>
+</body>
+</html>

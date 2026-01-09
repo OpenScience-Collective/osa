@@ -4,25 +4,31 @@ A precise, reliable AI assistant platform for researchers working with open scie
 
 ## Development Workflow
 
-**All development follows: Issue -> Feature Branch -> PR -> Review -> Merge**
+**All development follows: Issue -> Feature Branch (from develop) -> PR to develop -> Review -> Merge**
+
+**Branch Strategy:**
+- `main` - Production releases only, auto-deploys to prod
+- `develop` - Integration branch, auto-deploys to dev
+- `feature/*` - Feature branches, created from and merged to `develop`
 
 1. **Pick an issue** from GitHub Issues
-2. **Create feature branch**: `git checkout -b feature/issue-N-short-description`
+2. **Create feature branch from develop**: `git checkout develop && git pull && git checkout -b feature/issue-N-short-description`
 3. **Implement** with atomic commits
 4. **Review** using `/pr-review-toolkit:review-pr` before creating PR
 5. **Address ALL review findings** - fix critical AND important issues, not just critical
-6. **Create PR** with `gh pr create`
+6. **Create PR to develop**: `gh pr create --base develop`
 7. **Merge with merge commit**: `gh pr merge --merge --delete-branch` (NEVER squash)
 
 ```bash
 # Example workflow
 gh issue list                                    # Find issue to work on
+git checkout develop && git pull                 # Start from develop
 git checkout -b feature/issue-7-interfaces       # Create branch
 # ... implement ...
 git add -A && git commit -m "feat: add X"       # Atomic commits
 /pr-review-toolkit:review-pr                     # Review before PR
 # FIX ALL ISSUES from review (critical + important)
-gh pr create --title "feat: add X" --body "Closes #7"
+gh pr create --base develop --title "feat: add X" --body "Closes #7"
 git push -u origin feature/issue-7-interfaces
 gh pr merge --merge --delete-branch              # MERGE COMMIT, never squash
 ```
@@ -99,7 +105,8 @@ src/
 ### Git
 - **Follow the Development Workflow** (see top of file)
 - Atomic commits, concise messages, no emojis
-- Feature branches from main, linked to issues
+- Feature branches from `develop`, PRs target `develop`
+- `main` is production only; merge `develop` -> `main` for releases
 - **NEVER squash merge** - always use merge commits to preserve history
 - Use PR review toolkit before creating PRs
 - **Address ALL review issues** (critical + important) before merging
