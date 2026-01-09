@@ -1,0 +1,71 @@
+name: Create GitHub Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version from tag
+        id: version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=v$VERSION" >> $GITHUB_OUTPUT
+
+          # Determine if prerelease (contains a, b, rc, or dev)
+          if [[ "$VERSION" =~ (a[0-9]+|b[0-9]+|rc[0-9]+|\.dev[0-9]+) ]]; then
+            echo "prerelease=true" >> $GITHUB_OUTPUT
+            echo "Version $VERSION is a pre-release"
+          else
+            echo "prerelease=false" >> $GITHUB_OUTPUT
+            echo "Version $VERSION is a stable release"
+          fi
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          # Get previous tag
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+
+          if [ -z "$PREV_TAG" ]; then
+            # First release - get all commits
+            COMMITS=$(git log --oneline --no-decorate -20)
+          else
+            # Get commits since previous tag
+            COMMITS=$(git log --oneline --no-decorate ${PREV_TAG}..HEAD)
+          fi
+
+          # Create release notes file
+          cat > /tmp/release_notes.md << EOF
+          ## What's Changed
+
+          ${COMMITS}
+
+          **Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG:-initial}...v${{ steps.version.outputs.version }}
+          EOF
+
+          echo "Generated release notes for v${{ steps.version.outputs.version }}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "OSA ${{ steps.version.outputs.tag }}"
+          body_path: /tmp/release_notes.md
+          prerelease: ${{ steps.version.outputs.prerelease }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
