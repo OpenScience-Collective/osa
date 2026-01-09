@@ -4,7 +4,12 @@ An extensible AI assistant platform for open science projects, built with LangGr
 
 ## Overview
 
-OSA provides domain-specific AI assistants for open science tools (HED, BIDS, EEGLAB) with:
+OSA provides domain-specific AI assistants for open science tools with:
+- **HED Assistant**: Hierarchical Event Descriptors for neuroimaging annotation
+- **BIDS Assistant**: Brain Imaging Data Structure (coming soon)
+- **EEGLAB Assistant**: EEG analysis toolbox (coming soon)
+
+Features:
 - Modular tool system for document retrieval, validation, and code execution
 - Multi-source knowledge bases (GitHub, OpenALEX, Discourse forums, mailing lists)
 - Extensible architecture for adding new assistants and tools
@@ -13,25 +18,62 @@ OSA provides domain-specific AI assistants for open science tools (HED, BIDS, EE
 ## Installation
 
 ```bash
-# Create conda environment
-conda create -n osa python=3.12 -y
-conda activate osa
+# From PyPI
+pip install open-science-assistant
 
-# Install in development mode
-pip install -e ".[dev]"
+# Or with uv (recommended)
+uv pip install open-science-assistant
+```
+
+### Development Setup
+
+```bash
+# Clone and install in development mode
+git clone https://github.com/OpenScience-Collective/osa.git
+cd osa
+uv sync --extra dev
 
 # Install pre-commit hooks
-pre-commit install
+uv run pre-commit install
 ```
 
 ## Quick Start
 
-```bash
-# Run development server
-uvicorn src.api.main:app --reload --port 38528
+### CLI Usage
 
-# CLI usage
+```bash
+# Show available assistants
+osa
+
+# Ask the HED assistant a question
+osa hed ask "What is HED?"
+
+# Start an interactive chat session
+osa hed chat
+
+# Show all commands
 osa --help
+osa hed --help
+```
+
+### API Server
+
+```bash
+# Start the API server
+osa serve
+
+# Or with uvicorn directly
+uv run uvicorn src.api.main:app --reload --port 38528
+```
+
+### Configuration
+
+```bash
+# Show current config
+osa config show
+
+# Set API keys
+osa config set --openrouter-key YOUR_KEY
 ```
 
 ## Optional: HED Tag Suggestions
@@ -50,7 +92,7 @@ npm run compile
 
 ### Configuration
 
-Set the `HED_LSP_PATH` environment variable to point to your hed-lsp installation:
+Set the `HED_LSP_PATH` environment variable:
 
 ```bash
 export HED_LSP_PATH=/path/to/hed-lsp
@@ -63,39 +105,14 @@ cd hed-lsp/server
 npm link  # Makes hed-suggest available globally
 ```
 
-### Usage
-
-The `suggest_hed_tags` tool will automatically find the CLI and convert natural language to valid HED tags:
-
-```python
-from src.tools.hed_validation import suggest_hed_tags
-
-result = suggest_hed_tags.invoke({
-    'search_terms': ['button press', 'visual flash'],
-    'top_n': 5
-})
-# {'button press': ['Button', 'Response-button', 'Mouse-button', 'Press', 'Push'],
-#  'visual flash': ['Flash', 'Flickering', 'Visual-presentation']}
-```
-
-The CLI can also be used directly:
-
-```bash
-hed-suggest "button press"
-# Button, Response-button, Mouse-button, Press, Push
-
-hed-suggest --json "button" "stimulus"
-# {"button": [...], "stimulus": [...]}
-```
-
 ## Development
 
 ```bash
 # Run tests with coverage
-pytest --cov
+uv run pytest --cov
 
 # Format code
-ruff check --fix . && ruff format .
+uv run ruff check --fix . && uv run ruff format .
 ```
 
 ## License
