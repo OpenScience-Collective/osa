@@ -24,14 +24,14 @@ function getConfig(env) {
  * Verify Cloudflare Turnstile token
  */
 async function verifyTurnstileToken(token, secretKey, ip) {
-  if (!token) {
-    return { success: false, error: 'Missing Turnstile token' };
-  }
-
+  // If no secret key configured, skip verification (for development/testing)
   if (!secretKey) {
-    // If no secret key configured, skip verification (for development)
     console.warn('TURNSTILE_SECRET_KEY not configured, skipping verification');
     return { success: true };
+  }
+
+  if (!token) {
+    return { success: false, error: 'Missing Turnstile token' };
   }
 
   try {
