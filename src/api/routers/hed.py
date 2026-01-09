@@ -8,9 +8,10 @@ from typing import Annotated
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from src.agents.hed import HEDAssistant
+from src.agents.hed import PageContext as AgentPageContext
 from src.api.config import get_settings
 from src.api.security import RequireAuth
 from src.core.services.litellm_llm import create_openrouter_llm
@@ -41,11 +42,41 @@ class ChatRequest(BaseModel):
     stream: bool = Field(default=True, description="Whether to stream the response")
 
 
+class PageContext(BaseModel):
+    """Context about the page where the widget is embedded."""
+
+    url: str | None = Field(
+        default=None,
+        description="URL of the page where the assistant is embedded",
+        max_length=2048,  # Reasonable URL length limit
+    )
+    title: str | None = Field(
+        default=None,
+        description="Title of the page where the assistant is embedded",
+        max_length=500,  # Prevent DoS with huge titles
+    )
+
+    @field_validator("url")
+    @classmethod
+    def validate_url_scheme(cls, url: str | None) -> str | None:
+        """Ensure URL has valid scheme if provided."""
+        if url is None:
+            return url
+        # Validate URL has proper scheme - reject invalid schemes explicitly
+        if not url.startswith(("http://", "https://")):
+            raise ValueError("URL must start with http:// or https://")
+        return url
+
+
 class AskRequest(BaseModel):
     """Request body for single question (ask) endpoint."""
 
     question: str = Field(..., description="Question to ask", min_length=1)
     stream: bool = Field(default=False, description="Whether to stream the response")
+    page_context: PageContext | None = Field(
+        default=None,
+        description="Optional context about the page where the widget is embedded",
+    )
 
 
 class ToolCallInfo(BaseModel):
@@ -146,6 +177,7 @@ def create_hed_assistant(
     api_key: str | None = None,
     user_id: str | None = None,
     preload_docs: bool = True,
+    page_context: PageContext | None = None,
 ) -> HEDAssistant:
     """Create a HED assistant instance.
 
@@ -153,6 +185,7 @@ def create_hed_assistant(
         api_key: Optional API key override (BYOK)
         user_id: User ID for cache optimization (sticky routing)
         preload_docs: Whether to preload documents
+        page_context: Optional context about the page where the widget is embedded
 
     Returns:
         Configured HEDAssistant instance
@@ -167,7 +200,15 @@ def create_hed_assistant(
         user_id=user_id,
     )
 
-    return HEDAssistant(model=model, preload_docs=preload_docs)
+    # Convert Pydantic PageContext to agent's dataclass PageContext
+    agent_page_context = None
+    if page_context:
+        agent_page_context = AgentPageContext(
+            url=page_context.url,
+            title=page_context.title,
+        )
+
+    return HEDAssistant(model=model, preload_docs=preload_docs, page_context=agent_page_context)
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +244,9 @@ async def ask(
     """
     if request.stream:
         return StreamingResponse(
-            stream_ask_response(request.question, x_openrouter_key, x_user_id),
+            stream_ask_response(
+                request.question, x_openrouter_key, x_user_id, request.page_context
+            ),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -212,7 +255,9 @@ async def ask(
         )
 
     try:
-        assistant = create_hed_assistant(x_openrouter_key, x_user_id)
+        assistant = create_hed_assistant(
+            x_openrouter_key, x_user_id, page_context=request.page_context
+        )
         messages = [HumanMessage(content=request.question)]
         result = await assistant.ainvoke(messages)
 
@@ -237,10 +282,13 @@ async def stream_ask_response(
     question: str,
     api_key: str | None,
     user_id: str | None,
+    page_context: PageContext | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream response for ask endpoint."""
     try:
-        assistant = create_hed_assistant(api_key, user_id, preload_docs=True)
+        assistant = create_hed_assistant(
+            api_key, user_id, preload_docs=True, page_context=page_context
+        )
         graph = assistant.build_graph()
 
         state = {
