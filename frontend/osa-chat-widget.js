@@ -28,10 +28,10 @@
     repoName: 'Open Science Assistant',
     // Page context awareness - sends current page URL/title to help the assistant
     // provide more contextually relevant answers
-    includePageContext: true,
-    // Privacy notice shown when page context is enabled
-    showPageContextNotice: true,
-    pageContextNoticeText: 'Page context enabled - the assistant can see this page URL to help answer your questions.'
+    allowPageContext: true,  // Show the checkbox option
+    pageContextDefaultEnabled: true,  // Default state of checkbox
+    pageContextStorageKey: 'osa-page-context-enabled',
+    pageContextLabel: 'Share page URL to help answer questions'
   };
 
   // State
@@ -41,6 +41,7 @@
   let turnstileToken = null;
   let turnstileWidgetId = null;
   let backendOnline = null; // null = checking, true = online, false = offline
+  let pageContextEnabled = true; // Runtime state for page context toggle
 
   // Icons (SVG)
   const ICONS = {
@@ -50,8 +51,7 @@
     reset: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>',
     brain: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/></svg>',
     copy: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>',
-    check: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>',
-    info: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>'
+    check: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>'
   };
 
   // CSS Styles
@@ -640,21 +640,27 @@
       border-top: 2px solid rgba(0,0,0,0.2);
     }
 
-    .osa-page-context-notice {
-      padding: 6px 16px;
-      background: #eff6ff;
-      border-top: 1px solid #bfdbfe;
-      font-size: 11px;
-      color: #1e40af;
+    .osa-page-context-toggle {
+      padding: 8px 16px;
+      border-top: 1px solid var(--osa-border);
+      font-size: 12px;
+      color: var(--osa-text-light);
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 8px;
     }
 
-    .osa-page-context-notice svg {
-      width: 12px;
-      height: 12px;
-      flex-shrink: 0;
+    .osa-page-context-toggle input[type="checkbox"] {
+      width: 14px;
+      height: 14px;
+      margin: 0;
+      cursor: pointer;
+      accent-color: var(--osa-primary);
+    }
+
+    .osa-page-context-toggle label {
+      cursor: pointer;
+      user-select: none;
     }
   `;
 
@@ -943,13 +949,40 @@
 
   // Get page context (URL and title) for contextual answers
   function getPageContext() {
-    if (!CONFIG.includePageContext) {
+    if (!CONFIG.allowPageContext || !pageContextEnabled) {
       return null;
     }
     return {
       url: window.location.href,
       title: document.title || null
     };
+  }
+
+  // Load page context preference from localStorage
+  function loadPageContextPreference() {
+    if (!CONFIG.allowPageContext) {
+      pageContextEnabled = false;
+      return;
+    }
+    try {
+      const saved = localStorage.getItem(CONFIG.pageContextStorageKey);
+      if (saved !== null) {
+        pageContextEnabled = saved === 'true';
+      } else {
+        pageContextEnabled = CONFIG.pageContextDefaultEnabled;
+      }
+    } catch (e) {
+      pageContextEnabled = CONFIG.pageContextDefaultEnabled;
+    }
+  }
+
+  // Save page context preference to localStorage
+  function savePageContextPreference() {
+    try {
+      localStorage.setItem(CONFIG.pageContextStorageKey, pageContextEnabled.toString());
+    } catch (e) {
+      console.warn('Could not save page context preference:', e);
+    }
   }
 
   // Check backend health status
@@ -1094,9 +1127,9 @@
             ${ICONS.send}
           </button>
         </div>
-        <div class="osa-page-context-notice" style="display: ${CONFIG.includePageContext && CONFIG.showPageContextNotice ? 'flex' : 'none'}">
-          ${ICONS.info}
-          <span>${escapeHtml(CONFIG.pageContextNoticeText)}</span>
+        <div class="osa-page-context-toggle" style="display: ${CONFIG.allowPageContext ? 'flex' : 'none'}">
+          <input type="checkbox" id="osa-page-context-checkbox" ${pageContextEnabled ? 'checked' : ''} />
+          <label for="osa-page-context-checkbox">${escapeHtml(CONFIG.pageContextLabel)}</label>
         </div>
         <div class="osa-chat-footer">
           <a href="${escapeHtml(CONFIG.repoUrl)}" target="_blank" rel="noopener noreferrer">
@@ -1359,6 +1392,7 @@
 
   // Initialize widget
   function init() {
+    loadPageContextPreference();
     loadHistory();
     injectStyles();
     const container = createWidget();
@@ -1400,6 +1434,13 @@
       if (e.target.classList.contains('osa-suggestion')) {
         sendMessage(container, e.target.textContent);
       }
+    });
+
+    // Page context toggle
+    const pageContextCheckbox = container.querySelector('#osa-page-context-checkbox');
+    pageContextCheckbox?.addEventListener('change', (e) => {
+      pageContextEnabled = e.target.checked;
+      savePageContextPreference();
     });
 
     // Check backend status
