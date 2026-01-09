@@ -573,6 +573,17 @@
     return div.innerHTML;
   }
 
+  // Validate URL protocol to prevent javascript: XSS
+  function isSafeUrl(url) {
+    if (!url) return false;
+    try {
+      const parsed = new URL(url, window.location.origin);
+      return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    } catch {
+      return false;
+    }
+  }
+
   // Render inline markdown (bold, italic, links, plain URLs)
   function renderInlineMarkdown(text) {
     if (!text) return '';
@@ -608,10 +619,16 @@
         remaining = remaining.substring(italicIndex + italicMatch[0].length);
       } else if (minIndex === linkIndex && linkMatch) {
         if (linkIndex > 0) result += escapeHtml(remaining.substring(0, linkIndex));
-        result += '<a href="' + escapeHtml(linkMatch[2]) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(linkMatch[1]) + '</a>';
+        // Validate URL to prevent javascript: XSS
+        if (isSafeUrl(linkMatch[2])) {
+          result += '<a href="' + escapeHtml(linkMatch[2]) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(linkMatch[1]) + '</a>';
+        } else {
+          result += escapeHtml(linkMatch[1]); // Just show text, no link
+        }
         remaining = remaining.substring(linkIndex + linkMatch[0].length);
       } else if (minIndex === urlIndex && urlMatch) {
         if (urlIndex > 0) result += escapeHtml(remaining.substring(0, urlIndex));
+        // Plain URLs are already validated by regex to start with https?://
         result += '<a href="' + escapeHtml(urlMatch[0]) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(urlMatch[0]) + '</a>';
         remaining = remaining.substring(urlIndex + urlMatch[0].length);
       }
@@ -751,27 +768,57 @@
     return result || text;
   }
 
+  // Validate message structure for security
+  function isValidMessage(msg) {
+    return msg &&
+      typeof msg === 'object' &&
+      typeof msg.role === 'string' &&
+      (msg.role === 'user' || msg.role === 'assistant') &&
+      typeof msg.content === 'string' &&
+      msg.content.length < 100000; // Prevent DoS
+  }
+
   // Load chat history from localStorage
   function loadHistory() {
+    let historyLoadFailed = false;
     try {
       const saved = localStorage.getItem(CONFIG.storageKey);
       if (saved) {
-        messages = JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        // Validate structure to prevent injection attacks
+        if (Array.isArray(parsed)) {
+          messages = parsed.filter(isValidMessage);
+          if (messages.length !== parsed.length) {
+            console.warn('Some chat messages were invalid and filtered out');
+          }
+        }
       }
     } catch (e) {
-      console.warn('Failed to load chat history:', e);
+      console.error('Failed to load chat history:', e);
+      historyLoadFailed = true;
     }
     if (messages.length === 0) {
       messages = [{ role: 'assistant', content: CONFIG.initialMessage }];
     }
+    return historyLoadFailed;
   }
 
   // Save chat history to localStorage
+  let saveErrorShown = false;
   function saveHistory() {
     try {
       localStorage.setItem(CONFIG.storageKey, JSON.stringify(messages));
+      saveErrorShown = false;
     } catch (e) {
-      console.warn('Failed to save chat history:', e);
+      console.error('Failed to save chat history:', e);
+      // Show error once per session to avoid spam
+      if (!saveErrorShown) {
+        const container = document.querySelector('.osa-chat-widget');
+        if (container) {
+          showError(container, 'Chat history could not be saved. Storage may be full or disabled.');
+        }
+        saveErrorShown = true;
+      }
     }
   }
 
@@ -1029,8 +1076,25 @@
       });
 
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || error.error || 'Request failed');
+        let errorMessage = `Request failed (${response.status})`;
+        try {
+          const error = await response.json();
+          if (error && typeof error.detail === 'string') {
+            errorMessage = error.detail.substring(0, 500);
+          } else if (error && typeof error.error === 'string') {
+            errorMessage = error.error.substring(0, 500);
+          }
+        } catch {
+          // Response wasn't JSON - use status-based message
+          if (response.status >= 500) {
+            errorMessage = 'The service is temporarily unavailable. Please try again later.';
+          } else if (response.status === 429) {
+            errorMessage = 'Too many requests. Please wait a moment and try again.';
+          } else if (response.status === 403) {
+            errorMessage = 'Access denied. Please complete the security verification.';
+          }
+        }
+        throw new Error(errorMessage);
       }
 
       const data = await response.json();
@@ -1066,14 +1130,31 @@
     if (!CONFIG.turnstileSiteKey || !window.turnstile) return;
 
     const turnstileContainer = container.querySelector('.osa-turnstile-container');
+    if (!turnstileContainer) {
+      console.error('Turnstile container not found');
+      return;
+    }
     turnstileContainer.style.display = 'flex';
 
-    turnstileWidgetId = window.turnstile.render(turnstileContainer, {
-      sitekey: CONFIG.turnstileSiteKey,
-      callback: function(token) {
-        turnstileToken = token;
-      },
-    });
+    try {
+      turnstileWidgetId = window.turnstile.render(turnstileContainer, {
+        sitekey: CONFIG.turnstileSiteKey,
+        callback: function(token) {
+          turnstileToken = token;
+        },
+        'error-callback': function(error) {
+          console.error('Turnstile error:', error);
+          showError(container, 'Security verification failed. Please refresh the page.');
+        },
+        'expired-callback': function() {
+          turnstileToken = null;
+          console.warn('Turnstile token expired');
+        }
+      });
+    } catch (e) {
+      console.error('Failed to initialize Turnstile:', e);
+      showError(container, 'Could not initialize security verification.');
+    }
   }
 
   // Reset chat
@@ -1110,24 +1191,37 @@
     renderMessages(container);
     renderSuggestions(container);
 
-    // Update reset button state
+    // Query required DOM elements with null checks
+    const chatButton = container.querySelector('.osa-chat-button');
+    const closeBtn = container.querySelector('.osa-close-btn');
     const resetBtn = container.querySelector('.osa-reset-btn');
-    resetBtn.disabled = messages.length <= 1;
-
-    // Event listeners
-    container.querySelector('.osa-chat-button').addEventListener('click', () => toggleChat(container));
-    container.querySelector('.osa-close-btn').addEventListener('click', () => toggleChat(container));
-    container.querySelector('.osa-reset-btn').addEventListener('click', () => resetChat(container));
-
     const input = container.querySelector('.osa-chat-input input');
     const sendBtn = container.querySelector('.osa-send-btn');
+    const suggestionsList = container.querySelector('.osa-suggestions-list');
 
-    sendBtn.addEventListener('click', () => sendMessage(container, input.value));
-    input.addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') sendMessage(container, input.value);
-    });
+    // Verify all required elements exist
+    if (!chatButton || !closeBtn || !resetBtn || !input || !sendBtn || !suggestionsList) {
+      console.error('OSA Chat Widget: Required DOM elements not found. Widget may not function correctly.');
+    }
 
-    container.querySelector('.osa-suggestions-list').addEventListener('click', (e) => {
+    // Update reset button state
+    if (resetBtn) {
+      resetBtn.disabled = messages.length <= 1;
+    }
+
+    // Event listeners with null checks
+    chatButton?.addEventListener('click', () => toggleChat(container));
+    closeBtn?.addEventListener('click', () => toggleChat(container));
+    resetBtn?.addEventListener('click', () => resetChat(container));
+
+    if (sendBtn && input) {
+      sendBtn.addEventListener('click', () => sendMessage(container, input.value));
+      input.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') sendMessage(container, input.value);
+      });
+    }
+
+    suggestionsList?.addEventListener('click', (e) => {
       if (e.target.classList.contains('osa-suggestion')) {
         sendMessage(container, e.target.textContent);
       }
