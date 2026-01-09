@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from src.agents.hed import HEDAssistant
 from src.api.config import get_settings
+from src.api.security import RequireAuth
 from src.core.services.litellm_llm import create_openrouter_llm
 
 router = APIRouter(prefix="/hed", tags=["HED Assistant"])
@@ -185,6 +186,7 @@ def create_hed_assistant(
 )
 async def ask(
     request: AskRequest,
+    _auth: RequireAuth,
     x_openrouter_key: Annotated[str | None, Header(alias="X-OpenRouter-Key")] = None,
     x_user_id: Annotated[str | None, Header(alias="X-User-ID")] = None,
 ) -> AskResponse | StreamingResponse:
@@ -278,6 +280,7 @@ async def stream_ask_response(
 )
 async def chat(
     request: ChatRequest,
+    _auth: RequireAuth,
     x_openrouter_key: Annotated[str | None, Header(alias="X-OpenRouter-Key")] = None,
     x_user_id: Annotated[str | None, Header(alias="X-User-ID")] = None,
 ) -> ChatResponse | StreamingResponse:

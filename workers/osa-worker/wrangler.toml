@@ -1,0 +1,68 @@
+# OSA Cloudflare Worker Configuration
+# https://developers.cloudflare.com/workers/wrangler/configuration/
+
+name = "osa-worker"
+main = "index.js"
+compatibility_date = "2024-01-01"
+
+# Production environment (default)
+[vars]
+BACKEND_URL = "https://api.osc.earth/osa"
+ENVIRONMENT = "production"
+
+# KV namespace for rate limiting
+[[kv_namespaces]]
+binding = "RATE_LIMITER"
+id = "8f8506b1a7fb400680a00014312c124d"
+
+# Development environment
+[env.dev]
+name = "osa-worker-dev"
+vars = { BACKEND_URL = "https://api.osc.earth/osa-dev", ENVIRONMENT = "development" }
+
+[[env.dev.kv_namespaces]]
+binding = "RATE_LIMITER"
+id = "REPLACE_WITH_DEV_KV_ID"
+
+# =============================================================================
+# Setup Instructions
+# =============================================================================
+#
+# 1. Install wrangler:
+#    npm install -g wrangler
+#
+# 2. Login to Cloudflare:
+#    wrangler login
+#
+# 3. Create KV namespaces:
+#    wrangler kv:namespace create "RATE_LIMITER"
+#    wrangler kv:namespace create "RATE_LIMITER" --env dev
+#
+# 4. Update this file with the KV namespace IDs from step 3
+#
+# 5. Set secrets:
+#    wrangler secret put BACKEND_API_KEY
+#    wrangler secret put TURNSTILE_SECRET_KEY
+#    wrangler secret put BACKEND_API_KEY --env dev
+#    wrangler secret put TURNSTILE_SECRET_KEY --env dev
+#
+# 6. Deploy:
+#    wrangler deploy           # Production
+#    wrangler deploy --env dev # Development
+#
+# 7. Verify:
+#    curl https://osa-worker.<your-subdomain>.workers.dev/health
+#
+# =============================================================================
+# Turnstile Setup
+# =============================================================================
+#
+# 1. Go to Cloudflare Dashboard > Turnstile
+# 2. Create a new widget with "Visible" mode
+# 3. Add hostnames where the widget will be embedded:
+#    - hedtags.org
+#    - hed-examples.org
+#    - localhost (for development)
+# 4. Copy the Site Key (for frontend) and Secret Key (for this worker)
+# 5. Set the secret key:
+#    wrangler secret put TURNSTILE_SECRET_KEY
