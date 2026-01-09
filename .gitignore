@@ -115,3 +115,8 @@ dmypy.json
 # Build outputs
 *.manifest
 *.spec
+
+# Node.js (for Cloudflare Workers)
+node_modules/
+package-lock.json
+.wrangler/
