@@ -25,7 +25,13 @@
     ],
     showExperimentalBadge: true,
     repoUrl: 'https://github.com/OpenScience-Collective/osa',
-    repoName: 'Open Science Assistant'
+    repoName: 'Open Science Assistant',
+    // Page context awareness - sends current page URL/title to help the assistant
+    // provide more contextually relevant answers
+    includePageContext: true,
+    // Privacy notice shown when page context is enabled
+    showPageContextNotice: true,
+    pageContextNoticeText: 'Page context enabled - the assistant can see this page URL to help answer your questions.'
   };
 
   // State
@@ -44,7 +50,8 @@
     reset: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>',
     brain: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/></svg>',
     copy: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>',
-    check: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>'
+    check: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>',
+    info: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>'
   };
 
   // CSS Styles
@@ -632,6 +639,23 @@
       border-left: 2px solid rgba(0,0,0,0.2);
       border-top: 2px solid rgba(0,0,0,0.2);
     }
+
+    .osa-page-context-notice {
+      padding: 6px 16px;
+      background: #eff6ff;
+      border-top: 1px solid #bfdbfe;
+      font-size: 11px;
+      color: #1e40af;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .osa-page-context-notice svg {
+      width: 12px;
+      height: 12px;
+      flex-shrink: 0;
+    }
   `;
 
   // Escape HTML for user messages
@@ -917,6 +941,17 @@
     }
   }
 
+  // Get page context (URL and title) for contextual answers
+  function getPageContext() {
+    if (!CONFIG.includePageContext) {
+      return null;
+    }
+    return {
+      url: window.location.href,
+      title: document.title || null
+    };
+  }
+
   // Check backend health status
   async function checkBackendStatus() {
     const statusDot = document.querySelector('.osa-status-dot');
@@ -1059,6 +1094,10 @@
             ${ICONS.send}
           </button>
         </div>
+        <div class="osa-page-context-notice" style="display: ${CONFIG.includePageContext && CONFIG.showPageContextNotice ? 'flex' : 'none'}">
+          ${ICONS.info}
+          <span>${escapeHtml(CONFIG.pageContextNoticeText)}</span>
+        </div>
         <div class="osa-chat-footer">
           <a href="${escapeHtml(CONFIG.repoUrl)}" target="_blank" rel="noopener noreferrer">
             Powered by ${escapeHtml(CONFIG.repoName)}
@@ -1191,6 +1230,12 @@
 
     try {
       const body = { question: question.trim() };
+
+      // Add page context if enabled
+      const pageContext = getPageContext();
+      if (pageContext) {
+        body.page_context = pageContext;
+      }
 
       // Add Turnstile token if available
       if (turnstileToken) {

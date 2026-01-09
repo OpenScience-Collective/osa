@@ -3,9 +3,11 @@ name: Deploy to Cloudflare Pages
 on:
   push:
     branches:
+      - main
       - develop
     paths:
       - 'frontend/**'
+      - '.github/workflows/deploy-pages.yml'
   workflow_dispatch:
 
 jobs:
@@ -23,4 +25,7 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy frontend --project-name=osa-demo
+          # Deploy with branch name so Cloudflare Pages routes correctly:
+          # - main branch -> osa-demo.pages.dev (production)
+          # - develop branch -> develop.osa-demo.pages.dev (preview)
+          command: pages deploy frontend --project-name=osa-demo --branch=${{ github.ref_name }}
