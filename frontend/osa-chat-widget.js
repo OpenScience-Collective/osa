@@ -42,7 +42,9 @@
     close: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>',
     send: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>',
     reset: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>',
-    brain: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/></svg>'
+    brain: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/></svg>',
+    copy: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>',
+    check: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>'
   };
 
   // CSS Styles
@@ -315,6 +317,7 @@
       border-radius: 8px;
       overflow-x: auto;
       margin: 8px 0;
+      position: relative;
     }
 
     .osa-message-content pre code {
@@ -376,6 +379,71 @@
 
     .osa-table tr:nth-child(even) {
       background: rgba(0,0,0,0.02);
+    }
+
+    /* Copy button styles */
+    .osa-copy-btn {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      background: rgba(255,255,255,0.1);
+      border: none;
+      border-radius: 4px;
+      padding: 4px 6px;
+      cursor: pointer;
+      color: #9ca3af;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      transition: background 0.2s, color 0.2s;
+    }
+
+    .osa-copy-btn:hover {
+      background: rgba(255,255,255,0.2);
+      color: #f9fafb;
+    }
+
+    .osa-copy-btn svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    .osa-copy-btn.copied {
+      color: #22c55e;
+    }
+
+    .osa-message-copy-btn {
+      background: transparent;
+      border: none;
+      border-radius: 4px;
+      padding: 4px;
+      cursor: pointer;
+      color: var(--osa-text-light);
+      display: flex;
+      align-items: center;
+      transition: color 0.2s, background 0.2s;
+      margin-left: auto;
+    }
+
+    .osa-message-copy-btn:hover {
+      color: var(--osa-primary);
+      background: rgba(0,0,0,0.05);
+    }
+
+    .osa-message-copy-btn svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    .osa-message-copy-btn.copied {
+      color: #22c55e;
+    }
+
+    .osa-message-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
     }
 
     .osa-suggestions {
@@ -584,6 +652,29 @@
     }
   }
 
+  // Copy text to clipboard
+  async function copyToClipboard(text, button) {
+    try {
+      await navigator.clipboard.writeText(text);
+      // Show success feedback
+      const originalHtml = button.innerHTML;
+      button.innerHTML = ICONS.check;
+      button.classList.add('copied');
+      setTimeout(() => {
+        button.innerHTML = originalHtml;
+        button.classList.remove('copied');
+      }, 2000);
+    } catch (e) {
+      console.error('Failed to copy:', e);
+    }
+  }
+
+  // Generate unique ID for code blocks
+  let codeBlockId = 0;
+  function getCodeBlockId() {
+    return 'osa-code-' + (++codeBlockId);
+  }
+
   // Render inline markdown (bold, italic, links, plain URLs)
   function renderInlineMarkdown(text) {
     if (!text) return '';
@@ -683,7 +774,9 @@
       // Handle code blocks
       if (line.trim().startsWith('```')) {
         if (inCodeBlock) {
-          result += '<pre><code>' + escapeHtml(codeBlockContent.join('\n')) + '</code></pre>';
+          const codeContent = codeBlockContent.join('\n');
+          const blockId = getCodeBlockId();
+          result += '<pre data-code-id="' + blockId + '"><button class="osa-copy-btn" data-copy-target="' + blockId + '" title="Copy code">' + ICONS.copy + '</button><code>' + escapeHtml(codeContent) + '</code></pre>';
           codeBlockContent = [];
           inCodeBlock = false;
         } else {
@@ -762,7 +855,9 @@
     flushList();
     flushTable();
     if (inCodeBlock && codeBlockContent.length > 0) {
-      result += '<pre><code>' + escapeHtml(codeBlockContent.join('\n')) + '</code></pre>';
+      const codeContent = codeBlockContent.join('\n');
+      const blockId = getCodeBlockId();
+      result += '<pre data-code-id="' + blockId + '"><button class="osa-copy-btn" data-copy-target="' + blockId + '" title="Copy code">' + ICONS.copy + '</button><code>' + escapeHtml(codeContent) + '</code></pre>';
     }
 
     return result || text;
@@ -985,18 +1080,53 @@
     const messagesEl = container.querySelector('.osa-chat-messages');
     messagesEl.innerHTML = '';
 
-    messages.forEach(msg => {
+    messages.forEach((msg, msgIndex) => {
       const msgEl = document.createElement('div');
       msgEl.className = `osa-message ${msg.role}`;
 
       const label = msg.role === 'user' ? 'You' : CONFIG.title;
       const content = msg.role === 'assistant' ? markdownToHtml(msg.content) : escapeHtml(msg.content);
 
+      // Add copy button for assistant messages
+      const copyBtn = msg.role === 'assistant'
+        ? `<button class="osa-message-copy-btn" data-msg-index="${msgIndex}" title="Copy as markdown">${ICONS.copy}</button>`
+        : '';
+
       msgEl.innerHTML = `
-        <span class="osa-message-label">${escapeHtml(label)}</span>
+        <div class="osa-message-header">
+          <span class="osa-message-label">${escapeHtml(label)}</span>
+          ${copyBtn}
+        </div>
         <div class="osa-message-content">${content}</div>
       `;
       messagesEl.appendChild(msgEl);
+    });
+
+    // Add event listeners for copy buttons
+    // Code block copy buttons
+    messagesEl.querySelectorAll('.osa-copy-btn[data-copy-target]').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const codeId = btn.getAttribute('data-copy-target');
+        const pre = messagesEl.querySelector(`pre[data-code-id="${codeId}"]`);
+        if (pre) {
+          const code = pre.querySelector('code');
+          if (code) {
+            copyToClipboard(code.textContent, btn);
+          }
+        }
+      });
+    });
+
+    // Message copy buttons (copy markdown source)
+    messagesEl.querySelectorAll('.osa-message-copy-btn[data-msg-index]').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const msgIndex = parseInt(btn.getAttribute('data-msg-index'), 10);
+        if (messages[msgIndex] && messages[msgIndex].content) {
+          copyToClipboard(messages[msgIndex].content, btn);
+        }
+      });
     });
 
     if (isLoading) {
