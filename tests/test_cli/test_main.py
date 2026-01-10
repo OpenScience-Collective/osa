@@ -157,3 +157,59 @@ class TestCLIHelp:
         result = runner.invoke(cli, ["config", "--help"])
         assert result.exit_code == 0
         assert "Manage CLI configuration" in result.output
+
+
+class TestAssistantSubcommands:
+    """Tests for assistant-specific subcommands (osa hed, osa bids, etc.)."""
+
+    def test_bare_osa_shows_assistants_table(self) -> None:
+        """Running 'osa' with no command should show available assistants."""
+        result = runner.invoke(cli, [])
+        assert result.exit_code == 0
+        assert "Available Assistants" in result.output
+        assert "hed" in result.output.lower()
+        assert "bids" in result.output.lower()
+        assert "eeglab" in result.output.lower()
+
+    def test_hed_help_shows_commands(self) -> None:
+        """'osa hed --help' should show ask and chat commands."""
+        result = runner.invoke(cli, ["hed", "--help"])
+        assert result.exit_code == 0
+        assert "ask" in result.output
+        assert "chat" in result.output
+        assert "HED" in result.output
+
+    def test_bids_help_shows_commands(self) -> None:
+        """'osa bids --help' should show ask and chat commands."""
+        result = runner.invoke(cli, ["bids", "--help"])
+        assert result.exit_code == 0
+        assert "ask" in result.output
+        assert "chat" in result.output
+        assert "BIDS" in result.output
+
+    def test_unavailable_assistant_ask_rejects(self) -> None:
+        """Unavailable assistant (bids) should reject ask command."""
+        result = runner.invoke(cli, ["bids", "ask", "test question"])
+        assert result.exit_code == 1
+        assert "coming soon" in result.output.lower()
+
+    def test_unavailable_assistant_chat_rejects(self) -> None:
+        """Unavailable assistant (eeglab) should reject chat command."""
+        result = runner.invoke(cli, ["eeglab", "chat"])
+        assert result.exit_code == 1
+        assert "coming soon" in result.output.lower()
+
+    def test_hed_ask_help(self) -> None:
+        """'osa hed ask --help' should show command options."""
+        result = runner.invoke(cli, ["hed", "ask", "--help"])
+        assert result.exit_code == 0
+        assert "QUESTION" in result.output or "question" in result.output.lower()
+        assert "--standalone" in result.output or "standalone" in result.output.lower()
+        assert "--url" in result.output
+
+    def test_hed_chat_help(self) -> None:
+        """'osa hed chat --help' should show command options."""
+        result = runner.invoke(cli, ["hed", "chat", "--help"])
+        assert result.exit_code == 0
+        assert "--standalone" in result.output or "standalone" in result.output.lower()
+        assert "--url" in result.output
