@@ -35,25 +35,25 @@ class TestOSAClientHeaders:
         assert "X-API-Key" not in headers
 
     def test_headers_include_openai_key_when_set(self) -> None:
-        """Headers should include X-OpenAI-Key when configured."""
+        """Headers should include X-OpenAI-API-Key when configured."""
         config = CLIConfig(openai_api_key="sk-test")
         client = OSAClient(config)
         headers = client._get_headers()
-        assert headers["X-OpenAI-Key"] == "sk-test"
+        assert headers["X-OpenAI-API-Key"] == "sk-test"
 
     def test_headers_include_anthropic_key_when_set(self) -> None:
-        """Headers should include X-Anthropic-Key when configured."""
+        """Headers should include X-Anthropic-API-Key when configured."""
         config = CLIConfig(anthropic_api_key="sk-ant-test")
         client = OSAClient(config)
         headers = client._get_headers()
-        assert headers["X-Anthropic-Key"] == "sk-ant-test"
+        assert headers["X-Anthropic-API-Key"] == "sk-ant-test"
 
     def test_headers_include_openrouter_key_when_set(self) -> None:
-        """Headers should include X-OpenRouter-Key when configured."""
+        """Headers should include X-OpenRouter-API-Key when configured."""
         config = CLIConfig(openrouter_api_key="sk-or-test")
         client = OSAClient(config)
         headers = client._get_headers()
-        assert headers["X-OpenRouter-Key"] == "sk-or-test"
+        assert headers["X-OpenRouter-API-Key"] == "sk-or-test"
 
     def test_headers_include_multiple_byok_keys(self) -> None:
         """Headers should include all configured BYOK keys."""
@@ -63,9 +63,9 @@ class TestOSAClientHeaders:
         )
         client = OSAClient(config)
         headers = client._get_headers()
-        assert headers["X-OpenAI-Key"] == "sk-openai"
-        assert headers["X-Anthropic-Key"] == "sk-anthropic"
-        assert "X-OpenRouter-Key" not in headers
+        assert headers["X-OpenAI-API-Key"] == "sk-openai"
+        assert headers["X-Anthropic-API-Key"] == "sk-anthropic"
+        assert "X-OpenRouter-API-Key" not in headers
 
 
 class TestOSAClientBaseUrl:

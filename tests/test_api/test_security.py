@@ -98,7 +98,40 @@ class TestAPIKeyAuthentication:
         """Protected route should require API key when server auth is enabled."""
         response = client_with_auth.get("/protected")
         assert response.status_code == 401
-        assert response.json()["detail"] == "API key required"
+        assert "API key required" in response.json()["detail"]
+
+    def test_byok_bypasses_server_auth_openrouter(self, client_with_auth: TestClient) -> None:
+        """OpenRouter BYOK header should bypass server API key requirement."""
+        response = client_with_auth.get(
+            "/protected",
+            headers={"X-OpenRouter-API-Key": "sk-or-user-key"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["message"] == "authenticated"
+        assert data["has_key"] is False
+
+    def test_byok_bypasses_server_auth_openai(self, client_with_auth: TestClient) -> None:
+        """OpenAI BYOK header should bypass server API key requirement."""
+        response = client_with_auth.get(
+            "/protected",
+            headers={"X-OpenAI-API-Key": "sk-openai-user-key"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["message"] == "authenticated"
+        assert data["has_key"] is False
+
+    def test_byok_bypasses_server_auth_anthropic(self, client_with_auth: TestClient) -> None:
+        """Anthropic BYOK header should bypass server API key requirement."""
+        response = client_with_auth.get(
+            "/protected",
+            headers={"X-Anthropic-API-Key": "sk-ant-user-key"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["message"] == "authenticated"
+        assert data["has_key"] is False
 
     def test_protected_route_rejects_invalid_key(self, client_with_auth: TestClient) -> None:
         """Protected route should reject invalid API key."""

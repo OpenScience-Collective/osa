@@ -1,5 +1,5 @@
 [project]
-name = "osa"
+name = "open-science-assistant"
 dynamic = ["version"]
 description = "Open Science Assistant - An extensible AI assistant platform for open science projects"
 readme = "README.md"
@@ -19,6 +19,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering",
 ]
 

@@ -2005,6 +2005,87 @@ wheels = [
 ]
 
 [[package]]
+name = "open-science-assistant"
+source = { editable = "." }
+dependencies = [
+    { name = "beautifulsoup4" },
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "langchain" },
+    { name = "langchain-anthropic" },
+    { name = "langchain-community" },
+    { name = "langchain-core" },
+    { name = "langchain-litellm" },
+    { name = "langchain-openai" },
+    { name = "langfuse" },
+    { name = "langgraph" },
+    { name = "langgraph-checkpoint-postgres" },
+    { name = "litellm" },
+    { name = "lxml" },
+    { name = "markdownify" },
+    { name = "platformdirs" },
+    { name = "psycopg", extra = ["binary"] },
+    { name = "pyalex" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "pygithub" },
+    { name = "python-dotenv" },
+    { name = "pyyaml" },
+    { name = "rich" },
+    { name = "typer" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "mypy" },
+    { name = "pre-commit" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
+    { name = "uv" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "beautifulsoup4", specifier = ">=4.14.0" },
+    { name = "fastapi", specifier = ">=0.125.0" },
+    { name = "httpx", specifier = ">=0.28.0" },
+    { name = "langchain", specifier = ">=1.2.0" },
+    { name = "langchain-anthropic", specifier = ">=1.3.0" },
+    { name = "langchain-community", specifier = ">=0.4.0" },
+    { name = "langchain-core", specifier = ">=1.2.0" },
+    { name = "langchain-litellm", specifier = ">=0.2.0" },
+    { name = "langchain-openai", specifier = ">=1.1.0" },
+    { name = "langfuse", specifier = ">=3.11.0" },
+    { name = "langgraph", specifier = ">=1.0.0" },
+    { name = "langgraph-checkpoint-postgres", specifier = ">=3.0.0" },
+    { name = "litellm", specifier = ">=1.50.0" },
+    { name = "lxml", specifier = ">=6.0.0" },
+    { name = "markdownify", specifier = ">=1.1.0" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.19.0" },
+    { name = "platformdirs", specifier = ">=4.5.0" },
+    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.5.0" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.3.0" },
+    { name = "pyalex", specifier = ">=0.19" },
+    { name = "pydantic", specifier = ">=2.12.0" },
+    { name = "pydantic-settings", specifier = ">=2.12.0" },
+    { name = "pygithub", specifier = ">=2.8.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.3.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.0.0" },
+    { name = "python-dotenv", specifier = ">=1.2.0" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
+    { name = "rich", specifier = ">=14.0.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.14.0" },
+    { name = "typer", specifier = ">=0.20.0" },
+    { name = "uv", marker = "extra == 'dev'", specifier = ">=0.5.0" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.38.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
 name = "openai"
 version = "2.14.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2219,87 +2300,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/05/a0/1149a7163f8b0dfbc64bf9099b6f16d102ad3b03bcc11afee198d751da2d/ormsgpack-1.12.1-cp314-cp314t-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:4e6d54c14cf86ef13f10ccade94d1e7de146aa9b17d371e18b16e95f329393b7", size = 202490, upload-time = "2025-12-14T07:57:40.168Z" },
     { url = "https://files.pythonhosted.org/packages/68/82/f2ec5e758d6a7106645cca9bb7137d98bce5d363789fa94075be6572057c/ormsgpack-1.12.1-cp314-cp314t-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:5f3584d07882b7ea2a1a589f795a3af97fe4c2932b739408e6d1d9d286cad862", size = 211733, upload-time = "2025-12-14T07:57:42.253Z" },
 ]
-
-[[package]]
-name = "osa"
-source = { editable = "." }
-dependencies = [
-    { name = "beautifulsoup4" },
-    { name = "fastapi" },
-    { name = "httpx" },
-    { name = "langchain" },
-    { name = "langchain-anthropic" },
-    { name = "langchain-community" },
-    { name = "langchain-core" },
-    { name = "langchain-litellm" },
-    { name = "langchain-openai" },
-    { name = "langfuse" },
-    { name = "langgraph" },
-    { name = "langgraph-checkpoint-postgres" },
-    { name = "litellm" },
-    { name = "lxml" },
-    { name = "markdownify" },
-    { name = "platformdirs" },
-    { name = "psycopg", extra = ["binary"] },
-    { name = "pyalex" },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
-    { name = "pygithub" },
-    { name = "python-dotenv" },
-    { name = "pyyaml" },
-    { name = "rich" },
-    { name = "typer" },
-    { name = "uvicorn", extra = ["standard"] },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "mypy" },
-    { name = "pre-commit" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-    { name = "uv" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "beautifulsoup4", specifier = ">=4.14.0" },
-    { name = "fastapi", specifier = ">=0.125.0" },
-    { name = "httpx", specifier = ">=0.28.0" },
-    { name = "langchain", specifier = ">=1.2.0" },
-    { name = "langchain-anthropic", specifier = ">=1.3.0" },
-    { name = "langchain-community", specifier = ">=0.4.0" },
-    { name = "langchain-core", specifier = ">=1.2.0" },
-    { name = "langchain-litellm", specifier = ">=0.2.0" },
-    { name = "langchain-openai", specifier = ">=1.1.0" },
-    { name = "langfuse", specifier = ">=3.11.0" },
-    { name = "langgraph", specifier = ">=1.0.0" },
-    { name = "langgraph-checkpoint-postgres", specifier = ">=3.0.0" },
-    { name = "litellm", specifier = ">=1.50.0" },
-    { name = "lxml", specifier = ">=6.0.0" },
-    { name = "markdownify", specifier = ">=1.1.0" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.19.0" },
-    { name = "platformdirs", specifier = ">=4.5.0" },
-    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.5.0" },
-    { name = "psycopg", extras = ["binary"], specifier = ">=3.3.0" },
-    { name = "pyalex", specifier = ">=0.19" },
-    { name = "pydantic", specifier = ">=2.12.0" },
-    { name = "pydantic-settings", specifier = ">=2.12.0" },
-    { name = "pygithub", specifier = ">=2.8.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.3.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.0.0" },
-    { name = "python-dotenv", specifier = ">=1.2.0" },
-    { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "rich", specifier = ">=14.0.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.14.0" },
-    { name = "typer", specifier = ">=0.20.0" },
-    { name = "uv", marker = "extra == 'dev'", specifier = ">=0.5.0" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.38.0" },
-]
-provides-extras = ["dev"]
 
 [[package]]
 name = "packaging"

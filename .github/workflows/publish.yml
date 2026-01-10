@@ -55,7 +55,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.test_pypi == 'true'
     environment:
       name: testpypi
-      url: https://test.pypi.org/p/osa
+      url: https://test.pypi.org/p/open-science-assistant
     permissions:
       id-token: write
     steps:
@@ -78,7 +78,7 @@ jobs:
     if: github.event_name == 'push' || github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.event.inputs.test_pypi != 'true')
     environment:
       name: pypi
-      url: https://pypi.org/p/osa
+      url: https://pypi.org/p/open-science-assistant
     permissions:
       id-token: write
     steps:
