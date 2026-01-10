@@ -5,10 +5,14 @@ This document explains the deployment architecture for OSA (Open Science Assista
 ## Table of Contents
 
 - [Overview](#overview)
+- [Production URLs](#production-urls)
+- [BYOK (Bring Your Own Key)](#byok-bring-your-own-key)
 - [Architecture Options](#architecture-options)
 - [Security Layers](#security-layers)
 - [Setup Instructions](#setup-instructions)
+- [Apache Reverse Proxy](#apache-reverse-proxy)
 - [Configuration](#configuration)
+- [CLI Usage](#cli-usage)
 
 ---
 
@@ -23,6 +27,64 @@ This document explains the deployment architecture for OSA (Open Science Assista
 - HEDit dev: 38428
 - OSA prod: 38528
 - OSA dev: 38529
+
+---
+
+## Production URLs
+
+| Environment | API URL | Docker Image Tag | Port |
+|-------------|---------|------------------|------|
+| Production | `https://api.osc.earth/osa` | `ghcr.io/openscience-collective/osa:latest` | 38528 |
+| Development | `https://api.osc.earth/osa-dev` | `ghcr.io/openscience-collective/osa:dev` | 38529 |
+
+**Frontend:**
+- Production: `https://osa-demo.pages.dev`
+- Development: `https://develop.osa-demo.pages.dev`
+
+---
+
+## BYOK (Bring Your Own Key)
+
+OSA supports BYOK, allowing users to provide their own LLM API keys instead of relying on server-configured keys.
+
+### How It Works
+
+Users can pass their own API keys via HTTP headers:
+
+| Header | Provider |
+|--------|----------|
+| `X-OpenAI-API-Key` | OpenAI |
+| `X-Anthropic-API-Key` | Anthropic |
+| `X-OpenRouter-API-Key` | OpenRouter |
+
+### Authentication Policy
+
+- **With BYOK**: Users providing any BYOK header bypass server API key requirement
+- **Without BYOK**: Users must provide server API key via `X-API-Key` header
+
+### Example Request with BYOK
+
+```bash
+curl -X POST https://api.osc.earth/osa-dev/hed/chat \
+  -H "Content-Type: application/json" \
+  -H "X-OpenRouter-API-Key: sk-or-your-key" \
+  -d '{"message": "What is HED?", "stream": false}'
+```
+
+No `X-API-Key` required when using BYOK headers.
+
+### CLI Configuration for BYOK
+
+```bash
+# Set your LLM API key
+osa config set --openrouter-key "sk-or-your-key"
+
+# Use with remote server (BYOK)
+osa hed ask "What is HED?" --url https://api.osc.earth/osa-dev
+
+# Use standalone mode (local server, no remote needed)
+osa hed ask "What is HED?"
+```
 
 ---
 
@@ -307,6 +369,92 @@ docker logs -f osa
 - Cerebras models: ~$0.0001/request
 
 **Estimated monthly cost for 10,000 requests: ~$1-5**
+
+---
+
+## Apache Reverse Proxy
+
+For servers using Apache as a reverse proxy (alternative to Cloudflare Tunnel):
+
+### Configuration
+
+```apache
+# /etc/apache2/sites-available/apache-api.osc.earth.conf
+
+<VirtualHost *:443>
+    ServerName api.osc.earth
+
+    # SSL configuration (managed by certbot or similar)
+    SSLEngine on
+    SSLCertificateFile /path/to/cert.pem
+    SSLCertificateKeyFile /path/to/key.pem
+
+    # PRODUCTION: OSA API Backend (port 38528)
+    ProxyPass /osa/ http://localhost:38528/
+    ProxyPassReverse /osa/ http://localhost:38528/
+
+    # DEVELOPMENT: OSA Dev API Backend (port 38529)
+    ProxyPass /osa-dev/ http://localhost:38529/
+    ProxyPassReverse /osa-dev/ http://localhost:38529/
+</VirtualHost>
+```
+
+### Enable Required Modules
+
+```bash
+sudo a2enmod proxy proxy_http ssl
+sudo systemctl reload apache2
+```
+
+---
+
+## CLI Usage
+
+### Installation
+
+```bash
+# From PyPI (when published)
+pip install open-science-assistant
+
+# From source
+git clone https://github.com/OpenScience-Collective/osa.git
+cd osa
+uv sync
+```
+
+### Commands
+
+```bash
+# Show available assistants
+osa
+
+# Ask a single question (standalone mode - starts local server)
+osa hed ask "What is HED?"
+
+# Interactive chat session
+osa hed chat
+
+# Use remote server with BYOK
+osa hed ask "What is HED?" --url https://api.osc.earth/osa-dev
+
+# Configuration
+osa config show                           # Show current config
+osa config set --openrouter-key "sk-..."  # Set LLM API key
+osa config set --api-key "server-key"     # Set server API key
+osa config path                           # Show config file location
+
+# Server management
+osa serve                                 # Start API server (production)
+osa serve --port 38529 --reload           # Development mode
+osa health --url https://api.osc.earth/osa  # Check API health
+```
+
+### Standalone vs Remote Mode
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| Standalone (default) | Starts embedded server on localhost | Local development, offline use |
+| Remote (`--url`) | Connects to external API | Production, shared infrastructure |
 
 ---
 

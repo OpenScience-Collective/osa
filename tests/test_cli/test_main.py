@@ -20,10 +20,12 @@ class TestVersionCommand:
 
     def test_version_shows_version(self) -> None:
         """version command should display version number."""
+        from src.version import __version__
+
         result = runner.invoke(cli, ["version"])
         assert result.exit_code == 0
         assert "OSA v" in result.output
-        assert "0.1.0" in result.output
+        assert __version__ in result.output
 
 
 class TestHealthCommand:

@@ -72,9 +72,29 @@ uv run uvicorn src.api.main:app --reload --port 38528
 # Show current config
 osa config show
 
-# Set API keys
+# Set API keys for BYOK (Bring Your Own Key)
 osa config set --openrouter-key YOUR_KEY
+
+# Connect to remote server (uses BYOK)
+osa hed ask "What is HED?" --url https://api.osc.earth/osa-dev
 ```
+
+### Deployment
+
+OSA can be deployed via Docker:
+
+```bash
+# Pull and run
+docker pull ghcr.io/openscience-collective/osa:latest
+docker run -d --name osa -p 38528:38528 \
+  -e OPENROUTER_API_KEY=your-key \
+  ghcr.io/openscience-collective/osa:latest
+
+# Check health
+curl http://localhost:38528/health
+```
+
+See [deploy/DEPLOYMENT_ARCHITECTURE.md](deploy/DEPLOYMENT_ARCHITECTURE.md) for detailed deployment options including Apache reverse proxy and BYOK configuration.
 
 ## Optional: HED Tag Suggestions
 
