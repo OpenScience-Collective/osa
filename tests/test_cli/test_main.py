@@ -205,11 +205,13 @@ class TestAssistantSubcommands:
         assert result.exit_code == 0
         assert "QUESTION" in result.output or "question" in result.output.lower()
         assert "--standalone" in result.output or "standalone" in result.output.lower()
-        assert "--url" in result.output
+        # Check for "url" to handle ANSI escape codes in Rich output
+        assert "--url" in result.output or "url" in result.output.lower()
 
     def test_hed_chat_help(self) -> None:
         """'osa hed chat --help' should show command options."""
         result = runner.invoke(cli, ["hed", "chat", "--help"])
         assert result.exit_code == 0
         assert "--standalone" in result.output or "standalone" in result.output.lower()
-        assert "--url" in result.output
+        # Check for "url" to handle ANSI escape codes in Rich output
+        assert "--url" in result.output or "url" in result.output.lower()
