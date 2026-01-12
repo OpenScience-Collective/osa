@@ -2,8 +2,8 @@
 # Docker Compose for easy deployment
 #
 # Usage:
-#   1. Copy .env.example to .env and configure
-#   2. Run: docker-compose up -d
+#   1. Copy ../.env.example to ../.env and configure (or use existing .env in root)
+#   2. Run from deploy/: docker-compose up -d
 #
 # Port allocation: HEDit prod=38427, HEDit dev=38428, OSA prod=38528, OSA dev=38529
 
@@ -15,6 +15,8 @@ services:
     image: osa:latest
     container_name: osa
     restart: unless-stopped
+    env_file:
+      - ../.env
     ports:
       - "38528:38528"
     volumes:
