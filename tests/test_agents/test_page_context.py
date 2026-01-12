@@ -383,8 +383,8 @@ class TestHEDAssistantWithPageContext:
         model.bind_tools = MagicMock(return_value=model)
         assistant = HEDAssistant(model=model, preload_docs=False)
 
-        # Should have 4 base tools, not 5
-        assert len(assistant.tools) == 4
+        # Should have 6 base tools (not 7 with fetch_current_page)
+        assert len(assistant.tools) == 6
         tool_names = [t.name for t in assistant.tools]
         assert "fetch_current_page" not in tool_names
 
@@ -395,8 +395,8 @@ class TestHEDAssistantWithPageContext:
         page_context = PageContext(url="https://hedtags.org", title="HED Tags")
         assistant = HEDAssistant(model=model, preload_docs=False, page_context=page_context)
 
-        # Should have 5 tools including fetch_current_page
-        assert len(assistant.tools) == 5
+        # Should have 7 tools including fetch_current_page
+        assert len(assistant.tools) == 7
         tool_names = [t.name for t in assistant.tools]
         assert "fetch_current_page" in tool_names
 
@@ -407,8 +407,8 @@ class TestHEDAssistantWithPageContext:
         page_context = PageContext(url=None, title="No URL")
         assistant = HEDAssistant(model=model, preload_docs=False, page_context=page_context)
 
-        # Should have 4 base tools, not 5
-        assert len(assistant.tools) == 4
+        # Should have 6 base tools (not 7 with fetch_current_page)
+        assert len(assistant.tools) == 6
         tool_names = [t.name for t in assistant.tools]
         assert "fetch_current_page" not in tool_names
 

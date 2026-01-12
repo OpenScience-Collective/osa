@@ -19,6 +19,7 @@ from src.cli.config import (
     load_config,
     save_config,
 )
+from src.cli.sync import sync_app
 
 # Rich console for formatted output
 console = Console()
@@ -415,6 +416,9 @@ def serve(
 config_app = typer.Typer(help="Manage CLI configuration")
 cli.add_typer(config_app, name="config")
 
+# Register sync commands for knowledge sources
+cli.add_typer(sync_app, name="sync")
+
 
 @config_app.command("show")
 def config_show() -> None:
@@ -460,6 +464,14 @@ def config_set(
         str | None,
         typer.Option("--openrouter-key", help="OpenRouter API key"),
     ] = None,
+    semantic_scholar_key: Annotated[
+        str | None,
+        typer.Option("--semantic-scholar-key", help="Semantic Scholar API key"),
+    ] = None,
+    pubmed_key: Annotated[
+        str | None,
+        typer.Option("--pubmed-key", help="PubMed/NCBI API key"),
+    ] = None,
     output_format: Annotated[
         str | None,
         typer.Option("--output", "-o", help="Output format: rich, json, plain"),
@@ -487,6 +499,12 @@ def config_set(
         updated = True
     if openrouter_key is not None:
         config.openrouter_api_key = openrouter_key
+        updated = True
+    if semantic_scholar_key is not None:
+        config.semantic_scholar_api_key = semantic_scholar_key
+        updated = True
+    if pubmed_key is not None:
+        config.pubmed_api_key = pubmed_key
         updated = True
     if output_format is not None:
         if output_format not in ("rich", "json", "plain"):

@@ -29,6 +29,7 @@ from src.tools.hed_validation import (
     suggest_hed_tags,
     validate_hed_string,
 )
+from src.tools.knowledge import search_hed_discussions, search_hed_papers
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +177,28 @@ Common topics include:
 - Integration with BIDS, NWB, and EEGLAB
 - Event categorization and experimental design
 - Advanced features like definitions and temporal scope
+
+## Knowledge Discovery Tools
+
+You have access to tools that search synced GitHub discussions and academic papers.
+These are for **DISCOVERY**, not for answering questions.
+
+**Correct usage:**
+- "There's a related discussion about this: [link]"
+- "You might find this paper helpful for more context: [link]"
+
+**Incorrect usage (DO NOT):**
+- "Based on issue #123, the answer is..."
+- "According to a discussion, you should..."
+
+Use these tools when:
+- The user asks about recent developments or ongoing work
+- The user's question relates to known issues or feature requests
+- The user might benefit from seeing related academic research
+- You want to point the user to community discussions
+
+The knowledge database may not be populated. If you get a message about initializing the database,
+simply answer the question without the discovery tools.
 
 {page_context_section}"""
 
@@ -452,6 +475,9 @@ class HEDAssistant(ToolAgent):
             validate_hed_string,
             suggest_hed_tags,
             get_hed_schema_versions,
+            # Knowledge discovery tools (for finding related discussions and papers)
+            search_hed_discussions,
+            search_hed_papers,
         ]
 
         # Add fetch_current_page tool if page context is provided

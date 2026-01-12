@@ -28,13 +28,16 @@ class TestHEDAssistantInitialization:
         assistant = HEDAssistant(model=model, preload_docs=False)
 
         assert assistant.model is not None
-        # Should have 4 tools: retrieve_hed_docs, validate_hed_string, suggest_hed_tags, get_hed_schema_versions
-        assert len(assistant.tools) == 4
+        # Should have 6 tools: retrieve_hed_docs, validate_hed_string, suggest_hed_tags,
+        # get_hed_schema_versions, search_hed_discussions, search_hed_papers
+        assert len(assistant.tools) == 6
         tool_names = [t.name for t in assistant.tools]
         assert "retrieve_hed_docs" in tool_names
         assert "validate_hed_string" in tool_names
         assert "suggest_hed_tags" in tool_names
         assert "get_hed_schema_versions" in tool_names
+        assert "search_hed_discussions" in tool_names
+        assert "search_hed_papers" in tool_names
         assert assistant.preloaded_doc_count == 0
 
     def test_hed_assistant_available_doc_count(self) -> None:
