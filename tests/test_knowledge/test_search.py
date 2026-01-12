@@ -9,7 +9,13 @@ from unittest.mock import patch
 import pytest
 
 from src.knowledge.db import get_connection, init_db, upsert_github_item, upsert_paper
-from src.knowledge.search import SearchResult, search_all, search_github_items, search_papers
+from src.knowledge.search import (
+    SearchResult,
+    _sanitize_fts5_query,
+    search_all,
+    search_github_items,
+    search_papers,
+)
 
 
 @pytest.fixture
@@ -176,3 +182,52 @@ class TestSearchAll:
             assert "papers" in results
             assert isinstance(results["github"], list)
             assert isinstance(results["papers"], list)
+
+
+class TestFTS5Sanitization:
+    """Tests for FTS5 query sanitization to prevent injection."""
+
+    def test_sanitize_basic_query(self):
+        """Test that basic queries are wrapped in quotes."""
+        result = _sanitize_fts5_query("validation error")
+        assert result == '"validation error"'
+
+    def test_sanitize_escapes_quotes(self):
+        """Test that double quotes in user input are escaped."""
+        result = _sanitize_fts5_query('say "hello" world')
+        assert result == '"say ""hello"" world"'
+
+    def test_sanitize_fts5_operators(self):
+        """Test that FTS5 operators are treated as literal text."""
+        # These would be dangerous without sanitization
+        dangerous_queries = [
+            "test AND DROP TABLE",
+            "test OR 1=1",
+            "test NOT secure",
+            "test NEAR malicious",
+            "test*",  # Wildcard
+        ]
+        for query in dangerous_queries:
+            result = _sanitize_fts5_query(query)
+            # Should be wrapped in quotes, treating operators as literals
+            assert result.startswith('"')
+            assert result.endswith('"')
+
+    def test_search_handles_special_characters(self, populated_db: Path):
+        """Test that search doesn't crash with special FTS5 characters."""
+        with patch("src.knowledge.db.get_db_path", return_value=populated_db):
+            # These should not crash, even if they return no results
+            dangerous_inputs = [
+                "validation AND DROP",
+                "test OR 1=1",
+                'test" OR "1"="1',
+                "validation*",
+                "(test)",
+                "test:value",
+            ]
+            for query in dangerous_inputs:
+                # Should not raise an exception
+                results = search_github_items(query)
+                assert isinstance(results, list)
+                results = search_papers(query)
+                assert isinstance(results, list)

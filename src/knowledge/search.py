@@ -13,6 +13,25 @@ from src.knowledge.db import get_connection
 logger = logging.getLogger(__name__)
 
 
+def _sanitize_fts5_query(query: str) -> str:
+    """Sanitize user input for safe FTS5 queries.
+
+    FTS5 has special operators (AND, OR, NOT, NEAR, *, etc.) that could
+    be exploited. This function escapes user input by wrapping it in quotes
+    to treat as a phrase search, preventing operator injection.
+
+    Args:
+        query: Raw user input
+
+    Returns:
+        Sanitized query safe for FTS5 MATCH
+    """
+    # Escape internal double quotes by doubling them
+    escaped = query.replace('"', '""')
+    # Wrap in quotes to treat entire input as phrase search
+    return f'"{escaped}"'
+
+
 @dataclass
 class SearchResult:
     """A search result from the knowledge database."""
@@ -71,6 +90,10 @@ def search_github_items(
     results = []
     try:
         with get_connection() as conn:
+            # Sanitize user query to prevent FTS5 injection
+            safe_query = _sanitize_fts5_query(query)
+            params[0] = safe_query
+
             for row in conn.execute(sql, params):
                 # Create snippet from first_message (first 200 chars)
                 first_message = row["first_message"] or ""
@@ -129,6 +152,10 @@ def search_papers(
     results = []
     try:
         with get_connection() as conn:
+            # Sanitize user query to prevent FTS5 injection
+            safe_query = _sanitize_fts5_query(query)
+            params[0] = safe_query
+
             for row in conn.execute(sql, params):
                 # Create snippet from abstract (first 200 chars)
                 first_message = row["first_message"] or ""
