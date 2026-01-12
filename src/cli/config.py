@@ -22,6 +22,14 @@ class CLIConfig(BaseModel):
     anthropic_api_key: str | None = Field(default=None, description="Anthropic API key")
     openrouter_api_key: str | None = Field(default=None, description="OpenRouter API key")
 
+    # Paper source API keys (optional, for higher rate limits)
+    semantic_scholar_api_key: str | None = Field(
+        default=None, description="Semantic Scholar API key for higher rate limits"
+    )
+    pubmed_api_key: str | None = Field(
+        default=None, description="PubMed/NCBI API key for higher rate limits"
+    )
+
     # Output preferences
     output_format: str = Field(default="rich", description="Output format: rich, json, plain")
     verbose: bool = Field(default=False, description="Enable verbose output")
