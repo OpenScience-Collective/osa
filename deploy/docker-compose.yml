@@ -1,0 +1,62 @@
+# OSA - Open Science Assistant
+# Docker Compose for easy deployment
+#
+# Usage:
+#   1. Copy .env.example to .env and configure
+#   2. Run: docker-compose up -d
+#
+# Port allocation: HEDit prod=38427, HEDit dev=38428, OSA prod=38528, OSA dev=38529
+
+services:
+  osa:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: osa:latest
+    container_name: osa
+    restart: unless-stopped
+    ports:
+      - "38528:38528"
+    volumes:
+      # Persist knowledge database across container restarts
+      - osa-data:/app/data
+    environment:
+      # API Settings
+      - DEBUG=${DEBUG:-false}
+      - ROOT_PATH=${ROOT_PATH:-}
+      - REQUIRE_API_AUTH=${REQUIRE_API_AUTH:-true}
+      - API_KEYS=${API_KEYS:-}
+
+      # LLM Provider Keys (server-side, for shared access)
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+
+      # Model Configuration
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-openai/gpt-oss-120b}
+      - DEFAULT_MODEL_PROVIDER=${DEFAULT_MODEL_PROVIDER:-Cerebras}
+
+      # Knowledge Sync API Keys (optional, for higher rate limits)
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - SEMANTIC_SCHOLAR_API_KEY=${SEMANTIC_SCHOLAR_API_KEY:-}
+      - PUBMED_API_KEY=${PUBMED_API_KEY:-}
+
+      # Knowledge Sync Scheduling
+      - SYNC_ENABLED=${SYNC_ENABLED:-true}
+      - SYNC_GITHUB_CRON=${SYNC_GITHUB_CRON:-0 2 * * *}
+      - SYNC_PAPERS_CRON=${SYNC_PAPERS_CRON:-0 3 * * 0}
+
+      # Observability (optional)
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
+      - LANGFUSE_HOST=${LANGFUSE_HOST:-https://cloud.langfuse.com}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:38528/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  osa-data:
+    name: osa-data

@@ -1,5 +1,6 @@
 """FastAPI application entry point for Open Science Assistant."""
 
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -11,6 +12,9 @@ from pydantic import BaseModel
 
 from src.api.config import get_settings
 from src.api.routers import hed_router
+from src.api.scheduler import start_scheduler, stop_scheduler
+
+logger = logging.getLogger(__name__)
 
 
 class HealthResponse(BaseModel):
@@ -35,12 +39,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     settings = get_settings()
 
     # Startup
+    logger.info("Starting %s v%s", settings.app_name, settings.app_version)
     app.state.settings = settings
     app.state.start_time = datetime.now(UTC)
 
+    # Start background scheduler for knowledge sync
+    scheduler = start_scheduler()
+    app.state.scheduler = scheduler
+    if scheduler:
+        logger.info("Knowledge sync scheduler started")
+
     yield
 
-    # Shutdown (cleanup resources here)
+    # Shutdown
+    logger.info("Shutting down %s", settings.app_name)
+    stop_scheduler()
 
 
 def create_app() -> FastAPI:

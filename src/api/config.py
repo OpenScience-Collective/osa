@@ -86,6 +86,34 @@ class Settings(BaseSettings):
         default=None, description="PostgreSQL connection URL for state persistence"
     )
 
+    # Knowledge Database Settings
+    data_dir: str | None = Field(
+        default=None,
+        description="Data directory for knowledge database (default: platform-specific user data dir)",
+    )
+
+    # Knowledge Sync API Keys (all optional, for higher rate limits)
+    github_token: str | None = Field(
+        default=None, description="GitHub token for gh CLI (higher rate limits for sync)"
+    )
+    semantic_scholar_api_key: str | None = Field(
+        default=None, description="Semantic Scholar API key (optional, for higher rate limits)"
+    )
+    pubmed_api_key: str | None = Field(
+        default=None, description="PubMed/NCBI API key (optional, for higher rate limits)"
+    )
+
+    # Knowledge Sync Scheduling
+    sync_enabled: bool = Field(default=True, description="Enable automated knowledge sync")
+    sync_github_cron: str = Field(
+        default="0 2 * * *",
+        description="Cron schedule for GitHub sync (default: daily at 2am UTC)",
+    )
+    sync_papers_cron: str = Field(
+        default="0 3 * * 0",
+        description="Cron schedule for papers sync (default: weekly Sunday at 3am UTC)",
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:

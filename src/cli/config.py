@@ -41,7 +41,17 @@ def get_config_dir() -> Path:
 
 
 def get_data_dir() -> Path:
-    """Get the OSA data directory for storing sessions, history, etc."""
+    """Get the OSA data directory for storing sessions, history, knowledge database, etc.
+
+    Respects DATA_DIR environment variable for Docker deployments.
+    Falls back to platform-specific user data directory.
+    """
+    # Check for DATA_DIR env var (used in Docker deployments)
+    data_dir = os.environ.get("DATA_DIR")
+    if data_dir:
+        path = Path(data_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
     return Path(user_data_dir("osa", ensure_exists=True))
 
 
