@@ -6,6 +6,7 @@ users to relevant discussions, not answer from them.
 """
 
 import logging
+import sqlite3
 from dataclasses import dataclass
 
 from src.knowledge.db import get_connection
@@ -114,8 +115,11 @@ def search_github_items(
                         created_at=row["created_at"] or "",
                     )
                 )
-    except Exception as e:
-        # FTS5 query errors (e.g., syntax errors) should not crash
+    except sqlite3.OperationalError as e:
+        # Database-level errors (corruption, disk issues) - log as error
+        logger.error("Database operational error during GitHub search '%s': %s", query, e)
+    except sqlite3.Error as e:
+        # FTS5 query errors (e.g., syntax errors) - suppress but warn
         logger.warning("FTS5 search error for '%s': %s", query, e)
 
     return results
@@ -178,7 +182,11 @@ def search_papers(
                         created_at=row["created_at"] or "",
                     )
                 )
-    except Exception as e:
+    except sqlite3.OperationalError as e:
+        # Database-level errors (corruption, disk issues) - log as error
+        logger.error("Database operational error during paper search '%s': %s", query, e)
+    except sqlite3.Error as e:
+        # FTS5 query errors (e.g., syntax errors) - suppress but warn
         logger.warning("FTS5 search error for '%s': %s", query, e)
 
     return results
