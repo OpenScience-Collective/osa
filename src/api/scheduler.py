@@ -12,8 +12,9 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from src.api.config import get_settings
+from src.assistants.hed.sync import HED_REPOS
 from src.knowledge.db import init_db
-from src.knowledge.github_sync import sync_all_hed_repos
+from src.knowledge.github_sync import sync_repos
 from src.knowledge.papers_sync import sync_all_papers
 
 logger = logging.getLogger(__name__)
@@ -26,7 +27,7 @@ def _run_github_sync() -> None:
     """Run GitHub sync job."""
     logger.info("Starting scheduled GitHub sync")
     try:
-        results = sync_all_hed_repos(incremental=True)
+        results = sync_repos(HED_REPOS, project="hed", incremental=True)
         total = sum(results.values())
         logger.info("GitHub sync complete: %d items synced", total)
     except Exception as e:
@@ -149,7 +150,7 @@ def run_sync_now(sync_type: str = "all") -> dict[str, int]:
 
     if sync_type in ("github", "all"):
         logger.info("Running GitHub sync")
-        github_results = sync_all_hed_repos(incremental=True)
+        github_results = sync_repos(HED_REPOS, project="hed", incremental=True)
         results["github"] = sum(github_results.values())
 
     if sync_type in ("papers", "all"):

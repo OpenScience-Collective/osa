@@ -6,7 +6,7 @@ NO MOCKS - we test against the actual service.
 
 import pytest
 
-from src.tools.hed_validation import get_hed_schema_versions, validate_hed_string
+from src.assistants.hed.tools import get_hed_schema_versions, validate_hed_string
 
 
 class TestValidateHedString:

@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 
-from src.agents.hed import (
+from src.assistants.hed import (
     MAX_PAGE_CONTENT_LENGTH,
     HEDAssistant,
     PageContext,

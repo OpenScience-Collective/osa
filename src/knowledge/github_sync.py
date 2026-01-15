@@ -16,21 +16,6 @@ from src.knowledge.db import get_connection, get_last_sync, update_sync_metadata
 
 logger = logging.getLogger(__name__)
 
-# Lazy-loaded for backward compatibility - actual value comes from HED assistant
-_HED_REPOS: list[str] | None = None
-
-
-def __getattr__(name: str) -> Any:
-    """Module-level __getattr__ for lazy loading HED_REPOS."""
-    global _HED_REPOS
-    if name == "HED_REPOS":
-        if _HED_REPOS is None:
-            from src.assistants.hed.sync import HED_REPOS as _hed_repos
-
-            _HED_REPOS = _hed_repos
-        return _HED_REPOS
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
 
 def _run_gh(args: list[str], timeout: int = 120) -> list[dict[str, Any]]:
     """Run gh CLI command and return JSON result.
@@ -233,27 +218,3 @@ def sync_repos(repos: list[str], project: str = "hed", incremental: bool = True)
     total = sum(results.values())
     logger.info("Total items synced for %s: %d", project, total)
     return results
-
-
-# ---------------------------------------------------------------------------
-# Backward compatibility exports (used by CLI sync commands)
-# TODO: Update CLI to use registry-based sync and remove these
-# ---------------------------------------------------------------------------
-
-
-def sync_all_hed_repos(incremental: bool = True) -> dict[str, int]:
-    """Sync all HED repositories.
-
-    This is a backward-compatible wrapper that uses the new sync_repos function
-    with HED-specific configuration.
-
-    Args:
-        incremental: If True, only sync items since last sync
-
-    Returns:
-        Dict mapping repo to items synced
-    """
-    # HED_REPOS is lazy-loaded via __getattr__
-    from src.assistants.hed.sync import HED_REPOS
-
-    return sync_repos(HED_REPOS, project="hed", incremental=incremental)

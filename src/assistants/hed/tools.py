@@ -307,5 +307,10 @@ def retrieve_hed_docs(url: str) -> str:
     return f"Error retrieving {result.url}: {result.error}"
 
 
-# Update docstring with available docs
-retrieve_hed_docs.__doc__ = retrieve_hed_docs.__doc__.format(doc_list=HED_DOCS.format_doc_list())
+# Update tool description with available docs
+_doc_list = HED_DOCS.format_doc_list()
+retrieve_hed_docs.__doc__ = retrieve_hed_docs.__doc__.format(doc_list=_doc_list)
+# Also update the StructuredTool's description field (captured at decoration time)
+object.__setattr__(
+    retrieve_hed_docs, "description", retrieve_hed_docs.description.replace("{doc_list}", _doc_list)
+)
