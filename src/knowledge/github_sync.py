@@ -1,4 +1,4 @@
-"""GitHub sync using gh CLI.
+"""GitHub sync using REST API.
 
 Syncs issues and PRs from configured repositories.
 Each assistant can configure its own repos via sync_config.
@@ -7,47 +7,80 @@ Only stores title, first message (body), status, URL, and created date.
 No replies or comments are stored.
 """
 
-import json
 import logging
-import subprocess
 from typing import Any
 
+import httpx
+
+from src.api.config import get_settings
 from src.knowledge.db import get_connection, get_last_sync, update_sync_metadata, upsert_github_item
 
 logger = logging.getLogger(__name__)
 
 
-def _run_gh(args: list[str], timeout: int = 120) -> list[dict[str, Any]]:
-    """Run gh CLI command and return JSON result.
+def _github_request(
+    endpoint: str, params: dict[str, Any] | None = None, timeout: int = 30
+) -> list[dict[str, Any]]:
+    """Make GitHub REST API request.
 
     Args:
-        args: Arguments for gh command (without 'gh' prefix)
-        timeout: Command timeout in seconds
+        endpoint: API endpoint (e.g., '/repos/owner/repo/issues')
+        params: Query parameters
+        timeout: Request timeout in seconds
 
     Returns:
-        Parsed JSON response (list of items)
+        List of items from API response
 
     Raises:
-        RuntimeError: If gh command fails
+        httpx.HTTPStatusError: If request fails
+
+    Note:
+        Works without authentication for public repos (60 req/hour).
+        Optional GITHUB_TOKEN env var enables higher rate limits (5000 req/hour).
     """
-    cmd = ["gh"] + args
-    logger.debug("Running: %s", " ".join(cmd))
+    settings = get_settings()
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
 
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    # Optional token for higher rate limits
+    if settings.github_token:
+        headers["Authorization"] = f"Bearer {settings.github_token}"
+        logger.debug("Using GitHub token for authentication")
 
-    if result.returncode != 0:
-        raise RuntimeError(f"gh command failed: {result.stderr}")
+    url = f"https://api.github.com{endpoint}"
+    logger.debug("GET %s with params %s", url, params)
 
-    return json.loads(result.stdout) if result.stdout.strip() else []
+    all_items = []
+    page = 1
+    per_page = 100
+
+    # Handle pagination
+    while True:
+        page_params = {**(params or {}), "page": page, "per_page": per_page}
+
+        response = httpx.get(url, headers=headers, params=page_params, timeout=timeout)
+        response.raise_for_status()
+
+        items = response.json()
+        if not items:
+            break
+
+        all_items.extend(items)
+
+        # Check if there are more pages
+        if len(items) < per_page:
+            break
+
+        page += 1
+
+    logger.debug("Fetched %d items from %s", len(all_items), endpoint)
+    return all_items
 
 
 def sync_repo_issues(repo: str, project: str = "hed", since: str | None = None) -> int:
-    """Sync issues from a repository.
+    """Sync issues from a repository using GitHub REST API.
 
     Args:
         repo: Repository in owner/name format
@@ -57,37 +90,24 @@ def sync_repo_issues(repo: str, project: str = "hed", since: str | None = None) 
     Returns:
         Number of items synced
     """
-    fields = "number,title,body,state,createdAt,url"
-    args = [
-        "issue",
-        "list",
-        "--repo",
-        repo,
-        "--state",
-        "all",
-        "--limit",
-        "500",
-        "--json",
-        fields,
-    ]
-
     try:
-        items = _run_gh(args)
-    except subprocess.TimeoutExpired:
-        logger.warning("Timeout syncing issues from %s", repo)
-        return 0
-    except RuntimeError as e:
-        logger.warning("gh CLI error for %s: %s", repo, e)
-        return 0
-    except json.JSONDecodeError as e:
-        logger.warning("Invalid JSON from gh for %s: %s", repo, e)
+        items = _github_request(
+            f"/repos/{repo}/issues",
+            params={"state": "all", "filter": "all"},
+        )
+    except httpx.HTTPError as e:
+        logger.warning("GitHub API error for %s: %s", repo, e)
         return 0
 
     count = 0
     with get_connection(project) as conn:
         for item in items:
+            # Skip pull requests (they appear in issues endpoint too)
+            if "pull_request" in item:
+                continue
+
             # Skip if before since date (for incremental sync)
-            if since and item.get("createdAt", "") < since:
+            if since and item.get("created_at", "") < since:
                 continue
 
             upsert_github_item(
@@ -97,9 +117,9 @@ def sync_repo_issues(repo: str, project: str = "hed", since: str | None = None) 
                 number=item["number"],
                 title=item["title"],
                 first_message=item.get("body"),
-                status="open" if item.get("state") == "OPEN" else "closed",
-                url=item["url"],
-                created_at=item["createdAt"],
+                status="open" if item.get("state") == "open" else "closed",
+                url=item["html_url"],
+                created_at=item["created_at"],
             )
             count += 1
         conn.commit()
@@ -109,7 +129,7 @@ def sync_repo_issues(repo: str, project: str = "hed", since: str | None = None) 
 
 
 def sync_repo_prs(repo: str, project: str = "hed", since: str | None = None) -> int:
-    """Sync PRs from a repository.
+    """Sync PRs from a repository using GitHub REST API.
 
     Args:
         repo: Repository in owner/name format
@@ -119,42 +139,25 @@ def sync_repo_prs(repo: str, project: str = "hed", since: str | None = None) -> 
     Returns:
         Number of items synced
     """
-    fields = "number,title,body,state,createdAt,url"
-    args = [
-        "pr",
-        "list",
-        "--repo",
-        repo,
-        "--state",
-        "all",
-        "--limit",
-        "500",
-        "--json",
-        fields,
-    ]
-
     try:
-        items = _run_gh(args)
-    except subprocess.TimeoutExpired:
-        logger.warning("Timeout syncing PRs from %s", repo)
-        return 0
-    except RuntimeError as e:
-        logger.warning("gh CLI error for %s: %s", repo, e)
-        return 0
-    except json.JSONDecodeError as e:
-        logger.warning("Invalid JSON from gh for %s: %s", repo, e)
+        items = _github_request(
+            f"/repos/{repo}/pulls",
+            params={"state": "all"},
+        )
+    except httpx.HTTPError as e:
+        logger.warning("GitHub API error for %s: %s", repo, e)
         return 0
 
     count = 0
     with get_connection(project) as conn:
         for item in items:
             # Skip if before since date (for incremental sync)
-            if since and item.get("createdAt", "") < since:
+            if since and item.get("created_at", "") < since:
                 continue
 
-            # Map PR state (OPEN, CLOSED, MERGED) to simple status
-            state = item.get("state", "CLOSED")
-            status = "open" if state == "OPEN" else "closed"
+            # Map PR state (open, closed) to simple status
+            # Note: GitHub API doesn't distinguish merged in state field
+            status = "open" if item.get("state") == "open" else "closed"
 
             upsert_github_item(
                 conn,
@@ -164,8 +167,8 @@ def sync_repo_prs(repo: str, project: str = "hed", since: str | None = None) -> 
                 title=item["title"],
                 first_message=item.get("body"),
                 status=status,
-                url=item["url"],
-                created_at=item["createdAt"],
+                url=item["html_url"],
+                created_at=item["created_at"],
             )
             count += 1
         conn.commit()
