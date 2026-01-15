@@ -43,6 +43,10 @@
   let turnstileWidgetId = null;
   let backendOnline = null; // null = checking, true = online, false = offline
   let pageContextEnabled = true; // Runtime state for page context toggle
+  let chatPopup = null; // Reference to pop-out window (prevents duplicates)
+
+  // Store script URL at load time for reliable pop-out
+  const WIDGET_SCRIPT_URL = document.currentScript?.src || null;
 
   // Icons (SVG)
   const ICONS = {
@@ -1436,31 +1440,86 @@
 
   // Open chat in a new popup window
   async function openPopout() {
-    // Find the script URL
-    const scripts = document.querySelectorAll('script[src*="osa-chat-widget"]');
-    const scriptUrl = scripts.length > 0 ? scripts[scripts.length - 1].src : null;
+    const popoutBtn = document.querySelector('.osa-popout-btn');
 
-    if (!scriptUrl) {
-      alert('Could not find widget script URL. Pop-out is not available.');
+    // Reuse existing popup if still open
+    if (chatPopup && !chatPopup.closed) {
+      chatPopup.focus();
       return;
     }
 
-    // Fetch the script content
-    let scriptCode = '';
+    // Prevent double-clicks during async operation
+    if (popoutBtn?.disabled) return;
+
+    if (popoutBtn) {
+      popoutBtn.disabled = true;
+      popoutBtn.setAttribute('aria-busy', 'true');
+      popoutBtn.title = 'Opening...';
+    }
+
     try {
-      const response = await fetch(scriptUrl);
-      scriptCode = await response.text();
-    } catch (e) {
-      console.error('Failed to fetch widget script:', e);
-      alert('Failed to load widget for pop-out. Please try again.');
-      return;
-    }
+      // Find the script URL (prefer stored URL, fallback to DOM query)
+      let scriptUrl = WIDGET_SCRIPT_URL;
+      if (!scriptUrl) {
+        const scripts = document.querySelectorAll('script[src*="osa-chat-widget"]');
+        if (scripts.length === 0) {
+          console.warn('OSA Chat Widget: Could not find widget script tag for pop-out.');
+          alert('Could not find widget script URL. Pop-out is not available.');
+          return;
+        }
+        if (scripts.length > 1) {
+          console.warn(`OSA Chat Widget: Found ${scripts.length} matching script tags, using the last one.`);
+        }
+        scriptUrl = scripts[scripts.length - 1].src;
+      }
 
-    // Create popup config with fullscreen mode
-    const popupConfig = { ...CONFIG, fullscreen: true };
+      // Fetch the script content
+      let scriptCode = '';
+      try {
+        const response = await fetch(scriptUrl);
+        if (!response.ok) {
+          console.error(`Failed to fetch widget script: HTTP ${response.status}`);
+          alert(`Failed to load widget for pop-out (HTTP ${response.status}). Please try again.`);
+          return;
+        }
+        scriptCode = await response.text();
+      } catch (e) {
+        console.error('Failed to fetch widget script:', e);
+        alert('Failed to load widget for pop-out. Please try again.');
+        return;
+      }
 
-    // Create the popup HTML with config set BEFORE the widget script runs
-    const popupHtml = `<!DOCTYPE html>
+      // Validate script content
+      if (!scriptCode || scriptCode.trim().length === 0) {
+        console.error('Widget script content is empty');
+        alert('Failed to load widget for pop-out. Please try again.');
+        return;
+      }
+
+      // Create popup config with fullscreen mode
+      const popupConfig = { ...CONFIG, fullscreen: true };
+
+      // Serialize config safely (escape script-breaking sequences)
+      let configJson;
+      try {
+        configJson = JSON.stringify(popupConfig)
+          .replace(/</g, '\\u003c')
+          .replace(/>/g, '\\u003e');
+      } catch (e) {
+        console.error('Failed to serialize widget config:', e);
+        alert('Failed to prepare widget configuration for pop-out.');
+        return;
+      }
+
+      // Calculate responsive popup size
+      const width = Math.min(500, Math.floor(window.screen.availWidth * 0.9));
+      const height = Math.min(700, Math.floor(window.screen.availHeight * 0.9));
+      const left = Math.floor((window.screen.availWidth - width) / 2);
+      const top = Math.floor((window.screen.availHeight - height) / 2);
+      const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes`;
+
+      // Create the popup HTML with config set BEFORE the widget script runs
+      const popupHtml = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -1478,7 +1537,7 @@
 <body>
   <script>
     // Pre-configure widget before it initializes
-    window.__OSA_CHAT_CONFIG__ = ${JSON.stringify(popupConfig)};
+    window.__OSA_CHAT_CONFIG__ = ${configJson};
   <\/script>
   <script>
     // Widget code (will pick up __OSA_CHAT_CONFIG__ if present)
@@ -1487,13 +1546,37 @@
 </body>
 </html>`;
 
-    // Open the popup window
-    const popup = window.open('', '_blank', 'width=500,height=700,menubar=no,toolbar=no,location=no,status=no');
-    if (popup) {
-      popup.document.write(popupHtml);
-      popup.document.close();
-    } else {
-      alert('Please allow popups to open the chat in a new window.');
+      // Open the popup window
+      const popup = window.open('', '_blank', features);
+      if (popup) {
+        try {
+          popup.document.write(popupHtml);
+          popup.document.close();
+          chatPopup = popup;
+
+          // Clean up reference when popup closes
+          const checkClosed = setInterval(() => {
+            if (popup.closed) {
+              clearInterval(checkClosed);
+              chatPopup = null;
+            }
+          }, 1000);
+        } catch (e) {
+          console.error('Failed to write popup content:', e);
+          popup.close();
+          alert('Failed to initialize the pop-out window. Please try again.');
+          return;
+        }
+      } else {
+        alert('Please allow popups to open the chat in a new window.');
+      }
+    } finally {
+      // Reset button state
+      if (popoutBtn) {
+        popoutBtn.disabled = false;
+        popoutBtn.setAttribute('aria-busy', 'false');
+        popoutBtn.title = 'Open in new window';
+      }
     }
   }
 
