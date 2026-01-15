@@ -21,13 +21,16 @@ Example:
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from fastapi import APIRouter
     from langchain_core.language_models import BaseChatModel
 
 logger = logging.getLogger(__name__)
+
+# Type alias for assistant status
+AssistantStatus = Literal["available", "beta", "coming_soon"]
 
 
 @dataclass
@@ -52,13 +55,14 @@ class AssistantInfo:
     Signature: (model: BaseChatModel, **kwargs) -> BaseAgent
     """
 
-    status: str = "available"
+    status: AssistantStatus = "available"
     """Status: 'available', 'beta', or 'coming_soon'."""
 
     router_factory: Callable[[], "APIRouter"] | None = None
     """Optional factory for custom API router.
 
-    If provided, router will be auto-mounted at /{id}/*.
+    Note: Routers must be manually registered in api/main.py.
+    This field stores the factory for discovery; auto-mounting is not implemented.
     """
 
     sync_config: dict[str, Any] = field(default_factory=dict)
@@ -68,6 +72,17 @@ class AssistantInfo:
     - github_repos: list[str] - Repos to sync (e.g., ['hed-standard/hed-specification'])
     - paper_queries: list[str] - Queries for paper search
     """
+
+    def __post_init__(self) -> None:
+        """Validate required fields after initialization."""
+        if not self.id or not self.id.strip():
+            raise ValueError("id must be a non-empty string")
+        if not self.name or not self.name.strip():
+            raise ValueError("name must be a non-empty string")
+        if not self.description or not self.description.strip():
+            raise ValueError("description must be a non-empty string")
+        if not callable(self.factory):
+            raise ValueError("factory must be callable")
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for API responses."""
@@ -97,7 +112,7 @@ class AssistantRegistry:
         id: str,
         name: str,
         description: str,
-        status: str = "available",
+        status: AssistantStatus = "available",
         router_factory: Callable[[], "APIRouter"] | None = None,
         sync_config: dict[str, Any] | None = None,
     ) -> Callable[[Callable], Callable]:

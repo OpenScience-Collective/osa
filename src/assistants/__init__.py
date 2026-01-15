@@ -63,8 +63,9 @@ def discover_assistants() -> list[str]:
             importlib.import_module(module_name)
             discovered.append(subdir.name)
             logger.debug("Discovered assistant: %s", subdir.name)
-        except Exception as e:
-            logger.error("Failed to load assistant %s: %s", module_name, e)
+        except Exception:
+            # Use exception() to preserve full traceback for debugging
+            logger.exception("Failed to load assistant %s", module_name)
 
     logger.info(
         "Discovered %d assistants: %s",
