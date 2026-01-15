@@ -8,8 +8,8 @@ automatically include them in all parameterized tests.
 import pytest
 from langchain_core.language_models import FakeListChatModel
 
-from src.agents.hed import HEDAssistant
-from src.tools.hed import HED_DOCS
+from src.assistants.hed import HEDAssistant
+from src.assistants.hed.docs import HED_DOCS
 
 # ============================================================================
 # Registry Implementations

@@ -1,6 +1,9 @@
-"""Knowledge discovery tools for the HED assistant.
+"""HED knowledge discovery tools.
 
-These tools provide DISCOVERY, not authoritative answers.
+These tools search the HED-specific knowledge database (knowledge/hed.db)
+for related GitHub discussions and academic papers.
+
+Purpose: DISCOVERY, not authoritative answers.
 The agent should link users to relevant discussions, not answer from them.
 
 Usage:
@@ -21,10 +24,13 @@ from src.knowledge.search import search_github_items, search_papers
 
 logger = logging.getLogger(__name__)
 
+# Project name for database isolation
+PROJECT = "hed"
+
 
 def _check_db_exists() -> bool:
-    """Check if the knowledge database exists."""
-    return get_db_path().exists()
+    """Check if the HED knowledge database exists."""
+    return get_db_path(PROJECT).exists()
 
 
 @tool
@@ -62,11 +68,11 @@ def search_hed_discussions(
     results = []
 
     if include_issues:
-        issues = search_github_items(query, limit=limit, item_type="issue")
+        issues = search_github_items(query, project=PROJECT, limit=limit, item_type="issue")
         results.extend(issues)
 
     if include_prs:
-        prs = search_github_items(query, limit=limit, item_type="pr")
+        prs = search_github_items(query, project=PROJECT, limit=limit, item_type="pr")
         results.extend(prs)
 
     # Sort by relevance and limit total results
@@ -115,7 +121,7 @@ def search_hed_papers(query: str, limit: int = 5) -> str:
             "Run 'osa sync init' and 'osa sync papers' to populate it."
         )
 
-    results = search_papers(query, limit=limit)
+    results = search_papers(query, project=PROJECT, limit=limit)
 
     if not results:
         return f"No related papers found for '{query}'."

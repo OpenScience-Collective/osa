@@ -10,10 +10,10 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field, field_validator
 
-from src.agents.hed import HEDAssistant
-from src.agents.hed import PageContext as AgentPageContext
 from src.api.config import get_settings
 from src.api.security import RequireAuth
+from src.assistants.hed import HEDAssistant
+from src.assistants.hed import PageContext as AgentPageContext
 from src.core.services.litellm_llm import create_openrouter_llm
 
 router = APIRouter(prefix="/hed", tags=["HED Assistant"])

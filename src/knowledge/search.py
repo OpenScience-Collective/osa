@@ -6,6 +6,7 @@ users to relevant discussions, not answer from them.
 """
 
 import logging
+import sqlite3
 from dataclasses import dataclass
 
 from src.knowledge.db import get_connection
@@ -47,6 +48,7 @@ class SearchResult:
 
 def search_github_items(
     query: str,
+    project: str = "hed",
     limit: int = 10,
     item_type: str | None = None,
     status: str | None = None,
@@ -56,6 +58,7 @@ def search_github_items(
 
     Args:
         query: Search query (FTS5 syntax supported, e.g., "validation AND error")
+        project: Assistant/project name for database isolation. Defaults to 'hed'.
         limit: Maximum number of results
         item_type: Filter by 'issue' or 'pr'
         status: Filter by 'open' or 'closed'
@@ -89,7 +92,7 @@ def search_github_items(
 
     results = []
     try:
-        with get_connection() as conn:
+        with get_connection(project) as conn:
             # Sanitize user query to prevent FTS5 injection
             safe_query = _sanitize_fts5_query(query)
             params[0] = safe_query
@@ -112,8 +115,11 @@ def search_github_items(
                         created_at=row["created_at"] or "",
                     )
                 )
-    except Exception as e:
-        # FTS5 query errors (e.g., syntax errors) should not crash
+    except sqlite3.OperationalError as e:
+        # Database-level errors (corruption, disk issues) - log as error
+        logger.error("Database operational error during GitHub search '%s': %s", query, e)
+    except sqlite3.Error as e:
+        # FTS5 query errors (e.g., syntax errors) - suppress but warn
         logger.warning("FTS5 search error for '%s': %s", query, e)
 
     return results
@@ -121,6 +127,7 @@ def search_github_items(
 
 def search_papers(
     query: str,
+    project: str = "hed",
     limit: int = 10,
     source: str | None = None,
 ) -> list[SearchResult]:
@@ -128,6 +135,7 @@ def search_papers(
 
     Args:
         query: Search query (FTS5 syntax supported)
+        project: Assistant/project name for database isolation. Defaults to 'hed'.
         limit: Maximum number of results
         source: Filter by source ('openalex', 'semanticscholar', 'pubmed')
 
@@ -151,7 +159,7 @@ def search_papers(
 
     results = []
     try:
-        with get_connection() as conn:
+        with get_connection(project) as conn:
             # Sanitize user query to prevent FTS5 injection
             safe_query = _sanitize_fts5_query(query)
             params[0] = safe_query
@@ -174,7 +182,11 @@ def search_papers(
                         created_at=row["created_at"] or "",
                     )
                 )
-    except Exception as e:
+    except sqlite3.OperationalError as e:
+        # Database-level errors (corruption, disk issues) - log as error
+        logger.error("Database operational error during paper search '%s': %s", query, e)
+    except sqlite3.Error as e:
+        # FTS5 query errors (e.g., syntax errors) - suppress but warn
         logger.warning("FTS5 search error for '%s': %s", query, e)
 
     return results
@@ -182,18 +194,20 @@ def search_papers(
 
 def search_all(
     query: str,
+    project: str = "hed",
     limit: int = 10,
 ) -> dict[str, list[SearchResult]]:
     """Search both GitHub items and papers.
 
     Args:
         query: Search query
+        project: Assistant/project name for database isolation. Defaults to 'hed'.
         limit: Maximum results per category
 
     Returns:
         Dict with 'github' and 'papers' keys containing results
     """
     return {
-        "github": search_github_items(query, limit=limit),
-        "papers": search_papers(query, limit=limit),
+        "github": search_github_items(query, project=project, limit=limit),
+        "papers": search_papers(query, project=project, limit=limit),
     }

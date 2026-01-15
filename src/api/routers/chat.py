@@ -3,16 +3,19 @@
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
 
-from src.agents.hed import HEDAssistant
 from src.api.config import get_settings
+from src.assistants import discover_assistants, registry
 from src.core.services.litellm_llm import create_openrouter_llm
+
+# Discover assistants on module load
+discover_assistants()
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
@@ -143,11 +146,11 @@ def create_assistant(
     api_key: str | None = None,
     user_id: str | None = None,
     preload_docs: bool = True,
-) -> HEDAssistant:
-    """Create an assistant instance.
+) -> Any:
+    """Create an assistant instance using the registry.
 
     Args:
-        assistant_type: Type of assistant ('hed', 'bids', 'eeglab', 'general')
+        assistant_type: Type of assistant ('hed', 'bids', 'eeglab', etc.)
         api_key: Optional API key override (BYOK)
         user_id: User ID for cache optimization (sticky routing)
         preload_docs: Whether to preload documents
@@ -156,9 +159,14 @@ def create_assistant(
         Configured assistant instance
 
     Raises:
-        ValueError: If assistant type is not supported
+        ValueError: If assistant type is not registered
     """
     settings = get_settings()
+
+    # Validate assistant exists in registry
+    if assistant_type not in registry:
+        available = [a.id for a in registry.list_all()]
+        raise ValueError(f"Assistant '{assistant_type}' not found. Available: {available}")
 
     # Get model using LiteLLM with prompt caching support
     model = create_openrouter_llm(
@@ -170,13 +178,12 @@ def create_assistant(
         # enable_caching auto-detects based on model (Anthropic models)
     )
 
-    # Currently only HED assistant is implemented
-    if assistant_type == "hed":
-        return HEDAssistant(model=model, preload_docs=preload_docs)
-    else:
-        # For now, use HED assistant for all types
-        # TODO: Implement BIDS, EEGLAB, and General assistants
-        return HEDAssistant(model=model, preload_docs=preload_docs)
+    # Create assistant via registry factory
+    return registry.create_assistant(
+        assistant_type,
+        model=model,
+        preload_docs=preload_docs,
+    )
 
 
 # ---------------------------------------------------------------------------

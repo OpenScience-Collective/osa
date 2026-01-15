@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 
-from src.agents.hed import (
+from src.assistants.hed import (
     MAX_PAGE_CONTENT_LENGTH,
     HEDAssistant,
     PageContext,
@@ -148,8 +148,8 @@ class TestFetchPageContentImpl:
         assert "Error" in result
         assert "private" in result.lower()
 
-    @patch("src.agents.hed.is_safe_url")
-    @patch("src.agents.hed.httpx.Client")
+    @patch("src.assistants.hed.is_safe_url")
+    @patch("src.assistants.hed.httpx.Client")
     def test_successful_fetch(self, mock_client_class, mock_is_safe):
         """Should fetch and convert HTML to markdown."""
         mock_is_safe.return_value = (True, "", "93.184.216.34")
@@ -170,8 +170,8 @@ class TestFetchPageContentImpl:
         assert "Test" in result
         assert "Hello world" in result
 
-    @patch("src.agents.hed.is_safe_url")
-    @patch("src.agents.hed.httpx.Client")
+    @patch("src.assistants.hed.is_safe_url")
+    @patch("src.assistants.hed.httpx.Client")
     def test_rejects_non_html_content(self, mock_client_class, mock_is_safe):
         """Should reject non-HTML content types."""
         mock_is_safe.return_value = (True, "", "93.184.216.34")
@@ -188,8 +188,8 @@ class TestFetchPageContentImpl:
         assert "Error" in result
         assert "non-HTML" in result
 
-    @patch("src.agents.hed.is_safe_url")
-    @patch("src.agents.hed.httpx.Client")
+    @patch("src.assistants.hed.is_safe_url")
+    @patch("src.assistants.hed.httpx.Client")
     def test_handles_redirect_to_safe_url(self, mock_client_class, mock_is_safe):
         """Should follow redirects to safe URLs."""
         # First call safe, redirect also safe
@@ -215,8 +215,8 @@ class TestFetchPageContentImpl:
         result = _fetch_page_content_impl("https://example.com")
         assert "Final page" in result
 
-    @patch("src.agents.hed.is_safe_url")
-    @patch("src.agents.hed.httpx.Client")
+    @patch("src.assistants.hed.is_safe_url")
+    @patch("src.assistants.hed.httpx.Client")
     def test_blocks_redirect_to_unsafe_url(self, mock_client_class, mock_is_safe):
         """Should block redirects to unsafe URLs (SSRF protection)."""
         # Original safe, redirect unsafe
@@ -237,8 +237,8 @@ class TestFetchPageContentImpl:
         assert "Error" in result
         assert "Redirect to unsafe URL" in result
 
-    @patch("src.agents.hed.is_safe_url")
-    @patch("src.agents.hed.httpx.Client")
+    @patch("src.assistants.hed.is_safe_url")
+    @patch("src.assistants.hed.httpx.Client")
     def test_handles_too_many_redirects(self, mock_client_class, mock_is_safe):
         """Should limit redirect count."""
         mock_is_safe.return_value = (True, "", "93.184.216.34")
@@ -256,8 +256,8 @@ class TestFetchPageContentImpl:
         assert "Error" in result
         assert "Too many redirects" in result
 
-    @patch("src.agents.hed.is_safe_url")
-    @patch("src.agents.hed.httpx.Client")
+    @patch("src.assistants.hed.is_safe_url")
+    @patch("src.assistants.hed.httpx.Client")
     def test_handles_relative_redirect(self, mock_client_class, mock_is_safe):
         """Should handle relative redirects properly."""
         mock_is_safe.side_effect = [
@@ -281,8 +281,8 @@ class TestFetchPageContentImpl:
         result = _fetch_page_content_impl("https://example.com")
         assert "New page" in result
 
-    @patch("src.agents.hed.is_safe_url")
-    @patch("src.agents.hed.httpx.Client")
+    @patch("src.assistants.hed.is_safe_url")
+    @patch("src.assistants.hed.httpx.Client")
     def test_truncates_large_content(self, mock_client_class, mock_is_safe):
         """Should truncate content that exceeds MAX_PAGE_CONTENT_LENGTH."""
         mock_is_safe.return_value = (True, "", "93.184.216.34")
@@ -303,8 +303,8 @@ class TestFetchPageContentImpl:
         # Content should be limited
         assert len(result) < MAX_PAGE_CONTENT_LENGTH + 1000  # Account for header/footer
 
-    @patch("src.agents.hed.is_safe_url")
-    @patch("src.agents.hed.httpx.Client")
+    @patch("src.assistants.hed.is_safe_url")
+    @patch("src.assistants.hed.httpx.Client")
     def test_handles_http_error(self, mock_client_class, mock_is_safe):
         """Should handle HTTP errors gracefully."""
         mock_is_safe.return_value = (True, "", "93.184.216.34")
@@ -324,8 +324,8 @@ class TestFetchPageContentImpl:
         assert "Error" in result
         assert "404" in result
 
-    @patch("src.agents.hed.is_safe_url")
-    @patch("src.agents.hed.httpx.Client")
+    @patch("src.assistants.hed.is_safe_url")
+    @patch("src.assistants.hed.httpx.Client")
     def test_handles_timeout(self, mock_client_class, mock_is_safe):
         """Should handle request timeouts gracefully."""
         mock_is_safe.return_value = (True, "", "93.184.216.34")
@@ -338,8 +338,8 @@ class TestFetchPageContentImpl:
         assert "Error" in result
         assert "timed out" in result.lower()
 
-    @patch("src.agents.hed.is_safe_url")
-    @patch("src.agents.hed.httpx.Client")
+    @patch("src.assistants.hed.is_safe_url")
+    @patch("src.assistants.hed.httpx.Client")
     def test_handles_request_error(self, mock_client_class, mock_is_safe):
         """Should handle generic request errors gracefully."""
         mock_is_safe.return_value = (True, "", "93.184.216.34")
@@ -444,7 +444,7 @@ class TestHEDAssistantWithPageContext:
         prompt = assistant.get_system_prompt()
         assert "(No title)" in prompt
 
-    @patch("src.agents.hed._fetch_page_content_impl")
+    @patch("src.assistants.hed._fetch_page_content_impl")
     def test_fetch_current_page_tool_calls_impl(self, mock_fetch):
         """Should call _fetch_page_content_impl with bound URL."""
         mock_fetch.return_value = "# Content from https://hedtags.org\n\nTest content"
@@ -462,7 +462,7 @@ class TestHEDAssistantWithPageContext:
         mock_fetch.assert_called_once_with("https://hedtags.org")
         assert "Test content" in result
 
-    @patch("src.agents.hed._fetch_page_content_impl")
+    @patch("src.assistants.hed._fetch_page_content_impl")
     def test_fetch_current_page_tool_bound_to_specific_url(self, mock_fetch):
         """Should only fetch the bound URL, not allow arbitrary URLs."""
         mock_fetch.return_value = "Content"

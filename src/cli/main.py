@@ -10,6 +10,7 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
+from src.assistants import discover_assistants, registry
 from src.cli.client import OSAClient
 from src.cli.config import (
     CLIConfig,
@@ -21,27 +22,26 @@ from src.cli.config import (
 )
 from src.cli.sync import sync_app
 
+# Discover assistants on module load
+discover_assistants()
+
 # Rich console for formatted output
 console = Console()
 
-# Available assistants registry
-ASSISTANTS = {
-    "hed": {
-        "name": "HED",
-        "description": "Hierarchical Event Descriptors - annotation standard for neuroimaging",
-        "status": "available",
-    },
-    "bids": {
-        "name": "BIDS",
-        "description": "Brain Imaging Data Structure - data organization standard",
-        "status": "coming soon",
-    },
-    "eeglab": {
-        "name": "EEGLAB",
-        "description": "EEG analysis toolbox for MATLAB",
-        "status": "coming soon",
-    },
-}
+
+def get_assistants() -> dict[str, dict[str, str]]:
+    """Get available assistants from the registry.
+
+    Returns a dict compatible with the old ASSISTANTS format for CLI display.
+    """
+    assistants = {}
+    for info in registry.list_all():
+        assistants[info.id] = {
+            "name": info.name,
+            "description": info.description,
+            "status": info.status,
+        }
+    return assistants
 
 
 def display_tool_calls(tool_calls: list[dict]) -> None:
@@ -305,7 +305,7 @@ def main_callback(ctx: typer.Context) -> None:
         table.add_column("Description", style="white")
         table.add_column("Status", style="green")
 
-        for assistant_id, info in ASSISTANTS.items():
+        for assistant_id, info in get_assistants().items():
             status_style = "green" if info["status"] == "available" else "yellow"
             table.add_row(
                 f"osa {assistant_id}",
@@ -322,7 +322,7 @@ def main_callback(ctx: typer.Context) -> None:
 
 
 # Register assistant subcommands
-for assistant_id, assistant_info in ASSISTANTS.items():
+for assistant_id, assistant_info in get_assistants().items():
     cli.add_typer(
         create_assistant_app(assistant_id, assistant_info),
         name=assistant_id,

@@ -9,14 +9,14 @@ import pytest
 from langchain_core.language_models import FakeListChatModel
 from langchain_core.messages import AIMessage
 
-from src.agents.hed import (
+from src.assistants.hed import (
     HED_SYSTEM_PROMPT_TEMPLATE,
     HEDAssistant,
     _format_ondemand_section,
     _format_preloaded_section,
     retrieve_hed_docs,
 )
-from src.tools.hed import HED_DOCS
+from src.assistants.hed.docs import HED_DOCS
 
 
 class TestHEDAssistantInitialization:
