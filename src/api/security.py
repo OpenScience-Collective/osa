@@ -69,6 +69,47 @@ async def verify_api_key(
 RequireAuth = Annotated[str | None, Depends(verify_api_key)]
 
 
+async def verify_admin_api_key(
+    api_key: Annotated[str | None, Security(api_key_header)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> str | None:
+    """Verify API key for admin operations. NO BYOK bypass.
+
+    Admin endpoints (like sync trigger) consume server resources,
+    so BYOK bypass is not allowed - only server API keys work.
+    """
+    # If auth is not required, skip verification
+    if not settings.require_api_auth:
+        return None
+
+    # If no server API keys configured, authentication is disabled
+    if not settings.api_keys:
+        return None
+
+    # Parse comma-separated API keys
+    valid_keys = {k.strip() for k in settings.api_keys.split(",") if k.strip()}
+
+    # Admin endpoints require valid server API key (no BYOK bypass)
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Admin API key required",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+
+    if api_key not in valid_keys:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid API key",
+        )
+
+    return api_key
+
+
+# Dependency for admin routes (no BYOK bypass)
+RequireAdminAuth = Annotated[str | None, Depends(verify_admin_api_key)]
+
+
 class BYOKHeaders:
     """BYOK (Bring Your Own Key) headers for LLM providers.
 

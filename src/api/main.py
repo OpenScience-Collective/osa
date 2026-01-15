@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from src.api.config import get_settings
-from src.api.routers import hed_router
+from src.api.routers import hed_router, sync_router
 from src.api.scheduler import start_scheduler, stop_scheduler
 
 logger = logging.getLogger(__name__)
@@ -88,6 +88,7 @@ def create_app() -> FastAPI:
 def register_routes(app: FastAPI) -> None:
     """Register all application routes."""
     app.include_router(hed_router)
+    app.include_router(sync_router)
 
     @app.get("/health", response_model=HealthResponse, tags=["System"])
     async def health_check() -> HealthResponse:
@@ -117,6 +118,9 @@ def register_routes(app: FastAPI) -> None:
                 "GET /hed/sessions": "List active sessions",
                 "GET /hed/sessions/{session_id}": "Get session info",
                 "DELETE /hed/sessions/{session_id}": "Delete a session",
+                "GET /sync/status": "Knowledge sync status",
+                "GET /sync/health": "Sync health check",
+                "POST /sync/trigger": "Trigger sync (requires API key)",
                 "GET /health": "Health check",
             },
         }

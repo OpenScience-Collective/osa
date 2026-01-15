@@ -34,7 +34,15 @@ class Settings(BaseSettings):
 
     # CORS Settings
     cors_origins: list[str] = Field(
-        default=["http://localhost:3000", "http://localhost:8080", "http://localhost:8888"],
+        default=[
+            "http://localhost:3000",
+            "http://localhost:8080",
+            "http://localhost:8888",
+            "https://osc.earth",
+            "https://www.osc.earth",
+            "https://docs.osc.earth",
+            "https://openscience-collective.github.io",
+        ],
         description="Allowed CORS origins",
     )
 
