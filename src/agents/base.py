@@ -143,7 +143,6 @@ class BaseAgent(ABC):
                 strategy="last",  # Keep most recent messages
                 token_counter=count_tokens_approximately,
                 start_on="human",  # Ensure we start on a user message
-                end_on=("human", "tool"),  # Valid ending message types
                 include_system=False,  # System prompt handled separately
             )
 

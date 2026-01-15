@@ -238,3 +238,23 @@ class TestTokenTrimming:
 
         # Should only have system prompt
         assert len(messages) == 1
+
+    def test_prepare_messages_preserves_ai_responses(self) -> None:
+        """Trimming should preserve final AI responses, not drop them."""
+        model = FakeListChatModel(responses=["Response"])
+        agent = SimpleAgent(model=model, max_conversation_tokens=500)
+
+        # Conversation ending with AI response (common pattern)
+        messages = [
+            HumanMessage(content="What is HED?"),
+            AIMessage(content="HED is Hierarchical Event Descriptors."),
+        ]
+
+        state = {"messages": messages}
+        result = agent._prepare_messages(state)
+
+        # The AI response should be preserved (not dropped by end_on filter)
+        conversation = result[1:]  # Skip system prompt
+        assert len(conversation) == 2
+        assert isinstance(conversation[-1], AIMessage)
+        assert "HED" in conversation[-1].content
