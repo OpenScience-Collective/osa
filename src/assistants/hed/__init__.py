@@ -21,11 +21,16 @@ Usage:
     assistant = HEDAssistant(model=llm)
 """
 
+import ipaddress
 import logging
+import socket
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
+import httpx
 from langchain_core.tools import tool
+from markdownify import markdownify
 
 from src.agents.base import ToolAgent
 from src.assistants.registry import registry
@@ -55,6 +60,172 @@ class PageContext:
 
     url: str | None = None
     title: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# SSRF Protection Utilities (used by _create_fetch_current_page_tool and tests)
+# ---------------------------------------------------------------------------
+
+
+def is_safe_url(url: str) -> tuple[bool, str, str | None]:
+    """Validate URL is safe to fetch (prevents SSRF attacks).
+
+    This function resolves DNS and returns the resolved IP to prevent
+    TOCTOU (Time-Of-Check-Time-Of-Use) attacks where DNS could return
+    different IPs between validation and fetch.
+
+    Args:
+        url: The URL to validate.
+
+    Returns:
+        Tuple of (is_safe, error_message, resolved_ip).
+        - error_message is empty if safe
+        - resolved_ip is the IP address to use for fetching (prevents DNS rebinding)
+    """
+    parsed = urlparse(url)
+
+    # Only allow http/https
+    if parsed.scheme not in ("http", "https"):
+        logger.warning("SSRF blocked: invalid scheme '%s' in URL: %s", parsed.scheme, url)
+        return False, "Only HTTP/HTTPS protocols are allowed", None
+
+    hostname = parsed.hostname
+    if not hostname:
+        logger.warning("SSRF blocked: empty hostname in URL: %s", url)
+        return False, "Invalid hostname", None
+
+    # Resolve hostname to IP to check for private ranges
+    try:
+        resolved_ip = socket.gethostbyname(hostname)
+    except socket.gaierror as e:
+        # DNS resolution failed - treat as security error
+        logger.warning("SSRF blocked: DNS resolution failed for %s: %s", hostname, e)
+        return False, f"DNS resolution failed for {hostname}: {e}", None
+    except socket.herror as e:
+        logger.warning("SSRF blocked: host error for %s: %s", hostname, e)
+        return False, f"Host error for {hostname}: {e}", None
+    except TimeoutError as e:
+        logger.warning("SSRF blocked: DNS timeout for %s: %s", hostname, e)
+        return False, f"DNS resolution timed out for {hostname}", None
+
+    try:
+        ip_obj = ipaddress.ip_address(resolved_ip)
+    except ValueError as e:
+        logger.warning("SSRF blocked: invalid IP address '%s': %s", resolved_ip, e)
+        return False, f"Invalid IP address: {resolved_ip}", None
+
+    # Block private/internal IPs to prevent SSRF
+    if ip_obj.is_private:
+        logger.warning("SSRF blocked: private IP %s for host %s", resolved_ip, hostname)
+        return False, f"Access to private IP ranges is not allowed: {resolved_ip}", None
+    if ip_obj.is_loopback:
+        logger.warning("SSRF blocked: loopback IP %s for host %s", resolved_ip, hostname)
+        return False, f"Access to loopback addresses is not allowed: {resolved_ip}", None
+    if ip_obj.is_link_local:
+        logger.warning("SSRF blocked: link-local IP %s for host %s", resolved_ip, hostname)
+        return False, f"Access to link-local addresses is not allowed: {resolved_ip}", None
+    if ip_obj.is_reserved:
+        logger.warning("SSRF blocked: reserved IP %s for host %s", resolved_ip, hostname)
+        return False, f"Access to reserved IP ranges is not allowed: {resolved_ip}", None
+
+    return True, "", resolved_ip
+
+
+def _fetch_page_content_impl(url: str) -> str:
+    """Internal implementation to fetch page content.
+
+    This is not a tool - it's called by the dynamically created tool.
+
+    Args:
+        url: The URL of the page to fetch content from.
+
+    Returns:
+        The page content in markdown format, or an error message.
+    """
+    # Validate URL for SSRF protection
+    if not url or not url.startswith(("http://", "https://")):
+        logger.warning("Page fetch blocked: invalid URL format: %s", url)
+        return f"Error: Invalid URL '{url}'. URL must start with http:// or https://"
+
+    is_safe_result, error_msg, resolved_ip = is_safe_url(url)
+    if not is_safe_result:
+        return f"Error: {error_msg}"
+
+    logger.info("Fetching page content from %s (resolved to %s)", url, resolved_ip)
+
+    try:
+        # Fetch the page (disable redirects to prevent redirect-based SSRF)
+        with httpx.Client(timeout=10.0, follow_redirects=False) as client:
+            response = client.get(url)
+
+            # Handle redirects manually with validation
+            redirect_count = 0
+            max_redirects = 3
+            while response.is_redirect and redirect_count < max_redirects:
+                redirect_url = response.headers.get("location")
+                if not redirect_url:
+                    logger.warning("Redirect response missing Location header from %s", url)
+                    break
+
+                # Handle relative redirects
+                if redirect_url.startswith("/"):
+                    parsed = urlparse(url)
+                    redirect_url = f"{parsed.scheme}://{parsed.netloc}{redirect_url}"
+
+                redirect_safe, redirect_error, _ = is_safe_url(redirect_url)
+                if not redirect_safe:
+                    logger.warning(
+                        "SSRF blocked: redirect from %s to unsafe URL %s: %s",
+                        url,
+                        redirect_url,
+                        redirect_error,
+                    )
+                    return f"Error: Redirect to unsafe URL blocked: {redirect_error}"
+
+                logger.info("Following redirect to %s", redirect_url)
+                response = client.get(redirect_url)
+                redirect_count += 1
+
+            if response.is_redirect:
+                logger.warning("Too many redirects (>%d) from %s", max_redirects, url)
+                return f"Error: Too many redirects (exceeded {max_redirects})"
+
+            response.raise_for_status()
+
+        # Validate content type
+        content_type = response.headers.get("content-type", "")
+        if "text/html" not in content_type.lower():
+            logger.warning("Non-HTML content type from %s: %s", url, content_type)
+            return f"Error: URL returned non-HTML content: {content_type}"
+
+        # Convert HTML to markdown
+        content = markdownify(response.text, heading_style="ATX", strip=["script", "style"])
+
+        # Clean up excessive whitespace
+        lines = [line.strip() for line in content.split("\n")]
+        content = "\n".join(line for line in lines if line)
+
+        # Truncate if too long
+        if len(content) > MAX_PAGE_CONTENT_LENGTH:
+            logger.info(
+                "Content from %s truncated from %d to %d chars",
+                url,
+                len(content),
+                MAX_PAGE_CONTENT_LENGTH,
+            )
+            content = content[:MAX_PAGE_CONTENT_LENGTH] + "\n\n... [content truncated]"
+
+        return f"# Content from {url}\n\n{content}"
+
+    except httpx.HTTPStatusError as e:
+        logger.warning("HTTP error fetching %s: %d", url, e.response.status_code)
+        return f"Error fetching {url}: HTTP {e.response.status_code}"
+    except httpx.TimeoutException:
+        logger.warning("Timeout fetching %s", url)
+        return f"Error: Request timed out fetching {url}"
+    except httpx.RequestError as e:
+        logger.warning("Request error fetching %s: %s", url, e)
+        return f"Error fetching {url}: {e}"
 
 
 # HED System Prompt - adapted from QP's hedAssistantSystemPrompt.ts
@@ -262,36 +433,8 @@ def _create_fetch_current_page_tool(page_url: str):
     """Create a bound tool that fetches a specific page URL.
 
     This prevents the LLM from requesting arbitrary URLs (SSRF protection).
+    The bound page_url is passed to _fetch_page_content_impl for the actual fetch.
     """
-    import ipaddress
-    import socket
-    from urllib.parse import urlparse
-
-    import httpx
-    from markdownify import markdownify
-
-    def is_safe_url(url: str) -> tuple[bool, str]:
-        """Validate URL is safe to fetch."""
-        parsed = urlparse(url)
-
-        if parsed.scheme not in ("http", "https"):
-            return False, "Only HTTP/HTTPS protocols are allowed"
-
-        hostname = parsed.hostname
-        if not hostname:
-            return False, "Invalid hostname"
-
-        try:
-            resolved_ip = socket.gethostbyname(hostname)
-            ip_obj = ipaddress.ip_address(resolved_ip)
-
-            if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local:
-                return False, f"Access to private/local IP not allowed: {resolved_ip}"
-
-        except (socket.gaierror, ValueError) as e:
-            return False, f"DNS resolution failed: {e}"
-
-        return True, ""
 
     @tool
     def fetch_current_page() -> str:
@@ -304,30 +447,7 @@ def _create_fetch_current_page_tool(page_url: str):
         Returns:
             The page content in markdown format, or an error message.
         """
-        is_safe, error = is_safe_url(page_url)
-        if not is_safe:
-            return f"Error: {error}"
-
-        try:
-            with httpx.Client(timeout=10.0, follow_redirects=True) as client:
-                response = client.get(page_url)
-                response.raise_for_status()
-
-            content_type = response.headers.get("content-type", "")
-            if "text/html" not in content_type.lower():
-                return f"Error: URL returned non-HTML content: {content_type}"
-
-            content = markdownify(response.text, heading_style="ATX", strip=["script", "style"])
-            lines = [line.strip() for line in content.split("\n")]
-            content = "\n".join(line for line in lines if line)
-
-            if len(content) > MAX_PAGE_CONTENT_LENGTH:
-                content = content[:MAX_PAGE_CONTENT_LENGTH] + "\n\n... [content truncated]"
-
-            return f"# Content from {page_url}\n\n{content}"
-
-        except httpx.HTTPError as e:
-            return f"Error fetching {page_url}: {e}"
+        return _fetch_page_content_impl(page_url)
 
     return fetch_current_page
 
