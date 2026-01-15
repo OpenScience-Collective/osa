@@ -218,3 +218,27 @@ def sync_repos(repos: list[str], project: str = "hed", incremental: bool = True)
     total = sum(results.values())
     logger.info("Total items synced for %s: %d", project, total)
     return results
+
+
+# ---------------------------------------------------------------------------
+# Backward compatibility exports (used by CLI sync commands)
+# TODO: Update CLI to use registry-based sync and remove these
+# ---------------------------------------------------------------------------
+
+# Import HED repos from the HED assistant's sync config
+from src.assistants.hed.sync import HED_REPOS  # noqa: E402
+
+
+def sync_all_hed_repos(incremental: bool = True) -> dict[str, int]:
+    """Sync all HED repositories.
+
+    This is a backward-compatible wrapper that uses the new sync_repos function
+    with HED-specific configuration.
+
+    Args:
+        incremental: If True, only sync items since last sync
+
+    Returns:
+        Dict mapping repo to items synced
+    """
+    return sync_repos(HED_REPOS, project="hed", incremental=incremental)
