@@ -10,13 +10,13 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from src.api.config import get_settings
 from src.api.scheduler import get_scheduler, run_sync_now
-from src.api.security import verify_api_key
-from src.knowledge.db import get_connection, get_db_path, get_stats
+from src.api.security import RequireAdminAuth
+from src.knowledge.db import get_connection, get_stats
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +75,6 @@ class SyncStatusResponse(BaseModel):
     papers: PapersStatus
     scheduler: SchedulerStatus
     health: HealthStatus
-    database_path: str
 
 
 class TriggerRequest(BaseModel):
@@ -148,7 +147,14 @@ def _parse_iso_datetime(iso_str: str | None) -> datetime | None:
 
 
 def _calculate_health(metadata: dict[str, Any]) -> HealthStatus:
-    """Calculate health status based on sync ages."""
+    """Calculate health status based on sync ages.
+
+    Health is determined by sync freshness:
+    - GitHub: Healthy if synced within 48 hours, or never synced (new install)
+    - Papers: Healthy if synced within 2 weeks, or never synced (new install)
+
+    New installations are considered healthy until the first sync should have run.
+    """
     now = datetime.now(UTC)
 
     # Find most recent GitHub sync
@@ -170,8 +176,9 @@ def _calculate_health(metadata: dict[str, Any]) -> HealthStatus:
     papers_age = (now - papers_last).total_seconds() / 3600 if papers_last else None
 
     # Health thresholds: GitHub should sync daily (48h grace), papers weekly (2 weeks grace)
-    github_healthy = github_age is not None and github_age < 48
-    papers_healthy = papers_age is not None and papers_age < (14 * 24)  # 2 weeks
+    # Never synced (None) is considered healthy - new installation grace period
+    github_healthy = github_age is None or github_age < 48
+    papers_healthy = papers_age is None or papers_age < (14 * 24)  # 2 weeks
 
     return HealthStatus(
         healthy=github_healthy,  # Papers are secondary, so health based on GitHub
@@ -253,14 +260,13 @@ async def get_sync_status() -> SyncStatusResponse:
             next_papers_sync=next_papers,
         ),
         health=_calculate_health(metadata),
-        database_path=str(get_db_path()),
     )
 
 
 @router.post("/trigger", response_model=TriggerResponse)
 async def trigger_sync(
     request: TriggerRequest,
-    _api_key: str = Depends(verify_api_key),
+    _api_key: RequireAdminAuth,
 ) -> TriggerResponse:
     """Manually trigger a sync job.
 
