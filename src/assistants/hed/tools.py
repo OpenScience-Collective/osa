@@ -11,6 +11,7 @@ by the LLM to validate examples and fetch documentation.
 """
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -20,7 +21,9 @@ from typing import Any
 import httpx
 from langchain_core.tools import tool
 
-from .docs import format_hed_doc_list, retrieve_hed_doc
+from .docs import HED_DOCS, retrieve_hed_doc
+
+logger = logging.getLogger(__name__)
 
 
 def _get_session_info(base_url: str = "https://hedtools.org/hed") -> tuple[str, str]:
@@ -138,12 +141,14 @@ def validate_hed_string(hed_string: str, schema_version: str = "8.4.0") -> dict[
             }
 
     except httpx.HTTPError as e:
+        logger.warning("HED validation API error: %s", e)
         return {
             "valid": False,
             "errors": f"API error: {e}. Could not validate. Use examples from documentation instead.",
             "schema_version": schema_version,
         }
     except Exception as e:
+        logger.exception("Unexpected error during HED validation")
         return {
             "valid": False,
             "errors": f"Validation failed: {e}. Use examples from documentation instead.",
@@ -204,7 +209,8 @@ def suggest_hed_tags(search_terms: list[str], top_n: int = 10) -> dict[str, list
             cli_path = dev_path
 
     if not cli_path:
-        # Return empty results with error
+        # hed-suggest not available - this is expected in many environments
+        logger.debug("hed-suggest CLI not found; tag suggestions unavailable")
         return {term: [] for term in search_terms}
 
     try:
@@ -222,7 +228,11 @@ def suggest_hed_tags(search_terms: list[str], top_n: int = 10) -> dict[str, list
         )
 
         if result.returncode != 0:
-            # CLI failed, return empty results
+            logger.warning(
+                "hed-suggest CLI failed with exit code %d: %s",
+                result.returncode,
+                result.stderr[:200] if result.stderr else "(no stderr)",
+            )
             return {term: [] for term in search_terms}
 
         # Parse JSON from stdout
@@ -230,10 +240,13 @@ def suggest_hed_tags(search_terms: list[str], top_n: int = 10) -> dict[str, list
         return output
 
     except subprocess.TimeoutExpired:
+        logger.error("hed-suggest CLI timed out after 30 seconds")
         return {term: [] for term in search_terms}
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        logger.error("hed-suggest CLI returned invalid JSON: %s", e)
         return {term: [] for term in search_terms}
     except Exception:
+        logger.exception("Unexpected error in suggest_hed_tags")
         return {term: [] for term in search_terms}
 
 
@@ -265,8 +278,10 @@ def get_hed_schema_versions() -> dict[str, Any]:
         return {"versions": versions, "error": ""}
 
     except httpx.HTTPError as e:
+        logger.warning("Failed to get HED schema versions from hedtools.org: %s", e)
         return {"versions": [], "error": f"API error: {e}"}
     except Exception as e:
+        logger.exception("Unexpected error getting HED schema versions")
         return {"versions": [], "error": f"Failed to get versions: {e}"}
 
 
@@ -293,4 +308,4 @@ def retrieve_hed_docs(url: str) -> str:
 
 
 # Update docstring with available docs
-retrieve_hed_docs.__doc__ = retrieve_hed_docs.__doc__.format(doc_list=format_hed_doc_list())
+retrieve_hed_docs.__doc__ = retrieve_hed_docs.__doc__.format(doc_list=HED_DOCS.format_doc_list())
