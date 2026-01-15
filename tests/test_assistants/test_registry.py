@@ -126,7 +126,7 @@ class TestAssistantRegistry:
             name="Test",
             description="Test assistant",
         )
-        def create_test(_model, **_kwargs):
+        def create_test(model, **kwargs):  # noqa: ARG001
             return mock_agent
 
         model = MagicMock()
