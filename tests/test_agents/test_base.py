@@ -7,9 +7,15 @@ actual LLM API calls.
 import pytest
 from langchain_core.language_models import FakeListChatModel
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.tools import tool
 
-from src.agents.base import BaseAgent, SimpleAgent, ToolAgent
+from src.agents.base import (
+    DEFAULT_MAX_CONVERSATION_TOKENS,
+    BaseAgent,
+    SimpleAgent,
+    ToolAgent,
+)
 
 
 @tool
@@ -145,3 +151,110 @@ class TestAgentStateTracking:
 
         assert "tool_calls" in result
         assert isinstance(result["tool_calls"], list)
+
+
+class TestTokenTrimming:
+    """Tests for conversation token trimming."""
+
+    def test_default_max_conversation_tokens(self) -> None:
+        """Default max conversation tokens should be 6000."""
+        assert DEFAULT_MAX_CONVERSATION_TOKENS == 6000
+
+    def test_agent_uses_default_max_tokens(self) -> None:
+        """Agent should use default max conversation tokens."""
+        model = FakeListChatModel(responses=["Hello!"])
+        agent = SimpleAgent(model=model)
+        assert agent.max_conversation_tokens == DEFAULT_MAX_CONVERSATION_TOKENS
+
+    def test_agent_accepts_custom_max_tokens(self) -> None:
+        """Agent should accept custom max conversation tokens."""
+        model = FakeListChatModel(responses=["Hello!"])
+        agent = SimpleAgent(model=model, max_conversation_tokens=4000)
+        assert agent.max_conversation_tokens == 4000
+
+    def test_prepare_messages_includes_system_prompt(self) -> None:
+        """_prepare_messages should always include system prompt."""
+        model = FakeListChatModel(responses=["Hello!"])
+        agent = SimpleAgent(model=model)
+
+        state = {"messages": [HumanMessage(content="Hi")]}
+        messages = agent._prepare_messages(state)
+
+        # First message should be system prompt
+        assert len(messages) >= 2
+        assert messages[0].content  # System prompt exists
+        assert "open science" in messages[0].content.lower()
+
+    def test_prepare_messages_trims_long_conversation(self) -> None:
+        """_prepare_messages should trim conversation exceeding token budget."""
+        model = FakeListChatModel(responses=["Response"])
+        # Use very small token budget to force trimming
+        agent = SimpleAgent(model=model, max_conversation_tokens=100)
+
+        # Create a long conversation that exceeds 100 tokens
+        long_messages = [
+            HumanMessage(content="This is a very long message " * 20),
+            AIMessage(content="This is a very long response " * 20),
+            HumanMessage(content="Another long message " * 20),
+            AIMessage(content="Another long response " * 20),
+            HumanMessage(content="Final question"),
+        ]
+
+        state = {"messages": long_messages}
+        messages = agent._prepare_messages(state)
+
+        # Count tokens in conversation part (excluding system prompt)
+        conversation_messages = messages[1:]  # Skip system prompt
+        conversation_tokens = count_tokens_approximately(conversation_messages)
+
+        # Should be trimmed to fit within budget (with some tolerance)
+        assert conversation_tokens <= 150  # 100 + buffer
+
+    def test_prepare_messages_keeps_recent_messages(self) -> None:
+        """Trimming should keep most recent messages."""
+        model = FakeListChatModel(responses=["Response"])
+        agent = SimpleAgent(model=model, max_conversation_tokens=200)
+
+        messages = [
+            HumanMessage(content="Old message 1 " * 50),
+            AIMessage(content="Old response 1 " * 50),
+            HumanMessage(content="Recent question"),
+        ]
+
+        state = {"messages": messages}
+        result = agent._prepare_messages(state)
+
+        # The most recent message should be preserved
+        conversation = result[1:]  # Skip system prompt
+        assert any("Recent question" in str(m.content) for m in conversation)
+
+    def test_prepare_messages_handles_empty_state(self) -> None:
+        """_prepare_messages should handle empty message state."""
+        model = FakeListChatModel(responses=["Hello!"])
+        agent = SimpleAgent(model=model)
+
+        state = {"messages": []}
+        messages = agent._prepare_messages(state)
+
+        # Should only have system prompt
+        assert len(messages) == 1
+
+    def test_prepare_messages_preserves_ai_responses(self) -> None:
+        """Trimming should preserve final AI responses, not drop them."""
+        model = FakeListChatModel(responses=["Response"])
+        agent = SimpleAgent(model=model, max_conversation_tokens=500)
+
+        # Conversation ending with AI response (common pattern)
+        messages = [
+            HumanMessage(content="What is HED?"),
+            AIMessage(content="HED is Hierarchical Event Descriptors."),
+        ]
+
+        state = {"messages": messages}
+        result = agent._prepare_messages(state)
+
+        # The AI response should be preserved (not dropped by end_on filter)
+        conversation = result[1:]  # Skip system prompt
+        assert len(conversation) == 2
+        assert isinstance(conversation[-1], AIMessage)
+        assert "HED" in conversation[-1].content

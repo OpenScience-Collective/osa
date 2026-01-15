@@ -1,17 +1,25 @@
 """Base agent workflow patterns for OSA."""
 
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages.utils import count_tokens_approximately, trim_messages
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode
 
 from src.agents.state import BaseAgentState
+
+logger = logging.getLogger(__name__)
+
+# Token budget for conversation history (excludes system prompt)
+# System prompt with preloaded docs is ~14K tokens, conversation budget is additional
+DEFAULT_MAX_CONVERSATION_TOKENS = 6000
 
 
 class BaseAgent(ABC):
@@ -25,6 +33,7 @@ class BaseAgent(ABC):
         model: BaseChatModel,
         tools: Sequence[BaseTool] | None = None,
         system_prompt: str | None = None,
+        max_conversation_tokens: int = DEFAULT_MAX_CONVERSATION_TOKENS,
     ) -> None:
         """Initialize the agent.
 
@@ -32,10 +41,15 @@ class BaseAgent(ABC):
             model: The language model to use.
             tools: Optional list of tools available to the agent.
             system_prompt: Optional system prompt for the agent.
+            max_conversation_tokens: Maximum tokens for conversation history.
+                This caps the accumulated messages to prevent unbounded growth.
+                Default is 6000 tokens, which combined with ~14K system prompt
+                keeps total context under 20K tokens per iteration.
         """
         self.model = model
         self.tools = list(tools) if tools else []
         self.system_prompt = system_prompt
+        self.max_conversation_tokens = max_conversation_tokens
 
         # Bind tools to model if supported
         if self.tools:
@@ -104,17 +118,43 @@ class BaseAgent(ABC):
         }
 
     def _prepare_messages(self, state: BaseAgentState) -> list[BaseMessage]:
-        """Prepare messages for the model, including system prompt."""
+        """Prepare messages for the model, including system prompt.
+
+        Uses token-aware trimming to prevent unbounded context growth.
+        The system prompt is always included in full, while conversation
+        history is trimmed to fit within max_conversation_tokens budget.
+        """
         messages: list[BaseMessage] = []
 
-        # Add system prompt
+        # Add system prompt (always included in full)
         system_prompt = self.system_prompt or self.get_system_prompt()
         if system_prompt:
             messages.append(SystemMessage(content=system_prompt))
 
-        # Add conversation messages
+        # Trim conversation history to fit token budget
         state_messages = state.get("messages", [])
-        messages.extend(state_messages)
+        if state_messages:
+            # Count tokens before trimming for logging
+            pre_trim_tokens = count_tokens_approximately(state_messages)
+
+            trimmed = trim_messages(
+                state_messages,
+                max_tokens=self.max_conversation_tokens,
+                strategy="last",  # Keep most recent messages
+                token_counter=count_tokens_approximately,
+                start_on="human",  # Ensure we start on a user message
+                include_system=False,  # System prompt handled separately
+            )
+
+            post_trim_tokens = count_tokens_approximately(trimmed)
+            if pre_trim_tokens > post_trim_tokens:
+                logger.debug(
+                    "Trimmed conversation from %d to %d tokens",
+                    pre_trim_tokens,
+                    post_trim_tokens,
+                )
+
+            messages.extend(trimmed)
 
         return messages
 
