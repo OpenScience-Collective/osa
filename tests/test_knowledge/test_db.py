@@ -300,3 +300,58 @@ class TestSyncMetadata:
                 assert row is not None
                 assert row["items_synced"] == 10
                 assert row["source_type"] == "github"
+
+
+class TestProjectNameValidation:
+    """Tests for project name validation in get_db_path."""
+
+    def test_valid_project_names(self) -> None:
+        """Should accept valid project names."""
+        from src.knowledge.db import get_db_path
+
+        # Basic alphanumeric
+        assert get_db_path("hed").name == "hed.db"
+        assert get_db_path("bids").name == "bids.db"
+
+        # With hyphens
+        assert get_db_path("hed-standard").name == "hed-standard.db"
+
+        # With underscores
+        assert get_db_path("hed_v2").name == "hed_v2.db"
+
+        # Mixed
+        assert get_db_path("hed-test_v2").name == "hed-test_v2.db"
+
+    def test_invalid_empty_project_name(self) -> None:
+        """Should reject empty project name."""
+        from src.knowledge.db import get_db_path
+
+        with pytest.raises(ValueError, match="Invalid project name"):
+            get_db_path("")
+
+    def test_invalid_path_traversal(self) -> None:
+        """Should reject project names with path traversal attempts."""
+        from src.knowledge.db import get_db_path
+
+        with pytest.raises(ValueError, match="Invalid project name"):
+            get_db_path("../../../etc")
+
+    def test_invalid_slashes(self) -> None:
+        """Should reject project names containing slashes."""
+        from src.knowledge.db import get_db_path
+
+        with pytest.raises(ValueError, match="Invalid project name"):
+            get_db_path("hed/bids")
+
+    def test_invalid_special_characters(self) -> None:
+        """Should reject project names with special characters."""
+        from src.knowledge.db import get_db_path
+
+        with pytest.raises(ValueError, match="Invalid project name"):
+            get_db_path("hed@bids")
+
+        with pytest.raises(ValueError, match="Invalid project name"):
+            get_db_path("hed.bids")
+
+        with pytest.raises(ValueError, match="Invalid project name"):
+            get_db_path("hed bids")
