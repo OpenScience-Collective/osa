@@ -30,7 +30,9 @@
     allowPageContext: true,  // Show the checkbox option
     pageContextDefaultEnabled: true,  // Default state of checkbox
     pageContextStorageKey: 'osa-page-context-enabled',
-    pageContextLabel: 'Share page URL to help answer questions'
+    pageContextLabel: 'Share page URL to help answer questions',
+    // Fullscreen mode (for pop-out windows)
+    fullscreen: false
   };
 
   // State
@@ -50,7 +52,8 @@
     reset: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>',
     brain: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/></svg>',
     copy: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>',
-    check: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>'
+    check: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>',
+    popout: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>'
   };
 
   // CSS Styles
@@ -660,6 +663,33 @@
       cursor: pointer;
       user-select: none;
     }
+
+    /* Fullscreen mode (for pop-out windows) */
+    .osa-chat-widget.fullscreen .osa-chat-button {
+      display: none !important;
+    }
+
+    .osa-chat-widget.fullscreen .osa-chat-window {
+      position: fixed !important;
+      top: 0 !important;
+      left: 0 !important;
+      right: 0 !important;
+      bottom: 0 !important;
+      width: 100% !important;
+      height: 100% !important;
+      max-width: none !important;
+      max-height: none !important;
+      border-radius: 0 !important;
+      display: flex !important;
+    }
+
+    .osa-chat-widget.fullscreen .osa-resize-handle {
+      display: none !important;
+    }
+
+    .osa-chat-widget.fullscreen .osa-chat-header {
+      border-radius: 0;
+    }
   `;
 
   // Escape HTML for user messages
@@ -1085,7 +1115,7 @@
   // Create the widget DOM
   function createWidget() {
     const container = document.createElement('div');
-    container.className = 'osa-chat-widget';
+    container.className = 'osa-chat-widget' + (CONFIG.fullscreen ? ' fullscreen' : '');
 
     const experimentalBadge = CONFIG.showExperimentalBadge
       ? '<span class="osa-experimental-badge">Experimental</span>'
@@ -1110,10 +1140,13 @@
             </div>
           </div>
           <div class="osa-header-actions">
+            <button class="osa-header-btn osa-popout-btn" title="Open in new window" style="display: ${CONFIG.fullscreen ? 'none' : 'flex'}">
+              ${ICONS.popout}
+            </button>
             <button class="osa-header-btn osa-reset-btn" title="Clear chat">
               ${ICONS.reset}
             </button>
-            <button class="osa-header-btn osa-close-btn" title="Close">
+            <button class="osa-header-btn osa-close-btn" title="Close" style="display: ${CONFIG.fullscreen ? 'none' : 'flex'}">
               ${ICONS.close}
             </button>
           </div>
@@ -1401,8 +1434,76 @@
     }
   }
 
+  // Open chat in a new popup window
+  async function openPopout() {
+    // Find the script URL
+    const scripts = document.querySelectorAll('script[src*="osa-chat-widget"]');
+    const scriptUrl = scripts.length > 0 ? scripts[scripts.length - 1].src : null;
+
+    if (!scriptUrl) {
+      alert('Could not find widget script URL. Pop-out is not available.');
+      return;
+    }
+
+    // Fetch the script content
+    let scriptCode = '';
+    try {
+      const response = await fetch(scriptUrl);
+      scriptCode = await response.text();
+    } catch (e) {
+      console.error('Failed to fetch widget script:', e);
+      alert('Failed to load widget for pop-out. Please try again.');
+      return;
+    }
+
+    // Create popup config with fullscreen mode
+    const popupConfig = { ...CONFIG, fullscreen: true };
+
+    // Create the popup HTML with config set BEFORE the widget script runs
+    const popupHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtml(CONFIG.title)}</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      height: 100vh;
+      overflow: hidden;
+    }
+  </style>
+</head>
+<body>
+  <script>
+    // Pre-configure widget before it initializes
+    window.__OSA_CHAT_CONFIG__ = ${JSON.stringify(popupConfig)};
+  <\/script>
+  <script>
+    // Widget code (will pick up __OSA_CHAT_CONFIG__ if present)
+    ${scriptCode}
+  <\/script>
+</body>
+</html>`;
+
+    // Open the popup window
+    const popup = window.open('', '_blank', 'width=500,height=700,menubar=no,toolbar=no,location=no,status=no');
+    if (popup) {
+      popup.document.write(popupHtml);
+      popup.document.close();
+    } else {
+      alert('Please allow popups to open the chat in a new window.');
+    }
+  }
+
   // Initialize widget
   function init() {
+    // Check for pre-configured settings (used by pop-out windows)
+    if (window.__OSA_CHAT_CONFIG__) {
+      Object.assign(CONFIG, window.__OSA_CHAT_CONFIG__);
+    }
+
     loadPageContextPreference();
     loadHistory();
     injectStyles();
@@ -1415,6 +1516,7 @@
     const chatButton = container.querySelector('.osa-chat-button');
     const closeBtn = container.querySelector('.osa-close-btn');
     const resetBtn = container.querySelector('.osa-reset-btn');
+    const popoutBtn = container.querySelector('.osa-popout-btn');
     const input = container.querySelector('.osa-chat-input input');
     const sendBtn = container.querySelector('.osa-send-btn');
     const suggestionsList = container.querySelector('.osa-suggestions-list');
@@ -1433,6 +1535,7 @@
     chatButton?.addEventListener('click', () => toggleChat(container));
     closeBtn?.addEventListener('click', () => toggleChat(container));
     resetBtn?.addEventListener('click', () => resetChat(container));
+    popoutBtn?.addEventListener('click', () => openPopout());
 
     if (sendBtn && input) {
       sendBtn.addEventListener('click', () => sendMessage(container, input.value));
@@ -1464,6 +1567,16 @@
       window.addEventListener('load', () => {
         if (window.turnstile) initTurnstile(container);
       });
+    }
+
+    // In fullscreen mode, open the chat immediately
+    if (CONFIG.fullscreen) {
+      isOpen = true;
+      const chatWindow = container.querySelector('.osa-chat-window');
+      chatWindow?.classList.add('open');
+      setTimeout(() => {
+        input?.focus();
+      }, 100);
     }
   }
 
