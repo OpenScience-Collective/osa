@@ -122,22 +122,49 @@ CREATE INDEX IF NOT EXISTS idx_papers_source ON papers(source);
 """
 
 
-def get_db_path() -> Path:
-    """Get path to knowledge database."""
-    return get_data_dir() / "knowledge" / "hed.db"
+def get_db_path(project: str = "hed") -> Path:
+    """Get path to knowledge database for a project.
+
+    Each assistant/project has its own isolated knowledge database.
+
+    Args:
+        project: Assistant/project name (e.g., 'hed', 'bids', 'eeglab').
+                 Defaults to 'hed' for backward compatibility.
+
+    Returns:
+        Path to the project's knowledge database.
+
+    Raises:
+        ValueError: If project name contains invalid characters.
+    """
+    # Validate project name to prevent path traversal
+    if not project or not project.replace("-", "").replace("_", "").isalnum():
+        raise ValueError(
+            f"Invalid project name: {project}. "
+            "Use only alphanumeric characters, hyphens, and underscores."
+        )
+
+    return get_data_dir() / "knowledge" / f"{project}.db"
 
 
 @contextmanager
-def get_connection() -> Iterator[sqlite3.Connection]:
+def get_connection(project: str = "hed") -> Iterator[sqlite3.Connection]:
     """Get database connection with row factory.
+
+    Args:
+        project: Assistant/project name. Defaults to 'hed'.
 
     Usage:
         with get_connection() as conn:
             cursor = conn.execute("SELECT * FROM github_items")
             for row in cursor:
                 print(row["title"])
+
+        # For a specific project:
+        with get_connection("bids") as conn:
+            ...
     """
-    db_path = get_db_path()
+    db_path = get_db_path(project)
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     conn = sqlite3.connect(str(db_path))
@@ -148,16 +175,19 @@ def get_connection() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def init_db() -> None:
-    """Initialize database schema.
+def init_db(project: str = "hed") -> None:
+    """Initialize database schema for a project.
 
     Creates all tables, FTS5 virtual tables, triggers, and indexes.
     Safe to call multiple times (uses IF NOT EXISTS).
+
+    Args:
+        project: Assistant/project name. Defaults to 'hed'.
     """
-    with get_connection() as conn:
+    with get_connection(project) as conn:
         conn.executescript(SCHEMA_SQL)
         conn.commit()
-    logger.info("Knowledge database initialized at %s", get_db_path())
+    logger.info("Knowledge database initialized at %s", get_db_path(project))
 
 
 def _now_iso() -> str:
@@ -248,17 +278,18 @@ def upsert_paper(
     )
 
 
-def get_last_sync(source_type: str, source_name: str) -> str | None:
+def get_last_sync(source_type: str, source_name: str, project: str = "hed") -> str | None:
     """Get last sync time for a source.
 
     Args:
         source_type: 'github' or 'papers'
         source_name: Repository name or paper source name
+        project: Assistant/project name. Defaults to 'hed'.
 
     Returns:
         ISO 8601 timestamp of last sync, or None if never synced
     """
-    with get_connection() as conn:
+    with get_connection(project) as conn:
         row = conn.execute(
             "SELECT last_sync_at FROM sync_metadata WHERE source_type = ? AND source_name = ?",
             (source_type, source_name),
@@ -266,15 +297,18 @@ def get_last_sync(source_type: str, source_name: str) -> str | None:
         return row["last_sync_at"] if row else None
 
 
-def update_sync_metadata(source_type: str, source_name: str, items_synced: int) -> None:
+def update_sync_metadata(
+    source_type: str, source_name: str, items_synced: int, project: str = "hed"
+) -> None:
     """Update sync metadata for a source.
 
     Args:
         source_type: 'github' or 'papers'
         source_name: Repository name or paper source name
         items_synced: Number of items synced in this run
+        project: Assistant/project name. Defaults to 'hed'.
     """
-    with get_connection() as conn:
+    with get_connection(project) as conn:
         conn.execute(
             """
             INSERT INTO sync_metadata (source_type, source_name, last_sync_at, items_synced)
@@ -288,13 +322,16 @@ def update_sync_metadata(source_type: str, source_name: str, items_synced: int) 
         conn.commit()
 
 
-def get_stats() -> dict[str, int]:
-    """Get database statistics.
+def get_stats(project: str = "hed") -> dict[str, int]:
+    """Get database statistics for a project.
+
+    Args:
+        project: Assistant/project name. Defaults to 'hed'.
 
     Returns:
         Dict with counts for each category
     """
-    with get_connection() as conn:
+    with get_connection(project) as conn:
         stats = {}
 
         # GitHub stats

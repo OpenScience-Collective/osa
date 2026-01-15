@@ -1,9 +1,7 @@
 """GitHub sync using gh CLI.
 
-Syncs issues and PRs from HED repositories:
-- hed-standard/hed-specification
-- hed-standard/hed-javascript
-- hed-standard/hed-schemas
+Syncs issues and PRs from configured repositories.
+Each assistant can configure its own repos via sync_config.
 
 Only stores title, first message (body), status, URL, and created date.
 No replies or comments are stored.
@@ -17,13 +15,6 @@ from typing import Any
 from src.knowledge.db import get_connection, get_last_sync, update_sync_metadata, upsert_github_item
 
 logger = logging.getLogger(__name__)
-
-# HED-specific repos (per user requirements)
-HED_REPOS = [
-    "hed-standard/hed-specification",
-    "hed-standard/hed-javascript",
-    "hed-standard/hed-schemas",
-]
 
 
 def _run_gh(args: list[str], timeout: int = 120) -> list[dict[str, Any]]:
@@ -55,11 +46,12 @@ def _run_gh(args: list[str], timeout: int = 120) -> list[dict[str, Any]]:
     return json.loads(result.stdout) if result.stdout.strip() else []
 
 
-def sync_repo_issues(repo: str, since: str | None = None) -> int:
+def sync_repo_issues(repo: str, project: str = "hed", since: str | None = None) -> int:
     """Sync issues from a repository.
 
     Args:
         repo: Repository in owner/name format
+        project: Assistant/project name for database isolation. Defaults to 'hed'.
         since: Optional ISO date to sync from (for incremental sync)
 
     Returns:
@@ -92,7 +84,7 @@ def sync_repo_issues(repo: str, since: str | None = None) -> int:
         return 0
 
     count = 0
-    with get_connection() as conn:
+    with get_connection(project) as conn:
         for item in items:
             # Skip if before since date (for incremental sync)
             if since and item.get("createdAt", "") < since:
@@ -112,15 +104,16 @@ def sync_repo_issues(repo: str, since: str | None = None) -> int:
             count += 1
         conn.commit()
 
-    logger.info("Synced %d issues from %s", count, repo)
+    logger.info("Synced %d issues from %s to %s.db", count, repo, project)
     return count
 
 
-def sync_repo_prs(repo: str, since: str | None = None) -> int:
+def sync_repo_prs(repo: str, project: str = "hed", since: str | None = None) -> int:
     """Sync PRs from a repository.
 
     Args:
         repo: Repository in owner/name format
+        project: Assistant/project name for database isolation. Defaults to 'hed'.
         since: Optional ISO date to sync from (for incremental sync)
 
     Returns:
@@ -153,7 +146,7 @@ def sync_repo_prs(repo: str, since: str | None = None) -> int:
         return 0
 
     count = 0
-    with get_connection() as conn:
+    with get_connection(project) as conn:
         for item in items:
             # Skip if before since date (for incremental sync)
             if since and item.get("createdAt", "") < since:
@@ -177,15 +170,16 @@ def sync_repo_prs(repo: str, since: str | None = None) -> int:
             count += 1
         conn.commit()
 
-    logger.info("Synced %d PRs from %s", count, repo)
+    logger.info("Synced %d PRs from %s to %s.db", count, repo, project)
     return count
 
 
-def sync_repo(repo: str, incremental: bool = True) -> int:
+def sync_repo(repo: str, project: str = "hed", incremental: bool = True) -> int:
     """Sync both issues and PRs from a repository.
 
     Args:
         repo: Repository in owner/name format
+        project: Assistant/project name for database isolation. Defaults to 'hed'.
         incremental: If True, only sync items since last sync
 
     Returns:
@@ -193,32 +187,34 @@ def sync_repo(repo: str, incremental: bool = True) -> int:
     """
     since = None
     if incremental:
-        since = get_last_sync("github", repo)
+        since = get_last_sync("github", repo, project)
         if since:
             logger.info("Incremental sync from %s for %s", since, repo)
 
-    issues = sync_repo_issues(repo, since)
-    prs = sync_repo_prs(repo, since)
+    issues = sync_repo_issues(repo, project, since)
+    prs = sync_repo_prs(repo, project, since)
     total = issues + prs
 
-    update_sync_metadata("github", repo, total)
+    update_sync_metadata("github", repo, total, project)
     return total
 
 
-def sync_all_hed_repos(incremental: bool = True) -> dict[str, int]:
-    """Sync all HED repositories.
+def sync_repos(repos: list[str], project: str = "hed", incremental: bool = True) -> dict[str, int]:
+    """Sync multiple repositories for a project.
 
     Args:
+        repos: List of repositories in owner/name format
+        project: Assistant/project name for database isolation. Defaults to 'hed'.
         incremental: If True, only sync items since last sync
 
     Returns:
         Dict mapping repo to items synced
     """
     results = {}
-    for repo in HED_REPOS:
-        count = sync_repo(repo, incremental)
+    for repo in repos:
+        count = sync_repo(repo, project, incremental)
         results[repo] = count
 
     total = sum(results.values())
-    logger.info("Total items synced from HED repos: %d", total)
+    logger.info("Total items synced for %s: %d", project, total)
     return results
