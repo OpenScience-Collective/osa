@@ -306,6 +306,8 @@ async def stream_response(
         }
 
         full_response = ""
+        in_tool_loop = False
+        buffered_content = ""
 
         # Stream the response
         async for event in graph.astream_events(state, version="v2"):
@@ -315,17 +317,35 @@ async def stream_response(
                 content = event.get("data", {}).get("chunk", {})
                 if hasattr(content, "content") and content.content:
                     chunk = content.content
-                    full_response += chunk
-                    # Send as SSE
-                    yield f"data: {chunk}\n\n"
+
+                    # If we're in a tool loop, buffer content instead of streaming
+                    # This prevents intermediate thinking from being shown to users
+                    if in_tool_loop:
+                        buffered_content += chunk
+                    else:
+                        full_response += chunk
+                        yield f"data: {chunk}\n\n"
 
             elif kind == "on_tool_start":
                 tool_name = event.get("name", "")
+                in_tool_loop = True
+                # Clear any buffered content from before tool started
+                buffered_content = ""
                 yield f"event: tool_start\ndata: {tool_name}\n\n"
 
             elif kind == "on_tool_end":
                 tool_name = event.get("name", "")
+                # Don't reset in_tool_loop yet - wait until we get the final response
                 yield f"event: tool_end\ndata: {tool_name}\n\n"
+
+            elif kind == "on_chain_end":
+                # Check if this is the final chain end (agent finished)
+                event_name = event.get("name", "")
+                if "agent" in event_name.lower():
+                    # Tools are done, reset flag to start streaming final response
+                    in_tool_loop = False
+                    # Discard buffered intermediate thinking
+                    buffered_content = ""
 
         # Add complete response to session history
         if full_response:
