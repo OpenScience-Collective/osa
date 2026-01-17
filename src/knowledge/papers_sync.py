@@ -368,3 +368,103 @@ def sync_all_papers(
     total = sum(results.values())
     logger.info("Total papers synced: %d", total)
     return results
+
+
+def sync_citing_papers(
+    dois: list[str],
+    max_results: int = 100,
+    project: str = "hed",
+) -> int:
+    """Sync papers that cite the given DOIs using OpenALEX.
+
+    OpenALEX supports finding papers that cite a specific work via
+    the `cites` filter. This is useful for tracking citations to
+    foundational papers in a field.
+
+    Args:
+        dois: List of DOIs to find citations for (without https://doi.org/ prefix)
+        max_results: Maximum number of citing papers per DOI
+        project: Project/assistant name for database isolation
+
+    Returns:
+        Total number of citing papers synced
+    """
+    total = 0
+
+    for doi in dois:
+        logger.info("Syncing papers citing DOI: %s", doi)
+
+        try:
+            # First, look up the OpenALEX work ID for this DOI
+            work_lookup = Works()[f"https://doi.org/{doi}"]
+            openalex_id = work_lookup.get("id")
+
+            if not openalex_id:
+                logger.warning("Could not find OpenALEX ID for DOI %s", doi)
+                continue
+
+            logger.debug("Found OpenALEX ID %s for DOI %s", openalex_id, doi)
+
+            # Now find papers that cite this work using the OpenALEX ID
+            works_query = (
+                Works()
+                .filter(cites=openalex_id)
+                .select(
+                    [
+                        "id",
+                        "title",
+                        "abstract_inverted_index",
+                        "publication_date",
+                        "doi",
+                        "primary_location",
+                    ]
+                )
+            )
+            works = list(works_query.get(per_page=min(max_results, 200)))
+        except Exception as e:
+            logger.warning("OpenALEX citation error for DOI %s: %s", doi, e)
+            continue
+
+        count = 0
+        with get_connection(project) as conn:
+            for work in works:
+                if count >= max_results:
+                    break
+
+                title = work.get("title")
+                if not title:
+                    continue
+
+                abstract = _reconstruct_abstract(work.get("abstract_inverted_index"))
+
+                work_doi = work.get("doi")
+                if work_doi:
+                    url = work_doi if work_doi.startswith("http") else f"https://doi.org/{work_doi}"
+                else:
+                    url = work.get("id", "")
+
+                openalex_id = work.get("id", "")
+                if openalex_id.startswith("https://openalex.org/"):
+                    external_id = openalex_id.replace("https://openalex.org/", "")
+                else:
+                    external_id = openalex_id
+
+                upsert_paper(
+                    conn,
+                    source="openalex",
+                    external_id=external_id,
+                    title=title,
+                    first_message=abstract,
+                    url=url,
+                    created_at=work.get("publication_date"),
+                )
+                count += 1
+
+            conn.commit()
+
+        # Update sync metadata with citing_ prefix to distinguish from query-based syncs
+        update_sync_metadata("papers", f"citing_{doi}", count, project)
+        logger.info("Synced %d papers citing %s", count, doi)
+        total += count
+
+    return total
