@@ -76,7 +76,9 @@ def sync_openalex_papers(query: str, max_results: int = 100) -> int:
     logger.info("Syncing OpenALEX papers for query: %s", query)
 
     try:
-        works = (
+        # Build query and fetch results
+        # pyalex returns a lazy query object, need to call .get() to fetch results
+        works_query = (
             Works()
             .search(query)
             .select(
@@ -90,6 +92,8 @@ def sync_openalex_papers(query: str, max_results: int = 100) -> int:
                 ]
             )
         )
+        # Fetch up to max_results using pagination
+        works = list(works_query.get(per_page=min(max_results, 200)))
     except Exception as e:
         logger.warning("OpenALEX error for '%s': %s", query, e)
         return 0
