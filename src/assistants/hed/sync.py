@@ -7,6 +7,7 @@ This configuration is used by the CLI sync commands.
 # HED-specific GitHub repositories to sync
 HED_REPOS = [
     "hed-standard/hed-specification",
+    "hed-standard/hed-python",
     "hed-standard/hed-javascript",
     "hed-standard/hed-schemas",
 ]
