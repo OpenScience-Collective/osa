@@ -102,7 +102,8 @@ class Settings(BaseSettings):
 
     # Knowledge Sync API Keys (all optional, for higher rate limits)
     github_token: str | None = Field(
-        default=None, description="GitHub token for gh CLI (higher rate limits for sync)"
+        default=None,
+        description="GitHub token for REST API (optional, higher rate limits for sync)",
     )
     semantic_scholar_api_key: str | None = Field(
         default=None, description="Semantic Scholar API key (optional, for higher rate limits)"
