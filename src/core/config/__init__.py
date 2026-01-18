@@ -8,6 +8,7 @@ from src.core.config.community import (
     DocSource,
     ExtensionsConfig,
     GitHubConfig,
+    McpServer,
     PythonPlugin,
 )
 
@@ -19,5 +20,6 @@ __all__ = [
     "DocSource",
     "ExtensionsConfig",
     "GitHubConfig",
+    "McpServer",
     "PythonPlugin",
 ]

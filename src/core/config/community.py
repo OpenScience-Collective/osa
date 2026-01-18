@@ -20,7 +20,7 @@ Example YAML:
 """
 
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
@@ -156,7 +156,7 @@ class CommunityConfig(BaseModel):
     extensions: ExtensionsConfig | None = None
     """Extension points for specialized tools."""
 
-    def get_sync_config(self) -> dict:
+    def get_sync_config(self) -> dict[str, Any]:
         """Generate sync_config dict for registry compatibility.
 
         Returns format expected by AssistantInfo.sync_config.
