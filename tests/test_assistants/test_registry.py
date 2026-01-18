@@ -4,16 +4,24 @@ Tests cover:
 - AssistantInfo dataclass validation
 - Registry registration and lookup
 - YAML configuration loading
+- YAML-only assistant creation via CommunityAssistant
 - Error handling for invalid inputs
 """
 
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
 from src.assistants.registry import AssistantInfo, AssistantRegistry
+
+
+@pytest.fixture
+def temp_registry() -> AssistantRegistry:
+    """Create a fresh registry for testing."""
+    return AssistantRegistry()
 
 
 class TestAssistantInfo:
@@ -278,8 +286,107 @@ class TestAssistantInfoWithNoneFactory:
             factory=None,
         )
 
-        with pytest.raises(ValueError, match="has no factory implementation"):
+        with pytest.raises(ValueError, match="no factory.*no YAML config"):
             registry.create_assistant("test", model=MagicMock())
+
+
+class TestYAMLOnlyAssistantCreation:
+    """Tests for creating assistants from YAML-only configurations."""
+
+    def test_create_assistant_from_yaml_only_config(
+        self, temp_registry: AssistantRegistry, tmp_path: Path
+    ) -> None:
+        """Should create CommunityAssistant for YAML-only entry."""
+        # Create a YAML file with a community that has no Python factory
+        yaml_content = """
+communities:
+  - id: yaml-only-test
+    name: YAML Only Test
+    description: A community defined only in YAML
+    github:
+      repos:
+        - org/test-repo
+    citations:
+      queries:
+        - yaml test query
+"""
+        yaml_path = tmp_path / "communities.yaml"
+        yaml_path.write_text(yaml_content)
+
+        # Load YAML into registry
+        temp_registry.load_from_yaml(yaml_path)
+
+        # Verify entry exists with no factory
+        info = temp_registry.get("yaml-only-test")
+        assert info is not None
+        assert info.factory is None
+        assert info.community_config is not None
+
+        # Create mock model
+        mock_model = MagicMock()
+
+        # Create assistant - should use CommunityAssistant
+        assistant = temp_registry.create_assistant("yaml-only-test", model=mock_model)
+
+        # Verify it's a CommunityAssistant
+        from src.assistants.community import CommunityAssistant
+
+        assert isinstance(assistant, CommunityAssistant)
+        assert assistant.config.id == "yaml-only-test"
+        assert assistant.config.name == "YAML Only Test"
+
+    def test_create_assistant_prefers_factory_over_yaml(
+        self, temp_registry: AssistantRegistry, tmp_path: Path
+    ) -> None:
+        """Should use factory when both factory and YAML config exist."""
+
+        # Register with factory
+        @temp_registry.register(
+            id="hybrid-test",
+            name="Hybrid Test",
+            description="Has both factory and YAML config",
+        )
+        def create_hybrid(model: Any, **kwargs: Any) -> MagicMock:  # noqa: ARG001
+            mock = MagicMock()
+            mock.is_from_factory = True
+            return mock
+
+        # Load YAML that also defines this community
+        yaml_content = """
+communities:
+  - id: hybrid-test
+    name: Hybrid Test YAML
+    description: YAML version
+"""
+        yaml_path = tmp_path / "communities.yaml"
+        yaml_path.write_text(yaml_content)
+        temp_registry.load_from_yaml(yaml_path)
+
+        # Create assistant - should use factory, not CommunityAssistant
+        mock_model = MagicMock()
+        assistant = temp_registry.create_assistant("hybrid-test", model=mock_model)
+
+        # Verify it used the factory (has is_from_factory attribute)
+        assert assistant.is_from_factory is True
+
+    def test_create_assistant_fails_without_factory_or_config(
+        self, temp_registry: AssistantRegistry
+    ) -> None:
+        """Should raise error when no factory and no community config."""
+        # Manually add an entry with neither factory nor community_config
+        temp_registry._assistants["broken-entry"] = AssistantInfo(
+            id="broken-entry",
+            name="Broken",
+            description="No factory or config",
+            factory=None,
+            status="available",
+            community_config=None,
+        )
+
+        mock_model = MagicMock()
+
+        with pytest.raises(ValueError, match="no factory.*no YAML config"):
+            temp_registry.create_assistant("broken-entry", model=mock_model)
 
 
 class TestYAMLLoading:

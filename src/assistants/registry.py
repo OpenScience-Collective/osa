@@ -230,7 +230,7 @@ class AssistantRegistry:
             Configured assistant instance.
 
         Raises:
-            ValueError: If assistant ID is not registered or has no factory.
+            ValueError: If assistant ID is not registered or cannot be created.
         """
         info = self.get(id)
         if not info:
@@ -240,12 +240,22 @@ class AssistantRegistry:
         if info.status == "coming_soon":
             raise ValueError(f"Assistant '{id}' is coming soon but not yet available")
 
-        if info.factory is None:
-            raise ValueError(
-                f"Assistant '{id}' has no factory implementation. Only YAML config is available."
+        # If there's a custom factory, use it
+        if info.factory is not None:
+            return info.factory(model=model, **kwargs)
+
+        # Otherwise, use CommunityAssistant if we have YAML config
+        if info.community_config is not None:
+            from src.assistants.community import create_community_assistant
+
+            return create_community_assistant(
+                model=model,
+                config=info.community_config,
+                **kwargs,
             )
 
-        return info.factory(model=model, **kwargs)
+        # No factory and no community config - can't create
+        raise ValueError(f"Assistant '{id}' has no factory implementation and no YAML config.")
 
     def load_from_yaml(self, yaml_path: Path | str) -> list[str]:
         """Load community configurations from YAML file.
