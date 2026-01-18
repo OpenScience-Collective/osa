@@ -22,7 +22,7 @@ vars = { BACKEND_URL = "https://api.osc.earth/osa-dev", ENVIRONMENT = "developme
 
 [[env.dev.kv_namespaces]]
 binding = "RATE_LIMITER"
-id = "REPLACE_WITH_DEV_KV_ID"
+id = "6d46ef72877b4129b38ef2ca1e1cd5ea"
 
 # =============================================================================
 # Setup Instructions

@@ -7,11 +7,21 @@
 (function() {
   'use strict';
 
+  // Auto-detect environment based on hostname
+  const hostname = window.location.hostname;
+  const isDev = hostname.startsWith('develop.') ||
+                hostname.includes('localhost') ||
+                hostname.includes('127.0.0.1');
+
   // Configuration (can be customized via OSAChatWidget.setConfig)
   const CONFIG = {
-    apiEndpoint: 'https://osa-worker.shirazi-10f.workers.dev',
+    // Use dev worker for develop.* hostnames, production worker otherwise
+    apiEndpoint: isDev
+      ? 'https://osa-worker-dev.shirazi-10f.workers.dev'
+      : 'https://osa-worker.shirazi-10f.workers.dev',
     storageKey: 'osa-chat-history',
-    turnstileSiteKey: null,
+    // Turnstile: use testing key for dev (always passes), null for prod (will be set via setConfig)
+    turnstileSiteKey: isDev ? '1x00000000000000000000AA' : null,
     // Customizable branding
     title: 'HED Assistant',
     initialMessage: 'Hi! I\'m the HED Assistant. I can help with HED (Hierarchical Event Descriptors), annotation, validation, and related tools. What would you like to know?',
@@ -34,6 +44,11 @@
     // Fullscreen mode (for pop-out windows)
     fullscreen: false
   };
+
+  // Log environment for debugging
+  if (isDev) {
+    console.log('[OSA] Using DEV backend:', CONFIG.apiEndpoint);
+  }
 
   // State
   let isOpen = false;
