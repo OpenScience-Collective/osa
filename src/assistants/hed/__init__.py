@@ -37,7 +37,7 @@ from src.assistants.registry import registry
 
 from .docs import HED_DOCS, get_preloaded_hed_content
 from .knowledge import list_hed_recent, search_hed_discussions, search_hed_papers
-from .sync import HED_REPOS, SYNC_CONFIG
+from .sync import HED_PAPER_DOIS, HED_REPOS, SYNC_CONFIG
 from .tools import (
     get_hed_schema_versions,
     retrieve_hed_docs,
@@ -387,14 +387,24 @@ You have access to a synced knowledge database with GitHub issues, PRs, and acad
 - "Recent activity?" -> CALL `list_hed_recent(limit=10)`
 - "Any discussions about validation?" -> CALL `search_hed_discussions(query="validation")`
 
+**Core HED papers tracked for citations (DOIs in database):**
+{paper_dois}
+
+**MANDATORY: Use tools for citation/paper questions:**
+- "Has anyone cited the HED paper?" -> CALL `search_hed_papers(query="HED")`
+- "Papers about HED annotation?" -> CALL `search_hed_papers(query="HED annotation")`
+- "Research on HED and BIDS?" -> CALL `search_hed_papers(query="HED BIDS")`
+
 **DO NOT:**
-- Tell users to "visit GitHub" or "use the API" when you have the data
-- Make up PR numbers, issue numbers, or titles
+- Tell users to "visit GitHub", "check Google Scholar", or "use the API" when you have the data
+- Make up PR numbers, issue numbers, paper titles, authors, or citation counts
 - Say "I don't have access" - you DO have access via the tools above
+- Hallucinate fake papers, fake authors, or fake citation counts
 
 **Present results as discovery:**
 - "Here are the recent PRs in hed-javascript: [actual list with real URLs]"
 - "There's a related discussion: [real link]"
+- "Here are papers related to HED: [actual list from database with real URLs]"
 
 The knowledge database may not be populated. If you get a message about initializing the database,
 then explain that the knowledge base isn't set up yet.
@@ -555,11 +565,15 @@ class HEDAssistant(ToolAgent):
         # Format repo list for knowledge discovery section
         repo_list = "\n".join(f"- `{repo}`" for repo in HED_REPOS)
 
+        # Format paper DOIs for citation tracking section
+        paper_dois = "\n".join(f"- `{doi}`" for doi in HED_PAPER_DOIS)
+
         return HED_SYSTEM_PROMPT_TEMPLATE.format(
             preloaded_docs=preloaded_section,
             ondemand_docs=ondemand_section,
             page_context_section=page_context_section,
             repo_list=repo_list,
+            paper_dois=paper_dois,
         )
 
     @property
