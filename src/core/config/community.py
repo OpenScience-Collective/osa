@@ -256,6 +256,27 @@ class CommunityConfig(BaseModel):
     status: Literal["available", "beta", "coming_soon"] = "available"
     """Availability status of the assistant."""
 
+    system_prompt: str | None = None
+    """Custom system prompt template.
+
+    If provided, replaces the default CommunityAssistant prompt.
+    Supports placeholders that are substituted at runtime:
+    - {name}: Community display name
+    - {description}: Community description
+    - {repo_list}: Formatted list of GitHub repos (if configured)
+    - {paper_dois}: Formatted list of paper DOIs (if configured)
+    - {additional_instructions}: Extra instructions passed at creation time
+
+    Example:
+        system_prompt: |
+          You are an expert assistant for {name}.
+
+          {description}
+
+          Available repositories:
+          {repo_list}
+    """
+
     @field_validator("id")
     @classmethod
     def validate_id(cls, v: str) -> str:
