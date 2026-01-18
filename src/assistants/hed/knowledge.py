@@ -86,10 +86,11 @@ def search_hed_discussions(
         status_label = "(open)" if r.status == "open" else "(closed)"
         item_label = "Issue" if r.item_type == "issue" else "PR"
         lines.append(f"- [{item_label}] {r.title} {status_label}")
-        lines.append(f"  {r.url}")
+        # Use markdown link format (no angle brackets)
+        lines.append(f"  [View on GitHub]({r.url})")
         if r.snippet:
             # Truncate long snippets
-            snippet = r.snippet[:150] + "..." if len(r.snippet) > 150 else r.snippet
+            snippet = r.snippet[:200] + "..." if len(r.snippet) > 200 else r.snippet
             lines.append(f"  Preview: {snippet}")
         lines.append("")
 
@@ -158,7 +159,12 @@ def list_hed_recent(
         item_label = "Issue" if r.item_type == "issue" else "PR"
         date_str = r.created_at[:10] if r.created_at else "unknown date"
         lines.append(f"- [{item_label}] {r.title} {status_label} - {date_str}")
-        lines.append(f"  {r.url}")
+        # Use markdown link format (no angle brackets)
+        lines.append(f"  [View on GitHub]({r.url})")
+        # Include first comment/body snippet if available
+        if r.snippet:
+            snippet = r.snippet[:200] + "..." if len(r.snippet) > 200 else r.snippet
+            lines.append(f"  Summary: {snippet}")
         lines.append("")
 
     return "\n".join(lines)
@@ -198,10 +204,11 @@ def search_hed_papers(query: str, limit: int = 5) -> str:
     for r in results:
         source_label = f"[{r.source}]" if r.source else ""
         lines.append(f"- {r.title} {source_label}")
-        lines.append(f"  {r.url}")
+        # Use markdown link format (no angle brackets)
+        lines.append(f"  [View Paper]({r.url})")
         if r.snippet:
             # Truncate long snippets
-            snippet = r.snippet[:150] + "..." if len(r.snippet) > 150 else r.snippet
+            snippet = r.snippet[:200] + "..." if len(r.snippet) > 200 else r.snippet
             lines.append(f"  Abstract: {snippet}")
         if r.created_at:
             lines.append(f"  Published: {r.created_at}")
