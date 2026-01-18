@@ -283,7 +283,7 @@ def sync_repo_prs(repo: str, project: str = "hed", since: str | None = None) -> 
                         continue
 
                     # Map PR state (open, closed) to simple status
-                    # Note: GitHub API doesn't distinguish merged in state field
+                    # Note: Merged status available via 'merged' field if needed in future
                     status = "open" if item.get("state") == "open" else "closed"
 
                     upsert_github_item(

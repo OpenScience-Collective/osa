@@ -70,9 +70,11 @@ class PageContext:
 def is_safe_url(url: str) -> tuple[bool, str, str | None]:
     """Validate URL is safe to fetch (prevents SSRF attacks).
 
-    This function resolves DNS and returns the resolved IP to prevent
-    TOCTOU (Time-Of-Check-Time-Of-Use) attacks where DNS could return
-    different IPs between validation and fetch.
+    This function resolves DNS and validates the IP address is not private,
+    loopback, link-local, or reserved. Note that this validation happens
+    at check-time; DNS could theoretically resolve to a different IP during
+    the actual fetch (TOCTOU risk). For production use with untrusted URLs,
+    consider fetching using the resolved IP directly.
 
     Args:
         url: The URL to validate.
@@ -80,7 +82,7 @@ def is_safe_url(url: str) -> tuple[bool, str, str | None]:
     Returns:
         Tuple of (is_safe, error_message, resolved_ip).
         - error_message is empty if safe
-        - resolved_ip is the IP address to use for fetching (prevents DNS rebinding)
+        - resolved_ip is the resolved IP address for logging purposes
     """
     parsed = urlparse(url)
 

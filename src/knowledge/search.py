@@ -74,15 +74,18 @@ def _titles_are_similar(
 def _sanitize_fts5_query(query: str) -> str:
     """Sanitize user input for safe FTS5 queries.
 
-    FTS5 has special operators (AND, OR, NOT, NEAR, *, etc.) that could
-    be exploited. This function escapes user input by wrapping it in quotes
-    to treat as a phrase search, preventing operator injection.
+    IMPORTANT: This function wraps ALL input in quotes, converting queries to
+    exact phrase searches. This prevents FTS5 operator injection but also
+    disables legitimate FTS5 features (AND/OR/NOT, wildcards, NEAR, etc.).
+
+    For a production system with advanced search needs, consider implementing
+    proper query parsing instead of blanket phrase conversion.
 
     Args:
         query: Raw user input
 
     Returns:
-        Sanitized query safe for FTS5 MATCH
+        Sanitized query safe for FTS5 MATCH (as a phrase search)
     """
     # Escape internal double quotes by doubling them
     escaped = query.replace('"', '""')

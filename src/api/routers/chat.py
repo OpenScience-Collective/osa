@@ -1,5 +1,6 @@
 """Chat API router with streaming responses."""
 
+import logging
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
@@ -18,6 +19,7 @@ from src.core.services.litellm_llm import create_openrouter_llm
 discover_assistants()
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -340,7 +342,19 @@ async def stream_response(
         yield f"event: done\ndata: {session.session_id}\n\n"
 
     except Exception as e:
-        yield f"event: error\ndata: {e!s}\n\n"
+        # Log full exception with stack trace for debugging
+        logger.error(
+            "Streaming error for session %s: %s",
+            session.session_id,
+            e,
+            exc_info=True,
+            extra={
+                "session_id": session.session_id,
+                "assistant": session.assistant,
+                "message_count": len(session.messages),
+            },
+        )
+        yield "event: error\ndata: Error generating response. Please try again.\n\n"
 
 
 @router.get("/sessions/{session_id}", response_model=SessionInfo)

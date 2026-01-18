@@ -22,20 +22,40 @@ logger = logging.getLogger(__name__)
 # Global scheduler instance
 _scheduler: BackgroundScheduler | None = None
 
+# Failure tracking for alerting
+_github_sync_failures = 0
+_papers_sync_failures = 0
+MAX_CONSECUTIVE_FAILURES = 3
+
 
 def _run_github_sync() -> None:
     """Run GitHub sync job."""
+    global _github_sync_failures
     logger.info("Starting scheduled GitHub sync")
     try:
         results = sync_repos(HED_REPOS, project="hed", incremental=True)
         total = sum(results.values())
         logger.info("GitHub sync complete: %d items synced", total)
+        _github_sync_failures = 0  # Reset on success
     except Exception as e:
-        logger.error("GitHub sync failed: %s", e)
+        _github_sync_failures += 1
+        logger.error(
+            "GitHub sync failed (attempt %d/%d): %s",
+            _github_sync_failures,
+            MAX_CONSECUTIVE_FAILURES,
+            e,
+            exc_info=True,
+        )
+        if _github_sync_failures >= MAX_CONSECUTIVE_FAILURES:
+            logger.critical(
+                "GitHub sync has failed %d times consecutively. Manual intervention required.",
+                _github_sync_failures,
+            )
 
 
 def _run_papers_sync() -> None:
     """Run papers sync job."""
+    global _papers_sync_failures
     settings = get_settings()
     logger.info("Starting scheduled papers sync")
     try:
@@ -45,8 +65,21 @@ def _run_papers_sync() -> None:
         )
         total = sum(results.values())
         logger.info("Papers sync complete: %d items synced", total)
+        _papers_sync_failures = 0  # Reset on success
     except Exception as e:
-        logger.error("Papers sync failed: %s", e)
+        _papers_sync_failures += 1
+        logger.error(
+            "Papers sync failed (attempt %d/%d): %s",
+            _papers_sync_failures,
+            MAX_CONSECUTIVE_FAILURES,
+            e,
+            exc_info=True,
+        )
+        if _papers_sync_failures >= MAX_CONSECUTIVE_FAILURES:
+            logger.critical(
+                "Papers sync has failed %d times consecutively. Manual intervention required.",
+                _papers_sync_failures,
+            )
 
 
 def start_scheduler() -> BackgroundScheduler | None:

@@ -63,12 +63,13 @@ def _reconstruct_abstract(inverted_index: dict[str, list[int]] | None) -> str:
     return " ".join(words)
 
 
-def sync_openalex_papers(query: str, max_results: int = 100) -> int:
+def sync_openalex_papers(query: str, max_results: int = 100, project: str = "hed") -> int:
     """Sync papers from OpenALEX matching query.
 
     Args:
         query: Search query
         max_results: Maximum number of papers to sync
+        project: Assistant/project name for database isolation. Defaults to 'hed'.
 
     Returns:
         Number of papers synced
@@ -99,7 +100,7 @@ def sync_openalex_papers(query: str, max_results: int = 100) -> int:
         return 0
 
     count = 0
-    with get_connection() as conn:
+    with get_connection(project) as conn:
         for work in works:
             if count >= max_results:
                 break
@@ -140,7 +141,7 @@ def sync_openalex_papers(query: str, max_results: int = 100) -> int:
         conn.commit()
 
     logger.info("Synced %d papers from OpenALEX for '%s'", count, query)
-    update_sync_metadata("papers", f"openalex:{query}", count)
+    update_sync_metadata("papers", f"openalex:{query}", count, project)
     return count
 
 
@@ -148,6 +149,7 @@ def sync_semanticscholar_papers(
     query: str,
     max_results: int = 100,
     api_key: str | None = None,
+    project: str = "hed",
 ) -> int:
     """Sync papers from Semantic Scholar matching query.
 
@@ -155,6 +157,7 @@ def sync_semanticscholar_papers(
         query: Search query
         max_results: Maximum number of papers to sync
         api_key: Optional API key for higher rate limits
+        project: Assistant/project name for database isolation. Defaults to 'hed'.
 
     Returns:
         Number of papers synced
@@ -184,7 +187,7 @@ def sync_semanticscholar_papers(
         return 0
 
     count = 0
-    with get_connection() as conn:
+    with get_connection(project) as conn:
         for paper in data.get("data", []):
             if count >= max_results:
                 break
@@ -216,7 +219,7 @@ def sync_semanticscholar_papers(
         conn.commit()
 
     logger.info("Synced %d papers from Semantic Scholar for '%s'", count, query)
-    update_sync_metadata("papers", f"semanticscholar:{query}", count)
+    update_sync_metadata("papers", f"semanticscholar:{query}", count, project)
 
     # Rate limiting
     time.sleep(SEMANTIC_SCHOLAR_DELAY)
@@ -227,6 +230,7 @@ def sync_pubmed_papers(
     query: str,
     max_results: int = 100,
     api_key: str | None = None,
+    project: str = "hed",
 ) -> int:
     """Sync papers from PubMed matching query.
 
@@ -236,6 +240,7 @@ def sync_pubmed_papers(
         query: Search query
         max_results: Maximum number of papers to sync
         api_key: Optional NCBI API key for higher rate limits
+        project: Assistant/project name for database isolation. Defaults to 'hed'.
 
     Returns:
         Number of papers synced
@@ -294,7 +299,7 @@ def sync_pubmed_papers(
         return 0
 
     count = 0
-    with get_connection() as conn:
+    with get_connection(project) as conn:
         for article in root.findall(".//PubmedArticle"):
             pmid_elem = article.find(".//PMID")
             title_elem = article.find(".//ArticleTitle")
@@ -325,7 +330,7 @@ def sync_pubmed_papers(
         conn.commit()
 
     logger.info("Synced %d papers from PubMed for '%s'", count, query)
-    update_sync_metadata("papers", f"pubmed:{query}", count)
+    update_sync_metadata("papers", f"pubmed:{query}", count, project)
 
     # Rate limiting
     time.sleep(PUBMED_DELAY)
