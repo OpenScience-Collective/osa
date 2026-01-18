@@ -36,7 +36,7 @@ from src.agents.base import ToolAgent
 from src.assistants.registry import registry
 
 from .docs import HED_DOCS, get_preloaded_hed_content
-from .knowledge import search_hed_discussions, search_hed_papers
+from .knowledge import list_hed_recent, search_hed_discussions, search_hed_papers
 from .sync import SYNC_CONFIG
 from .tools import (
     get_hed_schema_versions,
@@ -366,19 +366,29 @@ Common topics include:
 You have access to tools that search synced GitHub discussions and academic papers.
 These are for **DISCOVERY**, not for answering questions.
 
+**Available tools:**
+- `list_hed_recent`: List recent PRs/issues by date. Use for "what are the latest PRs?" questions.
+- `search_hed_discussions`: Search by keywords. Use for "are there discussions about X?" questions.
+- `search_hed_papers`: Search papers by keywords. Use for "are there papers about X?" questions.
+
+**When to use which tool:**
+- "What are the latest PRs in hed-javascript?" -> `list_hed_recent(item_type="pr", repo="hed-standard/hed-javascript")`
+- "What are the open issues?" -> `list_hed_recent(item_type="issue", status="open")`
+- "Recent activity in HED repos?" -> `list_hed_recent(limit=10)`
+- "Are there discussions about validation errors?" -> `search_hed_discussions(query="validation errors")`
+- "Papers about HED and BIDS?" -> `search_hed_papers(query="HED BIDS")`
+
 **Correct usage:**
 - "There's a related discussion about this: [link]"
 - "You might find this paper helpful for more context: [link]"
+- "Here are the recent PRs in hed-javascript: [list with links]"
 
 **Incorrect usage (DO NOT):**
 - "Based on issue #123, the answer is..."
 - "According to a discussion, you should..."
+- Making up fake PR numbers or titles when you haven't used the tools
 
-Use these tools when:
-- The user asks about recent developments or ongoing work
-- The user's question relates to known issues or feature requests
-- The user might benefit from seeing related academic research
-- You want to point the user to community discussions
+**IMPORTANT**: If users ask about recent activity, PRs, issues, or discussions, **always use the appropriate tool** to get real data. Never hallucinate or make up GitHub items.
 
 The knowledge database may not be populated. If you get a message about initializing the database,
 simply answer the question without the discovery tools.
@@ -503,6 +513,7 @@ class HEDAssistant(ToolAgent):
             # Knowledge discovery tools (for finding related discussions and papers)
             search_hed_discussions,
             search_hed_papers,
+            list_hed_recent,
         ]
 
         # Add fetch_current_page tool if page context is provided

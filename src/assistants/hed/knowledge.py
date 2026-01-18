@@ -20,7 +20,7 @@ import logging
 from langchain_core.tools import tool
 
 from src.knowledge.db import get_db_path
-from src.knowledge.search import search_github_items, search_papers
+from src.knowledge.search import list_recent_github_items, search_github_items, search_papers
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +91,74 @@ def search_hed_discussions(
             # Truncate long snippets
             snippet = r.snippet[:150] + "..." if len(r.snippet) > 150 else r.snippet
             lines.append(f"  Preview: {snippet}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+@tool
+def list_hed_recent(
+    item_type: str = "all",
+    repo: str | None = None,
+    status: str | None = None,
+    limit: int = 10,
+) -> str:
+    """List recent HED GitHub issues and PRs ordered by date.
+
+    Use this tool when users ask about recent activity, latest PRs, or newest issues.
+    Unlike search_hed_discussions which searches by keywords, this tool lists items
+    by creation date.
+
+    Args:
+        item_type: Type of items to list: "issue", "pr", or "all" (default: "all")
+        repo: Filter by repository name. Options:
+              - "hed-standard/hed-specification"
+              - "hed-standard/hed-python"
+              - "hed-standard/hed-javascript"
+              - "hed-standard/hed-schemas"
+              Or None for all repos (default: None)
+        status: Filter by status: "open", "closed", or None for all (default: None)
+        limit: Maximum number of results (default: 10)
+
+    Returns:
+        Formatted list of recent GitHub items with links, or a message if
+        the database is not initialized.
+    """
+    if not _check_db_exists():
+        return (
+            "Knowledge database not initialized. "
+            "Run 'osa sync init' and 'osa sync github' to populate it."
+        )
+
+    # Convert "all" to None for the search function
+    type_filter = None if item_type == "all" else item_type
+
+    results = list_recent_github_items(
+        project=PROJECT,
+        limit=limit,
+        item_type=type_filter,
+        status=status,
+        repo=repo,
+    )
+
+    if not results:
+        filter_desc = []
+        if item_type != "all":
+            filter_desc.append(f"type={item_type}")
+        if repo:
+            filter_desc.append(f"repo={repo}")
+        if status:
+            filter_desc.append(f"status={status}")
+        filter_str = ", ".join(filter_desc) if filter_desc else "no filters"
+        return f"No GitHub items found ({filter_str})."
+
+    lines = ["Recent HED GitHub activity:\n"]
+    for r in results:
+        status_label = "(open)" if r.status == "open" else "(closed)"
+        item_label = "Issue" if r.item_type == "issue" else "PR"
+        date_str = r.created_at[:10] if r.created_at else "unknown date"
+        lines.append(f"- [{item_label}] {r.title} {status_label} - {date_str}")
+        lines.append(f"  {r.url}")
         lines.append("")
 
     return "\n".join(lines)

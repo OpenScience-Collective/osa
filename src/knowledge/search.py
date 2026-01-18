@@ -211,3 +211,73 @@ def search_all(
         "github": search_github_items(query, project=project, limit=limit),
         "papers": search_papers(query, project=project, limit=limit),
     }
+
+
+def list_recent_github_items(
+    project: str = "hed",
+    limit: int = 10,
+    item_type: str | None = None,
+    status: str | None = None,
+    repo: str | None = None,
+) -> list[SearchResult]:
+    """List recent GitHub issues and PRs ordered by creation date.
+
+    Unlike search_github_items which searches by text, this function
+    simply lists the most recent items.
+
+    Args:
+        project: Assistant/project name for database isolation. Defaults to 'hed'.
+        limit: Maximum number of results
+        item_type: Filter by 'issue' or 'pr'
+        status: Filter by 'open' or 'closed'
+        repo: Filter by repository name (e.g., 'hed-standard/hed-javascript')
+
+    Returns:
+        List of recent items, ordered by creation date (newest first)
+    """
+    sql = """
+        SELECT title, url, first_message, item_type, status, created_at, repo
+        FROM github_items
+        WHERE 1=1
+    """
+    params: list[str | int] = []
+
+    if item_type:
+        sql += " AND item_type = ?"
+        params.append(item_type)
+    if status:
+        sql += " AND status = ?"
+        params.append(status)
+    if repo:
+        sql += " AND repo = ?"
+        params.append(repo)
+
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+
+    results = []
+    try:
+        with get_connection(project) as conn:
+            for row in conn.execute(sql, params):
+                first_message = row["first_message"] or ""
+                snippet = first_message[:200].strip()
+                if len(first_message) > 200:
+                    snippet += "..."
+
+                results.append(
+                    SearchResult(
+                        title=row["title"],
+                        url=row["url"],
+                        snippet=snippet,
+                        source="github",
+                        item_type=row["item_type"],
+                        status=row["status"],
+                        created_at=row["created_at"] or "",
+                    )
+                )
+    except sqlite3.OperationalError as e:
+        logger.error("Database error listing recent GitHub items: %s", e)
+    except sqlite3.Error as e:
+        logger.warning("Error listing recent GitHub items: %s", e)
+
+    return results
