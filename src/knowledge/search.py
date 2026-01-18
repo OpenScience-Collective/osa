@@ -176,11 +176,18 @@ def search_github_items(
                     )
                 )
     except sqlite3.OperationalError as e:
-        # Database-level errors (corruption, disk issues) - log as error
-        logger.error("Database operational error during GitHub search '%s': %s", query, e)
+        # Infrastructure failure (corruption, disk full, permissions) - must propagate
+        logger.error(
+            "Database operational error during search: %s",
+            e,
+            exc_info=True,
+            extra={"query": query, "project": project},
+        )
+        raise  # Let API layer return 500, not empty results
     except sqlite3.Error as e:
-        # FTS5 query errors (e.g., syntax errors) - suppress but warn
-        logger.warning("FTS5 search error for '%s': %s", query, e)
+        # Other database errors - still raise for debugging
+        logger.warning("Database error during search '%s': %s", query, e)
+        raise
 
     return results
 
@@ -263,11 +270,18 @@ def search_papers(
                 if len(results) >= limit:
                     break
     except sqlite3.OperationalError as e:
-        # Database-level errors (corruption, disk issues) - log as error
-        logger.error("Database operational error during paper search '%s': %s", query, e)
+        # Infrastructure failure (corruption, disk full, permissions) - must propagate
+        logger.error(
+            "Database operational error during paper search: %s",
+            e,
+            exc_info=True,
+            extra={"query": query, "project": project},
+        )
+        raise  # Let API layer return 500, not empty results
     except sqlite3.Error as e:
-        # FTS5 query errors (e.g., syntax errors) - suppress but warn
-        logger.warning("FTS5 search error for '%s': %s", query, e)
+        # Other database errors - still raise for debugging
+        logger.warning("Database error during paper search '%s': %s", query, e)
+        raise
 
     return results
 
@@ -356,8 +370,17 @@ def list_recent_github_items(
                     )
                 )
     except sqlite3.OperationalError as e:
-        logger.error("Database error listing recent GitHub items: %s", e)
+        # Infrastructure failure (corruption, disk full, permissions) - must propagate
+        logger.error(
+            "Database operational error listing recent items: %s",
+            e,
+            exc_info=True,
+            extra={"project": project},
+        )
+        raise  # Let API layer return 500, not empty results
     except sqlite3.Error as e:
-        logger.warning("Error listing recent GitHub items: %s", e)
+        # Other database errors - still raise for debugging
+        logger.warning("Database error listing recent items: %s", e)
+        raise
 
     return results
