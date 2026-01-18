@@ -306,8 +306,7 @@ async def stream_response(
         }
 
         full_response = ""
-        in_tool_loop = False
-        buffered_content = ""
+        tool_executed = False
 
         # Stream the response
         async for event in graph.astream_events(state, version="v2"):
@@ -317,28 +316,20 @@ async def stream_response(
                 content = event.get("data", {}).get("chunk", {})
                 if hasattr(content, "content") and content.content:
                     chunk = content.content
-
-                    # If we're in a tool loop, buffer content instead of streaming
-                    # This prevents intermediate thinking from being shown to users
-                    if in_tool_loop:
-                        buffered_content += chunk
-                    else:
-                        full_response += chunk
-                        yield f"data: {chunk}\n\n"
+                    # Skip tool call JSON (before tool execution) to prevent
+                    # intermediate thinking from leaking to the user
+                    if not tool_executed and chunk.strip().startswith("{"):
+                        continue
+                    full_response += chunk
+                    yield f"data: {chunk}\n\n"
 
             elif kind == "on_tool_start":
                 tool_name = event.get("name", "")
-                in_tool_loop = True
-                # Clear any buffered content from before tool started
-                buffered_content = ""
                 yield f"event: tool_start\ndata: {tool_name}\n\n"
 
             elif kind == "on_tool_end":
                 tool_name = event.get("name", "")
-                # Tool is done, reset flag so final response gets streamed
-                in_tool_loop = False
-                # Discard any buffered intermediate content (tool call request)
-                buffered_content = ""
+                tool_executed = True
                 yield f"event: tool_end\ndata: {tool_name}\n\n"
 
         # Add complete response to session history

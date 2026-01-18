@@ -85,13 +85,14 @@ def create_openrouter_llm(
     if user_id:
         model_kwargs["user"] = user_id
 
-    # Create base LLM
+    # Create base LLM with streaming enabled for proper event handling
     llm = ChatLiteLLM(
         model=litellm_model,
         api_key=api_key or os.getenv("OPENROUTER_API_KEY"),
         temperature=temperature,
         max_tokens=max_tokens,
         model_kwargs=model_kwargs,
+        streaming=True,  # Required for on_chat_model_stream events in LangGraph
     )
 
     # Determine if caching should be enabled
