@@ -19,6 +19,7 @@ from src.core.config.community import (
     DocSource,
     ExtensionsConfig,
     GitHubConfig,
+    McpServer,
     PythonPlugin,
 )
 
@@ -69,6 +70,42 @@ class TestGitHubConfig:
         config = GitHubConfig()
         assert config.repos == []
 
+    def test_validates_repo_format(self) -> None:
+        """Should validate repo format."""
+        with pytest.raises(ValidationError, match="'org/repo' format"):
+            GitHubConfig(repos=["invalid-repo-format"])
+
+        with pytest.raises(ValidationError, match="'org/repo' format"):
+            GitHubConfig(repos=["org/repo", "bad format"])
+
+    def test_rejects_empty_repo_names(self) -> None:
+        """Should reject empty repo names."""
+        with pytest.raises(ValidationError, match="cannot be empty"):
+            GitHubConfig(repos=[""])
+
+        with pytest.raises(ValidationError, match="cannot be empty"):
+            GitHubConfig(repos=["org/repo", "  "])
+
+    def test_deduplicates_repos(self) -> None:
+        """Should deduplicate repo names."""
+        config = GitHubConfig(repos=["org/repo", "org/repo", "org/other"])
+        assert len(config.repos) == 2
+        assert "org/repo" in config.repos
+        assert "org/other" in config.repos
+
+    def test_accepts_valid_repo_patterns(self) -> None:
+        """Should accept various valid repo patterns."""
+        config = GitHubConfig(
+            repos=[
+                "org/repo",
+                "my-org/my-repo",
+                "org123/repo456",
+                "org.name/repo.name",
+                "org_name/repo_name",
+            ]
+        )
+        assert len(config.repos) == 5
+
 
 class TestCitationConfig:
     """Tests for CitationConfig model."""
@@ -87,6 +124,60 @@ class TestCitationConfig:
         config = CitationConfig()
         assert config.queries == []
         assert config.dois == []
+
+    def test_validates_doi_format(self) -> None:
+        """Should validate DOI format."""
+        with pytest.raises(ValidationError, match="Invalid DOI format"):
+            CitationConfig(dois=["invalid-doi"])
+
+        with pytest.raises(ValidationError, match="Invalid DOI format"):
+            CitationConfig(dois=["10.1234/valid", "bad-doi"])
+
+    def test_normalizes_doi_prefixes(self) -> None:
+        """Should strip common DOI URL prefixes."""
+        config = CitationConfig(
+            dois=[
+                "10.1234/example",
+                "https://doi.org/10.5678/test",
+                "http://dx.doi.org/10.9012/paper",
+                "doi.org/10.3456/article",
+            ]
+        )
+        assert "10.1234/example" in config.dois
+        assert "10.5678/test" in config.dois
+        assert "10.9012/paper" in config.dois
+        assert "10.3456/article" in config.dois
+        # Should not contain prefixes
+        for doi in config.dois:
+            assert not doi.startswith("http")
+            assert not doi.startswith("doi.org")
+
+    def test_deduplicates_dois(self) -> None:
+        """Should deduplicate DOIs."""
+        config = CitationConfig(dois=["10.1234/example", "10.1234/example", "10.5678/other"])
+        assert len(config.dois) == 2
+        assert "10.1234/example" in config.dois
+        assert "10.5678/other" in config.dois
+
+    def test_deduplicates_queries(self) -> None:
+        """Should deduplicate queries."""
+        config = CitationConfig(queries=["query 1", "query 1", "query 2"])
+        assert len(config.queries) == 2
+        assert "query 1" in config.queries
+        assert "query 2" in config.queries
+
+    def test_removes_empty_queries(self) -> None:
+        """Should remove empty queries."""
+        config = CitationConfig(queries=["query 1", "", "  ", "query 2"])
+        assert len(config.queries) == 2
+        assert "query 1" in config.queries
+        assert "query 2" in config.queries
+
+    def test_skips_empty_dois(self) -> None:
+        """Should skip empty DOI strings."""
+        config = CitationConfig(dois=["10.1234/example", "", "  "])
+        assert len(config.dois) == 1
+        assert config.dois[0] == "10.1234/example"
 
 
 class TestPythonPlugin:
@@ -107,6 +198,51 @@ class TestPythonPlugin:
         assert plugin.tools is None
 
 
+class TestMcpServer:
+    """Tests for McpServer model."""
+
+    def test_valid_local_server(self) -> None:
+        """Should create McpServer with command (local)."""
+        server = McpServer(name="test-server", command=["uvx", "test-mcp"])
+        assert server.name == "test-server"
+        assert server.command == ["uvx", "test-mcp"]
+        assert server.url is None
+
+    def test_valid_remote_server(self) -> None:
+        """Should create McpServer with URL (remote)."""
+        server = McpServer(name="test-server", url="https://example.com/mcp")
+        assert server.name == "test-server"
+        assert server.url is not None
+        assert server.command is None
+
+    def test_requires_command_or_url(self) -> None:
+        """Should require either command or url."""
+        with pytest.raises(ValidationError, match="either 'command'.*or 'url'"):
+            McpServer(name="test-server")
+
+    def test_rejects_both_command_and_url(self) -> None:
+        """Should reject both command and url."""
+        with pytest.raises(ValidationError, match="cannot have both"):
+            McpServer(
+                name="test-server",
+                command=["uvx", "test"],
+                url="https://example.com/mcp",
+            )
+
+    def test_rejects_empty_command(self) -> None:
+        """Should reject empty command list."""
+        with pytest.raises(ValidationError, match="cannot be empty"):
+            McpServer(name="test-server", command=[])
+
+    def test_rejects_empty_command_parts(self) -> None:
+        """Should reject empty strings in command."""
+        with pytest.raises(ValidationError, match="cannot be empty strings"):
+            McpServer(name="test-server", command=["uvx", ""])
+
+        with pytest.raises(ValidationError, match="cannot be empty strings"):
+            McpServer(name="test-server", command=["", "test"])
+
+
 class TestExtensionsConfig:
     """Tests for ExtensionsConfig model."""
 
@@ -124,6 +260,41 @@ class TestExtensionsConfig:
         config = ExtensionsConfig()
         assert config.python_plugins == []
         assert config.mcp_servers == []
+
+    def test_rejects_duplicate_plugin_modules(self) -> None:
+        """Should reject duplicate plugin modules."""
+        with pytest.raises(ValidationError, match="Duplicate plugin modules"):
+            ExtensionsConfig(
+                python_plugins=[
+                    PythonPlugin(module="src.tools.custom"),
+                    PythonPlugin(module="src.tools.custom"),
+                ]
+            )
+
+    def test_rejects_duplicate_server_names(self) -> None:
+        """Should reject duplicate MCP server names."""
+        with pytest.raises(ValidationError, match="Duplicate MCP server names"):
+            ExtensionsConfig(
+                mcp_servers=[
+                    McpServer(name="server1", command=["uvx", "test"]),
+                    McpServer(name="server1", url="https://example.com/mcp"),
+                ]
+            )
+
+    def test_allows_unique_extensions(self) -> None:
+        """Should allow unique plugins and servers."""
+        config = ExtensionsConfig(
+            python_plugins=[
+                PythonPlugin(module="src.tools.one"),
+                PythonPlugin(module="src.tools.two"),
+            ],
+            mcp_servers=[
+                McpServer(name="server1", command=["uvx", "test1"]),
+                McpServer(name="server2", command=["uvx", "test2"]),
+            ],
+        )
+        assert len(config.python_plugins) == 2
+        assert len(config.mcp_servers) == 2
 
 
 class TestCommunityConfig:
@@ -204,6 +375,36 @@ class TestCommunityConfig:
                 status="invalid",  # type: ignore
             )
 
+    def test_validates_kebab_case_id(self) -> None:
+        """Should validate ID is kebab-case."""
+        # Valid kebab-case IDs
+        valid_ids = ["hed", "bids-validator", "eeglab-2024", "my-tool"]
+        for id_val in valid_ids:
+            config = CommunityConfig(id=id_val, name="Test", description="Test")
+            assert config.id == id_val
+
+    def test_rejects_invalid_id_format(self) -> None:
+        """Should reject non-kebab-case IDs."""
+        with pytest.raises(ValidationError, match="kebab-case"):
+            CommunityConfig(id="InvalidCase", name="Test", description="Test")
+
+        with pytest.raises(ValidationError, match="kebab-case"):
+            CommunityConfig(id="with spaces", name="Test", description="Test")
+
+        with pytest.raises(ValidationError, match="kebab-case"):
+            CommunityConfig(id="with_underscores", name="Test", description="Test")
+
+        with pytest.raises(ValidationError, match="kebab-case"):
+            CommunityConfig(id="with.dots", name="Test", description="Test")
+
+    def test_rejects_empty_id(self) -> None:
+        """Should reject empty ID."""
+        with pytest.raises(ValidationError, match="cannot be empty"):
+            CommunityConfig(id="", name="Test", description="Test")
+
+        with pytest.raises(ValidationError, match="cannot be empty"):
+            CommunityConfig(id="  ", name="Test", description="Test")
+
 
 class TestCommunitiesConfig:
     """Tests for CommunitiesConfig model."""
@@ -224,6 +425,27 @@ class TestCommunitiesConfig:
         assert config.get_community("one") is not None
         assert config.get_community("one").name == "One"
         assert config.get_community("nonexistent") is None
+
+    def test_rejects_duplicate_community_ids(self) -> None:
+        """Should reject duplicate community IDs."""
+        with pytest.raises(ValidationError, match="Duplicate community IDs"):
+            CommunitiesConfig(
+                communities=[
+                    CommunityConfig(id="test", name="Test 1", description="First"),
+                    CommunityConfig(id="test", name="Test 2", description="Second"),
+                ]
+            )
+
+    def test_allows_unique_community_ids(self) -> None:
+        """Should allow unique community IDs."""
+        config = CommunitiesConfig(
+            communities=[
+                CommunityConfig(id="one", name="One", description="First"),
+                CommunityConfig(id="two", name="Two", description="Second"),
+                CommunityConfig(id="three", name="Three", description="Third"),
+            ]
+        )
+        assert len(config.communities) == 3
 
     def test_from_yaml(self) -> None:
         """Should load configuration from YAML file."""
@@ -304,3 +526,55 @@ communities:
                 CommunitiesConfig.from_yaml(yaml_path)
         finally:
             yaml_path.unlink()
+
+    def test_from_yaml_malformed_syntax(self) -> None:
+        """Should raise YAMLError for malformed YAML syntax."""
+        import yaml
+
+        yaml_content = "bad: yaml: syntax: error:"
+        with NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            yaml_path = Path(f.name)
+
+        try:
+            with pytest.raises(yaml.YAMLError, match="Failed to parse YAML"):
+                CommunitiesConfig.from_yaml(yaml_path)
+        finally:
+            yaml_path.unlink()
+
+    def test_from_yaml_null_communities(self) -> None:
+        """Should reject YAML with null communities field."""
+        yaml_content = "communities: null"
+        with NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            yaml_path = Path(f.name)
+
+        try:
+            with pytest.raises(ValidationError, match="should be a valid list"):
+                CommunitiesConfig.from_yaml(yaml_path)
+        finally:
+            yaml_path.unlink()
+
+    def test_load_actual_communities_yaml(self) -> None:
+        """Should successfully load the real communities.yaml from the repo."""
+        project_root = Path(__file__).parent.parent.parent.parent
+        yaml_path = project_root / "registries" / "communities.yaml"
+
+        # Skip if YAML doesn't exist (e.g., in isolated test environments)
+        if not yaml_path.exists():
+            pytest.skip(f"communities.yaml not found at {yaml_path}")
+
+        config = CommunitiesConfig.from_yaml(yaml_path)
+
+        # Basic validation
+        assert len(config.communities) > 0, "Should have at least one community"
+
+        for community in config.communities:
+            # Validate structure
+            assert community.id, "Community missing id"
+            assert community.name, f"Community {community.id} missing name"
+            assert community.description, f"Community {community.id} missing description"
+
+            # If documentation URLs are provided, they should be valid
+            for doc in community.documentation:
+                assert doc.url, f"Doc in {community.id} missing URL"
