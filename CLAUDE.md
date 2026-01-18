@@ -148,7 +148,7 @@ ssh -J hallu hedtools
 cd ~/osa
 
 # Deploy to dev
-./deploy.sh dev
+deploy/deploy.sh dev
 
 # Check service status
 docker ps

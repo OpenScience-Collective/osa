@@ -4,16 +4,24 @@ Tests cover:
 - AssistantInfo dataclass validation
 - Registry registration and lookup
 - YAML configuration loading
+- YAML-only assistant creation via CommunityAssistant
 - Error handling for invalid inputs
 """
 
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
 from src.assistants.registry import AssistantInfo, AssistantRegistry
+
+
+@pytest.fixture
+def temp_registry() -> AssistantRegistry:
+    """Create a fresh registry for testing."""
+    return AssistantRegistry()
 
 
 class TestAssistantInfo:
@@ -278,8 +286,107 @@ class TestAssistantInfoWithNoneFactory:
             factory=None,
         )
 
-        with pytest.raises(ValueError, match="has no factory implementation"):
+        with pytest.raises(ValueError, match="no factory.*no YAML config"):
             registry.create_assistant("test", model=MagicMock())
+
+
+class TestYAMLOnlyAssistantCreation:
+    """Tests for creating assistants from YAML-only configurations."""
+
+    def test_create_assistant_from_yaml_only_config(
+        self, temp_registry: AssistantRegistry, tmp_path: Path
+    ) -> None:
+        """Should create CommunityAssistant for YAML-only entry."""
+        # Create a YAML file with a community that has no Python factory
+        yaml_content = """
+communities:
+  - id: yaml-only-test
+    name: YAML Only Test
+    description: A community defined only in YAML
+    github:
+      repos:
+        - org/test-repo
+    citations:
+      queries:
+        - yaml test query
+"""
+        yaml_path = tmp_path / "communities.yaml"
+        yaml_path.write_text(yaml_content)
+
+        # Load YAML into registry
+        temp_registry.load_from_yaml(yaml_path)
+
+        # Verify entry exists with no factory
+        info = temp_registry.get("yaml-only-test")
+        assert info is not None
+        assert info.factory is None
+        assert info.community_config is not None
+
+        # Create mock model
+        mock_model = MagicMock()
+
+        # Create assistant - should use CommunityAssistant
+        assistant = temp_registry.create_assistant("yaml-only-test", model=mock_model)
+
+        # Verify it's a CommunityAssistant
+        from src.assistants.community import CommunityAssistant
+
+        assert isinstance(assistant, CommunityAssistant)
+        assert assistant.config.id == "yaml-only-test"
+        assert assistant.config.name == "YAML Only Test"
+
+    def test_create_assistant_prefers_factory_over_yaml(
+        self, temp_registry: AssistantRegistry, tmp_path: Path
+    ) -> None:
+        """Should use factory when both factory and YAML config exist."""
+
+        # Register with factory
+        @temp_registry.register(
+            id="hybrid-test",
+            name="Hybrid Test",
+            description="Has both factory and YAML config",
+        )
+        def create_hybrid(model: Any, **kwargs: Any) -> MagicMock:  # noqa: ARG001
+            mock = MagicMock()
+            mock.is_from_factory = True
+            return mock
+
+        # Load YAML that also defines this community
+        yaml_content = """
+communities:
+  - id: hybrid-test
+    name: Hybrid Test YAML
+    description: YAML version
+"""
+        yaml_path = tmp_path / "communities.yaml"
+        yaml_path.write_text(yaml_content)
+        temp_registry.load_from_yaml(yaml_path)
+
+        # Create assistant - should use factory, not CommunityAssistant
+        mock_model = MagicMock()
+        assistant = temp_registry.create_assistant("hybrid-test", model=mock_model)
+
+        # Verify it used the factory (has is_from_factory attribute)
+        assert assistant.is_from_factory is True
+
+    def test_create_assistant_fails_without_factory_or_config(
+        self, temp_registry: AssistantRegistry
+    ) -> None:
+        """Should raise error when no factory and no community config."""
+        # Manually add an entry with neither factory nor community_config
+        temp_registry._assistants["broken-entry"] = AssistantInfo(
+            id="broken-entry",
+            name="Broken",
+            description="No factory or config",
+            factory=None,
+            status="available",
+            community_config=None,
+        )
+
+        mock_model = MagicMock()
+
+        with pytest.raises(ValueError, match="no factory.*no YAML config"):
+            temp_registry.create_assistant("broken-entry", model=mock_model)
 
 
 class TestYAMLLoading:
@@ -434,3 +541,142 @@ communities:
             assert registry.get_community_config("nonexistent") is None
         finally:
             yaml_path.unlink()
+
+
+class TestCustomSystemPrompt:
+    """Tests for custom system_prompt in YAML configurations."""
+
+    def test_custom_system_prompt_used(
+        self, temp_registry: AssistantRegistry, tmp_path: Path
+    ) -> None:
+        """Should use custom system_prompt from YAML config."""
+        yaml_content = """
+communities:
+  - id: custom-prompt-test
+    name: Custom Prompt Test
+    description: Testing custom system prompts
+    system_prompt: |
+      You are a specialized assistant for {name}.
+      Description: {description}
+      Repos: {repo_list}
+      DOIs: {paper_dois}
+    github:
+      repos:
+        - org/test-repo
+    citations:
+      dois:
+        - "10.1234/test.doi"
+"""
+        yaml_path = tmp_path / "communities.yaml"
+        yaml_path.write_text(yaml_content)
+
+        temp_registry.load_from_yaml(yaml_path)
+
+        mock_model = MagicMock()
+        assistant = temp_registry.create_assistant("custom-prompt-test", model=mock_model)
+
+        # Verify custom prompt with substitutions
+        prompt = assistant.get_system_prompt()
+        assert "You are a specialized assistant for Custom Prompt Test" in prompt
+        assert "Description: Testing custom system prompts" in prompt
+        assert "org/test-repo" in prompt
+        assert "10.1234/test.doi" in prompt
+
+    def test_default_prompt_without_custom(
+        self, temp_registry: AssistantRegistry, tmp_path: Path
+    ) -> None:
+        """Should use default prompt when no custom system_prompt provided."""
+        yaml_content = """
+communities:
+  - id: default-prompt-test
+    name: Default Prompt Test
+    description: Testing default prompts
+"""
+        yaml_path = tmp_path / "communities.yaml"
+        yaml_path.write_text(yaml_content)
+
+        temp_registry.load_from_yaml(yaml_path)
+
+        mock_model = MagicMock()
+        assistant = temp_registry.create_assistant("default-prompt-test", model=mock_model)
+
+        # Verify default template is used
+        prompt = assistant.get_system_prompt()
+        assert "You are an expert assistant for Default Prompt Test" in prompt
+        assert "## Your Role" in prompt  # From default template
+
+
+class TestHEDYAMLMigration:
+    """Tests for HED hybrid approach: Python factory + YAML config."""
+
+    @pytest.fixture(autouse=True)
+    def setup_registry(self) -> None:
+        """Ensure registry is populated before tests."""
+        from src.assistants import discover_assistants
+
+        # Call discover to load YAML and Python modules
+        discover_assistants()
+
+    def test_hed_has_both_factory_and_yaml(self) -> None:
+        """HED should have both Python factory and YAML config (hybrid)."""
+        from src.assistants import registry
+
+        # HED should be in registry
+        assert "hed" in registry
+
+        # Get HED info
+        info = registry.get("hed")
+        assert info is not None
+        assert info.name == "HED (Hierarchical Event Descriptors)"
+
+        # Should have community_config from YAML (for sync_config)
+        assert info.community_config is not None
+
+        # Should ALSO have a factory (HED uses full-featured HEDAssistant)
+        assert info.factory is not None
+
+    def test_hed_creates_hed_assistant(self) -> None:
+        """HED should create HEDAssistant instance (not CommunityAssistant)."""
+        from src.assistants import registry
+        from src.assistants.hed import HEDAssistant
+
+        mock_model = MagicMock()
+        assistant = registry.create_assistant("hed", model=mock_model)
+
+        # Should be HEDAssistant with full features (28 docs, preloaded, etc.)
+        assert isinstance(assistant, HEDAssistant)
+
+    def test_hed_has_custom_system_prompt(self) -> None:
+        """HED should use custom system_prompt from YAML."""
+        from src.assistants import registry
+
+        mock_model = MagicMock()
+        assistant = registry.create_assistant("hed", model=mock_model)
+
+        prompt = assistant.get_system_prompt()
+
+        # Should have HED-specific content
+        assert "Hierarchical Event Descriptors" in prompt
+        assert "hedtags.org" in prompt
+        assert "validate_hed_string" in prompt
+
+    def test_hed_has_plugin_tools(self) -> None:
+        """HED should have tools loaded from Python plugin."""
+        from src.assistants import registry
+
+        mock_model = MagicMock()
+        assistant = registry.create_assistant("hed", model=mock_model)
+
+        # Get tool names
+        tool_names = [t.name for t in assistant.tools]
+
+        # Should have HED-specific tools from plugin
+        assert "validate_hed_string" in tool_names
+        assert "suggest_hed_tags" in tool_names
+        assert "get_hed_schema_versions" in tool_names
+        assert "retrieve_hed_docs" in tool_names
+
+        # Should also have generic knowledge tools
+        assert "search_hed_discussions" in tool_names
+        assert "list_hed_recent" in tool_names
+        assert "search_hed_papers" in tool_names
