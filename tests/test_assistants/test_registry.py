@@ -541,3 +541,142 @@ communities:
             assert registry.get_community_config("nonexistent") is None
         finally:
             yaml_path.unlink()
+
+
+class TestCustomSystemPrompt:
+    """Tests for custom system_prompt in YAML configurations."""
+
+    def test_custom_system_prompt_used(
+        self, temp_registry: AssistantRegistry, tmp_path: Path
+    ) -> None:
+        """Should use custom system_prompt from YAML config."""
+        yaml_content = """
+communities:
+  - id: custom-prompt-test
+    name: Custom Prompt Test
+    description: Testing custom system prompts
+    system_prompt: |
+      You are a specialized assistant for {name}.
+      Description: {description}
+      Repos: {repo_list}
+      DOIs: {paper_dois}
+    github:
+      repos:
+        - org/test-repo
+    citations:
+      dois:
+        - "10.1234/test.doi"
+"""
+        yaml_path = tmp_path / "communities.yaml"
+        yaml_path.write_text(yaml_content)
+
+        temp_registry.load_from_yaml(yaml_path)
+
+        mock_model = MagicMock()
+        assistant = temp_registry.create_assistant("custom-prompt-test", model=mock_model)
+
+        # Verify custom prompt with substitutions
+        prompt = assistant.get_system_prompt()
+        assert "You are a specialized assistant for Custom Prompt Test" in prompt
+        assert "Description: Testing custom system prompts" in prompt
+        assert "org/test-repo" in prompt
+        assert "10.1234/test.doi" in prompt
+
+    def test_default_prompt_without_custom(
+        self, temp_registry: AssistantRegistry, tmp_path: Path
+    ) -> None:
+        """Should use default prompt when no custom system_prompt provided."""
+        yaml_content = """
+communities:
+  - id: default-prompt-test
+    name: Default Prompt Test
+    description: Testing default prompts
+"""
+        yaml_path = tmp_path / "communities.yaml"
+        yaml_path.write_text(yaml_content)
+
+        temp_registry.load_from_yaml(yaml_path)
+
+        mock_model = MagicMock()
+        assistant = temp_registry.create_assistant("default-prompt-test", model=mock_model)
+
+        # Verify default template is used
+        prompt = assistant.get_system_prompt()
+        assert "You are an expert assistant for Default Prompt Test" in prompt
+        assert "## Your Role" in prompt  # From default template
+
+
+class TestHEDYAMLMigration:
+    """Tests for HED working via YAML + CommunityAssistant."""
+
+    @pytest.fixture(autouse=True)
+    def setup_registry(self) -> None:
+        """Ensure registry is populated before tests."""
+        from src.assistants import discover_assistants
+
+        # Call discover to load YAML and Python modules
+        discover_assistants()
+
+    def test_hed_loads_from_yaml(self) -> None:
+        """HED should be registered from YAML without Python factory."""
+        from src.assistants import registry
+
+        # HED should be in registry
+        assert "hed" in registry
+
+        # Get HED info
+        info = registry.get("hed")
+        assert info is not None
+        assert info.name == "HED (Hierarchical Event Descriptors)"
+
+        # Should have community_config from YAML
+        assert info.community_config is not None
+
+        # Should NOT have a factory (using CommunityAssistant)
+        assert info.factory is None
+
+    def test_hed_creates_community_assistant(self) -> None:
+        """HED should create CommunityAssistant instance."""
+        from src.assistants import registry
+        from src.assistants.community import CommunityAssistant
+
+        mock_model = MagicMock()
+        assistant = registry.create_assistant("hed", model=mock_model)
+
+        # Should be CommunityAssistant, not HEDAssistant
+        assert isinstance(assistant, CommunityAssistant)
+
+    def test_hed_has_custom_system_prompt(self) -> None:
+        """HED should use custom system_prompt from YAML."""
+        from src.assistants import registry
+
+        mock_model = MagicMock()
+        assistant = registry.create_assistant("hed", model=mock_model)
+
+        prompt = assistant.get_system_prompt()
+
+        # Should have HED-specific content
+        assert "Hierarchical Event Descriptors" in prompt
+        assert "hedtags.org" in prompt
+        assert "validate_hed_string" in prompt
+
+    def test_hed_has_plugin_tools(self) -> None:
+        """HED should have tools loaded from Python plugin."""
+        from src.assistants import registry
+
+        mock_model = MagicMock()
+        assistant = registry.create_assistant("hed", model=mock_model)
+
+        # Get tool names
+        tool_names = [t.name for t in assistant.tools]
+
+        # Should have HED-specific tools from plugin
+        assert "validate_hed_string" in tool_names
+        assert "suggest_hed_tags" in tool_names
+        assert "get_hed_schema_versions" in tool_names
+        assert "retrieve_hed_docs" in tool_names
+
+        # Should also have generic knowledge tools
+        assert "search_hed_discussions" in tool_names
+        assert "list_hed_recent" in tool_names
+        assert "search_hed_papers" in tool_names
