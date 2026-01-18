@@ -22,6 +22,7 @@ class HealthResponse(BaseModel):
 
     status: str
     version: str
+    commit_sha: str | None
     timestamp: str
     environment: str
 
@@ -100,6 +101,7 @@ def register_routes(app: FastAPI) -> None:
         return HealthResponse(
             status="healthy",
             version=settings.app_version,
+            commit_sha=settings.git_commit_sha,
             timestamp=datetime.now(UTC).isoformat(),
             environment="development" if settings.debug else "production",
         )

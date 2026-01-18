@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     # API Settings
     app_name: str = Field(default="Open Science Assistant", description="Application name")
     app_version: str = Field(default=__version__, description="Application version")
+    git_commit_sha: str | None = Field(
+        default=None,
+        description="Git commit SHA (set via GIT_COMMIT_SHA env var during deployment)",
+    )
     debug: bool = Field(default=False, description="Enable debug mode")
 
     # Server Settings

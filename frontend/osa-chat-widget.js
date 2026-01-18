@@ -58,6 +58,7 @@
   let turnstileWidgetId = null;
   let backendOnline = null; // null = checking, true = online, false = offline
   let backendVersion = null; // Backend version from health check
+  let backendCommitSha = null; // Backend git commit SHA from health check
   let pageContextEnabled = true; // Runtime state for page context toggle
   let chatPopup = null; // Reference to pop-out window (prevents duplicates)
 
@@ -1057,11 +1058,16 @@
         statusDot.className = 'osa-status-dot';
         statusText.textContent = 'Online';
 
-        // Extract version from health response
+        // Extract version and commit SHA from health response
         try {
           const data = await response.json();
-          if (data.backend && data.backend.version) {
-            backendVersion = data.backend.version;
+          if (data.backend) {
+            if (data.backend.version) {
+              backendVersion = data.backend.version;
+            }
+            if (data.backend.commit_sha) {
+              backendCommitSha = data.backend.commit_sha;
+            }
             updateFooterVersion();
           }
         } catch (jsonErr) {
@@ -1083,8 +1089,17 @@
   // Update footer with version info
   function updateFooterVersion() {
     const versionSpan = document.querySelector('.osa-version');
-    if (versionSpan && backendVersion) {
-      versionSpan.textContent = ` v${backendVersion}`;
+    if (versionSpan) {
+      let versionText = '';
+      if (backendVersion) {
+        versionText = ` v${backendVersion}`;
+      }
+      if (backendCommitSha) {
+        // Show short SHA (first 7 characters)
+        const shortSha = backendCommitSha.substring(0, 7);
+        versionText += ` (${shortSha})`;
+      }
+      versionSpan.textContent = versionText;
     }
   }
 
