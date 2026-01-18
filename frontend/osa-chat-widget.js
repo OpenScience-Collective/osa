@@ -20,8 +20,8 @@
       ? 'https://osa-worker-dev.shirazi-10f.workers.dev'
       : 'https://osa-worker.shirazi-10f.workers.dev',
     storageKey: 'osa-chat-history',
-    // Turnstile: use testing key for dev (always passes), null for prod (will be set via setConfig)
-    turnstileSiteKey: isDev ? '1x00000000000000000000AA' : null,
+    // Turnstile: disabled for now (not set up yet)
+    turnstileSiteKey: null,
     // Customizable branding
     title: 'HED Assistant',
     initialMessage: 'Hi! I\'m the HED Assistant. I can help with HED (Hierarchical Event Descriptors), annotation, validation, and related tools. What would you like to know?',
@@ -57,6 +57,7 @@
   let turnstileToken = null;
   let turnstileWidgetId = null;
   let backendOnline = null; // null = checking, true = online, false = offline
+  let backendVersion = null; // Backend version from health check
   let pageContextEnabled = true; // Runtime state for page context toggle
   let chatPopup = null; // Reference to pop-out window (prevents duplicates)
 
@@ -1055,6 +1056,17 @@
         backendOnline = true;
         statusDot.className = 'osa-status-dot';
         statusText.textContent = 'Online';
+
+        // Extract version from health response
+        try {
+          const data = await response.json();
+          if (data.backend && data.backend.version) {
+            backendVersion = data.backend.version;
+            updateFooterVersion();
+          }
+        } catch (jsonErr) {
+          // Ignore JSON parse errors
+        }
       } else {
         backendOnline = false;
         statusDot.className = 'osa-status-dot offline';
@@ -1065,6 +1077,14 @@
       statusDot.className = 'osa-status-dot offline';
       statusText.textContent = 'Offline';
       console.warn('Backend health check failed:', e);
+    }
+  }
+
+  // Update footer with version info
+  function updateFooterVersion() {
+    const versionSpan = document.querySelector('.osa-version');
+    if (versionSpan && backendVersion) {
+      versionSpan.textContent = ` v${backendVersion}`;
     }
   }
 
@@ -1189,7 +1209,7 @@
         </div>
         <div class="osa-chat-footer">
           <a href="${escapeHtml(CONFIG.repoUrl)}" target="_blank" rel="noopener noreferrer">
-            Powered by ${escapeHtml(CONFIG.repoName)}
+            Powered by ${escapeHtml(CONFIG.repoName)}<span class="osa-version"></span>
           </a>
         </div>
       </div>
