@@ -6,17 +6,16 @@ retrieval functionality.
 
 import pytest
 
-from src.tools.base import DocRegistry
-from src.tools.fetcher import DocumentFetcher
-from src.tools.hed import (
+from src.assistants.hed.docs import (
     HED_DOCS,
-    format_hed_doc_list,
     get_hed_registry,
     get_preloaded_hed_content,
     retrieve_hed_doc,
-    retrieve_hed_docs,
     retrieve_hed_docs_by_category,
 )
+from src.assistants.hed.tools import retrieve_hed_docs
+from src.tools.base import DocRegistry
+from src.tools.fetcher import DocumentFetcher
 
 
 class TestHEDRegistry:
@@ -170,7 +169,7 @@ class TestFormatHEDDocList:
 
     def test_format_includes_sections(self) -> None:
         """Test that formatted list includes expected sections."""
-        formatted = format_hed_doc_list()
+        formatted = HED_DOCS.format_doc_list()
 
         assert "Preloaded Documents" in formatted
         # Should have category sections for on-demand docs
@@ -179,7 +178,7 @@ class TestFormatHEDDocList:
 
     def test_format_includes_urls(self) -> None:
         """Test that formatted list includes document URLs."""
-        formatted = format_hed_doc_list()
+        formatted = HED_DOCS.format_doc_list()
 
         assert "https://" in formatted
         assert "hedtags.org" in formatted.lower()
@@ -188,17 +187,17 @@ class TestFormatHEDDocList:
 class TestRetrieveHEDDocsTool:
     """Tests for the LangChain-compatible tool function."""
 
-    def test_tool_has_docstring(self) -> None:
+    def test_tool_has_description(self) -> None:
         """Test that the tool has proper documentation."""
-        assert retrieve_hed_docs.__doc__ is not None
-        assert "HED" in retrieve_hed_docs.__doc__
+        assert retrieve_hed_docs.description is not None
+        assert "HED" in retrieve_hed_docs.description
         # Should include the doc list
-        assert "https://" in retrieve_hed_docs.__doc__
+        assert "https://" in retrieve_hed_docs.description
 
     def test_tool_retrieves_valid_doc(self) -> None:
         """Test retrieving a document through the tool interface."""
         url = "https://www.hedtags.org/hed-specification/02_Terminology.html"
-        result = retrieve_hed_docs(url)
+        result = retrieve_hed_docs.invoke({"url": url})
 
         # Should return formatted content
         assert isinstance(result, str)
@@ -208,7 +207,7 @@ class TestRetrieveHEDDocsTool:
     def test_tool_handles_invalid_url(self) -> None:
         """Test tool handles invalid URL gracefully."""
         url = "https://example.com/invalid.html"
-        result = retrieve_hed_docs(url)
+        result = retrieve_hed_docs.invoke({"url": url})
 
         assert isinstance(result, str)
         assert "Error" in result or "error" in result

@@ -10,6 +10,7 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
+from src.assistants import discover_assistants, registry
 from src.cli.client import OSAClient
 from src.cli.config import (
     CLIConfig,
@@ -19,28 +20,28 @@ from src.cli.config import (
     load_config,
     save_config,
 )
+from src.cli.sync import sync_app
+
+# Discover assistants on module load
+discover_assistants()
 
 # Rich console for formatted output
 console = Console()
 
-# Available assistants registry
-ASSISTANTS = {
-    "hed": {
-        "name": "HED",
-        "description": "Hierarchical Event Descriptors - annotation standard for neuroimaging",
-        "status": "available",
-    },
-    "bids": {
-        "name": "BIDS",
-        "description": "Brain Imaging Data Structure - data organization standard",
-        "status": "coming soon",
-    },
-    "eeglab": {
-        "name": "EEGLAB",
-        "description": "EEG analysis toolbox for MATLAB",
-        "status": "coming soon",
-    },
-}
+
+def get_assistants() -> dict[str, dict[str, str]]:
+    """Get available assistants from the registry.
+
+    Returns a dict compatible with the old ASSISTANTS format for CLI display.
+    """
+    assistants = {}
+    for info in registry.list_all():
+        assistants[info.id] = {
+            "name": info.name,
+            "description": info.description,
+            "status": info.status,
+        }
+    return assistants
 
 
 def display_tool_calls(tool_calls: list[dict]) -> None:
@@ -304,7 +305,7 @@ def main_callback(ctx: typer.Context) -> None:
         table.add_column("Description", style="white")
         table.add_column("Status", style="green")
 
-        for assistant_id, info in ASSISTANTS.items():
+        for assistant_id, info in get_assistants().items():
             status_style = "green" if info["status"] == "available" else "yellow"
             table.add_row(
                 f"osa {assistant_id}",
@@ -321,7 +322,7 @@ def main_callback(ctx: typer.Context) -> None:
 
 
 # Register assistant subcommands
-for assistant_id, assistant_info in ASSISTANTS.items():
+for assistant_id, assistant_info in get_assistants().items():
     cli.add_typer(
         create_assistant_app(assistant_id, assistant_info),
         name=assistant_id,
@@ -415,6 +416,9 @@ def serve(
 config_app = typer.Typer(help="Manage CLI configuration")
 cli.add_typer(config_app, name="config")
 
+# Register sync commands for knowledge sources
+cli.add_typer(sync_app, name="sync")
+
 
 @config_app.command("show")
 def config_show() -> None:
@@ -460,6 +464,14 @@ def config_set(
         str | None,
         typer.Option("--openrouter-key", help="OpenRouter API key"),
     ] = None,
+    semantic_scholar_key: Annotated[
+        str | None,
+        typer.Option("--semantic-scholar-key", help="Semantic Scholar API key"),
+    ] = None,
+    pubmed_key: Annotated[
+        str | None,
+        typer.Option("--pubmed-key", help="PubMed/NCBI API key"),
+    ] = None,
     output_format: Annotated[
         str | None,
         typer.Option("--output", "-o", help="Output format: rich, json, plain"),
@@ -487,6 +499,12 @@ def config_set(
         updated = True
     if openrouter_key is not None:
         config.openrouter_api_key = openrouter_key
+        updated = True
+    if semantic_scholar_key is not None:
+        config.semantic_scholar_api_key = semantic_scholar_key
+        updated = True
+    if pubmed_key is not None:
+        config.pubmed_api_key = pubmed_key
         updated = True
     if output_format is not None:
         if output_format not in ("rich", "json", "plain"):

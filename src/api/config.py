@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     # API Settings
     app_name: str = Field(default="Open Science Assistant", description="Application name")
     app_version: str = Field(default=__version__, description="Application version")
+    git_commit_sha: str | None = Field(
+        default=None,
+        description="Git commit SHA (set via GIT_COMMIT_SHA env var during deployment)",
+    )
     debug: bool = Field(default=False, description="Enable debug mode")
 
     # Server Settings
@@ -34,7 +38,15 @@ class Settings(BaseSettings):
 
     # CORS Settings
     cors_origins: list[str] = Field(
-        default=["http://localhost:3000", "http://localhost:8080", "http://localhost:8888"],
+        default=[
+            "http://localhost:3000",
+            "http://localhost:8080",
+            "http://localhost:8888",
+            "https://osc.earth",
+            "https://www.osc.earth",
+            "https://docs.osc.earth",
+            "https://openscience-collective.github.io",
+        ],
         description="Allowed CORS origins",
     )
 
@@ -84,6 +96,35 @@ class Settings(BaseSettings):
     # Database
     database_url: str | None = Field(
         default=None, description="PostgreSQL connection URL for state persistence"
+    )
+
+    # Knowledge Database Settings
+    data_dir: str | None = Field(
+        default=None,
+        description="Data directory for knowledge database (default: platform-specific user data dir)",
+    )
+
+    # Knowledge Sync API Keys (all optional, for higher rate limits)
+    github_token: str | None = Field(
+        default=None,
+        description="GitHub token for REST API (optional, higher rate limits for sync)",
+    )
+    semantic_scholar_api_key: str | None = Field(
+        default=None, description="Semantic Scholar API key (optional, for higher rate limits)"
+    )
+    pubmed_api_key: str | None = Field(
+        default=None, description="PubMed/NCBI API key (optional, for higher rate limits)"
+    )
+
+    # Knowledge Sync Scheduling
+    sync_enabled: bool = Field(default=True, description="Enable automated knowledge sync")
+    sync_github_cron: str = Field(
+        default="0 2 * * *",
+        description="Cron schedule for GitHub sync (default: daily at 2am UTC)",
+    )
+    sync_papers_cron: str = Field(
+        default="0 3 * * 0",
+        description="Cron schedule for papers sync (default: weekly Sunday at 3am UTC)",
     )
 
 

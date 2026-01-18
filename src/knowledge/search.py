@@ -1,0 +1,386 @@
+"""FTS5 search for knowledge sources.
+
+Provides full-text search over GitHub discussions and papers.
+These are for DISCOVERY, not answering - the agent should link
+users to relevant discussions, not answer from them.
+"""
+
+import logging
+import re
+import sqlite3
+import unicodedata
+from dataclasses import dataclass
+
+from src.knowledge.db import get_connection
+
+logger = logging.getLogger(__name__)
+
+
+def _normalize_title_for_dedup(title: str) -> set[str]:
+    """Normalize a paper title to a set of words for deduplication.
+
+    This handles different Unicode representations, punctuation variants,
+    and whitespace differences that might exist between the same paper
+    indexed from different sources.
+
+    Args:
+        title: Raw paper title
+
+    Returns:
+        Set of normalized words for similarity comparison
+    """
+    # Unicode NFKC normalization - converts all Unicode variants to canonical form
+    normalized = unicodedata.normalize("NFKC", title)
+
+    # Lowercase for case-insensitive comparison
+    normalized = normalized.lower()
+
+    # Remove all punctuation and special characters, keep only alphanumeric and spaces
+    normalized = re.sub(r"[^\w\s]", "", normalized)
+
+    # Split into words and filter out very short words (less than 3 chars)
+    words = {word for word in normalized.split() if len(word) >= 3}
+
+    return words
+
+
+def _titles_are_similar(
+    title1_words: set[str], title2_words: set[str], threshold: float = 0.7
+) -> bool:
+    """Check if two titles are similar based on word overlap (Jaccard-like similarity).
+
+    Args:
+        title1_words: Set of words from first title
+        title2_words: Set of words from second title
+        threshold: Minimum similarity ratio (0.0 to 1.0), default 0.7 (70%)
+
+    Returns:
+        True if titles are similar enough to be considered duplicates
+    """
+    if not title1_words or not title2_words:
+        return False
+
+    # Calculate intersection and union
+    intersection = len(title1_words & title2_words)
+    union = len(title1_words | title2_words)
+
+    if union == 0:
+        return False
+
+    similarity = intersection / union
+    return similarity >= threshold
+
+
+def _sanitize_fts5_query(query: str) -> str:
+    """Sanitize user input for safe FTS5 queries.
+
+    IMPORTANT: This function wraps ALL input in quotes, converting queries to
+    exact phrase searches. This prevents FTS5 operator injection but also
+    disables legitimate FTS5 features (AND/OR/NOT, wildcards, NEAR, etc.).
+
+    For a production system with advanced search needs, consider implementing
+    proper query parsing instead of blanket phrase conversion.
+
+    Args:
+        query: Raw user input
+
+    Returns:
+        Sanitized query safe for FTS5 MATCH (as a phrase search)
+    """
+    # Escape internal double quotes by doubling them
+    escaped = query.replace('"', '""')
+    # Wrap in quotes to treat entire input as phrase search
+    return f'"{escaped}"'
+
+
+@dataclass
+class SearchResult:
+    """A search result from the knowledge database."""
+
+    title: str
+    url: str
+    snippet: str
+    source: str  # 'github' or paper source name
+    item_type: str | None  # 'issue', 'pr', or None for papers
+    status: str  # 'open', 'closed', or 'published'
+    created_at: str
+
+
+def search_github_items(
+    query: str,
+    project: str = "hed",
+    limit: int = 10,
+    item_type: str | None = None,
+    status: str | None = None,
+    repo: str | None = None,
+) -> list[SearchResult]:
+    """Search GitHub issues and PRs using FTS5.
+
+    Args:
+        query: Search query (FTS5 syntax supported, e.g., "validation AND error")
+        project: Assistant/project name for database isolation. Defaults to 'hed'.
+        limit: Maximum number of results
+        item_type: Filter by 'issue' or 'pr'
+        status: Filter by 'open' or 'closed'
+        repo: Filter by repository name
+
+    Returns:
+        List of matching results, ordered by relevance
+    """
+    # Build SQL query with optional filters
+    sql = """
+        SELECT g.title, g.url, g.first_message, g.item_type, g.status,
+               g.created_at, g.repo
+        FROM github_items_fts f
+        JOIN github_items g ON f.rowid = g.id
+        WHERE github_items_fts MATCH ?
+    """
+    params: list[str | int] = [query]
+
+    if item_type:
+        sql += " AND g.item_type = ?"
+        params.append(item_type)
+    if status:
+        sql += " AND g.status = ?"
+        params.append(status)
+    if repo:
+        sql += " AND g.repo = ?"
+        params.append(repo)
+
+    sql += " ORDER BY rank LIMIT ?"
+    params.append(limit)
+
+    results = []
+    try:
+        with get_connection(project) as conn:
+            # Sanitize user query to prevent FTS5 injection
+            safe_query = _sanitize_fts5_query(query)
+            params[0] = safe_query
+
+            for row in conn.execute(sql, params):
+                # Create snippet from first_message (first 200 chars)
+                first_message = row["first_message"] or ""
+                snippet = first_message[:200].strip()
+                if len(first_message) > 200:
+                    snippet += "..."
+
+                results.append(
+                    SearchResult(
+                        title=row["title"],
+                        url=row["url"],
+                        snippet=snippet,
+                        source="github",
+                        item_type=row["item_type"],
+                        status=row["status"],
+                        created_at=row["created_at"] or "",
+                    )
+                )
+    except sqlite3.OperationalError as e:
+        # Infrastructure failure (corruption, disk full, permissions) - must propagate
+        logger.error(
+            "Database operational error during search: %s",
+            e,
+            exc_info=True,
+            extra={"query": query, "project": project},
+        )
+        raise  # Let API layer return 500, not empty results
+    except sqlite3.Error as e:
+        # Other database errors - still raise for debugging
+        logger.warning("Database error during search '%s': %s", query, e)
+        raise
+
+    return results
+
+
+def search_papers(
+    query: str,
+    project: str = "hed",
+    limit: int = 10,
+    source: str | None = None,
+) -> list[SearchResult]:
+    """Search papers using FTS5.
+
+    Args:
+        query: Search query (FTS5 syntax supported)
+        project: Assistant/project name for database isolation. Defaults to 'hed'.
+        limit: Maximum number of results
+        source: Filter by source ('openalex', 'semanticscholar', 'pubmed')
+
+    Returns:
+        List of matching results, ordered by relevance
+    """
+    sql = """
+        SELECT p.title, p.url, p.first_message, p.source, p.created_at
+        FROM papers_fts f
+        JOIN papers p ON f.rowid = p.id
+        WHERE papers_fts MATCH ?
+    """
+    params: list[str | int] = [query]
+
+    if source:
+        sql += " AND p.source = ?"
+        params.append(source)
+
+    # Fetch more results than needed to allow for deduplication
+    sql += " ORDER BY rank LIMIT ?"
+    params.append(limit * 3)
+
+    results = []
+    seen_titles: list[set[str]] = []  # List of word sets for fuzzy matching
+    try:
+        with get_connection(project) as conn:
+            # Sanitize user query to prevent FTS5 injection
+            safe_query = _sanitize_fts5_query(query)
+            params[0] = safe_query
+
+            for row in conn.execute(sql, params):
+                # Deduplicate by fuzzy title matching (>70% word overlap)
+                title_words = _normalize_title_for_dedup(row["title"])
+
+                # Check if this title is similar to any we've already seen
+                is_duplicate = False
+                for seen_words in seen_titles:
+                    if _titles_are_similar(title_words, seen_words):
+                        is_duplicate = True
+                        break
+
+                if is_duplicate:
+                    continue
+                seen_titles.append(title_words)
+
+                # Create snippet from abstract (first 200 chars)
+                first_message = row["first_message"] or ""
+                snippet = first_message[:200].strip()
+                if len(first_message) > 200:
+                    snippet += "..."
+
+                results.append(
+                    SearchResult(
+                        title=row["title"],
+                        url=row["url"],
+                        snippet=snippet,
+                        source=row["source"],
+                        item_type=None,
+                        status="published",
+                        created_at=row["created_at"] or "",
+                    )
+                )
+
+                # Stop once we have enough unique results
+                if len(results) >= limit:
+                    break
+    except sqlite3.OperationalError as e:
+        # Infrastructure failure (corruption, disk full, permissions) - must propagate
+        logger.error(
+            "Database operational error during paper search: %s",
+            e,
+            exc_info=True,
+            extra={"query": query, "project": project},
+        )
+        raise  # Let API layer return 500, not empty results
+    except sqlite3.Error as e:
+        # Other database errors - still raise for debugging
+        logger.warning("Database error during paper search '%s': %s", query, e)
+        raise
+
+    return results
+
+
+def search_all(
+    query: str,
+    project: str = "hed",
+    limit: int = 10,
+) -> dict[str, list[SearchResult]]:
+    """Search both GitHub items and papers.
+
+    Args:
+        query: Search query
+        project: Assistant/project name for database isolation. Defaults to 'hed'.
+        limit: Maximum results per category
+
+    Returns:
+        Dict with 'github' and 'papers' keys containing results
+    """
+    return {
+        "github": search_github_items(query, project=project, limit=limit),
+        "papers": search_papers(query, project=project, limit=limit),
+    }
+
+
+def list_recent_github_items(
+    project: str = "hed",
+    limit: int = 10,
+    item_type: str | None = None,
+    status: str | None = None,
+    repo: str | None = None,
+) -> list[SearchResult]:
+    """List recent GitHub issues and PRs ordered by creation date.
+
+    Unlike search_github_items which searches by text, this function
+    simply lists the most recent items.
+
+    Args:
+        project: Assistant/project name for database isolation. Defaults to 'hed'.
+        limit: Maximum number of results
+        item_type: Filter by 'issue' or 'pr'
+        status: Filter by 'open' or 'closed'
+        repo: Filter by repository name (e.g., 'hed-standard/hed-javascript')
+
+    Returns:
+        List of recent items, ordered by creation date (newest first)
+    """
+    sql = """
+        SELECT title, url, first_message, item_type, status, created_at, repo
+        FROM github_items
+        WHERE 1=1
+    """
+    params: list[str | int] = []
+
+    if item_type:
+        sql += " AND item_type = ?"
+        params.append(item_type)
+    if status:
+        sql += " AND status = ?"
+        params.append(status)
+    if repo:
+        sql += " AND repo = ?"
+        params.append(repo)
+
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+
+    results = []
+    try:
+        with get_connection(project) as conn:
+            for row in conn.execute(sql, params):
+                first_message = row["first_message"] or ""
+                snippet = first_message[:200].strip()
+                if len(first_message) > 200:
+                    snippet += "..."
+
+                results.append(
+                    SearchResult(
+                        title=row["title"],
+                        url=row["url"],
+                        snippet=snippet,
+                        source="github",
+                        item_type=row["item_type"],
+                        status=row["status"],
+                        created_at=row["created_at"] or "",
+                    )
+                )
+    except sqlite3.OperationalError as e:
+        # Infrastructure failure (corruption, disk full, permissions) - must propagate
+        logger.error(
+            "Database operational error listing recent items: %s",
+            e,
+            exc_info=True,
+            extra={"project": project},
+        )
+        raise  # Let API layer return 500, not empty results
+    except sqlite3.Error as e:
+        # Other database errors - still raise for debugging
+        logger.warning("Database error listing recent items: %s", e)
+        raise
+
+    return results

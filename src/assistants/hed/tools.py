@@ -1,18 +1,29 @@
-"""HED validation tools using hedtools.org REST API.
+"""HED-specific tools for the HED assistant.
 
-These tools enable the HED assistant to validate its own examples before presenting
-them to users, ensuring accuracy and building trust.
+Includes:
+- validate_hed_string: Validate HED annotation strings via hedtools.org API
+- suggest_hed_tags: Suggest HED tags using hed-lsp semantic search
+- get_hed_schema_versions: Get available HED schema versions
+- retrieve_hed_docs: Retrieve HED documentation by URL
 
-The hedtools.org API requires CSRF protection. The workflow is:
-1. GET /services to obtain session cookie and CSRF token
-2. POST to /services_submit with X-CSRFToken header and Cookie
+These tools are registered with the HED assistant and can be used
+by the LLM to validate examples and fetch documentation.
 """
 
+import json
+import logging
+import os
 import re
+import shutil
+import subprocess
 from typing import Any
 
 import httpx
 from langchain_core.tools import tool
+
+from .docs import HED_DOCS, retrieve_hed_doc
+
+logger = logging.getLogger(__name__)
 
 
 def _get_session_info(base_url: str = "https://hedtools.org/hed") -> tuple[str, str]:
@@ -130,12 +141,14 @@ def validate_hed_string(hed_string: str, schema_version: str = "8.4.0") -> dict[
             }
 
     except httpx.HTTPError as e:
+        logger.warning("HED validation API error: %s", e)
         return {
             "valid": False,
             "errors": f"API error: {e}. Could not validate. Use examples from documentation instead.",
             "schema_version": schema_version,
         }
     except Exception as e:
+        logger.exception("Unexpected error during HED validation")
         return {
             "valid": False,
             "errors": f"Validation failed: {e}. Use examples from documentation instead.",
@@ -175,11 +188,6 @@ def suggest_hed_tags(search_terms: list[str], top_n: int = 10) -> dict[str, list
             "visual flash": ["Flash", "Flickering", "Visual-presentation"]
         }
     """
-    import json
-    import os
-    import shutil
-    import subprocess
-
     # Try to find hed-suggest CLI
     # 1. Check if it's in PATH (global install)
     # 2. Check configured path via HED_LSP_PATH env var
@@ -201,7 +209,8 @@ def suggest_hed_tags(search_terms: list[str], top_n: int = 10) -> dict[str, list
             cli_path = dev_path
 
     if not cli_path:
-        # Return empty results with error
+        # hed-suggest not available - this is expected in many environments
+        logger.debug("hed-suggest CLI not found; tag suggestions unavailable")
         return {term: [] for term in search_terms}
 
     try:
@@ -219,7 +228,11 @@ def suggest_hed_tags(search_terms: list[str], top_n: int = 10) -> dict[str, list
         )
 
         if result.returncode != 0:
-            # CLI failed, return empty results
+            logger.warning(
+                "hed-suggest CLI failed with exit code %d: %s",
+                result.returncode,
+                result.stderr[:200] if result.stderr else "(no stderr)",
+            )
             return {term: [] for term in search_terms}
 
         # Parse JSON from stdout
@@ -227,10 +240,13 @@ def suggest_hed_tags(search_terms: list[str], top_n: int = 10) -> dict[str, list
         return output
 
     except subprocess.TimeoutExpired:
+        logger.error("hed-suggest CLI timed out after 30 seconds")
         return {term: [] for term in search_terms}
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        logger.error("hed-suggest CLI returned invalid JSON: %s", e)
         return {term: [] for term in search_terms}
     except Exception:
+        logger.exception("Unexpected error in suggest_hed_tags")
         return {term: [] for term in search_terms}
 
 
@@ -262,6 +278,39 @@ def get_hed_schema_versions() -> dict[str, Any]:
         return {"versions": versions, "error": ""}
 
     except httpx.HTTPError as e:
+        logger.warning("Failed to get HED schema versions from hedtools.org: %s", e)
         return {"versions": [], "error": f"API error: {e}"}
     except Exception as e:
+        logger.exception("Unexpected error getting HED schema versions")
         return {"versions": [], "error": f"Failed to get versions: {e}"}
+
+
+@tool
+def retrieve_hed_docs(url: str) -> str:
+    """Retrieve HED documentation by URL.
+
+    Use this tool to fetch HED documentation when you need detailed
+    information about HED annotation, schemas, or tools.
+
+    Available documents:
+    {doc_list}
+
+    Args:
+        url: The HTML URL of the HED documentation page to retrieve.
+
+    Returns:
+        The document content in markdown format, or an error message.
+    """
+    result = retrieve_hed_doc(url)
+    if result.success:
+        return f"# {result.title}\n\nSource: {result.url}\n\n{result.content}"
+    return f"Error retrieving {result.url}: {result.error}"
+
+
+# Update tool description with available docs
+_doc_list = HED_DOCS.format_doc_list()
+retrieve_hed_docs.__doc__ = retrieve_hed_docs.__doc__.format(doc_list=_doc_list)
+# Also update the StructuredTool's description field (captured at decoration time)
+object.__setattr__(
+    retrieve_hed_docs, "description", retrieve_hed_docs.description.replace("{doc_list}", _doc_list)
+)

@@ -63,6 +63,9 @@ dependencies = [
     "lxml>=6.0.0",
     "python-dotenv>=1.2.0",
     "markdownify>=1.1.0",
+
+    # Scheduling
+    "apscheduler>=3.10.0,<4.0.0",
 ]
 
 [project.optional-dependencies]

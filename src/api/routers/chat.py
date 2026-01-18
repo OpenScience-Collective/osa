@@ -1,20 +1,25 @@
 """Chat API router with streaming responses."""
 
+import logging
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
 
-from src.agents.hed import HEDAssistant
 from src.api.config import get_settings
+from src.assistants import discover_assistants, registry
 from src.core.services.litellm_llm import create_openrouter_llm
 
+# Discover assistants on module load
+discover_assistants()
+
 router = APIRouter(prefix="/chat", tags=["Chat"])
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -143,11 +148,11 @@ def create_assistant(
     api_key: str | None = None,
     user_id: str | None = None,
     preload_docs: bool = True,
-) -> HEDAssistant:
-    """Create an assistant instance.
+) -> Any:
+    """Create an assistant instance using the registry.
 
     Args:
-        assistant_type: Type of assistant ('hed', 'bids', 'eeglab', 'general')
+        assistant_type: Type of assistant ('hed', 'bids', 'eeglab', etc.)
         api_key: Optional API key override (BYOK)
         user_id: User ID for cache optimization (sticky routing)
         preload_docs: Whether to preload documents
@@ -156,9 +161,14 @@ def create_assistant(
         Configured assistant instance
 
     Raises:
-        ValueError: If assistant type is not supported
+        ValueError: If assistant type is not registered
     """
     settings = get_settings()
+
+    # Validate assistant exists in registry
+    if assistant_type not in registry:
+        available = [a.id for a in registry.list_all()]
+        raise ValueError(f"Assistant '{assistant_type}' not found. Available: {available}")
 
     # Get model using LiteLLM with prompt caching support
     model = create_openrouter_llm(
@@ -170,13 +180,12 @@ def create_assistant(
         # enable_caching auto-detects based on model (Anthropic models)
     )
 
-    # Currently only HED assistant is implemented
-    if assistant_type == "hed":
-        return HEDAssistant(model=model, preload_docs=preload_docs)
-    else:
-        # For now, use HED assistant for all types
-        # TODO: Implement BIDS, EEGLAB, and General assistants
-        return HEDAssistant(model=model, preload_docs=preload_docs)
+    # Create assistant via registry factory
+    return registry.create_assistant(
+        assistant_type,
+        model=model,
+        preload_docs=preload_docs,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +308,7 @@ async def stream_response(
         }
 
         full_response = ""
+        tool_executed = False
 
         # Stream the response
         async for event in graph.astream_events(state, version="v2"):
@@ -308,8 +318,11 @@ async def stream_response(
                 content = event.get("data", {}).get("chunk", {})
                 if hasattr(content, "content") and content.content:
                     chunk = content.content
+                    # Skip tool call JSON (before tool execution) to prevent
+                    # intermediate thinking from leaking to the user
+                    if not tool_executed and chunk.strip().startswith("{"):
+                        continue
                     full_response += chunk
-                    # Send as SSE
                     yield f"data: {chunk}\n\n"
 
             elif kind == "on_tool_start":
@@ -318,6 +331,7 @@ async def stream_response(
 
             elif kind == "on_tool_end":
                 tool_name = event.get("name", "")
+                tool_executed = True
                 yield f"event: tool_end\ndata: {tool_name}\n\n"
 
         # Add complete response to session history
@@ -328,7 +342,19 @@ async def stream_response(
         yield f"event: done\ndata: {session.session_id}\n\n"
 
     except Exception as e:
-        yield f"event: error\ndata: {e!s}\n\n"
+        # Log full exception with stack trace for debugging
+        logger.error(
+            "Streaming error for session %s: %s",
+            session.session_id,
+            e,
+            exc_info=True,
+            extra={
+                "session_id": session.session_id,
+                "assistant": session.assistant,
+                "message_count": len(session.messages),
+            },
+        )
+        yield "event: error\ndata: Error generating response. Please try again.\n\n"
 
 
 @router.get("/sessions/{session_id}", response_model=SessionInfo)

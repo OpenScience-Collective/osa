@@ -7,8 +7,8 @@ These tests verify:
 - Document fetching and caching
 """
 
+from src.assistants.hed.docs import HED_DOCS
 from src.tools.base import DocPage
-from src.tools.hed import HED_DOCS
 
 
 class TestDocumentRegistry:

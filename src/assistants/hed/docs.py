@@ -1,7 +1,19 @@
-"""HED documentation retrieval tools for OSA.
+"""HED documentation registry.
 
-Provides tools for fetching HED (Hierarchical Event Descriptors)
-documentation from hedtags.org, hed-specification, and hed-resources repos.
+Defines all HED documentation sources with metadata for:
+- Preloaded docs (embedded in system prompt)
+- On-demand docs (fetched via retrieve_hed_docs tool)
+
+Categories:
+- core: Essential HED concepts
+- specification: Formal HED specification documents
+- introductory: Getting started guides
+- quickstart: Quick reference guides
+- tools: Tool-specific documentation
+- advanced: Advanced topics
+- integration: Integration with other systems
+- reference: Reference materials and datasets
+- examples: Example code and test cases
 """
 
 from src.tools.base import DocPage, DocRegistry, RetrievedDoc
@@ -22,7 +34,6 @@ HED_DOCS = DocRegistry(
         ),
         # NOTE: HED schema is NOT included here - it's too large (~890KB)
         # Instead, use hed-lsp tool for schema lookups with autocomplete and semantic search
-        # See: /Users/yahya/Documents/git/HED/hed-lsp
         # === Specification (1 preloaded, rest on-demand) ===
         DocPage(
             title="HED terminology",
@@ -293,37 +304,3 @@ def get_preloaded_hed_content(fetcher: DocumentFetcher | None = None) -> dict[st
         fetcher = get_fetcher()
 
     return fetcher.preload(HED_DOCS.docs)
-
-
-def format_hed_doc_list() -> str:
-    """Format a readable list of available HED documentation.
-
-    Used in tool descriptions to show what docs are available.
-    """
-    return HED_DOCS.format_doc_list()
-
-
-# LangChain-compatible tool function signature
-def retrieve_hed_docs(url: str) -> str:
-    """Retrieve HED documentation by URL.
-
-    Use this tool to fetch HED documentation when you need detailed
-    information about HED annotation, schemas, or tools.
-
-    Available documents:
-    {doc_list}
-
-    Args:
-        url: The HTML URL of the HED documentation page to retrieve.
-
-    Returns:
-        The document content in markdown format, or an error message.
-    """
-    result = retrieve_hed_doc(url)
-    if result.success:
-        return f"# {result.title}\n\nSource: {result.url}\n\n{result.content}"
-    return f"Error retrieving {result.url}: {result.error}"
-
-
-# Update docstring with available docs
-retrieve_hed_docs.__doc__ = retrieve_hed_docs.__doc__.format(doc_list=format_hed_doc_list())

@@ -8,16 +8,15 @@ These tests verify that the tool functions work correctly for:
 - Tool docstring generation
 """
 
-from src.tools.base import DocPage
-from src.tools.fetcher import DocumentFetcher
-from src.tools.hed import (
+from src.assistants.hed.docs import (
     HED_DOCS,
-    format_hed_doc_list,
     get_preloaded_hed_content,
     retrieve_hed_doc,
-    retrieve_hed_docs,
     retrieve_hed_docs_by_category,
 )
+from src.assistants.hed.tools import retrieve_hed_docs
+from src.tools.base import DocPage
+from src.tools.fetcher import DocumentFetcher
 
 
 class TestRetrieveHedDocs:
@@ -26,7 +25,7 @@ class TestRetrieveHedDocs:
     def test_retrieve_preloaded_doc_success(self):
         """Test retrieving a preloaded document."""
         url = "https://www.hedtags.org/hed-resources/IntroductionToHed.html"
-        result = retrieve_hed_docs(url)
+        result = retrieve_hed_docs.invoke({"url": url})
 
         # Should return formatted content
         assert "# Introduction to HED" in result
@@ -37,7 +36,7 @@ class TestRetrieveHedDocs:
     def test_retrieve_ondemand_doc_success(self):
         """Test retrieving an on-demand document."""
         url = "https://www.hedtags.org/hed-resources/HedAnnotationQuickstart.html"
-        result = retrieve_hed_docs(url)
+        result = retrieve_hed_docs.invoke({"url": url})
 
         # Should return formatted content
         assert "# HED annotation quickstart" in result
@@ -48,26 +47,26 @@ class TestRetrieveHedDocs:
     def test_retrieve_unknown_url(self):
         """Test retrieving document with unknown URL."""
         url = "https://example.com/nonexistent.html"
-        result = retrieve_hed_docs(url)
+        result = retrieve_hed_docs.invoke({"url": url})
 
         # Should return error message
         assert result.startswith("Error retrieving")
         assert url in result
 
-    def test_tool_docstring_includes_doc_list(self):
-        """Test that tool docstring includes available documents."""
-        docstring = retrieve_hed_docs.__doc__
+    def test_tool_description_includes_doc_list(self):
+        """Test that tool description includes available documents."""
+        description = retrieve_hed_docs.description
 
         # Should include formatted doc list
-        assert "Available documents:" in docstring
-        assert "Introduction to HED" in docstring
-        assert "HED annotation semantics" in docstring
+        assert "Available documents:" in description
+        assert "Introduction to HED" in description
+        assert "HED annotation semantics" in description
 
         # Should include preloaded section
-        assert "Preloaded" in docstring
+        assert "Preloaded" in description
 
         # Should include category sections
-        assert "Quickstart" in docstring or "Quick Start" in docstring
+        assert "Quickstart" in description or "Quick Start" in description
 
 
 class TestRetrieveHedDoc:
@@ -188,7 +187,7 @@ class TestFormatDocList:
 
     def test_format_includes_all_sections(self):
         """Test that formatted list includes all expected sections."""
-        formatted = format_hed_doc_list()
+        formatted = HED_DOCS.format_doc_list()
 
         # Should include preloaded section
         assert "Preloaded" in formatted
@@ -199,14 +198,14 @@ class TestFormatDocList:
 
     def test_format_is_deterministic(self):
         """Test that formatting is deterministic."""
-        formatted1 = format_hed_doc_list()
-        formatted2 = format_hed_doc_list()
+        formatted1 = HED_DOCS.format_doc_list()
+        formatted2 = HED_DOCS.format_doc_list()
 
         assert formatted1 == formatted2
 
     def test_format_includes_descriptions_by_default(self):
         """Test that format includes descriptions by default."""
-        formatted = format_hed_doc_list()
+        formatted = HED_DOCS.format_doc_list()
 
         # Should include at least one description
         assert "Outlines the fundamental principles" in formatted

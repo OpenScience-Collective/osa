@@ -7,10 +7,20 @@
 (function() {
   'use strict';
 
+  // Auto-detect environment based on hostname
+  const hostname = window.location.hostname;
+  const isDev = hostname.startsWith('develop.') ||
+                hostname.includes('localhost') ||
+                hostname.includes('127.0.0.1');
+
   // Configuration (can be customized via OSAChatWidget.setConfig)
   const CONFIG = {
-    apiEndpoint: 'https://osa-worker.shirazi-10f.workers.dev',
+    // Use dev worker for develop.* hostnames, production worker otherwise
+    apiEndpoint: isDev
+      ? 'https://osa-worker-dev.shirazi-10f.workers.dev'
+      : 'https://osa-worker.shirazi-10f.workers.dev',
     storageKey: 'osa-chat-history',
+    // Turnstile: disabled for now (not set up yet)
     turnstileSiteKey: null,
     // Customizable branding
     title: 'HED Assistant',
@@ -30,8 +40,15 @@
     allowPageContext: true,  // Show the checkbox option
     pageContextDefaultEnabled: true,  // Default state of checkbox
     pageContextStorageKey: 'osa-page-context-enabled',
-    pageContextLabel: 'Share page URL to help answer questions'
+    pageContextLabel: 'Share page URL to help answer questions',
+    // Fullscreen mode (for pop-out windows)
+    fullscreen: false
   };
+
+  // Log environment for debugging
+  if (isDev) {
+    console.log('[OSA] Using DEV backend:', CONFIG.apiEndpoint);
+  }
 
   // State
   let isOpen = false;
@@ -40,7 +57,13 @@
   let turnstileToken = null;
   let turnstileWidgetId = null;
   let backendOnline = null; // null = checking, true = online, false = offline
+  let backendVersion = null; // Backend version from health check
+  let backendCommitSha = null; // Backend git commit SHA from health check
   let pageContextEnabled = true; // Runtime state for page context toggle
+  let chatPopup = null; // Reference to pop-out window (prevents duplicates)
+
+  // Store script URL at load time for reliable pop-out
+  const WIDGET_SCRIPT_URL = document.currentScript?.src || null;
 
   // Icons (SVG)
   const ICONS = {
@@ -50,7 +73,8 @@
     reset: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>',
     brain: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/></svg>',
     copy: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>',
-    check: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>'
+    check: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>',
+    popout: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>'
   };
 
   // CSS Styles
@@ -660,6 +684,33 @@
       cursor: pointer;
       user-select: none;
     }
+
+    /* Fullscreen mode (for pop-out windows) */
+    .osa-chat-widget.fullscreen .osa-chat-button {
+      display: none !important;
+    }
+
+    .osa-chat-widget.fullscreen .osa-chat-window {
+      position: fixed !important;
+      top: 0 !important;
+      left: 0 !important;
+      right: 0 !important;
+      bottom: 0 !important;
+      width: 100% !important;
+      height: 100% !important;
+      max-width: none !important;
+      max-height: none !important;
+      border-radius: 0 !important;
+      display: flex !important;
+    }
+
+    .osa-chat-widget.fullscreen .osa-resize-handle {
+      display: none !important;
+    }
+
+    .osa-chat-widget.fullscreen .osa-chat-header {
+      border-radius: 0;
+    }
   `;
 
   // Escape HTML for user messages
@@ -1006,6 +1057,22 @@
         backendOnline = true;
         statusDot.className = 'osa-status-dot';
         statusText.textContent = 'Online';
+
+        // Extract version and commit SHA from health response
+        try {
+          const data = await response.json();
+          if (data.backend) {
+            if (data.backend.version) {
+              backendVersion = data.backend.version;
+            }
+            if (data.backend.commit_sha) {
+              backendCommitSha = data.backend.commit_sha;
+            }
+            updateFooterVersion();
+          }
+        } catch (jsonErr) {
+          // Ignore JSON parse errors
+        }
       } else {
         backendOnline = false;
         statusDot.className = 'osa-status-dot offline';
@@ -1016,6 +1083,23 @@
       statusDot.className = 'osa-status-dot offline';
       statusText.textContent = 'Offline';
       console.warn('Backend health check failed:', e);
+    }
+  }
+
+  // Update footer with version info
+  function updateFooterVersion() {
+    const versionSpan = document.querySelector('.osa-version');
+    if (versionSpan) {
+      let versionText = '';
+      if (backendVersion) {
+        versionText = ` v${backendVersion}`;
+      }
+      if (backendCommitSha) {
+        // Show short SHA (first 7 characters)
+        const shortSha = backendCommitSha.substring(0, 7);
+        versionText += ` (${shortSha})`;
+      }
+      versionSpan.textContent = versionText;
     }
   }
 
@@ -1085,7 +1169,7 @@
   // Create the widget DOM
   function createWidget() {
     const container = document.createElement('div');
-    container.className = 'osa-chat-widget';
+    container.className = 'osa-chat-widget' + (CONFIG.fullscreen ? ' fullscreen' : '');
 
     const experimentalBadge = CONFIG.showExperimentalBadge
       ? '<span class="osa-experimental-badge">Experimental</span>'
@@ -1110,10 +1194,13 @@
             </div>
           </div>
           <div class="osa-header-actions">
+            <button class="osa-header-btn osa-popout-btn" title="Open in new window" style="display: ${CONFIG.fullscreen ? 'none' : 'flex'}">
+              ${ICONS.popout}
+            </button>
             <button class="osa-header-btn osa-reset-btn" title="Clear chat">
               ${ICONS.reset}
             </button>
-            <button class="osa-header-btn osa-close-btn" title="Close">
+            <button class="osa-header-btn osa-close-btn" title="Close" style="display: ${CONFIG.fullscreen ? 'none' : 'flex'}">
               ${ICONS.close}
             </button>
           </div>
@@ -1137,7 +1224,7 @@
         </div>
         <div class="osa-chat-footer">
           <a href="${escapeHtml(CONFIG.repoUrl)}" target="_blank" rel="noopener noreferrer">
-            Powered by ${escapeHtml(CONFIG.repoName)}
+            Powered by ${escapeHtml(CONFIG.repoName)}<span class="osa-version"></span>
           </a>
         </div>
       </div>
@@ -1401,8 +1488,155 @@
     }
   }
 
+  // Open chat in a new popup window
+  async function openPopout() {
+    const popoutBtn = document.querySelector('.osa-popout-btn');
+
+    // Reuse existing popup if still open
+    if (chatPopup && !chatPopup.closed) {
+      chatPopup.focus();
+      return;
+    }
+
+    // Prevent double-clicks during async operation
+    if (popoutBtn?.disabled) return;
+
+    if (popoutBtn) {
+      popoutBtn.disabled = true;
+      popoutBtn.setAttribute('aria-busy', 'true');
+      popoutBtn.title = 'Opening...';
+    }
+
+    try {
+      // Find the script URL (prefer stored URL, fallback to DOM query)
+      let scriptUrl = WIDGET_SCRIPT_URL;
+      if (!scriptUrl) {
+        const scripts = document.querySelectorAll('script[src*="osa-chat-widget"]');
+        if (scripts.length === 0) {
+          console.warn('OSA Chat Widget: Could not find widget script tag for pop-out.');
+          alert('Could not find widget script URL. Pop-out is not available.');
+          return;
+        }
+        if (scripts.length > 1) {
+          console.warn(`OSA Chat Widget: Found ${scripts.length} matching script tags, using the last one.`);
+        }
+        scriptUrl = scripts[scripts.length - 1].src;
+      }
+
+      // Fetch the script content
+      let scriptCode = '';
+      try {
+        const response = await fetch(scriptUrl);
+        if (!response.ok) {
+          console.error(`Failed to fetch widget script: HTTP ${response.status}`);
+          alert(`Failed to load widget for pop-out (HTTP ${response.status}). Please try again.`);
+          return;
+        }
+        scriptCode = await response.text();
+      } catch (e) {
+        console.error('Failed to fetch widget script:', e);
+        alert('Failed to load widget for pop-out. Please try again.');
+        return;
+      }
+
+      // Validate script content
+      if (!scriptCode || scriptCode.trim().length === 0) {
+        console.error('Widget script content is empty');
+        alert('Failed to load widget for pop-out. Please try again.');
+        return;
+      }
+
+      // Create popup config with fullscreen mode
+      const popupConfig = { ...CONFIG, fullscreen: true };
+
+      // Serialize config safely (escape script-breaking sequences)
+      let configJson;
+      try {
+        configJson = JSON.stringify(popupConfig)
+          .replace(/</g, '\\u003c')
+          .replace(/>/g, '\\u003e');
+      } catch (e) {
+        console.error('Failed to serialize widget config:', e);
+        alert('Failed to prepare widget configuration for pop-out.');
+        return;
+      }
+
+      // Calculate responsive popup size
+      const width = Math.min(500, Math.floor(window.screen.availWidth * 0.9));
+      const height = Math.min(700, Math.floor(window.screen.availHeight * 0.9));
+      const left = Math.floor((window.screen.availWidth - width) / 2);
+      const top = Math.floor((window.screen.availHeight - height) / 2);
+      const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes`;
+
+      // Create the popup HTML with config set BEFORE the widget script runs
+      const popupHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtml(CONFIG.title)}</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      height: 100vh;
+      overflow: hidden;
+    }
+  </style>
+</head>
+<body>
+  <script>
+    // Pre-configure widget before it initializes
+    window.__OSA_CHAT_CONFIG__ = ${configJson};
+  <\/script>
+  <script>
+    // Widget code (will pick up __OSA_CHAT_CONFIG__ if present)
+    ${scriptCode}
+  <\/script>
+</body>
+</html>`;
+
+      // Open the popup window
+      const popup = window.open('', '_blank', features);
+      if (popup) {
+        try {
+          popup.document.write(popupHtml);
+          popup.document.close();
+          chatPopup = popup;
+
+          // Clean up reference when popup closes
+          const checkClosed = setInterval(() => {
+            if (popup.closed) {
+              clearInterval(checkClosed);
+              chatPopup = null;
+            }
+          }, 1000);
+        } catch (e) {
+          console.error('Failed to write popup content:', e);
+          popup.close();
+          alert('Failed to initialize the pop-out window. Please try again.');
+          return;
+        }
+      } else {
+        alert('Please allow popups to open the chat in a new window.');
+      }
+    } finally {
+      // Reset button state
+      if (popoutBtn) {
+        popoutBtn.disabled = false;
+        popoutBtn.setAttribute('aria-busy', 'false');
+        popoutBtn.title = 'Open in new window';
+      }
+    }
+  }
+
   // Initialize widget
   function init() {
+    // Check for pre-configured settings (used by pop-out windows)
+    if (window.__OSA_CHAT_CONFIG__) {
+      Object.assign(CONFIG, window.__OSA_CHAT_CONFIG__);
+    }
+
     loadPageContextPreference();
     loadHistory();
     injectStyles();
@@ -1415,6 +1649,7 @@
     const chatButton = container.querySelector('.osa-chat-button');
     const closeBtn = container.querySelector('.osa-close-btn');
     const resetBtn = container.querySelector('.osa-reset-btn');
+    const popoutBtn = container.querySelector('.osa-popout-btn');
     const input = container.querySelector('.osa-chat-input input');
     const sendBtn = container.querySelector('.osa-send-btn');
     const suggestionsList = container.querySelector('.osa-suggestions-list');
@@ -1433,6 +1668,7 @@
     chatButton?.addEventListener('click', () => toggleChat(container));
     closeBtn?.addEventListener('click', () => toggleChat(container));
     resetBtn?.addEventListener('click', () => resetChat(container));
+    popoutBtn?.addEventListener('click', () => openPopout());
 
     if (sendBtn && input) {
       sendBtn.addEventListener('click', () => sendMessage(container, input.value));
@@ -1464,6 +1700,16 @@
       window.addEventListener('load', () => {
         if (window.turnstile) initTurnstile(container);
       });
+    }
+
+    // In fullscreen mode, open the chat immediately
+    if (CONFIG.fullscreen) {
+      isOpen = true;
+      const chatWindow = container.querySelector('.osa-chat-window');
+      chatWindow?.classList.add('open');
+      setTimeout(() => {
+        input?.focus();
+      }, 100);
     }
   }
 

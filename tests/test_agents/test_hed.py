@@ -9,14 +9,14 @@ import pytest
 from langchain_core.language_models import FakeListChatModel
 from langchain_core.messages import AIMessage
 
-from src.agents.hed import (
+from src.assistants.hed import (
     HED_SYSTEM_PROMPT_TEMPLATE,
     HEDAssistant,
     _format_ondemand_section,
     _format_preloaded_section,
     retrieve_hed_docs,
 )
-from src.tools.hed import HED_DOCS
+from src.assistants.hed.docs import HED_DOCS
 
 
 class TestHEDAssistantInitialization:
@@ -28,13 +28,16 @@ class TestHEDAssistantInitialization:
         assistant = HEDAssistant(model=model, preload_docs=False)
 
         assert assistant.model is not None
-        # Should have 4 tools: retrieve_hed_docs, validate_hed_string, suggest_hed_tags, get_hed_schema_versions
-        assert len(assistant.tools) == 4
+        # Should have 7 tools: retrieve_hed_docs, validate_hed_string, suggest_hed_tags,
+        # get_hed_schema_versions, search_hed_discussions, search_hed_papers, list_hed_recent
+        assert len(assistant.tools) == 7
         tool_names = [t.name for t in assistant.tools]
         assert "retrieve_hed_docs" in tool_names
         assert "validate_hed_string" in tool_names
         assert "suggest_hed_tags" in tool_names
         assert "get_hed_schema_versions" in tool_names
+        assert "search_hed_discussions" in tool_names
+        assert "search_hed_papers" in tool_names
         assert assistant.preloaded_doc_count == 0
 
     def test_hed_assistant_available_doc_count(self) -> None:

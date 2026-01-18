@@ -1,5 +1,6 @@
 """FastAPI application entry point for Open Science Assistant."""
 
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -10,7 +11,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from src.api.config import get_settings
-from src.api.routers import hed_router
+from src.api.routers import hed_router, sync_router
+from src.api.scheduler import start_scheduler, stop_scheduler
+
+logger = logging.getLogger(__name__)
 
 
 class HealthResponse(BaseModel):
@@ -18,6 +22,7 @@ class HealthResponse(BaseModel):
 
     status: str
     version: str
+    commit_sha: str | None
     timestamp: str
     environment: str
 
@@ -35,12 +40,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     settings = get_settings()
 
     # Startup
+    logger.info("Starting %s v%s", settings.app_name, settings.app_version)
     app.state.settings = settings
     app.state.start_time = datetime.now(UTC)
 
+    # Start background scheduler for knowledge sync
+    scheduler = start_scheduler()
+    app.state.scheduler = scheduler
+    if scheduler:
+        logger.info("Knowledge sync scheduler started")
+
     yield
 
-    # Shutdown (cleanup resources here)
+    # Shutdown
+    logger.info("Shutting down %s", settings.app_name)
+    stop_scheduler()
 
 
 def create_app() -> FastAPI:
@@ -75,6 +89,7 @@ def create_app() -> FastAPI:
 def register_routes(app: FastAPI) -> None:
     """Register all application routes."""
     app.include_router(hed_router)
+    app.include_router(sync_router)
 
     @app.get("/health", response_model=HealthResponse, tags=["System"])
     async def health_check() -> HealthResponse:
@@ -86,6 +101,7 @@ def register_routes(app: FastAPI) -> None:
         return HealthResponse(
             status="healthy",
             version=settings.app_version,
+            commit_sha=settings.git_commit_sha,
             timestamp=datetime.now(UTC).isoformat(),
             environment="development" if settings.debug else "production",
         )
@@ -104,6 +120,9 @@ def register_routes(app: FastAPI) -> None:
                 "GET /hed/sessions": "List active sessions",
                 "GET /hed/sessions/{session_id}": "Get session info",
                 "DELETE /hed/sessions/{session_id}": "Delete a session",
+                "GET /sync/status": "Knowledge sync status",
+                "GET /sync/health": "Sync health check",
+                "POST /sync/trigger": "Trigger sync (requires API key)",
                 "GET /health": "Health check",
             },
         }
