@@ -136,6 +136,36 @@ Simple, single-instance deployment:
 - LangFuse for observability (optional)
 - Deployment patterns from HEDit when ready
 
+## Backend Server Access
+
+To access and test the backend server:
+
+```bash
+# SSH into the backend server (via jump host)
+ssh -J hallu hedtools
+
+# Backend repo location on server
+cd ~/osa
+
+# Deploy to dev
+./deploy.sh dev
+
+# Check service status
+docker ps
+docker logs osa-dev
+
+# Manual sync trigger
+docker exec osa-dev python -m src.cli.main sync github --full
+```
+
+**API Endpoints:**
+- Dev: https://api.osc.earth/osa-dev
+- Prod: https://api.osc.earth/osa
+
+**Frontend:**
+- Dev: https://develop.osa-demo.pages.dev
+- Prod: https://osa-demo.pages.dev
+
 ## References
 
 - Plan: `.context/plan.md`
