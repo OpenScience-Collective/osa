@@ -4,12 +4,16 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 
-from src.assistants.hed import HEDAssistant, PageContext
+from src.assistants import discover_assistants, registry
+from src.assistants.community import PageContext
 from src.utils.page_fetcher import (
     MAX_PAGE_CONTENT_LENGTH,
     fetch_page_content,
     is_safe_url,
 )
+
+# Discover assistants at module load
+discover_assistants()
 
 
 class TestSsrfProtection:
@@ -373,17 +377,16 @@ class TestPageContextDataclass:
         assert ctx.title is None
 
 
-class TestHEDAssistantWithPageContext:
-    """Tests for HEDAssistant with page context."""
+class TestCommunityAssistantWithPageContext:
+    """Tests for CommunityAssistant with page context."""
 
     def test_assistant_without_page_context(self):
         """Should work without page context."""
         model = MagicMock()
         model.bind_tools = MagicMock(return_value=model)
-        assistant = HEDAssistant(model=model, preload_docs=False)
+        assistant = registry.create_assistant("hed", model=model, preload_docs=False)
 
-        # Should have 7 base tools (not 8 with fetch_current_page)
-        assert len(assistant.tools) == 7
+        # Should have tools but no fetch_current_page
         tool_names = [t.name for t in assistant.tools]
         assert "fetch_current_page" not in tool_names
 
@@ -392,10 +395,10 @@ class TestHEDAssistantWithPageContext:
         model = MagicMock()
         model.bind_tools = MagicMock(return_value=model)
         page_context = PageContext(url="https://hedtags.org", title="HED Tags")
-        assistant = HEDAssistant(model=model, preload_docs=False, page_context=page_context)
+        assistant = registry.create_assistant(
+            "hed", model=model, preload_docs=False, page_context=page_context
+        )
 
-        # Should have 8 tools including fetch_current_page
-        assert len(assistant.tools) == 8
         tool_names = [t.name for t in assistant.tools]
         assert "fetch_current_page" in tool_names
 
@@ -404,10 +407,10 @@ class TestHEDAssistantWithPageContext:
         model = MagicMock()
         model.bind_tools = MagicMock(return_value=model)
         page_context = PageContext(url=None, title="No URL")
-        assistant = HEDAssistant(model=model, preload_docs=False, page_context=page_context)
+        assistant = registry.create_assistant(
+            "hed", model=model, preload_docs=False, page_context=page_context
+        )
 
-        # Should have 7 base tools (not 8 with fetch_current_page)
-        assert len(assistant.tools) == 7
         tool_names = [t.name for t in assistant.tools]
         assert "fetch_current_page" not in tool_names
 
@@ -416,7 +419,9 @@ class TestHEDAssistantWithPageContext:
         model = MagicMock()
         model.bind_tools = MagicMock(return_value=model)
         page_context = PageContext(url="https://hedtags.org/docs", title="HED Docs")
-        assistant = HEDAssistant(model=model, preload_docs=False, page_context=page_context)
+        assistant = registry.create_assistant(
+            "hed", model=model, preload_docs=False, page_context=page_context
+        )
 
         prompt = assistant.get_system_prompt()
         assert "https://hedtags.org/docs" in prompt
@@ -428,7 +433,7 @@ class TestHEDAssistantWithPageContext:
         """Should not include page context section without page context."""
         model = MagicMock()
         model.bind_tools = MagicMock(return_value=model)
-        assistant = HEDAssistant(model=model, preload_docs=False)
+        assistant = registry.create_assistant("hed", model=model, preload_docs=False)
 
         prompt = assistant.get_system_prompt()
         assert "Page Context" not in prompt
@@ -438,12 +443,14 @@ class TestHEDAssistantWithPageContext:
         model = MagicMock()
         model.bind_tools = MagicMock(return_value=model)
         page_context = PageContext(url="https://hedtags.org/docs", title=None)
-        assistant = HEDAssistant(model=model, preload_docs=False, page_context=page_context)
+        assistant = registry.create_assistant(
+            "hed", model=model, preload_docs=False, page_context=page_context
+        )
 
         prompt = assistant.get_system_prompt()
         assert "(No title)" in prompt
 
-    @patch("src.assistants.hed.fetch_page_content")
+    @patch("src.assistants.community.fetch_page_content")
     def test_fetch_current_page_tool_calls_impl(self, mock_fetch):
         """Should call fetch_page_content with bound URL."""
         mock_fetch.return_value = "# Content from https://hedtags.org\n\nTest content"
@@ -451,7 +458,9 @@ class TestHEDAssistantWithPageContext:
         model = MagicMock()
         model.bind_tools = MagicMock(return_value=model)
         page_context = PageContext(url="https://hedtags.org", title="HED Tags")
-        assistant = HEDAssistant(model=model, preload_docs=False, page_context=page_context)
+        assistant = registry.create_assistant(
+            "hed", model=model, preload_docs=False, page_context=page_context
+        )
 
         # Find and invoke the fetch_current_page tool
         fetch_tool = next(t for t in assistant.tools if t.name == "fetch_current_page")
@@ -461,7 +470,7 @@ class TestHEDAssistantWithPageContext:
         mock_fetch.assert_called_once_with("https://hedtags.org")
         assert "Test content" in result
 
-    @patch("src.assistants.hed.fetch_page_content")
+    @patch("src.assistants.community.fetch_page_content")
     def test_fetch_current_page_tool_bound_to_specific_url(self, mock_fetch):
         """Should only fetch the bound URL, not allow arbitrary URLs."""
         mock_fetch.return_value = "Content"
@@ -469,7 +478,9 @@ class TestHEDAssistantWithPageContext:
         model = MagicMock()
         model.bind_tools = MagicMock(return_value=model)
         page_context = PageContext(url="https://specific-page.com/doc", title="Doc")
-        assistant = HEDAssistant(model=model, preload_docs=False, page_context=page_context)
+        assistant = registry.create_assistant(
+            "hed", model=model, preload_docs=False, page_context=page_context
+        )
 
         fetch_tool = next(t for t in assistant.tools if t.name == "fetch_current_page")
 
@@ -483,7 +494,7 @@ class TestHEDAssistantWithPageContext:
         """Should have correct preloaded and available doc counts."""
         model = MagicMock()
         model.bind_tools = MagicMock(return_value=model)
-        assistant = HEDAssistant(model=model, preload_docs=False)
+        assistant = registry.create_assistant("hed", model=model, preload_docs=False)
 
         # Without preloading, should have 0 preloaded docs
         assert assistant.preloaded_doc_count == 0

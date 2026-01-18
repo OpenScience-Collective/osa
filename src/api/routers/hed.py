@@ -12,9 +12,13 @@ from pydantic import BaseModel, Field, field_validator
 
 from src.api.config import get_settings
 from src.api.security import RequireAuth
-from src.assistants.hed import HEDAssistant
-from src.assistants.hed import PageContext as AgentPageContext
+from src.assistants import discover_assistants, registry
+from src.assistants.community import CommunityAssistant
+from src.assistants.community import PageContext as AgentPageContext
 from src.core.services.litellm_llm import create_openrouter_llm
+
+# Discover assistants at module load time to populate registry
+discover_assistants()
 
 router = APIRouter(prefix="/hed", tags=["HED Assistant"])
 
@@ -178,7 +182,7 @@ def create_hed_assistant(
     user_id: str | None = None,
     preload_docs: bool = True,
     page_context: PageContext | None = None,
-) -> HEDAssistant:
+) -> CommunityAssistant:
     """Create a HED assistant instance.
 
     Args:
@@ -188,7 +192,7 @@ def create_hed_assistant(
         page_context: Optional context about the page where the widget is embedded
 
     Returns:
-        Configured HEDAssistant instance
+        Configured CommunityAssistant instance for HED
     """
     settings = get_settings()
 
@@ -208,7 +212,12 @@ def create_hed_assistant(
             title=page_context.title,
         )
 
-    return HEDAssistant(model=model, preload_docs=preload_docs, page_context=agent_page_context)
+    return registry.create_assistant(
+        "hed",
+        model=model,
+        preload_docs=preload_docs,
+        page_context=agent_page_context,
+    )
 
 
 # ---------------------------------------------------------------------------

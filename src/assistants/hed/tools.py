@@ -1,13 +1,14 @@
-"""HED-specific tools for the HED assistant.
+"""HED-specific specialized tools.
 
-Includes:
-- validate_hed_string: Validate HED annotation strings via hedtools.org API
-- suggest_hed_tags: Suggest HED tags using hed-lsp semantic search
+These are tools that cannot be auto-generated from YAML config because
+they require specialized logic (API calls, CLI tools, etc.):
+
+- validate_hed_string: Validate HED annotations via hedtools.org API
+- suggest_hed_tags: Suggest tags using hed-lsp semantic search
 - get_hed_schema_versions: Get available HED schema versions
-- retrieve_hed_docs: Retrieve HED documentation by URL
 
-These tools are registered with the HED assistant and can be used
-by the LLM to validate examples and fetch documentation.
+Generic tools (doc retrieval, knowledge search) are auto-generated
+by CommunityAssistant based on the YAML config.
 """
 
 import json
@@ -20,8 +21,6 @@ from typing import Any
 
 import httpx
 from langchain_core.tools import tool
-
-from .docs import HED_DOCS, retrieve_hed_doc
 
 logger = logging.getLogger(__name__)
 
@@ -285,32 +284,5 @@ def get_hed_schema_versions() -> dict[str, Any]:
         return {"versions": [], "error": f"Failed to get versions: {e}"}
 
 
-@tool
-def retrieve_hed_docs(url: str) -> str:
-    """Retrieve HED documentation by URL.
-
-    Use this tool to fetch HED documentation when you need detailed
-    information about HED annotation, schemas, or tools.
-
-    Available documents:
-    {doc_list}
-
-    Args:
-        url: The HTML URL of the HED documentation page to retrieve.
-
-    Returns:
-        The document content in markdown format, or an error message.
-    """
-    result = retrieve_hed_doc(url)
-    if result.success:
-        return f"# {result.title}\n\nSource: {result.url}\n\n{result.content}"
-    return f"Error retrieving {result.url}: {result.error}"
-
-
-# Update tool description with available docs
-_doc_list = HED_DOCS.format_doc_list()
-retrieve_hed_docs.__doc__ = retrieve_hed_docs.__doc__.format(doc_list=_doc_list)
-# Also update the StructuredTool's description field (captured at decoration time)
-object.__setattr__(
-    retrieve_hed_docs, "description", retrieve_hed_docs.description.replace("{doc_list}", _doc_list)
-)
+# Export for plugin discovery
+__all__ = ["validate_hed_string", "suggest_hed_tags", "get_hed_schema_versions"]
