@@ -3,9 +3,12 @@
 Tests cover:
 - AssistantInfo dataclass validation
 - Registry registration and lookup
+- YAML configuration loading
 - Error handling for invalid inputs
 """
 
+from pathlib import Path
+from tempfile import NamedTemporaryFile
 from unittest.mock import MagicMock
 
 import pytest
@@ -250,3 +253,184 @@ class TestAssistantRegistry:
             return MagicMock()
 
         assert len(registry) == 2
+
+
+class TestAssistantInfoWithNoneFactory:
+    """Tests for AssistantInfo with None factory (YAML-only configs)."""
+
+    def test_none_factory_allowed(self) -> None:
+        """Should allow None factory for YAML-only configurations."""
+        info = AssistantInfo(
+            id="test",
+            name="Test Assistant",
+            description="A test assistant",
+            factory=None,
+        )
+        assert info.factory is None
+
+    def test_create_assistant_with_none_factory_raises_error(self) -> None:
+        """Should raise ValueError when creating assistant with no factory."""
+        registry = AssistantRegistry()
+        registry._assistants["test"] = AssistantInfo(
+            id="test",
+            name="Test",
+            description="Test",
+            factory=None,
+        )
+
+        with pytest.raises(ValueError, match="has no factory implementation"):
+            registry.create_assistant("test", model=MagicMock())
+
+
+class TestYAMLLoading:
+    """Tests for YAML configuration loading."""
+
+    def test_load_from_yaml_creates_registrations(self) -> None:
+        """Should create AssistantInfo from YAML config."""
+        yaml_content = """
+communities:
+  - id: test-community
+    name: Test Community
+    description: A test community
+    status: available
+    github:
+      repos:
+        - test-org/test-repo
+    citations:
+      queries:
+        - "test query"
+"""
+        with NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            yaml_path = Path(f.name)
+
+        try:
+            registry = AssistantRegistry()
+            loaded = registry.load_from_yaml(yaml_path)
+
+            assert "test-community" in loaded
+            assert "test-community" in registry
+
+            info = registry.get("test-community")
+            assert info is not None
+            assert info.name == "Test Community"
+            assert info.description == "A test community"
+            assert info.factory is None  # No Python implementation
+            assert info.community_config is not None
+            assert info.sync_config["github_repos"] == ["test-org/test-repo"]
+        finally:
+            yaml_path.unlink()
+
+    def test_load_from_yaml_missing_file_returns_empty(self) -> None:
+        """Should return empty list for missing YAML file."""
+        registry = AssistantRegistry()
+        loaded = registry.load_from_yaml("/nonexistent/path.yaml")
+        assert loaded == []
+
+    def test_load_from_yaml_merges_with_existing(self) -> None:
+        """Should merge YAML config into existing decorator registration."""
+        yaml_content = """
+communities:
+  - id: existing
+    name: Existing Community
+    description: From YAML
+    github:
+      repos:
+        - yaml-org/yaml-repo
+"""
+        with NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            yaml_path = Path(f.name)
+
+        try:
+            registry = AssistantRegistry()
+
+            # First register via decorator
+            @registry.register(
+                id="existing",
+                name="Existing",
+                description="From decorator",
+            )
+            def create_existing(_model):
+                return MagicMock()
+
+            # Then load YAML (should merge)
+            registry.load_from_yaml(yaml_path)
+
+            info = registry.get("existing")
+            assert info is not None
+            # Factory from decorator is preserved
+            assert info.factory is not None
+            # Community config from YAML is added
+            assert info.community_config is not None
+            assert info.sync_config["github_repos"] == ["yaml-org/yaml-repo"]
+        finally:
+            yaml_path.unlink()
+
+    def test_decorator_merges_with_yaml(self) -> None:
+        """Decorator should merge with pre-existing YAML registration."""
+        yaml_content = """
+communities:
+  - id: yaml-first
+    name: YAML First
+    description: From YAML
+    github:
+      repos:
+        - yaml-org/yaml-repo
+"""
+        with NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            yaml_path = Path(f.name)
+
+        try:
+            registry = AssistantRegistry()
+
+            # First load YAML
+            registry.load_from_yaml(yaml_path)
+            info_before = registry.get("yaml-first")
+            assert info_before is not None
+            assert info_before.factory is None
+
+            # Then register via decorator
+            @registry.register(
+                id="yaml-first",
+                name="YAML First",
+                description="From decorator",
+            )
+            def create_yaml_first(_model):
+                return MagicMock()
+
+            info_after = registry.get("yaml-first")
+            assert info_after is not None
+            # Factory now set from decorator
+            assert info_after.factory is not None
+            # Community config from YAML is preserved
+            assert info_after.community_config is not None
+        finally:
+            yaml_path.unlink()
+
+    def test_get_community_config(self) -> None:
+        """Should return community config for registered assistant."""
+        yaml_content = """
+communities:
+  - id: config-test
+    name: Config Test
+    description: Test getting config
+"""
+        with NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            yaml_path = Path(f.name)
+
+        try:
+            registry = AssistantRegistry()
+            registry.load_from_yaml(yaml_path)
+
+            config = registry.get_community_config("config-test")
+            assert config is not None
+            assert config.id == "config-test"
+            assert config.name == "Config Test"
+
+            # Non-existent returns None
+            assert registry.get_community_config("nonexistent") is None
+        finally:
+            yaml_path.unlink()
