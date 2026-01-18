@@ -30,30 +30,53 @@ class TestDocSource:
     def test_valid_doc_source(self) -> None:
         """Should create DocSource with valid inputs."""
         doc = DocSource(
+            title="Example Docs",
             url="https://docs.example.com/",
             type="sphinx",
             source_repo="org/repo",
         )
+        assert doc.title == "Example Docs"
         assert str(doc.url) == "https://docs.example.com/"
         assert doc.type == "sphinx"
         assert doc.source_repo == "org/repo"
 
     def test_doc_source_defaults(self) -> None:
         """Should use default values for optional fields."""
-        doc = DocSource(url="https://docs.example.com/")
+        doc = DocSource(title="Docs", url="https://docs.example.com/")
         assert doc.type == "html"
         assert doc.source_repo is None
         assert doc.description is None
+        assert doc.preload is False
+        assert doc.category == "general"
+
+    def test_doc_source_preload_requires_source_url(self) -> None:
+        """Should require source_url when preload is True."""
+        with pytest.raises(ValidationError, match="preload=True but no source_url"):
+            DocSource(
+                title="Preloaded Docs",
+                url="https://docs.example.com/",
+                preload=True,
+            )
+
+        # Should pass with source_url
+        doc = DocSource(
+            title="Preloaded Docs",
+            url="https://docs.example.com/",
+            source_url="https://raw.example.com/content.md",
+            preload=True,
+        )
+        assert doc.preload is True
+        assert doc.source_url == "https://raw.example.com/content.md"
 
     def test_invalid_url_raises_error(self) -> None:
         """Should reject invalid URLs."""
         with pytest.raises(ValidationError):
-            DocSource(url="not-a-url")
+            DocSource(title="Docs", url="not-a-url")
 
     def test_invalid_type_raises_error(self) -> None:
         """Should reject invalid documentation types."""
         with pytest.raises(ValidationError):
-            DocSource(url="https://docs.example.com/", type="invalid")
+            DocSource(title="Docs", url="https://docs.example.com/", type="invalid")
 
 
 class TestGitHubConfig:
@@ -319,7 +342,11 @@ class TestCommunityConfig:
             description="HED annotation",
             status="available",
             documentation=[
-                DocSource(url="https://hedtags.org/hed-resources/", type="sphinx"),
+                DocSource(
+                    title="HED Resources",
+                    url="https://hedtags.org/hed-resources/",
+                    type="sphinx",
+                ),
             ],
             github=GitHubConfig(repos=["hed-standard/hed-python"]),
             citations=CitationConfig(
@@ -337,6 +364,7 @@ class TestCommunityConfig:
         assert len(config.github.repos) == 1
         assert config.citations is not None
         assert len(config.citations.queries) == 1
+        assert config.enable_page_context is True  # Default value
 
     def test_get_sync_config(self) -> None:
         """Should generate sync_config dict from community config."""

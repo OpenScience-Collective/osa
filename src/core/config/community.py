@@ -21,32 +21,57 @@ Example YAML:
 
 import re
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
+
+if TYPE_CHECKING:
+    from src.tools.base import DocRegistry
 
 
 class DocSource(BaseModel):
     """Documentation source configuration.
 
-    Defines a documentation website to index and make available
+    Defines a documentation page to index and make available
     for retrieval by the assistant.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    url: HttpUrl
-    """Base URL of the documentation site."""
+    title: str
+    """Human-readable document title."""
 
-    type: Literal["sphinx", "mkdocs", "html"] = "html"
-    """Documentation generator type for proper indexing."""
+    url: HttpUrl
+    """HTML page URL for user reference (included in responses)."""
+
+    source_url: str | None = None
+    """Raw markdown/content URL for fetching. Required if preload=True."""
+
+    preload: bool = False
+    """If True, content is preloaded and embedded in system prompt."""
+
+    category: str = "general"
+    """Category for organizing documents (e.g., 'core', 'specification', 'tools')."""
+
+    type: Literal["sphinx", "mkdocs", "html", "markdown", "json"] = "html"
+    """Documentation format type."""
 
     source_repo: str | None = None
     """GitHub repo for raw markdown sources (e.g., 'org/repo')."""
 
     description: str | None = None
-    """Optional description of what this documentation covers."""
+    """Short description of what this documentation covers."""
+
+    @model_validator(mode="after")
+    def validate_preload_has_source_url(self) -> "DocSource":
+        """Ensure preloaded docs have a source_url for fetching."""
+        if self.preload and not self.source_url:
+            raise ValueError(
+                f"DocSource '{self.title}' has preload=True but no source_url. "
+                "Preloaded documents require a source_url to fetch content."
+            )
+        return self
 
 
 class GitHubConfig(BaseModel):
@@ -307,6 +332,14 @@ class CommunityConfig(BaseModel):
     extensions: ExtensionsConfig | None = None
     """Extension points for specialized tools."""
 
+    enable_page_context: bool = True
+    """Enable page context tool for widget embedding (default: True).
+
+    When True, the assistant includes a fetch_current_page tool that
+    retrieves content from the page where the widget is embedded.
+    Set to False if the assistant won't be used in a widget context.
+    """
+
     def get_sync_config(self) -> dict[str, Any]:
         """Generate sync_config dict for registry compatibility.
 
@@ -319,6 +352,28 @@ class CommunityConfig(BaseModel):
             config["paper_queries"] = self.citations.queries
             config["paper_dois"] = self.citations.dois
         return config
+
+    def get_doc_registry(self) -> "DocRegistry":
+        """Create a DocRegistry from this community's documentation config.
+
+        Returns:
+            DocRegistry with all configured documentation pages.
+        """
+        from src.tools.base import DocPage, DocRegistry
+
+        doc_pages = [
+            DocPage(
+                title=doc.title,
+                url=str(doc.url),
+                source_url=doc.source_url or str(doc.url),
+                preload=doc.preload,
+                category=doc.category,
+                description=doc.description or "",
+            )
+            for doc in self.documentation
+        ]
+
+        return DocRegistry(name=self.id, docs=doc_pages)
 
 
 class CommunitiesConfig(BaseModel):

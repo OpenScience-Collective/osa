@@ -16,21 +16,29 @@ communities:
     status: available
 
     # Documentation sources
-    # These are indexed for retrieval; individual pages are auto-discovered
+    # - preload: true = embedded in system prompt (for core docs)
+    # - preload: false/omitted = fetched on demand via retrieve_docs tool
     documentation:
-      - url: https://www.hedtags.org/hed-resources/
+      # On-demand documentation (fetched when needed)
+      - title: HED User Guide
+        url: https://www.hedtags.org/hed-resources/
         type: sphinx
         source_repo: hed-standard/hed-resources
+        category: guides
         description: User guides and tutorials for HED annotation
 
-      - url: https://www.hedtags.org/hed-specification/
+      - title: HED Specification
+        url: https://www.hedtags.org/hed-specification/
         type: sphinx
         source_repo: hed-standard/hed-specification
+        category: specification
         description: Formal HED specification and syntax rules
 
-      - url: https://www.hedtags.org/hed-python/
+      - title: HED Python Library
+        url: https://www.hedtags.org/hed-python/
         type: sphinx
         source_repo: hed-standard/hed-python
+        category: tools
         description: Python library documentation
 
     # GitHub repositories for issue/PR sync
