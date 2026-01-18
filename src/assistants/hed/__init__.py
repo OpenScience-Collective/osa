@@ -33,11 +33,10 @@ from langchain_core.tools import tool
 from markdownify import markdownify
 
 from src.agents.base import ToolAgent
-from src.assistants.registry import registry
 
 from .docs import HED_DOCS, get_preloaded_hed_content
 from .knowledge import list_hed_recent, search_hed_discussions, search_hed_papers
-from .sync import HED_PAPER_DOIS, HED_REPOS, SYNC_CONFIG
+from .sync import HED_PAPER_DOIS, HED_REPOS
 from .tools import (
     get_hed_schema_versions,
     retrieve_hed_docs,
@@ -589,14 +588,9 @@ class HEDAssistant(ToolAgent):
         return len(HED_DOCS.docs)
 
 
-# Register with the assistant registry
-@registry.register(
-    id="hed",
-    name="HED",
-    description="Hierarchical Event Descriptors - annotation standard for neuroimaging",
-    status="available",
-    sync_config=SYNC_CONFIG,
-)
+# HED is now registered via YAML (registries/communities.yaml) and uses CommunityAssistant.
+# The factory below is kept for backwards compatibility but not registered.
+# To use the custom HEDAssistant with preloaded docs, import and use it directly.
 def create_hed_assistant(
     model: "BaseChatModel",
     preload_docs: bool = True,

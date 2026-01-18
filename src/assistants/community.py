@@ -484,19 +484,47 @@ Only fetch the page content if it seems relevant to the question."""
         config: CommunityConfig,
         additional_instructions: str,
     ) -> str:
-        """Build the system prompt from configuration."""
+        """Build the system prompt from configuration.
+
+        Uses config.system_prompt if provided, otherwise uses the default template.
+        Supports placeholders: {name}, {description}, {repo_list}, {paper_dois},
+        {preloaded_docs_section}, {available_docs_section}, {page_context_section},
+        {additional_instructions}.
+        """
+        # Use custom prompt if provided, otherwise use default template
+        template = config.system_prompt or COMMUNITY_SYSTEM_PROMPT_TEMPLATE
+
+        # Build placeholder values
+        repo_list = ""
+        if config.github and config.github.repos:
+            repo_list = "\n".join(f"- `{repo}`" for repo in config.github.repos)
+
+        paper_dois = ""
+        if config.citations and config.citations.dois:
+            paper_dois = "\n".join(f"- `{doi}`" for doi in config.citations.dois)
+
         preloaded_section = self._format_preloaded_section()
         available_docs_section = self._format_available_docs_section()
         page_context_section = self._format_page_context_section()
 
-        return COMMUNITY_SYSTEM_PROMPT_TEMPLATE.format(
-            name=config.name,
-            description=config.description,
-            preloaded_docs_section=preloaded_section,
-            available_docs_section=available_docs_section,
-            page_context_section=page_context_section,
-            additional_instructions=additional_instructions,
-        )
+        # Substitute placeholders
+        # Use a safe approach that ignores missing placeholders
+        prompt = template
+        substitutions = {
+            "name": config.name,
+            "description": config.description,
+            "repo_list": repo_list,
+            "paper_dois": paper_dois,
+            "preloaded_docs_section": preloaded_section,
+            "available_docs_section": available_docs_section,
+            "page_context_section": page_context_section,
+            "additional_instructions": additional_instructions,
+        }
+
+        for key, value in substitutions.items():
+            prompt = prompt.replace("{" + key + "}", value)
+
+        return prompt
 
     def get_system_prompt(self) -> str:
         """Return the system prompt for this assistant."""
