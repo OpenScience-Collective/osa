@@ -335,19 +335,11 @@ async def stream_response(
 
             elif kind == "on_tool_end":
                 tool_name = event.get("name", "")
-                # Don't reset in_tool_loop yet - wait until we get the final response
+                # Tool is done, reset flag so final response gets streamed
+                in_tool_loop = False
+                # Discard any buffered intermediate content (tool call request)
+                buffered_content = ""
                 yield f"event: tool_end\ndata: {tool_name}\n\n"
-
-            elif kind == "on_chain_end":
-                # Check if this is the final chain end (agent finished)
-                event_name = event.get("name", "")
-                if "agent" in event_name.lower():
-                    # Tools are done, stream any buffered final response
-                    if buffered_content:
-                        full_response += buffered_content
-                        yield f"data: {buffered_content}\n\n"
-                    in_tool_loop = False
-                    buffered_content = ""
 
         # Add complete response to session history
         if full_response:
