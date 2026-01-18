@@ -29,7 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Build argument for commit hash (set during CI build)
 ARG GIT_COMMIT=unknown
-ENV GIT_COMMIT=${GIT_COMMIT}
+ENV GIT_COMMIT_SHA=${GIT_COMMIT}
 
 # Copy version.py first (required by hatchling for version detection)
 # Then copy pyproject.toml and README.md for dependency installation
