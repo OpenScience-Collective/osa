@@ -6,12 +6,69 @@ users to relevant discussions, not answer from them.
 """
 
 import logging
+import re
 import sqlite3
+import unicodedata
 from dataclasses import dataclass
 
 from src.knowledge.db import get_connection
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_title_for_dedup(title: str) -> set[str]:
+    """Normalize a paper title to a set of words for deduplication.
+
+    This handles different Unicode representations, punctuation variants,
+    and whitespace differences that might exist between the same paper
+    indexed from different sources.
+
+    Args:
+        title: Raw paper title
+
+    Returns:
+        Set of normalized words for similarity comparison
+    """
+    # Unicode NFKC normalization - converts all Unicode variants to canonical form
+    normalized = unicodedata.normalize("NFKC", title)
+
+    # Lowercase for case-insensitive comparison
+    normalized = normalized.lower()
+
+    # Remove all punctuation and special characters, keep only alphanumeric and spaces
+    normalized = re.sub(r"[^\w\s]", "", normalized)
+
+    # Split into words and filter out very short words (less than 3 chars)
+    words = {word for word in normalized.split() if len(word) >= 3}
+
+    return words
+
+
+def _titles_are_similar(
+    title1_words: set[str], title2_words: set[str], threshold: float = 0.7
+) -> bool:
+    """Check if two titles are similar based on word overlap (Jaccard-like similarity).
+
+    Args:
+        title1_words: Set of words from first title
+        title2_words: Set of words from second title
+        threshold: Minimum similarity ratio (0.0 to 1.0), default 0.7 (70%)
+
+    Returns:
+        True if titles are similar enough to be considered duplicates
+    """
+    if not title1_words or not title2_words:
+        return False
+
+    # Calculate intersection and union
+    intersection = len(title1_words & title2_words)
+    union = len(title1_words | title2_words)
+
+    if union == 0:
+        return False
+
+    similarity = intersection / union
+    return similarity >= threshold
 
 
 def _sanitize_fts5_query(query: str) -> str:
@@ -154,10 +211,12 @@ def search_papers(
         sql += " AND p.source = ?"
         params.append(source)
 
+    # Fetch more results than needed to allow for deduplication
     sql += " ORDER BY rank LIMIT ?"
-    params.append(limit)
+    params.append(limit * 3)
 
     results = []
+    seen_titles: list[set[str]] = []  # List of word sets for fuzzy matching
     try:
         with get_connection(project) as conn:
             # Sanitize user query to prevent FTS5 injection
@@ -165,6 +224,20 @@ def search_papers(
             params[0] = safe_query
 
             for row in conn.execute(sql, params):
+                # Deduplicate by fuzzy title matching (>70% word overlap)
+                title_words = _normalize_title_for_dedup(row["title"])
+
+                # Check if this title is similar to any we've already seen
+                is_duplicate = False
+                for seen_words in seen_titles:
+                    if _titles_are_similar(title_words, seen_words):
+                        is_duplicate = True
+                        break
+
+                if is_duplicate:
+                    continue
+                seen_titles.append(title_words)
+
                 # Create snippet from abstract (first 200 chars)
                 first_message = row["first_message"] or ""
                 snippet = first_message[:200].strip()
@@ -182,6 +255,10 @@ def search_papers(
                         created_at=row["created_at"] or "",
                     )
                 )
+
+                # Stop once we have enough unique results
+                if len(results) >= limit:
+                    break
     except sqlite3.OperationalError as e:
         # Database-level errors (corruption, disk issues) - log as error
         logger.error("Database operational error during paper search '%s': %s", query, e)
