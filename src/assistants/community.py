@@ -37,9 +37,6 @@ You help users understand and work with {name} by:
 
 ## Important Guidelines
 
-**Documentation First**: Always base your answers on official documentation when available.
-Use the documentation retrieval tool to fetch relevant content before answering.
-
 **Discovery, Not Authority**: When referencing GitHub discussions or papers:
 - Present them as "related resources" or "further reading"
 - Say: "There's a related discussion, see: [link]"
@@ -59,8 +56,8 @@ class CommunityAssistant(ToolAgent):
     """Generic assistant for any YAML-configured community.
 
     This assistant provides standard functionality for any community:
-    - Documentation retrieval (if configured)
     - GitHub discussion search (if repos configured)
+    - Recent GitHub activity listing (if repos configured)
     - Paper search (if citations configured)
     - Python plugin tools (if extensions configured)
 
@@ -128,12 +125,13 @@ class CommunityAssistant(ToolAgent):
 
     def _load_plugin_tools(self, config: CommunityConfig) -> list[BaseTool]:
         """Load tools from Python plugin extensions."""
-        tools: list[BaseTool] = []
+        all_tools: list[BaseTool] = []
 
         if not config.extensions or not config.extensions.python_plugins:
-            return tools
+            return all_tools
 
         for plugin in config.extensions.python_plugins:
+            plugin_tools: list[BaseTool] = []
             try:
                 module = importlib.import_module(plugin.module)
 
@@ -143,10 +141,10 @@ class CommunityAssistant(ToolAgent):
                         if hasattr(module, tool_name):
                             tool_obj = getattr(module, tool_name)
                             if isinstance(tool_obj, BaseTool):
-                                tools.append(tool_obj)
+                                plugin_tools.append(tool_obj)
                             elif callable(tool_obj):
                                 # It might be a tool-decorated function
-                                tools.append(tool_obj)
+                                plugin_tools.append(tool_obj)
                             else:
                                 logger.warning(
                                     "Plugin %s.%s is not a valid tool",
@@ -165,20 +163,21 @@ class CommunityAssistant(ToolAgent):
                     for name in tool_names:
                         obj = getattr(module, name, None)
                         if isinstance(obj, BaseTool) or (callable(obj) and hasattr(obj, "name")):
-                            tools.append(obj)
+                            plugin_tools.append(obj)
 
                 logger.info(
                     "Loaded %d tools from plugin %s",
-                    len(tools),
+                    len(plugin_tools),
                     plugin.module,
                 )
+                all_tools.extend(plugin_tools)
 
             except ImportError as e:
                 logger.error("Failed to import plugin %s: %s", plugin.module, e)
             except Exception as e:
                 logger.error("Error loading plugin %s: %s", plugin.module, e)
 
-        return tools
+        return all_tools
 
     def _build_system_prompt(
         self,

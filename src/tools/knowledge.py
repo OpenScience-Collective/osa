@@ -80,7 +80,7 @@ def create_search_discussions_tool(
             prs = search_github_items(query, project=community_id, limit=limit, item_type="pr")
             results.extend(prs)
 
-        # Sort by relevance and limit total results
+        # Limit total combined results
         results = results[:limit]
 
         if not results:
