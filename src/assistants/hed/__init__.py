@@ -413,9 +413,16 @@ class HEDAssistant(ToolAgent):
         return len(HED_DOCS.docs)
 
 
-# HED is now registered via YAML (registries/communities.yaml) and uses CommunityAssistant.
-# The factory below is kept for backwards compatibility but not registered.
-# To use the custom HEDAssistant with preloaded docs, import and use it directly.
+# Import registry for registration (at bottom to avoid circular imports)
+from src.assistants.registry import registry  # noqa: E402
+
+
+@registry.register(
+    id="hed",
+    name="HED (Hierarchical Event Descriptors)",
+    description="Event annotation standard for neuroimaging research",
+    status="available",
+)
 def create_hed_assistant(
     model: "BaseChatModel",
     preload_docs: bool = True,

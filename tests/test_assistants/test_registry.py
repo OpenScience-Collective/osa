@@ -607,7 +607,7 @@ communities:
 
 
 class TestHEDYAMLMigration:
-    """Tests for HED working via YAML + CommunityAssistant."""
+    """Tests for HED hybrid approach: Python factory + YAML config."""
 
     @pytest.fixture(autouse=True)
     def setup_registry(self) -> None:
@@ -617,8 +617,8 @@ class TestHEDYAMLMigration:
         # Call discover to load YAML and Python modules
         discover_assistants()
 
-    def test_hed_loads_from_yaml(self) -> None:
-        """HED should be registered from YAML without Python factory."""
+    def test_hed_has_both_factory_and_yaml(self) -> None:
+        """HED should have both Python factory and YAML config (hybrid)."""
         from src.assistants import registry
 
         # HED should be in registry
@@ -629,22 +629,22 @@ class TestHEDYAMLMigration:
         assert info is not None
         assert info.name == "HED (Hierarchical Event Descriptors)"
 
-        # Should have community_config from YAML
+        # Should have community_config from YAML (for sync_config)
         assert info.community_config is not None
 
-        # Should NOT have a factory (using CommunityAssistant)
-        assert info.factory is None
+        # Should ALSO have a factory (HED uses full-featured HEDAssistant)
+        assert info.factory is not None
 
-    def test_hed_creates_community_assistant(self) -> None:
-        """HED should create CommunityAssistant instance."""
+    def test_hed_creates_hed_assistant(self) -> None:
+        """HED should create HEDAssistant instance (not CommunityAssistant)."""
         from src.assistants import registry
-        from src.assistants.community import CommunityAssistant
+        from src.assistants.hed import HEDAssistant
 
         mock_model = MagicMock()
         assistant = registry.create_assistant("hed", model=mock_model)
 
-        # Should be CommunityAssistant, not HEDAssistant
-        assert isinstance(assistant, CommunityAssistant)
+        # Should be HEDAssistant with full features (28 docs, preloaded, etc.)
+        assert isinstance(assistant, HEDAssistant)
 
     def test_hed_has_custom_system_prompt(self) -> None:
         """HED should use custom system_prompt from YAML."""

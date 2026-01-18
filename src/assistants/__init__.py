@@ -23,6 +23,7 @@ Example:
 
 import importlib
 import logging
+import sys
 from pathlib import Path
 
 from src.assistants.registry import AssistantInfo, AssistantRegistry, registry
@@ -103,9 +104,16 @@ def discover_assistants(yaml_path: Path | str | None = None) -> list[str]:
 
         module_name = f"src.assistants.{subdir.name}"
         try:
-            importlib.import_module(module_name)
+            # Import or reload the module to ensure decorators run
+            # This is needed when the registry was cleared but modules are cached
+            if module_name in sys.modules:
+                # Module already imported - reload to re-run decorators
+                importlib.reload(sys.modules[module_name])
+                logger.debug("Reloaded assistant module: %s", subdir.name)
+            else:
+                importlib.import_module(module_name)
+                logger.debug("Imported assistant module: %s", subdir.name)
             discovered.append(subdir.name)
-            logger.debug("Discovered assistant: %s", subdir.name)
         except Exception:
             # Use exception() to preserve full traceback for debugging
             logger.exception("Failed to load assistant %s", module_name)
