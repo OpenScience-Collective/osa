@@ -37,7 +37,7 @@ from src.assistants.registry import registry
 
 from .docs import HED_DOCS, get_preloaded_hed_content
 from .knowledge import list_hed_recent, search_hed_discussions, search_hed_papers
-from .sync import SYNC_CONFIG
+from .sync import HED_REPOS, SYNC_CONFIG
 from .tools import (
     get_hed_schema_versions,
     retrieve_hed_docs,
@@ -361,37 +361,43 @@ Common topics include:
 - Event categorization and experimental design
 - Advanced features like definitions and temporal scope
 
-## Knowledge Discovery Tools
+## Knowledge Discovery Tools - YOU MUST USE THESE
 
-You have access to tools that search synced GitHub discussions and academic papers.
-These are for **DISCOVERY**, not for answering questions.
+You have access to a synced knowledge database with GitHub issues, PRs, and academic papers.
+**You MUST use these tools when users ask about recent activity, issues, or PRs.**
+
+**Available HED repositories in the database:**
+{repo_list}
+
+**CRITICAL: When users mention these repos (even by short name), USE THE TOOLS:**
+- "hed-javascript" or "javascript" -> repo="hed-standard/hed-javascript"
+- "hed-python" or "python" -> repo="hed-standard/hed-python"
+- "hed-specification" or "specification" or "spec" -> repo="hed-standard/hed-specification"
+- "hed-schemas" or "schemas" -> repo="hed-standard/hed-schemas"
 
 **Available tools:**
-- `list_hed_recent`: List recent PRs/issues by date. Use for "what are the latest PRs?" questions.
-- `search_hed_discussions`: Search by keywords. Use for "are there discussions about X?" questions.
-- `search_hed_papers`: Search papers by keywords. Use for "are there papers about X?" questions.
+1. `list_hed_recent`: List recent PRs/issues by date - USE THIS for "latest", "recent", "newest" questions
+2. `search_hed_discussions`: Search by keywords - USE THIS for "discussions about X" questions
+3. `search_hed_papers`: Search papers - USE THIS for paper/research questions
 
-**When to use which tool:**
-- "What are the latest PRs in hed-javascript?" -> `list_hed_recent(item_type="pr", repo="hed-standard/hed-javascript")`
-- "What are the open issues?" -> `list_hed_recent(item_type="issue", status="open")`
-- "Recent activity in HED repos?" -> `list_hed_recent(limit=10)`
-- "Are there discussions about validation errors?" -> `search_hed_discussions(query="validation errors")`
-- "Papers about HED and BIDS?" -> `search_hed_papers(query="HED BIDS")`
+**MANDATORY: Use tools for these question patterns:**
+- "What are the latest PRs?" -> CALL `list_hed_recent(item_type="pr")`
+- "Latest PRs in hed-javascript?" -> CALL `list_hed_recent(item_type="pr", repo="hed-standard/hed-javascript")`
+- "Open issues in hed-python?" -> CALL `list_hed_recent(item_type="issue", status="open", repo="hed-standard/hed-python")`
+- "Recent activity?" -> CALL `list_hed_recent(limit=10)`
+- "Any discussions about validation?" -> CALL `search_hed_discussions(query="validation")`
 
-**Correct usage:**
-- "There's a related discussion about this: [link]"
-- "You might find this paper helpful for more context: [link]"
-- "Here are the recent PRs in hed-javascript: [list with links]"
+**DO NOT:**
+- Tell users to "visit GitHub" or "use the API" when you have the data
+- Make up PR numbers, issue numbers, or titles
+- Say "I don't have access" - you DO have access via the tools above
 
-**Incorrect usage (DO NOT):**
-- "Based on issue #123, the answer is..."
-- "According to a discussion, you should..."
-- Making up fake PR numbers or titles when you haven't used the tools
-
-**IMPORTANT**: If users ask about recent activity, PRs, issues, or discussions, **always use the appropriate tool** to get real data. Never hallucinate or make up GitHub items.
+**Present results as discovery:**
+- "Here are the recent PRs in hed-javascript: [actual list with real URLs]"
+- "There's a related discussion: [real link]"
 
 The knowledge database may not be populated. If you get a message about initializing the database,
-simply answer the question without the discovery tools.
+then explain that the knowledge base isn't set up yet.
 
 {page_context_section}"""
 
@@ -546,10 +552,14 @@ class HEDAssistant(ToolAgent):
         else:
             page_context_section = ""
 
+        # Format repo list for knowledge discovery section
+        repo_list = "\n".join(f"- `{repo}`" for repo in HED_REPOS)
+
         return HED_SYSTEM_PROMPT_TEMPLATE.format(
             preloaded_docs=preloaded_section,
             ondemand_docs=ondemand_section,
             page_context_section=page_context_section,
+            repo_list=repo_list,
         )
 
     @property
