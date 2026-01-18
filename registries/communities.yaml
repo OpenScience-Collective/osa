@@ -1,0 +1,92 @@
+# OSA Community Registry
+#
+# This file defines research community assistants declaratively.
+# Each community gets baseline tools (docs, issues, papers) automatically.
+# Specialized tools can be added via the extensions section.
+#
+# Adding a new community:
+# 1. Add an entry under 'communities' with id, name, description
+# 2. Configure documentation sources, GitHub repos, and citations
+# 3. Restart the server or trigger a reload
+
+communities:
+  - id: hed
+    name: HED (Hierarchical Event Descriptors)
+    description: Event annotation standard for neuroimaging research
+    status: available
+
+    # Documentation sources
+    # These are indexed for retrieval; individual pages are auto-discovered
+    documentation:
+      - url: https://www.hedtags.org/hed-resources/
+        type: sphinx
+        source_repo: hed-standard/hed-resources
+        description: User guides and tutorials for HED annotation
+
+      - url: https://www.hedtags.org/hed-specification/
+        type: sphinx
+        source_repo: hed-standard/hed-specification
+        description: Formal HED specification and syntax rules
+
+      - url: https://www.hedtags.org/hed-python/
+        type: sphinx
+        source_repo: hed-standard/hed-python
+        description: Python library documentation
+
+    # GitHub repositories for issue/PR sync
+    github:
+      repos:
+        - hed-standard/hed-specification
+        - hed-standard/hed-python
+        - hed-standard/hed-javascript
+        - hed-standard/hed-schemas
+
+    # Paper/citation search configuration
+    citations:
+      queries:
+        - "HED annotation"
+        - "Hierarchical Event Descriptors"
+        - "HED neuroimaging"
+      dois:
+        - "10.1016/j.neuroimage.2021.118766"  # HED online system
+        - "10.1007/s12021-023-09628-4"        # HED annotation framework
+        - "10.3389/fninf.2024.1292667"        # HED SCORE library
+        - "10.1038/s41597-024-04282-0"        # HED-based BIDS annotation
+        - "10.1038/s41597-025-05791-2"        # HED validation framework
+
+    # Forum/discussion search (Phase 2 - not yet implemented)
+    discourse:
+      - url: https://neurostars.org
+        tags:
+          - hed
+
+    # Extension points for specialized tools
+    extensions:
+      python_plugins:
+        # HED-specific tools: validation, tag suggestions, schema versions
+        - module: src.assistants.hed.tools
+          tools:
+            - validate_hed_string
+            - suggest_hed_tags
+            - get_hed_schema_versions
+
+  # Example: BIDS community (Phase 2)
+  # - id: bids
+  #   name: BIDS (Brain Imaging Data Structure)
+  #   description: Data organization standard for neuroimaging
+  #   status: coming_soon
+  #
+  #   documentation:
+  #     - url: https://bids-specification.readthedocs.io/en/stable/
+  #       type: mkdocs
+  #       source_repo: bids-standard/bids-specification
+  #
+  #   github:
+  #     repos:
+  #       - bids-standard/bids-specification
+  #       - bids-standard/bids-validator
+  #
+  #   citations:
+  #     queries:
+  #       - "Brain Imaging Data Structure"
+  #       - "BIDS neuroimaging"

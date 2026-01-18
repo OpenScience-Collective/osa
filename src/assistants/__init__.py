@@ -2,8 +2,11 @@
 
 Self-contained assistant modules with auto-registration.
 
-Each assistant is a subpackage that registers itself when imported.
-The registry provides factory access for creating assistant instances.
+Assistants can be registered in two ways:
+1. **YAML config**: Define community in registries/communities.yaml
+2. **Decorator**: Use @registry.register decorator in Python code
+
+The discover_assistants() function loads both YAML and Python registrations.
 
 Example:
     ```python
@@ -31,14 +34,46 @@ __all__ = [
     "AssistantRegistry",
     "AssistantInfo",
     "discover_assistants",
+    "get_communities_yaml_path",
 ]
 
+# Default path to communities.yaml (relative to project root)
+DEFAULT_COMMUNITIES_YAML = "registries/communities.yaml"
 
-def discover_assistants() -> list[str]:
-    """Auto-discover and import all assistant packages.
 
-    Scans the assistants directory for subpackages (directories with __init__.py)
-    and imports them, triggering their @registry.register decorators.
+def get_communities_yaml_path() -> Path:
+    """Get the path to communities.yaml.
+
+    Searches for the file in the following order:
+    1. Relative to project root (registries/communities.yaml)
+    2. Relative to current working directory
+
+    Returns:
+        Path to communities.yaml file.
+    """
+    # Try relative to project root (3 levels up from this file)
+    project_root = Path(__file__).parent.parent.parent
+    yaml_path = project_root / DEFAULT_COMMUNITIES_YAML
+    if yaml_path.exists():
+        return yaml_path
+
+    # Fallback to current working directory
+    return Path.cwd() / DEFAULT_COMMUNITIES_YAML
+
+
+def discover_assistants(yaml_path: Path | str | None = None) -> list[str]:
+    """Auto-discover and register all assistants.
+
+    This function:
+    1. Loads community configurations from YAML
+    2. Imports Python packages to trigger @registry.register decorators
+
+    The order ensures YAML configs are available before Python factories
+    are registered, allowing proper merging.
+
+    Args:
+        yaml_path: Optional custom path to communities.yaml.
+                   If None, uses get_communities_yaml_path().
 
     Returns:
         List of discovered assistant module names.
@@ -46,6 +81,14 @@ def discover_assistants() -> list[str]:
     Note:
         Call this once at application startup (e.g., in api/main.py).
     """
+    # Step 1: Load YAML configurations
+    if yaml_path is None:
+        yaml_path = get_communities_yaml_path()
+
+    yaml_loaded = registry.load_from_yaml(yaml_path)
+    logger.debug("Loaded %d communities from YAML", len(yaml_loaded))
+
+    # Step 2: Discover and import Python packages
     discovered: list[str] = []
     assistants_dir = Path(__file__).parent
 
