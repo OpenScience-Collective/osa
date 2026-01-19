@@ -1,22 +1,24 @@
 """Pydantic models for community configuration.
 
-Defines the schema for communities.yaml, enabling declarative
+Defines the schema for community config.yaml files, enabling declarative
 configuration of research community assistants.
 
-Example YAML:
-    communities:
-      - id: hed
-        name: HED (Hierarchical Event Descriptors)
-        description: Event annotation standard for neuroimaging
-        documentation:
-          - url: https://www.hedtags.org/hed-resources/
-            type: sphinx
-        github:
-          repos:
-            - hed-standard/hed-specification
-        citations:
-          queries:
-            - "Hierarchical Event Descriptors"
+Each community has its own config.yaml file (e.g., src/assistants/hed/config.yaml)
+that is parsed directly as a CommunityConfig.
+
+Example config.yaml:
+    id: hed
+    name: HED (Hierarchical Event Descriptors)
+    description: Event annotation standard for neuroimaging
+    documentation:
+      - url: https://www.hedtags.org/hed-resources/
+        type: sphinx
+    github:
+      repos:
+        - hed-standard/hed-specification
+    citations:
+      queries:
+        - "Hierarchical Event Descriptors"
 """
 
 import re

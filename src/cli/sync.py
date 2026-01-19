@@ -21,16 +21,17 @@ from src.knowledge.papers_sync import (
 # Discover assistants to populate registry
 discover_assistants()
 
+console = Console()
+
 
 def _get_hed_repos() -> list[str]:
     """Get HED repos from the registry."""
     info = registry.get("hed")
     if info and info.community_config and info.community_config.github:
         return info.community_config.github.repos
+    console.print("[yellow]Warning: HED repos not found in registry[/yellow]")
     return []
 
-
-console = Console()
 
 sync_app = typer.Typer(
     name="sync",
