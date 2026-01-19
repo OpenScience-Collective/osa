@@ -299,20 +299,50 @@ class TestSessionEndpointBehavior:
         result = delete_session("test_community", "nonexistent-session-id")
         assert result is False
 
-    def test_session_endpoints_exist_and_are_not_404(self) -> None:
-        """Session endpoints should exist (return non-404 status)."""
+    def test_session_list_endpoint_exists(self) -> None:
+        """Session list endpoint should exist and be routable."""
         app = FastAPI()
         router = create_community_router("hed")
         app.include_router(router)
         client = TestClient(app)
 
-        # All session endpoints should exist (not 404)
-        # May return 200 (if API_KEYS set) or 401/403 (if not)
-        response_list = client.get("/hed/sessions")
-        assert response_list.status_code != 404
+        # List endpoint should return 200 (empty list) or 401/403 (no auth)
+        # Never 404 since it's a valid route
+        response = client.get("/hed/sessions")
+        assert response.status_code in (200, 401, 403)
 
-        response_get = client.get("/hed/sessions/some-id")
-        assert response_get.status_code != 404
+    def test_session_get_endpoint_exists(self) -> None:
+        """Session get endpoint should exist and be routable."""
+        app = FastAPI()
+        router = create_community_router("hed")
+        app.include_router(router)
+        client = TestClient(app)
 
-        response_delete = client.delete("/hed/sessions/some-id")
-        assert response_delete.status_code != 404
+        # Get endpoint with nonexistent session:
+        # - Returns 404 with "Session not found" if authenticated (route exists)
+        # - Returns 401/403 if not authenticated (route exists)
+        response = client.get("/hed/sessions/nonexistent-id")
+        if response.status_code == 404:
+            # Route exists, session not found - check the message
+            assert response.json().get("detail") == "Session not found"
+        else:
+            # Auth required
+            assert response.status_code in (401, 403)
+
+    def test_session_delete_endpoint_exists(self) -> None:
+        """Session delete endpoint should exist and be routable."""
+        app = FastAPI()
+        router = create_community_router("hed")
+        app.include_router(router)
+        client = TestClient(app)
+
+        # Delete endpoint with nonexistent session:
+        # - Returns 404 with "Session not found" if authenticated (route exists)
+        # - Returns 401/403 if not authenticated (route exists)
+        response = client.delete("/hed/sessions/nonexistent-id")
+        if response.status_code == 404:
+            # Route exists, session not found - check the message
+            assert response.json().get("detail") == "Session not found"
+        else:
+            # Auth required
+            assert response.status_code in (401, 403)
