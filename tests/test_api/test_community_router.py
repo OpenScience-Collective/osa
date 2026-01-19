@@ -163,11 +163,11 @@ class TestRouterIntegration:
         assert response.status_code != 404
 
     def test_sessions_endpoint_exists(self, app_with_hed_router: FastAPI) -> None:
-        """HED sessions endpoint should be accessible."""
+        """HED sessions endpoint should be accessible (requires auth)."""
         client = TestClient(app_with_hed_router)
         response = client.get("/hed/sessions")
-        # Sessions endpoint doesn't require auth
-        assert response.status_code == 200
+        # Sessions endpoint requires auth, so without auth we get 401/403, not 404
+        assert response.status_code != 404
 
 
 class TestMainAppIntegration:
@@ -273,3 +273,45 @@ class TestCacheUserIdDerivation:
         # Even with user_id, platform users get shared ID
         result = _get_cache_user_id("hed", None, "should-be-ignored")
         assert result == "hed_widget"
+
+
+class TestCreateCommunityAssistant:
+    """Tests for create_community_assistant factory function."""
+
+    def test_raises_for_unknown_community(self) -> None:
+        """Should raise ValueError for unknown community ID."""
+        from src.api.routers.community import create_community_assistant
+
+        with pytest.raises(ValueError, match="Unknown community: fake_community"):
+            create_community_assistant("fake_community")
+
+
+class TestSessionEndpointBehavior:
+    """Tests for session endpoint behavior using unit-level functions."""
+
+    def test_get_session_returns_none_for_nonexistent(self) -> None:
+        """get_session should return None for nonexistent session."""
+        session = get_session("test_community", "nonexistent-session-id")
+        assert session is None
+
+    def test_delete_session_returns_false_for_nonexistent(self) -> None:
+        """delete_session should return False for nonexistent session."""
+        result = delete_session("test_community", "nonexistent-session-id")
+        assert result is False
+
+    def test_session_endpoints_require_auth(self) -> None:
+        """Session endpoints should require authentication."""
+        app = FastAPI()
+        router = create_community_router("hed")
+        app.include_router(router)
+        client = TestClient(app)
+
+        # All session endpoints should return 401 without auth (not 404)
+        response_list = client.get("/hed/sessions")
+        assert response_list.status_code in (401, 403)
+
+        response_get = client.get("/hed/sessions/some-id")
+        assert response_get.status_code in (401, 403)
+
+        response_delete = client.delete("/hed/sessions/some-id")
+        assert response_delete.status_code in (401, 403)
