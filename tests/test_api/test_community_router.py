@@ -204,3 +204,72 @@ class TestMainAppIntegration:
         assert "endpoints" in data
         assert "POST /hed/ask" in data["endpoints"]
         assert "POST /hed/chat" in data["endpoints"]
+
+
+class TestCacheUserIdDerivation:
+    """Tests for prompt caching user ID derivation."""
+
+    def test_derive_user_id(self) -> None:
+        """Should derive a stable 16-char hex ID from API key."""
+        from src.api.routers.community import _derive_user_id
+
+        api_key = "sk-or-v1-test-key-12345"
+        user_id = _derive_user_id(api_key)
+
+        # Should be 16 hex chars
+        assert len(user_id) == 16
+        assert all(c in "0123456789abcdef" for c in user_id)
+
+    def test_derive_user_id_consistency(self) -> None:
+        """Same API key should always produce same user ID."""
+        from src.api.routers.community import _derive_user_id
+
+        api_key = "sk-or-v1-consistent-key"
+        user_id1 = _derive_user_id(api_key)
+        user_id2 = _derive_user_id(api_key)
+
+        assert user_id1 == user_id2
+
+    def test_derive_user_id_uniqueness(self) -> None:
+        """Different API keys should produce different user IDs."""
+        from src.api.routers.community import _derive_user_id
+
+        user_id1 = _derive_user_id("key1")
+        user_id2 = _derive_user_id("key2")
+
+        assert user_id1 != user_id2
+
+    def test_get_cache_user_id_byok_with_explicit_user_id(self) -> None:
+        """BYOK user with explicit user_id should use that ID."""
+        from src.api.routers.community import _get_cache_user_id
+
+        result = _get_cache_user_id("hed", "my-api-key", "my-user-id")
+        assert result == "my-user-id"
+
+    def test_get_cache_user_id_byok_derives_from_key(self) -> None:
+        """BYOK user without explicit user_id should derive from API key."""
+        from src.api.routers.community import _derive_user_id, _get_cache_user_id
+
+        api_key = "sk-or-v1-byok-key"
+        result = _get_cache_user_id("hed", api_key, None)
+        expected = _derive_user_id(api_key)
+
+        assert result == expected
+
+    def test_get_cache_user_id_platform_uses_shared_id(self) -> None:
+        """Platform/widget users should get shared ID per community."""
+        from src.api.routers.community import _get_cache_user_id
+
+        result_hed = _get_cache_user_id("hed", None, None)
+        result_bids = _get_cache_user_id("bids", None, None)
+
+        assert result_hed == "hed_widget"
+        assert result_bids == "bids_widget"
+
+    def test_get_cache_user_id_platform_ignores_user_id(self) -> None:
+        """Platform users ignore user_id since they share cache."""
+        from src.api.routers.community import _get_cache_user_id
+
+        # Even with user_id, platform users get shared ID
+        result = _get_cache_user_id("hed", None, "should-be-ignored")
+        assert result == "hed_widget"

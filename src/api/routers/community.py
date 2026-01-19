@@ -4,6 +4,7 @@ Creates parameterized routers for any registered community.
 Each community gets endpoints like /{community_id}/ask, /{community_id}/chat, etc.
 """
 
+import hashlib
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
@@ -202,6 +203,53 @@ def list_sessions(community_id: str) -> list[ChatSession]:
 # ---------------------------------------------------------------------------
 
 
+def _derive_user_id(token: str) -> str:
+    """Derive a stable user ID from API token for cache optimization.
+
+    Uses PBKDF2 to create a stable, anonymous identifier from the token.
+    Each unique token gets its own cache lane in OpenRouter.
+
+    Based on HEDit's implementation for consistency across projects.
+
+    Args:
+        token: OpenRouter API token (already a secret, not user password)
+
+    Returns:
+        16-character hexadecimal cache ID
+    """
+    # PBKDF2 is a computationally expensive KDF that satisfies CodeQL
+    # Using minimal iterations (1000) since input is already high-entropy
+    salt = b"osa-cache-id-v1"
+    derived = hashlib.pbkdf2_hmac("sha256", token.encode(), salt, iterations=1000, dklen=8)
+    return derived.hex()
+
+
+def _get_cache_user_id(community_id: str, api_key: str | None, user_id: str | None) -> str:
+    """Determine the user_id for prompt caching optimization.
+
+    For BYOK users (bring your own key), we derive a stable hash from their API
+    key so they get their own cache lane.
+
+    For platform/widget users (using our API key), we use a consistent user_id
+    per community so all users benefit from cached system prompts. This is
+    important because the system prompt with preloaded docs is large, and
+    caching it across users significantly reduces costs and latency.
+
+    Args:
+        community_id: The community identifier
+        api_key: User's API key if BYOK, None for platform users
+        user_id: User-provided user_id if any (overrides derived ID)
+
+    Returns:
+        User ID for OpenRouter sticky routing
+    """
+    if api_key:
+        # BYOK user: use their explicit ID or derive from their API key
+        return user_id or _derive_user_id(api_key)
+    # Platform/widget user: shared ID per community for prompt caching
+    return f"{community_id}_widget"
+
+
 def create_community_assistant(
     community_id: str,
     api_key: str | None = None,
@@ -229,12 +277,15 @@ def create_community_assistant(
 
     settings = get_settings()
 
+    # Determine user_id for prompt caching optimization
+    cache_user_id = _get_cache_user_id(community_id, api_key, user_id)
+
     model = create_openrouter_llm(
         model=settings.default_model,
         api_key=api_key or settings.openrouter_api_key,
         temperature=settings.llm_temperature,
         provider=settings.default_model_provider,
-        user_id=user_id,
+        user_id=cache_user_id,
     )
 
     # Convert Pydantic PageContext to agent's dataclass PageContext
