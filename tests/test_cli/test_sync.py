@@ -26,8 +26,7 @@ class TestAdminAccessCheck:
 
     def test_sync_init_requires_api_keys(self) -> None:
         """sync init should fail without API_KEYS."""
-        with patch.dict(os.environ, {"API_KEYS": ""}, clear=False):
-            # Make sure API_KEYS is not set
+        with patch.dict(os.environ, {}, clear=False):
             if "API_KEYS" in os.environ:
                 del os.environ["API_KEYS"]
 
@@ -90,6 +89,14 @@ class TestAdminAccessCheck:
 class TestCommunityValidation:
     """Tests for community option validation."""
 
+    def test_sync_init_rejects_unknown_community(self) -> None:
+        """sync init should reject unknown community ID."""
+        with patch.dict(os.environ, {"API_KEYS": "test-key"}, clear=False):
+            result = runner.invoke(cli, ["sync", "init", "--community", "nonexistent"])
+            assert result.exit_code == 1
+            assert "Unknown community" in result.output
+            assert "nonexistent" in result.output
+
     def test_sync_github_rejects_unknown_community(self) -> None:
         """sync github should reject unknown community ID."""
         with patch.dict(os.environ, {"API_KEYS": "test-key"}, clear=False):
@@ -115,6 +122,12 @@ class TestCommunityValidation:
     def test_sync_search_rejects_unknown_community(self) -> None:
         """sync search should reject unknown community ID."""
         result = runner.invoke(cli, ["sync", "search", "test", "--community", "nonexistent"])
+        assert result.exit_code == 1
+        assert "Unknown community" in result.output
+
+    def test_sync_status_rejects_unknown_community(self) -> None:
+        """sync status should reject unknown community ID."""
+        result = runner.invoke(cli, ["sync", "status", "--community", "nonexistent"])
         assert result.exit_code == 1
         assert "Unknown community" in result.output
 

@@ -1,6 +1,6 @@
 """CLI commands for syncing knowledge sources.
 
-Sync commands require admin access (OSA_API_KEY environment variable) because
+Sync commands require admin access (API_KEYS environment variable) because
 they modify the knowledge database that all users rely on. Regular users
 interact via API endpoints; only backend servers and admins run sync.
 """
@@ -60,6 +60,9 @@ def _get_community_paper_queries(community_id: str) -> list[str]:
     info = registry.get(community_id)
     if info and info.community_config and info.community_config.citations:
         return info.community_config.citations.queries
+    console.print(
+        f"[yellow]Warning: No paper queries found for community '{community_id}'[/yellow]"
+    )
     return []
 
 
@@ -68,6 +71,7 @@ def _get_community_paper_dois(community_id: str) -> list[str]:
     info = registry.get(community_id)
     if info and info.community_config and info.community_config.citations:
         return info.community_config.citations.dois
+    console.print(f"[yellow]Warning: No paper DOIs found for community '{community_id}'[/yellow]")
     return []
 
 

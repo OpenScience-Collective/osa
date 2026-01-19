@@ -21,13 +21,6 @@ from src.knowledge.db import get_connection, update_sync_metadata, upsert_paper
 
 logger = logging.getLogger(__name__)
 
-# Default search queries for HED papers
-HED_QUERIES = [
-    "HED annotation",
-    "Hierarchical Event Descriptors",
-    "HED neuroimaging",
-]
-
 # Rate limiting settings
 SEMANTIC_SCHOLAR_DELAY = 3.0  # seconds between requests (to stay under 100/5min)
 PUBMED_DELAY = 0.4  # seconds between requests (to stay under 3/sec)
