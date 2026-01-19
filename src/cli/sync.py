@@ -6,7 +6,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from src.assistants.hed.sync import HED_REPOS
+from src.assistants import discover_assistants, registry
 from src.cli.config import load_config
 from src.knowledge.db import get_db_path, get_stats, init_db
 from src.knowledge.github_sync import sync_repo, sync_repos
@@ -18,7 +18,20 @@ from src.knowledge.papers_sync import (
     sync_semanticscholar_papers,
 )
 
+# Discover assistants to populate registry
+discover_assistants()
+
 console = Console()
+
+
+def _get_hed_repos() -> list[str]:
+    """Get HED repos from the registry."""
+    info = registry.get("hed")
+    if info and info.community_config and info.community_config.github:
+        return info.community_config.github.repos
+    console.print("[yellow]Warning: HED repos not found in registry[/yellow]")
+    return []
+
 
 sync_app = typer.Typer(
     name="sync",
@@ -52,7 +65,7 @@ def sync_github(
     init_db()
 
     if repo:
-        if repo not in HED_REPOS:
+        if repo not in _get_hed_repos():
             console.print(f"[yellow]Note: {repo} is not in the default HED repos list[/yellow]")
 
         with console.status(f"[bold green]Syncing {repo}..."):
@@ -61,7 +74,7 @@ def sync_github(
         console.print(f"[green]Synced {count} items from {repo}[/green]")
     else:
         with console.status("[bold green]Syncing all HED repositories..."):
-            results = sync_repos(HED_REPOS, project="hed", incremental=not full)
+            results = sync_repos(_get_hed_repos(), project="hed", incremental=not full)
 
         table = Table(title="GitHub Sync Results")
         table.add_column("Repository", style="cyan")
@@ -144,7 +157,7 @@ def sync_all(
     # GitHub
     console.print("[bold]Syncing GitHub repositories...[/bold]")
     with console.status("[green]Syncing GitHub...[/green]"):
-        github_results = sync_repos(HED_REPOS, project="hed", incremental=not full)
+        github_results = sync_repos(_get_hed_repos(), project="hed", incremental=not full)
     github_total = sum(github_results.values())
     console.print(f"[green]GitHub: {github_total} items[/green]")
 

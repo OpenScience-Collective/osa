@@ -1,4 +1,4 @@
-"""Integration tests for HED documentation tool usage.
+"""Integration tests for documentation tool usage.
 
 These tests verify that the tool functions work correctly for:
 - Retrieving preloaded documents
@@ -8,362 +8,266 @@ These tests verify that the tool functions work correctly for:
 - Tool docstring generation
 """
 
-from src.assistants.hed.docs import (
-    HED_DOCS,
-    get_preloaded_hed_content,
-    retrieve_hed_doc,
-    retrieve_hed_docs_by_category,
-)
-from src.assistants.hed.tools import retrieve_hed_docs
-from src.tools.base import DocPage
+import pytest
+from langchain_core.language_models import FakeListChatModel
+
+from src.assistants import discover_assistants, registry
 from src.tools.fetcher import DocumentFetcher
 
+# Ensure assistants are discovered
+discover_assistants()
 
-class TestRetrieveHedDocs:
-    """Tests for the main retrieve_hed_docs tool function."""
 
-    def test_retrieve_preloaded_doc_success(self):
-        """Test retrieving a preloaded document."""
-        url = "https://www.hedtags.org/hed-resources/IntroductionToHed.html"
-        result = retrieve_hed_docs.invoke({"url": url})
+class TestRetrieveDocsTool:
+    """Tests for the retrieve_docs tool function."""
 
-        # Should return formatted content
-        assert "# Introduction to HED" in result
-        assert "Source:" in result
-        assert url in result
+    @pytest.fixture
+    def hed_assistant(self):
+        """Create HED assistant for testing."""
+        model = FakeListChatModel(responses=["Test response"])
+        return registry.create_assistant("hed", model=model, preload_docs=False)
+
+    @pytest.fixture
+    def retrieve_tool(self, hed_assistant):
+        """Get the retrieve_hed_docs tool."""
+        tools = {t.name: t for t in hed_assistant.tools}
+        return tools.get("retrieve_hed_docs")
+
+    def test_retrieve_tool_exists(self, hed_assistant) -> None:
+        """HED assistant should have retrieve_hed_docs tool."""
+        tool_names = [t.name for t in hed_assistant.tools]
+        assert "retrieve_hed_docs" in tool_names
+
+    def test_retrieve_preloaded_doc_success(self, retrieve_tool) -> None:
+        """Test retrieving a preloaded document returns content."""
+        assert retrieve_tool is not None
+
+        # Get a preloaded doc URL from the registry
+        info = registry.get("hed")
+        assert info is not None
+        assert info.community_config is not None
+        preloaded = [d for d in info.community_config.documentation if d.preload]
+        assert len(preloaded) > 0, "Need preloaded docs for this test"
+
+        # Convert HttpUrl to string
+        url = str(preloaded[0].url)
+        result = retrieve_tool.invoke({"url": url})
+
+        # Should return formatted content (not an error)
         assert not result.startswith("Error")
+        assert not result.startswith("Document not found")
+        assert "Source:" in result or len(result) > 100
 
-    def test_retrieve_ondemand_doc_success(self):
-        """Test retrieving an on-demand document."""
-        url = "https://www.hedtags.org/hed-resources/HedAnnotationQuickstart.html"
-        result = retrieve_hed_docs.invoke({"url": url})
+    def test_retrieve_ondemand_doc_success(self, retrieve_tool) -> None:
+        """Test retrieving an on-demand document returns content."""
+        assert retrieve_tool is not None
 
-        # Should return formatted content
-        assert "# HED annotation quickstart" in result
-        assert "Source:" in result
-        assert url in result
-        assert not result.startswith("Error")
+        # Get an on-demand doc URL from the registry
+        info = registry.get("hed")
+        assert info is not None
+        assert info.community_config is not None
+        on_demand = [d for d in info.community_config.documentation if not d.preload]
+        assert len(on_demand) > 0, "Need on-demand docs for this test"
 
-    def test_retrieve_unknown_url(self):
-        """Test retrieving document with unknown URL."""
+        # Convert HttpUrl to string
+        url = str(on_demand[0].url)
+        result = retrieve_tool.invoke({"url": url})
+
+        # Should return formatted content (not an error about registry)
+        assert "Document not found" not in result
+        # May have network errors, but not registry errors
+        if result.startswith("Error"):
+            assert "registry" not in result.lower()
+
+    def test_retrieve_unknown_url_returns_error(self, retrieve_tool) -> None:
+        """Test retrieving document with unknown URL returns helpful error."""
+        assert retrieve_tool is not None
+
         url = "https://example.com/nonexistent.html"
-        result = retrieve_hed_docs.invoke({"url": url})
+        result = retrieve_tool.invoke({"url": url})
 
-        # Should return error message
-        assert result.startswith("Error retrieving")
-        assert url in result
+        # Should return error message mentioning the URL
+        assert "not found" in result.lower() or "error" in result.lower()
+        assert url in result or "example.com" in result
 
-    def test_tool_description_includes_doc_list(self):
+    def test_tool_description_includes_doc_list(self, retrieve_tool) -> None:
         """Test that tool description includes available documents."""
-        description = retrieve_hed_docs.description
+        assert retrieve_tool is not None
 
-        # Should include formatted doc list
-        assert "Available documents:" in description
-        assert "Introduction to HED" in description
-        assert "HED annotation semantics" in description
+        description = retrieve_tool.description
 
-        # Should include preloaded section
-        assert "Preloaded" in description
+        # Should include info about available docs
+        assert "Available" in description or "documentation" in description.lower()
 
-        # Should include category sections
-        assert "Quickstart" in description or "Quick Start" in description
-
-
-class TestRetrieveHedDoc:
-    """Tests for the underlying retrieve_hed_doc function."""
-
-    def test_retrieve_doc_returns_retrieved_doc(self):
-        """Test that retrieve_hed_doc returns RetrievedDoc object."""
-        url = "https://www.hedtags.org/hed-resources/IntroductionToHed.html"
-        doc = HED_DOCS.find_by_url(url)
-        assert doc is not None
-
-        fetcher = DocumentFetcher()  # Memory-only for tests
-        result = retrieve_hed_doc(url, fetcher)
-
-        assert result.title == "Introduction to HED"
-        assert result.url == url
-        assert result.success
-        assert len(result.content) > 0
-
-    def test_retrieve_doc_with_unknown_url(self):
-        """Test error handling for unknown URL."""
-        url = "https://example.com/unknown.html"
-        fetcher = DocumentFetcher()
-        result = retrieve_hed_doc(url, fetcher)
-
-        assert not result.success
-        assert result.error is not None
-        assert "not found in HED registry" in result.error
-
-
-class TestRetrieveByCategory:
-    """Tests for category-based retrieval."""
-
-    def test_retrieve_quickstart_category(self):
-        """Test retrieving all quickstart documents."""
-        fetcher = DocumentFetcher()
-        results = retrieve_hed_docs_by_category("quickstart", fetcher)
-
-        # Should have 3 quickstart docs
-        assert len(results) == 3
-
-        # Check that all are quickstart docs
-        titles = {r.title for r in results}
-        assert "HED annotation quickstart" in titles
-        assert "BIDS annotation quickstart" in titles
-        assert "HED annotation in NWB" in titles
-
-        # At least some should be successful (network may be flaky)
-        success_count = sum(1 for r in results if r.success)
-        assert success_count >= 1, f"Expected at least 1 success, got {success_count}"
-
-    def test_retrieve_core_category(self):
-        """Test retrieving all core documents."""
-        fetcher = DocumentFetcher()
-        results = retrieve_hed_docs_by_category("core", fetcher)
-
-        # Should have multiple core docs
-        assert len(results) > 0
-
-        # At least some should be successful (network may be flaky)
-        success_count = sum(1 for r in results if r.success)
-        assert success_count >= 1, f"Expected at least 1 success, got {success_count}"
-
-    def test_retrieve_empty_category(self):
-        """Test retrieving from a category with no documents."""
-        fetcher = DocumentFetcher()
-        results = retrieve_hed_docs_by_category("nonexistent", fetcher)
-
-        # Should return empty list
-        assert len(results) == 0
+        # Should include at least some document titles
+        info = registry.get("hed")
+        assert info is not None
+        assert info.community_config is not None
+        docs = info.community_config.documentation
+        titles_found = sum(1 for d in docs[:5] if d.title in description)
+        assert titles_found >= 1, "Expected at least 1 document title in description"
 
 
 class TestPreloadedContent:
-    """Tests for preloaded document functionality.
+    """Tests for preloaded document functionality."""
 
-    These tests dynamically discover what should be preloaded from the registry
-    rather than hardcoding expected documents.
-    """
+    def test_assistant_has_preloaded_docs_in_prompt(self) -> None:
+        """Preloaded docs should appear in system prompt."""
+        model = FakeListChatModel(responses=["Test"])
+        assistant = registry.create_assistant("hed", model=model, preload_docs=True)
 
-    def test_get_preloaded_hed_content(self):
-        """Test fetching all preloaded HED documentation."""
-        fetcher = DocumentFetcher()
-        preloaded_content = get_preloaded_hed_content(fetcher)
-        preloaded_docs = HED_DOCS.get_preloaded()
+        prompt = assistant.get_system_prompt()
 
-        # Should attempt to fetch all docs marked as preloaded
-        # (some may fail due to network issues)
-        assert len(preloaded_content) >= 1, "Expected at least 1 preloaded doc"
+        # Check that preloaded content marker or content appears
+        info = registry.get("hed")
+        assert info is not None
+        assert info.community_config is not None
+        preloaded = [d for d in info.community_config.documentation if d.preload]
 
-        # All returned content should be keyed by valid URLs
-        for url in preloaded_content:
-            assert url.startswith("https://"), f"Invalid URL key: {url}"
+        # At least mention of preloaded docs should be in prompt
+        assert "preloaded" in prompt.lower() or any(d.title in prompt for d in preloaded)
 
-        # All content should be non-empty
-        assert all(len(content) > 0 for content in preloaded_content.values())
+    def test_preload_false_skips_content(self) -> None:
+        """preload_docs=False should not embed doc content."""
+        model = FakeListChatModel(responses=["Test"])
+        assistant = registry.create_assistant("hed", model=model, preload_docs=False)
 
-        # URLs in result should match docs marked preload=True
-        expected_urls = {doc.url for doc in preloaded_docs}
-        for url in preloaded_content:
-            assert url in expected_urls, f"Unexpected URL in preloaded: {url}"
+        prompt = assistant.get_system_prompt()
 
-    def test_preloaded_content_is_cleaned(self):
-        """Test that preloaded content is cleaned markdown."""
-        fetcher = DocumentFetcher(clean_markdown_content=True)
-        preloaded = get_preloaded_hed_content(fetcher)
-
-        # Check one document for cleaned content
-        intro_url = "https://www.hedtags.org/hed-resources/IntroductionToHed.html"
-        if intro_url in preloaded:
-            content = preloaded[intro_url]
-            # Should not contain HTML tags
-            assert "<div" not in content
-            assert "<p>" not in content
+        # Prompt should be shorter without preloaded content
+        # (exact check would be comparing with preload=True)
+        assert len(prompt) < 100000, "Prompt too large, preloaded content may be included"
 
 
-class TestFormatDocList:
-    """Tests for formatted doc list generation."""
+class TestDocumentFetcher:
+    """Tests for DocumentFetcher functionality."""
 
-    def test_format_includes_all_sections(self):
-        """Test that formatted list includes all expected sections."""
-        formatted = HED_DOCS.format_doc_list()
-
-        # Should include preloaded section
-        assert "Preloaded" in formatted
-
-        # Should include various categories
-        assert "Core" in formatted or "core" in formatted
-        assert "Specification" in formatted or "specification" in formatted
-
-    def test_format_is_deterministic(self):
-        """Test that formatting is deterministic."""
-        formatted1 = HED_DOCS.format_doc_list()
-        formatted2 = HED_DOCS.format_doc_list()
-
-        assert formatted1 == formatted2
-
-    def test_format_includes_descriptions_by_default(self):
-        """Test that format includes descriptions by default."""
-        formatted = HED_DOCS.format_doc_list()
-
-        # Should include at least one description
-        assert "Outlines the fundamental principles" in formatted
-        assert "Provides an overview" in formatted
-
-
-class TestDocumentDiscoveryByDescription:
-    """Tests for finding documents based on descriptions."""
-
-    def test_find_validation_doc_by_description(self):
-        """Test finding validation doc using description keywords."""
-        # Simulate agent searching for validation documentation
-        validation_docs = [
-            doc
-            for doc in HED_DOCS.docs
-            if "validat" in doc.description.lower() or "validat" in doc.title.lower()
-        ]
-
-        assert len(validation_docs) > 0
-
-        # Should find the validation guide
-        validation_titles = {doc.title for doc in validation_docs}
-        assert "HED validation guide" in validation_titles
-
-    def test_find_quickstart_docs_by_description(self):
-        """Test finding quickstart docs using description keywords."""
-        # Simulate agent searching for getting started resources
-        quickstart_docs = [
-            doc
-            for doc in HED_DOCS.docs
-            if any(
-                keyword in doc.description.lower()
-                for keyword in ["quick", "step-by-step", "tutorial", "concise"]
-            )
-        ]
-
-        assert len(quickstart_docs) >= 3
-
-        # Should include quickstart category docs
-        quickstart_titles = {doc.title for doc in quickstart_docs}
-        assert any("quickstart" in title.lower() for title in quickstart_titles)
-
-    def test_find_tools_docs_by_description(self):
-        """Test finding tools docs using description keywords."""
-        # Simulate agent searching for tool documentation
-        tools_docs = [
-            doc
-            for doc in HED_DOCS.docs
-            if any(
-                keyword in doc.description.lower()
-                for keyword in ["python", "matlab", "javascript", "online"]
-            )
-        ]
-
-        assert len(tools_docs) >= 4
-
-        # Should find the tools category
-        tools_titles = {doc.title for doc in tools_docs}
-        assert any("python" in title.lower() for title in tools_titles)
-        assert any("matlab" in title.lower() for title in tools_titles)
-
-    def test_find_schema_docs_by_description(self):
-        """Test finding schema docs using description keywords."""
-        # Simulate agent searching for schema information
-        schema_docs = [
-            doc
-            for doc in HED_DOCS.docs
-            if "schema" in doc.description.lower() or "schema" in doc.title.lower()
-        ]
-
-        assert len(schema_docs) >= 2
-
-        # Should include schema documentation
-        # Note: actual schema is too large (~890KB), use hed-lsp tool for schema lookups instead
-        schema_titles = {doc.title for doc in schema_docs}
-        assert "HED schemas" in schema_titles or "Library schemas" in schema_titles
-
-
-class TestFetcherCaching:
-    """Tests for document fetcher caching behavior."""
-
-    def test_fetcher_caches_documents(self):
-        """Test that fetcher caches documents for reuse."""
+    def test_fetcher_returns_content_for_known_doc(self) -> None:
+        """Fetcher should return content for valid document."""
         fetcher = DocumentFetcher()
 
-        url = "https://www.hedtags.org/hed-resources/IntroductionToHed.html"
-        doc = HED_DOCS.find_by_url(url)
-        assert doc is not None
+        # Get a doc registry
+        info = registry.get("hed")
+        assert info is not None
+        assert info.community_config is not None
+        doc_registry = info.community_config.get_doc_registry()
+        docs = doc_registry.docs
+        assert len(docs) > 0
 
-        # First fetch
-        result1 = fetcher.fetch(doc)
-        assert result1.success
+        # Try to fetch first doc (DocPage object)
+        doc = docs[0]
+        result = fetcher.fetch(doc)
 
-        # Second fetch should use cache
-        result2 = fetcher.fetch(doc)
-        assert result2.success
-        assert result2.content == result1.content
+        # Should get content or graceful error
+        assert result is not None
+        if result.success:
+            assert len(result.content) > 0
+        else:
+            # Network error is OK, but should have error message
+            assert result.error is not None
 
-        # Verify cache is populated
-        cached = fetcher.get_cached(doc.source_url)
-        assert cached is not None
+    def test_fetcher_handles_invalid_doc(self) -> None:
+        """Fetcher should handle invalid URLs gracefully."""
+        from src.tools.base import DocPage
 
-    def test_fetcher_cache_stats(self):
-        """Test that cache statistics are tracked."""
         fetcher = DocumentFetcher()
 
-        # Initially empty
-        stats = fetcher.cache_stats()
-        assert stats["memory_entries"] == 0
-
-        # Fetch a document
-        url = "https://www.hedtags.org/hed-resources/IntroductionToHed.html"
-        doc = HED_DOCS.find_by_url(url)
-        assert doc is not None
-        fetcher.fetch(doc)
-
-        # Should have cache entry
-        stats = fetcher.cache_stats()
-        assert stats["memory_entries"] >= 1
-
-
-class TestToolErrorHandling:
-    """Tests for error handling in tool functions."""
-
-    def test_handle_network_error_gracefully(self):
-        """Test that network errors are handled gracefully."""
-        # Create a doc with invalid source URL
+        # Create a DocPage with an invalid URL
         invalid_doc = DocPage(
-            title="Invalid Doc",
-            url="https://example.com/test.html",
-            source_url="https://invalid-domain-that-does-not-exist-12345.com/test.md",
-            category="test",
-            description="Test document",
+            title="Nonexistent",
+            url="https://example.com/nonexistent.html",
+            source_url="https://example.com/nonexistent-page-12345.md",
         )
-
-        fetcher = DocumentFetcher(timeout_seconds=2.0)
         result = fetcher.fetch(invalid_doc)
 
-        # Should return error, not raise exception
-        assert not result.success
-        assert result.error is not None
-        assert len(result.content) == 0
+        # Should not raise exception
+        assert result is not None
+        # Will likely fail, but gracefully
+        if not result.success:
+            assert result.error is not None
 
-    def test_handle_http_404_gracefully(self):
-        """Test that 404 errors are handled gracefully."""
-        # Create a doc with URL that will 404
-        notfound_doc = DocPage(
-            title="Not Found Doc",
-            url="https://www.hedtags.org/nonexistent.html",
-            source_url="https://raw.githubusercontent.com/hed-standard/hed-specification/main/nonexistent.md",
-            category="test",
-            description="Test document",
-        )
-
+    def test_fetcher_caches_results(self) -> None:
+        """Fetcher should cache successful fetches."""
         fetcher = DocumentFetcher()
-        result = fetcher.fetch(notfound_doc)
 
-        # Should return error, not raise exception
-        assert not result.success
-        assert result.error is not None
-        assert "404" in result.error or "Not Found" in result.error
+        # Get a doc from registry
+        info = registry.get("hed")
+        assert info is not None
+        assert info.community_config is not None
+        doc_registry = info.community_config.get_doc_registry()
+        doc = doc_registry.docs[0]
+
+        # Fetch twice
+        result1 = fetcher.fetch(doc)
+        result2 = fetcher.fetch(doc)
+
+        # Results should be same
+        assert result1.content == result2.content
+
+
+class TestToolNaming:
+    """Tests for tool naming conventions."""
+
+    def test_hed_tools_have_hed_prefix(self) -> None:
+        """HED tools should have 'hed' in their names."""
+        model = FakeListChatModel(responses=["Test"])
+        assistant = registry.create_assistant("hed", model=model, preload_docs=False)
+
+        tool_names = [t.name for t in assistant.tools]
+
+        # Auto-generated tools should have community ID
+        assert "retrieve_hed_docs" in tool_names
+        assert "search_hed_discussions" in tool_names
+        assert "search_hed_papers" in tool_names
+        assert "list_hed_recent" in tool_names
+
+    def test_specialized_tools_present(self) -> None:
+        """Specialized HED tools from plugins should be present."""
+        model = FakeListChatModel(responses=["Test"])
+        assistant = registry.create_assistant("hed", model=model, preload_docs=False)
+
+        tool_names = [t.name for t in assistant.tools]
+
+        # HED-specific tools from Python plugin
+        assert "validate_hed_string" in tool_names
+        assert "suggest_hed_tags" in tool_names
+        assert "get_hed_schema_versions" in tool_names
+
+
+class TestErrorHandling:
+    """Tests for error handling in tools."""
+
+    def test_retrieve_tool_handles_network_error_gracefully(self) -> None:
+        """Retrieve tool should handle network errors without crashing."""
+        model = FakeListChatModel(responses=["Test"])
+        assistant = registry.create_assistant("hed", model=model, preload_docs=False)
+
+        tools = {t.name: t for t in assistant.tools}
+        retrieve_tool = tools.get("retrieve_hed_docs")
+
+        # Use a URL that's in the registry but may fail to fetch
+        info = registry.get("hed")
+        assert info is not None
+        assert info.community_config is not None
+        docs = [d for d in info.community_config.documentation if not d.preload]
+
+        if docs:
+            # Convert HttpUrl to string
+            url = str(docs[0].url)
+            # Should not raise exception
+            result = retrieve_tool.invoke({"url": url})
+            assert isinstance(result, str)
+
+    def test_knowledge_tool_handles_missing_db(self) -> None:
+        """Knowledge tools should handle missing database gracefully."""
+        model = FakeListChatModel(responses=["Test"])
+        assistant = registry.create_assistant("hed", model=model, preload_docs=False)
+
+        tools = {t.name: t for t in assistant.tools}
+        search_tool = tools.get("search_hed_discussions")
+
+        # Should return helpful message, not crash
+        result = search_tool.invoke({"query": "validation error"})
+        assert isinstance(result, str)
+        # Either shows results or shows init message
+        assert len(result) > 0

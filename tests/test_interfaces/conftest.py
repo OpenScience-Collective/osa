@@ -8,21 +8,29 @@ automatically include them in all parameterized tests.
 import pytest
 from langchain_core.language_models import FakeListChatModel
 
-from src.assistants.hed import HEDAssistant
-from src.assistants.hed.docs import HED_DOCS
+from src.assistants import discover_assistants
+from src.assistants import registry as assistant_registry
+
+# Discover assistants at module load
+discover_assistants()
+
 
 # ============================================================================
 # Registry Implementations
 # ============================================================================
-# Add new registries here when they're implemented:
-# from src.tools.bids import BIDS_DOCS
-# from src.tools.eeglab import EEGLAB_DOCS
+# Get registries dynamically from discovered assistants
 
-ALL_REGISTRIES = [
-    HED_DOCS,
-    # BIDS_DOCS,
-    # EEGLAB_DOCS,
-]
+
+def get_all_registries():
+    """Get doc registries from all registered assistants."""
+    registries = []
+    for info in assistant_registry.list_all():
+        if info.community_config:
+            registries.append(info.community_config.get_doc_registry())
+    return registries
+
+
+ALL_REGISTRIES = get_all_registries()
 
 
 @pytest.fixture(params=ALL_REGISTRIES, ids=lambda r: r.name)
@@ -38,25 +46,24 @@ def registry(request):
 # Agent Factory Functions
 # ============================================================================
 # These functions create agents with a fake model for testing.
-# Add new agent factories here when they're implemented.
 
 
 def create_hed_agent():
     """Create a HED agent with fake model for testing."""
     model = FakeListChatModel(responses=["Test response"])
-    return HEDAssistant(model=model, preload_docs=False)
+    return assistant_registry.create_assistant("hed", model=model, preload_docs=False)
 
 
 # def create_bids_agent():
 #     """Create a BIDS agent with fake model for testing."""
 #     model = FakeListChatModel(responses=["Test response"])
-#     return BIDSAssistant(model=model, preload_docs=False)
+#     return assistant_registry.create_assistant("bids", model=model, preload_docs=False)
 
 
 # def create_eeglab_agent():
 #     """Create an EEGLAB agent with fake model for testing."""
 #     model = FakeListChatModel(responses=["Test response"])
-#     return EEGLABAssistant(model=model, preload_docs=False)
+#     return assistant_registry.create_assistant("eeglab", model=model, preload_docs=False)
 
 
 AGENT_FACTORIES = [

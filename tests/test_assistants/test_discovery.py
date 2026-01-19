@@ -1,159 +1,252 @@
-"""Tests for assistant discovery and YAML loading integration.
+"""Tests for assistant discovery from per-community config.yaml files.
 
-Tests the full discovery process including YAML loading and Python
-package registration.
+Tests the discovery process that scans src/assistants/*/config.yaml.
 """
 
 from pathlib import Path
-from tempfile import NamedTemporaryFile
-from unittest.mock import MagicMock
 
 import pytest
+import yaml
+from pydantic import ValidationError
 
-from src.assistants import discover_assistants, get_communities_yaml_path, registry
-
-
-class TestGetCommunitiesYamlPath:
-    """Tests for get_communities_yaml_path function."""
-
-    def test_finds_project_root_yaml(self) -> None:
-        """Should find YAML in project root."""
-        path = get_communities_yaml_path()
-        assert path.exists()
-        assert path.name == "communities.yaml"
-        assert "registries" in str(path)
+from src.assistants import discover_assistants, registry
+from src.assistants.registry import AssistantRegistry
+from src.core.config.community import CommunityConfig
 
 
 class TestDiscoverAssistants:
-    """Tests for discover_assistants integration."""
+    """Tests for discover_assistants function."""
 
-    def test_loads_yaml_and_python_registrations(self) -> None:
-        """Should load communities from YAML and Python packages."""
-        yaml_content = """
-communities:
-  - id: test-yaml-only
-    name: YAML Only
-    description: Only defined in YAML
-    status: coming_soon
-"""
-        with NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            f.write(yaml_content)
-            yaml_path = Path(f.name)
-
-        try:
-            # Clear registry for clean test
-            registry._assistants.clear()
-
-            # Run discovery with test YAML
-            discovered = discover_assistants(yaml_path)
-
-            # Should have loaded YAML-only community
-            assert "test-yaml-only" in registry
-            yaml_info = registry.get("test-yaml-only")
-            assert yaml_info is not None
-            assert yaml_info.factory is None  # No Python implementation
-            assert yaml_info.community_config is not None
-            assert yaml_info.name == "YAML Only"
-
-            # discover_assistants returns list of discovered Python packages
-            # (empty in this test since no assistants/ subpackages loaded)
-            assert isinstance(discovered, list)
-        finally:
-            yaml_path.unlink()
-
-    def test_merges_yaml_with_existing_decorator(self) -> None:
-        """Should merge YAML config with existing decorator registration."""
-        yaml_content = """
-communities:
-  - id: merge-test
-    name: Merge Test
-    description: From YAML
-    github:
-      repos:
-        - yaml-org/yaml-repo
-    citations:
-      queries:
-        - "yaml query"
-"""
-        with NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            f.write(yaml_content)
-            yaml_path = Path(f.name)
-
-        try:
-            # Clear registry
-            registry._assistants.clear()
-
-            # First register via decorator (simulates Python package)
-            @registry.register(
-                id="merge-test",
-                name="Merge Test",
-                description="From decorator",
-            )
-            def create_merge_test(_model):
-                return MagicMock()
-
-            # Load YAML (should merge)
-            registry.load_from_yaml(yaml_path)
-
-            # Check merged result
-            info = registry.get("merge-test")
-            assert info is not None
-            assert info.factory is not None  # From decorator
-            assert info.community_config is not None  # From YAML
-            assert info.sync_config["github_repos"] == ["yaml-org/yaml-repo"]
-        finally:
-            yaml_path.unlink()
-            registry._assistants.clear()
-
-    def test_handles_missing_yaml_gracefully(self) -> None:
-        """Should handle missing YAML file without crashing."""
-        # Clear registry
+    @pytest.fixture(autouse=True)
+    def clear_registry(self) -> None:
+        """Clear registry before each test."""
         registry._assistants.clear()
 
-        # Discovery with non-existent file should not crash
-        discovered = discover_assistants("/nonexistent/path.yaml")
+    def test_discovers_hed_from_config_yaml(self) -> None:
+        """Should discover HED from its config.yaml file."""
+        discovered = discover_assistants()
 
-        # Should return empty or just Python packages
-        assert isinstance(discovered, list)
-
-
-class TestDiscoveryWithActualYaml:
-    """Tests using the actual communities.yaml file."""
-
-    def test_actual_yaml_loads_hed(self) -> None:
-        """Should load HED from actual communities.yaml."""
-        # Clear registry
-        registry._assistants.clear()
-
-        # Use default YAML path
-        yaml_path = get_communities_yaml_path()
-        if not yaml_path.exists():
-            pytest.skip("communities.yaml not found")
-
-        # Load
-        registry.load_from_yaml(yaml_path)
-
-        # HED should be loaded from YAML
-        hed_info = registry.get("hed")
-        assert hed_info is not None
-        assert hed_info.name == "HED (Hierarchical Event Descriptors)"
-        assert hed_info.community_config is not None
-        assert hed_info.sync_config.get("github_repos")
-        assert len(hed_info.sync_config["github_repos"]) > 0
-
-    def test_full_discovery_with_real_yaml(self) -> None:
-        """Should run full discovery with real YAML."""
-        # Clear registry
-        registry._assistants.clear()
-
-        # Run full discovery
-        discover_assistants()
-
-        # Should have at least HED from YAML
+        assert "hed" in discovered
         assert "hed" in registry
 
-        # If Python hed package loaded, should have factory
-        hed_info = registry.get("hed")
-        if hed_info.factory is not None:
-            # Full merge happened
-            assert hed_info.community_config is not None
+    def test_discovered_assistant_has_community_config(self) -> None:
+        """Discovered assistants should have community config."""
+        discover_assistants()
+
+        info = registry.get("hed")
+        assert info is not None
+        assert info.community_config is not None
+        assert info.community_config.id == "hed"
+
+    def test_returns_list_of_discovered_ids(self) -> None:
+        """Should return list of discovered community IDs."""
+        discovered = discover_assistants()
+
+        assert isinstance(discovered, list)
+        assert len(discovered) > 0
+        # At least HED should be discovered
+        assert "hed" in discovered
+
+
+class TestCommunityConfigFromYaml:
+    """Tests for CommunityConfig.from_yaml() method."""
+
+    def test_loads_valid_yaml(self, tmp_path: Path) -> None:
+        """Should load valid YAML file."""
+        yaml_content = """
+id: test-community
+name: Test Community
+description: A test community
+"""
+        yaml_path = tmp_path / "config.yaml"
+        yaml_path.write_text(yaml_content)
+
+        config = CommunityConfig.from_yaml(yaml_path)
+
+        assert config.id == "test-community"
+        assert config.name == "Test Community"
+        assert config.description == "A test community"
+
+    def test_loads_yaml_with_documentation(self, tmp_path: Path) -> None:
+        """Should load YAML with documentation section."""
+        yaml_content = """
+id: docs-test
+name: Docs Test
+description: Test with docs
+documentation:
+  - title: Test Doc
+    url: https://example.com/docs
+    preload: false
+"""
+        yaml_path = tmp_path / "config.yaml"
+        yaml_path.write_text(yaml_content)
+
+        config = CommunityConfig.from_yaml(yaml_path)
+
+        assert len(config.documentation) == 1
+        assert config.documentation[0].title == "Test Doc"
+
+    def test_loads_yaml_with_github_config(self, tmp_path: Path) -> None:
+        """Should load YAML with GitHub configuration."""
+        yaml_content = """
+id: github-test
+name: GitHub Test
+description: Test with GitHub
+github:
+  repos:
+    - org/repo1
+    - org/repo2
+"""
+        yaml_path = tmp_path / "config.yaml"
+        yaml_path.write_text(yaml_content)
+
+        config = CommunityConfig.from_yaml(yaml_path)
+
+        assert config.github is not None
+        assert len(config.github.repos) == 2
+        assert "org/repo1" in config.github.repos
+
+    def test_loads_yaml_with_extensions(self, tmp_path: Path) -> None:
+        """Should load YAML with extensions configuration."""
+        yaml_content = """
+id: ext-test
+name: Extensions Test
+description: Test with extensions
+extensions:
+  python_plugins:
+    - module: some.module
+      tools:
+        - tool_one
+        - tool_two
+"""
+        yaml_path = tmp_path / "config.yaml"
+        yaml_path.write_text(yaml_content)
+
+        config = CommunityConfig.from_yaml(yaml_path)
+
+        assert config.extensions is not None
+        assert len(config.extensions.python_plugins) == 1
+        assert config.extensions.python_plugins[0].module == "some.module"
+
+    def test_raises_for_missing_file(self, tmp_path: Path) -> None:
+        """Should raise FileNotFoundError for missing file."""
+        yaml_path = tmp_path / "nonexistent.yaml"
+
+        with pytest.raises(FileNotFoundError):
+            CommunityConfig.from_yaml(yaml_path)
+
+    def test_raises_for_invalid_yaml(self, tmp_path: Path) -> None:
+        """Should raise error for invalid YAML syntax."""
+        yaml_content = """
+id: invalid
+name: Invalid
+  bad indentation
+"""
+        yaml_path = tmp_path / "config.yaml"
+        yaml_path.write_text(yaml_content)
+
+        with pytest.raises((yaml.YAMLError, ValidationError)):
+            CommunityConfig.from_yaml(yaml_path)
+
+
+class TestRegistryFromConfig:
+    """Tests for registry.register_from_config method."""
+
+    def test_registers_from_community_config(self) -> None:
+        """Should register assistant from CommunityConfig."""
+        temp_registry = AssistantRegistry()
+
+        config = CommunityConfig(
+            id="test-reg",
+            name="Test Registration",
+            description="Testing register_from_config",
+        )
+
+        temp_registry.register_from_config(config)
+
+        assert "test-reg" in temp_registry
+        info = temp_registry.get("test-reg")
+        assert info is not None
+        assert info.name == "Test Registration"
+        assert info.community_config == config
+
+    def test_overwrites_existing_registration(self) -> None:
+        """Should overwrite existing registration with warning."""
+        temp_registry = AssistantRegistry()
+
+        config1 = CommunityConfig(
+            id="overwrite-test",
+            name="First Version",
+            description="First registration",
+        )
+        config2 = CommunityConfig(
+            id="overwrite-test",
+            name="Second Version",
+            description="Second registration",
+        )
+
+        temp_registry.register_from_config(config1)
+        temp_registry.register_from_config(config2)
+
+        info = temp_registry.get("overwrite-test")
+        assert info is not None
+        assert info.name == "Second Version"
+
+    def test_populates_sync_config(self) -> None:
+        """Should populate sync_config from community config."""
+        temp_registry = AssistantRegistry()
+
+        config = CommunityConfig(
+            id="sync-test",
+            name="Sync Test",
+            description="Testing sync config",
+            github={"repos": ["org/repo"]},
+            citations={"queries": ["test query"], "dois": ["10.1234/test"]},
+        )
+
+        temp_registry.register_from_config(config)
+
+        info = temp_registry.get("sync-test")
+        assert info is not None
+        assert info.sync_config.get("github_repos") == ["org/repo"]
+        assert info.sync_config.get("paper_queries") == ["test query"]
+        assert info.sync_config.get("paper_dois") == ["10.1234/test"]
+
+
+class TestDiscoveryWithActualConfig:
+    """Tests using the actual HED config.yaml file."""
+
+    @pytest.fixture(autouse=True)
+    def clear_and_discover(self) -> None:
+        """Clear registry and run discovery."""
+        registry._assistants.clear()
+        discover_assistants()
+
+    def test_hed_config_loaded(self) -> None:
+        """HED config should be loaded from config.yaml."""
+        info = registry.get("hed")
+        assert info is not None
+        assert info.community_config is not None
+
+    def test_hed_has_documentation_config(self) -> None:
+        """HED should have documentation configured."""
+        info = registry.get("hed")
+        assert info is not None
+        assert info.community_config is not None
+        assert len(info.community_config.documentation) > 0
+
+    def test_hed_has_github_repos(self) -> None:
+        """HED should have GitHub repos configured."""
+        info = registry.get("hed")
+        assert info is not None
+        assert info.community_config is not None
+        assert info.community_config.github is not None
+        assert len(info.community_config.github.repos) > 0
+
+    def test_hed_has_extensions(self) -> None:
+        """HED should have Python plugin extensions configured."""
+        info = registry.get("hed")
+        assert info is not None
+        assert info.community_config is not None
+        assert info.community_config.extensions is not None
+        assert len(info.community_config.extensions.python_plugins) > 0

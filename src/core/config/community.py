@@ -1,22 +1,24 @@
 """Pydantic models for community configuration.
 
-Defines the schema for communities.yaml, enabling declarative
+Defines the schema for community config.yaml files, enabling declarative
 configuration of research community assistants.
 
-Example YAML:
-    communities:
-      - id: hed
-        name: HED (Hierarchical Event Descriptors)
-        description: Event annotation standard for neuroimaging
-        documentation:
-          - url: https://www.hedtags.org/hed-resources/
-            type: sphinx
-        github:
-          repos:
-            - hed-standard/hed-specification
-        citations:
-          queries:
-            - "Hierarchical Event Descriptors"
+Each community has its own config.yaml file (e.g., src/assistants/hed/config.yaml)
+that is parsed directly as a CommunityConfig.
+
+Example config.yaml:
+    id: hed
+    name: HED (Hierarchical Event Descriptors)
+    description: Event annotation standard for neuroimaging
+    documentation:
+      - url: https://www.hedtags.org/hed-resources/
+        type: sphinx
+    github:
+      repos:
+        - hed-standard/hed-specification
+    citations:
+      queries:
+        - "Hierarchical Event Descriptors"
 """
 
 import re
@@ -374,6 +376,32 @@ class CommunityConfig(BaseModel):
         ]
 
         return DocRegistry(name=self.id, docs=doc_pages)
+
+    @classmethod
+    def from_yaml(cls, path: Path) -> "CommunityConfig":
+        """Load a single community configuration from YAML file.
+
+        Unlike CommunitiesConfig.from_yaml which loads a list of communities,
+        this loads a single community's config.yaml file directly.
+
+        Args:
+            path: Path to the community's config.yaml file.
+
+        Returns:
+            Parsed and validated CommunityConfig.
+
+        Raises:
+            FileNotFoundError: If file doesn't exist.
+            yaml.YAMLError: If YAML syntax is invalid.
+            ValidationError: If YAML structure is invalid.
+        """
+        try:
+            with open(path) as f:
+                data = yaml.safe_load(f)
+        except yaml.YAMLError as e:
+            raise yaml.YAMLError(f"Failed to parse YAML file {path}: {e}") from e
+
+        return cls.model_validate(data or {})
 
 
 class CommunitiesConfig(BaseModel):

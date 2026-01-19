@@ -12,15 +12,28 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from src.api.config import get_settings
-from src.assistants.hed.sync import HED_REPOS
+from src.assistants import discover_assistants, registry
 from src.knowledge.db import init_db
 from src.knowledge.github_sync import sync_repos
 from src.knowledge.papers_sync import sync_all_papers
 
 logger = logging.getLogger(__name__)
 
+# Discover assistants at module load to populate registry
+discover_assistants()
+
 # Global scheduler instance
 _scheduler: BackgroundScheduler | None = None
+
+
+def _get_hed_repos() -> list[str]:
+    """Get HED repos from the registry."""
+    info = registry.get("hed")
+    if info and info.community_config and info.community_config.github:
+        return info.community_config.github.repos
+    logger.warning("HED repos not found in registry, using empty list")
+    return []
+
 
 # Failure tracking for alerting
 _github_sync_failures = 0
@@ -33,7 +46,7 @@ def _run_github_sync() -> None:
     global _github_sync_failures
     logger.info("Starting scheduled GitHub sync")
     try:
-        results = sync_repos(HED_REPOS, project="hed", incremental=True)
+        results = sync_repos(_get_hed_repos(), project="hed", incremental=True)
         total = sum(results.values())
         logger.info("GitHub sync complete: %d items synced", total)
         _github_sync_failures = 0  # Reset on success
@@ -183,7 +196,7 @@ def run_sync_now(sync_type: str = "all") -> dict[str, int]:
 
     if sync_type in ("github", "all"):
         logger.info("Running GitHub sync")
-        github_results = sync_repos(HED_REPOS, project="hed", incremental=True)
+        github_results = sync_repos(_get_hed_repos(), project="hed", incremental=True)
         results["github"] = sum(github_results.values())
 
     if sync_type in ("papers", "all"):
