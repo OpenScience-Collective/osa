@@ -1,6 +1,6 @@
 """Paper sync from OpenALEX, Semantic Scholar, and PubMed Central.
 
-Syncs papers related to HED (and other open science tools).
+Syncs papers for community-configured search queries.
 Only stores title, abstract snippet, URL, and publication date.
 
 Rate limits:
@@ -56,6 +56,33 @@ def _reconstruct_abstract(inverted_index: dict[str, list[int]] | None) -> str:
     return " ".join(words)
 
 
+def _get_paper_url(doi: str | None, fallback_id: str) -> str:
+    """Get paper URL, preferring DOI when available.
+
+    Args:
+        doi: The DOI (may be full URL or bare DOI)
+        fallback_id: Fallback URL/ID if no DOI
+
+    Returns:
+        URL string
+    """
+    if not doi:
+        return fallback_id
+    return doi if doi.startswith("http") else f"https://doi.org/{doi}"
+
+
+def _get_openalex_external_id(openalex_id: str) -> str:
+    """Extract external ID from OpenALEX URL.
+
+    Args:
+        openalex_id: Full OpenALEX URL or bare ID
+
+    Returns:
+        Bare external ID (e.g., "W12345")
+    """
+    return openalex_id.removeprefix("https://openalex.org/")
+
+
 def sync_openalex_papers(query: str, max_results: int = 100, project: str = "hed") -> int:
     """Sync papers from OpenALEX matching query.
 
@@ -103,22 +130,9 @@ def sync_openalex_papers(query: str, max_results: int = 100, project: str = "hed
             if not title:
                 continue
 
-            # Reconstruct abstract from inverted index
             abstract = _reconstruct_abstract(work.get("abstract_inverted_index"))
-
-            # Get URL (prefer DOI)
-            doi = work.get("doi")
-            if doi:
-                url = doi if doi.startswith("http") else f"https://doi.org/{doi}"
-            else:
-                url = work.get("id", "")
-
-            # Extract external ID from OpenALEX URL
-            openalex_id = work.get("id", "")
-            if openalex_id.startswith("https://openalex.org/"):
-                external_id = openalex_id.replace("https://openalex.org/", "")
-            else:
-                external_id = openalex_id
+            url = _get_paper_url(work.get("doi"), work.get("id", ""))
+            external_id = _get_openalex_external_id(work.get("id", ""))
 
             upsert_paper(
                 conn,
@@ -383,9 +397,12 @@ def sync_citing_papers(
     foundational papers in a field.
 
     Args:
-        dois: List of DOIs to find citations for (without https://doi.org/ prefix)
+        dois: List of DOIs to find citations for. Should be in bare format
+            (e.g., "10.1016/j.neuroimage.2021.118809") without the
+            https://doi.org/ prefix. Invalid or unfound DOIs are skipped
+            with a warning log.
         max_results: Maximum number of citing papers per DOI
-        project: Project/assistant name for database isolation
+        project: Project/community ID for database isolation
 
     Returns:
         Total number of citing papers synced
@@ -437,18 +454,8 @@ def sync_citing_papers(
                     continue
 
                 abstract = _reconstruct_abstract(work.get("abstract_inverted_index"))
-
-                work_doi = work.get("doi")
-                if work_doi:
-                    url = work_doi if work_doi.startswith("http") else f"https://doi.org/{work_doi}"
-                else:
-                    url = work.get("id", "")
-
-                openalex_id = work.get("id", "")
-                if openalex_id.startswith("https://openalex.org/"):
-                    external_id = openalex_id.replace("https://openalex.org/", "")
-                else:
-                    external_id = openalex_id
+                url = _get_paper_url(work.get("doi"), work.get("id", ""))
+                external_id = _get_openalex_external_id(work.get("id", ""))
 
                 upsert_paper(
                     conn,

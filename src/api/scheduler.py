@@ -15,7 +15,7 @@ from src.api.config import get_settings
 from src.assistants import discover_assistants, registry
 from src.knowledge.db import init_db
 from src.knowledge.github_sync import sync_repos
-from src.knowledge.papers_sync import sync_all_papers
+from src.knowledge.papers_sync import sync_all_papers, sync_citing_papers
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,24 @@ def _get_hed_repos() -> list[str]:
     if info and info.community_config and info.community_config.github:
         return info.community_config.github.repos
     logger.warning("HED repos not found in registry, using empty list")
+    return []
+
+
+def _get_hed_paper_queries() -> list[str]:
+    """Get HED paper queries from the registry."""
+    info = registry.get("hed")
+    if info and info.community_config and info.community_config.citations:
+        return info.community_config.citations.queries
+    logger.warning("HED paper queries not found in registry, using empty list")
+    return []
+
+
+def _get_hed_paper_dois() -> list[str]:
+    """Get HED paper DOIs for citation tracking from the registry."""
+    info = registry.get("hed")
+    if info and info.community_config and info.community_config.citations:
+        return info.community_config.citations.dois
+    logger.warning("HED paper DOIs not found in registry, using empty list")
     return []
 
 
@@ -72,11 +90,22 @@ def _run_papers_sync() -> None:
     settings = get_settings()
     logger.info("Starting scheduled papers sync")
     try:
+        # Sync papers by query
+        queries = _get_hed_paper_queries()
         results = sync_all_papers(
+            queries=queries,
             semantic_scholar_api_key=settings.semantic_scholar_api_key,
             pubmed_api_key=settings.pubmed_api_key,
+            project="hed",
         )
         total = sum(results.values())
+
+        # Sync citing papers by DOI
+        dois = _get_hed_paper_dois()
+        if dois:
+            citing_count = sync_citing_papers(dois, project="hed")
+            total += citing_count
+
         logger.info("Papers sync complete: %d items synced", total)
         _papers_sync_failures = 0  # Reset on success
     except Exception as e:
@@ -201,10 +230,21 @@ def run_sync_now(sync_type: str = "all") -> dict[str, int]:
 
     if sync_type in ("papers", "all"):
         logger.info("Running papers sync")
+        queries = _get_hed_paper_queries()
         papers_results = sync_all_papers(
+            queries=queries,
             semantic_scholar_api_key=settings.semantic_scholar_api_key,
             pubmed_api_key=settings.pubmed_api_key,
+            project="hed",
         )
-        results["papers"] = sum(papers_results.values())
+        papers_total = sum(papers_results.values())
+
+        # Sync citing papers by DOI
+        dois = _get_hed_paper_dois()
+        if dois:
+            citing_count = sync_citing_papers(dois, project="hed")
+            papers_total += citing_count
+
+        results["papers"] = papers_total
 
     return results

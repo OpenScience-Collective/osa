@@ -3,8 +3,11 @@
 Sync commands require admin access (API_KEYS environment variable) because
 they modify the knowledge database that all users rely on. Regular users
 interact via API endpoints; only backend servers and admins run sync.
+
+Read-only commands (status, search) do not require admin access.
 """
 
+import logging
 import os
 from typing import Annotated
 
@@ -23,6 +26,8 @@ from src.knowledge.papers_sync import (
     sync_pubmed_papers,
     sync_semanticscholar_papers,
 )
+
+logger = logging.getLogger(__name__)
 
 # Discover assistants to populate registry
 discover_assistants()
@@ -80,6 +85,86 @@ def _get_all_community_ids() -> list[str]:
     return [info.id for info in registry.list_all()]
 
 
+def _validate_community(community_id: str) -> None:
+    """Validate community exists, exit with error if not.
+
+    Args:
+        community_id: The community ID to validate.
+
+    Raises:
+        typer.Exit: If community is not found in registry.
+    """
+    if registry.get(community_id) is None:
+        available = ", ".join(_get_all_community_ids())
+        console.print(f"[red]Error: Unknown community '{community_id}'[/red]")
+        console.print(f"[dim]Available communities: {available}[/dim]")
+        raise typer.Exit(1)
+
+
+def _resolve_communities(community: str | None) -> list[str] | None:
+    """Resolve community option to list of community IDs.
+
+    Args:
+        community: Single community ID or None for all.
+
+    Returns:
+        List of community IDs, or None if no communities available.
+
+    Raises:
+        typer.Exit: If specified community is invalid.
+    """
+    if community:
+        _validate_community(community)
+        return [community]
+
+    communities = _get_all_community_ids()
+    if not communities:
+        console.print("[yellow]No communities registered[/yellow]")
+        return None
+    return communities
+
+
+def _safe_init_db(community_id: str) -> bool:
+    """Initialize database with error handling.
+
+    Args:
+        community_id: The community ID for database isolation.
+
+    Returns:
+        True if successful, False on error.
+    """
+    try:
+        init_db(community_id)
+        return True
+    except Exception as e:
+        console.print(f"[red]Error: Failed to initialize database for '{community_id}': {e}[/red]")
+        console.print("[dim]Check disk space and permissions for the data directory.[/dim]")
+        logger.exception("Database initialization failed for %s", community_id)
+        return False
+
+
+def _safe_load_config() -> tuple[str | None, str | None]:
+    """Load config with error handling, returning API keys.
+
+    Returns:
+        Tuple of (semantic_scholar_key, pubmed_key), both may be None.
+    """
+    try:
+        config = load_config()
+        semantic_scholar_key = getattr(config, "semantic_scholar_api_key", None)
+        pubmed_key = getattr(config, "pubmed_api_key", None)
+        if semantic_scholar_key:
+            logger.debug("Loaded Semantic Scholar API key from config")
+        if pubmed_key:
+            logger.debug("Loaded PubMed API key from config")
+        return semantic_scholar_key, pubmed_key
+    except Exception as e:
+        console.print(f"[yellow]Warning: Could not load config: {e}[/yellow]")
+        console.print("[dim]Continuing without API keys (reduced rate limits).[/dim]")
+        logger.warning("Config load failed: %s", e)
+        return None, None
+
+
 sync_app = typer.Typer(
     name="sync",
     help="Sync knowledge sources (GitHub issues/PRs, papers)",
@@ -97,24 +182,14 @@ def sync_init(
     """Initialize the knowledge database for one or all communities."""
     _require_admin()
 
-    # Determine which communities to initialize
-    if community:
-        if registry.get(community) is None:
-            available = ", ".join(_get_all_community_ids())
-            console.print(f"[red]Error: Unknown community '{community}'[/red]")
-            console.print(f"[dim]Available communities: {available}[/dim]")
-            raise typer.Exit(1)
-        communities = [community]
-    else:
-        communities = _get_all_community_ids()
-        if not communities:
-            console.print("[yellow]No communities registered[/yellow]")
-            return
+    communities = _resolve_communities(community)
+    if communities is None:
+        return
 
     for comm_id in communities:
-        init_db(comm_id)
-        db_path = get_db_path(comm_id)
-        console.print(f"[green]{comm_id}:[/green] Database initialized at {db_path}")
+        if _safe_init_db(comm_id):
+            db_path = get_db_path(comm_id)
+            console.print(f"[green]{comm_id}:[/green] Database initialized at {db_path}")
 
 
 @sync_app.command("github")
@@ -136,15 +211,10 @@ def sync_github(
 ) -> None:
     """Sync GitHub issues and PRs from community repositories."""
     _require_admin()
+    _validate_community(community)
 
-    # Validate community exists
-    if registry.get(community) is None:
-        available = ", ".join(_get_all_community_ids())
-        console.print(f"[red]Error: Unknown community '{community}'[/red]")
-        console.print(f"[dim]Available communities: {available}[/dim]")
+    if not _safe_init_db(community):
         raise typer.Exit(1)
-
-    init_db(community)
 
     if repo:
         community_repos = _get_community_repos(community)
@@ -204,20 +274,13 @@ def sync_papers(
 ) -> None:
     """Sync papers from OpenALEX, Semantic Scholar, and PubMed."""
     _require_admin()
+    _validate_community(community)
 
-    # Validate community exists
-    if registry.get(community) is None:
-        available = ", ".join(_get_all_community_ids())
-        console.print(f"[red]Error: Unknown community '{community}'[/red]")
-        console.print(f"[dim]Available communities: {available}[/dim]")
+    if not _safe_init_db(community):
         raise typer.Exit(1)
 
-    init_db(community)
-
     # Load API keys from config
-    config = load_config()
-    semantic_scholar_key = getattr(config, "semantic_scholar_api_key", None)
-    pubmed_key = getattr(config, "pubmed_api_key", None)
+    semantic_scholar_key, pubmed_key = _safe_load_config()
 
     # Get queries from community config, or use custom query
     if query:
@@ -282,35 +345,30 @@ def sync_all(
         bool,
         typer.Option("--full", help="Full sync (not incremental)"),
     ] = False,
+    limit: Annotated[
+        int,
+        typer.Option("--limit", "-l", help="Max papers per query"),
+    ] = 100,
 ) -> None:
     """Sync all knowledge sources (GitHub + papers) for one or all communities."""
     _require_admin()
 
     # Load API keys from config
-    config = load_config()
-    semantic_scholar_key = getattr(config, "semantic_scholar_api_key", None)
-    pubmed_key = getattr(config, "pubmed_api_key", None)
+    semantic_scholar_key, pubmed_key = _safe_load_config()
 
     # Determine which communities to sync
-    if community:
-        if registry.get(community) is None:
-            available = ", ".join(_get_all_community_ids())
-            console.print(f"[red]Error: Unknown community '{community}'[/red]")
-            console.print(f"[dim]Available communities: {available}[/dim]")
-            raise typer.Exit(1)
-        communities = [community]
-    else:
-        communities = _get_all_community_ids()
-        if not communities:
-            console.print("[yellow]No communities registered[/yellow]")
-            return
+    communities = _resolve_communities(community)
+    if communities is None:
+        return
 
     grand_github_total = 0
     grand_paper_total = 0
 
     for comm_id in communities:
         console.print(f"\n[bold cyan]═══ Syncing {comm_id} ═══[/bold cyan]")
-        init_db(comm_id)
+        if not _safe_init_db(comm_id):
+            console.print(f"[red]Skipping {comm_id} due to database error[/red]")
+            continue
 
         # GitHub
         repos = _get_community_repos(comm_id)
@@ -337,6 +395,7 @@ def sync_all(
                 with console.status(f"[green]Syncing {comm_id} papers...[/green]"):
                     paper_results = sync_all_papers(
                         queries=queries,
+                        max_results=limit,
                         semantic_scholar_api_key=semantic_scholar_key,
                         pubmed_api_key=pubmed_key,
                         project=comm_id,
@@ -346,7 +405,7 @@ def sync_all(
             # Sync citing papers
             if dois:
                 with console.status("[green]Syncing citing papers...[/green]"):
-                    citing_count = sync_citing_papers(dois, project=comm_id)
+                    citing_count = sync_citing_papers(dois, max_results=limit, project=comm_id)
                 paper_total += citing_count
 
             console.print(f"[green]Papers: {paper_total} items[/green]")
@@ -354,9 +413,11 @@ def sync_all(
         else:
             console.print("[dim]No paper queries/DOIs configured[/dim]")
 
+    total_items = grand_github_total + grand_paper_total
+    community_word = "community" if len(communities) == 1 else "communities"
     console.print(
-        f"\n[bold green]Sync complete: {grand_github_total + grand_paper_total} total items "
-        f"across {len(communities)} community/communities[/bold green]"
+        f"\n[bold green]Sync complete: {total_items} total items "
+        f"across {len(communities)} {community_word}[/bold green]"
     )
 
 
@@ -370,19 +431,9 @@ def sync_status(
     """Show sync status and statistics."""
     # Note: status is read-only, no admin check needed
 
-    # Determine which communities to show
-    if community:
-        if registry.get(community) is None:
-            available = ", ".join(_get_all_community_ids())
-            console.print(f"[red]Error: Unknown community '{community}'[/red]")
-            console.print(f"[dim]Available communities: {available}[/dim]")
-            raise typer.Exit(1)
-        communities = [community]
-    else:
-        communities = _get_all_community_ids()
-        if not communities:
-            console.print("[yellow]No communities registered[/yellow]")
-            return
+    communities = _resolve_communities(community)
+    if communities is None:
+        return
 
     for comm_id in communities:
         db_path = get_db_path(comm_id)
@@ -446,12 +497,7 @@ def sync_search(
     # Note: search is read-only, no admin check needed
     from src.knowledge.search import search_github_items, search_papers
 
-    # Validate community exists
-    if registry.get(community) is None:
-        available = ", ".join(_get_all_community_ids())
-        console.print(f"[red]Error: Unknown community '{community}'[/red]")
-        console.print(f"[dim]Available communities: {available}[/dim]")
-        raise typer.Exit(1)
+    _validate_community(community)
 
     db_path = get_db_path(community)
     if not db_path.exists():

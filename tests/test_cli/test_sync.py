@@ -5,11 +5,13 @@ Tests cover:
 - Community option validation
 - Dynamic repository lookup from registry
 - Paper query lookup from registry
+- Citation sync functionality
 """
 
 import os
 from unittest.mock import patch
 
+import pytest
 from typer.testing import CliRunner
 
 from src.assistants import discover_assistants, registry
@@ -21,103 +23,91 @@ discover_assistants()
 runner = CliRunner()
 
 
+@pytest.fixture
+def _no_api_keys():
+    """Remove API_KEYS from environment for testing admin access."""
+    with patch.dict(os.environ, {}, clear=False):
+        if "API_KEYS" in os.environ:
+            del os.environ["API_KEYS"]
+        yield
+
+
+@pytest.fixture
+def _with_api_keys():
+    """Set API_KEYS in environment for testing admin commands."""
+    with patch.dict(os.environ, {"API_KEYS": "test-key"}, clear=False):
+        yield
+
+
 class TestAdminAccessCheck:
     """Tests for admin access requirement on sync commands."""
 
-    def test_sync_init_requires_api_keys(self) -> None:
+    def test_sync_init_requires_api_keys(self, _no_api_keys) -> None:
         """sync init should fail without API_KEYS."""
-        with patch.dict(os.environ, {}, clear=False):
-            if "API_KEYS" in os.environ:
-                del os.environ["API_KEYS"]
+        result = runner.invoke(cli, ["sync", "init"])
+        assert result.exit_code == 1
+        assert "API_KEYS required" in result.output
 
-            result = runner.invoke(cli, ["sync", "init"])
-            assert result.exit_code == 1
-            assert "API_KEYS required" in result.output
-
-    def test_sync_github_requires_api_keys(self) -> None:
+    def test_sync_github_requires_api_keys(self, _no_api_keys) -> None:
         """sync github should fail without API_KEYS."""
-        with patch.dict(os.environ, {}, clear=False):
-            if "API_KEYS" in os.environ:
-                del os.environ["API_KEYS"]
+        result = runner.invoke(cli, ["sync", "github"])
+        assert result.exit_code == 1
+        assert "API_KEYS required" in result.output
 
-            result = runner.invoke(cli, ["sync", "github"])
-            assert result.exit_code == 1
-            assert "API_KEYS required" in result.output
-
-    def test_sync_papers_requires_api_keys(self) -> None:
+    def test_sync_papers_requires_api_keys(self, _no_api_keys) -> None:
         """sync papers should fail without API_KEYS."""
-        with patch.dict(os.environ, {}, clear=False):
-            if "API_KEYS" in os.environ:
-                del os.environ["API_KEYS"]
+        result = runner.invoke(cli, ["sync", "papers"])
+        assert result.exit_code == 1
+        assert "API_KEYS required" in result.output
 
-            result = runner.invoke(cli, ["sync", "papers"])
-            assert result.exit_code == 1
-            assert "API_KEYS required" in result.output
-
-    def test_sync_all_requires_api_keys(self) -> None:
+    def test_sync_all_requires_api_keys(self, _no_api_keys) -> None:
         """sync all should fail without API_KEYS."""
-        with patch.dict(os.environ, {}, clear=False):
-            if "API_KEYS" in os.environ:
-                del os.environ["API_KEYS"]
+        result = runner.invoke(cli, ["sync", "all"])
+        assert result.exit_code == 1
+        assert "API_KEYS required" in result.output
 
-            result = runner.invoke(cli, ["sync", "all"])
-            assert result.exit_code == 1
-            assert "API_KEYS required" in result.output
-
-    def test_sync_status_does_not_require_api_keys(self) -> None:
+    def test_sync_status_does_not_require_api_keys(self, _no_api_keys) -> None:
         """sync status should work without API_KEYS (read-only)."""
-        with patch.dict(os.environ, {}, clear=False):
-            if "API_KEYS" in os.environ:
-                del os.environ["API_KEYS"]
+        result = runner.invoke(cli, ["sync", "status"])
+        # Should not fail due to missing API_KEYS
+        # (may fail due to missing DB, which is fine)
+        assert "API_KEYS required" not in result.output
 
-            result = runner.invoke(cli, ["sync", "status"])
-            # Should not fail due to missing API_KEYS
-            # (may fail due to missing DB, which is fine)
-            assert "API_KEYS required" not in result.output
-
-    def test_sync_search_does_not_require_api_keys(self) -> None:
+    def test_sync_search_does_not_require_api_keys(self, _no_api_keys) -> None:
         """sync search should work without API_KEYS (read-only)."""
-        with patch.dict(os.environ, {}, clear=False):
-            if "API_KEYS" in os.environ:
-                del os.environ["API_KEYS"]
-
-            result = runner.invoke(cli, ["sync", "search", "test"])
-            # Should not fail due to missing API_KEYS
-            assert "API_KEYS required" not in result.output
+        result = runner.invoke(cli, ["sync", "search", "test"])
+        # Should not fail due to missing API_KEYS
+        assert "API_KEYS required" not in result.output
 
 
 class TestCommunityValidation:
     """Tests for community option validation."""
 
-    def test_sync_init_rejects_unknown_community(self) -> None:
+    def test_sync_init_rejects_unknown_community(self, _with_api_keys) -> None:
         """sync init should reject unknown community ID."""
-        with patch.dict(os.environ, {"API_KEYS": "test-key"}, clear=False):
-            result = runner.invoke(cli, ["sync", "init", "--community", "nonexistent"])
-            assert result.exit_code == 1
-            assert "Unknown community" in result.output
-            assert "nonexistent" in result.output
+        result = runner.invoke(cli, ["sync", "init", "--community", "nonexistent"])
+        assert result.exit_code == 1
+        assert "Unknown community" in result.output
+        assert "nonexistent" in result.output
 
-    def test_sync_github_rejects_unknown_community(self) -> None:
+    def test_sync_github_rejects_unknown_community(self, _with_api_keys) -> None:
         """sync github should reject unknown community ID."""
-        with patch.dict(os.environ, {"API_KEYS": "test-key"}, clear=False):
-            result = runner.invoke(cli, ["sync", "github", "--community", "nonexistent"])
-            assert result.exit_code == 1
-            assert "Unknown community" in result.output
-            assert "nonexistent" in result.output
+        result = runner.invoke(cli, ["sync", "github", "--community", "nonexistent"])
+        assert result.exit_code == 1
+        assert "Unknown community" in result.output
+        assert "nonexistent" in result.output
 
-    def test_sync_papers_rejects_unknown_community(self) -> None:
+    def test_sync_papers_rejects_unknown_community(self, _with_api_keys) -> None:
         """sync papers should reject unknown community ID."""
-        with patch.dict(os.environ, {"API_KEYS": "test-key"}, clear=False):
-            result = runner.invoke(cli, ["sync", "papers", "--community", "nonexistent"])
-            assert result.exit_code == 1
-            assert "Unknown community" in result.output
+        result = runner.invoke(cli, ["sync", "papers", "--community", "nonexistent"])
+        assert result.exit_code == 1
+        assert "Unknown community" in result.output
 
-    def test_sync_all_rejects_unknown_community(self) -> None:
+    def test_sync_all_rejects_unknown_community(self, _with_api_keys) -> None:
         """sync all should reject unknown community ID."""
-        with patch.dict(os.environ, {"API_KEYS": "test-key"}, clear=False):
-            result = runner.invoke(cli, ["sync", "all", "--community", "nonexistent"])
-            assert result.exit_code == 1
-            assert "Unknown community" in result.output
+        result = runner.invoke(cli, ["sync", "all", "--community", "nonexistent"])
+        assert result.exit_code == 1
+        assert "Unknown community" in result.output
 
     def test_sync_search_rejects_unknown_community(self) -> None:
         """sync search should reject unknown community ID."""
@@ -131,13 +121,12 @@ class TestCommunityValidation:
         assert result.exit_code == 1
         assert "Unknown community" in result.output
 
-    def test_sync_shows_available_communities(self) -> None:
+    def test_sync_shows_available_communities(self, _with_api_keys) -> None:
         """Error message should show available community IDs."""
-        with patch.dict(os.environ, {"API_KEYS": "test-key"}, clear=False):
-            result = runner.invoke(cli, ["sync", "github", "--community", "nonexistent"])
-            assert "Available communities:" in result.output
-            # HED should be in the list since it's registered
-            assert "hed" in result.output
+        result = runner.invoke(cli, ["sync", "github", "--community", "nonexistent"])
+        assert "Available communities:" in result.output
+        # HED should be in the list since it's registered
+        assert "hed" in result.output
 
 
 class TestRegistryIntegration:
@@ -205,3 +194,86 @@ class TestSyncHelp:
         result = runner.invoke(cli, ["sync", "all", "--help"])
         assert result.exit_code == 0
         assert "--community" in result.output
+
+    def test_sync_papers_help_shows_citations_option(self) -> None:
+        """sync papers --help should show --citations option."""
+        result = runner.invoke(cli, ["sync", "papers", "--help"])
+        assert result.exit_code == 0
+        assert "--citations" in result.output
+
+    def test_sync_all_help_shows_limit_option(self) -> None:
+        """sync all --help should show --limit option."""
+        result = runner.invoke(cli, ["sync", "all", "--help"])
+        assert result.exit_code == 0
+        assert "--limit" in result.output
+
+
+class TestPapersSync:
+    """Tests for papers sync functionality."""
+
+    def test_sync_all_papers_returns_zero_with_empty_queries(self) -> None:
+        """sync_all_papers should return zeros when no queries provided."""
+        from src.knowledge.papers_sync import sync_all_papers
+
+        # Empty queries should return zeros for all sources
+        results = sync_all_papers(queries=[], project="test_empty")
+        assert results == {"openalex": 0, "semanticscholar": 0, "pubmed": 0}
+
+    def test_sync_all_papers_returns_zero_with_none_queries(self) -> None:
+        """sync_all_papers should return zeros when queries is None."""
+        from src.knowledge.papers_sync import sync_all_papers
+
+        # None queries should return zeros for all sources
+        results = sync_all_papers(queries=None, project="test_none")
+        assert results == {"openalex": 0, "semanticscholar": 0, "pubmed": 0}
+
+
+class TestCitationsSync:
+    """Tests for citation tracking functionality."""
+
+    def test_sync_citing_papers_function_exists(self) -> None:
+        """sync_citing_papers should be importable and callable."""
+        from src.knowledge.papers_sync import sync_citing_papers
+
+        # Function should be callable
+        assert callable(sync_citing_papers)
+
+    def test_sync_citing_papers_returns_zero_for_empty_dois(self) -> None:
+        """sync_citing_papers should return 0 for empty DOI list."""
+        from src.knowledge.papers_sync import sync_citing_papers
+
+        result = sync_citing_papers(dois=[], project="test_citations")
+        assert result == 0
+
+    def test_hed_has_dois_for_citation_tracking(self) -> None:
+        """HED community should have DOIs configured for citation tracking."""
+        info = registry.get("hed")
+        assert info is not None
+        assert info.community_config is not None
+        assert info.community_config.citations is not None
+        dois = info.community_config.citations.dois
+        assert len(dois) > 0
+        # DOIs should be in bare format (no https://doi.org/ prefix)
+        for doi in dois:
+            assert not doi.startswith("http"), f"DOI should be bare format: {doi}"
+            assert "/" in doi, f"DOI should contain a slash: {doi}"
+
+
+class TestSyncOptions:
+    """Tests for sync command options."""
+
+    def test_sync_papers_citations_flag_in_help(self) -> None:
+        """--citations flag should be documented in help."""
+        result = runner.invoke(cli, ["sync", "papers", "--help"])
+        assert result.exit_code == 0
+        assert "--citations" in result.output
+        # Help should mention what the flag does
+        assert "citing" in result.output.lower() or "DOI" in result.output
+
+    def test_sync_all_limit_flag_in_help(self) -> None:
+        """--limit flag should be documented in help."""
+        result = runner.invoke(cli, ["sync", "all", "--help"])
+        assert result.exit_code == 0
+        assert "--limit" in result.output
+        # Help should mention what the flag does
+        assert "max" in result.output.lower() or "limit" in result.output.lower()
