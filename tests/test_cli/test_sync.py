@@ -9,6 +9,7 @@ Tests cover:
 """
 
 import os
+import re
 from unittest.mock import patch
 
 import pytest
@@ -21,6 +22,12 @@ from src.cli.main import cli
 discover_assistants()
 
 runner = CliRunner()
+
+
+def strip_ansi(text: str) -> str:
+    """Remove ANSI escape codes from text for reliable assertion matching."""
+    ansi_pattern = re.compile(r"\x1b\[[0-9;]*m")
+    return ansi_pattern.sub("", text)
 
 
 @pytest.fixture
@@ -170,42 +177,43 @@ class TestSyncHelp:
         """sync --help should show all subcommands."""
         result = runner.invoke(cli, ["sync", "--help"])
         assert result.exit_code == 0
-        assert "init" in result.output
-        assert "github" in result.output
-        assert "papers" in result.output
-        assert "all" in result.output
-        assert "status" in result.output
-        assert "search" in result.output
+        output = strip_ansi(result.output)
+        assert "init" in output
+        assert "github" in output
+        assert "papers" in output
+        assert "all" in output
+        assert "status" in output
+        assert "search" in output
 
     def test_sync_github_help_shows_community_option(self) -> None:
         """sync github --help should show --community option."""
         result = runner.invoke(cli, ["sync", "github", "--help"])
         assert result.exit_code == 0
-        assert "--community" in result.output
+        assert "--community" in strip_ansi(result.output)
 
     def test_sync_papers_help_shows_community_option(self) -> None:
         """sync papers --help should show --community option."""
         result = runner.invoke(cli, ["sync", "papers", "--help"])
         assert result.exit_code == 0
-        assert "--community" in result.output
+        assert "--community" in strip_ansi(result.output)
 
     def test_sync_all_help_shows_community_option(self) -> None:
         """sync all --help should show --community option."""
         result = runner.invoke(cli, ["sync", "all", "--help"])
         assert result.exit_code == 0
-        assert "--community" in result.output
+        assert "--community" in strip_ansi(result.output)
 
     def test_sync_papers_help_shows_citations_option(self) -> None:
         """sync papers --help should show --citations option."""
         result = runner.invoke(cli, ["sync", "papers", "--help"])
         assert result.exit_code == 0
-        assert "--citations" in result.output
+        assert "--citations" in strip_ansi(result.output)
 
     def test_sync_all_help_shows_limit_option(self) -> None:
         """sync all --help should show --limit option."""
         result = runner.invoke(cli, ["sync", "all", "--help"])
         assert result.exit_code == 0
-        assert "--limit" in result.output
+        assert "--limit" in strip_ansi(result.output)
 
 
 class TestPapersSync:
@@ -266,14 +274,16 @@ class TestSyncOptions:
         """--citations flag should be documented in help."""
         result = runner.invoke(cli, ["sync", "papers", "--help"])
         assert result.exit_code == 0
-        assert "--citations" in result.output
+        output = strip_ansi(result.output)
+        assert "--citations" in output
         # Help should mention what the flag does
-        assert "citing" in result.output.lower() or "DOI" in result.output
+        assert "citing" in output.lower() or "DOI" in output
 
     def test_sync_all_limit_flag_in_help(self) -> None:
         """--limit flag should be documented in help."""
         result = runner.invoke(cli, ["sync", "all", "--help"])
         assert result.exit_code == 0
-        assert "--limit" in result.output
+        output = strip_ansi(result.output)
+        assert "--limit" in output
         # Help should mention what the flag does
-        assert "max" in result.output.lower() or "limit" in result.output.lower()
+        assert "max" in output.lower() or "limit" in output.lower()
