@@ -371,6 +371,9 @@ def sync_repos(repos: list[str], project: str = "hed", incremental: bool = True)
                 logger.warning(
                     "No items synced from %s (could be no new items or sync error)", repo
                 )
+        except (KeyboardInterrupt, SystemExit):
+            # Let these propagate - user cancellation or system exit should not be caught
+            raise
         except Exception as e:
             logger.error("Failed to sync %s: %s", repo, e)
             results[repo] = 0
