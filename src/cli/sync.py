@@ -1,5 +1,11 @@
-"""CLI commands for syncing knowledge sources."""
+"""CLI commands for syncing knowledge sources.
 
+Sync commands require admin access (OSA_API_KEY environment variable) because
+they modify the knowledge database that all users rely on. Regular users
+interact via API endpoints; only backend servers and admins run sync.
+"""
+
+import os
 from typing import Annotated
 
 import typer
@@ -11,8 +17,8 @@ from src.cli.config import load_config
 from src.knowledge.db import get_db_path, get_stats, init_db
 from src.knowledge.github_sync import sync_repo, sync_repos
 from src.knowledge.papers_sync import (
-    HED_QUERIES,
     sync_all_papers,
+    sync_citing_papers,
     sync_openalex_papers,
     sync_pubmed_papers,
     sync_semanticscholar_papers,
@@ -24,13 +30,50 @@ discover_assistants()
 console = Console()
 
 
-def _get_hed_repos() -> list[str]:
-    """Get HED repos from the registry."""
-    info = registry.get("hed")
+def _require_admin() -> None:
+    """Check that API_KEYS is set, exit if not.
+
+    Sync commands modify the knowledge database and require admin access.
+    Only backend servers and administrators should have this key.
+    The API_KEYS environment variable is the same one used for API authentication.
+    """
+    if not os.environ.get("API_KEYS"):
+        console.print("[red]Error: API_KEYS required for sync commands[/red]")
+        console.print(
+            "[dim]Sync commands modify the knowledge database and require admin access.[/dim]"
+        )
+        console.print("[dim]Set API_KEYS environment variable to proceed.[/dim]")
+        raise typer.Exit(1)
+
+
+def _get_community_repos(community_id: str) -> list[str]:
+    """Get GitHub repos for a community from the registry."""
+    info = registry.get(community_id)
     if info and info.community_config and info.community_config.github:
         return info.community_config.github.repos
-    console.print("[yellow]Warning: HED repos not found in registry[/yellow]")
+    console.print(f"[yellow]Warning: No GitHub repos found for community '{community_id}'[/yellow]")
     return []
+
+
+def _get_community_paper_queries(community_id: str) -> list[str]:
+    """Get paper search queries for a community from the registry."""
+    info = registry.get(community_id)
+    if info and info.community_config and info.community_config.citations:
+        return info.community_config.citations.queries
+    return []
+
+
+def _get_community_paper_dois(community_id: str) -> list[str]:
+    """Get paper DOIs for citation tracking from the registry."""
+    info = registry.get(community_id)
+    if info and info.community_config and info.community_config.citations:
+        return info.community_config.citations.dois
+    return []
+
+
+def _get_all_community_ids() -> list[str]:
+    """Get all registered community IDs."""
+    return [info.id for info in registry.list_all()]
 
 
 sync_app = typer.Typer(
@@ -41,15 +84,41 @@ sync_app = typer.Typer(
 
 
 @sync_app.command("init")
-def sync_init() -> None:
-    """Initialize the knowledge database."""
-    init_db()
-    db_path = get_db_path()
-    console.print(f"[green]Knowledge database initialized at:[/green] {db_path}")
+def sync_init(
+    community: Annotated[
+        str | None,
+        typer.Option("--community", "-c", help="Community ID to initialize (omit for all)"),
+    ] = None,
+) -> None:
+    """Initialize the knowledge database for one or all communities."""
+    _require_admin()
+
+    # Determine which communities to initialize
+    if community:
+        if registry.get(community) is None:
+            available = ", ".join(_get_all_community_ids())
+            console.print(f"[red]Error: Unknown community '{community}'[/red]")
+            console.print(f"[dim]Available communities: {available}[/dim]")
+            raise typer.Exit(1)
+        communities = [community]
+    else:
+        communities = _get_all_community_ids()
+        if not communities:
+            console.print("[yellow]No communities registered[/yellow]")
+            return
+
+    for comm_id in communities:
+        init_db(comm_id)
+        db_path = get_db_path(comm_id)
+        console.print(f"[green]{comm_id}:[/green] Database initialized at {db_path}")
 
 
 @sync_app.command("github")
 def sync_github(
+    community: Annotated[
+        str,
+        typer.Option("--community", "-c", help="Community ID to sync (e.g., hed, bids)"),
+    ] = "hed",
     repo: Annotated[
         str | None,
         typer.Option(
@@ -61,22 +130,39 @@ def sync_github(
         typer.Option("--full", help="Full sync (not incremental)"),
     ] = False,
 ) -> None:
-    """Sync GitHub issues and PRs from HED repositories."""
-    init_db()
+    """Sync GitHub issues and PRs from community repositories."""
+    _require_admin()
+
+    # Validate community exists
+    if registry.get(community) is None:
+        available = ", ".join(_get_all_community_ids())
+        console.print(f"[red]Error: Unknown community '{community}'[/red]")
+        console.print(f"[dim]Available communities: {available}[/dim]")
+        raise typer.Exit(1)
+
+    init_db(community)
 
     if repo:
-        if repo not in _get_hed_repos():
-            console.print(f"[yellow]Note: {repo} is not in the default HED repos list[/yellow]")
+        community_repos = _get_community_repos(community)
+        if repo not in community_repos:
+            console.print(f"[yellow]Note: {repo} is not in {community}'s configured repos[/yellow]")
 
         with console.status(f"[bold green]Syncing {repo}..."):
-            count = sync_repo(repo, incremental=not full)
+            count = sync_repo(repo, project=community, incremental=not full)
 
         console.print(f"[green]Synced {count} items from {repo}[/green]")
     else:
-        with console.status("[bold green]Syncing all HED repositories..."):
-            results = sync_repos(_get_hed_repos(), project="hed", incremental=not full)
+        community_repos = _get_community_repos(community)
+        if not community_repos:
+            console.print(
+                f"[yellow]No GitHub repos configured for community '{community}'[/yellow]"
+            )
+            return
 
-        table = Table(title="GitHub Sync Results")
+        with console.status(f"[bold green]Syncing {community} repositories..."):
+            results = sync_repos(community_repos, project=community, incremental=not full)
+
+        table = Table(title=f"GitHub Sync Results ({community})")
         table.add_column("Repository", style="cyan")
         table.add_column("Items Synced", style="green", justify="right")
 
@@ -91,9 +177,13 @@ def sync_github(
 
 @sync_app.command("papers")
 def sync_papers(
+    community: Annotated[
+        str,
+        typer.Option("--community", "-c", help="Community ID to sync (e.g., hed, bids)"),
+    ] = "hed",
     query: Annotated[
         str | None,
-        typer.Option("--query", "-q", help="Custom search query"),
+        typer.Option("--query", "-q", help="Custom search query (overrides community config)"),
     ] = None,
     source: Annotated[
         str | None,
@@ -103,31 +193,57 @@ def sync_papers(
         int,
         typer.Option("--limit", "-l", help="Max papers per query"),
     ] = 100,
+    include_citations: Annotated[
+        bool,
+        typer.Option("--citations", help="Also sync papers citing community DOIs"),
+    ] = True,
 ) -> None:
     """Sync papers from OpenALEX, Semantic Scholar, and PubMed."""
-    init_db()
+    _require_admin()
+
+    # Validate community exists
+    if registry.get(community) is None:
+        available = ", ".join(_get_all_community_ids())
+        console.print(f"[red]Error: Unknown community '{community}'[/red]")
+        console.print(f"[dim]Available communities: {available}[/dim]")
+        raise typer.Exit(1)
+
+    init_db(community)
 
     # Load API keys from config
     config = load_config()
     semantic_scholar_key = getattr(config, "semantic_scholar_api_key", None)
     pubmed_key = getattr(config, "pubmed_api_key", None)
 
-    queries = [query] if query else HED_QUERIES
+    # Get queries from community config, or use custom query
+    if query:
+        queries = [query]
+    else:
+        queries = _get_community_paper_queries(community)
+        if not queries:
+            console.print(
+                f"[yellow]No paper queries configured for community '{community}'[/yellow]"
+            )
+            queries = []
+
     sources = [source] if source else ["openalex", "semanticscholar", "pubmed"]
 
     total = 0
     results_by_source: dict[str, int] = {}
 
+    # Sync papers by query
     for q in queries:
         console.print(f"[dim]Query: {q}[/dim]")
         for src in sources:
             with console.status(f"  [green]Syncing from {src}...[/green]"):
                 if src == "openalex":
-                    count = sync_openalex_papers(q, limit)
+                    count = sync_openalex_papers(q, limit, project=community)
                 elif src == "semanticscholar":
-                    count = sync_semanticscholar_papers(q, limit, semantic_scholar_key)
+                    count = sync_semanticscholar_papers(
+                        q, limit, semantic_scholar_key, project=community
+                    )
                 elif src == "pubmed":
-                    count = sync_pubmed_papers(q, limit, pubmed_key)
+                    count = sync_pubmed_papers(q, limit, pubmed_key, project=community)
                 else:
                     console.print(f"  [red]Unknown source: {src}[/red]")
                     continue
@@ -136,81 +252,169 @@ def sync_papers(
                 total += count
                 console.print(f"  [dim]{src}: {count} papers[/dim]")
 
-    console.print(f"\n[green]Total papers synced: {total}[/green]")
+    # Sync citing papers if DOIs are configured
+    if include_citations:
+        dois = _get_community_paper_dois(community)
+        if dois:
+            console.print(f"\n[dim]Syncing papers citing {len(dois)} DOI(s)...[/dim]")
+            with console.status("[green]Syncing citing papers...[/green]"):
+                citing_count = sync_citing_papers(dois, limit, project=community)
+            results_by_source["citing"] = citing_count
+            total += citing_count
+            console.print(f"[dim]Citing papers: {citing_count}[/dim]")
+
+    console.print(f"\n[green]Total papers synced for {community}: {total}[/green]")
 
 
 @sync_app.command("all")
 def sync_all(
+    community: Annotated[
+        str | None,
+        typer.Option(
+            "--community", "-c", help="Community ID to sync (omit to sync all communities)"
+        ),
+    ] = None,
     full: Annotated[
         bool,
         typer.Option("--full", help="Full sync (not incremental)"),
     ] = False,
 ) -> None:
-    """Sync all knowledge sources (GitHub + papers)."""
-    init_db()
+    """Sync all knowledge sources (GitHub + papers) for one or all communities."""
+    _require_admin()
 
     # Load API keys from config
     config = load_config()
     semantic_scholar_key = getattr(config, "semantic_scholar_api_key", None)
     pubmed_key = getattr(config, "pubmed_api_key", None)
 
-    # GitHub
-    console.print("[bold]Syncing GitHub repositories...[/bold]")
-    with console.status("[green]Syncing GitHub...[/green]"):
-        github_results = sync_repos(_get_hed_repos(), project="hed", incremental=not full)
-    github_total = sum(github_results.values())
-    console.print(f"[green]GitHub: {github_total} items[/green]")
+    # Determine which communities to sync
+    if community:
+        if registry.get(community) is None:
+            available = ", ".join(_get_all_community_ids())
+            console.print(f"[red]Error: Unknown community '{community}'[/red]")
+            console.print(f"[dim]Available communities: {available}[/dim]")
+            raise typer.Exit(1)
+        communities = [community]
+    else:
+        communities = _get_all_community_ids()
+        if not communities:
+            console.print("[yellow]No communities registered[/yellow]")
+            return
 
-    # Papers
-    console.print("\n[bold]Syncing papers...[/bold]")
-    with console.status("[green]Syncing papers...[/green]"):
-        paper_results = sync_all_papers(
-            semantic_scholar_api_key=semantic_scholar_key,
-            pubmed_api_key=pubmed_key,
-        )
-    paper_total = sum(paper_results.values())
-    console.print(f"[green]Papers: {paper_total} items[/green]")
+    grand_github_total = 0
+    grand_paper_total = 0
+
+    for comm_id in communities:
+        console.print(f"\n[bold cyan]═══ Syncing {comm_id} ═══[/bold cyan]")
+        init_db(comm_id)
+
+        # GitHub
+        repos = _get_community_repos(comm_id)
+        if repos:
+            console.print("[bold]Syncing GitHub repositories...[/bold]")
+            with console.status(f"[green]Syncing {comm_id} GitHub...[/green]"):
+                github_results = sync_repos(repos, project=comm_id, incremental=not full)
+            github_total = sum(github_results.values())
+            console.print(f"[green]GitHub: {github_total} items[/green]")
+            grand_github_total += github_total
+        else:
+            console.print("[dim]No GitHub repos configured[/dim]")
+
+        # Papers
+        queries = _get_community_paper_queries(comm_id)
+        dois = _get_community_paper_dois(comm_id)
+
+        if queries or dois:
+            console.print("[bold]Syncing papers...[/bold]")
+            paper_total = 0
+
+            # Sync by queries
+            if queries:
+                with console.status(f"[green]Syncing {comm_id} papers...[/green]"):
+                    paper_results = sync_all_papers(
+                        queries=queries,
+                        semantic_scholar_api_key=semantic_scholar_key,
+                        pubmed_api_key=pubmed_key,
+                        project=comm_id,
+                    )
+                paper_total += sum(paper_results.values())
+
+            # Sync citing papers
+            if dois:
+                with console.status("[green]Syncing citing papers...[/green]"):
+                    citing_count = sync_citing_papers(dois, project=comm_id)
+                paper_total += citing_count
+
+            console.print(f"[green]Papers: {paper_total} items[/green]")
+            grand_paper_total += paper_total
+        else:
+            console.print("[dim]No paper queries/DOIs configured[/dim]")
 
     console.print(
-        f"\n[bold green]Sync complete: {github_total + paper_total} total items[/bold green]"
+        f"\n[bold green]Sync complete: {grand_github_total + grand_paper_total} total items "
+        f"across {len(communities)} community/communities[/bold green]"
     )
 
 
 @sync_app.command("status")
-def sync_status() -> None:
+def sync_status(
+    community: Annotated[
+        str | None,
+        typer.Option("--community", "-c", help="Community ID to show status for (omit for all)"),
+    ] = None,
+) -> None:
     """Show sync status and statistics."""
-    db_path = get_db_path()
+    # Note: status is read-only, no admin check needed
 
-    if not db_path.exists():
-        console.print("[yellow]Database not initialized. Run 'osa sync init' first.[/yellow]")
-        return
+    # Determine which communities to show
+    if community:
+        if registry.get(community) is None:
+            available = ", ".join(_get_all_community_ids())
+            console.print(f"[red]Error: Unknown community '{community}'[/red]")
+            console.print(f"[dim]Available communities: {available}[/dim]")
+            raise typer.Exit(1)
+        communities = [community]
+    else:
+        communities = _get_all_community_ids()
+        if not communities:
+            console.print("[yellow]No communities registered[/yellow]")
+            return
 
-    stats = get_stats()
+    for comm_id in communities:
+        db_path = get_db_path(comm_id)
 
-    table = Table(title="Knowledge Database Status")
-    table.add_column("Source", style="cyan")
-    table.add_column("Count", style="green", justify="right")
+        if not db_path.exists():
+            console.print(
+                f"[yellow]{comm_id}: Database not initialized. Run 'osa sync init' first.[/yellow]"
+            )
+            continue
 
-    # GitHub section
-    table.add_row("[bold]GitHub[/bold]", "")
-    table.add_row("  Issues", str(stats["github_issues"]))
-    table.add_row("  PRs", str(stats["github_prs"]))
-    table.add_row("  Open", str(stats["github_open"]))
-    table.add_row("  [dim]Total[/dim]", f"[dim]{stats['github_total']}[/dim]")
+        stats = get_stats(comm_id)
 
-    # Papers section
-    table.add_row("[bold]Papers[/bold]", "")
-    table.add_row("  OpenALEX", str(stats["papers_openalex"]))
-    table.add_row("  Semantic Scholar", str(stats["papers_semanticscholar"]))
-    table.add_row("  PubMed", str(stats["papers_pubmed"]))
-    table.add_row("  [dim]Total[/dim]", f"[dim]{stats['papers_total']}[/dim]")
+        table = Table(title=f"Knowledge Database Status ({comm_id})")
+        table.add_column("Source", style="cyan")
+        table.add_column("Count", style="green", justify="right")
 
-    # Grand total
-    grand_total = stats["github_total"] + stats["papers_total"]
-    table.add_row("[bold]Grand Total[/bold]", f"[bold]{grand_total}[/bold]")
+        # GitHub section
+        table.add_row("[bold]GitHub[/bold]", "")
+        table.add_row("  Issues", str(stats["github_issues"]))
+        table.add_row("  PRs", str(stats["github_prs"]))
+        table.add_row("  Open", str(stats["github_open"]))
+        table.add_row("  [dim]Total[/dim]", f"[dim]{stats['github_total']}[/dim]")
 
-    console.print(table)
-    console.print(f"\n[dim]Database: {db_path}[/dim]")
+        # Papers section
+        table.add_row("[bold]Papers[/bold]", "")
+        table.add_row("  OpenALEX", str(stats["papers_openalex"]))
+        table.add_row("  Semantic Scholar", str(stats["papers_semanticscholar"]))
+        table.add_row("  PubMed", str(stats["papers_pubmed"]))
+        table.add_row("  [dim]Total[/dim]", f"[dim]{stats['papers_total']}[/dim]")
+
+        # Grand total
+        grand_total = stats["github_total"] + stats["papers_total"]
+        table.add_row("[bold]Grand Total[/bold]", f"[bold]{grand_total}[/bold]")
+
+        console.print(table)
+        console.print(f"[dim]Database: {db_path}[/dim]\n")
 
 
 @sync_app.command("search")
@@ -219,6 +423,10 @@ def sync_search(
         str,
         typer.Argument(help="Search query"),
     ],
+    community: Annotated[
+        str,
+        typer.Option("--community", "-c", help="Community ID to search (e.g., hed, bids)"),
+    ] = "hed",
     limit: Annotated[
         int,
         typer.Option("--limit", "-l", help="Max results"),
@@ -231,16 +439,29 @@ def sync_search(
     ] = None,
 ) -> None:
     """Search the knowledge database (for testing)."""
+    # Note: search is read-only, no admin check needed
     from src.knowledge.search import search_github_items, search_papers
 
-    db_path = get_db_path()
+    # Validate community exists
+    if registry.get(community) is None:
+        available = ", ".join(_get_all_community_ids())
+        console.print(f"[red]Error: Unknown community '{community}'[/red]")
+        console.print(f"[dim]Available communities: {available}[/dim]")
+        raise typer.Exit(1)
+
+    db_path = get_db_path(community)
     if not db_path.exists():
-        console.print("[yellow]Database not initialized. Run 'osa sync init' first.[/yellow]")
+        console.print(
+            f"[yellow]Database not initialized for '{community}'. "
+            "Run 'osa sync init' first.[/yellow]"
+        )
         return
+
+    console.print(f"[dim]Searching {community} knowledge database...[/dim]\n")
 
     if source == "github" or source is None:
         console.print("[bold]GitHub Results:[/bold]")
-        github_results = search_github_items(query, limit=limit)
+        github_results = search_github_items(query, project=community, limit=limit)
         if github_results:
             for r in github_results:
                 status_style = "green" if r.status == "open" else "dim"
@@ -252,7 +473,7 @@ def sync_search(
     if source != "github":
         console.print("\n[bold]Paper Results:[/bold]")
         paper_source = source if source and source != "github" else None
-        paper_results = search_papers(query, limit=limit, source=paper_source)
+        paper_results = search_papers(query, project=community, limit=limit, source=paper_source)
         if paper_results:
             for r in paper_results:
                 console.print(f"  [{r.source}] {r.title}")

@@ -342,20 +342,23 @@ def sync_all_papers(
     max_results: int = 100,
     semantic_scholar_api_key: str | None = None,
     pubmed_api_key: str | None = None,
+    project: str = "hed",
 ) -> dict[str, int]:
     """Sync papers from all sources for given queries.
 
     Args:
-        queries: List of search queries (defaults to HED_QUERIES)
+        queries: List of search queries (required - no default queries)
         max_results: Max results per query per source
         semantic_scholar_api_key: Optional Semantic Scholar API key
         pubmed_api_key: Optional PubMed/NCBI API key
+        project: Project/community ID for database isolation
 
     Returns:
         Dict mapping source to total items synced
     """
-    if queries is None:
-        queries = HED_QUERIES
+    if not queries:
+        logger.warning("No queries provided for paper sync")
+        return {"openalex": 0, "semanticscholar": 0, "pubmed": 0}
 
     results = {
         "openalex": 0,
@@ -364,14 +367,14 @@ def sync_all_papers(
     }
 
     for query in queries:
-        results["openalex"] += sync_openalex_papers(query, max_results)
+        results["openalex"] += sync_openalex_papers(query, max_results, project=project)
         results["semanticscholar"] += sync_semanticscholar_papers(
-            query, max_results, semantic_scholar_api_key
+            query, max_results, semantic_scholar_api_key, project=project
         )
-        results["pubmed"] += sync_pubmed_papers(query, max_results, pubmed_api_key)
+        results["pubmed"] += sync_pubmed_papers(query, max_results, pubmed_api_key, project=project)
 
     total = sum(results.values())
-    logger.info("Total papers synced: %d", total)
+    logger.info("Total papers synced for %s: %d", project, total)
     return results
 
 
