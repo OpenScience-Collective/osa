@@ -55,6 +55,48 @@
     li {
       margin: 8px 0;
     }
+    .community-cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+      margin: 24px 0;
+    }
+    .community-card {
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      text-decoration: none;
+      color: inherit;
+      transition: box-shadow 0.2s, transform 0.2s;
+    }
+    .community-card:hover {
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      transform: translateY(-2px);
+    }
+    .community-card h3 {
+      margin: 0 0 8px 0;
+      color: #1f2937;
+    }
+    .community-card p {
+      margin: 0;
+      font-size: 14px;
+    }
+    .community-card .status {
+      display: inline-block;
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 12px;
+      margin-top: 12px;
+    }
+    .status-active {
+      background: #d1fae5;
+      color: #065f46;
+    }
+    .status-soon {
+      background: #fef3c7;
+      color: #92400e;
+    }
     .feature-list {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -73,116 +115,240 @@
       color: #1f2937;
       margin-bottom: 4px;
     }
+    .badge {
+      display: inline-block;
+      font-size: 12px;
+      background: #dbeafe;
+      color: #1e40af;
+      padding: 2px 8px;
+      border-radius: 4px;
+      margin-left: 8px;
+      vertical-align: middle;
+    }
   </style>
 </head>
 <body>
-  <h1>Open Science Assistant</h1>
-  <p>A chat widget for HED, BIDS, and other open science tools.</p>
-
-  <div class="info-box">
-    <h2>Try it out</h2>
-    <p>Click the chat button in the bottom-right corner to start a conversation.</p>
-    <p>Ask questions about:</p>
-    <ul>
-      <li>HED (Hierarchical Event Descriptors)</li>
-      <li>HED validation and annotation</li>
-      <li>BIDS (Brain Imaging Data Structure)</li>
-    </ul>
-  </div>
-
-  <div class="info-box">
-    <h2>Features</h2>
-    <div class="feature-list">
-      <div class="feature-item">
-        <strong>Health Status</strong>
-        Shows real-time backend connectivity
-      </div>
-      <div class="feature-item">
-        <strong>Markdown Support</strong>
-        Tables, code blocks, lists, links
-      </div>
-      <div class="feature-item">
-        <strong>Resizable</strong>
-        Drag top-left corner to resize
-      </div>
-      <div class="feature-item">
-        <strong>Configurable</strong>
-        Customize title, messages, colors
-      </div>
-      <div class="feature-item">
-        <strong>Chat History</strong>
-        Persists across page reloads
-      </div>
-      <div class="feature-item">
-        <strong>Bot Protection</strong>
-        Optional Turnstile integration
-      </div>
-    </div>
-  </div>
-
-  <div class="info-box">
-    <h2>Basic Integration</h2>
-    <p>Add this to your website:</p>
-    <pre><code>&lt;script src="https://osa-demo.pages.dev/osa-chat-widget.js"&gt;&lt;/script&gt;</code></pre>
-  </div>
-
-  <div class="info-box">
-    <h2>Custom Configuration</h2>
-    <p>Customize the widget appearance and behavior:</p>
-    <pre><code>&lt;script src="https://osa-demo.pages.dev/osa-chat-widget.js"&gt;&lt;/script&gt;
-&lt;script&gt;
-  OSAChatWidget.setConfig({
-    // Branding
-    title: 'BIDS Assistant',
-    placeholder: 'Ask about BIDS...',
-    initialMessage: 'Hi! I can help with BIDS questions.',
-    showExperimentalBadge: true,
-
-    // Suggested questions
-    suggestedQuestions: [
-      'What is BIDS?',
-      'How do I organize my data?',
-      'Explain BIDS validation errors.'
-    ],
-
-    // Footer link
-    repoUrl: 'https://github.com/OpenScience-Collective/osa',
-    repoName: 'Open Science Assistant',
-
-    // Optional: Turnstile for bot protection
-    turnstileSiteKey: 'YOUR_SITE_KEY'
-  });
-&lt;/script&gt;</code></pre>
-  </div>
-
-  <div class="info-box">
-    <h2>Configuration Options</h2>
-    <ul>
-      <li><code>title</code> - Widget header title (default: "HED Assistant")</li>
-      <li><code>placeholder</code> - Input placeholder text</li>
-      <li><code>initialMessage</code> - First greeting message from the assistant</li>
-      <li><code>suggestedQuestions</code> - Array of clickable suggestion buttons</li>
-      <li><code>showExperimentalBadge</code> - Show/hide "Experimental" badge</li>
-      <li><code>repoUrl</code> - URL for the "Powered by" footer link</li>
-      <li><code>repoName</code> - Name shown in footer link</li>
-      <li><code>turnstileSiteKey</code> - Cloudflare Turnstile site key (optional)</li>
-      <li><code>apiEndpoint</code> - Backend API URL (default: OSA worker)</li>
-      <li><code>storageKey</code> - localStorage key for chat history</li>
-    </ul>
-  </div>
-
-  <div class="info-box">
-    <h2>API Endpoints</h2>
-    <p>The widget connects to:</p>
-    <ul>
-      <li><code>POST /hed/ask</code> - Single question</li>
-      <li><code>POST /hed/chat</code> - Multi-turn conversation</li>
-      <li><code>GET /health</code> - Backend status check</li>
-    </ul>
-    <p>Backend: <code>https://osa-worker.shirazi-10f.workers.dev</code></p>
-  </div>
+  <div id="page-content"></div>
 
   <!-- Load the OSA Chat Widget -->
   <script src="osa-chat-widget.js"></script>
+
+  <script>
+    // Community configurations for the demo page
+    const COMMUNITIES = {
+      hed: {
+        name: 'HED',
+        fullName: 'Hierarchical Event Descriptors',
+        description: 'Annotation standard for neuroimaging experiments',
+        status: 'active',
+        widget: {
+          communityId: 'hed',
+          title: 'HED Assistant',
+          initialMessage: 'Hi! I\'m the HED Assistant. I can help with HED (Hierarchical Event Descriptors), annotation, validation, and related tools. What would you like to know?',
+          placeholder: 'Ask about HED...',
+          suggestedQuestions: [
+            'What is HED and how is it used?',
+            'How do I annotate an event with HED tags?',
+            'What tools are available for working with HED?',
+            'Explain this HED validation error.'
+          ]
+        }
+      },
+      bids: {
+        name: 'BIDS',
+        fullName: 'Brain Imaging Data Structure',
+        description: 'Standard for organizing neuroimaging data',
+        status: 'soon',
+        widget: {
+          communityId: 'bids',
+          title: 'BIDS Assistant',
+          initialMessage: 'Hi! I\'m the BIDS Assistant. I can help with Brain Imaging Data Structure (BIDS), data organization, validation, and related tools.',
+          placeholder: 'Ask about BIDS...',
+          suggestedQuestions: [
+            'What is BIDS and why should I use it?',
+            'How do I organize my EEG data in BIDS?',
+            'What are the required metadata fields?',
+            'How do I validate my BIDS dataset?'
+          ]
+        }
+      },
+      eeglab: {
+        name: 'EEGLAB',
+        fullName: 'EEG Analysis Toolbox',
+        description: 'MATLAB toolbox for EEG analysis',
+        status: 'soon',
+        widget: {
+          communityId: 'eeglab',
+          title: 'EEGLAB Assistant',
+          initialMessage: 'Hi! I\'m the EEGLAB Assistant. I can help with EEG analysis, MATLAB scripting, and EEGLAB plugins.',
+          placeholder: 'Ask about EEGLAB...',
+          suggestedQuestions: [
+            'How do I load EEG data in EEGLAB?',
+            'What preprocessing steps should I follow?',
+            'How do I run ICA in EEGLAB?',
+            'What plugins are available?'
+          ]
+        }
+      }
+    };
+
+    // Determine community from URL path
+    function getCommunityFromPath() {
+      const path = window.location.pathname.replace(/^\/+|\/+$/g, '').toLowerCase();
+      if (path && COMMUNITIES[path]) {
+        return path;
+      }
+      return null; // Landing page
+    }
+
+    // Render landing page (no specific community)
+    function renderLanding() {
+      document.title = 'Open Science Assistant - Demo';
+      const html = `
+        <h1>Open Science Assistant</h1>
+        <p>AI-powered assistants for research communities. Each community gets a specialized assistant with domain expertise, documentation, and tools.</p>
+
+        <div class="info-box">
+          <h2>Available Assistants</h2>
+          <p>Click a community to try its assistant:</p>
+        </div>
+
+        <div class="community-cards">
+          ${Object.entries(COMMUNITIES).map(([id, c]) => `
+            <a href="/${id}" class="community-card">
+              <h3>${c.name}</h3>
+              <p>${c.description}</p>
+              <span class="status ${c.status === 'active' ? 'status-active' : 'status-soon'}">
+                ${c.status === 'active' ? 'Live' : 'Coming soon'}
+              </span>
+            </a>
+          `).join('')}
+        </div>
+
+        <div class="info-box">
+          <h2>Integration</h2>
+          <p>Add an assistant to your website:</p>
+          <pre><code>&lt;script src="https://osa-demo.pages.dev/osa-chat-widget.js"&gt;&lt;/script&gt;
+&lt;script&gt;
+  OSAChatWidget.setConfig({
+    communityId: 'hed'  // or 'bids', 'eeglab', etc.
+  });
+&lt;/script&gt;</code></pre>
+          <p>The widget auto-configures the API endpoint based on the <code>communityId</code>.</p>
+        </div>
+
+        <div class="info-box">
+          <h2>Configuration Options</h2>
+          <ul>
+            <li><code>communityId</code> - Which assistant to use (e.g., 'hed', 'bids')</li>
+            <li><code>title</code> - Widget header title</li>
+            <li><code>placeholder</code> - Input placeholder text</li>
+            <li><code>initialMessage</code> - First greeting message from the assistant</li>
+            <li><code>suggestedQuestions</code> - Array of clickable suggestion buttons</li>
+            <li><code>apiEndpoint</code> - Backend API URL (auto-detected by default)</li>
+            <li><code>storageKey</code> - localStorage key (auto-derived from communityId)</li>
+            <li><code>turnstileSiteKey</code> - Cloudflare Turnstile site key (optional)</li>
+          </ul>
+        </div>
+
+        <div class="info-box">
+          <h2>Features</h2>
+          <div class="feature-list">
+            <div class="feature-item">
+              <strong>Health Status</strong>
+              Shows real-time backend connectivity
+            </div>
+            <div class="feature-item">
+              <strong>Markdown Support</strong>
+              Tables, code blocks, lists, links
+            </div>
+            <div class="feature-item">
+              <strong>Resizable</strong>
+              Drag top-left corner to resize
+            </div>
+            <div class="feature-item">
+              <strong>Chat History</strong>
+              Persists across page reloads
+            </div>
+            <div class="feature-item">
+              <strong>Page Context</strong>
+              Shares URL for relevant answers
+            </div>
+            <div class="feature-item">
+              <strong>Bot Protection</strong>
+              Optional Turnstile integration
+            </div>
+          </div>
+        </div>
+      `;
+      document.getElementById('page-content').innerHTML = html;
+    }
+
+    // Render community-specific page
+    function renderCommunity(communityId) {
+      const community = COMMUNITIES[communityId];
+      document.title = `${community.name} Assistant - OSA Demo`;
+
+      const html = `
+        <h1>${community.name} Assistant <span class="badge">${community.fullName}</span></h1>
+        <p>${community.description}. Click the chat button in the bottom-right corner to start a conversation.</p>
+
+        <div class="info-box">
+          <h2>Try it out</h2>
+          <p>Ask questions about:</p>
+          <ul>
+            ${community.widget.suggestedQuestions.map(q => `<li>${q}</li>`).join('')}
+          </ul>
+          ${community.status === 'soon' ? '<p><em>This assistant is in development. Some features may not work yet.</em></p>' : ''}
+        </div>
+
+        <div class="info-box">
+          <h2>Add to Your Site</h2>
+          <pre><code>&lt;script src="https://osa-demo.pages.dev/osa-chat-widget.js"&gt;&lt;/script&gt;
+&lt;script&gt;
+  OSAChatWidget.setConfig({
+    communityId: '${communityId}'
+  });
+&lt;/script&gt;</code></pre>
+        </div>
+
+        <div class="info-box">
+          <h2>API Endpoints</h2>
+          <ul>
+            <li><code>POST /${communityId}/ask</code> - Single question</li>
+            <li><code>POST /${communityId}/chat</code> - Multi-turn conversation</li>
+            <li><code>GET /health</code> - Backend status check</li>
+          </ul>
+        </div>
+
+        <div class="info-box">
+          <h2>Other Assistants</h2>
+          <div class="community-cards">
+            ${Object.entries(COMMUNITIES).filter(([id]) => id !== communityId).map(([id, c]) => `
+              <a href="/${id}" class="community-card">
+                <h3>${c.name}</h3>
+                <p>${c.description}</p>
+                <span class="status ${c.status === 'active' ? 'status-active' : 'status-soon'}">
+                  ${c.status === 'active' ? 'Live' : 'Coming soon'}
+                </span>
+              </a>
+            `).join('')}
+          </div>
+        </div>
+      `;
+      document.getElementById('page-content').innerHTML = html;
+
+      // Configure widget for this community
+      OSAChatWidget.setConfig(community.widget);
+    }
+
+    // Route based on URL path
+    const communityId = getCommunityFromPath();
+    if (communityId) {
+      renderCommunity(communityId);
+    } else {
+      renderLanding();
+    }
+  </script>
 </body>
 </html>

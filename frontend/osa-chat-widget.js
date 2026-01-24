@@ -15,6 +15,9 @@
 
   // Configuration (can be customized via OSAChatWidget.setConfig)
   const CONFIG = {
+    // Community identifier - determines which assistant to use
+    // Endpoints will be: /${communityId}/ask, /${communityId}/chat
+    communityId: 'hed',
     // Use dev worker for develop.* hostnames, production worker otherwise
     apiEndpoint: isDev
       ? 'https://osa-worker-dev.shirazi-10f.workers.dev'
@@ -22,7 +25,7 @@
     storageKey: 'osa-chat-history',
     // Turnstile: disabled for now (not set up yet)
     turnstileSiteKey: null,
-    // Customizable branding
+    // Customizable branding (defaults shown are for HED community)
     title: 'HED Assistant',
     initialMessage: 'Hi! I\'m the HED Assistant. I can help with HED (Hierarchical Event Descriptors), annotation, validation, and related tools. What would you like to know?',
     placeholder: 'Ask about HED...',
@@ -1366,7 +1369,7 @@
         body.cf_turnstile_response = turnstileToken;
       }
 
-      const response = await fetch(`${CONFIG.apiEndpoint}/hed/ask`, {
+      const response = await fetch(`${CONFIG.apiEndpoint}/${CONFIG.communityId}/ask`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1723,6 +1726,10 @@
   // Expose configuration for customization
   window.OSAChatWidget = {
     setConfig: function(options) {
+      // Auto-derive storageKey from communityId if communityId changed but storageKey wasn't explicitly set
+      if (options.communityId && !options.storageKey) {
+        options.storageKey = `osa-chat-history-${options.communityId}`;
+      }
       Object.assign(CONFIG, options);
     },
     getConfig: function() {
