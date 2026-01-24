@@ -23,6 +23,7 @@ Example:
 """
 
 import logging
+import os
 from pathlib import Path
 
 from src.assistants.registry import AssistantInfo, AssistantRegistry, registry
@@ -77,6 +78,29 @@ def discover_assistants() -> list[str]:
             registry.register_from_config(config)
             discovered.append(config.id)
             logger.info("Discovered assistant: %s from %s", config.id, config_path)
+
+            # Validate API key env var is set if configured
+            if config.openrouter_api_key_env_var and not os.getenv(
+                config.openrouter_api_key_env_var
+            ):
+                logger.error(
+                    "Community '%s' configured to use env var '%s' but it is not set. "
+                    "This community will fall back to the platform API key, which may incur unexpected costs. "
+                    "Set the environment variable or remove 'openrouter_api_key_env_var' from config.yaml",
+                    config.id,
+                    config.openrouter_api_key_env_var,
+                    extra={
+                        "community_id": config.id,
+                        "env_var": config.openrouter_api_key_env_var,
+                        "env_var_missing": True,
+                    },
+                )
+        except KeyboardInterrupt:
+            # Never catch user interruption
+            raise
+        except SystemExit:
+            # Never catch intentional exits
+            raise
         except Exception as e:
             logger.exception("Failed to load config from %s", config_path)
             failures.append((config_path, e))

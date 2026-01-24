@@ -151,9 +151,15 @@ class TestCommunitiesHealthEndpoint:
         data = response.json()
 
         for community_id, health in data.items():
-            # Error status if no documents
+            # Error status if no documents or missing API key
             if health["documents"] == 0:
                 assert health["status"] == "error", f"{community_id} should be error with no docs"
+
+            # Error status if API key is missing (configured but env var not set)
+            elif health["api_key"] == "missing":
+                assert health["status"] == "error", (
+                    f"{community_id} should be error with missing API key"
+                )
 
             # Degraded if using platform key
             elif health["api_key"] == "using_platform":
@@ -167,15 +173,14 @@ class TestCommunitiesHealthEndpoint:
                     f"{community_id} should be healthy with docs and own key"
                 )
 
-    def test_handles_missing_community_config(self, client: TestClient) -> None:
-        """Should handle communities with missing config gracefully."""
+    def test_handles_missing_api_key_env_var(self, client: TestClient) -> None:
+        """Should show error status when API key env var is configured but not set."""
         response = client.get("/health/communities")
         assert response.status_code == 200
 
         data = response.json()
-        # If any community has missing config, it should show error status
+        # If any community has missing API key (configured but env var not set),
+        # it should show error status
         for _community_id, health in data.items():
             if health["api_key"] == "missing":
                 assert health["status"] == "error"
-                assert health["documents"] == 0
-                assert health["cors_origins"] == 0

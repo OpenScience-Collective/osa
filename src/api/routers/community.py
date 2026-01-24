@@ -387,12 +387,18 @@ def _select_api_key(
         Tuple of (api_key, source) where source is "byok", "community", or "platform"
 
     Raises:
-        HTTPException(403): If BYOK required but not provided
+        HTTPException(403): If origin is not authorized and BYOK is not provided
+        HTTPException(500): If no platform API key is configured and no other key is available
     """
     import os
 
     # Case 1: BYOK provided - always allowed
     if byok:
+        logger.debug(
+            "Using BYOK for community %s",
+            community_id,
+            extra={"community_id": community_id, "key_source": "byok"},
+        )
         return (byok, "byok")
 
     # Case 2: Check if origin is authorized for platform key usage
@@ -415,14 +421,30 @@ def _select_api_key(
         if env_var:
             community_key = os.getenv(env_var)
             if community_key:
-                logger.debug(
-                    "Using community-specific API key from %s for %s", env_var, community_id
+                logger.info(
+                    "Using community-specific API key from %s for %s",
+                    env_var,
+                    community_id,
+                    extra={
+                        "community_id": community_id,
+                        "key_source": "community",
+                        "env_var": env_var,
+                    },
                 )
                 return (community_key, "community")
-            logger.warning(
-                "Community %s configured to use %s but env var not set, falling back to platform key",
+            logger.error(
+                "Community %s configured to use %s but env var not set, falling back to platform key. "
+                "This may incur unexpected costs. Set the environment variable to fix this.",
                 community_id,
                 env_var,
+                extra={
+                    "community_id": community_id,
+                    "key_source": "platform",
+                    "configured_env_var": env_var,
+                    "env_var_missing": True,
+                    "fallback_to_platform": True,
+                    "origin": origin,
+                },
             )
 
     # Fall back to platform key
@@ -432,6 +454,11 @@ def _select_api_key(
             detail="No API key configured for this community. Please contact support.",
         )
 
+    logger.debug(
+        "Using platform API key for community %s",
+        community_id,
+        extra={"community_id": community_id, "key_source": "platform"},
+    )
     return (settings.openrouter_api_key, "platform")
 
 
