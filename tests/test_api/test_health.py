@@ -4,6 +4,7 @@ These tests use real HTTP requests against the actual FastAPI application,
 not mocks. They verify the actual behavior of the health check endpoint.
 """
 
+import os
 from datetime import datetime
 
 import pytest
@@ -16,6 +17,14 @@ from src.version import __version__
 @pytest.fixture
 def client() -> TestClient:
     """Create a test client for the FastAPI application."""
+    # Disable auth requirement for health endpoint tests
+    os.environ["REQUIRE_API_AUTH"] = "false"
+
+    # Clear settings cache to pick up new env var
+    from src.api.config import get_settings
+
+    get_settings.cache_clear()
+
     return TestClient(app)
 
 
@@ -151,3 +160,22 @@ class TestCommunitiesHealthEndpoint:
                 assert health["status"] == "degraded", (
                     f"{community_id} should be degraded with platform key"
                 )
+
+            # Healthy if has docs and own API key
+            else:
+                assert health["status"] == "healthy", (
+                    f"{community_id} should be healthy with docs and own key"
+                )
+
+    def test_handles_missing_community_config(self, client: TestClient) -> None:
+        """Should handle communities with missing config gracefully."""
+        response = client.get("/health/communities")
+        assert response.status_code == 200
+
+        data = response.json()
+        # If any community has missing config, it should show error status
+        for _community_id, health in data.items():
+            if health["api_key"] == "missing":
+                assert health["status"] == "error"
+                assert health["documents"] == 0
+                assert health["cors_origins"] == 0

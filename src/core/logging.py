@@ -9,7 +9,8 @@ Supports both text and JSON-structured logging formats.
 import json
 import logging
 import re
-from datetime import datetime
+import sys
+from datetime import UTC, datetime
 from typing import Any
 
 
@@ -35,10 +36,18 @@ class SecureFormatter(logging.Formatter):
         # Format the message first
         try:
             formatted = super().format(record)
+        except (ValueError, TypeError, KeyError) as e:
+            # Expected formatting errors - include context for debugging
+            safe_msg = str(getattr(record, "msg", "<no message>"))[:200]
+            safe_name = getattr(record, "name", "<unknown>")
+            return (
+                f"[LOGGING ERROR: Failed to format log record - {type(e).__name__}: {e}] "
+                f"(logger={safe_name}, msg={safe_msg})"
+            )
         except Exception as e:
-            # If formatting fails, return a safe error message
-            # Don't let logging failures crash the app
-            return f"[LOGGING ERROR: Failed to format log record: {type(e).__name__}]"
+            # Unexpected errors - log to stderr to surface bugs
+            print(f"CRITICAL: Unexpected error in SecureFormatter: {e}", file=sys.stderr)
+            raise
 
         # Redact API keys with size limit to prevent ReDoS
         try:
@@ -47,10 +56,18 @@ class SecureFormatter(logging.Formatter):
                 formatted = formatted[:100_000] + "... [truncated for safety]"
 
             formatted = self.API_KEY_PATTERN.sub("sk-or-v1-***[redacted]", formatted)
-        except Exception as e:
-            # If redaction fails, suppress the original message for security
-            # (it might contain the API key we're trying to redact!)
+        except re.error as e:
+            # Regex pattern is broken - this is a code bug
+            print(f"CRITICAL: Redaction regex failed: {e}", file=sys.stderr)
+            return f"[REDACTION REGEX ERROR: {e}] - message suppressed for security"
+        except (MemoryError, RecursionError) as e:
+            # Resource exhaustion in regex - log it
+            print(f"ERROR: Redaction failed due to {type(e).__name__}: {e}", file=sys.stderr)
             return f"[REDACTION ERROR: {type(e).__name__}] - message suppressed for security"
+        except Exception as e:
+            # Unexpected error - log and re-raise to surface bugs
+            print(f"UNEXPECTED: Redaction failure: {type(e).__name__}: {e}", file=sys.stderr)
+            raise
 
         return formatted
 
@@ -74,7 +91,7 @@ class SecureJSONFormatter(SecureFormatter):
         try:
             # Build base log entry
             log_entry: dict[str, Any] = {
-                "timestamp": datetime.fromtimestamp(record.created).isoformat(),
+                "timestamp": datetime.fromtimestamp(record.created, tz=UTC).isoformat(),
                 "level": record.levelname,
                 "logger": record.name,
                 "message": record.getMessage(),
@@ -87,7 +104,9 @@ class SecureJSONFormatter(SecureFormatter):
             # Add custom context fields from 'extra'
             # These are fields added via logger.info("msg", extra={...})
             for key, value in record.__dict__.items():
-                # Skip internal logging fields
+                # Skip internal logging fields and private attributes
+                if key.startswith("_"):
+                    continue
                 if key not in {
                     "name",
                     "msg",
@@ -125,7 +144,7 @@ class SecureJSONFormatter(SecureFormatter):
         except Exception as e:
             # Fallback to safe error message
             error_entry = {
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "level": "ERROR",
                 "logger": "logging",
                 "message": f"[LOGGING ERROR: {type(e).__name__}]",
