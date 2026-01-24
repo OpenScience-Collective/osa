@@ -59,8 +59,14 @@ def get_communities_health(_auth: RequireAuth) -> dict[str, Any]:
             continue
 
         # Determine API key status
+        import os
+
         api_key_env_var = getattr(config, "openrouter_api_key_env_var", None)
-        api_key_status = "configured" if api_key_env_var else "using_platform"
+        if api_key_env_var:
+            # Check if env var is actually set
+            api_key_status = "configured" if os.getenv(api_key_env_var) else "missing"
+        else:
+            api_key_status = "using_platform"
 
         # Count documentation sources
         documentation = getattr(config, "documentation", None)
@@ -75,12 +81,12 @@ def get_communities_health(_auth: RequireAuth) -> dict[str, Any]:
         sync_age_hours = None
 
         # Determine overall status
-        # - error: critical issues (no docs)
+        # - error: critical issues (no docs, missing configured API key)
         # - degraded: warnings (using platform key)
         # - healthy: all good
         status = "healthy"
 
-        if doc_count == 0:
+        if doc_count == 0 or api_key_status == "missing":
             status = "error"
         elif api_key_status == "using_platform":
             status = "degraded"
