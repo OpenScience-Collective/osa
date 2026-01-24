@@ -342,6 +342,40 @@ class CommunityConfig(BaseModel):
     Set to False if the assistant won't be used in a widget context.
     """
 
+    cors_origins: list[str] = Field(default_factory=list)
+    """Allowed CORS origins for this community's widget embedding.
+
+    Supports exact origins (e.g., 'https://hedtags.org') and wildcard
+    subdomains (e.g., 'https://*.pages.dev'). These are aggregated with
+    platform-level origins at API startup.
+    """
+
+    @field_validator("cors_origins")
+    @classmethod
+    def validate_cors_origins(cls, v: list[str]) -> list[str]:
+        """Validate CORS origins are well-formed URL patterns."""
+        origin_pattern = re.compile(
+            r"^https?://"  # scheme
+            r"(\*\.)?[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?"  # optional wildcard + first label
+            r"(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)*"  # additional labels
+            r"(:\d{1,5})?$"  # optional port
+        )
+        validated = []
+        for origin in v:
+            origin = origin.strip()
+            if not origin:
+                continue
+            if len(origin) > 255:
+                raise ValueError(f"CORS origin too long (max 255 chars): {origin[:50]}...")
+            if not origin_pattern.match(origin):
+                raise ValueError(
+                    f"Invalid CORS origin '{origin}'. Must be a valid origin "
+                    f"(e.g., 'https://example.org' or 'https://*.pages.dev')"
+                )
+            if origin not in validated:
+                validated.append(origin)
+        return validated
+
     def get_sync_config(self) -> dict[str, Any]:
         """Generate sync_config dict for registry compatibility.
 

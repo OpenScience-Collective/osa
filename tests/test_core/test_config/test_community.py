@@ -434,6 +434,156 @@ class TestCommunityConfig:
             CommunityConfig(id="  ", name="Test", description="Test")
 
 
+class TestCommunityConfigCorsOrigins:
+    """Tests for CommunityConfig.cors_origins validation."""
+
+    def test_valid_exact_origins(self) -> None:
+        """Should accept valid exact origin URLs."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            cors_origins=[
+                "https://example.org",
+                "https://www.hedtags.org",
+                "http://localhost:3000",
+                "https://my-site.example.com:8080",
+            ],
+        )
+        assert len(config.cors_origins) == 4
+
+    def test_valid_wildcard_origins(self) -> None:
+        """Should accept valid wildcard subdomain patterns."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            cors_origins=[
+                "https://*.pages.dev",
+                "https://*.osa-demo.pages.dev",
+                "http://*.localhost:3000",
+            ],
+        )
+        assert len(config.cors_origins) == 3
+
+    def test_defaults_to_empty(self) -> None:
+        """Should default to empty list."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+        )
+        assert config.cors_origins == []
+
+    def test_rejects_origin_without_scheme(self) -> None:
+        """Should reject origins missing http/https scheme."""
+        with pytest.raises(ValidationError, match="Invalid CORS origin"):
+            CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                cors_origins=["example.org"],
+            )
+
+    def test_rejects_origin_with_path(self) -> None:
+        """Should reject origins with paths."""
+        with pytest.raises(ValidationError, match="Invalid CORS origin"):
+            CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                cors_origins=["https://example.org/path"],
+            )
+
+    def test_rejects_invalid_wildcard_position(self) -> None:
+        """Should reject wildcards not at subdomain position."""
+        with pytest.raises(ValidationError, match="Invalid CORS origin"):
+            CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                cors_origins=["https://example.*.com"],
+            )
+
+    def test_deduplicates_origins(self) -> None:
+        """Should deduplicate origin entries."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            cors_origins=[
+                "https://example.org",
+                "https://example.org",
+                "https://other.org",
+            ],
+        )
+        assert len(config.cors_origins) == 2
+
+    def test_strips_whitespace(self) -> None:
+        """Should strip whitespace from origins."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            cors_origins=["  https://example.org  "],
+        )
+        assert config.cors_origins == ["https://example.org"]
+
+    def test_skips_empty_strings(self) -> None:
+        """Should skip empty strings."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            cors_origins=["", "  ", "https://example.org"],
+        )
+        assert config.cors_origins == ["https://example.org"]
+
+    def test_rejects_too_long_origin(self) -> None:
+        """Should reject origins longer than 255 characters."""
+        long_origin = "https://" + "a" * 248
+        with pytest.raises(ValidationError, match="too long"):
+            CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                cors_origins=[long_origin],
+            )
+
+    def test_accepts_single_char_subdomain_labels(self) -> None:
+        """Should accept origins with single-character subdomain labels."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            cors_origins=[
+                "https://a.example.org",
+                "https://1.example.org",
+            ],
+        )
+        assert len(config.cors_origins) == 2
+
+    def test_rejects_leading_hyphen_in_domain(self) -> None:
+        """Should reject origins with leading hyphens in domain labels."""
+        with pytest.raises(ValidationError, match="Invalid CORS origin"):
+            CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                cors_origins=["https://-example.org"],
+            )
+
+    def test_accepts_numeric_only_domain(self) -> None:
+        """Should accept origins with numeric-only domain labels."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            cors_origins=["https://123.456.789:8080"],
+        )
+        assert len(config.cors_origins) == 1
+
+
 class TestCommunitiesConfig:
     """Tests for CommunitiesConfig model."""
 

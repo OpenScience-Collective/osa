@@ -9,6 +9,11 @@ status: available
 # Enable page context tool for widget embedding
 enable_page_context: true
 
+# Allowed CORS origins for widget embedding on community websites
+cors_origins:
+  - https://www.hedtags.org
+  - https://hedtags.org
+
 # System prompt template
 # Available placeholders: {name}, {description}, {repo_list}, {paper_dois},
 # {preloaded_docs_section}, {available_docs_section}, {page_context_section},
