@@ -4,6 +4,7 @@ Provides validation of community configuration files before deployment.
 Catches YAML syntax errors, schema validation errors, and missing dependencies.
 """
 
+import logging
 import os
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from rich.table import Table
 from src.core.config.community import CommunityConfig
 
 console = Console()
+logger = logging.getLogger(__name__)
 
 
 def validate(
@@ -37,7 +39,10 @@ def validate(
 
     Returns exit code 0 on success, 1 on failure.
     """
+    logger.info("Starting validation for config: %s", config_path)
+
     if not config_path.exists():
+        logger.error("Config file not found: %s", config_path)
         console.print(f"[red]Error: Config file not found: {config_path}[/red]")
         raise typer.Exit(1)
 
@@ -48,11 +53,39 @@ def validate(
     warnings = []
     errors = []
 
-    # Step 1: YAML Syntax
+    # Step 1: Read file with proper error handling
+    console.print("[dim]Reading config file...[/dim]")
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            raw_content = f.read()
+    except PermissionError:
+        logger.error("Permission denied reading config: %s", config_path)
+        console.print(f"[red]Error: Permission denied reading config file: {config_path}[/red]")
+        console.print("[yellow]Check file permissions and try again.[/yellow]")
+        raise typer.Exit(1)
+    except IsADirectoryError:
+        logger.error("Config path is a directory: %s", config_path)
+        console.print(f"[red]Error: Path is a directory, not a file: {config_path}[/red]")
+        raise typer.Exit(1)
+    except OSError as e:
+        logger.error("Cannot read config file %s: %s", config_path, e)
+        console.print(f"[red]Error: Cannot read config file: {e}[/red]")
+        raise typer.Exit(1)
+
+    # Step 2: YAML Syntax
     console.print("[dim]Checking YAML syntax...[/dim]")
     try:
-        with open(config_path) as f:
-            yaml_data = yaml.safe_load(f)
+        yaml_data = yaml.safe_load(raw_content)
+
+        # Check for empty file
+        if yaml_data is None:
+            logger.error("Config file is empty or contains only comments: %s", config_path)
+            errors.append("Config file is empty or contains only comments")
+            checks.append(("YAML Content", "✗ File is empty", "red"))
+            _display_results(checks, warnings, errors)
+            raise typer.Exit(1)
+
+        logger.debug("YAML syntax valid")
         checks.append(("YAML Syntax", "✓ Valid", "green"))
     except yaml.YAMLError as e:
         error_msg = f"YAML syntax error: {e}"
@@ -60,31 +93,45 @@ def validate(
             mark = e.problem_mark
             problem_desc = getattr(e, "problem", str(e))
             error_msg = f"YAML syntax error at line {mark.line + 1}, column {mark.column + 1}: {problem_desc}"
+        logger.error("YAML syntax error in %s: %s", config_path, error_msg, exc_info=True)
         errors.append(error_msg)
         checks.append(("YAML Syntax", f"✗ {error_msg}", "red"))
         _display_results(checks, warnings, errors)
         raise typer.Exit(1)
 
-    # Step 2: Pydantic Schema Validation
+    # Step 3: Pydantic Schema Validation
     console.print("[dim]Validating schema...[/dim]")
     try:
         config = CommunityConfig.model_validate(yaml_data)
+        logger.debug("Schema validation passed for community: %s", config.id)
         checks.append(("Schema Validation", "✓ Valid", "green"))
     except ValidationError as e:
+        logger.error("Schema validation failed for %s", config_path, exc_info=True)
         errors.append("Schema validation failed")
         checks.append(("Schema Validation", "✗ Invalid schema", "red"))
 
-        # Format validation errors clearly
+        # Format validation errors clearly with actual values
         console.print("\n[red]Schema Validation Errors:[/red]\n")
         for error in e.errors():
             field = " → ".join(str(x) for x in error["loc"])
             message = error["msg"]
-            console.print(f"  [yellow]•[/yellow] [bold]{field}[/bold]: {message}")
+
+            # Include the actual invalid value
+            if "input" in error and error["input"] is not None:
+                invalid_value = error["input"]
+                value_str = str(invalid_value)
+                # Truncate long values
+                if len(value_str) > 50:
+                    value_str = value_str[:47] + "..."
+                console.print(f"  [yellow]•[/yellow] [bold]{field}[/bold]: {message}")
+                console.print(f"    Got: [red]{value_str}[/red]")
+            else:
+                console.print(f"  [yellow]•[/yellow] [bold]{field}[/bold]: {message}")
 
         _display_results(checks, warnings, errors)
         raise typer.Exit(1)
 
-    # Step 3: Configuration Details
+    # Step 4: Configuration Details
     console.print("[dim]Checking configuration...[/dim]")
     checks.append(("Community ID", config.id, "cyan"))
     checks.append(("Community Name", config.name, "cyan"))
@@ -95,13 +142,14 @@ def validate(
     if config.github:
         checks.append(("GitHub Repos", f"{len(config.github.repos)} repos", "cyan"))
 
-    # Step 4: Environment Variable Check
+    # Step 5: Environment Variable Check
     console.print("[dim]Checking environment variables...[/dim]")
     if config.openrouter_api_key_env_var:
         env_var_name = config.openrouter_api_key_env_var
         api_key = os.getenv(env_var_name)
 
         if not api_key:
+            logger.warning("API key env var not set: %s", env_var_name)
             warnings.append(
                 f"Environment variable '{env_var_name}' is not set. "
                 "The assistant will fall back to the platform API key, "
@@ -109,21 +157,28 @@ def validate(
             )
             checks.append(("API Key Env Var", f"⚠ {env_var_name} not set", "yellow"))
         else:
+            logger.debug("API key env var is set: %s", env_var_name)
             checks.append(("API Key Env Var", f"✓ {env_var_name} is set", "green"))
 
-            # Step 5: Optional API Key Test
+            # Step 6: Optional API Key Test
             if test_api_key:
                 console.print("[dim]Testing API key with OpenRouter...[/dim]")
+                logger.info("Testing API key for %s", env_var_name)
                 test_result = _test_openrouter_api_key(api_key)
                 if test_result["success"]:
+                    logger.info("API key test passed for %s", env_var_name)
                     checks.append(("API Key Test", "✓ Key works", "green"))
                 else:
+                    logger.error(
+                        "API key test failed for %s: %s", env_var_name, test_result["error"]
+                    )
                     errors.append(f"API key test failed: {test_result['error']}")
                     checks.append(("API Key Test", f"✗ {test_result['error']}", "red"))
     else:
+        logger.debug("No community-specific API key configured, will use platform key")
         checks.append(("API Key Env Var", "Not configured (using platform key)", "cyan"))
 
-    # Step 6: Model Configuration
+    # Step 7: Model Configuration
     if config.default_model:
         checks.append(("Default Model", config.default_model, "cyan"))
         if config.default_model_provider:
@@ -134,14 +189,45 @@ def validate(
 
     # Exit with appropriate code
     if errors:
+        logger.error("Validation failed for %s with %d errors", config_path, len(errors))
         console.print("\n[red]✗ Validation failed[/red]\n")
         raise typer.Exit(1)
     elif warnings:
+        logger.warning("Validation passed with %d warnings for %s", len(warnings), config_path)
         console.print("\n[yellow]✓ Validation passed with warnings[/yellow]\n")
         raise typer.Exit(0)
     else:
+        logger.info("Validation passed successfully for %s", config_path)
         console.print("\n[green]✓ Validation passed[/green]\n")
         raise typer.Exit(0)
+
+
+def _interpret_api_response(status_code: int, response_text: str = "") -> dict:
+    """Interpret OpenRouter API response.
+
+    Pure function to interpret HTTP response - easy to test without mocking.
+
+    Args:
+        status_code: HTTP status code from OpenRouter API
+        response_text: Response body text (for error details)
+
+    Returns:
+        Dict with 'success' bool and optional 'error' message.
+    """
+    if status_code == 200:
+        return {"success": True}
+    elif status_code == 401:
+        return {"success": False, "error": "Invalid API key (401 Unauthorized)"}
+    elif status_code == 403:
+        return {"success": False, "error": "API key lacks permissions (403 Forbidden)"}
+    else:
+        # Include response body for unexpected status codes
+        error_msg = f"Unexpected status code: {status_code}"
+        if response_text:
+            # Truncate long responses
+            error_detail = response_text[:200] if len(response_text) > 200 else response_text
+            error_msg = f"{error_msg} - {error_detail}"
+        return {"success": False, "error": error_msg}
 
 
 def _test_openrouter_api_key(api_key: str) -> dict:
@@ -154,7 +240,7 @@ def _test_openrouter_api_key(api_key: str) -> dict:
         api_key: The OpenRouter API key to test.
 
     Returns:
-        Dict with 'success' bool and optional 'error' message.
+        Dict with 'success' bool and 'error' message (only present when success=False).
     """
     try:
         response = httpx.get(
@@ -162,24 +248,14 @@ def _test_openrouter_api_key(api_key: str) -> dict:
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=10.0,
         )
-
-        if response.status_code == 200:
-            return {"success": True}
-        elif response.status_code == 401:
-            return {"success": False, "error": "Invalid API key (401 Unauthorized)"}
-        elif response.status_code == 403:
-            return {"success": False, "error": "API key lacks permissions (403 Forbidden)"}
-        else:
-            return {
-                "success": False,
-                "error": f"Unexpected status code: {response.status_code}",
-            }
+        return _interpret_api_response(response.status_code, response.text)
     except httpx.TimeoutException:
+        logger.warning("API key test timeout after 10s")
         return {"success": False, "error": "Request timeout (>10s)"}
     except httpx.RequestError as e:
+        logger.warning("API key test network error: %s", e)
         return {"success": False, "error": f"Network error: {e}"}
-    except Exception as e:
-        return {"success": False, "error": f"Unexpected error: {e}"}
+    # No broad exception handler - let unexpected errors propagate
 
 
 def _display_results(
