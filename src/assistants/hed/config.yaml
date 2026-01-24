@@ -19,6 +19,12 @@ cors_origins:
 # The backend must have this environment variable set
 openrouter_api_key_env_var: "OPENROUTER_API_KEY_HED"
 
+# Default model for this community (optional)
+# If specified, overrides the platform-level default model
+# Format: creator/model-name (OpenRouter format)
+# default_model: "anthropic/claude-3.5-sonnet"
+# default_model_provider: null  # Use default routing
+
 # System prompt template
 # Available placeholders: {name}, {description}, {repo_list}, {paper_dois},
 # {preloaded_docs_section}, {available_docs_section}, {page_context_section},

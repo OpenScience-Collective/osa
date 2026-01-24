@@ -12,7 +12,7 @@ from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field, field_validator
@@ -22,6 +22,7 @@ from src.api.security import RequireAuth
 from src.assistants import registry
 from src.assistants.community import CommunityAssistant
 from src.assistants.community import PageContext as AgentPageContext
+from src.assistants.registry import AssistantInfo
 from src.core.services.litellm_llm import create_openrouter_llm
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,10 @@ class ChatRequest(BaseModel):
         description="Session ID for conversation continuity. If not provided, a new session is created.",
     )
     stream: bool = Field(default=True, description="Whether to stream the response")
+    model: str | None = Field(
+        default=None,
+        description="Optional model override (OpenRouter format: creator/model-name). Requires BYOK.",
+    )
 
 
 class PageContext(BaseModel):
@@ -82,6 +87,10 @@ class AskRequest(BaseModel):
     page_context: PageContext | None = Field(
         default=None,
         description="Optional context about the page where the widget is embedded",
+    )
+    model: str | None = Field(
+        default=None,
+        description="Optional model override (OpenRouter format: creator/model-name). Requires BYOK.",
     )
 
 
@@ -308,6 +317,181 @@ def list_sessions(community_id: str) -> list[ChatSession]:
 # ---------------------------------------------------------------------------
 
 
+def _is_authorized_origin(origin: str | None, community_id: str) -> bool:
+    """Check if Origin header matches community's allowed CORS origins.
+
+    This determines if a request is coming from an authorized widget embed
+    (vs CLI, unauthorized web page, or API client).
+
+    Args:
+        origin: Origin header from HTTP request (e.g., "https://hedtags.org")
+        community_id: Community identifier
+
+    Returns:
+        True if origin matches community's cors_origins, False otherwise.
+        Returns False if origin is None (CLI, mobile apps, browser extensions).
+    """
+    if not origin:
+        return False
+
+    import re
+
+    community_info = registry.get(community_id)
+    if not community_info or not community_info.community_config:
+        return False
+
+    cors_origins = community_info.community_config.cors_origins
+    if not cors_origins:
+        return False
+
+    # Check exact matches first
+    for allowed in cors_origins:
+        if "*" not in allowed and origin == allowed:
+            return True
+
+    # Check wildcard patterns
+    for allowed in cors_origins:
+        if "*" in allowed:
+            # Convert wildcard pattern to regex (same logic as main.py)
+            escaped = re.escape(allowed)
+            pattern = escaped.replace(r"\*", r"[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?")
+            if re.fullmatch(pattern, origin):
+                return True
+
+    return False
+
+
+def _select_api_key(
+    community_id: str,
+    byok: str | None,
+    origin: str | None,
+) -> tuple[str, str]:
+    """Select API key based on BYOK and origin authorization.
+
+    **Authorization Logic:**
+    1. If BYOK provided → use it (always allowed)
+    2. If origin matches community CORS → allow fallback to community/platform key
+    3. Otherwise → reject (CLI or unauthorized origin must provide BYOK)
+
+    This ensures:
+    - CLI users must provide their own key
+    - Widget users on authorized sites can use platform keys
+    - Custom model requests require BYOK (checked separately)
+
+    Args:
+        community_id: Community identifier
+        byok: User-provided API key from X-OpenRouter-Key header
+        origin: Origin header from HTTP request
+
+    Returns:
+        Tuple of (api_key, source) where source is "byok", "community", or "platform"
+
+    Raises:
+        HTTPException(403): If BYOK required but not provided
+    """
+    import os
+
+    # Case 1: BYOK provided - always allowed
+    if byok:
+        return (byok, "byok")
+
+    # Case 2: Check if origin is authorized for platform key usage
+    if not _is_authorized_origin(origin, community_id):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "API key required. Please provide your OpenRouter API key via the X-OpenRouter-Key header. "
+                "Get your key at: https://openrouter.ai/keys"
+            ),
+        )
+
+    # Origin is authorized - allow fallback to community/platform keys
+    settings = get_settings()
+    community_info = registry.get(community_id)
+
+    # Try community-specific key first
+    if community_info and community_info.community_config:
+        env_var = community_info.community_config.openrouter_api_key_env_var
+        if env_var:
+            community_key = os.getenv(env_var)
+            if community_key:
+                logger.debug(
+                    "Using community-specific API key from %s for %s", env_var, community_id
+                )
+                return (community_key, "community")
+            logger.warning(
+                "Community %s configured to use %s but env var not set, falling back to platform key",
+                community_id,
+                env_var,
+            )
+
+    # Fall back to platform key
+    if not settings.openrouter_api_key:
+        raise HTTPException(
+            status_code=500,
+            detail="No API key configured for this community. Please contact support.",
+        )
+
+    return (settings.openrouter_api_key, "platform")
+
+
+def _select_model(
+    community_info: AssistantInfo,
+    requested_model: str | None,
+    has_byok: bool,
+) -> tuple[str, str | None]:
+    """Select model based on community config and user request.
+
+    **Model Selection Logic:**
+    1. If user requests custom model:
+       - Must have BYOK (otherwise reject)
+       - Use requested model
+    2. Else if community has default_model → use it
+    3. Else → use platform default_model
+
+    This ensures:
+    - Custom models always require BYOK (prevents abuse)
+    - Communities can have preferred models
+    - Platform default is the fallback
+
+    Args:
+        community_info: Community information from registry
+        requested_model: User-requested model from request body
+        has_byok: Whether user provided their own API key
+
+    Returns:
+        Tuple of (model, provider)
+
+    Raises:
+        HTTPException(403): If custom model requested without BYOK
+    """
+    settings = get_settings()
+
+    # Determine the default model for this community
+    default_model = settings.default_model
+    default_provider = settings.default_model_provider
+    if community_info.community_config and community_info.community_config.default_model:
+        default_model = community_info.community_config.default_model
+        default_provider = community_info.community_config.default_model_provider
+
+    # If user requests a custom model, require BYOK
+    if requested_model and requested_model != default_model:
+        if not has_byok:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"Custom model '{requested_model}' requires your own API key. "
+                    "Please provide your OpenRouter API key via the X-OpenRouter-Key header. "
+                    "Get your key at: https://openrouter.ai/keys"
+                ),
+            )
+        # User has BYOK, allow custom model
+        return (requested_model, None)  # Custom model uses default routing
+
+    # Use community or platform default
+    return (default_model, default_provider)
+
+
 def _derive_user_id(token: str) -> str:
     """Derive a stable user ID from API token for cache optimization.
 
@@ -359,17 +543,30 @@ def _get_cache_user_id(community_id: str, api_key: str | None, user_id: str | No
 
 def create_community_assistant(
     community_id: str,
-    api_key: str | None = None,
+    byok: str | None = None,
+    origin: str | None = None,
     user_id: str | None = None,
+    requested_model: str | None = None,
     preload_docs: bool = True,
     page_context: PageContext | None = None,
 ) -> CommunityAssistant:
-    """Create a community assistant instance.
+    """Create a community assistant instance with authorization checks.
+
+    **Authorization:**
+    - If BYOK provided → always allowed
+    - If origin matches community CORS → can use community/platform keys
+    - Otherwise → rejects with 403 (CLI/unauthorized must provide BYOK)
+
+    **Model Selection:**
+    - Custom model requests require BYOK
+    - Otherwise uses community default_model or platform default_model
 
     Args:
         community_id: The community identifier (e.g., "hed", "bids")
-        api_key: Optional API key override (BYOK)
+        byok: User-provided API key from X-OpenRouter-Key header
+        origin: Origin header from HTTP request (for CORS authorization)
         user_id: User ID for cache optimization (sticky routing)
+        requested_model: Optional model override from request body
         preload_docs: Whether to preload documents
         page_context: Optional context about the page where the widget is embedded
 
@@ -378,6 +575,7 @@ def create_community_assistant(
 
     Raises:
         ValueError: If community_id is not registered
+        HTTPException(403): If authorization fails or custom model requested without BYOK
     """
     community_info = registry.get(community_id)
     if community_info is None:
@@ -385,39 +583,24 @@ def create_community_assistant(
 
     settings = get_settings()
 
-    # Determine API key to use (priority order):
-    # 1. BYOK (user-provided key)
-    # 2. Community-specific key (from env var)
-    # 3. Platform-level default key
-    effective_api_key = api_key
-    if not effective_api_key and community_info.community_config:
-        env_var_name = community_info.community_config.openrouter_api_key_env_var
-        if env_var_name:
-            import os
+    # Select API key with authorization checks
+    effective_api_key, key_source = _select_api_key(community_id, byok, origin)
+    logger.debug("Using %s API key for %s", key_source, community_id)
 
-            community_key = os.getenv(env_var_name)
-            if community_key:
-                effective_api_key = community_key
-                logger.debug(
-                    "Using community-specific API key from %s for %s", env_var_name, community_id
-                )
-            else:
-                logger.warning(
-                    "Community %s configured to use %s but env var not set, falling back to platform key",
-                    community_id,
-                    env_var_name,
-                )
-    if not effective_api_key:
-        effective_api_key = settings.openrouter_api_key
+    # Select model (checks BYOK requirement for custom models)
+    selected_model, selected_provider = _select_model(
+        community_info, requested_model, has_byok=bool(byok)
+    )
+    logger.debug("Using model %s for %s", selected_model, community_id)
 
     # Determine user_id for prompt caching optimization
-    cache_user_id = _get_cache_user_id(community_id, api_key, user_id)
+    cache_user_id = _get_cache_user_id(community_id, byok, user_id)
 
     model = create_openrouter_llm(
-        model=settings.default_model,
+        model=selected_model,
         api_key=effective_api_key,
         temperature=settings.llm_temperature,
-        provider=settings.default_model_provider,
+        provider=selected_provider,
         user_id=cache_user_id,
     )
 
@@ -476,7 +659,8 @@ def create_community_router(community_id: str) -> APIRouter:
         },
     )
     async def ask(
-        request: AskRequest,
+        body: AskRequest,
+        http_request: Request,
         _auth: RequireAuth,
         x_openrouter_key: Annotated[str | None, Header(alias="X-OpenRouter-Key")] = None,
         x_user_id: Annotated[str | None, Header(alias="X-User-ID")] = None,
@@ -488,18 +672,28 @@ def create_community_router(community_id: str) -> APIRouter:
 
         **BYOK (Bring Your Own Key):**
         Pass your OpenRouter API key in the `X-OpenRouter-Key` header.
+        Required for CLI usage and custom model requests.
+
+        **Custom Models:**
+        Specify a custom model via the `model` field in the request body.
+        Custom models require BYOK.
 
         **Cache Optimization:**
         Pass a stable user ID in the `X-User-ID` header for better cache hit rates.
         """
-        if request.stream:
+        # Extract origin for authorization
+        origin = http_request.headers.get("origin")
+
+        if body.stream:
             return StreamingResponse(
                 _stream_ask_response(
                     community_id,
-                    request.question,
+                    body.question,
                     x_openrouter_key,
+                    origin,
                     x_user_id,
-                    request.page_context,
+                    body.page_context,
+                    body.model,
                 ),
                 media_type="text/event-stream",
                 headers={
@@ -510,9 +704,14 @@ def create_community_router(community_id: str) -> APIRouter:
 
         try:
             assistant = create_community_assistant(
-                community_id, x_openrouter_key, x_user_id, page_context=request.page_context
+                community_id,
+                byok=x_openrouter_key,
+                origin=origin,
+                user_id=x_user_id,
+                requested_model=body.model,
+                page_context=body.page_context,
             )
-            messages = [HumanMessage(content=request.question)]
+            messages = [HumanMessage(content=body.question)]
             result = await assistant.ainvoke(messages)
 
             response_content = ""
@@ -549,7 +748,8 @@ def create_community_router(community_id: str) -> APIRouter:
         },
     )
     async def chat(
-        request: ChatRequest,
+        body: ChatRequest,
+        http_request: Request,
         _auth: RequireAuth,
         x_openrouter_key: Annotated[str | None, Header(alias="X-OpenRouter-Key")] = None,
         x_user_id: Annotated[str | None, Header(alias="X-User-ID")] = None,
@@ -560,22 +760,32 @@ def create_community_router(community_id: str) -> APIRouter:
 
         **BYOK (Bring Your Own Key):**
         Pass your OpenRouter API key in the `X-OpenRouter-Key` header.
+        Required for CLI usage and custom model requests.
+
+        **Custom Models:**
+        Specify a custom model via the `model` field in the request body.
+        Custom models require BYOK.
 
         **Cache Optimization:**
         Pass a stable user ID in the `X-User-ID` header for better cache hit rates.
         """
-        session = get_or_create_session(community_id, request.session_id)
+        # Extract origin for authorization
+        origin = http_request.headers.get("origin")
+
+        session = get_or_create_session(community_id, body.session_id)
         user_id = x_user_id or session.session_id
 
         # Add user message with constraint validation
         try:
-            session.add_user_message(request.message)
+            session.add_user_message(body.message)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 
-        if request.stream:
+        if body.stream:
             return StreamingResponse(
-                _stream_chat_response(community_id, session, x_openrouter_key, user_id),
+                _stream_chat_response(
+                    community_id, session, x_openrouter_key, origin, user_id, body.model
+                ),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
@@ -585,7 +795,13 @@ def create_community_router(community_id: str) -> APIRouter:
             )
 
         try:
-            assistant = create_community_assistant(community_id, x_openrouter_key, user_id)
+            assistant = create_community_assistant(
+                community_id,
+                byok=x_openrouter_key,
+                origin=origin,
+                user_id=user_id,
+                requested_model=body.model,
+            )
             result = await assistant.ainvoke(session.messages)
 
             response_content = ""
@@ -661,9 +877,11 @@ def create_community_router(community_id: str) -> APIRouter:
 async def _stream_ask_response(
     community_id: str,
     question: str,
-    api_key: str | None,
+    byok: str | None,
+    origin: str | None,
     user_id: str | None,
     page_context: PageContext | None = None,
+    requested_model: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream response for ask endpoint with JSON-encoded SSE events.
 
@@ -676,7 +894,13 @@ async def _stream_ask_response(
     """
     try:
         assistant = create_community_assistant(
-            community_id, api_key, user_id, preload_docs=True, page_context=page_context
+            community_id,
+            byok=byok,
+            origin=origin,
+            user_id=user_id,
+            requested_model=requested_model,
+            preload_docs=True,
+            page_context=page_context,
         )
         graph = assistant.build_graph()
 
@@ -730,8 +954,10 @@ async def _stream_ask_response(
 async def _stream_chat_response(
     community_id: str,
     session: ChatSession,
-    api_key: str | None,
+    byok: str | None,
+    origin: str | None,
     user_id: str | None,
+    requested_model: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream assistant response as JSON-encoded Server-Sent Events.
 
@@ -743,7 +969,14 @@ async def _stream_chat_response(
         data: {"event": "error", "message": "error text"}
     """
     try:
-        assistant = create_community_assistant(community_id, api_key, user_id, preload_docs=True)
+        assistant = create_community_assistant(
+            community_id,
+            byok=byok,
+            origin=origin,
+            user_id=user_id,
+            requested_model=requested_model,
+            preload_docs=True,
+        )
         graph = assistant.build_graph()
 
         state = {

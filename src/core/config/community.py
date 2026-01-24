@@ -363,6 +363,30 @@ class CommunityConfig(BaseModel):
     The backend must have this environment variable set for the assistant to work.
     """
 
+    default_model: str | None = None
+    """Default LLM model for this community (OpenRouter format: creator/model-name).
+
+    If specified, overrides the platform-level default_model for this community.
+    Allows communities to use models better suited to their domain.
+
+    Example:
+        default_model: "anthropic/claude-3.5-sonnet"
+
+    If not specified, uses the platform-level default from Settings.
+    """
+
+    default_model_provider: str | None = None
+    """Provider routing preference for the default model (e.g., "Cerebras", "Together").
+
+    Specifies where the model should run for optimal performance.
+    Only applies if default_model is also specified.
+
+    Example:
+        default_model_provider: "Cerebras"
+
+    If not specified, uses default routing for the model.
+    """
+
     @field_validator("cors_origins")
     @classmethod
     def validate_cors_origins(cls, v: list[str]) -> list[str]:
