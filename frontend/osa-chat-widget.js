@@ -721,6 +721,11 @@
       display: flex;
     }
 
+    /* Hide settings overlay when chat is closed */
+    .osa-chat-window:not(.open) ~ .osa-settings-overlay {
+      display: none !important;
+    }
+
     .osa-settings-modal {
       background: var(--osa-bg);
       border-radius: 12px;
@@ -1230,17 +1235,30 @@
         if (parsed.apiKey) {
           // Basic format validation: sk-or-v1-[hex]
           if (!/^sk-or-v1-[0-9a-f]{64}$/i.test(parsed.apiKey)) {
-            console.warn('[OSA] Saved API key has invalid format, ignoring');
+            console.error('[OSA] Saved API key has invalid format, ignoring');
             parsed.apiKey = null;
+          }
+        }
+        // Validate model format if present
+        if (parsed.model && typeof parsed.model === 'string') {
+          // Validate model format: provider/model-name
+          if (!/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9._-]+$/. test(parsed.model)) {
+            console.error('[OSA] Saved model has invalid format, ignoring');
+            parsed.model = null;
           }
         }
         userSettings = {
           apiKey: parsed.apiKey || null,
-          model: (parsed.model && typeof parsed.model === 'string') ? parsed.model : null
+          model: parsed.model || null
         };
       }
     } catch (e) {
-      console.warn('[OSA] Could not load user settings:', e);
+      console.error('[OSA] Could not load user settings:', e);
+      // Show error to user when settings can't be loaded
+      const container = document.querySelector('.osa-chat-widget');
+      if (container) {
+        showError(container, 'Could not load your saved settings. Using defaults.');
+      }
       userSettings = { apiKey: null, model: null };
     }
   }
@@ -1251,31 +1269,51 @@
     try {
       localStorage.setItem(storageKey, JSON.stringify(userSettings));
     } catch (e) {
-      console.warn('[OSA] Could not save user settings:', e);
+      console.error('[OSA] Could not save user settings:', e);
+      // Show error to user - this is critical
+      const container = document.querySelector('.osa-chat-widget');
+      if (container) {
+        showError(container, 'Could not save settings. Storage may be full or disabled. Your settings will not persist.');
+      }
+      throw e; // Re-throw so caller knows save failed
     }
   }
 
   // Fetch community default model from API
   async function fetchCommunityDefaultModel() {
+    // Validate communityId before making request
+    if (!isValidCommunityId(CONFIG.communityId)) {
+      console.error('[OSA] Invalid communityId, cannot fetch default model');
+      return;
+    }
+
     try {
       const response = await fetch(`${CONFIG.apiEndpoint}/communities/${CONFIG.communityId}`, {
         method: 'GET',
         signal: AbortSignal.timeout(5000)
       });
 
-      if (response.ok) {
-        const data = await response.json();
-        if (data && data.default_model) {
-          communityDefaultModel = data.default_model;
-        }
+      if (!response.ok) {
+        console.warn(`[OSA] Community default model fetch failed: HTTP ${response.status}`);
+        return;
+      }
+
+      const data = await response.json();
+      if (data && data.default_model) {
+        communityDefaultModel = data.default_model;
+      } else {
+        console.warn('[OSA] Community default model not found in API response');
       }
     } catch (e) {
-      console.debug('[OSA] Could not fetch community default model:', e);
+      console.warn('[OSA] Could not fetch community default model:', e.message || e);
     }
   }
 
   // Open settings modal
   function openSettings(container) {
+    // Don't open settings if chat window is closed
+    if (!isOpen) return;
+
     const overlay = container.querySelector('.osa-settings-overlay');
     const apiKeyInput = container.querySelector('#osa-settings-api-key');
     const modelSelect = container.querySelector('#osa-settings-model');
@@ -1352,6 +1390,11 @@
         showError(container, 'Please enter a custom model name');
         return;
       }
+      // Validate custom model format: provider/model-name
+      if (!/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9._-]+$/.test(model)) {
+        showError(container, 'Invalid model format. Expected: provider/model-name');
+        return;
+      }
     } else if (modelSelection !== 'default') {
       model = modelSelection;
     }
@@ -1361,9 +1404,15 @@
     userSettings.model = model;
 
     // Save to localStorage
-    saveUserSettings();
+    try {
+      saveUserSettings();
+    } catch (e) {
+      // Error already shown by saveUserSettings()
+      // Don't close modal if save failed
+      return;
+    }
 
-    // Close modal
+    // Close modal only if save succeeded
     closeSettings(container);
   }
 
@@ -1572,7 +1621,7 @@
                 OpenRouter API Key (Optional)
               </label>
               <input
-                type="text"
+                type="password"
                 id="osa-settings-api-key"
                 class="osa-settings-input"
                 placeholder="sk-or-v1-..."
