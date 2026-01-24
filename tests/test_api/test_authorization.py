@@ -52,41 +52,41 @@ def mock_registry():
 class TestIsAuthorizedOrigin:
     """Tests for _is_authorized_origin helper function."""
 
-    def test_exact_origin_match(self, _mock_registry):
+    def test_exact_origin_match(self, mock_registry):  # noqa: ARG002
         """Should return True for exact origin match."""
         assert _is_authorized_origin("https://hedtags.org", "hed") is True
         assert _is_authorized_origin("https://www.hedtags.org", "hed") is True
 
-    def test_wildcard_origin_match(self, _mock_registry):
+    def test_wildcard_origin_match(self, mock_registry):  # noqa: ARG002
         """Should return True for wildcard subdomain match."""
         assert _is_authorized_origin("https://my-app.pages.dev", "hed") is True
         assert _is_authorized_origin("https://preview-123.pages.dev", "hed") is True
 
-    def test_wildcard_does_not_match_multiple_levels(self, _mock_registry):
+    def test_wildcard_does_not_match_multiple_levels(self, mock_registry):  # noqa: ARG002
         """Wildcard should match single subdomain, not multiple levels."""
         # *.pages.dev should NOT match foo.bar.pages.dev
         assert _is_authorized_origin("https://foo.bar.pages.dev", "hed") is False
 
-    def test_no_origin_returns_false(self, _mock_registry):
+    def test_no_origin_returns_false(self, mock_registry):  # noqa: ARG002
         """Should return False when origin is None (CLI, mobile apps)."""
         assert _is_authorized_origin(None, "hed") is False
 
-    def test_unauthorized_origin_returns_false(self, _mock_registry):
+    def test_unauthorized_origin_returns_false(self, mock_registry):  # noqa: ARG002
         """Should return False for origin not in CORS list."""
         assert _is_authorized_origin("https://evil.com", "hed") is False
         assert _is_authorized_origin("https://example.org", "hed") is False
 
-    def test_case_sensitive_origin_matching(self, _mock_registry):
+    def test_case_sensitive_origin_matching(self, mock_registry):  # noqa: ARG002
         """Origin matching should be case-sensitive."""
         # HTTPS vs https
         assert _is_authorized_origin("https://hedtags.org", "hed") is True
         assert _is_authorized_origin("HTTPS://hedtags.org", "hed") is False
 
-    def test_community_without_cors_origins(self, _mock_registry):
+    def test_community_without_cors_origins(self, mock_registry):  # noqa: ARG002
         """Should return False for community with empty cors_origins."""
         assert _is_authorized_origin("https://example.com", "no-cors") is False
 
-    def test_unknown_community_returns_false(self, _mock_registry):
+    def test_unknown_community_returns_false(self, mock_registry):  # noqa: ARG002
         """Should return False for unknown community ID."""
         assert _is_authorized_origin("https://hedtags.org", "unknown") is False
 
@@ -96,7 +96,7 @@ class TestSelectApiKey:
 
     @patch.dict("os.environ", {}, clear=True)
     @patch("src.api.routers.community.get_settings")
-    def test_byok_always_allowed(self, mock_settings, _mock_registry):
+    def test_byok_always_allowed(self, mock_settings, mock_registry):  # noqa: ARG002
         """BYOK should always be allowed regardless of origin."""
         mock_settings.return_value.openrouter_api_key = "platform-key"
 
@@ -117,7 +117,7 @@ class TestSelectApiKey:
 
     @patch.dict("os.environ", {}, clear=True)
     @patch("src.api.routers.community.get_settings")
-    def test_authorized_origin_uses_platform_key(self, mock_settings, _mock_registry):
+    def test_authorized_origin_uses_platform_key(self, mock_settings, mock_registry):  # noqa: ARG002
         """Authorized origin should use community or platform key."""
         mock_settings.return_value.openrouter_api_key = "platform-key"
 
@@ -127,7 +127,7 @@ class TestSelectApiKey:
 
     @patch.dict("os.environ", {"OPENROUTER_API_KEY_HED": "community-key"}, clear=True)
     @patch("src.api.routers.community.get_settings")
-    def test_authorized_origin_uses_community_key(self, mock_settings, _mock_registry):
+    def test_authorized_origin_uses_community_key(self, mock_settings, mock_registry):  # noqa: ARG002
         """Authorized origin should prefer community key over platform key."""
         mock_settings.return_value.openrouter_api_key = "platform-key"
 
@@ -137,7 +137,7 @@ class TestSelectApiKey:
 
     @patch.dict("os.environ", {}, clear=True)
     @patch("src.api.routers.community.get_settings")
-    def test_unauthorized_origin_requires_byok(self, mock_settings, _mock_registry):
+    def test_unauthorized_origin_requires_byok(self, mock_settings, mock_registry):  # noqa: ARG002
         """Unauthorized origin without BYOK should raise 403."""
         mock_settings.return_value.openrouter_api_key = "platform-key"
 
@@ -150,7 +150,7 @@ class TestSelectApiKey:
 
     @patch.dict("os.environ", {}, clear=True)
     @patch("src.api.routers.community.get_settings")
-    def test_cli_without_byok_requires_key(self, mock_settings, _mock_registry):
+    def test_cli_without_byok_requires_key(self, mock_settings, mock_registry):  # noqa: ARG002
         """CLI (no origin) without BYOK should raise 403."""
         mock_settings.return_value.openrouter_api_key = "platform-key"
 
@@ -162,7 +162,7 @@ class TestSelectApiKey:
 
     @patch.dict("os.environ", {}, clear=True)
     @patch("src.api.routers.community.get_settings")
-    def test_no_platform_key_configured_raises_500(self, mock_settings, _mock_registry):
+    def test_no_platform_key_configured_raises_500(self, mock_settings, mock_registry):  # noqa: ARG002
         """No platform key configured should raise 500 for authorized origins."""
         mock_settings.return_value.openrouter_api_key = None
 
@@ -312,7 +312,7 @@ class TestIntegration:
 
     @patch.dict("os.environ", {}, clear=True)
     @patch("src.api.routers.community.get_settings")
-    def test_cli_user_without_byok_rejected(self, mock_settings, _mock_registry):
+    def test_cli_user_without_byok_rejected(self, mock_settings, mock_registry):  # noqa: ARG002
         """CLI user without BYOK should be rejected."""
         mock_settings.return_value.openrouter_api_key = "platform-key"
 
