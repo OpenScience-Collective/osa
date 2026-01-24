@@ -1,6 +1,7 @@
 """FastAPI application entry point for Open Science Assistant."""
 
 import logging
+import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -61,6 +62,62 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     stop_scheduler()
 
 
+def _wildcard_origin_to_regex(pattern: str) -> str:
+    """Convert a wildcard CORS origin pattern to a regex string.
+
+    Converts patterns like 'https://*.pages.dev' to a regex that matches
+    any subdomain (e.g., 'https://my-app.pages.dev').
+
+    Args:
+        pattern: Origin with wildcard (e.g., 'https://*.example.com').
+
+    Returns:
+        Regex string matching the pattern.
+    """
+    escaped = re.escape(pattern)
+    # Replace escaped wildcard \* with regex for a valid subdomain label
+    return escaped.replace(r"\*", r"[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?")
+
+
+def _collect_cors_config() -> tuple[list[str], str | None]:
+    """Collect CORS origins from settings and all registered communities.
+
+    Aggregates exact origins and wildcard patterns from:
+    1. Platform-level settings (Settings.cors_origins)
+    2. Per-community config (CommunityConfig.cors_origins)
+    3. Default platform wildcard (*.osa-demo.pages.dev)
+
+    Returns:
+        Tuple of (exact_origins, origin_regex_pattern).
+        origin_regex_pattern is None if no wildcards are configured.
+    """
+    settings = get_settings()
+
+    exact_origins: list[str] = list(settings.cors_origins)
+    wildcard_patterns: list[str] = [
+        "https://*.osa-demo.pages.dev",  # Default: all community demo pages
+    ]
+
+    # Collect from all registered communities
+    for info in registry.list_all():
+        if info.community_config and info.community_config.cors_origins:
+            for origin in info.community_config.cors_origins:
+                if "*" in origin:
+                    if origin not in wildcard_patterns:
+                        wildcard_patterns.append(origin)
+                else:
+                    if origin not in exact_origins:
+                        exact_origins.append(origin)
+
+    # Build combined regex from wildcard patterns
+    origin_regex: str | None = None
+    if wildcard_patterns:
+        regex_parts = [_wildcard_origin_to_regex(p) for p in wildcard_patterns]
+        origin_regex = "^(" + "|".join(regex_parts) + ")$"
+
+    return exact_origins, origin_regex
+
+
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     settings = get_settings()
@@ -75,14 +132,17 @@ def create_app() -> FastAPI:
         redoc_url="/redoc" if settings.debug else None,
     )
 
-    # CORS middleware
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.cors_origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    # CORS middleware - aggregate origins from settings and community configs
+    exact_origins, origin_regex = _collect_cors_config()
+    cors_kwargs: dict[str, Any] = {
+        "allow_origins": exact_origins,
+        "allow_credentials": True,
+        "allow_methods": ["*"],
+        "allow_headers": ["*"],
+    }
+    if origin_regex:
+        cors_kwargs["allow_origin_regex"] = origin_regex
+    app.add_middleware(CORSMiddleware, **cors_kwargs)
 
     # Register routes
     register_routes(app)
