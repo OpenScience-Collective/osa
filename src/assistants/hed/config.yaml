@@ -14,6 +14,11 @@ cors_origins:
   - https://www.hedtags.org
   - https://hedtags.org
 
+# Per-community OpenRouter API key (optional)
+# If specified, this community will use its own API key instead of the platform default
+# The backend must have this environment variable set
+openrouter_api_key_env_var: "OPENROUTER_API_KEY_HED"
+
 # System prompt template
 # Available placeholders: {name}, {description}, {repo_list}, {paper_dois},
 # {preloaded_docs_section}, {available_docs_section}, {page_context_section},

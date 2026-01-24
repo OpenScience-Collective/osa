@@ -118,6 +118,10 @@ name: My Tool
 description: A research tool for neuroscience
 status: available
 
+# Required: Per-community OpenRouter API key for cost attribution
+# Set the environment variable on your backend server
+openrouter_api_key_env_var: "OPENROUTER_API_KEY_MY_TOOL"
+
 system_prompt: |
   You are a technical assistant for {name}.
   {preloaded_docs_section}
@@ -134,7 +138,13 @@ github:
     - org/my-tool
 ```
 
-2. Start the server - the `/{community-id}/ask` endpoint is auto-created.
+2. Set the API key environment variable on your backend:
+
+```bash
+export OPENROUTER_API_KEY_MY_TOOL="your-openrouter-key"
+```
+
+3. Start the server - the `/{community-id}/ask` endpoint is auto-created.
 
 See the [full documentation](https://docs.osc.earth/osa/registry/) for schema reference, extensions, and widget deployment.
 

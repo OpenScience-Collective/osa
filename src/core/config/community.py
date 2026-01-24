@@ -350,6 +350,19 @@ class CommunityConfig(BaseModel):
     platform-level origins at API startup.
     """
 
+    openrouter_api_key_env_var: str | None = None
+    """Environment variable name for community's OpenRouter API key.
+
+    If specified, the assistant will use the key from this environment variable
+    instead of the platform-level default. This allows per-community API key
+    control for cost attribution and management.
+
+    Example:
+        openrouter_api_key_env_var: "OPENROUTER_API_KEY_HED"
+
+    The backend must have this environment variable set for the assistant to work.
+    """
+
     @field_validator("cors_origins")
     @classmethod
     def validate_cors_origins(cls, v: list[str]) -> list[str]:
