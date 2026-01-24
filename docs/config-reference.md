@@ -164,6 +164,7 @@ cors_origins:
 **Validation:**
 - Must start with `http://` or `https://`
 - Must be valid origin format
+- Max 255 characters per origin
 - No path, query, or fragment allowed
 - Automatically deduplicated
 
@@ -232,7 +233,7 @@ export OPENROUTER_API_KEY_HED="sk-or-v1-your-api-key-here"
 
 ### `default_model`
 **Type:** string
-**Default:** Platform default (currently `anthropic/claude-haiku-4.5`)
+**Default:** Platform default model (check Settings configuration)
 
 Default LLM model for your community (OpenRouter format).
 
@@ -909,7 +910,7 @@ See [troubleshooting.md](troubleshooting.md) for detailed error resolution.
 
 ## Schema Version
 
-This reference documents the schema as of **January 2026**.
+This reference documents the schema as of **January 24, 2026**.
 
 **Config Version:** Not explicitly versioned (uses Pydantic validation)
 **Breaking Changes:** Announced in release notes
