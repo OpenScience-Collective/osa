@@ -430,7 +430,7 @@ class TestRealAPIKeyTesting:
             "id": "test",
             "name": "Test",
             "description": "Test",
-            "openrouter_api_key_env_var": "MISSING_VAR_DOES_NOT_EXIST",
+            "openrouter_api_key_env_var": "OPENROUTER_API_KEY_MISSING",
         }
 
         config_path = tmp_path / "config.yaml"
