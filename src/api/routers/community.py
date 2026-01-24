@@ -585,13 +585,21 @@ def create_community_assistant(
 
     # Select API key with authorization checks
     effective_api_key, key_source = _select_api_key(community_id, byok, origin)
-    logger.debug("Using %s API key for %s", key_source, community_id)
+    logger.debug(
+        "Using %s API key",
+        key_source,
+        extra={"community_id": community_id, "origin": origin, "key_source": key_source},
+    )
 
     # Select model (checks BYOK requirement for custom models)
     selected_model, selected_provider = _select_model(
         community_info, requested_model, has_byok=bool(byok)
     )
-    logger.debug("Using model %s for %s", selected_model, community_id)
+    logger.debug(
+        "Using model %s",
+        selected_model,
+        extra={"community_id": community_id, "origin": origin, "model": selected_model},
+    )
 
     # Determine user_id for prompt caching optimization
     cache_user_id = _get_cache_user_id(community_id, byok, user_id)

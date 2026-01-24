@@ -206,3 +206,101 @@ class TestConfigureSecureLogging:
         formatted = formatter.format(record)
         assert "CUSTOM:" in formatted
         assert "INFO" in formatted
+
+
+class TestSecureJSONFormatter:
+    """Tests for SecureJSONFormatter structured logging."""
+
+    def test_formats_as_json(self) -> None:
+        """Should format log records as JSON."""
+        import json
+
+        from src.core.logging import SecureJSONFormatter
+
+        formatter = SecureJSONFormatter()
+        record = logging.LogRecord(
+            name="test.logger",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="Test message",
+            args=(),
+            exc_info=None,
+        )
+
+        formatted = formatter.format(record)
+
+        # Should be valid JSON
+        log_data = json.loads(formatted)
+        assert log_data["level"] == "INFO"
+        assert log_data["logger"] == "test.logger"
+        assert log_data["message"] == "Test message"
+        assert "timestamp" in log_data
+
+    def test_includes_context_fields(self) -> None:
+        """Should include custom context fields from extra parameter."""
+        import json
+
+        from src.core.logging import SecureJSONFormatter
+
+        formatter = SecureJSONFormatter()
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="Request processed",
+            args=(),
+            exc_info=None,
+        )
+
+        # Add custom fields (simulating extra parameter)
+        record.community_id = "hed"
+        record.origin = "https://example.com"
+        record.model = "anthropic/claude-sonnet-4.5"
+
+        formatted = formatter.format(record)
+        log_data = json.loads(formatted)
+
+        assert log_data["community_id"] == "hed"
+        assert log_data["origin"] == "https://example.com"
+        assert log_data["model"] == "anthropic/claude-sonnet-4.5"
+
+    def test_redacts_api_keys_in_json(self) -> None:
+        """Should redact API keys in JSON-formatted logs."""
+        import json
+
+        from src.core.logging import SecureJSONFormatter
+
+        formatter = SecureJSONFormatter()
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="Using API key: sk-or-v1-" + "a" * 64,
+            args=(),
+            exc_info=None,
+        )
+
+        formatted = formatter.format(record)
+        log_data = json.loads(formatted)
+
+        assert "sk-or-v1-***[redacted]" in log_data["message"]
+        assert "aaaa" not in log_data["message"]
+
+    def test_configures_json_logging(self) -> None:
+        """Should configure logging with JSON format when json_format=True."""
+        from src.core.logging import SecureJSONFormatter, configure_secure_logging
+
+        configure_secure_logging(level=logging.INFO, json_format=True)
+
+        root_logger = logging.getLogger()
+        assert root_logger.level == logging.INFO
+        assert len(root_logger.handlers) >= 1
+
+        # Check that at least one handler has SecureJSONFormatter
+        has_json_formatter = any(
+            isinstance(handler.formatter, SecureJSONFormatter) for handler in root_logger.handlers
+        )
+        assert has_json_formatter

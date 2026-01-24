@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from src.api.config import get_settings
 from src.api.routers import create_community_router, sync_router
+from src.api.routers.health import router as health_router
 from src.api.scheduler import start_scheduler, stop_scheduler
 from src.assistants import discover_assistants, registry
 
@@ -174,6 +175,9 @@ def register_routes(app: FastAPI) -> None:
 
     # Sync router (not community-specific)
     app.include_router(sync_router)
+
+    # Health check router
+    app.include_router(health_router)
 
     @app.get("/health", response_model=HealthResponse, tags=["System"])
     async def health_check() -> HealthResponse:

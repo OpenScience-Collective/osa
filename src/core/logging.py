@@ -2,10 +2,15 @@
 
 Provides a custom log formatter that automatically redacts OpenRouter API keys
 from log messages to prevent credential exposure in centralized logging systems.
+
+Supports both text and JSON-structured logging formats.
 """
 
+import json
 import logging
 import re
+from datetime import datetime
+from typing import Any
 
 
 class SecureFormatter(logging.Formatter):
@@ -50,21 +55,104 @@ class SecureFormatter(logging.Formatter):
         return formatted
 
 
+class SecureJSONFormatter(SecureFormatter):
+    """JSON log formatter with API key redaction and structured context.
+
+    Outputs log records as JSON with standard fields plus custom context fields
+    from the 'extra' parameter. API keys are automatically redacted.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        """Format log record as JSON with redacted API keys.
+
+        Args:
+            record: The log record to format.
+
+        Returns:
+            JSON-formatted log message with API keys redacted.
+        """
+        try:
+            # Build base log entry
+            log_entry: dict[str, Any] = {
+                "timestamp": datetime.fromtimestamp(record.created).isoformat(),
+                "level": record.levelname,
+                "logger": record.name,
+                "message": record.getMessage(),
+            }
+
+            # Add exception info if present
+            if record.exc_info:
+                log_entry["exception"] = self.formatException(record.exc_info)
+
+            # Add custom context fields from 'extra'
+            # These are fields added via logger.info("msg", extra={...})
+            for key, value in record.__dict__.items():
+                # Skip internal logging fields
+                if key not in {
+                    "name",
+                    "msg",
+                    "args",
+                    "created",
+                    "filename",
+                    "funcName",
+                    "levelname",
+                    "levelno",
+                    "lineno",
+                    "module",
+                    "msecs",
+                    "message",
+                    "pathname",
+                    "process",
+                    "processName",
+                    "relativeCreated",
+                    "thread",
+                    "threadName",
+                    "exc_info",
+                    "exc_text",
+                    "stack_info",
+                    "taskName",
+                }:
+                    log_entry[key] = value
+
+            # Convert to JSON string
+            json_str = json.dumps(log_entry, default=str)
+
+            # Redact API keys from the JSON string
+            json_str = self.API_KEY_PATTERN.sub("sk-or-v1-***[redacted]", json_str)
+
+            return json_str
+
+        except Exception as e:
+            # Fallback to safe error message
+            error_entry = {
+                "timestamp": datetime.now().isoformat(),
+                "level": "ERROR",
+                "logger": "logging",
+                "message": f"[LOGGING ERROR: {type(e).__name__}]",
+            }
+            return json.dumps(error_entry)
+
+
 def configure_secure_logging(
     level: int = logging.INFO,
     format_string: str | None = None,
+    json_format: bool = False,
 ) -> None:
     """Configure logging with secure formatter that redacts API keys.
 
     Args:
         level: Logging level (default: INFO).
-        format_string: Custom format string (default: standard format with timestamp).
+        format_string: Custom format string for text logging (default: standard format with timestamp).
+                      Ignored if json_format=True.
+        json_format: If True, use JSON structured logging format (default: False).
     """
-    if format_string is None:
-        format_string = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-
-    # Create secure formatter
-    formatter = SecureFormatter(format_string)
+    # Create appropriate formatter
+    if json_format:
+        formatter = SecureJSONFormatter()
+    else:
+        if format_string is None:
+            format_string = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        formatter = SecureFormatter(format_string)
 
     # Configure root logger
     root_logger = logging.getLogger()
