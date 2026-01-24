@@ -736,7 +736,10 @@ def create_community_router(community_id: str) -> APIRouter:
                 e,
                 exc_info=True,
             )
-            raise HTTPException(status_code=500, detail=str(e)) from e
+            raise HTTPException(
+                status_code=500,
+                detail="Internal server error. Please contact support if the issue persists.",
+            ) from e
 
     @router.post(
         "/chat",
@@ -822,7 +825,10 @@ def create_community_router(community_id: str) -> APIRouter:
                 session.add_assistant_message(response_content)
             except ValueError as e:
                 logger.error("Session limit exceeded: %s", e)
-                raise HTTPException(status_code=500, detail=str(e)) from e
+                raise HTTPException(
+                    status_code=500,
+                    detail="Session limit exceeded. Please start a new conversation.",
+                ) from e
 
             return ChatResponse(
                 session_id=session.session_id,
@@ -844,7 +850,10 @@ def create_community_router(community_id: str) -> APIRouter:
                 e,
                 exc_info=True,
             )
-            raise HTTPException(status_code=500, detail=str(e)) from e
+            raise HTTPException(
+                status_code=500,
+                detail="Internal server error. Please contact support if the issue persists.",
+            ) from e
 
     @router.get("/sessions/{session_id}", response_model=SessionInfo)
     async def get_session_info(session_id: str, _auth: RequireAuth) -> SessionInfo:

@@ -46,12 +46,18 @@ def discover_assistants() -> list[str]:
     Returns:
         List of discovered community IDs.
 
+    Raises:
+        RuntimeError: If any config.yaml files fail to load.
+
     Note:
         Call this once at application startup (e.g., in api/main.py).
+        If any configs fail to load, all failures are collected and reported
+        together to help identify all broken configs at once.
     """
     from src.core.config.community import CommunityConfig
 
     discovered: list[str] = []
+    failures: list[tuple[Path, Exception]] = []
     assistants_dir = Path(__file__).parent
 
     for subdir in sorted(assistants_dir.iterdir()):
@@ -71,12 +77,27 @@ def discover_assistants() -> list[str]:
             registry.register_from_config(config)
             discovered.append(config.id)
             logger.info("Discovered assistant: %s from %s", config.id, config_path)
-        except Exception:
+        except Exception as e:
             logger.exception("Failed to load config from %s", config_path)
+            failures.append((config_path, e))
 
+    # Report summary
     logger.info(
         "Discovered %d assistants: %s",
         len(discovered),
         ", ".join(discovered) if discovered else "(none)",
     )
+
+    # Fail fast if any configs failed to load
+    if failures:
+        error_details = "\n".join(
+            f"  - {path.relative_to(assistants_dir.parent)}: {type(e).__name__}: {e}"
+            for path, e in failures
+        )
+        raise RuntimeError(
+            f"Failed to load {len(failures)} community config(s):\n{error_details}\n\n"
+            "All community configs must be valid for the application to start. "
+            "Fix the above errors and restart."
+        )
+
     return discovered

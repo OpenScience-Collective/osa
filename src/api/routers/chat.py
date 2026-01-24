@@ -282,7 +282,11 @@ async def chat(
             )
 
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+            logger.error("Error in chat endpoint: %s", e, exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail="Internal server error. Please contact support if the issue persists.",
+            ) from e
 
 
 async def stream_response(
