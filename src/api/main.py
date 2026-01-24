@@ -11,10 +11,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from src.api.config import get_settings
-from src.api.routers import hed_router, sync_router
+from src.api.routers import create_community_router, sync_router
 from src.api.scheduler import start_scheduler, stop_scheduler
+from src.assistants import discover_assistants, registry
 
 logger = logging.getLogger(__name__)
+
+# Discover assistants at module load time to populate registry
+discover_assistants()
 
 
 class HealthResponse(BaseModel):
@@ -87,8 +91,23 @@ def create_app() -> FastAPI:
 
 
 def register_routes(app: FastAPI) -> None:
-    """Register all application routes."""
-    app.include_router(hed_router)
+    """Register all application routes.
+
+    Auto-mounts routers for all registered communities from the registry.
+    Each community gets endpoints at /{community_id}/ask, /{community_id}/chat, etc.
+    """
+    # Auto-mount routers for all registered communities
+    registered_communities = []
+    for info in registry.list_available():
+        try:
+            router = create_community_router(info.id)
+            app.include_router(router)
+            registered_communities.append(info.id)
+            logger.info("Registered API routes for community: %s", info.id)
+        except Exception as e:
+            logger.error("Failed to register routes for %s: %s", info.id, e)
+
+    # Sync router (not community-specific)
     app.include_router(sync_router)
 
     @app.get("/health", response_model=HealthResponse, tags=["System"])
@@ -110,21 +129,30 @@ def register_routes(app: FastAPI) -> None:
     async def root() -> dict[str, Any]:
         """Root endpoint with API information."""
         settings = get_settings()
+
+        # Build dynamic endpoint list based on registered communities
+        endpoints: dict[str, str] = {}
+        for community_id in registered_communities:
+            info = registry.get(community_id)
+            name = info.name if info else community_id.upper()
+            endpoints[f"POST /{community_id}/ask"] = f"Ask a single question about {name}"
+            endpoints[f"POST /{community_id}/chat"] = f"Multi-turn conversation about {name}"
+            endpoints[f"GET /{community_id}/sessions"] = f"List active {name} sessions"
+            endpoints[f"GET /{community_id}/sessions/{{session_id}}"] = "Get session info"
+            endpoints[f"DELETE /{community_id}/sessions/{{session_id}}"] = "Delete a session"
+
+        # Add non-community endpoints
+        endpoints["GET /sync/status"] = "Knowledge sync status"
+        endpoints["GET /sync/health"] = "Sync health check"
+        endpoints["POST /sync/trigger"] = "Trigger sync (requires API key)"
+        endpoints["GET /health"] = "Health check"
+
         return {
             "name": settings.app_name,
             "version": settings.app_version,
             "description": "AI assistant for open science tools",
-            "endpoints": {
-                "POST /hed/ask": "Ask a single question about HED",
-                "POST /hed/chat": "Multi-turn conversation about HED",
-                "GET /hed/sessions": "List active sessions",
-                "GET /hed/sessions/{session_id}": "Get session info",
-                "DELETE /hed/sessions/{session_id}": "Delete a session",
-                "GET /sync/status": "Knowledge sync status",
-                "GET /sync/health": "Sync health check",
-                "POST /sync/trigger": "Trigger sync (requires API key)",
-                "GET /health": "Health check",
-            },
+            "communities": registered_communities,
+            "endpoints": endpoints,
         }
 
 
