@@ -15,7 +15,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from src.assistants import discover_assistants, registry
+from src.assistants import registry
 from src.cli.config import load_config
 from src.knowledge.db import get_db_path, get_stats, init_db
 from src.knowledge.github_sync import sync_repo, sync_repos
@@ -28,9 +28,6 @@ from src.knowledge.papers_sync import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Discover assistants to populate registry
-discover_assistants()
 
 console = Console()
 

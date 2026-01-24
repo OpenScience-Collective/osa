@@ -12,44 +12,51 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from src.api.config import get_settings
-from src.assistants import discover_assistants, registry
+from src.assistants import registry
 from src.knowledge.db import init_db
 from src.knowledge.github_sync import sync_repos
 from src.knowledge.papers_sync import sync_all_papers, sync_citing_papers
 
 logger = logging.getLogger(__name__)
 
-# Discover assistants at module load to populate registry
-discover_assistants()
-
 # Global scheduler instance
 _scheduler: BackgroundScheduler | None = None
 
 
-def _get_hed_repos() -> list[str]:
-    """Get HED repos from the registry."""
-    info = registry.get("hed")
+def _get_communities_with_sync() -> list[str]:
+    """Get all community IDs that have sync configuration.
+
+    Returns:
+        List of community IDs with GitHub repos or citation config.
+    """
+    communities = []
+    for info in registry.list_all():
+        if info.sync_config:
+            communities.append(info.id)
+    return communities
+
+
+def _get_community_repos(community_id: str) -> list[str]:
+    """Get GitHub repos for a community from the registry."""
+    info = registry.get(community_id)
     if info and info.community_config and info.community_config.github:
         return info.community_config.github.repos
-    logger.warning("HED repos not found in registry, using empty list")
     return []
 
 
-def _get_hed_paper_queries() -> list[str]:
-    """Get HED paper queries from the registry."""
-    info = registry.get("hed")
+def _get_community_paper_queries(community_id: str) -> list[str]:
+    """Get paper queries for a community from the registry."""
+    info = registry.get(community_id)
     if info and info.community_config and info.community_config.citations:
         return info.community_config.citations.queries
-    logger.warning("HED paper queries not found in registry, using empty list")
     return []
 
 
-def _get_hed_paper_dois() -> list[str]:
-    """Get HED paper DOIs for citation tracking from the registry."""
-    info = registry.get("hed")
+def _get_community_paper_dois(community_id: str) -> list[str]:
+    """Get paper DOIs for a community from the registry."""
+    info = registry.get(community_id)
     if info and info.community_config and info.community_config.citations:
         return info.community_config.citations.dois
-    logger.warning("HED paper DOIs not found in registry, using empty list")
     return []
 
 
@@ -60,13 +67,29 @@ MAX_CONSECUTIVE_FAILURES = 3
 
 
 def _run_github_sync() -> None:
-    """Run GitHub sync job."""
+    """Run GitHub sync job for all communities."""
     global _github_sync_failures
-    logger.info("Starting scheduled GitHub sync")
+    logger.info("Starting scheduled GitHub sync for all communities")
     try:
-        results = sync_repos(_get_hed_repos(), project="hed", incremental=True)
-        total = sum(results.values())
-        logger.info("GitHub sync complete: %d items synced", total)
+        communities = _get_communities_with_sync()
+        if not communities:
+            logger.info("No communities with sync configuration found")
+            return
+
+        grand_total = 0
+        for community_id in communities:
+            repos = _get_community_repos(community_id)
+            if not repos:
+                logger.debug("No GitHub repos configured for %s", community_id)
+                continue
+
+            logger.info("Syncing GitHub for community: %s", community_id)
+            results = sync_repos(repos, project=community_id, incremental=True)
+            total = sum(results.values())
+            grand_total += total
+            logger.info("GitHub sync complete for %s: %d items", community_id, total)
+
+        logger.info("GitHub sync complete for all communities: %d items synced", grand_total)
         _github_sync_failures = 0  # Reset on success
     except Exception as e:
         _github_sync_failures += 1
@@ -85,28 +108,47 @@ def _run_github_sync() -> None:
 
 
 def _run_papers_sync() -> None:
-    """Run papers sync job."""
+    """Run papers sync job for all communities."""
     global _papers_sync_failures
     settings = get_settings()
-    logger.info("Starting scheduled papers sync")
+    logger.info("Starting scheduled papers sync for all communities")
     try:
-        # Sync papers by query
-        queries = _get_hed_paper_queries()
-        results = sync_all_papers(
-            queries=queries,
-            semantic_scholar_api_key=settings.semantic_scholar_api_key,
-            pubmed_api_key=settings.pubmed_api_key,
-            project="hed",
-        )
-        total = sum(results.values())
+        communities = _get_communities_with_sync()
+        if not communities:
+            logger.info("No communities with sync configuration found")
+            return
 
-        # Sync citing papers by DOI
-        dois = _get_hed_paper_dois()
-        if dois:
-            citing_count = sync_citing_papers(dois, project="hed")
-            total += citing_count
+        grand_total = 0
+        for community_id in communities:
+            queries = _get_community_paper_queries(community_id)
+            dois = _get_community_paper_dois(community_id)
 
-        logger.info("Papers sync complete: %d items synced", total)
+            if not queries and not dois:
+                logger.debug("No paper queries/DOIs configured for %s", community_id)
+                continue
+
+            logger.info("Syncing papers for community: %s", community_id)
+            community_total = 0
+
+            # Sync papers by query
+            if queries:
+                results = sync_all_papers(
+                    queries=queries,
+                    semantic_scholar_api_key=settings.semantic_scholar_api_key,
+                    pubmed_api_key=settings.pubmed_api_key,
+                    project=community_id,
+                )
+                community_total += sum(results.values())
+
+            # Sync citing papers by DOI
+            if dois:
+                citing_count = sync_citing_papers(dois, project=community_id)
+                community_total += citing_count
+
+            grand_total += community_total
+            logger.info("Papers sync complete for %s: %d items", community_id, community_total)
+
+        logger.info("Papers sync complete for all communities: %d items synced", grand_total)
         _papers_sync_failures = 0  # Reset on success
     except Exception as e:
         _papers_sync_failures += 1
@@ -205,13 +247,13 @@ def get_scheduler() -> BackgroundScheduler | None:
 
 
 def run_sync_now(sync_type: str = "all") -> dict[str, int]:
-    """Run sync immediately (for manual triggers or initial sync).
+    """Run sync immediately for all communities (for manual triggers or initial sync).
 
     Args:
         sync_type: "github", "papers", or "all"
 
     Returns:
-        Dict mapping source to items synced
+        Dict mapping source to items synced across all communities
     """
     settings = get_settings()
     results: dict[str, int] = {}
@@ -223,28 +265,48 @@ def run_sync_now(sync_type: str = "all") -> dict[str, int]:
     # Initialize database
     init_db()
 
-    if sync_type in ("github", "all"):
-        logger.info("Running GitHub sync")
-        github_results = sync_repos(_get_hed_repos(), project="hed", incremental=True)
-        results["github"] = sum(github_results.values())
+    github_total = 0
+    papers_total = 0
 
-    if sync_type in ("papers", "all"):
-        logger.info("Running papers sync")
-        queries = _get_hed_paper_queries()
-        papers_results = sync_all_papers(
-            queries=queries,
-            semantic_scholar_api_key=settings.semantic_scholar_api_key,
-            pubmed_api_key=settings.pubmed_api_key,
-            project="hed",
-        )
-        papers_total = sum(papers_results.values())
+    communities = _get_communities_with_sync()
+    if not communities:
+        logger.info("No communities with sync configuration found")
+        results["github"] = 0
+        results["papers"] = 0
+        return results
 
-        # Sync citing papers by DOI
-        dois = _get_hed_paper_dois()
-        if dois:
-            citing_count = sync_citing_papers(dois, project="hed")
-            papers_total += citing_count
+    for community_id in communities:
+        if sync_type in ("github", "all"):
+            repos = _get_community_repos(community_id)
+            if repos:
+                logger.info("Running GitHub sync for %s", community_id)
+                github_results = sync_repos(repos, project=community_id, incremental=True)
+                github_total += sum(github_results.values())
 
-        results["papers"] = papers_total
+        if sync_type in ("papers", "all"):
+            queries = _get_community_paper_queries(community_id)
+            dois = _get_community_paper_dois(community_id)
+
+            if queries or dois:
+                logger.info("Running papers sync for %s", community_id)
+                community_papers = 0
+
+                if queries:
+                    papers_results = sync_all_papers(
+                        queries=queries,
+                        semantic_scholar_api_key=settings.semantic_scholar_api_key,
+                        pubmed_api_key=settings.pubmed_api_key,
+                        project=community_id,
+                    )
+                    community_papers += sum(papers_results.values())
+
+                if dois:
+                    citing_count = sync_citing_papers(dois, project=community_id)
+                    community_papers += citing_count
+
+                papers_total += community_papers
+
+    results["github"] = github_total
+    results["papers"] = papers_total
 
     return results

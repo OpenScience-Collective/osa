@@ -5,6 +5,7 @@ Each community gets endpoints like /{community_id}/ask, /{community_id}/chat, et
 """
 
 import hashlib
+import json
 import logging
 import uuid
 from collections.abc import AsyncGenerator
@@ -124,9 +125,21 @@ class SessionInfo(BaseModel):
 # Session Management (In-Memory, per-community isolation)
 # ---------------------------------------------------------------------------
 
+# Session limits and constraints
+MAX_SESSIONS_PER_COMMUNITY = 1000  # Prevent memory exhaustion
+SESSION_TTL_HOURS = 24  # Auto-delete inactive sessions after 24h
+MAX_MESSAGES_PER_SESSION = 100  # Limit conversation length
+MAX_MESSAGE_LENGTH = 10000  # Max characters per message
+
 
 class ChatSession:
-    """A chat session with message history."""
+    """A chat session with message history.
+
+    Enforces constraints:
+    - Max messages per session: 100
+    - Max message length: 10,000 characters
+    - TTL: 24 hours from last activity
+    """
 
     def __init__(self, session_id: str, community_id: str) -> None:
         self.session_id = session_id
@@ -136,14 +149,41 @@ class ChatSession:
         self.last_active = self.created_at
 
     def add_user_message(self, content: str) -> None:
-        """Add a user message to history."""
+        """Add a user message to history.
+
+        Raises:
+            ValueError: If message exceeds length limit or session at max messages.
+        """
+        if len(content) > MAX_MESSAGE_LENGTH:
+            raise ValueError(f"Message too long ({len(content)} chars). Max: {MAX_MESSAGE_LENGTH}")
+        if len(self.messages) >= MAX_MESSAGES_PER_SESSION:
+            raise ValueError(
+                f"Session has reached max messages ({MAX_MESSAGES_PER_SESSION}). "
+                "Start a new session."
+            )
         self.messages.append(HumanMessage(content=content))
         self.last_active = datetime.now(UTC)
 
     def add_assistant_message(self, content: str) -> None:
-        """Add an assistant message to history."""
+        """Add an assistant message to history.
+
+        Raises:
+            ValueError: If message exceeds length limit or session at max messages.
+        """
+        if len(content) > MAX_MESSAGE_LENGTH:
+            raise ValueError(f"Message too long ({len(content)} chars). Max: {MAX_MESSAGE_LENGTH}")
+        if len(self.messages) >= MAX_MESSAGES_PER_SESSION:
+            raise ValueError(
+                f"Session has reached max messages ({MAX_MESSAGES_PER_SESSION}). "
+                "Start a new session."
+            )
         self.messages.append(AIMessage(content=content))
         self.last_active = datetime.now(UTC)
+
+    def is_expired(self) -> bool:
+        """Check if session has exceeded TTL."""
+        age_hours = (datetime.now(UTC) - self.last_active).total_seconds() / 3600
+        return age_hours > SESSION_TTL_HOURS
 
     def to_info(self) -> SessionInfo:
         """Convert to SessionInfo model."""
@@ -167,13 +207,62 @@ def _get_session_store(community_id: str) -> dict[str, ChatSession]:
     return _community_sessions[community_id]
 
 
+def _evict_expired_sessions(community_id: str) -> int:
+    """Remove expired sessions from store. Returns count of evicted sessions."""
+    store = _get_session_store(community_id)
+    expired = [sid for sid, session in store.items() if session.is_expired()]
+    for sid in expired:
+        del store[sid]
+    if expired:
+        logger.info("Evicted %d expired sessions from community %s", len(expired), community_id)
+    return len(expired)
+
+
+def _evict_lru_session(community_id: str) -> None:
+    """Remove least-recently-used session when limit is reached."""
+    store = _get_session_store(community_id)
+    if not store:
+        return
+
+    # Find session with oldest last_active timestamp
+    lru_id = min(store.keys(), key=lambda sid: store[sid].last_active)
+    del store[lru_id]
+    logger.warning(
+        "Evicted LRU session %s from community %s (limit: %d)",
+        lru_id,
+        community_id,
+        MAX_SESSIONS_PER_COMMUNITY,
+    )
+
+
 def get_or_create_session(community_id: str, session_id: str | None) -> ChatSession:
-    """Get existing session or create a new one."""
+    """Get existing session or create a new one.
+
+    Enforces session limits:
+    - Evicts expired sessions (TTL)
+    - Evicts LRU session if at capacity
+    - Max sessions per community: 1000
+    """
     store = _get_session_store(community_id)
 
+    # Try to get existing session
     if session_id and session_id in store:
-        return store[session_id]
+        session = store[session_id]
+        # Check if expired
+        if session.is_expired():
+            del store[session_id]
+            logger.info("Removed expired session %s", session_id)
+        else:
+            return session
 
+    # Evict expired sessions before creating new one
+    _evict_expired_sessions(community_id)
+
+    # If at capacity, evict LRU
+    if len(store) >= MAX_SESSIONS_PER_COMMUNITY:
+        _evict_lru_session(community_id)
+
+    # Create new session
     new_id = session_id or str(uuid.uuid4())
     session = ChatSession(new_id, community_id)
     store[new_id] = session
@@ -181,9 +270,14 @@ def get_or_create_session(community_id: str, session_id: str | None) -> ChatSess
 
 
 def get_session(community_id: str, session_id: str) -> ChatSession | None:
-    """Get a session by ID."""
+    """Get a session by ID, returns None if not found or expired."""
     store = _get_session_store(community_id)
-    return store.get(session_id)
+    session = store.get(session_id)
+    if session and session.is_expired():
+        del store[session_id]
+        logger.info("Removed expired session %s", session_id)
+        return None
+    return session
 
 
 def delete_session(community_id: str, session_id: str) -> bool:
@@ -196,9 +290,17 @@ def delete_session(community_id: str, session_id: str) -> bool:
 
 
 def list_sessions(community_id: str) -> list[ChatSession]:
-    """List all sessions for a community."""
+    """List all active (non-expired) sessions for a community."""
     store = _get_session_store(community_id)
-    return list(store.values())
+    # Filter out expired sessions
+    active_sessions = [s for s in store.values() if not s.is_expired()]
+    # Clean up expired sessions from store
+    expired = [sid for sid, s in store.items() if s.is_expired()]
+    for sid in expired:
+        del store[sid]
+    if expired:
+        logger.info("Cleaned %d expired sessions from %s", len(expired), community_id)
+    return active_sessions
 
 
 # ---------------------------------------------------------------------------
@@ -277,17 +379,43 @@ def create_community_assistant(
     Raises:
         ValueError: If community_id is not registered
     """
-    if registry.get(community_id) is None:
+    community_info = registry.get(community_id)
+    if community_info is None:
         raise ValueError(f"Unknown community: {community_id}")
 
     settings = get_settings()
+
+    # Determine API key to use (priority order):
+    # 1. BYOK (user-provided key)
+    # 2. Community-specific key (from env var)
+    # 3. Platform-level default key
+    effective_api_key = api_key
+    if not effective_api_key and community_info.community_config:
+        env_var_name = community_info.community_config.openrouter_api_key_env_var
+        if env_var_name:
+            import os
+
+            community_key = os.getenv(env_var_name)
+            if community_key:
+                effective_api_key = community_key
+                logger.debug(
+                    "Using community-specific API key from %s for %s", env_var_name, community_id
+                )
+            else:
+                logger.warning(
+                    "Community %s configured to use %s but env var not set, falling back to platform key",
+                    community_id,
+                    env_var_name,
+                )
+    if not effective_api_key:
+        effective_api_key = settings.openrouter_api_key
 
     # Determine user_id for prompt caching optimization
     cache_user_id = _get_cache_user_id(community_id, api_key, user_id)
 
     model = create_openrouter_llm(
         model=settings.default_model,
-        api_key=api_key or settings.openrouter_api_key,
+        api_key=effective_api_key,
         temperature=settings.llm_temperature,
         provider=settings.default_model_provider,
         user_id=cache_user_id,
@@ -438,7 +566,12 @@ def create_community_router(community_id: str) -> APIRouter:
         """
         session = get_or_create_session(community_id, request.session_id)
         user_id = x_user_id or session.session_id
-        session.add_user_message(request.message)
+
+        # Add user message with constraint validation
+        try:
+            session.add_user_message(request.message)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
 
         if request.stream:
             return StreamingResponse(
@@ -468,7 +601,12 @@ def create_community_router(community_id: str) -> APIRouter:
                 for tc in result.get("tool_calls", [])
             ]
 
-            session.add_assistant_message(response_content)
+            # Add assistant message with constraint validation
+            try:
+                session.add_assistant_message(response_content)
+            except ValueError as e:
+                logger.error("Session limit exceeded: %s", e)
+                raise HTTPException(status_code=500, detail=str(e)) from e
 
             return ChatResponse(
                 session_id=session.session_id,
@@ -476,6 +614,12 @@ def create_community_router(community_id: str) -> APIRouter:
                 tool_calls=tool_calls_info,
             )
 
+        except ValueError as e:
+            # Session limit errors
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except HTTPException:
+            # Re-raise HTTP exceptions (including the ones we created above)
+            raise
         except Exception as e:
             logger.error(
                 "Error in chat endpoint for session %s (community: %s): %s",
@@ -521,7 +665,15 @@ async def _stream_ask_response(
     user_id: str | None,
     page_context: PageContext | None = None,
 ) -> AsyncGenerator[str, None]:
-    """Stream response for ask endpoint."""
+    """Stream response for ask endpoint with JSON-encoded SSE events.
+
+    Event format:
+        data: {"event": "content", "content": "text chunk"}
+        data: {"event": "tool_start", "name": "tool_name", "input": {...}}
+        data: {"event": "tool_end", "name": "tool_name", "output": {...}}
+        data: {"event": "done"}
+        data: {"event": "error", "message": "error text"}
+    """
     try:
         assistant = create_community_assistant(
             community_id, api_key, user_id, preload_docs=True, page_context=page_context
@@ -540,15 +692,29 @@ async def _stream_ask_response(
             if kind == "on_chat_model_stream":
                 content = event.get("data", {}).get("chunk", {})
                 if hasattr(content, "content") and content.content:
-                    yield f"data: {content.content}\n\n"
+                    sse_event = {"event": "content", "content": content.content}
+                    yield f"data: {json.dumps(sse_event)}\n\n"
 
             elif kind == "on_tool_start":
-                yield f"event: tool_start\ndata: {event.get('name', '')}\n\n"
+                tool_input = event.get("data", {}).get("input", {})
+                sse_event = {
+                    "event": "tool_start",
+                    "name": event.get("name", ""),
+                    "input": tool_input if isinstance(tool_input, dict) else {},
+                }
+                yield f"data: {json.dumps(sse_event)}\n\n"
 
             elif kind == "on_tool_end":
-                yield f"event: tool_end\ndata: {event.get('name', '')}\n\n"
+                tool_output = event.get("data", {}).get("output", {})
+                sse_event = {
+                    "event": "tool_end",
+                    "name": event.get("name", ""),
+                    "output": str(tool_output) if tool_output else "",
+                }
+                yield f"data: {json.dumps(sse_event)}\n\n"
 
-        yield "event: done\ndata: complete\n\n"
+        sse_event = {"event": "done"}
+        yield f"data: {json.dumps(sse_event)}\n\n"
 
     except Exception as e:
         logger.error(
@@ -557,7 +723,8 @@ async def _stream_ask_response(
             e,
             exc_info=True,
         )
-        yield f"event: error\ndata: {e!s}\n\n"
+        sse_event = {"event": "error", "message": str(e)}
+        yield f"data: {json.dumps(sse_event)}\n\n"
 
 
 async def _stream_chat_response(
@@ -566,7 +733,15 @@ async def _stream_chat_response(
     api_key: str | None,
     user_id: str | None,
 ) -> AsyncGenerator[str, None]:
-    """Stream assistant response as Server-Sent Events."""
+    """Stream assistant response as JSON-encoded Server-Sent Events.
+
+    Event format:
+        data: {"event": "content", "content": "text chunk"}
+        data: {"event": "tool_start", "name": "tool_name", "input": {...}}
+        data: {"event": "tool_end", "name": "tool_name", "output": {...}}
+        data: {"event": "done", "session_id": "..."}
+        data: {"event": "error", "message": "error text"}
+    """
     try:
         assistant = create_community_assistant(community_id, api_key, user_id, preload_docs=True)
         graph = assistant.build_graph()
@@ -587,19 +762,45 @@ async def _stream_chat_response(
                 if hasattr(content, "content") and content.content:
                     chunk = content.content
                     full_response += chunk
-                    yield f"data: {chunk}\n\n"
+                    sse_event = {"event": "content", "content": chunk}
+                    yield f"data: {json.dumps(sse_event)}\n\n"
 
             elif kind == "on_tool_start":
-                yield f"event: tool_start\ndata: {event.get('name', '')}\n\n"
+                tool_input = event.get("data", {}).get("input", {})
+                sse_event = {
+                    "event": "tool_start",
+                    "name": event.get("name", ""),
+                    "input": tool_input if isinstance(tool_input, dict) else {},
+                }
+                yield f"data: {json.dumps(sse_event)}\n\n"
 
             elif kind == "on_tool_end":
-                yield f"event: tool_end\ndata: {event.get('name', '')}\n\n"
+                tool_output = event.get("data", {}).get("output", {})
+                sse_event = {
+                    "event": "tool_end",
+                    "name": event.get("name", ""),
+                    "output": str(tool_output) if tool_output else "",
+                }
+                yield f"data: {json.dumps(sse_event)}\n\n"
 
         if full_response:
-            session.add_assistant_message(full_response)
+            try:
+                session.add_assistant_message(full_response)
+            except ValueError as e:
+                # Session limit exceeded
+                logger.error("Session limit exceeded in streaming: %s", e)
+                sse_event = {"event": "error", "message": str(e)}
+                yield f"data: {json.dumps(sse_event)}\n\n"
+                return
 
-        yield f"event: done\ndata: {session.session_id}\n\n"
+        sse_event = {"event": "done", "session_id": session.session_id}
+        yield f"data: {json.dumps(sse_event)}\n\n"
 
+    except ValueError as e:
+        # Session limit errors
+        logger.error("Session limit error: %s", e)
+        sse_event = {"event": "error", "message": str(e)}
+        yield f"data: {json.dumps(sse_event)}\n\n"
     except Exception as e:
         logger.error(
             "Streaming error in chat endpoint for session %s (community: %s): %s",
@@ -608,4 +809,5 @@ async def _stream_chat_response(
             e,
             exc_info=True,
         )
-        yield f"event: error\ndata: {e!s}\n\n"
+        sse_event = {"event": "error", "message": str(e)}
+        yield f"data: {json.dumps(sse_event)}\n\n"

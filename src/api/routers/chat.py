@@ -12,11 +12,8 @@ from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
 
 from src.api.config import get_settings
-from src.assistants import discover_assistants, registry
+from src.assistants import registry
 from src.core.services.litellm_llm import create_openrouter_llm
-
-# Discover assistants on module load
-discover_assistants()
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 logger = logging.getLogger(__name__)

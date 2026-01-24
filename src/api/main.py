@@ -66,7 +66,10 @@ def _wildcard_origin_to_regex(pattern: str) -> str:
     """Convert a wildcard CORS origin pattern to a regex string.
 
     Converts patterns like 'https://*.pages.dev' to a regex that matches
-    any subdomain (e.g., 'https://my-app.pages.dev').
+    any valid subdomain label (e.g., 'https://my-app.pages.dev').
+
+    Note: Matches a single subdomain label, not multiple levels.
+    Example: '*.example.com' matches 'foo.example.com' but not 'foo.bar.example.com'.
 
     Args:
         pattern: Origin with wildcard (e.g., 'https://*.example.com').
