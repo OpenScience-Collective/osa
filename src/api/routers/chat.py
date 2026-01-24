@@ -12,11 +12,8 @@ from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
 
 from src.api.config import get_settings
-from src.assistants import discover_assistants, registry
+from src.assistants import registry
 from src.core.services.litellm_llm import create_openrouter_llm
-
-# Discover assistants on module load
-discover_assistants()
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 logger = logging.getLogger(__name__)
@@ -285,7 +282,11 @@ async def chat(
             )
 
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
+            logger.error("Error in chat endpoint: %s", e, exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail="Internal server error. Please contact support if the issue persists.",
+            ) from e
 
 
 async def stream_response(

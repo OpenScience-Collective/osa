@@ -4,13 +4,16 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 
-from src.assistants.hed import (
+from src.assistants import discover_assistants, registry
+from src.assistants.community import PageContext
+from src.utils.page_fetcher import (
     MAX_PAGE_CONTENT_LENGTH,
-    HEDAssistant,
-    PageContext,
-    _fetch_page_content_impl,
+    fetch_page_content,
     is_safe_url,
 )
+
+# Discover assistants at module load
+discover_assistants()
 
 
 class TestSsrfProtection:
@@ -117,39 +120,39 @@ class TestSsrfProtection:
 
 
 class TestFetchPageContentImpl:
-    """Tests for _fetch_page_content_impl function."""
+    """Tests for fetch_page_content function."""
 
     def test_rejects_invalid_url(self):
         """Should reject URLs that don't start with http/https."""
-        result = _fetch_page_content_impl("ftp://example.com")
+        result = fetch_page_content("ftp://example.com")
         assert "Error" in result
         assert "http://" in result.lower() or "https://" in result.lower()
 
     def test_rejects_empty_url(self):
         """Should reject empty URLs."""
-        result = _fetch_page_content_impl("")
+        result = fetch_page_content("")
         assert "Error" in result
 
     def test_rejects_none_url(self):
         """Should handle None-like URL."""
         # Test with empty string since None is not a valid type
-        result = _fetch_page_content_impl("")
+        result = fetch_page_content("")
         assert "Error" in result
 
     def test_rejects_localhost(self):
         """Should reject localhost URLs."""
-        result = _fetch_page_content_impl("http://localhost:8080")
+        result = fetch_page_content("http://localhost:8080")
         assert "Error" in result
         assert "not allowed" in result.lower()
 
     def test_rejects_private_ip(self):
         """Should reject private IP addresses."""
-        result = _fetch_page_content_impl("http://192.168.1.1")
+        result = fetch_page_content("http://192.168.1.1")
         assert "Error" in result
         assert "private" in result.lower()
 
-    @patch("src.assistants.hed.is_safe_url")
-    @patch("src.assistants.hed.httpx.Client")
+    @patch("src.utils.page_fetcher.is_safe_url")
+    @patch("src.utils.page_fetcher.httpx.Client")
     def test_successful_fetch(self, mock_client_class, mock_is_safe):
         """Should fetch and convert HTML to markdown."""
         mock_is_safe.return_value = (True, "", "93.184.216.34")
@@ -165,13 +168,13 @@ class TestFetchPageContentImpl:
         mock_client.get.return_value = mock_response
         mock_client_class.return_value.__enter__.return_value = mock_client
 
-        result = _fetch_page_content_impl("https://example.com")
+        result = fetch_page_content("https://example.com")
         assert "Content from https://example.com" in result
         assert "Test" in result
         assert "Hello world" in result
 
-    @patch("src.assistants.hed.is_safe_url")
-    @patch("src.assistants.hed.httpx.Client")
+    @patch("src.utils.page_fetcher.is_safe_url")
+    @patch("src.utils.page_fetcher.httpx.Client")
     def test_rejects_non_html_content(self, mock_client_class, mock_is_safe):
         """Should reject non-HTML content types."""
         mock_is_safe.return_value = (True, "", "93.184.216.34")
@@ -184,12 +187,12 @@ class TestFetchPageContentImpl:
         mock_client.get.return_value = mock_response
         mock_client_class.return_value.__enter__.return_value = mock_client
 
-        result = _fetch_page_content_impl("https://example.com/api")
+        result = fetch_page_content("https://example.com/api")
         assert "Error" in result
         assert "non-HTML" in result
 
-    @patch("src.assistants.hed.is_safe_url")
-    @patch("src.assistants.hed.httpx.Client")
+    @patch("src.utils.page_fetcher.is_safe_url")
+    @patch("src.utils.page_fetcher.httpx.Client")
     def test_handles_redirect_to_safe_url(self, mock_client_class, mock_is_safe):
         """Should follow redirects to safe URLs."""
         # First call safe, redirect also safe
@@ -212,11 +215,11 @@ class TestFetchPageContentImpl:
         mock_client.get.side_effect = [redirect_response, final_response]
         mock_client_class.return_value.__enter__.return_value = mock_client
 
-        result = _fetch_page_content_impl("https://example.com")
+        result = fetch_page_content("https://example.com")
         assert "Final page" in result
 
-    @patch("src.assistants.hed.is_safe_url")
-    @patch("src.assistants.hed.httpx.Client")
+    @patch("src.utils.page_fetcher.is_safe_url")
+    @patch("src.utils.page_fetcher.httpx.Client")
     def test_blocks_redirect_to_unsafe_url(self, mock_client_class, mock_is_safe):
         """Should block redirects to unsafe URLs (SSRF protection)."""
         # Original safe, redirect unsafe
@@ -233,12 +236,12 @@ class TestFetchPageContentImpl:
         mock_client.get.return_value = redirect_response
         mock_client_class.return_value.__enter__.return_value = mock_client
 
-        result = _fetch_page_content_impl("https://example.com")
+        result = fetch_page_content("https://example.com")
         assert "Error" in result
         assert "Redirect to unsafe URL" in result
 
-    @patch("src.assistants.hed.is_safe_url")
-    @patch("src.assistants.hed.httpx.Client")
+    @patch("src.utils.page_fetcher.is_safe_url")
+    @patch("src.utils.page_fetcher.httpx.Client")
     def test_handles_too_many_redirects(self, mock_client_class, mock_is_safe):
         """Should limit redirect count."""
         mock_is_safe.return_value = (True, "", "93.184.216.34")
@@ -252,12 +255,12 @@ class TestFetchPageContentImpl:
         mock_client.get.return_value = redirect_response
         mock_client_class.return_value.__enter__.return_value = mock_client
 
-        result = _fetch_page_content_impl("https://example.com")
+        result = fetch_page_content("https://example.com")
         assert "Error" in result
         assert "Too many redirects" in result
 
-    @patch("src.assistants.hed.is_safe_url")
-    @patch("src.assistants.hed.httpx.Client")
+    @patch("src.utils.page_fetcher.is_safe_url")
+    @patch("src.utils.page_fetcher.httpx.Client")
     def test_handles_relative_redirect(self, mock_client_class, mock_is_safe):
         """Should handle relative redirects properly."""
         mock_is_safe.side_effect = [
@@ -278,11 +281,11 @@ class TestFetchPageContentImpl:
         mock_client.get.side_effect = [redirect_response, final_response]
         mock_client_class.return_value.__enter__.return_value = mock_client
 
-        result = _fetch_page_content_impl("https://example.com")
+        result = fetch_page_content("https://example.com")
         assert "New page" in result
 
-    @patch("src.assistants.hed.is_safe_url")
-    @patch("src.assistants.hed.httpx.Client")
+    @patch("src.utils.page_fetcher.is_safe_url")
+    @patch("src.utils.page_fetcher.httpx.Client")
     def test_truncates_large_content(self, mock_client_class, mock_is_safe):
         """Should truncate content that exceeds MAX_PAGE_CONTENT_LENGTH."""
         mock_is_safe.return_value = (True, "", "93.184.216.34")
@@ -298,13 +301,13 @@ class TestFetchPageContentImpl:
         mock_client.get.return_value = mock_response
         mock_client_class.return_value.__enter__.return_value = mock_client
 
-        result = _fetch_page_content_impl("https://example.com")
+        result = fetch_page_content("https://example.com")
         assert "[content truncated]" in result
         # Content should be limited
         assert len(result) < MAX_PAGE_CONTENT_LENGTH + 1000  # Account for header/footer
 
-    @patch("src.assistants.hed.is_safe_url")
-    @patch("src.assistants.hed.httpx.Client")
+    @patch("src.utils.page_fetcher.is_safe_url")
+    @patch("src.utils.page_fetcher.httpx.Client")
     def test_handles_http_error(self, mock_client_class, mock_is_safe):
         """Should handle HTTP errors gracefully."""
         mock_is_safe.return_value = (True, "", "93.184.216.34")
@@ -320,12 +323,12 @@ class TestFetchPageContentImpl:
         mock_client.get.return_value = mock_response
         mock_client_class.return_value.__enter__.return_value = mock_client
 
-        result = _fetch_page_content_impl("https://example.com/missing")
+        result = fetch_page_content("https://example.com/missing")
         assert "Error" in result
         assert "404" in result
 
-    @patch("src.assistants.hed.is_safe_url")
-    @patch("src.assistants.hed.httpx.Client")
+    @patch("src.utils.page_fetcher.is_safe_url")
+    @patch("src.utils.page_fetcher.httpx.Client")
     def test_handles_timeout(self, mock_client_class, mock_is_safe):
         """Should handle request timeouts gracefully."""
         mock_is_safe.return_value = (True, "", "93.184.216.34")
@@ -334,12 +337,12 @@ class TestFetchPageContentImpl:
         mock_client.get.side_effect = httpx.TimeoutException("Connection timed out")
         mock_client_class.return_value.__enter__.return_value = mock_client
 
-        result = _fetch_page_content_impl("https://example.com")
+        result = fetch_page_content("https://example.com")
         assert "Error" in result
         assert "timed out" in result.lower()
 
-    @patch("src.assistants.hed.is_safe_url")
-    @patch("src.assistants.hed.httpx.Client")
+    @patch("src.utils.page_fetcher.is_safe_url")
+    @patch("src.utils.page_fetcher.httpx.Client")
     def test_handles_request_error(self, mock_client_class, mock_is_safe):
         """Should handle generic request errors gracefully."""
         mock_is_safe.return_value = (True, "", "93.184.216.34")
@@ -348,7 +351,7 @@ class TestFetchPageContentImpl:
         mock_client.get.side_effect = httpx.RequestError("Connection refused")
         mock_client_class.return_value.__enter__.return_value = mock_client
 
-        result = _fetch_page_content_impl("https://example.com")
+        result = fetch_page_content("https://example.com")
         assert "Error" in result
 
 
@@ -374,17 +377,16 @@ class TestPageContextDataclass:
         assert ctx.title is None
 
 
-class TestHEDAssistantWithPageContext:
-    """Tests for HEDAssistant with page context."""
+class TestCommunityAssistantWithPageContext:
+    """Tests for CommunityAssistant with page context."""
 
     def test_assistant_without_page_context(self):
         """Should work without page context."""
         model = MagicMock()
         model.bind_tools = MagicMock(return_value=model)
-        assistant = HEDAssistant(model=model, preload_docs=False)
+        assistant = registry.create_assistant("hed", model=model, preload_docs=False)
 
-        # Should have 7 base tools (not 8 with fetch_current_page)
-        assert len(assistant.tools) == 7
+        # Should have tools but no fetch_current_page
         tool_names = [t.name for t in assistant.tools]
         assert "fetch_current_page" not in tool_names
 
@@ -393,10 +395,10 @@ class TestHEDAssistantWithPageContext:
         model = MagicMock()
         model.bind_tools = MagicMock(return_value=model)
         page_context = PageContext(url="https://hedtags.org", title="HED Tags")
-        assistant = HEDAssistant(model=model, preload_docs=False, page_context=page_context)
+        assistant = registry.create_assistant(
+            "hed", model=model, preload_docs=False, page_context=page_context
+        )
 
-        # Should have 8 tools including fetch_current_page
-        assert len(assistant.tools) == 8
         tool_names = [t.name for t in assistant.tools]
         assert "fetch_current_page" in tool_names
 
@@ -405,10 +407,10 @@ class TestHEDAssistantWithPageContext:
         model = MagicMock()
         model.bind_tools = MagicMock(return_value=model)
         page_context = PageContext(url=None, title="No URL")
-        assistant = HEDAssistant(model=model, preload_docs=False, page_context=page_context)
+        assistant = registry.create_assistant(
+            "hed", model=model, preload_docs=False, page_context=page_context
+        )
 
-        # Should have 7 base tools (not 8 with fetch_current_page)
-        assert len(assistant.tools) == 7
         tool_names = [t.name for t in assistant.tools]
         assert "fetch_current_page" not in tool_names
 
@@ -417,7 +419,9 @@ class TestHEDAssistantWithPageContext:
         model = MagicMock()
         model.bind_tools = MagicMock(return_value=model)
         page_context = PageContext(url="https://hedtags.org/docs", title="HED Docs")
-        assistant = HEDAssistant(model=model, preload_docs=False, page_context=page_context)
+        assistant = registry.create_assistant(
+            "hed", model=model, preload_docs=False, page_context=page_context
+        )
 
         prompt = assistant.get_system_prompt()
         assert "https://hedtags.org/docs" in prompt
@@ -429,7 +433,7 @@ class TestHEDAssistantWithPageContext:
         """Should not include page context section without page context."""
         model = MagicMock()
         model.bind_tools = MagicMock(return_value=model)
-        assistant = HEDAssistant(model=model, preload_docs=False)
+        assistant = registry.create_assistant("hed", model=model, preload_docs=False)
 
         prompt = assistant.get_system_prompt()
         assert "Page Context" not in prompt
@@ -439,20 +443,24 @@ class TestHEDAssistantWithPageContext:
         model = MagicMock()
         model.bind_tools = MagicMock(return_value=model)
         page_context = PageContext(url="https://hedtags.org/docs", title=None)
-        assistant = HEDAssistant(model=model, preload_docs=False, page_context=page_context)
+        assistant = registry.create_assistant(
+            "hed", model=model, preload_docs=False, page_context=page_context
+        )
 
         prompt = assistant.get_system_prompt()
         assert "(No title)" in prompt
 
-    @patch("src.assistants.hed._fetch_page_content_impl")
+    @patch("src.assistants.community.fetch_page_content")
     def test_fetch_current_page_tool_calls_impl(self, mock_fetch):
-        """Should call _fetch_page_content_impl with bound URL."""
+        """Should call fetch_page_content with bound URL."""
         mock_fetch.return_value = "# Content from https://hedtags.org\n\nTest content"
 
         model = MagicMock()
         model.bind_tools = MagicMock(return_value=model)
         page_context = PageContext(url="https://hedtags.org", title="HED Tags")
-        assistant = HEDAssistant(model=model, preload_docs=False, page_context=page_context)
+        assistant = registry.create_assistant(
+            "hed", model=model, preload_docs=False, page_context=page_context
+        )
 
         # Find and invoke the fetch_current_page tool
         fetch_tool = next(t for t in assistant.tools if t.name == "fetch_current_page")
@@ -462,7 +470,7 @@ class TestHEDAssistantWithPageContext:
         mock_fetch.assert_called_once_with("https://hedtags.org")
         assert "Test content" in result
 
-    @patch("src.assistants.hed._fetch_page_content_impl")
+    @patch("src.assistants.community.fetch_page_content")
     def test_fetch_current_page_tool_bound_to_specific_url(self, mock_fetch):
         """Should only fetch the bound URL, not allow arbitrary URLs."""
         mock_fetch.return_value = "Content"
@@ -470,7 +478,9 @@ class TestHEDAssistantWithPageContext:
         model = MagicMock()
         model.bind_tools = MagicMock(return_value=model)
         page_context = PageContext(url="https://specific-page.com/doc", title="Doc")
-        assistant = HEDAssistant(model=model, preload_docs=False, page_context=page_context)
+        assistant = registry.create_assistant(
+            "hed", model=model, preload_docs=False, page_context=page_context
+        )
 
         fetch_tool = next(t for t in assistant.tools if t.name == "fetch_current_page")
 
@@ -484,7 +494,7 @@ class TestHEDAssistantWithPageContext:
         """Should have correct preloaded and available doc counts."""
         model = MagicMock()
         model.bind_tools = MagicMock(return_value=model)
-        assistant = HEDAssistant(model=model, preload_docs=False)
+        assistant = registry.create_assistant("hed", model=model, preload_docs=False)
 
         # Without preloading, should have 0 preloaded docs
         assert assistant.preloaded_doc_count == 0

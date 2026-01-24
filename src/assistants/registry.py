@@ -1,31 +1,32 @@
 """Assistant registry for OSA.
 
-Provides decorator-based auto-registration for assistants.
-Each assistant registers itself when imported, allowing for
-modular, self-contained assistant packages.
+Provides YAML-based registration for assistants. Each community is registered
+from its own config.yaml file, discovered by the discover_assistants() function.
 
 Example:
     ```python
-    from src.assistants.registry import registry
+    from src.assistants import registry, discover_assistants
 
-    @registry.register(
-        id="hed",
-        name="HED",
-        description="Hierarchical Event Descriptors",
-    )
-    def create_hed_assistant(model, **kwargs):
-        return HEDAssistant(model=model, **kwargs)
+    # Discover and register all assistants from config.yaml files
+    discover_assistants()
+
+    # List available assistants
+    for assistant in registry.list_available():
+        print(f"{assistant.id}: {assistant.description}")
+
+    # Create an assistant
+    assistant = registry.create_assistant("hed", model=llm)
     ```
 """
 
 import logging
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
-    from fastapi import APIRouter
     from langchain_core.language_models import BaseChatModel
+
+    from src.core.config.community import CommunityConfig
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ AssistantStatus = Literal["available", "beta", "coming_soon"]
 
 @dataclass
 class AssistantInfo:
-    """Metadata and factory for a registered assistant.
+    """Metadata for a registered assistant.
 
     Contains all information needed to create and configure an assistant.
     """
@@ -49,21 +50,8 @@ class AssistantInfo:
     description: str
     """Short description for discovery and help text."""
 
-    factory: Callable[..., Any]
-    """Factory function to create assistant instances.
-
-    Signature: (model: BaseChatModel, **kwargs) -> BaseAgent
-    """
-
     status: AssistantStatus = "available"
     """Status: 'available', 'beta', or 'coming_soon'."""
-
-    router_factory: Callable[[], "APIRouter"] | None = None
-    """Optional factory for custom API router.
-
-    Note: Routers must be manually registered in api/main.py.
-    This field stores the factory for discovery; auto-mounting is not implemented.
-    """
 
     sync_config: dict[str, Any] = field(default_factory=dict)
     """Configuration for knowledge sync.
@@ -71,6 +59,14 @@ class AssistantInfo:
     Expected keys:
     - github_repos: list[str] - Repos to sync (e.g., ['hed-standard/hed-specification'])
     - paper_queries: list[str] - Queries for paper search
+    - paper_dois: list[str] - DOIs for citation tracking
+    """
+
+    community_config: "CommunityConfig | None" = None
+    """Full community configuration from YAML.
+
+    Contains documentation sources, GitHub repos, citations, and extension points.
+    This is the source of truth for creating assistants.
     """
 
     def __post_init__(self) -> None:
@@ -81,8 +77,6 @@ class AssistantInfo:
             raise ValueError("name must be a non-empty string")
         if not self.description or not self.description.strip():
             raise ValueError("description must be a non-empty string")
-        if not callable(self.factory):
-            raise ValueError("factory must be callable")
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for API responses."""
@@ -91,7 +85,6 @@ class AssistantInfo:
             "name": self.name,
             "description": self.description,
             "status": self.status,
-            "has_custom_router": self.router_factory is not None,
             "has_sync_config": bool(self.sync_config),
         }
 
@@ -99,7 +92,7 @@ class AssistantInfo:
 class AssistantRegistry:
     """Global registry for OSA assistants.
 
-    Provides decorator-based registration and factory access.
+    Provides YAML-based registration and assistant creation.
     Thread-safe for read operations after initial registration.
     """
 
@@ -107,57 +100,27 @@ class AssistantRegistry:
         """Initialize empty registry."""
         self._assistants: dict[str, AssistantInfo] = {}
 
-    def register(
-        self,
-        id: str,
-        name: str,
-        description: str,
-        status: AssistantStatus = "available",
-        router_factory: Callable[[], "APIRouter"] | None = None,
-        sync_config: dict[str, Any] | None = None,
-    ) -> Callable[[Callable], Callable]:
-        """Decorator to register an assistant factory.
+    def register_from_config(self, config: "CommunityConfig") -> None:
+        """Register an assistant from a CommunityConfig.
+
+        This is the primary registration method, called by discover_assistants()
+        for each community's config.yaml file.
 
         Args:
-            id: Unique identifier for the assistant (kebab-case).
-            name: Display name for the assistant.
-            description: Short description.
-            status: Availability status.
-            router_factory: Optional custom router factory.
-            sync_config: Optional knowledge sync configuration.
-
-        Returns:
-            Decorator that registers the factory function.
-
-        Example:
-            ```python
-            @registry.register(
-                id="hed",
-                name="HED",
-                description="HED annotation assistant",
-            )
-            def create_hed_assistant(model, **kwargs):
-                return HEDAssistant(model=model, **kwargs)
-            ```
+            config: Parsed CommunityConfig from a config.yaml file.
         """
+        if config.id in self._assistants:
+            logger.warning("Overwriting existing registration for: %s", config.id)
 
-        def decorator(factory: Callable) -> Callable:
-            if id in self._assistants:
-                logger.warning("Assistant '%s' already registered, overwriting", id)
-
-            self._assistants[id] = AssistantInfo(
-                id=id,
-                name=name,
-                description=description,
-                factory=factory,
-                status=status,
-                router_factory=router_factory,
-                sync_config=sync_config or {},
-            )
-            logger.info("Registered assistant: %s (%s)", id, name)
-            return factory
-
-        return decorator
+        self._assistants[config.id] = AssistantInfo(
+            id=config.id,
+            name=config.name,
+            description=config.description,
+            status=config.status,
+            sync_config=config.get_sync_config(),
+            community_config=config,
+        )
+        logger.debug("Registered assistant from config: %s (%s)", config.id, config.name)
 
     def get(self, id: str) -> AssistantInfo | None:
         """Get assistant info by ID.
@@ -194,16 +157,23 @@ class AssistantRegistry:
     ) -> Any:
         """Create an assistant instance.
 
+        All assistants are created using CommunityAssistant, which uses
+        the YAML config as the single source of truth.
+
         Args:
             id: Assistant identifier.
             model: Language model instance.
-            **kwargs: Additional arguments for the factory.
+            **kwargs: Additional arguments for CommunityAssistant.
+                - preload_docs: Whether to preload docs (default: True)
+                - page_context: PageContext for widget embedding
+                - additional_tools: Extra tools to include
+                - additional_instructions: Extra text for system prompt
 
         Returns:
-            Configured assistant instance.
+            Configured CommunityAssistant instance.
 
         Raises:
-            ValueError: If assistant ID is not registered.
+            ValueError: If assistant ID is not registered or cannot be created.
         """
         info = self.get(id)
         if not info:
@@ -213,7 +183,28 @@ class AssistantRegistry:
         if info.status == "coming_soon":
             raise ValueError(f"Assistant '{id}' is coming soon but not yet available")
 
-        return info.factory(model=model, **kwargs)
+        if info.community_config is None:
+            raise ValueError(f"Assistant '{id}' has no community config.")
+
+        from src.assistants.community import create_community_assistant
+
+        return create_community_assistant(
+            model=model,
+            config=info.community_config,
+            **kwargs,
+        )
+
+    def get_community_config(self, id: str) -> "CommunityConfig | None":
+        """Get the full community configuration for an assistant.
+
+        Args:
+            id: Assistant/community identifier.
+
+        Returns:
+            CommunityConfig if available, None otherwise.
+        """
+        info = self.get(id)
+        return info.community_config if info else None
 
     def __contains__(self, id: str) -> bool:
         """Check if assistant is registered."""

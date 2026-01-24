@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from src.api.routers.hed import AskRequest, PageContext
+from src.api.routers.community import AskRequest, PageContext
 
 
 class TestPageContextModel:
