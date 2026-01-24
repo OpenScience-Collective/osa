@@ -21,6 +21,7 @@ from src.cli.config import (
     save_config,
 )
 from src.cli.sync import sync_app
+from src.cli.validate import validate as validate_command
 
 # Discover assistants on module load
 discover_assistants()
@@ -418,6 +419,9 @@ cli.add_typer(config_app, name="config")
 
 # Register sync commands for knowledge sources
 cli.add_typer(sync_app, name="sync")
+
+# Register validate command for config validation
+cli.command(name="validate")(validate_command)
 
 
 @config_app.command("show")
