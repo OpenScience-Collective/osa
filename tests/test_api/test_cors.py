@@ -99,6 +99,11 @@ class TestCollectCorsConfig:
         assert pattern.match("https://develop.osa-demo.pages.dev")
         assert pattern.match("https://feature-branch.osa-demo.pages.dev")
 
+    def test_includes_main_demo_origin(self) -> None:
+        """Should include main demo page without subdomain."""
+        exact_origins, _ = _collect_cors_config()
+        assert "https://osa-demo.pages.dev" in exact_origins
+
     def test_includes_community_exact_origins(self) -> None:
         """Should include exact origins from community configs (e.g., HED)."""
         exact_origins, _ = _collect_cors_config()

@@ -94,8 +94,10 @@ def _collect_cors_config() -> tuple[list[str], str | None]:
     settings = get_settings()
 
     exact_origins: list[str] = list(settings.cors_origins)
+    # Add default demo page origins
+    exact_origins.append("https://osa-demo.pages.dev")
     wildcard_patterns: list[str] = [
-        "https://*.osa-demo.pages.dev",  # Default: all community demo pages
+        "https://*.osa-demo.pages.dev",  # Default: preview/branch deploys
     ]
 
     # Collect from all registered communities
