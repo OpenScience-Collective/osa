@@ -5,15 +5,18 @@ import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from src.api.config import get_settings
 from src.api.routers import create_community_router, sync_router
 from src.api.routers.health import router as health_router
+from src.api.routers.widget_test import router as widget_test_router
 from src.api.scheduler import start_scheduler, stop_scheduler
 from src.assistants import discover_assistants, registry
 
@@ -178,6 +181,15 @@ def register_routes(app: FastAPI) -> None:
 
     # Health check router
     app.include_router(health_router)
+
+    # Widget test router
+    app.include_router(widget_test_router)
+
+    # Mount frontend static files (widget JavaScript)
+    frontend_dir = Path(__file__).parent.parent.parent / "frontend"
+    if frontend_dir.exists():
+        app.mount("/frontend", StaticFiles(directory=str(frontend_dir)), name="frontend")
+        logger.info("Mounted frontend static files from: %s", frontend_dir)
 
     @app.get("/health", response_model=HealthResponse, tags=["System"])
     async def health_check() -> HealthResponse:
