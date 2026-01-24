@@ -1,5 +1,6 @@
 """Widget integration test endpoint for developer testing."""
 
+import html
 import logging
 
 from fastapi import APIRouter, HTTPException
@@ -32,19 +33,57 @@ def get_widget_test_page(community_id: str) -> str:
     Raises:
         HTTPException: 404 if community doesn't exist
     """
-    # Get community from registry
-    assistant_info = registry.get(community_id)
+    logger.info(
+        "Widget test page requested for community: %s",
+        community_id,
+        extra={"community_id": community_id},
+    )
+
+    # Get community from registry with error handling
+    try:
+        assistant_info = registry.get(community_id)
+    except Exception as e:
+        logger.error(
+            "Registry lookup failed for community %s: %s",
+            community_id,
+            e,
+            exc_info=True,
+            extra={"community_id": community_id},
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Internal error accessing community registry",
+        ) from e
+
     if not assistant_info:
+        # Safely get available communities list
+        try:
+            available_communities = ", ".join([a.id for a in registry.list_all()])
+        except Exception as e:
+            logger.error("Failed to list communities for error message: %s", e)
+            available_communities = "unable to list (registry error)"
+
+        logger.warning(
+            "Community '%s' not found in registry. Available: %s",
+            community_id,
+            available_communities,
+            extra={"community_id": community_id},
+        )
         raise HTTPException(
             status_code=404,
-            detail=f"Community '{community_id}' not found. Available communities: {', '.join([a.id for a in registry.list_all()])}",
+            detail=f"Community '{community_id}' not found. Available communities: {available_communities}",
         )
 
     config = assistant_info.community_config
     if not config:
+        logger.error(
+            "Community '%s' exists but has no configuration",
+            community_id,
+            extra={"community_id": community_id},
+        )
         raise HTTPException(
             status_code=500,
-            detail=f"Community '{community_id}' has no configuration",
+            detail=f"Community '{community_id}' is not properly configured. Please contact support.",
         )
 
     # Build diagnostic information
@@ -59,15 +98,30 @@ def get_widget_test_page(community_id: str) -> str:
     elif api_key_status == "using_platform":
         status = "degraded"
 
-    # Build CORS origins list
+    # Build CORS origins list with HTML escaping and error handling
     cors_origins_html = ""
     if config.cors_origins:
-        cors_origins_html = "".join(
-            f'<li class="diagnostic-item"><span class="diagnostic-label">Origin:</span> <code>{origin}</code></li>'
-            for origin in config.cors_origins
-        )
+        try:
+            cors_origins_html = "".join(
+                f'<li class="diagnostic-item"><span class="diagnostic-label">Origin:</span> <code>{html.escape(str(origin))}</code></li>'
+                for origin in config.cors_origins
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to format CORS origins for community %s: %s",
+                community_id,
+                e,
+                extra={"community_id": community_id},
+            )
+            cors_origins_html = '<li class="diagnostic-item"><span class="diagnostic-label">Error displaying CORS origins</span></li>'
     else:
         cors_origins_html = '<li class="diagnostic-item"><span class="diagnostic-label">No CORS origins configured</span></li>'
+
+    # Escape values for safe HTML interpolation
+    escaped_community_id = html.escape(community_id)
+    escaped_community_id_upper = html.escape(community_id.upper())
+    escaped_config_name = html.escape(config.name or community_id.upper())
+    escaped_default_model = html.escape(config.default_model or "Not configured")
 
     # Build HTML page
     html_content = f"""<!DOCTYPE html>
@@ -75,7 +129,7 @@ def get_widget_test_page(community_id: str) -> str:
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Widget Test - {community_id.upper()} Community</title>
+    <title>Widget Test - {escaped_community_id_upper} Community</title>
     <style>
         * {{
             margin: 0;
@@ -284,7 +338,7 @@ def get_widget_test_page(community_id: str) -> str:
     <div class="container">
         <div class="header">
             <h1>🧪 Widget Integration Test</h1>
-            <p>Testing widget integration for <strong>{community_id.upper()}</strong> community</p>
+            <p>Testing widget integration for <strong>{escaped_community_id_upper}</strong> community</p>
         </div>
 
         <div class="card">
@@ -311,11 +365,11 @@ def get_widget_test_page(community_id: str) -> str:
             <ul class="diagnostic-list">
                 <li class="diagnostic-item">
                     <span class="diagnostic-label">Community ID:</span>
-                    <code>{community_id}</code>
+                    <code>{escaped_community_id}</code>
                 </li>
                 <li class="diagnostic-item">
                     <span class="diagnostic-label">Model:</span>
-                    <code>{config.default_model or "Not configured"}</code>
+                    <code>{escaped_default_model}</code>
                 </li>
             </ul>
 
@@ -343,14 +397,14 @@ def get_widget_test_page(community_id: str) -> str:
         <div class="card">
             <h2>📝 Integration Code</h2>
             <p style="margin-bottom: 1rem; color: #6b7280;">Copy this code to integrate the widget into your website:</p>
-            <pre><code>&lt;!-- OSA Chat Widget for {community_id.upper()} --&gt;
+            <pre><code>&lt;!-- OSA Chat Widget for {escaped_community_id_upper} --&gt;
 &lt;script&gt;
   // Configure widget before loading
   window.OSAChatWidget = {{
-    communityId: '{community_id}',
-    title: '{config.name or community_id.upper()} Assistant',
-    initialMessage: 'Hi! I\\'m the {config.name or community_id.upper()} Assistant. How can I help you today?',
-    placeholder: 'Ask about {config.name or community_id}...'
+    communityId: '{escaped_community_id}',
+    title: '{escaped_config_name} Assistant',
+    initialMessage: 'Hi! I\\'m the {escaped_config_name} Assistant. How can I help you today?',
+    placeholder: 'Ask about {escaped_config_name}...'
   }};
 &lt;/script&gt;
 &lt;script src="https://osa.osc.earth/frontend/osa-chat-widget.js"&gt;&lt;/script&gt;</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
@@ -358,7 +412,7 @@ def get_widget_test_page(community_id: str) -> str:
             <div class="info-box">
                 <p><strong>📦 What happens when you add this code:</strong></p>
                 <p>• Widget loads in bottom-right corner</p>
-                <p>• Users can ask questions specific to {community_id.upper()}</p>
+                <p>• Users can ask questions specific to {escaped_community_id_upper}</p>
                 <p>• BYOK (Bring Your Own Key) supported via settings menu</p>
                 <p>• Conversation history saved locally</p>
             </div>
@@ -369,10 +423,10 @@ def get_widget_test_page(community_id: str) -> str:
     <script>
       // Configure widget for this community
       window.OSAChatWidget = {{
-        communityId: '{community_id}',
-        title: '{config.name or community_id.upper()} Assistant',
-        initialMessage: 'Hi! I\\'m the {config.name or community_id.upper()} Assistant. How can I help you today?',
-        placeholder: 'Ask about {config.name or community_id}...',
+        communityId: '{escaped_community_id}',
+        title: '{escaped_config_name} Assistant',
+        initialMessage: 'Hi! I\\'m the {escaped_config_name} Assistant. How can I help you today?',
+        placeholder: 'Ask about {escaped_config_name}...',
         showExperimentalBadge: true
       }};
 
@@ -400,8 +454,7 @@ def get_widget_test_page(community_id: str) -> str:
 
         const tests = [
           {{ name: 'Health Check', url: window.location.origin + '/health', method: 'GET' }},
-          {{ name: 'Communities Health', url: window.location.origin + '/health/communities', method: 'GET', requiresAuth: true }},
-          {{ name: 'Community Config', url: window.location.origin + '/communities/{community_id}', method: 'GET' }}
+          {{ name: 'Communities Health', url: window.location.origin + '/health/communities', method: 'GET', requiresAuth: true }}
         ];
 
         for (const test of tests) {{
