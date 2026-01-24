@@ -4,6 +4,7 @@ These tests use real HTTP requests against the actual FastAPI application,
 not mocks. They verify the actual behavior of the health check endpoint.
 """
 
+import os
 from datetime import datetime
 
 import pytest
@@ -16,6 +17,14 @@ from src.version import __version__
 @pytest.fixture
 def client() -> TestClient:
     """Create a test client for the FastAPI application."""
+    # Disable auth requirement for health endpoint tests
+    os.environ["REQUIRE_API_AUTH"] = "false"
+
+    # Clear settings cache to pick up new env var
+    from src.api.config import get_settings
+
+    get_settings.cache_clear()
+
     return TestClient(app)
 
 
@@ -78,3 +87,95 @@ class TestRootEndpoint:
         data = response.json()
         assert "version" in data
         assert data["version"] == __version__
+
+
+class TestCommunitiesHealthEndpoint:
+    """Tests for the /health/communities endpoint."""
+
+    def test_communities_health_endpoint_exists(self, client: TestClient) -> None:
+        """Should respond to GET /health/communities."""
+        response = client.get("/health/communities")
+        assert response.status_code == 200
+
+    def test_returns_dict_of_communities(self, client: TestClient) -> None:
+        """Should return dictionary with community IDs as keys."""
+        response = client.get("/health/communities")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert isinstance(data, dict)
+
+        # Should have at least one community (HED from test fixtures)
+        assert len(data) > 0
+
+    def test_community_status_structure(self, client: TestClient) -> None:
+        """Should return correct structure for each community."""
+        response = client.get("/health/communities")
+        data = response.json()
+
+        # Check structure of first community
+        community_id = list(data.keys())[0]
+        community_health = data[community_id]
+
+        # Required fields
+        assert "status" in community_health
+        assert "api_key" in community_health
+        assert "cors_origins" in community_health
+        assert "documents" in community_health
+        assert "sync_age_hours" in community_health
+
+        # Status should be one of the valid values
+        assert community_health["status"] in ["healthy", "degraded", "error"]
+
+        # API key should be one of the valid values
+        assert community_health["api_key"] in [
+            "configured",
+            "using_platform",
+            "missing",
+        ]
+
+        # Counts should be non-negative integers
+        assert isinstance(community_health["cors_origins"], int)
+        assert community_health["cors_origins"] >= 0
+        assert isinstance(community_health["documents"], int)
+        assert community_health["documents"] >= 0
+
+        # Sync age can be None or float
+        assert community_health["sync_age_hours"] is None or isinstance(
+            community_health["sync_age_hours"], (int, float)
+        )
+
+    def test_status_reflects_configuration(self, client: TestClient) -> None:
+        """Status should reflect actual community configuration."""
+        response = client.get("/health/communities")
+        data = response.json()
+
+        for community_id, health in data.items():
+            # Error status if no documents
+            if health["documents"] == 0:
+                assert health["status"] == "error", f"{community_id} should be error with no docs"
+
+            # Degraded if using platform key
+            elif health["api_key"] == "using_platform":
+                assert health["status"] == "degraded", (
+                    f"{community_id} should be degraded with platform key"
+                )
+
+            # Healthy if has docs and own API key
+            else:
+                assert health["status"] == "healthy", (
+                    f"{community_id} should be healthy with docs and own key"
+                )
+
+    def test_handles_missing_community_config(self, client: TestClient) -> None:
+        """Should handle communities with missing config gracefully."""
+        response = client.get("/health/communities")
+        assert response.status_code == 200
+
+        data = response.json()
+        # If any community has missing config, it should show error status
+        for _community_id, health in data.items():
+            if health["api_key"] == "missing":
+                assert health["status"] == "error"
+                assert health["documents"] == 0
+                assert health["cors_origins"] == 0
