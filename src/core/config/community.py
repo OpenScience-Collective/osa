@@ -34,6 +34,12 @@ if TYPE_CHECKING:
     from src.tools.base import DocRegistry
 
 
+class SSRFViolationError(ValueError):
+    """Raised when URL violates SSRF protection rules."""
+
+    pass
+
+
 class DocSource(BaseModel):
     """Documentation source configuration.
 
@@ -74,6 +80,10 @@ class DocSource(BaseModel):
 
         Blocks access to private IPs, localhost, and AWS metadata service
         to prevent attackers from probing internal infrastructure.
+
+        Note: This validator only checks URL format and IP literals, not DNS
+        resolution. Hostnames that resolve to private IPs (DNS rebinding attacks)
+        are not prevented by this check and should be validated at fetch time.
         """
         if v is None:
             return None
@@ -82,25 +92,20 @@ class DocSource(BaseModel):
         if not v:
             return None
 
-        try:
-            parsed = urlparse(v)
-        except Exception as e:
-            raise ValueError(f"Invalid URL format: {v}") from e
+        # urlparse is highly reliable and doesn't raise for string inputs
+        parsed = urlparse(v)
 
-        # Only allow HTTP/HTTPS schemes
         if parsed.scheme not in ("http", "https"):
             raise ValueError(
                 f"Invalid URL scheme '{parsed.scheme}'. Only http:// and https:// are allowed."
             )
 
-        # Get hostname
         hostname = parsed.hostname
         if not hostname:
             raise ValueError(f"URL must have a valid hostname: {v}")
 
-        # Block localhost
         if hostname in ("localhost", "127.0.0.1", "::1"):
-            raise ValueError(
+            raise SSRFViolationError(
                 f"Cannot fetch from localhost: {v}. "
                 "Documentation must be hosted on a public server."
             )
@@ -109,29 +114,33 @@ class DocSource(BaseModel):
         try:
             ip = ipaddress.ip_address(hostname)
 
-            # Block private IP ranges
+            # Check link-local FIRST (before is_private) since link-local addresses
+            # are also private, and we want the more specific error message
+            # Link-local: 169.254.0.0/16 for IPv4 (AWS metadata), fe80::/10 for IPv6
+            if ip.is_link_local:
+                raise SSRFViolationError(
+                    f"Cannot fetch from link-local address: {hostname}. "
+                    "This prevents access to cloud metadata services like AWS at 169.254.169.254."
+                )
+
+            # Block private IP ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
             if ip.is_private:
-                raise ValueError(
+                raise SSRFViolationError(
                     f"Cannot fetch from private IP address: {hostname}. "
                     "Documentation must be hosted on a public server."
                 )
 
-            # Block link-local (169.254.0.0/16 - AWS metadata service)
-            if ip.is_link_local:
-                raise ValueError(
-                    f"Cannot fetch from link-local address: {hostname}. "
-                    "This prevents access to cloud metadata services."
-                )
-
             # Block loopback
             if ip.is_loopback:
-                raise ValueError(f"Cannot fetch from loopback address: {hostname}")
+                raise SSRFViolationError(f"Cannot fetch from loopback address: {hostname}")
 
-        except ValueError as e:
-            # If it's not an IP address, it's a hostname - that's OK
-            # Just check if the error is from our validation, not from IP parsing
-            if "Cannot fetch" in str(e) or "prevents access" in str(e):
-                raise
+        except SSRFViolationError:
+            # Re-raise our SSRF validation errors
+            raise
+        except ValueError:
+            # Not an IP address - it's a hostname, which is acceptable
+            # (Note: Hostnames that resolve to private IPs are not checked here)
+            pass
 
         return v
 
@@ -553,6 +562,7 @@ class CommunityConfig(BaseModel):
 
         # Hardcoded list of known expensive models (>$15/1M tokens)
         # This prevents communities from setting ultra-expensive models on platform key
+        # Note: This list must be manually maintained as model pricing changes
         ultra_expensive_models = {
             "openai/o1",
             "openai/o1-preview",
@@ -560,14 +570,18 @@ class CommunityConfig(BaseModel):
             "anthropic/claude-3-opus",
         }
 
-        # Check if model is ultra-expensive
-        for expensive_model in ultra_expensive_models:
-            if self.default_model.startswith(expensive_model):
-                raise ValueError(
-                    f"Model '{self.default_model}' requires BYOK (Bring Your Own Key). "
-                    f"Set 'openrouter_api_key_env_var' to use this model. "
-                    f"Ultra-expensive models (>${15}/1M tokens) cannot use the platform API key."
-                )
+        # Extract base model name (remove date suffix like -2024-12-17 if present)
+        # This allows dated versions of expensive models while not blocking cheaper variants
+        base_model = re.sub(r"-\d{4}-\d{2}-\d{2}$", "", self.default_model)
+
+        # Check if base model is ultra-expensive (exact match only)
+        if base_model in ultra_expensive_models:
+            raise ValueError(
+                f"Model '{self.default_model}' requires BYOK (Bring Your Own Key). "
+                f"Add 'openrouter_api_key_env_var: OPENROUTER_API_KEY_<YOUR_COMMUNITY>' to your config.yaml, "
+                f"then set that environment variable to your OpenRouter API key. "
+                f"Ultra-expensive models (>$15/1M tokens) cannot use the platform API key."
+            )
 
         return self
 

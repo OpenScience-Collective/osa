@@ -28,10 +28,24 @@ class SecureFormatter(logging.Formatter):
             Formatted log message with API keys redacted.
         """
         # Format the message first
-        formatted = super().format(record)
+        try:
+            formatted = super().format(record)
+        except Exception as e:
+            # If formatting fails, return a safe error message
+            # Don't let logging failures crash the app
+            return f"[LOGGING ERROR: Failed to format log record: {type(e).__name__}]"
 
-        # Redact API keys
-        formatted = self.API_KEY_PATTERN.sub("sk-or-v1-***[redacted]", formatted)
+        # Redact API keys with size limit to prevent ReDoS
+        try:
+            # Limit message size to prevent potential regex issues with extremely large inputs
+            if len(formatted) > 100_000:  # 100KB limit
+                formatted = formatted[:100_000] + "... [truncated for safety]"
+
+            formatted = self.API_KEY_PATTERN.sub("sk-or-v1-***[redacted]", formatted)
+        except Exception as e:
+            # If redaction fails, suppress the original message for security
+            # (it might contain the API key we're trying to redact!)
+            return f"[REDACTION ERROR: {type(e).__name__}] - message suppressed for security"
 
         return formatted
 

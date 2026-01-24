@@ -758,10 +758,6 @@ communities:
                 assert doc.url, f"Doc in {community.id} missing URL"
 
 
-class TestSecurityValidators:
-    """Tests for security-related validators (Issues #64-68)."""
-
-
 class TestEnvVarNameValidation:
     """Tests for openrouter_api_key_env_var validation (Issue #64)."""
 
@@ -883,7 +879,7 @@ class TestSSRFProtection:
 
     def test_rejects_aws_metadata_service(self) -> None:
         """Should reject AWS metadata service (link-local 169.254.0.0/16)."""
-        with pytest.raises(ValidationError, match="Cannot fetch from private IP"):
+        with pytest.raises(ValidationError, match="link-local address"):
             DocSource(
                 title="Test Doc",
                 url="https://example.com",
@@ -1057,3 +1053,20 @@ class TestCostManipulationProtection:
             # No default_model, no BYOK
         )
         assert config.default_model is None
+
+    def test_allows_cheaper_variants_with_expensive_prefix(self) -> None:
+        """Should allow cheaper model variants that share prefix with expensive models."""
+        cheaper_variants = [
+            "openai/o1-mini",  # Cheaper than o1, but starts with "openai/o1"
+            "openai/o1-mini-2024-09-12",  # Dated version of o1-mini
+        ]
+        for model in cheaper_variants:
+            # Should NOT require BYOK for cheaper variants
+            config = CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                default_model=model,
+                # No BYOK - should work for cheaper models
+            )
+            assert config.default_model == model
