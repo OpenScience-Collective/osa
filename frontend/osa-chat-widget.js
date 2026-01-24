@@ -22,7 +22,7 @@
     apiEndpoint: isDev
       ? 'https://osa-worker-dev.shirazi-10f.workers.dev'
       : 'https://osa-worker.shirazi-10f.workers.dev',
-    storageKey: 'osa-chat-history',
+    storageKey: 'osa-chat-history-hed',
     // Turnstile: disabled for now (not set up yet)
     turnstileSiteKey: null,
     // Customizable branding (defaults shown are for HED community)
@@ -1074,7 +1074,7 @@
             updateFooterVersion();
           }
         } catch (jsonErr) {
-          // Ignore JSON parse errors
+          console.debug('[OSA] Could not parse health response:', jsonErr.message);
         }
       } else {
         backendOnline = false;
@@ -1367,6 +1367,10 @@
       // Add Turnstile token if available
       if (turnstileToken) {
         body.cf_turnstile_response = turnstileToken;
+      }
+
+      if (!isValidCommunityId(CONFIG.communityId)) {
+        throw new Error('Invalid community configuration. Please reload the page.');
       }
 
       const response = await fetch(`${CONFIG.apiEndpoint}/${CONFIG.communityId}/ask`, {
@@ -1716,21 +1720,35 @@
     }
   }
 
-  // Start when DOM is ready
+  // Validate communityId contains only safe characters (alphanumeric, hyphens, underscores)
+  function isValidCommunityId(id) {
+    return typeof id === 'string' && /^[a-zA-Z0-9_-]+$/.test(id);
+  }
+
+  // Start when DOM is ready, deferred to allow setConfig calls before init
+  function scheduleInit() {
+    setTimeout(init, 0);
+  }
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
+    document.addEventListener('DOMContentLoaded', scheduleInit);
   } else {
-    init();
+    scheduleInit();
   }
 
   // Expose configuration for customization
   window.OSAChatWidget = {
     setConfig: function(options) {
-      // Auto-derive storageKey from communityId if communityId changed but storageKey wasn't explicitly set
-      if (options.communityId && !options.storageKey) {
-        options.storageKey = `osa-chat-history-${options.communityId}`;
+      const opts = { ...options };
+      // Validate communityId if provided
+      if (opts.communityId && !isValidCommunityId(opts.communityId)) {
+        console.error('[OSA] Invalid communityId:', opts.communityId);
+        return;
       }
-      Object.assign(CONFIG, options);
+      // Auto-derive storageKey from communityId if communityId changed but storageKey wasn't explicitly set
+      if (opts.communityId && !opts.storageKey) {
+        opts.storageKey = `osa-chat-history-${opts.communityId}`;
+      }
+      Object.assign(CONFIG, opts);
     },
     getConfig: function() {
       return { ...CONFIG };

@@ -192,13 +192,20 @@
       }
     };
 
-    // Determine community from URL path
+    // Determine community from URL path (first segment only)
     function getCommunityFromPath() {
       const path = window.location.pathname.replace(/^\/+|\/+$/g, '').toLowerCase();
-      if (path && COMMUNITIES[path]) {
-        return path;
+      if (!path) return null; // Landing page
+      // Use only the first path segment (ignore sub-paths like /hed/docs)
+      const firstSegment = path.split('/')[0];
+      if (COMMUNITIES[firstSegment]) {
+        return firstSegment;
       }
-      return null; // Landing page
+      // Unknown path - redirect to landing
+      if (path) {
+        window.history.replaceState(null, '', '/');
+      }
+      return null;
     }
 
     // Render landing page (no specific community)
