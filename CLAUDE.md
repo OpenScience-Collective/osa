@@ -17,7 +17,7 @@ A precise, reliable AI assistant platform for researchers working with open scie
 4. **Review** using `/pr-review-toolkit:review-pr` before creating PR
 5. **Address ALL review findings** - fix critical AND important issues, not just critical
 6. **Create PR to develop**: `gh pr create --base develop`
-7. **Merge with merge commit**: `gh pr merge --merge --delete-branch` (NEVER squash)
+7. **Squash and merge**: `gh pr merge --squash --delete-branch` (always squash to keep history clean)
 
 ```bash
 # Example workflow
@@ -30,7 +30,7 @@ git add -A && git commit -m "feat: add X"       # Atomic commits
 # FIX ALL ISSUES from review (critical + important)
 gh pr create --base develop --title "feat: add X" --body "Closes #7"
 git push -u origin feature/issue-7-interfaces
-gh pr merge --merge --delete-branch              # MERGE COMMIT, never squash
+gh pr merge --squash --delete-branch             # SQUASH MERGE to keep history clean
 ```
 
 ## Design Principles
@@ -107,7 +107,7 @@ src/
 - Atomic commits, concise messages, no emojis
 - Feature branches from `develop`, PRs target `develop`
 - `main` is production only; merge `develop` -> `main` for releases
-- **NEVER squash merge** - always use merge commits to preserve history
+- **ALWAYS squash merge** - keep develop history clean with single commit per feature
 - Use PR review toolkit before creating PRs
 - **Address ALL review issues** (critical + important) before merging
 
