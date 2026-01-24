@@ -387,13 +387,14 @@ def _select_api_key(
         Tuple of (api_key, source) where source is "byok", "community", or "platform"
 
     Raises:
-        HTTPException(403): If BYOK required but not provided
+        HTTPException(403): If origin is not authorized and BYOK is not provided
+        HTTPException(500): If no platform API key is configured and no other key is available
     """
     import os
 
     # Case 1: BYOK provided - always allowed
     if byok:
-        logger.info(
+        logger.debug(
             "Using BYOK for community %s",
             community_id,
             extra={"community_id": community_id, "key_source": "byok"},
@@ -442,6 +443,7 @@ def _select_api_key(
                     "configured_env_var": env_var,
                     "env_var_missing": True,
                     "fallback_to_platform": True,
+                    "origin": origin,
                 },
             )
 
@@ -452,7 +454,7 @@ def _select_api_key(
             detail="No API key configured for this community. Please contact support.",
         )
 
-    logger.info(
+    logger.debug(
         "Using platform API key for community %s",
         community_id,
         extra={"community_id": community_id, "key_source": "platform"},
