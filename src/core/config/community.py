@@ -21,9 +21,11 @@ Example config.yaml:
         - "Hierarchical Event Descriptors"
 """
 
+import ipaddress
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import urlparse
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
@@ -64,6 +66,74 @@ class DocSource(BaseModel):
 
     description: str | None = None
     """Short description of what this documentation covers."""
+
+    @field_validator("source_url")
+    @classmethod
+    def validate_source_url(cls, v: str | None) -> str | None:
+        """Validate source_url to prevent SSRF attacks.
+
+        Blocks access to private IPs, localhost, and AWS metadata service
+        to prevent attackers from probing internal infrastructure.
+        """
+        if v is None:
+            return None
+
+        v = v.strip()
+        if not v:
+            return None
+
+        try:
+            parsed = urlparse(v)
+        except Exception as e:
+            raise ValueError(f"Invalid URL format: {v}") from e
+
+        # Only allow HTTP/HTTPS schemes
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError(
+                f"Invalid URL scheme '{parsed.scheme}'. Only http:// and https:// are allowed."
+            )
+
+        # Get hostname
+        hostname = parsed.hostname
+        if not hostname:
+            raise ValueError(f"URL must have a valid hostname: {v}")
+
+        # Block localhost
+        if hostname in ("localhost", "127.0.0.1", "::1"):
+            raise ValueError(
+                f"Cannot fetch from localhost: {v}. "
+                "Documentation must be hosted on a public server."
+            )
+
+        # Try to parse as IP address to check if it's private
+        try:
+            ip = ipaddress.ip_address(hostname)
+
+            # Block private IP ranges
+            if ip.is_private:
+                raise ValueError(
+                    f"Cannot fetch from private IP address: {hostname}. "
+                    "Documentation must be hosted on a public server."
+                )
+
+            # Block link-local (169.254.0.0/16 - AWS metadata service)
+            if ip.is_link_local:
+                raise ValueError(
+                    f"Cannot fetch from link-local address: {hostname}. "
+                    "This prevents access to cloud metadata services."
+                )
+
+            # Block loopback
+            if ip.is_loopback:
+                raise ValueError(f"Cannot fetch from loopback address: {hostname}")
+
+        except ValueError as e:
+            # If it's not an IP address, it's a hostname - that's OK
+            # Just check if the error is from our validation, not from IP parsing
+            if "Cannot fetch" in str(e) or "prevents access" in str(e):
+                raise
+
+        return v
 
     @model_validator(mode="after")
     def validate_preload_has_source_url(self) -> "DocSource":
@@ -412,6 +482,94 @@ class CommunityConfig(BaseModel):
             if origin not in validated:
                 validated.append(origin)
         return validated
+
+    @field_validator("openrouter_api_key_env_var")
+    @classmethod
+    def validate_openrouter_api_key_env_var(cls, v: str | None) -> str | None:
+        """Validate environment variable name to prevent accessing arbitrary secrets.
+
+        Only allows variables matching OPENROUTER_API_KEY_* pattern to prevent
+        communities from referencing other secrets like AWS credentials.
+        """
+        if v is None:
+            return None
+
+        v = v.strip()
+        if not v:
+            return None
+
+        # Only allow OPENROUTER_API_KEY_* pattern (uppercase, underscores, alphanumeric)
+        env_var_pattern = re.compile(r"^OPENROUTER_API_KEY_[A-Z0-9_]+$")
+        if not env_var_pattern.match(v):
+            raise ValueError(
+                f"Invalid environment variable name: '{v}'. "
+                "Must match pattern: OPENROUTER_API_KEY_[A-Z0-9_]+ "
+                "(e.g., 'OPENROUTER_API_KEY_HED')"
+            )
+
+        return v
+
+    @field_validator("default_model")
+    @classmethod
+    def validate_default_model(cls, v: str | None) -> str | None:
+        """Validate model name format.
+
+        Ensures model follows provider/model-name pattern to prevent
+        injection or confusion.
+        """
+        if v is None:
+            return None
+
+        v = v.strip()
+        if not v:
+            return None
+
+        # Validate format: provider/model-name
+        # Allow alphanumeric, hyphens, underscores, and dots
+        model_pattern = re.compile(r"^[a-zA-Z0-9_-]+/[a-zA-Z0-9._-]+$")
+        if not model_pattern.match(v):
+            raise ValueError(
+                f"Invalid model name format: '{v}'. "
+                "Must match pattern: provider/model-name "
+                "(e.g., 'anthropic/claude-3.5-sonnet')"
+            )
+
+        # Max length check
+        if len(v) > 100:
+            raise ValueError(f"Model name too long (max 100 chars): {v[:50]}...")
+
+        return v
+
+    @model_validator(mode="after")
+    def validate_expensive_model_without_byok(self) -> "CommunityConfig":
+        """Warn about expensive models without BYOK to prevent surprise billing.
+
+        Communities using expensive models should provide their own API key
+        to avoid unexpected platform costs.
+        """
+        if not self.default_model or self.openrouter_api_key_env_var:
+            # No model specified or BYOK configured - OK
+            return self
+
+        # Hardcoded list of known expensive models (>$15/1M tokens)
+        # This prevents communities from setting ultra-expensive models on platform key
+        ultra_expensive_models = {
+            "openai/o1",
+            "openai/o1-preview",
+            "anthropic/claude-opus-4",
+            "anthropic/claude-3-opus",
+        }
+
+        # Check if model is ultra-expensive
+        for expensive_model in ultra_expensive_models:
+            if self.default_model.startswith(expensive_model):
+                raise ValueError(
+                    f"Model '{self.default_model}' requires BYOK (Bring Your Own Key). "
+                    f"Set 'openrouter_api_key_env_var' to use this model. "
+                    f"Ultra-expensive models (>${15}/1M tokens) cannot use the platform API key."
+                )
+
+        return self
 
     def get_sync_config(self) -> dict[str, Any]:
         """Generate sync_config dict for registry compatibility.

@@ -756,3 +756,304 @@ communities:
             # If documentation URLs are provided, they should be valid
             for doc in community.documentation:
                 assert doc.url, f"Doc in {community.id} missing URL"
+
+
+class TestSecurityValidators:
+    """Tests for security-related validators (Issues #64-68)."""
+
+
+class TestEnvVarNameValidation:
+    """Tests for openrouter_api_key_env_var validation (Issue #64)."""
+
+    def test_valid_env_var_names(self) -> None:
+        """Should accept valid OPENROUTER_API_KEY_* patterns."""
+        valid_names = [
+            "OPENROUTER_API_KEY_HED",
+            "OPENROUTER_API_KEY_BIDS",
+            "OPENROUTER_API_KEY_TEST",
+            "OPENROUTER_API_KEY_MY_COMMUNITY",
+            "OPENROUTER_API_KEY_123",
+        ]
+        for name in valid_names:
+            config = CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                openrouter_api_key_env_var=name,
+            )
+            assert config.openrouter_api_key_env_var == name
+
+    def test_allows_none(self) -> None:
+        """Should allow None (use platform key)."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            openrouter_api_key_env_var=None,
+        )
+        assert config.openrouter_api_key_env_var is None
+
+    def test_rejects_arbitrary_env_vars(self) -> None:
+        """Should reject non-OPENROUTER_API_KEY_* patterns (prevents secret access)."""
+        invalid_names = [
+            "AWS_SECRET_KEY",
+            "DATABASE_PASSWORD",
+            "SOME_OTHER_SECRET",
+            "OPENROUTER_KEY",  # Missing API_KEY part
+            "API_KEY_HED",  # Missing OPENROUTER part
+            "openrouter_api_key_hed",  # Lowercase not allowed
+        ]
+        for name in invalid_names:
+            with pytest.raises(ValidationError, match="Invalid environment variable name"):
+                CommunityConfig(
+                    id="test",
+                    name="Test",
+                    description="Test",
+                    openrouter_api_key_env_var=name,
+                )
+
+    def test_rejects_env_var_with_special_chars(self) -> None:
+        """Should reject env var names with special characters."""
+        with pytest.raises(ValidationError, match="Invalid environment variable name"):
+            CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                openrouter_api_key_env_var="OPENROUTER_API_KEY-HED",  # Hyphen not allowed
+            )
+
+    def test_strips_whitespace_from_env_var(self) -> None:
+        """Should strip whitespace from env var names."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            openrouter_api_key_env_var="  OPENROUTER_API_KEY_HED  ",
+        )
+        assert config.openrouter_api_key_env_var == "OPENROUTER_API_KEY_HED"
+
+
+class TestSSRFProtection:
+    """Tests for source_url SSRF protection (Issue #66)."""
+
+    def test_valid_public_urls(self) -> None:
+        """Should accept valid public HTTP/HTTPS URLs."""
+        valid_urls = [
+            "https://raw.githubusercontent.com/org/repo/main/docs/file.md",
+            "https://docs.example.com/content.md",
+            "http://public-site.org/documentation.html",
+        ]
+        for url in valid_urls:
+            doc = DocSource(
+                title="Test Doc",
+                url="https://example.com",
+                source_url=url,
+            )
+            assert doc.source_url == url
+
+    def test_rejects_localhost(self) -> None:
+        """Should reject localhost URLs (prevents local probing)."""
+        localhost_urls = [
+            "http://localhost/file.md",
+            "http://127.0.0.1/file.md",
+            "http://[::1]/file.md",
+        ]
+        for url in localhost_urls:
+            with pytest.raises(ValidationError, match="Cannot fetch from localhost"):
+                DocSource(
+                    title="Test Doc",
+                    url="https://example.com",
+                    source_url=url,
+                )
+
+    def test_rejects_private_ips(self) -> None:
+        """Should reject private IP addresses (prevents internal network probing)."""
+        private_ips = [
+            "http://10.0.0.1/file.md",  # 10.0.0.0/8
+            "http://172.16.0.1/file.md",  # 172.16.0.0/12
+            "http://192.168.1.1/file.md",  # 192.168.0.0/16
+        ]
+        for url in private_ips:
+            with pytest.raises(ValidationError, match="Cannot fetch from private IP"):
+                DocSource(
+                    title="Test Doc",
+                    url="https://example.com",
+                    source_url=url,
+                )
+
+    def test_rejects_aws_metadata_service(self) -> None:
+        """Should reject AWS metadata service (link-local 169.254.0.0/16)."""
+        with pytest.raises(ValidationError, match="Cannot fetch from private IP"):
+            DocSource(
+                title="Test Doc",
+                url="https://example.com",
+                source_url="http://169.254.169.254/latest/meta-data/",
+            )
+
+    def test_rejects_non_http_schemes(self) -> None:
+        """Should reject non-HTTP/HTTPS schemes."""
+        invalid_schemes = [
+            "file:///etc/passwd",
+            "ftp://example.com/file.md",
+            "gopher://example.com/",
+            "data:text/plain,content",
+        ]
+        for url in invalid_schemes:
+            with pytest.raises(ValidationError, match="Invalid URL scheme"):
+                DocSource(
+                    title="Test Doc",
+                    url="https://example.com",
+                    source_url=url,
+                )
+
+    def test_allows_none_source_url(self) -> None:
+        """Should allow None for source_url."""
+        doc = DocSource(
+            title="Test Doc",
+            url="https://example.com",
+            source_url=None,
+        )
+        assert doc.source_url is None
+
+    def test_accepts_public_hostnames(self) -> None:
+        """Should accept public hostnames (not IPs)."""
+        doc = DocSource(
+            title="Test Doc",
+            url="https://example.com",
+            source_url="https://public-docs.example.org/file.md",
+        )
+        assert doc.source_url == "https://public-docs.example.org/file.md"
+
+
+class TestModelNameValidation:
+    """Tests for default_model validation (Issue #68)."""
+
+    def test_valid_model_names(self) -> None:
+        """Should accept valid provider/model-name format."""
+        valid_models = [
+            "anthropic/claude-3.5-sonnet",
+            "openai/gpt-4",
+            "google/gemini-pro",
+            "provider/model-name-v2.0",
+            "provider_name/model_name",
+        ]
+        for model in valid_models:
+            config = CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                default_model=model,
+            )
+            assert config.default_model == model
+
+    def test_allows_none(self) -> None:
+        """Should allow None (use platform default)."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            default_model=None,
+        )
+        assert config.default_model is None
+
+    def test_rejects_invalid_format(self) -> None:
+        """Should reject model names not matching provider/model-name."""
+        invalid_models = [
+            "just-a-model-name",  # No provider
+            "provider/",  # No model name
+            "/model-name",  # No provider
+            "provider model",  # Space instead of slash
+            "provider\\model",  # Backslash
+            "provider/model/extra",  # Too many slashes
+        ]
+        for model in invalid_models:
+            with pytest.raises(ValidationError, match="Invalid model name format"):
+                CommunityConfig(
+                    id="test",
+                    name="Test",
+                    description="Test",
+                    default_model=model,
+                )
+
+    def test_rejects_too_long_model_name(self) -> None:
+        """Should reject model names longer than 100 characters."""
+        long_model = "provider/" + "x" * 100
+        with pytest.raises(ValidationError, match="too long"):
+            CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                default_model=long_model,
+            )
+
+    def test_strips_whitespace(self) -> None:
+        """Should strip whitespace from model names."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            default_model="  anthropic/claude-3.5-sonnet  ",
+        )
+        assert config.default_model == "anthropic/claude-3.5-sonnet"
+
+
+class TestCostManipulationProtection:
+    """Tests for cost manipulation guards (Issue #67)."""
+
+    def test_allows_expensive_model_with_byok(self) -> None:
+        """Should allow ultra-expensive models when BYOK is configured."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            default_model="anthropic/claude-opus-4",
+            openrouter_api_key_env_var="OPENROUTER_API_KEY_TEST",
+        )
+        assert config.default_model == "anthropic/claude-opus-4"
+        assert config.openrouter_api_key_env_var is not None
+
+    def test_rejects_ultra_expensive_model_without_byok(self) -> None:
+        """Should reject ultra-expensive models without BYOK (prevents surprise billing)."""
+        ultra_expensive_models = [
+            "openai/o1",
+            "openai/o1-preview",
+            "anthropic/claude-opus-4",
+            "anthropic/claude-3-opus",
+        ]
+        for model in ultra_expensive_models:
+            with pytest.raises(ValidationError, match="requires BYOK"):
+                CommunityConfig(
+                    id="test",
+                    name="Test",
+                    description="Test",
+                    default_model=model,
+                    # No openrouter_api_key_env_var set
+                )
+
+    def test_allows_moderate_models_without_byok(self) -> None:
+        """Should allow moderate-cost models without BYOK."""
+        moderate_models = [
+            "anthropic/claude-sonnet-4.5",
+            "anthropic/claude-haiku-4.5",
+            "openai/gpt-4",
+            "google/gemini-pro",
+        ]
+        for model in moderate_models:
+            config = CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                default_model=model,
+                # No BYOK - should still work for moderate models
+            )
+            assert config.default_model == model
+
+    def test_allows_no_model_without_byok(self) -> None:
+        """Should allow no model specified without BYOK."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            # No default_model, no BYOK
+        )
+        assert config.default_model is None
