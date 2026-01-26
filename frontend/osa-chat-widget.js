@@ -8,10 +8,14 @@
   'use strict';
 
   // Auto-detect environment based on hostname
+  // Production is only osa-demo.pages.dev (exact match)
+  // All other *.osa-demo.pages.dev subdomains are preview/dev deployments
   const hostname = window.location.hostname;
-  const isDev = hostname.startsWith('develop.') ||
+  const isProduction = hostname === 'osa-demo.pages.dev';
+  const isDev = !isProduction && (
+                hostname.endsWith('.osa-demo.pages.dev') ||
                 hostname.includes('localhost') ||
-                hostname.includes('127.0.0.1');
+                hostname.includes('127.0.0.1'));
 
   // Configuration (can be customized via OSAChatWidget.setConfig)
   const CONFIG = {
