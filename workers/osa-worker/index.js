@@ -130,6 +130,14 @@ function isAllowedOrigin(origin) {
 }
 
 /**
+ * Validate community ID format
+ */
+function isValidCommunityId(id) {
+  // Allow alphanumeric, hyphen, underscore, 1-50 chars
+  return /^[a-zA-Z0-9_-]{1,50}$/.test(id);
+}
+
+/**
  * Build CORS headers
  */
 function getCorsHeaders(origin) {
@@ -270,6 +278,27 @@ export default {
       const communityGetMatch = url.pathname.match(/^\/communities\/([^\/]+)$/);
       if (communityGetMatch && request.method === 'GET') {
         const communityId = communityGetMatch[1];
+
+        // Validate community ID format
+        if (!isValidCommunityId(communityId)) {
+          return new Response(JSON.stringify({ error: 'Invalid community ID format' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        // Rate limit community lookups
+        const rateLimitResult = await checkRateLimit(request, env, CONFIG);
+        if (!rateLimitResult.allowed) {
+          return new Response(JSON.stringify({
+            error: 'Rate limit exceeded',
+            details: rateLimitResult.reason,
+          }), {
+            status: 429,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
         return await proxyToBackend(request, env, `/communities/${communityId}`, null, corsHeaders, CONFIG);
       }
 
@@ -277,6 +306,21 @@ export default {
       const communityActionMatch = url.pathname.match(/^\/([^\/]+)\/(ask|chat)$/);
       if (communityActionMatch && request.method === 'POST') {
         const [, communityId, action] = communityActionMatch;
+
+        // Reject reserved path segments as community IDs
+        const reservedPaths = ['health', 'version', 'feedback', 'communities'];
+        if (reservedPaths.includes(communityId)) {
+          return new Response('Not Found', { status: 404, headers: corsHeaders });
+        }
+
+        // Validate community ID format
+        if (!isValidCommunityId(communityId)) {
+          return new Response(JSON.stringify({ error: 'Invalid community ID format' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
         return await handleProtectedEndpoint(request, env, ctx, `/${communityId}/${action}`, corsHeaders, CONFIG);
       }
 
