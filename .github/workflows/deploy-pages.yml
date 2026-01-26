@@ -73,16 +73,19 @@ jobs:
               comment.body.includes('<!-- cloudflare-pages-preview -->')
             );
 
-            const body = `<!-- cloudflare-pages-preview -->
-            ## 🚀 Preview Deployment
-
-            | Name | Link |
-            |------|------|
-            | **Preview URL** | ${previewUrl} |
-            | **Branch** | \`${{ steps.branch.outputs.original }}\` |
-            | **Commit** | \`${{ github.sha.substring(0, 7) }}\` |
-
-            This preview will be updated automatically when you push new commits.`;
+            const sha = '${{ github.sha }}'.substring(0, 7);
+            const body = [
+              '<!-- cloudflare-pages-preview -->',
+              '## 🚀 Preview Deployment',
+              '',
+              '| Name | Link |',
+              '|------|------|',
+              `| **Preview URL** | ${previewUrl} |`,
+              '| **Branch** | `${{ steps.branch.outputs.original }}` |',
+              `| **Commit** | \`${sha}\` |`,
+              '',
+              'This preview will be updated automatically when you push new commits.'
+            ].join('\n');
 
             if (botComment) {
               // Update existing comment
