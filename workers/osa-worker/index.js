@@ -168,6 +168,12 @@ async function proxyToBackend(request, env, path, body, corsHeaders, CONFIG) {
     backendHeaders['X-API-Key'] = env.BACKEND_API_KEY;
   }
 
+  // Forward Origin header for CORS authorization
+  const origin = request.headers.get('Origin');
+  if (origin) {
+    backendHeaders['Origin'] = origin;
+  }
+
   // Forward BYOK headers
   const byokHeaders = ['X-OpenRouter-Key', 'X-OpenRouter-Model', 'X-OpenRouter-Provider', 'X-OpenRouter-Temperature', 'X-User-Id'];
   for (const header of byokHeaders) {
