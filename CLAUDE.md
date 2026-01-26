@@ -8,8 +8,21 @@ A precise, reliable AI assistant platform for researchers working with open scie
 
 **Branch Strategy:**
 - `main` - Production releases only, auto-deploys to prod
+  - Always has stable versions (no `.dev` suffix)
+  - CI automatically strips `.dev` suffix if merged accidentally
+  - Releases tagged with `--latest` flag
 - `develop` - Integration branch, auto-deploys to dev
+  - Has `.dev` suffix on versions (e.g., `0.5.1.dev0`)
 - `feature/*` - Feature branches, created from and merged to `develop`
+
+**Version Management (Automated):**
+- `develop` branch: Versions end with `.dev0` suffix (e.g., `0.5.1.dev0`)
+- `main` branch: Versions are stable, no suffix (e.g., `0.5.1`)
+- When `src/version.py` changes on `main`:
+  1. CI automatically strips `.dev` suffix if present
+  2. Creates git tag (e.g., `v0.5.1`)
+  3. Creates GitHub release marked as "latest"
+- Manual version bumps use `scripts/bump_version.py`
 
 1. **Pick an issue** from GitHub Issues
 2. **Create feature branch from develop**: `git checkout develop && git pull && git checkout -b feature/issue-N-short-description`
@@ -32,6 +45,42 @@ gh pr create --base develop --title "feat: add X" --body "Closes #7"
 git push -u origin feature/issue-7-interfaces
 gh pr merge --squash --delete-branch             # SQUASH MERGE to keep history clean
 ```
+
+## GitHub Labels
+
+Available labels for issues and PRs (check with `gh label list` before creating new ones):
+
+**Priority:**
+- `P0` - Blocker, must fix before release
+- `P1` - Critical, fix as soon as possible
+- `P2` - Important, fix when possible
+
+**Type:**
+- `bug` - Something isn't working
+- `feature` - New feature or enhancement
+- `enhancement` - New feature or request
+- `documentation` - Improvements or additions to documentation
+- `security` - Security vulnerability or hardening
+
+**Category:**
+- `testing` - Testing and quality assurance
+- `operations` - Operations, monitoring, and observability
+- `observability` - Logging, monitoring, and debugging
+- `developer-experience` - Improves developer experience
+- `widget` - Related to frontend widget
+- `cost-management` - Cost tracking and optimization
+
+**Status:**
+- `good first issue` - Good for newcomers
+- `help wanted` - Extra attention is needed
+- `duplicate` - This issue or pull request already exists
+- `invalid` - This doesn't seem right
+- `question` - Further information is requested
+- `wontfix` - This will not be worked on
+
+**Adding new labels:**
+1. Create the label: `gh label create "label-name" --description "Description" --color "hexcolor"`
+2. Update this list in CLAUDE.md
 
 ## Design Principles
 
