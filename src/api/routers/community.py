@@ -318,17 +318,21 @@ def list_sessions(community_id: str) -> list[ChatSession]:
 
 
 def _is_authorized_origin(origin: str | None, community_id: str) -> bool:
-    """Check if Origin header matches community's allowed CORS origins.
+    """Check if Origin header matches allowed CORS origins.
 
     This determines if a request is coming from an authorized widget embed
     (vs CLI, unauthorized web page, or API client).
+
+    Checks against:
+    1. Platform default origins (osa-demo.pages.dev and subdomains)
+    2. Community-specific CORS origins from config
 
     Args:
         origin: Origin header from HTTP request (e.g., "https://hedtags.org")
         community_id: Community identifier
 
     Returns:
-        True if origin matches community's cors_origins, False otherwise.
+        True if origin matches platform defaults or community's cors_origins.
         Returns False if origin is None (CLI, mobile apps, browser extensions).
     """
     if not origin:
@@ -336,6 +340,26 @@ def _is_authorized_origin(origin: str | None, community_id: str) -> bool:
 
     import re
 
+    # Platform default origins - always allowed for all communities
+    platform_exact_origins = [
+        "https://osa-demo.pages.dev",
+    ]
+    platform_wildcard_origins = [
+        "https://*.osa-demo.pages.dev",
+    ]
+
+    # Check platform exact matches
+    if origin in platform_exact_origins:
+        return True
+
+    # Check platform wildcard patterns
+    for allowed in platform_wildcard_origins:
+        escaped = re.escape(allowed)
+        pattern = escaped.replace(r"\*", r"[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?")
+        if re.fullmatch(pattern, origin):
+            return True
+
+    # Check community-specific origins
     community_info = registry.get(community_id)
     if not community_info or not community_info.community_config:
         return False
@@ -387,12 +411,18 @@ def _select_api_key(
         Tuple of (api_key, source) where source is "byok", "community", or "platform"
 
     Raises:
-        HTTPException(403): If BYOK required but not provided
+        HTTPException(403): If origin is not authorized and BYOK is not provided
+        HTTPException(500): If no platform API key is configured and no other key is available
     """
     import os
 
     # Case 1: BYOK provided - always allowed
     if byok:
+        logger.debug(
+            "Using BYOK for community %s",
+            community_id,
+            extra={"community_id": community_id, "key_source": "byok"},
+        )
         return (byok, "byok")
 
     # Case 2: Check if origin is authorized for platform key usage
@@ -415,14 +445,30 @@ def _select_api_key(
         if env_var:
             community_key = os.getenv(env_var)
             if community_key:
-                logger.debug(
-                    "Using community-specific API key from %s for %s", env_var, community_id
+                logger.info(
+                    "Using community-specific API key from %s for %s",
+                    env_var,
+                    community_id,
+                    extra={
+                        "community_id": community_id,
+                        "key_source": "community",
+                        "env_var": env_var,
+                    },
                 )
                 return (community_key, "community")
-            logger.warning(
-                "Community %s configured to use %s but env var not set, falling back to platform key",
+            logger.error(
+                "Community %s configured to use %s but env var not set, falling back to platform key. "
+                "This may incur unexpected costs. Set the environment variable to fix this.",
                 community_id,
                 env_var,
+                extra={
+                    "community_id": community_id,
+                    "key_source": "platform",
+                    "configured_env_var": env_var,
+                    "env_var_missing": True,
+                    "fallback_to_platform": True,
+                    "origin": origin,
+                },
             )
 
     # Fall back to platform key
@@ -432,6 +478,11 @@ def _select_api_key(
             detail="No API key configured for this community. Please contact support.",
         )
 
+    logger.debug(
+        "Using platform API key for community %s",
+        community_id,
+        extra={"community_id": community_id, "key_source": "platform"},
+    )
     return (settings.openrouter_api_key, "platform")
 
 
@@ -585,13 +636,21 @@ def create_community_assistant(
 
     # Select API key with authorization checks
     effective_api_key, key_source = _select_api_key(community_id, byok, origin)
-    logger.debug("Using %s API key for %s", key_source, community_id)
+    logger.debug(
+        "Using %s API key",
+        key_source,
+        extra={"community_id": community_id, "origin": origin, "key_source": key_source},
+    )
 
     # Select model (checks BYOK requirement for custom models)
     selected_model, selected_provider = _select_model(
         community_info, requested_model, has_byok=bool(byok)
     )
-    logger.debug("Using model %s for %s", selected_model, community_id)
+    logger.debug(
+        "Using model %s",
+        selected_model,
+        extra={"community_id": community_id, "origin": origin, "model": selected_model},
+    )
 
     # Determine user_id for prompt caching optimization
     cache_user_id = _get_cache_user_id(community_id, byok, user_id)

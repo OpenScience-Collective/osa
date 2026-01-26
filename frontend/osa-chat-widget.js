@@ -2,23 +2,30 @@
  * OSA Chat Widget
  * A floating chat assistant for Open Science tools (HED, BIDS, etc.)
  * Connects to OSA Cloudflare Worker for secure access.
+ * Version: 2026-01-26-v2
  */
 
 (function() {
   'use strict';
 
   // Auto-detect environment based on hostname
+  // Production: Only osa-demo.pages.dev (exact match) routes to production API
+  // Development: All other *.osa-demo.pages.dev subdomains (preview/branch deployments)
+  //              route to dev API for testing without affecting production data
   const hostname = window.location.hostname;
-  const isDev = hostname.startsWith('develop.') ||
+  const isProduction = hostname === 'osa-demo.pages.dev';
+  const isDev = !isProduction && (
+                hostname.endsWith('.osa-demo.pages.dev') ||
                 hostname.includes('localhost') ||
-                hostname.includes('127.0.0.1');
+                hostname.includes('127.0.0.1'));
 
   // Configuration (can be customized via OSAChatWidget.setConfig)
   const CONFIG = {
     // Community identifier - determines which assistant to use
     // Endpoints will be: /${communityId}/ask, /${communityId}/chat
     communityId: 'hed',
-    // Use dev worker for develop.* hostnames, production worker otherwise
+    // Route to dev worker for all non-production deployments (preview branches, localhost)
+    // or production worker for osa-demo.pages.dev (production only)
     apiEndpoint: isDev
       ? 'https://osa-worker-dev.shirazi-10f.workers.dev'
       : 'https://osa-worker.shirazi-10f.workers.dev',
@@ -53,6 +60,18 @@
     console.log('[OSA] Using DEV backend:', CONFIG.apiEndpoint);
   }
 
+  // Default model options for settings dropdown
+  const DEFAULT_MODELS = [
+    { value: 'openai/gpt-5.2-chat', label: 'GPT-5.2 Chat' },
+    { value: 'openai/gpt-5-mini', label: 'GPT-5 Mini' },
+    { value: 'anthropic/claude-haiku-4.5', label: 'Claude Haiku 4.5' },
+    { value: 'anthropic/claude-sonnet-4.5', label: 'Claude Sonnet 4.5' },
+    { value: 'google/gemini-3-flash-preview', label: 'Gemini 3 Flash' },
+    { value: 'google/gemini-3-pro-preview', label: 'Gemini 3 Pro' },
+    { value: 'moonshotai/kimi-k2-0905', label: 'Kimi K2' },
+    { value: 'qwen/qwen3-235b-a22b-2507', label: 'Qwen3 235B' }
+  ];
+
   // State
   let isOpen = false;
   let isLoading = false;
@@ -64,6 +83,8 @@
   let backendCommitSha = null; // Backend git commit SHA from health check
   let pageContextEnabled = true; // Runtime state for page context toggle
   let chatPopup = null; // Reference to pop-out window (prevents duplicates)
+  let userSettings = { apiKey: null, model: null }; // User settings (BYOK and model selection)
+  let communityDefaultModel = null; // Community's default model from API
 
   // Store script URL at load time for reliable pop-out
   const WIDGET_SCRIPT_URL = document.currentScript?.src || null;
@@ -77,7 +98,8 @@
     brain: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/></svg>',
     copy: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>',
     check: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>',
-    popout: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>'
+    popout: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>',
+    settings: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="2"></circle><circle cx="12" cy="12" r="2"></circle><circle cx="12" cy="19" r="2"></circle></svg>'
   };
 
   // CSS Styles
@@ -125,6 +147,48 @@
     .osa-chat-button svg {
       width: 24px;
       height: 24px;
+    }
+
+    /* Tooltip that appears next to chat button on initial page load
+       Auto-hides after 8 seconds or when chat is opened */
+    .osa-chat-tooltip {
+      position: fixed;
+      bottom: 28px;
+      right: 86px;
+      background: var(--osa-bg);
+      color: var(--osa-text);
+      padding: 10px 14px;
+      border-radius: 8px;
+      box-shadow: var(--osa-shadow);
+      font-size: 13px;
+      font-weight: 500;
+      white-space: nowrap;
+      z-index: 9999;
+      opacity: 0;
+      transform: translateX(10px);
+      transition: opacity 0.3s ease, transform 0.3s ease;
+      pointer-events: none;
+    }
+
+    .osa-chat-tooltip.visible {
+      opacity: 1;
+      transform: translateX(0);
+    }
+
+    .osa-chat-tooltip::after {
+      content: '';
+      position: absolute;
+      right: -6px;
+      top: 50%;
+      transform: translateY(-50%);
+      border: 6px solid transparent;
+      border-left-color: var(--osa-bg);
+      border-right: none;
+    }
+
+    /* Hide tooltip when chat is open */
+    .osa-chat-widget.chat-open .osa-chat-tooltip {
+      display: none;
     }
 
     .osa-chat-window {
@@ -688,6 +752,172 @@
       user-select: none;
     }
 
+    /* Settings modal - contained within chat window to avoid z-index conflicts
+       and ensure modal is properly scoped to the widget's stacking context */
+    .osa-settings-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.4);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      border-radius: 16px;
+    }
+
+    .osa-settings-overlay.open {
+      display: flex;
+    }
+
+    .osa-settings-modal {
+      background: var(--osa-bg);
+      border-radius: 12px;
+      width: 90%;
+      max-width: 340px;
+      max-height: 85%;
+      overflow-y: auto;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+      margin: 10px;
+    }
+
+    .osa-settings-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--osa-border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .osa-settings-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--osa-text);
+      margin: 0;
+    }
+
+    .osa-settings-close-btn {
+      background: transparent;
+      border: none;
+      color: var(--osa-text-light);
+      cursor: pointer;
+      padding: 4px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.2s, color 0.2s;
+    }
+
+    .osa-settings-close-btn:hover {
+      background: var(--osa-border);
+      color: var(--osa-text);
+    }
+
+    .osa-settings-close-btn svg {
+      width: 20px;
+      height: 20px;
+    }
+
+    .osa-settings-body {
+      padding: 20px;
+    }
+
+    .osa-settings-field {
+      margin-bottom: 20px;
+    }
+
+    .osa-settings-field:last-child {
+      margin-bottom: 0;
+    }
+
+    .osa-settings-label {
+      display: block;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--osa-text);
+      margin-bottom: 6px;
+    }
+
+    .osa-settings-hint {
+      display: block;
+      font-size: 11px;
+      color: var(--osa-text-light);
+      margin-top: 4px;
+    }
+
+    .osa-settings-input {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--osa-border);
+      border-radius: 8px;
+      font-size: 13px;
+      font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+      outline: none;
+      transition: border-color 0.2s;
+      box-sizing: border-box;
+    }
+
+    .osa-settings-input:focus {
+      border-color: var(--osa-primary);
+    }
+
+    .osa-settings-select {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--osa-border);
+      border-radius: 8px;
+      font-size: 13px;
+      outline: none;
+      cursor: pointer;
+      box-sizing: border-box;
+      transition: border-color 0.2s;
+      background: var(--osa-bg);
+    }
+
+    .osa-settings-select:focus {
+      border-color: var(--osa-primary);
+    }
+
+    .osa-settings-footer {
+      padding: 16px 20px;
+      border-top: 1px solid var(--osa-border);
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
+    }
+
+    .osa-settings-btn {
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s, color 0.2s;
+      border: none;
+    }
+
+    .osa-settings-btn-cancel {
+      background: transparent;
+      color: var(--osa-text);
+      border: 1px solid var(--osa-border);
+    }
+
+    .osa-settings-btn-cancel:hover {
+      background: var(--osa-border);
+    }
+
+    .osa-settings-btn-save {
+      background: var(--osa-primary);
+      color: white;
+    }
+
+    .osa-settings-btn-save:hover {
+      background: var(--osa-primary-dark);
+    }
+
     /* Fullscreen mode (for pop-out windows) */
     .osa-chat-widget.fullscreen .osa-chat-button {
       display: none !important;
@@ -1043,6 +1273,233 @@
     }
   }
 
+  // Load user settings from localStorage
+  function loadUserSettings() {
+    const storageKey = `osa-settings-${CONFIG.communityId}`;
+    try {
+      const saved = localStorage.getItem(storageKey);
+      if (!saved) {
+        userSettings = { apiKey: null, model: null };
+        return;
+      }
+
+      let parsed;
+      try {
+        parsed = JSON.parse(saved);
+      } catch (jsonErr) {
+        console.error('[OSA] Saved settings contain invalid JSON:', jsonErr.message);
+        const container = document.querySelector('.osa-chat-widget');
+        if (container && isOpen) {
+          showError(container, 'Saved settings are corrupted. Using defaults.');
+        }
+        userSettings = { apiKey: null, model: null };
+        // Clear corrupted data
+        try { localStorage.removeItem(storageKey); } catch {}
+        return;
+      }
+
+      // Validate API key format if present
+      if (parsed.apiKey) {
+        // Basic format validation: sk-or-v1-[hex]
+        if (!/^sk-or-v1-[0-9a-f]{64}$/i.test(parsed.apiKey)) {
+          console.error('[OSA] Saved API key has invalid format, ignoring');
+          parsed.apiKey = null;
+        }
+      }
+
+      // Validate model format if present
+      if (parsed.model && typeof parsed.model === 'string') {
+        // Validate model format: provider/model-name
+        if (!/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9._-]+$/.test(parsed.model)) {
+          console.error('[OSA] Saved model has invalid format, ignoring');
+          parsed.model = null;
+        }
+      }
+
+      userSettings = {
+        apiKey: parsed.apiKey || null,
+        model: parsed.model || null
+      };
+    } catch (e) {
+      // localStorage access error
+      console.error('[OSA] Cannot access localStorage for settings:', e.message);
+      const container = document.querySelector('.osa-chat-widget');
+      if (container && isOpen) {
+        showError(container, 'Cannot access browser storage. Settings will not persist.');
+      }
+      userSettings = { apiKey: null, model: null };
+    }
+  }
+
+  // Save user settings to localStorage
+  function saveUserSettings() {
+    const storageKey = `osa-settings-${CONFIG.communityId}`;
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(userSettings));
+    } catch (e) {
+      console.error('[OSA] Could not save user settings:', e);
+      // Show error to user - this is critical
+      const container = document.querySelector('.osa-chat-widget');
+      if (container) {
+        showError(container, 'Could not save settings. Storage may be full or disabled. Your settings will not persist.');
+      }
+      throw e; // Re-throw so caller knows save failed
+    }
+  }
+
+  // Fetch community default model from API
+  async function fetchCommunityDefaultModel() {
+    // Validate communityId before making request
+    if (!isValidCommunityId(CONFIG.communityId)) {
+      console.error('[OSA] Invalid communityId, cannot fetch default model');
+      communityDefaultModel = 'openai/gpt-oss-120b'; // Hardcoded fallback (Cerebras provider)
+      return;
+    }
+
+    try {
+      const response = await fetch(`${CONFIG.apiEndpoint}/communities/${CONFIG.communityId}`, {
+        method: 'GET',
+        signal: AbortSignal.timeout(5000)
+      });
+
+      if (!response.ok) {
+        console.error(`[OSA] Community default model fetch failed: HTTP ${response.status}`);
+        communityDefaultModel = 'openai/gpt-oss-120b'; // Hardcoded fallback (Cerebras provider)
+        const container = document.querySelector('.osa-chat-widget');
+        if (container && isOpen) {
+          showError(container, `Could not load default model settings (HTTP ${response.status}). Using fallback.`);
+        }
+        return;
+      }
+
+      const data = await response.json();
+      if (data && data.default_model) {
+        communityDefaultModel = data.default_model;
+      } else {
+        console.error('[OSA] Community default model not found in API response');
+        communityDefaultModel = 'openai/gpt-oss-120b';
+        const container = document.querySelector('.osa-chat-widget');
+        if (container && isOpen) {
+          showError(container, 'Default model settings incomplete. Using fallback.');
+        }
+      }
+    } catch (e) {
+      console.error('[OSA] Could not fetch community default model:', e.message || e);
+      communityDefaultModel = 'openai/gpt-oss-120b';
+      const container = document.querySelector('.osa-chat-widget');
+      if (container && isOpen) {
+        showError(container, 'Network error loading model settings. Using fallback.');
+      }
+    }
+  }
+
+  // Open settings modal
+  function openSettings(container) {
+    // Don't open settings if chat window is closed
+    if (!isOpen) return;
+
+    const overlay = container.querySelector('.osa-settings-overlay');
+    const apiKeyInput = container.querySelector('#osa-settings-api-key');
+    const modelSelect = container.querySelector('#osa-settings-model');
+    const customModelField = container.querySelector('#osa-settings-custom-model-field');
+    const customModelInput = container.querySelector('#osa-settings-custom-model');
+    const modelHint = container.querySelector('#osa-settings-model-hint');
+
+    // Update default option label with community default model
+    if (modelSelect) {
+      const defaultOption = modelSelect.querySelector('option[value="default"]');
+      if (defaultOption) {
+        const modelLabel = communityDefaultModel || 'Community Setting';
+        defaultOption.textContent = `Default (${modelLabel})`;
+      }
+    }
+
+    // Populate form with current settings
+    if (apiKeyInput) {
+      apiKeyInput.value = userSettings.apiKey || '';
+    }
+    if (modelSelect) {
+      // Check if current model is in the default list
+      const isDefaultModel = userSettings.model === null || DEFAULT_MODELS.some(m => m.value === userSettings.model);
+      if (isDefaultModel) {
+        modelSelect.value = userSettings.model || 'default';
+        if (customModelField) customModelField.style.display = 'none';
+      } else {
+        // Custom model
+        modelSelect.value = 'custom';
+        if (customModelInput) customModelInput.value = userSettings.model;
+        if (customModelField) customModelField.style.display = 'block';
+      }
+    }
+
+    // Update hint with current default model
+    if (modelHint && communityDefaultModel) {
+      modelHint.textContent = `Community default: ${communityDefaultModel}`;
+    }
+
+    if (overlay) {
+      overlay.classList.add('open');
+    }
+  }
+
+  // Close settings modal
+  function closeSettings(container) {
+    const overlay = container.querySelector('.osa-settings-overlay');
+    if (overlay) {
+      overlay.classList.remove('open');
+    }
+  }
+
+  // Save settings from modal
+  function saveSettings(container) {
+    const apiKeyInput = container.querySelector('#osa-settings-api-key');
+    const modelSelect = container.querySelector('#osa-settings-model');
+    const customModelInput = container.querySelector('#osa-settings-custom-model');
+
+    // Get values
+    const apiKey = apiKeyInput ? apiKeyInput.value.trim() : '';
+    const modelSelection = modelSelect ? modelSelect.value : 'default';
+
+    // Validate API key format if provided
+    if (apiKey && !/^sk-or-v1-[0-9a-f]{64}$/i.test(apiKey)) {
+      showError(container, 'Invalid API key format. Expected: sk-or-v1-[64 hex chars]');
+      return;
+    }
+
+    // Determine final model value
+    let model = null;
+    if (modelSelection === 'custom') {
+      model = customModelInput ? customModelInput.value.trim() : null;
+      if (!model) {
+        showError(container, 'Please enter a custom model name');
+        return;
+      }
+      // Validate custom model format: provider/model-name
+      if (!/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9._-]+$/.test(model)) {
+        showError(container, 'Invalid model format. Expected: provider/model-name');
+        return;
+      }
+    } else if (modelSelection !== 'default') {
+      model = modelSelection;
+    }
+
+    // Update settings
+    userSettings.apiKey = apiKey || null;
+    userSettings.model = model;
+
+    // Save to localStorage
+    try {
+      saveUserSettings();
+    } catch (e) {
+      // Error already shown by saveUserSettings()
+      // Don't close modal if save failed
+      return;
+    }
+
+    // Close modal only if save succeeded
+    closeSettings(container);
+  }
+
   // Check backend health status
   async function checkBackendStatus() {
     const statusDot = document.querySelector('.osa-status-dot');
@@ -1080,12 +1537,21 @@
         backendOnline = false;
         statusDot.className = 'osa-status-dot offline';
         statusText.textContent = 'Offline';
+        console.error(`[OSA] Backend health check failed: HTTP ${response.status}`);
+        const container = document.querySelector('.osa-chat-widget');
+        if (container && isOpen) {
+          showError(container, `Backend service unavailable (HTTP ${response.status}). Please try again later.`);
+        }
       }
     } catch (e) {
       backendOnline = false;
       statusDot.className = 'osa-status-dot offline';
       statusText.textContent = 'Offline';
-      console.warn('Backend health check failed:', e);
+      console.error('[OSA] Backend health check error:', e.message || e);
+      const container = document.querySelector('.osa-chat-widget');
+      if (container && isOpen) {
+        showError(container, 'Cannot connect to backend service. Check your network connection.');
+      }
     }
   }
 
@@ -1182,6 +1648,7 @@
       <button class="osa-chat-button" aria-label="Open chat">
         ${ICONS.chat}
       </button>
+      <div class="osa-chat-tooltip">Ask me about ${escapeHtml(CONFIG.title.replace(' Assistant', ''))}</div>
       <div class="osa-chat-window">
         <div class="osa-resize-handle"></div>
         <div class="osa-chat-header">
@@ -1197,6 +1664,9 @@
             </div>
           </div>
           <div class="osa-header-actions">
+            <button class="osa-header-btn osa-settings-btn-open" title="Settings">
+              ${ICONS.settings}
+            </button>
             <button class="osa-header-btn osa-popout-btn" title="Open in new window" style="display: ${CONFIG.fullscreen ? 'none' : 'flex'}">
               ${ICONS.popout}
             </button>
@@ -1230,6 +1700,66 @@
             Powered by ${escapeHtml(CONFIG.repoName)}<span class="osa-version"></span>
           </a>
         </div>
+        <div class="osa-settings-overlay">
+        <div class="osa-settings-modal">
+          <div class="osa-settings-header">
+            <h3 class="osa-settings-title">Settings</h3>
+            <button class="osa-settings-close-btn" aria-label="Close settings">
+              ${ICONS.close}
+            </button>
+          </div>
+          <div class="osa-settings-body">
+            <div class="osa-settings-field">
+              <label class="osa-settings-label" for="osa-settings-api-key">
+                OpenRouter API Key (Optional)
+              </label>
+              <input
+                type="password"
+                id="osa-settings-api-key"
+                class="osa-settings-input"
+                placeholder="sk-or-v1-..."
+                autocomplete="off"
+              />
+              <span class="osa-settings-hint">
+                Use your own API key for testing. Stored locally in your browser.
+              </span>
+            </div>
+            <div class="osa-settings-field">
+              <label class="osa-settings-label" for="osa-settings-model">
+                Model Selection
+              </label>
+              <select id="osa-settings-model" class="osa-settings-select">
+                <option value="default">Default (Community Setting)</option>
+                ${DEFAULT_MODELS.map(m => `<option value="${escapeHtml(m.value)}">${escapeHtml(m.label)}</option>`).join('')}
+                <option value="custom">Custom</option>
+              </select>
+              <span class="osa-settings-hint" id="osa-settings-model-hint">
+                Select a model or use the community default
+              </span>
+            </div>
+            <div class="osa-settings-field" id="osa-settings-custom-model-field" style="display: none;">
+              <label class="osa-settings-label" for="osa-settings-custom-model">
+                Model name (<a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer" style="color: var(--osa-primary); text-decoration: underline;">from OpenRouter</a>)
+              </label>
+              <input
+                type="text"
+                id="osa-settings-custom-model"
+                class="osa-settings-input"
+                placeholder="provider/model-name"
+                autocomplete="off"
+              />
+            </div>
+          </div>
+          <div class="osa-settings-footer">
+            <button class="osa-settings-btn osa-settings-btn-cancel">
+              Cancel
+            </button>
+            <button class="osa-settings-btn osa-settings-btn-save">
+              Save
+            </button>
+          </div>
+        </div>
+      </div>
       </div>
     `;
     document.body.appendChild(container);
@@ -1369,15 +1899,27 @@
         body.cf_turnstile_response = turnstileToken;
       }
 
+      // Add model selection if set
+      if (userSettings.model) {
+        body.model = userSettings.model;
+      }
+
       if (!isValidCommunityId(CONFIG.communityId)) {
         throw new Error('Invalid community configuration. Please reload the page.');
       }
 
+      const headers = {
+        'Content-Type': 'application/json',
+      };
+
+      // Add BYOK API key if set
+      if (userSettings.apiKey) {
+        headers['X-OpenRouter-Key'] = userSettings.apiKey;
+      }
+
       const response = await fetch(`${CONFIG.apiEndpoint}/${CONFIG.communityId}/ask`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: headers,
         body: JSON.stringify(body),
       });
 
@@ -1482,14 +2024,19 @@
     isOpen = !isOpen;
     const chatWindow = container.querySelector('.osa-chat-window');
     const button = container.querySelector('.osa-chat-button');
+    const tooltip = container.querySelector('.osa-chat-tooltip');
 
     if (isOpen) {
       chatWindow.classList.add('open');
+      container.classList.add('chat-open');
       button.innerHTML = ICONS.close;
       button.setAttribute('aria-label', 'Close chat');
       container.querySelector('.osa-chat-input input').focus();
+      // Hide tooltip when chat opens
+      if (tooltip) tooltip.classList.remove('visible');
     } else {
       chatWindow.classList.remove('open');
+      container.classList.remove('chat-open');
       button.innerHTML = ICONS.chat;
       button.setAttribute('aria-label', 'Open chat');
     }
@@ -1535,13 +2082,21 @@
       try {
         const response = await fetch(scriptUrl);
         if (!response.ok) {
-          console.error(`Failed to fetch widget script: HTTP ${response.status}`);
+          console.error('[OSA] Failed to fetch widget script:', {
+            url: scriptUrl,
+            status: response.status,
+            statusText: response.statusText
+          });
           alert(`Failed to load widget for pop-out (HTTP ${response.status}). Please try again.`);
           return;
         }
         scriptCode = await response.text();
       } catch (e) {
-        console.error('Failed to fetch widget script:', e);
+        console.error('[OSA] Failed to fetch widget script:', {
+          url: scriptUrl,
+          error: e.message || e,
+          stack: e.stack
+        });
         alert('Failed to load widget for pop-out. Please try again.');
         return;
       }
@@ -1645,9 +2200,13 @@
     }
 
     loadPageContextPreference();
+    loadUserSettings();
     loadHistory();
     injectStyles();
     const container = createWidget();
+
+    // Fetch community default model (async, non-blocking)
+    fetchCommunityDefaultModel();
 
     renderMessages(container);
     renderSuggestions(container);
@@ -1657,9 +2216,18 @@
     const closeBtn = container.querySelector('.osa-close-btn');
     const resetBtn = container.querySelector('.osa-reset-btn');
     const popoutBtn = container.querySelector('.osa-popout-btn');
+    const settingsBtn = container.querySelector('.osa-settings-btn-open');
     const input = container.querySelector('.osa-chat-input input');
     const sendBtn = container.querySelector('.osa-send-btn');
     const suggestionsList = container.querySelector('.osa-suggestions-list');
+
+    // Settings modal elements
+    const settingsOverlay = container.querySelector('.osa-settings-overlay');
+    const settingsCloseBtn = container.querySelector('.osa-settings-close-btn');
+    const settingsCancelBtn = container.querySelector('.osa-settings-btn-cancel');
+    const settingsSaveBtn = container.querySelector('.osa-settings-btn-save');
+    const modelSelect = container.querySelector('#osa-settings-model');
+    const customModelField = container.querySelector('#osa-settings-custom-model-field');
 
     // Verify all required elements exist
     if (!chatButton || !closeBtn || !resetBtn || !input || !sendBtn || !suggestionsList) {
@@ -1676,6 +2244,7 @@
     closeBtn?.addEventListener('click', () => toggleChat(container));
     resetBtn?.addEventListener('click', () => resetChat(container));
     popoutBtn?.addEventListener('click', () => openPopout());
+    settingsBtn?.addEventListener('click', () => openSettings(container));
 
     if (sendBtn && input) {
       sendBtn.addEventListener('click', () => sendMessage(container, input.value));
@@ -1697,8 +2266,41 @@
       savePageContextPreference();
     });
 
+    // Settings modal event listeners
+    settingsCloseBtn?.addEventListener('click', () => closeSettings(container));
+    settingsCancelBtn?.addEventListener('click', () => closeSettings(container));
+    settingsSaveBtn?.addEventListener('click', () => saveSettings(container));
+
+    // Close settings modal when clicking outside
+    settingsOverlay?.addEventListener('click', (e) => {
+      if (e.target === settingsOverlay) {
+        closeSettings(container);
+      }
+    });
+
+    // Show/hide custom model input based on selection
+    modelSelect?.addEventListener('change', (e) => {
+      if (customModelField) {
+        customModelField.style.display = e.target.value === 'custom' ? 'block' : 'none';
+      }
+    });
+
     // Check backend status
     checkBackendStatus();
+
+    // Show tooltip after a short delay (only if not fullscreen mode)
+    if (!CONFIG.fullscreen) {
+      const tooltip = container.querySelector('.osa-chat-tooltip');
+      if (tooltip) {
+        setTimeout(() => {
+          tooltip.classList.add('visible');
+          // Auto-hide tooltip after 8 seconds
+          setTimeout(() => {
+            tooltip.classList.remove('visible');
+          }, 8000);
+        }, 1500);
+      }
+    }
 
     // Initialize Turnstile if the script is loaded
     if (window.turnstile) {

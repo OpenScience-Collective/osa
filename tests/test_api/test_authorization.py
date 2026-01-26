@@ -52,6 +52,20 @@ def mock_registry():
 class TestIsAuthorizedOrigin:
     """Tests for _is_authorized_origin helper function."""
 
+    def test_platform_default_origin_always_allowed(self, mock_registry):  # noqa: ARG002
+        """Platform default origin (osa-demo.pages.dev) should be allowed for all communities."""
+        # Exact match
+        assert _is_authorized_origin("https://osa-demo.pages.dev", "hed") is True
+        assert _is_authorized_origin("https://osa-demo.pages.dev", "bids") is True
+        assert _is_authorized_origin("https://osa-demo.pages.dev", "no-cors") is True
+
+    def test_platform_wildcard_origin_always_allowed(self, mock_registry):  # noqa: ARG002
+        """Platform wildcard origins (*.osa-demo.pages.dev) should be allowed for all communities."""
+        # Wildcard subdomains
+        assert _is_authorized_origin("https://develop.osa-demo.pages.dev", "hed") is True
+        assert _is_authorized_origin("https://preview-123.osa-demo.pages.dev", "bids") is True
+        assert _is_authorized_origin("https://feature-branch.osa-demo.pages.dev", "no-cors") is True
+
     def test_exact_origin_match(self, mock_registry):  # noqa: ARG002
         """Should return True for exact origin match."""
         assert _is_authorized_origin("https://hedtags.org", "hed") is True
@@ -89,6 +103,19 @@ class TestIsAuthorizedOrigin:
     def test_unknown_community_returns_false(self, mock_registry):  # noqa: ARG002
         """Should return False for unknown community ID."""
         assert _is_authorized_origin("https://hedtags.org", "unknown") is False
+
+    def test_domain_case_sensitivity(self, mock_registry):  # noqa: ARG002
+        """Domain matching is currently case-sensitive.
+
+        Note: Per RFC 3986, scheme and host should be case-insensitive,
+        but current implementation uses exact string matching.
+        This test documents current behavior.
+        """
+        # Exact case match works
+        assert _is_authorized_origin("https://hedtags.org", "hed") is True
+        # Different case in domain currently fails (even though RFC says it should work)
+        assert _is_authorized_origin("https://HedTags.ORG", "hed") is False
+        assert _is_authorized_origin("https://HEDTAGS.ORG", "hed") is False
 
 
 class TestSelectApiKey:

@@ -21,12 +21,19 @@ Usage:
     python scripts/bump_version.py --prerelease alpha  # Change label: dev0 -> a0
     python scripts/bump_version.py --current           # Show current version
 
+Options:
+    --push              Automatically push commit and tag (requires bypass permissions for protected branches)
+    --ci                CI mode: skip prompts, auto-push, auto-release
+    --no-git            Skip git operations entirely
+
 Examples:
     python scripts/bump_version.py patch                      # 0.3.0a0 -> 0.3.1a0
     python scripts/bump_version.py minor --prerelease beta    # 0.3.0a0 -> 0.4.0b0
     python scripts/bump_version.py major --prerelease stable  # 0.3.0a0 -> 1.0.0
     python scripts/bump_version.py --prerelease alpha         # 0.4.5.dev0 -> 0.4.5a0
     python scripts/bump_version.py --prerelease dev           # 0.4.5.dev0 -> 0.4.5.dev1
+    python scripts/bump_version.py patch --prerelease dev --push  # Bump and push to remote
+    python scripts/bump_version.py patch --ci             # CI mode: bump, push, release (no prompts)
 """
 
 import argparse
@@ -209,7 +216,7 @@ def get_version_info() -> tuple:
         self.version_file.write_text(content)
         print(f"Updated {self.version_file.relative_to(self.project_root)}")
 
-    def git_commit_and_tag(self, version: str):
+    def git_commit_and_tag(self, version: str, skip_prompts: bool = False):
         """Commit version bump and create Git tag."""
         # Check if we're in a git repository
         result = subprocess.run(
@@ -229,7 +236,7 @@ def get_version_info() -> tuple:
             f for f in result.stdout.strip().split("\n") if f and not f.startswith("src/version.py")
         ]
 
-        if uncommitted_files:
+        if uncommitted_files and not skip_prompts:
             print(f"Warning: Uncommitted changes detected in: {', '.join(uncommitted_files)}")
             response = input("Continue with version bump? (y/N): ")
             if response.lower() != "y":
@@ -253,6 +260,79 @@ def get_version_info() -> tuple:
         )
         print(f"Created tag: {tag_name}")
 
+        return True
+
+    def push_to_remote(self, version: str, skip_prompts: bool = False):
+        """Push commit and tag to remote repository.
+
+        Args:
+            version: Version string (e.g., "0.5.1.dev0")
+            skip_prompts: If True, skip confirmation prompts (for CI mode)
+
+        Returns:
+            True if push succeeded, False otherwise
+        """
+        # Get current branch
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=self.project_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        current_branch = result.stdout.strip()
+
+        tag_name = f"v{version}"
+
+        if not skip_prompts:
+            print("\nReady to push to remote:")
+            print(f"  Branch: {current_branch}")
+            print(f"  Tag: {tag_name}")
+            response = input("\nProceed with push? (y/N): ")
+            if response.lower() != "y":
+                print("Push cancelled.")
+                return False
+
+        # Push branch
+        print(f"\nPushing {current_branch} to origin...")
+        result = subprocess.run(
+            ["git", "push", "origin", current_branch],
+            cwd=self.project_root,
+            capture_output=True,
+            text=True,
+        )
+
+        if result.returncode != 0:
+            print("❌ Failed to push branch to origin:")
+            print(result.stderr)
+            print("\nPossible reasons:")
+            print("  - Branch protection requires PR (you need bypass permissions)")
+            print("  - Required status checks haven't passed yet")
+            print("  - Remote branch has diverged")
+            print("\nYou can manually push later with:")
+            print(f"  git push origin {current_branch}")
+            print(f"  git push origin {tag_name}")
+            return False
+
+        print(f"✓ Pushed {current_branch} to origin")
+
+        # Push tag
+        print(f"Pushing tag {tag_name} to origin...")
+        result = subprocess.run(
+            ["git", "push", "origin", tag_name],
+            cwd=self.project_root,
+            capture_output=True,
+            text=True,
+        )
+
+        if result.returncode != 0:
+            print("❌ Failed to push tag to origin:")
+            print(result.stderr)
+            print("\nYou can manually push the tag later with:")
+            print(f"  git push origin {tag_name}")
+            return False
+
+        print(f"✓ Pushed tag {tag_name} to origin")
         return True
 
     def create_github_release(self, version: str):
@@ -337,6 +417,18 @@ def main():
         "--no-git", action="store_true", help="Skip Git operations (commit, tag, release)"
     )
 
+    parser.add_argument(
+        "--push",
+        action="store_true",
+        help="Automatically push commit and tag to remote (requires bypass permissions for protected branches)",
+    )
+
+    parser.add_argument(
+        "--ci",
+        action="store_true",
+        help="CI mode: skip interactive prompts, auto-push, suitable for GitHub Actions",
+    )
+
     args = parser.parse_args()
 
     # Find project root
@@ -364,19 +456,38 @@ def main():
         old_version, new_version = bumper.bump_version(args.bump_type, args.prerelease)
         print(f"\nVersion bumped: {old_version} -> {new_version}\n")
 
-        if not args.no_git and bumper.git_commit_and_tag(new_version):
-            # Git operations succeeded
-            print("\nNext steps:")
-            print(f"  1. Review the changes: git show v{new_version}")
-            print("  2. Push to remote: git push origin feature/your-branch")
-            print(f"  3. Push tag: git push origin v{new_version}")
-            print("  4. Create PR and merge to main")
-            print("  5. After merge, the GitHub release will be created automatically")
+        # CI mode: skip prompts, auto-push
+        skip_prompts = args.ci
+        auto_push = args.push or args.ci
 
-            # Optionally create GitHub release
-            response = input("\nCreate GitHub release now? (y/N): ")
-            if response.lower() == "y":
-                bumper.create_github_release(new_version)
+        if not args.no_git and bumper.git_commit_and_tag(new_version, skip_prompts=skip_prompts):
+            # Git operations succeeded
+
+            # Push to remote if requested
+            if auto_push:
+                push_success = bumper.push_to_remote(new_version, skip_prompts=skip_prompts)
+                if push_success and not skip_prompts:
+                    # Optionally create GitHub release (not in CI mode)
+                    response = input("\nCreate GitHub release now? (y/N): ")
+                    if response.lower() == "y":
+                        bumper.create_github_release(new_version)
+                elif push_success and skip_prompts:
+                    # In CI mode, auto-create release
+                    print("\n[CI Mode] Creating GitHub release...")
+                    bumper.create_github_release(new_version)
+            else:
+                # Manual push workflow
+                print("\nNext steps:")
+                print(f"  1. Review the changes: git show v{new_version}")
+                print("  2. Push to remote: git push origin <your-branch>")
+                print(f"  3. Push tag: git push origin v{new_version}")
+                print("  4. Create PR and merge to develop/main")
+                print("  5. After merge, create GitHub release if needed")
+
+                if not skip_prompts:
+                    response = input("\nCreate GitHub release now? (y/N): ")
+                    if response.lower() == "y":
+                        bumper.create_github_release(new_version)
 
         return 0
 

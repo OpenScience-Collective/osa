@@ -118,11 +118,9 @@ function isAllowedOrigin(origin) {
   if (origin.endsWith('.hed-examples.org')) return true;
   if (origin.endsWith('.osc.earth')) return true;
 
-  // Allow specific Cloudflare Pages projects (not all .pages.dev)
+  // Allow osa-demo.pages.dev and all subdomains (previews, branches)
   if (origin === 'https://osa-demo.pages.dev') return true;
-  if (origin === 'https://develop.osa-demo.pages.dev') return true;
-  // Allow preview deployments (format: https://<hash>.osa-demo.pages.dev)
-  if (/^https:\/\/[a-f0-9]+\.osa-demo\.pages\.dev$/.test(origin)) return true;
+  if (origin.endsWith('.osa-demo.pages.dev')) return true;
 
   // Allow localhost for development
   if (origin.startsWith('http://localhost:')) return true;
@@ -168,6 +166,13 @@ async function proxyToBackend(request, env, path, body, corsHeaders, CONFIG) {
     backendHeaders['X-API-Key'] = env.BACKEND_API_KEY;
   }
 
+  // Forward Origin header to backend for origin-based authorization checks
+  // Backend uses this to validate request source and apply origin-specific policies
+  const origin = request.headers.get('Origin');
+  if (origin) {
+    backendHeaders['Origin'] = origin;
+  }
+
   // Forward BYOK headers
   const byokHeaders = ['X-OpenRouter-Key', 'X-OpenRouter-Model', 'X-OpenRouter-Provider', 'X-OpenRouter-Temperature', 'X-User-Id'];
   for (const header of byokHeaders) {
@@ -204,11 +209,32 @@ async function proxyToBackend(request, env, path, body, corsHeaders, CONFIG) {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   } catch (error) {
+    console.error('Backend proxy error:', {
+      path: path,
+      errorName: error.name,
+      errorMessage: error.message,
+      stack: error.stack
+    });
+
+    let errorMessage = 'Backend request failed';
+    let statusCode = 500;
+
+    if (error.name === 'AbortError' || error.message.includes('timeout')) {
+      errorMessage = 'Backend request timed out';
+      statusCode = 504;
+    } else if (error.message.includes('network') || error.message.includes('fetch')) {
+      errorMessage = 'Cannot reach backend service';
+      statusCode = 503;
+    } else if (error instanceof SyntaxError) {
+      errorMessage = 'Backend returned invalid response';
+      statusCode = 502;
+    }
+
     return new Response(JSON.stringify({
-      error: 'Backend request failed',
+      error: errorMessage,
       details: error.message,
     }), {
-      status: 500,
+      status: statusCode,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   }
@@ -313,11 +339,19 @@ async function handleHealth(env, corsHeaders, CONFIG) {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   } catch (error) {
+    console.error('Health check backend error:', {
+      backendUrl: backendUrl,
+      errorName: error.name,
+      errorMessage: error.message,
+      stack: error.stack
+    });
+
     return new Response(JSON.stringify({
       status: 'degraded',
       proxy: 'operational',
       backend: 'unreachable',
       error: error.message,
+      error_type: error.name,
     }), {
       status: 503,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
