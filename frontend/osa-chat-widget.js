@@ -2,6 +2,7 @@
  * OSA Chat Widget
  * A floating chat assistant for Open Science tools (HED, BIDS, etc.)
  * Connects to OSA Cloudflare Worker for secure access.
+ * Version: 2026-01-26-v2
  */
 
 (function() {
