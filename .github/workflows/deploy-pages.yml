@@ -38,7 +38,9 @@ jobs:
           fi
           # Sanitize branch name for URL (replace / with -, lowercase)
           SANITIZED=$(echo "$BRANCH_NAME" | tr '/' '-' | tr '[:upper:]' '[:lower:]')
-          echo "name=$SANITIZED" >> $GITHUB_OUTPUT
+          # Cloudflare Pages truncates branch names to ~28 chars for preview URLs
+          TRUNCATED=$(echo "$SANITIZED" | cut -c1-28)
+          echo "name=$TRUNCATED" >> $GITHUB_OUTPUT
           echo "original=$BRANCH_NAME" >> $GITHUB_OUTPUT
 
       - name: Deploy to Cloudflare Pages
