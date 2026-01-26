@@ -8,12 +8,13 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   strip-dev-suffix:
     runs-on: ubuntu-latest
-    # Prevent infinite loop - only run for non-bot commits
-    if: github.actor != 'github-actions[bot]'
+    # Prevent infinite loop - only run for non-bot commits and non-strip-dev commits
+    if: github.actor != 'github-actions[bot]' && !contains(github.event.head_commit.message, 'strip dev suffix')
 
     steps:
       - name: Checkout code
@@ -55,8 +56,14 @@ jobs:
       - name: Create branch and commit
         if: steps.check_version.outputs.has_dev == 'true'
         id: commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           BRANCH="bot/strip-dev-suffix-${{ env.new_version }}"
+
+          # Delete remote branch if exists (from previous workflow run)
+          git push origin --delete "$BRANCH" 2>/dev/null || true
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
@@ -72,11 +79,18 @@ jobs:
           BRANCH="${{ steps.commit.outputs.branch }}"
           git push -u origin "$BRANCH"
 
-          gh pr create \
-            --base main \
-            --head "$BRANCH" \
-            --title "chore: strip dev suffix for stable release ${{ env.new_version }}" \
-            --body "Automated PR to strip \`.dev\` suffix from version on main branch.
+          # Check if PR already exists
+          EXISTING_PR=$(gh pr list --head "$BRANCH" --base main --json number --jq '.[0].number // empty')
+
+          if [ -n "$EXISTING_PR" ]; then
+            echo "✓ PR #$EXISTING_PR already exists for branch $BRANCH"
+            gh pr view "$EXISTING_PR" --json url --jq '.url'
+          else
+            gh pr create \
+              --base main \
+              --head "$BRANCH" \
+              --title "chore: strip dev suffix for stable release ${{ env.new_version }}" \
+              --body "Automated PR to strip \`.dev\` suffix from version on main branch.
 
           **Changes:**
           - \`${{ steps.check_version.outputs.version }}\` → \`${{ env.new_version }}\`
@@ -87,4 +101,5 @@ jobs:
           **Action required:**
           Please review and merge this PR to complete the release process. After merge, the \`tag-release\` workflow will automatically create the release tag."
 
-          echo "✅ Created PR from $BRANCH"
+            echo "✅ Created PR from $BRANCH"
+          fi
