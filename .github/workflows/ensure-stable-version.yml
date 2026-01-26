@@ -12,6 +12,8 @@ permissions:
 jobs:
   strip-dev-suffix:
     runs-on: ubuntu-latest
+    # Prevent infinite loop - only run for non-bot commits
+    if: github.actor != 'github-actions[bot]'
 
     steps:
       - name: Checkout code
