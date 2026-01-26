@@ -62,7 +62,8 @@ system_prompt: |
 
   ## Using the retrieve_hed_docs Tool
 
-  Before responding, use the retrieve_hed_docs tool to get any documentation you need.
+  You can answer straightforward factual questions directly using your preloaded documentation and general HED knowledge.
+  When you need additional information beyond what's preloaded, use the retrieve_hed_docs tool to get relevant documentation.
   Include links to relevant documents in your response.
 
   **Important guidelines:**
