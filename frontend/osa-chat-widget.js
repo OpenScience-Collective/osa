@@ -142,6 +142,47 @@
       height: 24px;
     }
 
+    /* Tooltip that appears next to chat button */
+    .osa-chat-tooltip {
+      position: fixed;
+      bottom: 28px;
+      right: 86px;
+      background: var(--osa-bg);
+      color: var(--osa-text);
+      padding: 10px 14px;
+      border-radius: 8px;
+      box-shadow: var(--osa-shadow);
+      font-size: 13px;
+      font-weight: 500;
+      white-space: nowrap;
+      z-index: 9999;
+      opacity: 0;
+      transform: translateX(10px);
+      transition: opacity 0.3s ease, transform 0.3s ease;
+      pointer-events: none;
+    }
+
+    .osa-chat-tooltip.visible {
+      opacity: 1;
+      transform: translateX(0);
+    }
+
+    .osa-chat-tooltip::after {
+      content: '';
+      position: absolute;
+      right: -6px;
+      top: 50%;
+      transform: translateY(-50%);
+      border: 6px solid transparent;
+      border-left-color: var(--osa-bg);
+      border-right: none;
+    }
+
+    /* Hide tooltip when chat is open */
+    .osa-chat-widget.chat-open .osa-chat-tooltip {
+      display: none;
+    }
+
     .osa-chat-window {
       position: fixed;
       bottom: 90px;
@@ -703,37 +744,34 @@
       user-select: none;
     }
 
-    /* Settings modal */
+    /* Settings modal - contained within chat window */
     .osa-settings-overlay {
-      position: fixed;
+      position: absolute;
       top: 0;
       left: 0;
       right: 0;
       bottom: 0;
-      background: rgba(0, 0, 0, 0.5);
+      background: rgba(0, 0, 0, 0.4);
       display: none;
       align-items: center;
       justify-content: center;
-      z-index: 10001;
+      z-index: 100;
+      border-radius: 16px;
     }
 
     .osa-settings-overlay.open {
       display: flex;
     }
 
-    /* Hide settings overlay when chat is closed */
-    .osa-chat-window:not(.open) ~ .osa-settings-overlay {
-      display: none !important;
-    }
-
     .osa-settings-modal {
       background: var(--osa-bg);
       border-radius: 12px;
       width: 90%;
-      max-width: 400px;
-      max-height: 90vh;
+      max-width: 340px;
+      max-height: 85%;
       overflow-y: auto;
-      box-shadow: var(--osa-shadow);
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+      margin: 10px;
     }
 
     .osa-settings-header {
@@ -1555,6 +1593,7 @@
       <button class="osa-chat-button" aria-label="Open chat">
         ${ICONS.chat}
       </button>
+      <div class="osa-chat-tooltip">Ask me about ${escapeHtml(CONFIG.title.replace(' Assistant', ''))}</div>
       <div class="osa-chat-window">
         <div class="osa-resize-handle"></div>
         <div class="osa-chat-header">
@@ -1606,8 +1645,7 @@
             Powered by ${escapeHtml(CONFIG.repoName)}<span class="osa-version"></span>
           </a>
         </div>
-      </div>
-      <div class="osa-settings-overlay">
+        <div class="osa-settings-overlay">
         <div class="osa-settings-modal">
           <div class="osa-settings-header">
             <h3 class="osa-settings-title">Settings</h3>
@@ -1666,6 +1704,7 @@
             </button>
           </div>
         </div>
+      </div>
       </div>
     `;
     document.body.appendChild(container);
@@ -1930,14 +1969,19 @@
     isOpen = !isOpen;
     const chatWindow = container.querySelector('.osa-chat-window');
     const button = container.querySelector('.osa-chat-button');
+    const tooltip = container.querySelector('.osa-chat-tooltip');
 
     if (isOpen) {
       chatWindow.classList.add('open');
+      container.classList.add('chat-open');
       button.innerHTML = ICONS.close;
       button.setAttribute('aria-label', 'Close chat');
       container.querySelector('.osa-chat-input input').focus();
+      // Hide tooltip when chat opens
+      if (tooltip) tooltip.classList.remove('visible');
     } else {
       chatWindow.classList.remove('open');
+      container.classList.remove('chat-open');
       button.innerHTML = ICONS.chat;
       button.setAttribute('aria-label', 'Open chat');
     }
@@ -2180,6 +2224,20 @@
 
     // Check backend status
     checkBackendStatus();
+
+    // Show tooltip after a short delay (only if not fullscreen mode)
+    if (!CONFIG.fullscreen) {
+      const tooltip = container.querySelector('.osa-chat-tooltip');
+      if (tooltip) {
+        setTimeout(() => {
+          tooltip.classList.add('visible');
+          // Auto-hide tooltip after 8 seconds
+          setTimeout(() => {
+            tooltip.classList.remove('visible');
+          }, 8000);
+        }, 1500);
+      }
+    }
 
     // Initialize Turnstile if the script is loaded
     if (window.turnstile) {
