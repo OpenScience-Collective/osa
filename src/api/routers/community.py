@@ -318,17 +318,21 @@ def list_sessions(community_id: str) -> list[ChatSession]:
 
 
 def _is_authorized_origin(origin: str | None, community_id: str) -> bool:
-    """Check if Origin header matches community's allowed CORS origins.
+    """Check if Origin header matches allowed CORS origins.
 
     This determines if a request is coming from an authorized widget embed
     (vs CLI, unauthorized web page, or API client).
+
+    Checks against:
+    1. Platform default origins (osa-demo.pages.dev and subdomains)
+    2. Community-specific CORS origins from config
 
     Args:
         origin: Origin header from HTTP request (e.g., "https://hedtags.org")
         community_id: Community identifier
 
     Returns:
-        True if origin matches community's cors_origins, False otherwise.
+        True if origin matches platform defaults or community's cors_origins.
         Returns False if origin is None (CLI, mobile apps, browser extensions).
     """
     if not origin:
@@ -336,6 +340,26 @@ def _is_authorized_origin(origin: str | None, community_id: str) -> bool:
 
     import re
 
+    # Platform default origins - always allowed for all communities
+    platform_exact_origins = [
+        "https://osa-demo.pages.dev",
+    ]
+    platform_wildcard_origins = [
+        "https://*.osa-demo.pages.dev",
+    ]
+
+    # Check platform exact matches
+    if origin in platform_exact_origins:
+        return True
+
+    # Check platform wildcard patterns
+    for allowed in platform_wildcard_origins:
+        escaped = re.escape(allowed)
+        pattern = escaped.replace(r"\*", r"[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?")
+        if re.fullmatch(pattern, origin):
+            return True
+
+    # Check community-specific origins
     community_info = registry.get(community_id)
     if not community_info or not community_info.community_config:
         return False
