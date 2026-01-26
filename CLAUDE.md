@@ -33,6 +33,42 @@ git push -u origin feature/issue-7-interfaces
 gh pr merge --squash --delete-branch             # SQUASH MERGE to keep history clean
 ```
 
+## GitHub Labels
+
+Available labels for issues and PRs (check with `gh label list` before creating new ones):
+
+**Priority:**
+- `P0` - Blocker, must fix before release
+- `P1` - Critical, fix as soon as possible
+- `P2` - Important, fix when possible
+
+**Type:**
+- `bug` - Something isn't working
+- `feature` - New feature or enhancement
+- `enhancement` - New feature or request
+- `documentation` - Improvements or additions to documentation
+- `security` - Security vulnerability or hardening
+
+**Category:**
+- `testing` - Testing and quality assurance
+- `operations` - Operations, monitoring, and observability
+- `observability` - Logging, monitoring, and debugging
+- `developer-experience` - Improves developer experience
+- `widget` - Related to frontend widget
+- `cost-management` - Cost tracking and optimization
+
+**Status:**
+- `good first issue` - Good for newcomers
+- `help wanted` - Extra attention is needed
+- `duplicate` - This issue or pull request already exists
+- `invalid` - This doesn't seem right
+- `question` - Further information is requested
+- `wontfix` - This will not be worked on
+
+**Adding new labels:**
+1. Create the label: `gh label create "label-name" --description "Description" --color "hexcolor"`
+2. Update this list in CLAUDE.md
+
 ## Design Principles
 
 - **Precision over features**: Researchers need accurate, citation-backed answers
