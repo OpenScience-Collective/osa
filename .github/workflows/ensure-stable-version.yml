@@ -1,0 +1,64 @@
+name: Ensure Stable Version on Main
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/version.py'
+
+permissions:
+  contents: write
+
+jobs:
+  strip-dev-suffix:
+    runs-on: ubuntu-latest
+    # Prevent infinite loop - only run for non-bot commits
+    if: github.actor != 'github-actions[bot]'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Check version for dev suffix
+        id: check_version
+        run: |
+          VERSION=$(python -c "from src.version import __version__; print(__version__)")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+          if [[ "$VERSION" == *"dev"* ]]; then
+            echo "has_dev=true" >> $GITHUB_OUTPUT
+            echo "Version $VERSION contains dev suffix - will strip it"
+          else
+            echo "has_dev=false" >> $GITHUB_OUTPUT
+            echo "Version $VERSION is stable - no action needed"
+          fi
+
+      - name: Strip dev suffix
+        if: steps.check_version.outputs.has_dev == 'true'
+        run: |
+          uv run python scripts/bump_version.py --prerelease stable --no-git
+
+          NEW_VERSION=$(python -c "from src.version import __version__; print(__version__)")
+          echo "Stripped dev suffix: ${{ steps.check_version.outputs.version }} -> $NEW_VERSION"
+          echo "new_version=$NEW_VERSION" >> $GITHUB_ENV
+
+      - name: Commit stable version
+        if: steps.check_version.outputs.has_dev == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add src/version.py
+          git commit -m "chore: strip dev suffix for stable release"
+          git push
+
+          echo "Committed stable version ${{ env.new_version }}"

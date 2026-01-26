@@ -32,8 +32,18 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected version: $VERSION"
 
+          # Skip dev versions - ensure-stable-version workflow will fix them first
+          if [[ "$VERSION" =~ \.dev[0-9]* ]]; then
+            echo "has_dev_suffix=true" >> $GITHUB_OUTPUT
+            echo "Skipping dev version - waiting for ensure-stable-version workflow to strip suffix"
+          else
+            echo "has_dev_suffix=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Check if tag exists
         id: check_tag
+        # Skip if version has dev suffix
+        if: steps.get_version.outputs.has_dev_suffix == 'false'
         run: |
           TAG="v${{ steps.get_version.outputs.version }}"
           if git rev-parse "$TAG" >/dev/null 2>&1; then
@@ -45,7 +55,7 @@ jobs:
           fi
 
       - name: Create tag
-        if: steps.check_tag.outputs.exists == 'false'
+        if: steps.check_tag.outputs.exists == 'false' && steps.get_version.outputs.has_dev_suffix == 'false'
         run: |
           TAG="v${{ steps.get_version.outputs.version }}"
           git config user.name "github-actions[bot]"
@@ -55,7 +65,7 @@ jobs:
           echo "Created and pushed tag: $TAG"
 
       - name: Generate release notes
-        if: steps.check_tag.outputs.exists == 'false'
+        if: steps.check_tag.outputs.exists == 'false' && steps.get_version.outputs.has_dev_suffix == 'false'
         id: release_notes
         run: |
           TAG="v${{ steps.get_version.outputs.version }}"
@@ -89,23 +99,28 @@ jobs:
           echo "notes_file=release_notes.md" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
-        if: steps.check_tag.outputs.exists == 'false'
+        if: steps.check_tag.outputs.exists == 'false' && steps.get_version.outputs.has_dev_suffix == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="v${{ steps.get_version.outputs.version }}"
           VERSION="${{ steps.get_version.outputs.version }}"
 
-          # Determine if this is a pre-release
+          # Determine if this is a pre-release or stable release
           PRERELEASE_FLAG=""
+          LATEST_FLAG=""
           if [[ "$VERSION" =~ (dev|alpha|beta|rc|a|b) ]]; then
             PRERELEASE_FLAG="--prerelease"
             echo "Marking as pre-release (version contains dev/alpha/beta/rc)"
+          else
+            LATEST_FLAG="--latest"
+            echo "Marking as latest stable release"
           fi
 
           gh release create "$TAG" \
             --title "Release $VERSION" \
             --notes-file "${{ steps.release_notes.outputs.notes_file }}" \
-            $PRERELEASE_FLAG
+            $PRERELEASE_FLAG \
+            $LATEST_FLAG
 
           echo "Created GitHub release: $TAG"
