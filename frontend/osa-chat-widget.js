@@ -848,6 +848,7 @@
       font-family: 'SF Mono', Monaco, 'Courier New', monospace;
       outline: none;
       transition: border-color 0.2s;
+      box-sizing: border-box;
     }
 
     .osa-settings-input:focus {
@@ -862,6 +863,7 @@
       font-size: 13px;
       outline: none;
       cursor: pointer;
+      box-sizing: border-box;
       transition: border-color 0.2s;
       background: var(--osa-bg);
     }
