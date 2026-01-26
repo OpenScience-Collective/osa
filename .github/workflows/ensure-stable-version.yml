@@ -52,13 +52,39 @@ jobs:
           echo "Stripped dev suffix: ${{ steps.check_version.outputs.version }} -> $NEW_VERSION"
           echo "new_version=$NEW_VERSION" >> $GITHUB_ENV
 
-      - name: Commit stable version
+      - name: Create branch and commit
         if: steps.check_version.outputs.has_dev == 'true'
+        id: commit
         run: |
+          BRANCH="bot/strip-dev-suffix-${{ env.new_version }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
           git add src/version.py
           git commit -m "chore: strip dev suffix for stable release"
-          git push
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
 
-          echo "Committed stable version ${{ env.new_version }}"
+      - name: Push and create PR
+        if: steps.check_version.outputs.has_dev == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="${{ steps.commit.outputs.branch }}"
+          git push -u origin "$BRANCH"
+
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "chore: strip dev suffix for stable release ${{ env.new_version }}" \
+            --body "Automated PR to strip \`.dev\` suffix from version on main branch.
+
+          **Changes:**
+          - \`${{ steps.check_version.outputs.version }}\` → \`${{ env.new_version }}\`
+
+          **Why PR?**
+          Branch protection rules require changes through pull requests. This workflow creates a PR instead of pushing directly.
+
+          **Action required:**
+          Please review and merge this PR to complete the release process. After merge, the \`tag-release\` workflow will automatically create the release tag."
+
+          echo "✅ Created PR from $BRANCH"
