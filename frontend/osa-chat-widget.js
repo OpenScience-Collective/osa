@@ -9,8 +9,9 @@
   'use strict';
 
   // Auto-detect environment based on hostname
-  // Production is only osa-demo.pages.dev (exact match)
-  // All other *.osa-demo.pages.dev subdomains are preview/dev deployments
+  // Production: Only osa-demo.pages.dev (exact match) routes to production API
+  // Development: All other *.osa-demo.pages.dev subdomains (preview/branch deployments)
+  //              route to dev API for testing without affecting production data
   const hostname = window.location.hostname;
   const isProduction = hostname === 'osa-demo.pages.dev';
   const isDev = !isProduction && (
@@ -23,7 +24,8 @@
     // Community identifier - determines which assistant to use
     // Endpoints will be: /${communityId}/ask, /${communityId}/chat
     communityId: 'hed',
-    // Use dev worker for develop.* hostnames, production worker otherwise
+    // Route to dev worker for all non-production deployments (preview branches, localhost)
+    // or production worker for osa-demo.pages.dev (production only)
     apiEndpoint: isDev
       ? 'https://osa-worker-dev.shirazi-10f.workers.dev'
       : 'https://osa-worker.shirazi-10f.workers.dev',
@@ -147,7 +149,8 @@
       height: 24px;
     }
 
-    /* Tooltip that appears next to chat button */
+    /* Tooltip that appears next to chat button on initial page load
+       Auto-hides after 8 seconds or when chat is opened */
     .osa-chat-tooltip {
       position: fixed;
       bottom: 28px;
@@ -749,7 +752,8 @@
       user-select: none;
     }
 
-    /* Settings modal - contained within chat window */
+    /* Settings modal - contained within chat window to avoid z-index conflicts
+       and ensure modal is properly scoped to the widget's stacking context */
     .osa-settings-overlay {
       position: absolute;
       top: 0;
@@ -1274,35 +1278,54 @@
     const storageKey = `osa-settings-${CONFIG.communityId}`;
     try {
       const saved = localStorage.getItem(storageKey);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        // Validate API key format if present
-        if (parsed.apiKey) {
-          // Basic format validation: sk-or-v1-[hex]
-          if (!/^sk-or-v1-[0-9a-f]{64}$/i.test(parsed.apiKey)) {
-            console.error('[OSA] Saved API key has invalid format, ignoring');
-            parsed.apiKey = null;
-          }
-        }
-        // Validate model format if present
-        if (parsed.model && typeof parsed.model === 'string') {
-          // Validate model format: provider/model-name
-          if (!/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9._-]+$/. test(parsed.model)) {
-            console.error('[OSA] Saved model has invalid format, ignoring');
-            parsed.model = null;
-          }
-        }
-        userSettings = {
-          apiKey: parsed.apiKey || null,
-          model: parsed.model || null
-        };
+      if (!saved) {
+        userSettings = { apiKey: null, model: null };
+        return;
       }
+
+      let parsed;
+      try {
+        parsed = JSON.parse(saved);
+      } catch (jsonErr) {
+        console.error('[OSA] Saved settings contain invalid JSON:', jsonErr.message);
+        const container = document.querySelector('.osa-chat-widget');
+        if (container && isOpen) {
+          showError(container, 'Saved settings are corrupted. Using defaults.');
+        }
+        userSettings = { apiKey: null, model: null };
+        // Clear corrupted data
+        try { localStorage.removeItem(storageKey); } catch {}
+        return;
+      }
+
+      // Validate API key format if present
+      if (parsed.apiKey) {
+        // Basic format validation: sk-or-v1-[hex]
+        if (!/^sk-or-v1-[0-9a-f]{64}$/i.test(parsed.apiKey)) {
+          console.error('[OSA] Saved API key has invalid format, ignoring');
+          parsed.apiKey = null;
+        }
+      }
+
+      // Validate model format if present
+      if (parsed.model && typeof parsed.model === 'string') {
+        // Validate model format: provider/model-name
+        if (!/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9._-]+$/.test(parsed.model)) {
+          console.error('[OSA] Saved model has invalid format, ignoring');
+          parsed.model = null;
+        }
+      }
+
+      userSettings = {
+        apiKey: parsed.apiKey || null,
+        model: parsed.model || null
+      };
     } catch (e) {
-      console.error('[OSA] Could not load user settings:', e);
-      // Show error to user when settings can't be loaded
+      // localStorage access error
+      console.error('[OSA] Cannot access localStorage for settings:', e.message);
       const container = document.querySelector('.osa-chat-widget');
-      if (container) {
-        showError(container, 'Could not load your saved settings. Using defaults.');
+      if (container && isOpen) {
+        showError(container, 'Cannot access browser storage. Settings will not persist.');
       }
       userSettings = { apiKey: null, model: null };
     }
@@ -1329,6 +1352,7 @@
     // Validate communityId before making request
     if (!isValidCommunityId(CONFIG.communityId)) {
       console.error('[OSA] Invalid communityId, cannot fetch default model');
+      communityDefaultModel = 'openai/gpt-oss-120b'; // Hardcoded fallback (Cerebras provider)
       return;
     }
 
@@ -1339,7 +1363,12 @@
       });
 
       if (!response.ok) {
-        console.warn(`[OSA] Community default model fetch failed: HTTP ${response.status}`);
+        console.error(`[OSA] Community default model fetch failed: HTTP ${response.status}`);
+        communityDefaultModel = 'openai/gpt-oss-120b'; // Hardcoded fallback (Cerebras provider)
+        const container = document.querySelector('.osa-chat-widget');
+        if (container && isOpen) {
+          showError(container, `Could not load default model settings (HTTP ${response.status}). Using fallback.`);
+        }
         return;
       }
 
@@ -1347,10 +1376,20 @@
       if (data && data.default_model) {
         communityDefaultModel = data.default_model;
       } else {
-        console.warn('[OSA] Community default model not found in API response');
+        console.error('[OSA] Community default model not found in API response');
+        communityDefaultModel = 'openai/gpt-oss-120b';
+        const container = document.querySelector('.osa-chat-widget');
+        if (container && isOpen) {
+          showError(container, 'Default model settings incomplete. Using fallback.');
+        }
       }
     } catch (e) {
-      console.warn('[OSA] Could not fetch community default model:', e.message || e);
+      console.error('[OSA] Could not fetch community default model:', e.message || e);
+      communityDefaultModel = 'openai/gpt-oss-120b';
+      const container = document.querySelector('.osa-chat-widget');
+      if (container && isOpen) {
+        showError(container, 'Network error loading model settings. Using fallback.');
+      }
     }
   }
 
@@ -1498,12 +1537,21 @@
         backendOnline = false;
         statusDot.className = 'osa-status-dot offline';
         statusText.textContent = 'Offline';
+        console.error(`[OSA] Backend health check failed: HTTP ${response.status}`);
+        const container = document.querySelector('.osa-chat-widget');
+        if (container && isOpen) {
+          showError(container, `Backend service unavailable (HTTP ${response.status}). Please try again later.`);
+        }
       }
     } catch (e) {
       backendOnline = false;
       statusDot.className = 'osa-status-dot offline';
       statusText.textContent = 'Offline';
-      console.warn('Backend health check failed:', e);
+      console.error('[OSA] Backend health check error:', e.message || e);
+      const container = document.querySelector('.osa-chat-widget');
+      if (container && isOpen) {
+        showError(container, 'Cannot connect to backend service. Check your network connection.');
+      }
     }
   }
 
@@ -2034,13 +2082,21 @@
       try {
         const response = await fetch(scriptUrl);
         if (!response.ok) {
-          console.error(`Failed to fetch widget script: HTTP ${response.status}`);
+          console.error('[OSA] Failed to fetch widget script:', {
+            url: scriptUrl,
+            status: response.status,
+            statusText: response.statusText
+          });
           alert(`Failed to load widget for pop-out (HTTP ${response.status}). Please try again.`);
           return;
         }
         scriptCode = await response.text();
       } catch (e) {
-        console.error('Failed to fetch widget script:', e);
+        console.error('[OSA] Failed to fetch widget script:', {
+          url: scriptUrl,
+          error: e.message || e,
+          stack: e.stack
+        });
         alert('Failed to load widget for pop-out. Please try again.');
         return;
       }

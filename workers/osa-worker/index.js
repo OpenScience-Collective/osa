@@ -166,7 +166,8 @@ async function proxyToBackend(request, env, path, body, corsHeaders, CONFIG) {
     backendHeaders['X-API-Key'] = env.BACKEND_API_KEY;
   }
 
-  // Forward Origin header for CORS authorization
+  // Forward Origin header to backend for origin-based authorization checks
+  // Backend uses this to validate request source and apply origin-specific policies
   const origin = request.headers.get('Origin');
   if (origin) {
     backendHeaders['Origin'] = origin;
@@ -208,11 +209,32 @@ async function proxyToBackend(request, env, path, body, corsHeaders, CONFIG) {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   } catch (error) {
+    console.error('Backend proxy error:', {
+      path: path,
+      errorName: error.name,
+      errorMessage: error.message,
+      stack: error.stack
+    });
+
+    let errorMessage = 'Backend request failed';
+    let statusCode = 500;
+
+    if (error.name === 'AbortError' || error.message.includes('timeout')) {
+      errorMessage = 'Backend request timed out';
+      statusCode = 504;
+    } else if (error.message.includes('network') || error.message.includes('fetch')) {
+      errorMessage = 'Cannot reach backend service';
+      statusCode = 503;
+    } else if (error instanceof SyntaxError) {
+      errorMessage = 'Backend returned invalid response';
+      statusCode = 502;
+    }
+
     return new Response(JSON.stringify({
-      error: 'Backend request failed',
+      error: errorMessage,
       details: error.message,
     }), {
-      status: 500,
+      status: statusCode,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   }
@@ -317,11 +339,19 @@ async function handleHealth(env, corsHeaders, CONFIG) {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   } catch (error) {
+    console.error('Health check backend error:', {
+      backendUrl: backendUrl,
+      errorName: error.name,
+      errorMessage: error.message,
+      stack: error.stack
+    });
+
     return new Response(JSON.stringify({
       status: 'degraded',
       proxy: 'operational',
       backend: 'unreachable',
       error: error.message,
+      error_type: error.name,
     }), {
       status: 503,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
