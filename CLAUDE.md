@@ -8,8 +8,21 @@ A precise, reliable AI assistant platform for researchers working with open scie
 
 **Branch Strategy:**
 - `main` - Production releases only, auto-deploys to prod
+  - Always has stable versions (no `.dev` suffix)
+  - CI automatically strips `.dev` suffix if merged accidentally
+  - Releases tagged with `--latest` flag
 - `develop` - Integration branch, auto-deploys to dev
+  - Has `.dev` suffix on versions (e.g., `0.5.1.dev0`)
 - `feature/*` - Feature branches, created from and merged to `develop`
+
+**Version Management (Automated):**
+- `develop` branch: Versions end with `.dev0` suffix (e.g., `0.5.1.dev0`)
+- `main` branch: Versions are stable, no suffix (e.g., `0.5.1`)
+- When `src/version.py` changes on `main`:
+  1. CI automatically strips `.dev` suffix if present
+  2. Creates git tag (e.g., `v0.5.1`)
+  3. Creates GitHub release marked as "latest"
+- Manual version bumps use `scripts/bump_version.py`
 
 1. **Pick an issue** from GitHub Issues
 2. **Create feature branch from develop**: `git checkout develop && git pull && git checkout -b feature/issue-N-short-description`

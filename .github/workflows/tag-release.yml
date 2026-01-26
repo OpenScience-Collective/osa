@@ -96,16 +96,21 @@ jobs:
           TAG="v${{ steps.get_version.outputs.version }}"
           VERSION="${{ steps.get_version.outputs.version }}"
 
-          # Determine if this is a pre-release
+          # Determine if this is a pre-release or stable release
           PRERELEASE_FLAG=""
+          LATEST_FLAG=""
           if [[ "$VERSION" =~ (dev|alpha|beta|rc|a|b) ]]; then
             PRERELEASE_FLAG="--prerelease"
             echo "Marking as pre-release (version contains dev/alpha/beta/rc)"
+          else
+            LATEST_FLAG="--latest"
+            echo "Marking as latest stable release"
           fi
 
           gh release create "$TAG" \
             --title "Release $VERSION" \
             --notes-file "${{ steps.release_notes.outputs.notes_file }}" \
-            $PRERELEASE_FLAG
+            $PRERELEASE_FLAG \
+            $LATEST_FLAG
 
           echo "Created GitHub release: $TAG"
