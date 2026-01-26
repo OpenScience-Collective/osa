@@ -1352,22 +1352,20 @@
     // Validate communityId before making request
     if (!isValidCommunityId(CONFIG.communityId)) {
       console.error('[OSA] Invalid communityId, cannot fetch default model');
-      communityDefaultModel = 'openai/gpt-oss-120b'; // Hardcoded fallback (Cerebras provider)
       return;
     }
 
     try {
-      const response = await fetch(`${CONFIG.apiEndpoint}/communities/${CONFIG.communityId}`, {
+      const response = await fetch(`${CONFIG.apiEndpoint}/${CONFIG.communityId}`, {
         method: 'GET',
         signal: AbortSignal.timeout(5000)
       });
 
       if (!response.ok) {
-        console.error(`[OSA] Community default model fetch failed: HTTP ${response.status}`);
-        communityDefaultModel = 'openai/gpt-oss-120b'; // Hardcoded fallback (Cerebras provider)
+        console.error(`[OSA] Community config fetch failed: HTTP ${response.status}`);
         const container = document.querySelector('.osa-chat-widget');
         if (container && isOpen) {
-          showError(container, `Could not load default model settings (HTTP ${response.status}). Using fallback.`);
+          showError(container, `Could not load community configuration (HTTP ${response.status}).`);
         }
         return;
       }
@@ -1377,18 +1375,16 @@
         communityDefaultModel = data.default_model;
       } else {
         console.error('[OSA] Community default model not found in API response');
-        communityDefaultModel = 'openai/gpt-oss-120b';
         const container = document.querySelector('.osa-chat-widget');
         if (container && isOpen) {
-          showError(container, 'Default model settings incomplete. Using fallback.');
+          showError(container, 'Default model not configured for this community.');
         }
       }
     } catch (e) {
-      console.error('[OSA] Could not fetch community default model:', e.message || e);
-      communityDefaultModel = 'openai/gpt-oss-120b';
+      console.error('[OSA] Could not fetch community config:', e.message || e);
       const container = document.querySelector('.osa-chat-widget');
       if (container && isOpen) {
-        showError(container, 'Network error loading model settings. Using fallback.');
+        showError(container, 'Network error loading community configuration.');
       }
     }
   }

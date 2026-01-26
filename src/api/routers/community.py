@@ -130,6 +130,18 @@ class SessionInfo(BaseModel):
     last_active: str = Field(..., description="ISO timestamp of last activity")
 
 
+class CommunityConfigResponse(BaseModel):
+    """Community configuration information."""
+
+    id: str = Field(..., description="Community identifier")
+    name: str = Field(..., description="Community display name")
+    description: str = Field(..., description="Community description")
+    default_model: str = Field(..., description="Default LLM model for this community")
+    default_model_provider: str | None = Field(
+        default=None, description="Default provider for model routing"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Session Management (In-Memory, per-community isolation)
 # ---------------------------------------------------------------------------
@@ -933,6 +945,33 @@ def create_community_router(community_id: str) -> APIRouter:
     async def list_sessions_endpoint(_auth: RequireAuth) -> list[SessionInfo]:
         """List all active chat sessions for this community."""
         return [session.to_info() for session in list_sessions(community_id)]
+
+    @router.get("/", response_model=CommunityConfigResponse)
+    async def get_community_config() -> CommunityConfigResponse:
+        """Get community configuration including default model settings.
+
+        Returns community information and model configuration that the
+        frontend widget uses to display settings and defaults.
+
+        No authentication required - this is public configuration info.
+        """
+        settings = get_settings()
+
+        # Determine default model: community-specific or platform default
+        default_model = settings.default_model
+        default_provider = settings.default_model_provider
+
+        if info.community_config and info.community_config.default_model:
+            default_model = info.community_config.default_model
+            default_provider = info.community_config.default_model_provider
+
+        return CommunityConfigResponse(
+            id=info.id,
+            name=info.name,
+            description=info.description,
+            default_model=default_model,
+            default_model_provider=default_provider,
+        )
 
     return router
 
