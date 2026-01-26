@@ -125,6 +125,27 @@
       margin-left: 8px;
       vertical-align: middle;
     }
+    .links {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-top: 16px;
+    }
+    .links a {
+      color: #2563eb;
+      text-decoration: none;
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .links a:hover {
+      text-decoration: underline;
+    }
+    .links a::before {
+      content: '→';
+      font-weight: bold;
+    }
   </style>
 </head>
 <body>
@@ -287,6 +308,15 @@
             </div>
           </div>
         </div>
+
+        <div class="info-box">
+          <h2>Learn More</h2>
+          <div class="links">
+            <a href="https://docs.osc.earth/osa/" target="_blank" rel="noopener">Documentation</a>
+            <a href="https://github.com/OpenScience-Collective/osa" target="_blank" rel="noopener">GitHub Repository</a>
+            <a href="https://osc.earth" target="_blank" rel="noopener">Open Science Collective</a>
+          </div>
+        </div>
       `;
       document.getElementById('page-content').innerHTML = html;
     }
@@ -340,6 +370,15 @@
                 </span>
               </a>
             `).join('')}
+          </div>
+        </div>
+
+        <div class="info-box">
+          <h2>Learn More</h2>
+          <div class="links">
+            <a href="https://docs.osc.earth/osa/" target="_blank" rel="noopener">Documentation</a>
+            <a href="https://github.com/OpenScience-Collective/osa" target="_blank" rel="noopener">GitHub Repository</a>
+            <a href="https://osc.earth" target="_blank" rel="noopener">Open Science Collective</a>
           </div>
         </div>
       `;
