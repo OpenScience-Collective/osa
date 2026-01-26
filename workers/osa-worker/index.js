@@ -130,6 +130,14 @@ function isAllowedOrigin(origin) {
 }
 
 /**
+ * Validate community ID format
+ */
+function isValidCommunityId(id) {
+  // Allow alphanumeric, hyphen, underscore, 1-50 chars
+  return /^[a-zA-Z0-9_-]{1,50}$/.test(id);
+}
+
+/**
  * Build CORS headers
  */
 function getCorsHeaders(origin) {
@@ -261,13 +269,59 @@ export default {
         return await handleHealth(env, corsHeaders, CONFIG);
       } else if (url.pathname === '/version') {
         return await proxyToBackend(request, env, '/version', null, corsHeaders, CONFIG);
-      } else if (url.pathname === '/hed/ask' && request.method === 'POST') {
-        return await handleProtectedEndpoint(request, env, ctx, '/hed/ask', corsHeaders, CONFIG);
-      } else if (url.pathname === '/hed/chat' && request.method === 'POST') {
-        return await handleProtectedEndpoint(request, env, ctx, '/hed/chat', corsHeaders, CONFIG);
       } else if (url.pathname === '/feedback' && request.method === 'POST') {
         // Feedback endpoint has lighter protection (rate limit only, no Turnstile)
         return await handleFeedback(request, env, corsHeaders, CONFIG);
+      }
+
+      // Community-based endpoints: /communities/:id
+      const communityGetMatch = url.pathname.match(/^\/communities\/([^\/]+)$/);
+      if (communityGetMatch && request.method === 'GET') {
+        const communityId = communityGetMatch[1];
+
+        // Validate community ID format
+        if (!isValidCommunityId(communityId)) {
+          return new Response(JSON.stringify({ error: 'Invalid community ID format' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        // Rate limit community lookups
+        const rateLimitResult = await checkRateLimit(request, env, CONFIG);
+        if (!rateLimitResult.allowed) {
+          return new Response(JSON.stringify({
+            error: 'Rate limit exceeded',
+            details: rateLimitResult.reason,
+          }), {
+            status: 429,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        return await proxyToBackend(request, env, `/communities/${communityId}`, null, corsHeaders, CONFIG);
+      }
+
+      // Community endpoints: /:communityId/ask and /:communityId/chat
+      const communityActionMatch = url.pathname.match(/^\/([^\/]+)\/(ask|chat)$/);
+      if (communityActionMatch && request.method === 'POST') {
+        const [, communityId, action] = communityActionMatch;
+
+        // Reject reserved path segments as community IDs
+        const reservedPaths = ['health', 'version', 'feedback', 'communities'];
+        if (reservedPaths.includes(communityId)) {
+          return new Response('Not Found', { status: 404, headers: corsHeaders });
+        }
+
+        // Validate community ID format
+        if (!isValidCommunityId(communityId)) {
+          return new Response(JSON.stringify({ error: 'Invalid community ID format' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        return await handleProtectedEndpoint(request, env, ctx, `/${communityId}/${action}`, corsHeaders, CONFIG);
       }
 
       return new Response('Not Found', { status: 404, headers: corsHeaders });
@@ -286,12 +340,13 @@ export default {
 function handleRoot(corsHeaders, CONFIG) {
   return new Response(JSON.stringify({
     name: 'OSA API (Cloudflare Workers Proxy)',
-    version: '1.0.0',
+    version: '2.0.0',
     description: 'Security proxy for Open Science Assistant backend',
     environment: CONFIG.IS_DEV ? 'development' : 'production',
     endpoints: {
-      'POST /hed/ask': 'Ask a single question about HED',
-      'POST /hed/chat': 'Multi-turn conversation about HED',
+      'GET /communities/:id': 'Get community configuration',
+      'POST /:communityId/ask': 'Ask a single question to a community',
+      'POST /:communityId/chat': 'Multi-turn conversation with a community',
       'POST /feedback': 'Submit feedback',
       'GET /health': 'Health check',
       'GET /version': 'Get API version',
@@ -300,6 +355,9 @@ function handleRoot(corsHeaders, CONFIG) {
       turnstile: 'visible (required for web clients)',
       byok: 'Bring Your Own Key mode for CLI/programmatic access',
       rate_limit: `${CONFIG.RATE_LIMIT_PER_MINUTE}/min, ${CONFIG.RATE_LIMIT_PER_HOUR}/hour`,
+    },
+    notes: {
+      communities: 'Available communities: hed, bids, eeglab (check backend /communities endpoint for full list)',
     },
   }), {
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
