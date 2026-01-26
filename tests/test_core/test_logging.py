@@ -180,6 +180,83 @@ class TestSecureFormatter:
         assert len(formatted) <= 100_050  # 100KB + truncation message
         assert "[truncated for safety]" in formatted
 
+    def test_redacts_api_keys_in_exception_tracebacks(self) -> None:
+        """Should redact API keys appearing in exception messages and tracebacks."""
+        import sys
+
+        formatter = SecureFormatter("%(message)s")
+        api_key = "sk-or-v1-" + "a" * 64
+
+        # Create an exception with API key in the message
+        try:
+            raise ValueError(f"Connection failed with key {api_key}")
+        except ValueError:
+            exc_info = sys.exc_info()
+
+        record = logging.LogRecord(
+            name="test",
+            level=logging.ERROR,
+            pathname="",
+            lineno=0,
+            msg="An error occurred",
+            args=(),
+            exc_info=exc_info,
+        )
+
+        formatted = formatter.format(record)
+        # API key in exception message should be redacted
+        assert "sk-or-v1-***[redacted]" in formatted
+        assert "aaaa" not in formatted
+
+    def test_concurrent_logging_thread_safety(self) -> None:
+        """Should safely redact API keys from concurrent log calls."""
+        import threading
+
+        formatter = SecureFormatter("%(message)s")
+        errors = []
+        formatted_logs = []
+
+        def log_with_key(index: int) -> None:
+            try:
+                # Use valid hex characters only (0-9, a-f)
+                hex_chars = "0123456789abcdef"
+                key_suffix = hex_chars[index % len(hex_chars)]
+                api_key = f"sk-or-v1-{key_suffix * 64}"
+                record = logging.LogRecord(
+                    name="test",
+                    level=logging.INFO,
+                    pathname="",
+                    lineno=0,
+                    msg=f"Using key: {api_key}",
+                    args=(),
+                    exc_info=None,
+                )
+                formatted = formatter.format(record)
+                formatted_logs.append((index, api_key, formatted))
+                # Verify redaction happened - check that the repeated character doesn't appear
+                # (but allow single char in '[redacted]')
+                if key_suffix * 4 in formatted:
+                    errors.append(
+                        f"Key with suffix {key_suffix} not redacted in thread {index}: {formatted}"
+                    )
+            except Exception as e:
+                errors.append(f"Exception in thread {index}: {str(e)}")
+
+        # Create threads with different indices
+        threads = [threading.Thread(target=log_with_key, args=(i,)) for i in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # Check all logs were redacted properly
+        assert len(errors) == 0, f"Concurrent logging errors: {errors}"
+        assert len(formatted_logs) == 10
+        for _, api_key, log in formatted_logs:
+            assert "sk-or-v1-***[redacted]" in log
+            # Original key should not appear
+            assert api_key not in log
+
 
 class TestConfigureSecureLogging:
     """Tests for configure_secure_logging function."""

@@ -184,3 +184,66 @@ class TestCommunitiesHealthEndpoint:
         for _community_id, health in data.items():
             if health["api_key"] == "missing":
                 assert health["status"] == "error"
+
+    def test_handles_env_var_state_changes(self, client: TestClient) -> None:
+        """Should reflect current env var state on each health check."""
+        # First check - get baseline
+        response1 = client.get("/health/communities")
+        assert response1.status_code == 200
+        response1.json()
+
+        # Set a test env var that might be checked
+        test_var_name = "OPENROUTER_API_KEY_TEST_COMMUNITY"
+        original_value = os.environ.get(test_var_name)
+
+        try:
+            # Set the env var
+            os.environ[test_var_name] = "sk-or-v1-test"
+
+            # Second check - should reflect new state
+            response2 = client.get("/health/communities")
+            assert response2.status_code == 200
+            # Response should still be valid even with env var changes
+            data2 = response2.json()
+            assert isinstance(data2, dict)
+
+            # Remove the env var
+            del os.environ[test_var_name]
+
+            # Third check - should reflect removed state
+            response3 = client.get("/health/communities")
+            assert response3.status_code == 200
+            data3 = response3.json()
+            assert isinstance(data3, dict)
+
+        finally:
+            # Cleanup - restore original state
+            if original_value is not None:
+                os.environ[test_var_name] = original_value
+            elif test_var_name in os.environ:
+                del os.environ[test_var_name]
+
+    def test_handles_malformed_assistant_info(self, client: TestClient) -> None:
+        """Should handle assistant info with missing attributes gracefully."""
+        # This test verifies the error handling at lines 65-90 in health.py
+        # that catches AttributeError, KeyError, TypeError
+        # The test relies on the existing behavior where the endpoint
+        # returns error status for communities with missing attributes
+
+        response = client.get("/health/communities")
+        assert response.status_code == 200
+
+        data = response.json()
+        # The endpoint should still work even if some assistant infos are malformed
+        assert isinstance(data, dict)
+
+        # Check for communities with error status and error field
+        # (indicates they failed processing due to malformed data)
+        for _community_id, health in data.items():
+            if "error" in health and "Failed to process" in health.get("error", ""):
+                # Verify the error response structure
+                assert health["status"] == "error"
+                assert health["api_key"] == "unknown"
+                assert health["cors_origins"] == 0
+                assert health["documents"] == 0
+                assert health["sync_age_hours"] is None

@@ -104,6 +104,19 @@ class TestIsAuthorizedOrigin:
         """Should return False for unknown community ID."""
         assert _is_authorized_origin("https://hedtags.org", "unknown") is False
 
+    def test_domain_case_sensitivity(self, mock_registry):  # noqa: ARG002
+        """Domain matching is currently case-sensitive.
+
+        Note: Per RFC 3986, scheme and host should be case-insensitive,
+        but current implementation uses exact string matching.
+        This test documents current behavior.
+        """
+        # Exact case match works
+        assert _is_authorized_origin("https://hedtags.org", "hed") is True
+        # Different case in domain currently fails (even though RFC says it should work)
+        assert _is_authorized_origin("https://HedTags.ORG", "hed") is False
+        assert _is_authorized_origin("https://HEDTAGS.ORG", "hed") is False
+
 
 class TestSelectApiKey:
     """Tests for _select_api_key authorization logic."""
