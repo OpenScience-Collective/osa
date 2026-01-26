@@ -63,22 +63,22 @@ class Settings(BaseSettings):
 
     # Model Configuration
     # OpenRouter model format: creator/model-name (e.g., openai/gpt-oss-120b, qwen/qwen3-235b-a22b-2507)
-    # Provider is separate - specifies where the model runs (e.g., Cerebras for fast inference)
+    # Provider is separate - specifies where the model runs (e.g., DeepInfra/FP8 for Qwen)
     # See .context/research.md for benchmark details
     default_model: str = Field(
-        default="openai/gpt-oss-120b",
+        default="qwen/qwen3-235b-a22b-2507",
         description="Default model (OpenRouter format: creator/model-name)",
     )
     default_model_provider: str | None = Field(
-        default="Cerebras",
-        description="Provider for routing (e.g., Cerebras for fast inference)",
+        default="DeepInfra/FP8",
+        description="Provider for routing (e.g., DeepInfra/FP8 for optimized inference)",
     )
     test_model: str = Field(
-        default="openai/gpt-oss-120b",
+        default="qwen/qwen3-235b-a22b-2507",
         description="Model for testing (OpenRouter format: creator/model-name)",
     )
     test_model_provider: str | None = Field(
-        default="Cerebras",
+        default="DeepInfra/FP8",
         description="Provider for test model routing",
     )
     llm_temperature: float = Field(

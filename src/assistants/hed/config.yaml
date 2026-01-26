@@ -22,8 +22,8 @@ openrouter_api_key_env_var: "OPENROUTER_API_KEY_HED"
 # Default model for this community (optional)
 # If specified, overrides the platform-level default model
 # Format: creator/model-name (OpenRouter format)
-# default_model: "anthropic/claude-3.5-sonnet"
-# default_model_provider: null  # Use default routing
+default_model: "qwen/qwen3-235b-a22b-2507"
+default_model_provider: "DeepInfra/FP8"  # Optimized FP8 quantized inference
 
 # System prompt template
 # Available placeholders: {name}, {description}, {repo_list}, {paper_dois},
