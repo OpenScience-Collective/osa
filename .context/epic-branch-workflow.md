@@ -1,6 +1,6 @@
 # Epic Branch Workflow for Multi-Phase Features
 
-For features with multiple phases (like EEGLAB with 3 phases), use an epic branch as an integration point before merging to develop.
+For features with multiple phases (like EEGLAB with 3 phases), use an epic branch worktree as an integration point before merging to develop.
 
 ## Why Epic Branches?
 
@@ -9,25 +9,24 @@ For features with multiple phases (like EEGLAB with 3 phases), use an epic branc
 - Can't test integrated epic until all phases done
 - Hard to iterate on earlier phases once merged
 
-**Solution:** Epic branch as integration point
-- Test all phases together before merging to develop
+**Solution:** Epic branch worktree as integration point
+- Test all phases together in epic worktree
 - Can iterate on any phase easily
 - Develop stays clean with only complete features
 
-## Workflow Overview
+## Worktree Structure Overview
 
 ```
-develop
-  │
-  └─> epic/issue-97-eeglab      (Epic branch)
-        ├─> feature/issue-99-phase1    (Phase 1)
-        ├─> feature/issue-100-phase2   (Phase 2)
-        └─> feature/issue-101-phase3   (Phase 3)
+/Users/yahya/Documents/git/osa          (develop)
+/Users/yahya/Documents/git/osa-epic     (epic/issue-97-eeglab)
+/Users/yahya/Documents/git/osa-phase1   (feature/issue-99-phase1)
+/Users/yahya/Documents/git/osa-phase2   (feature/issue-100-phase2)
+/Users/yahya/Documents/git/osa-phase3   (feature/issue-101-phase3)
 ```
 
 ## Step-by-Step Process
 
-### 1. Create Epic Branch (Do This First)
+### 1. Create Epic Branch Worktree (DONE ✓)
 
 ```bash
 cd /Users/yahya/Documents/git/osa
@@ -37,12 +36,20 @@ git checkout develop
 git pull
 git checkout -b epic/issue-97-eeglab
 git push -u origin epic/issue-97-eeglab
+
+# Switch back to develop in main worktree
+git checkout develop
+
+# Create epic worktree
+git worktree add ../osa-epic epic/issue-97-eeglab
 ```
+
+**Current status:** ✓ Epic worktree created at `/Users/yahya/Documents/git/osa-epic`
 
 ### 2. Create Phase Worktrees FROM Epic Branch
 
 ```bash
-# Phase 1 worktree from epic branch (not develop!)
+# Phase 1 worktree from epic branch (DONE ✓)
 git worktree add ../osa-phase1 -b feature/issue-99-phase1 epic/issue-97-eeglab
 
 # When Phase 1 is done, create Phase 2
@@ -85,9 +92,8 @@ gh pr merge --squash --delete-branch
 After merging phases into epic:
 
 ```bash
-# Switch to epic branch in main worktree
-cd /Users/yahya/Documents/git/osa
-git checkout epic/issue-97-eeglab
+# Work in epic worktree
+cd /Users/yahya/Documents/git/osa-epic
 git pull
 
 # Run full test suite
@@ -127,137 +133,134 @@ Closes #97"
 gh pr merge --squash --delete-branch
 ```
 
-## Current EEGLAB Status
+## Current EEGLAB Status (FIXED ✓)
 
-We're currently in a WRONG state:
-- ✗ Phase 1 branched from `develop`
-- ✗ PR #106 targets `develop`
-- ✗ No epic branch exists
+- ✓ Epic branch created: `epic/issue-97-eeglab`
+- ✓ Epic worktree created: `/Users/yahya/Documents/git/osa-epic`
+- ✓ Phase 1 worktree exists: `/Users/yahya/Documents/git/osa-phase1`
+- ✓ PR #106 retargeted to epic branch
+- ✓ Ready to test and merge Phase 1 → epic
 
-**Fix This:**
+## Worktree Management
 
-### Option A: Start Fresh (Recommended)
-
-```bash
-# 1. Close PR #106
-gh pr close 106
-
-# 2. Delete phase1 worktree
-cd /Users/yahya/Documents/git/osa
-git worktree remove ../osa-phase1
-
-# 3. Create epic branch
-git checkout develop
-git pull
-git checkout -b epic/issue-97-eeglab
-git push -u origin epic/issue-97-eeglab
-
-# 4. Cherry-pick phase1 commits to epic
-git cherry-pick <commit-hash-of-phase1-work>
-git push
-
-# 5. Create phase1 worktree from epic
-git worktree add ../osa-phase1 -b feature/issue-99-phase1 epic/issue-97-eeglab
-
-# 6. Recreate PR #106 with base epic/issue-97-eeglab
-cd ../osa-phase1
-gh pr create --base epic/issue-97-eeglab
-```
-
-### Option B: Convert Current PR (Easier)
+### List All Worktrees
 
 ```bash
-# 1. Change PR #106 base from develop to epic branch
-# (Unfortunately gh cli doesn't support this, need to do via GitHub UI)
-# Go to: https://github.com/OpenScience-Collective/osa/pull/106
-# Click "Edit" next to branch info
-# Change base from "develop" to "epic/issue-97-eeglab"
-
-# 2. Create epic branch from develop
-cd /Users/yahya/Documents/git/osa
-git checkout develop
-git pull
-git checkout -b epic/issue-97-eeglab
-git push -u origin epic/issue-97-eeglab
+git worktree list
 ```
 
-### Option C: Proceed As-Is (Not Recommended)
+Expected output:
+```
+/Users/yahya/Documents/git/osa         [develop]
+/Users/yahya/Documents/git/osa-epic    [epic/issue-97-eeglab]
+/Users/yahya/Documents/git/osa-phase1  [feature/issue-99-phase1-basic-setup]
+```
 
-Merge Phase 1 to develop now, then:
-- Phase 2/3 still branch from develop
-- Test integration only after ALL phases merged
-- Can't easily iterate on Phase 1 once in develop
+### Switch Between Worktrees
 
-## Epic Branch Management
+```bash
+# Work on epic integration
+cd /Users/yahya/Documents/git/osa-epic
 
-### Keeping Epic Updated
+# Work on Phase 1
+cd /Users/yahya/Documents/git/osa-phase1
+
+# Main repo (develop)
+cd /Users/yahya/Documents/git/osa
+```
+
+### Update Epic Worktree
 
 If develop changes while working on epic:
 
 ```bash
-cd /Users/yahya/Documents/git/osa
-git checkout epic/issue-97-eeglab
+cd /Users/yahya/Documents/git/osa-epic
 git pull origin develop  # Merge develop into epic
 git push
 ```
 
-### Rebasing Phases
+### Update Phase Worktrees
 
 If epic branch changes (due to merged phases or develop updates):
 
 ```bash
-cd ../osa-phase2  # In phase worktree
+cd /Users/yahya/Documents/git/osa-phase2  # In phase worktree
 git pull --rebase origin epic/issue-97-eeglab
 ```
 
 ### Cleaning Up After Epic Merge
 
 ```bash
+cd /Users/yahya/Documents/git/osa
+
 # Remove worktrees
 git worktree remove ../osa-phase1
 git worktree remove ../osa-phase2
 git worktree remove ../osa-phase3
+git worktree remove ../osa-epic
 
 # Delete local epic branch
 git branch -d epic/issue-97-eeglab
 
-# Delete remote (already done by squash merge)
+# Remote branch is deleted by squash merge
 ```
 
-## Benefits of This Approach
+## Benefits of Worktree Approach
 
-1. **Test Integration Early:** Test all phases together in epic branch
-2. **Iterate Freely:** Can go back and fix Phase 1 even while working on Phase 3
-3. **Clean Develop:** Develop only gets complete, tested features
-4. **Clear History:** One squash commit to develop with all phases
-5. **Easy Rollback:** If epic has issues, just don't merge it
+1. **Isolated Environments:** Each phase has its own directory, no branch switching needed
+2. **Test Integration Early:** Epic worktree lets you test all phases together
+3. **Parallel Work:** Can work on Phase 2 while fixing Phase 1
+4. **Clean Main Repo:** Main repo stays on develop, always stable
+5. **Easy Navigation:** `cd ../osa-epic` to test integration
 
-## Example: HED Would Benefit Too
+## Testing Workflow Example
 
-If HED had multiple phases:
+```bash
+# Develop in phase1
+cd /Users/yahya/Documents/git/osa-phase1
+# ... make changes, commit ...
+
+# Merge phase1 to epic via PR
+gh pr merge 106 --squash
+
+# Test in epic worktree
+cd /Users/yahya/Documents/git/osa-epic
+git pull
+uv run pytest tests/
+export OPENROUTER_API_KEY="..."
+uv run uvicorn src.api.main:app --reload --port 38528
+# ... test the integrated epic ...
+
+# Start phase2 from epic
+cd /Users/yahya/Documents/git/osa
+git worktree add ../osa-phase2 -b feature/issue-100-phase2 epic/issue-97-eeglab
+
+# Develop in phase2
+cd /Users/yahya/Documents/git/osa-phase2
+# ...
 ```
-develop
-  │
-  └─> epic/hed-advanced-features
-        ├─> feature/hed-definitions
-        ├─> feature/hed-temporal-scope
-        └─> feature/hed-library-schemas
-```
 
-## When NOT to Use Epic Branches
+## When to Use Epic Worktrees
 
+**Use for:**
+- Multi-phase features (3+ phases)
+- Features that need integration testing before merging to develop
+- Long-running feature development
+- Features where early phases may need updates while working on later phases
+
+**Don't use for:**
 - Single-phase features (just use feature branch → develop)
 - Quick bug fixes
 - Documentation updates
-- Features where phases are truly independent (can be merged separately)
+- Independent features that can be merged separately
 
 ## Summary
 
 For multi-phase features like EEGLAB:
-1. Create epic branch from develop
-2. Branch phases from epic (not develop)
-3. Merge phases into epic
-4. Test integrated epic
+1. Create epic branch and worktree from develop
+2. Create phase worktrees from epic (not develop)
+3. Merge phases into epic via PRs
+4. Test integrated epic in epic worktree
 5. Merge epic to develop when complete
 
-**Current Action:** Decide Option A, B, or C for EEGLAB Phase 1
+**All work happens in worktrees - main repo stays on develop!**
