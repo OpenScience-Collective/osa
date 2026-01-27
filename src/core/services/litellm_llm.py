@@ -77,9 +77,10 @@ def create_openrouter_llm(
         },
     }
 
-    # Provider routing (e.g., {"only": ["Cerebras"]})
+    # Provider routing (e.g., {"order": ["DeepInfra/FP8"]})
+    # Use "order" not "only" - OpenRouter requires exact routing field name
     if provider:
-        model_kwargs["provider"] = {"only": [provider]}
+        model_kwargs["provider"] = {"order": [provider]}
 
     # User ID for sticky cache routing
     if user_id:

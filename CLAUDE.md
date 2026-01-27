@@ -133,9 +133,33 @@ src/
 
 ## Key Documentation
 
-- **.context/plan.md**: Implementation roadmap
-- **.context/research.md**: Technical notes, target project resources
-- **.rules/**: Development standards
+**When working on different parts of the system, start with these documents:**
+
+### API Development
+- **.context/api-structure.md** - **START HERE for API work**
+  - Community-based routing (`/{community_id}/ask`, `/chat`, etc.)
+  - Model selection logic and provider routing
+  - Common implementation mistakes and how to avoid them
+  - How to add new communities
+
+### Security & Authorization
+- **.context/api_key_authorization_design.md** - API key auth and CORS
+- **.context/security-architecture.md** - Security patterns
+
+### Community Configuration
+- **.context/yaml_registry.md** - YAML-based community config
+- **.context/community_onboarding_review.md** - Onboarding guidelines
+
+### Tool System
+- **.context/tool-system-guide.md** - How tools work and are registered
+
+### Architecture & Planning
+- **docs/architecture.md** - High-level system diagrams (for papers/docs)
+- **.context/plan.md** - Implementation roadmap and current tasks
+- **.context/research.md** - Technical notes, target project resources
+
+### Development Standards
+- **.rules/** - Code style, testing, conventions
 
 ## Development Guidelines
 
@@ -217,11 +241,13 @@ docker exec osa-dev python -m src.cli.main sync github --full
 
 ## References
 
-- Plan: `.context/plan.md`
-- Research notes: `.context/research.md`
-- HED tools analysis: `.context/hed_tools_analysis.md`
-- HEDit (deployment patterns): `/Users/yahya/Documents/git/annot-garden/hedit`
-- QP (doc retrieval patterns): `/Users/yahya/Documents/git/HED/qp`
+- **API structure**: `.context/api-structure.md` (read first for API work)
+- **Architecture**: `docs/architecture.md` (high-level diagrams)
+- **Plan**: `.context/plan.md` (current roadmap)
+- **Research notes**: `.context/research.md` (technical deep-dives)
+- **HED tools analysis**: `.context/hed_tools_analysis.md`
+- **HEDit** (deployment patterns): `/Users/yahya/Documents/git/annot-garden/hedit`
+- **QP** (doc retrieval patterns): `/Users/yahya/Documents/git/HED/qp`
 
 ## HED Development Resources
 

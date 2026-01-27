@@ -52,7 +52,9 @@
     pageContextStorageKey: 'osa-page-context-enabled',
     pageContextLabel: 'Share page URL to help answer questions',
     // Fullscreen mode (for pop-out windows)
-    fullscreen: false
+    fullscreen: false,
+    // Streaming responses - enable progressive text display for better UX
+    streamingEnabled: true
   };
 
   // Log environment for debugging
@@ -71,6 +73,12 @@
     { value: 'moonshotai/kimi-k2-0905', label: 'Kimi K2' },
     { value: 'qwen/qwen3-235b-a22b-2507', label: 'Qwen3 235B' }
   ];
+
+  // Helper to get human-readable label for a model
+  function getModelLabel(modelId) {
+    const model = DEFAULT_MODELS.find(m => m.value === modelId);
+    return model ? model.label : modelId;
+  }
 
   // State
   let isOpen = false;
@@ -1219,19 +1227,45 @@
   // Save chat history to localStorage
   let saveErrorShown = false;
   function saveHistory() {
+    if (!CONFIG.storageKey) {
+      console.warn('[OSA] Cannot save history - no storage key configured');
+      return;
+    }
+
     try {
-      localStorage.setItem(CONFIG.storageKey, JSON.stringify(messages));
+      const data = JSON.stringify(messages);
+      localStorage.setItem(CONFIG.storageKey, data);
       saveErrorShown = false;
     } catch (e) {
-      console.error('Failed to save chat history:', e);
-      // Show error once per session to avoid spam
-      if (!saveErrorShown) {
-        const container = document.querySelector('.osa-chat-widget');
-        if (container) {
-          showError(container, 'Chat history could not be saved. Storage may be full or disabled.');
-        }
-        saveErrorShown = true;
+      console.error('[OSA] localStorage save failed:', {
+        errorName: e.name,
+        errorMessage: e.message,
+        messageCount: messages.length,
+        isQuotaError: e.name === 'QuotaExceededError'
+      });
+
+      // Determine error type for better user messaging
+      let errorMsg = 'Chat history could not be saved';
+      const isQuotaError = e.name === 'QuotaExceededError';
+      const isSecurityError = e.name === 'SecurityError';
+
+      if (isQuotaError) {
+        errorMsg = 'Storage full - conversation NOT saved. Clear browser data or export chat.';
+      } else if (isSecurityError) {
+        errorMsg = 'Browser privacy settings prevent saving. Enable local storage.';
+      } else {
+        errorMsg = 'Storage unavailable - conversation will be lost on refresh.';
       }
+
+      // Show error (not just once - user needs to know every time save fails)
+      const container = document.querySelector('.osa-chat-widget');
+      if (container && !saveErrorShown) {
+        showError(container, errorMsg);
+        saveErrorShown = true; // Show once per session to avoid spam
+      }
+
+      // Re-throw so callers know save failed
+      throw e;
     }
   }
 
@@ -1347,27 +1381,50 @@
     }
   }
 
+  // Disable widget when configuration is invalid
+  function disableWidget(container, message) {
+    if (!container) return;
+
+    showError(container, message);
+
+    // Disable input and send button
+    const input = container.querySelector('.osa-chat-input input');
+    const sendBtn = container.querySelector('.osa-send-btn');
+
+    if (input) {
+      input.disabled = true;
+      input.placeholder = 'Widget unavailable';
+    }
+    if (sendBtn) {
+      sendBtn.disabled = true;
+      sendBtn.style.opacity = '0.5';
+      sendBtn.style.cursor = 'not-allowed';
+    }
+  }
+
   // Fetch community default model from API
   async function fetchCommunityDefaultModel() {
     // Validate communityId before making request
     if (!isValidCommunityId(CONFIG.communityId)) {
       console.error('[OSA] Invalid communityId, cannot fetch default model');
-      communityDefaultModel = 'openai/gpt-oss-120b'; // Hardcoded fallback (Cerebras provider)
+      const container = document.querySelector('.osa-chat-widget');
+      if (container && isOpen) {
+        disableWidget(container, 'Invalid community configuration. Please check your widget setup.');
+      }
       return;
     }
 
     try {
-      const response = await fetch(`${CONFIG.apiEndpoint}/communities/${CONFIG.communityId}`, {
+      const response = await fetch(`${CONFIG.apiEndpoint}/${CONFIG.communityId}`, {
         method: 'GET',
         signal: AbortSignal.timeout(5000)
       });
 
       if (!response.ok) {
-        console.error(`[OSA] Community default model fetch failed: HTTP ${response.status}`);
-        communityDefaultModel = 'openai/gpt-oss-120b'; // Hardcoded fallback (Cerebras provider)
+        console.error(`[OSA] Community config fetch failed: HTTP ${response.status}`);
         const container = document.querySelector('.osa-chat-widget');
         if (container && isOpen) {
-          showError(container, `Could not load default model settings (HTTP ${response.status}). Using fallback.`);
+          disableWidget(container, `Failed to load community configuration (HTTP ${response.status}). Please try again later.`);
         }
         return;
       }
@@ -1375,20 +1432,19 @@
       const data = await response.json();
       if (data && data.default_model) {
         communityDefaultModel = data.default_model;
+        console.log(`[OSA] Loaded default model: ${communityDefaultModel}`);
       } else {
         console.error('[OSA] Community default model not found in API response');
-        communityDefaultModel = 'openai/gpt-oss-120b';
         const container = document.querySelector('.osa-chat-widget');
         if (container && isOpen) {
-          showError(container, 'Default model settings incomplete. Using fallback.');
+          disableWidget(container, 'Community configuration is incomplete. Please contact support.');
         }
       }
     } catch (e) {
-      console.error('[OSA] Could not fetch community default model:', e.message || e);
-      communityDefaultModel = 'openai/gpt-oss-120b';
+      console.error('[OSA] Could not fetch community config:', e.message || e);
       const container = document.querySelector('.osa-chat-widget');
       if (container && isOpen) {
-        showError(container, 'Network error loading model settings. Using fallback.');
+        disableWidget(container, 'Network error loading configuration. Please check your connection and try again.');
       }
     }
   }
@@ -1409,8 +1465,17 @@
     if (modelSelect) {
       const defaultOption = modelSelect.querySelector('option[value="default"]');
       if (defaultOption) {
-        const modelLabel = communityDefaultModel || 'Community Setting';
-        defaultOption.textContent = `Default (${modelLabel})`;
+        if (!communityDefaultModel) {
+          // Make it obvious something is wrong
+          defaultOption.textContent = 'Default (ERROR: Not configured)';
+          defaultOption.disabled = true;
+          console.error('[OSA] Cannot populate model selector - no default model loaded');
+        } else {
+          // Use human-readable label if available
+          const modelLabel = getModelLabel(communityDefaultModel);
+          defaultOption.textContent = `Default (${modelLabel})`;
+          defaultOption.disabled = false;
+        }
       }
     }
 
@@ -1433,8 +1498,15 @@
     }
 
     // Update hint with current default model
-    if (modelHint && communityDefaultModel) {
-      modelHint.textContent = `Community default: ${communityDefaultModel}`;
+    if (modelHint) {
+      if (communityDefaultModel) {
+        const modelLabel = getModelLabel(communityDefaultModel);
+        modelHint.textContent = `Community default: ${modelLabel}`;
+        modelHint.style.color = '';  // Reset to default color
+      } else {
+        modelHint.textContent = 'ERROR: Default model not loaded. Widget may not function correctly.';
+        modelHint.style.color = '#e53e3e';  // Red color for error
+      }
     }
 
     if (overlay) {
@@ -1730,7 +1802,7 @@
               </label>
               <select id="osa-settings-model" class="osa-settings-select">
                 <option value="default">Default (Community Setting)</option>
-                ${DEFAULT_MODELS.map(m => `<option value="${escapeHtml(m.value)}">${escapeHtml(m.label)}</option>`).join('')}
+                ${DEFAULT_MODELS.filter(m => m.value !== communityDefaultModel).map(m => `<option value="${escapeHtml(m.value)}">${escapeHtml(m.label)}</option>`).join('')}
                 <option value="custom">Custom</option>
               </select>
               <span class="osa-settings-hint" id="osa-settings-model-hint">
@@ -1868,12 +1940,208 @@
     }, 5000);
   }
 
+  // Parse SSE (Server-Sent Events) format
+  // Returns parsed event object or null if line is not a data event
+  function parseSSE(line) {
+    if (!line || !line.startsWith('data: ')) {
+      return null;
+    }
+    try {
+      const jsonStr = line.substring(6); // Remove 'data: ' prefix
+      return JSON.parse(jsonStr);
+    } catch (error) {
+      console.warn('[OSA] Failed to parse SSE line:', line, error);
+      return null;
+    }
+  }
+
+  // Handle streaming response from API
+  // SSE Event formats:
+  //   data: {"event": "content", "content": "text chunk"}
+  //   data: {"event": "tool_start", "name": "tool_name", "input": {...}}
+  //   data: {"event": "tool_end", "name": "tool_name", "output": "result"}
+  //   data: {"event": "done"}
+  //   data: {"event": "error", "message": "error description"}
+  async function handleStreamingResponse(response, container) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let accumulatedContent = '';
+    let lastUpdateTime = 0;
+    let lastChunkTime = Date.now();
+    const UPDATE_THROTTLE_MS = 100; // Update UI every 100ms max
+    const STREAM_TIMEOUT_MS = 60000; // 60 seconds with no data = timeout
+    let receivedDoneEvent = false;
+
+    // Create placeholder assistant message
+    messages.push({ role: 'assistant', content: '' });
+    const messageIndex = messages.length - 1;
+
+    // Hide loading indicator immediately when streaming starts
+    isLoading = false;
+    renderMessages(container);
+
+    try {
+      while (true) {
+        // Check for stream timeout
+        const now = Date.now();
+        if (now - lastChunkTime > STREAM_TIMEOUT_MS) {
+          console.error('[OSA] Stream timeout - no data received for', STREAM_TIMEOUT_MS, 'ms');
+          throw new Error('Stream timeout - server stopped responding');
+        }
+
+        const { done, value } = await reader.read();
+
+        if (done) {
+          break;
+        }
+
+        lastChunkTime = Date.now(); // Reset timeout on each chunk
+
+        // Decode chunk and add to buffer
+        buffer += decoder.decode(value, { stream: true });
+
+        // Process complete lines (SSE format uses \n\n as delimiter)
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+        for (const line of lines) {
+          const event = parseSSE(line);
+          if (!event) continue;
+
+          if (event.event === 'content' && event.content) {
+            // Accumulate content
+            accumulatedContent += event.content;
+
+            // Throttle UI updates for performance
+            const now = Date.now();
+            if (now - lastUpdateTime >= UPDATE_THROTTLE_MS) {
+              messages[messageIndex].content = accumulatedContent;
+              renderMessages(container);
+              lastUpdateTime = now;
+            }
+          } else if (event.event === 'tool_start') {
+            // Log tool execution for debugging
+            console.log('[OSA] Tool started:', event.name, event.input);
+          } else if (event.event === 'tool_end') {
+            // Log tool completion
+            console.log('[OSA] Tool completed:', event.name);
+          } else if (event.event === 'done') {
+            // Finalize message
+            receivedDoneEvent = true;
+            messages[messageIndex].content = accumulatedContent;
+            renderMessages(container);
+            try {
+              saveHistory();
+            } catch (saveError) {
+              console.error('[OSA] Failed to save history:', saveError);
+              showError(container, 'Warning: Unable to save conversation');
+            }
+            updateStatusDisplay(true);
+            return; // Successfully completed
+          } else if (event.event === 'error') {
+            // Backend sent an error event
+            const errorMsg = event.message || 'An error occurred during response generation';
+            console.error('[OSA] Backend error event:', errorMsg);
+
+            // Show partial content with error indicator
+            if (accumulatedContent) {
+              messages[messageIndex].content = accumulatedContent + `\n\n_[Error: ${errorMsg}]_`;
+            } else {
+              messages[messageIndex].content = `_[Error: ${errorMsg}]_`;
+            }
+            renderMessages(container);
+            try {
+              saveHistory();
+            } catch (saveError) {
+              console.error('[OSA] Failed to save history:', saveError);
+            }
+
+            throw new Error(`Backend streaming error: ${errorMsg}`);
+          } else if (event.event) {
+            // Unknown event type - log for debugging
+            console.warn('[OSA] Unknown SSE event type:', event.event, event);
+          }
+        }
+      }
+
+      // Stream ended without receiving 'done' event - this is abnormal
+      if (!receivedDoneEvent) {
+        console.error('[OSA] Stream ended without done event');
+
+        if (accumulatedContent) {
+          messages[messageIndex].content = accumulatedContent +
+            '\n\n_[Response may be incomplete - connection ended unexpectedly]_';
+          renderMessages(container);
+          try {
+            saveHistory();
+          } catch (saveError) {
+            console.error('[OSA] Failed to save history:', saveError);
+          }
+          updateStatusDisplay(false);
+          showError(container, 'Connection ended unexpectedly. Response may be incomplete.');
+        } else {
+          throw new Error('Stream ended without content or completion signal');
+        }
+      }
+
+    } catch (error) {
+      console.error('[OSA] Streaming error:', error);
+
+      // Keep partial content if we have any
+      if (accumulatedContent) {
+        const errorType = error.name || 'Error';
+        let userMessage = 'Stream interrupted';
+
+        if (error.name === 'AbortError') {
+          userMessage = 'Connection timeout';
+        } else if (error.message && error.message.includes('timeout')) {
+          userMessage = 'Stream timeout';
+        } else if (error.message && error.message.includes('Backend streaming error')) {
+          // Backend error already handled above, don't modify message
+          throw error;
+        }
+
+        messages[messageIndex].content = accumulatedContent + `\n\n_[${userMessage}]_`;
+        renderMessages(container);
+        try {
+          saveHistory();
+        } catch (saveError) {
+          console.error('[OSA] Failed to save history:', saveError);
+        }
+      } else {
+        // No content received - remove placeholder message
+        messages.pop();
+      }
+
+      throw error; // Re-throw to be handled by sendMessage
+    } finally {
+      // Always release the reader to free resources
+      if (reader) {
+        try {
+          reader.releaseLock();
+        } catch (releaseError) {
+          // Log cleanup failures - they indicate serious issues
+          console.error('[OSA] Failed to release stream reader:', {
+            errorName: releaseError.name,
+            errorMessage: releaseError.message
+          });
+        }
+      }
+    }
+  }
+
   // Send message to API
   async function sendMessage(container, question) {
     if (isLoading || !question.trim()) return;
 
     isLoading = true;
+
+    // Track message indices to avoid corruption on error
+    const userMessageIndex = messages.length;
     messages.push({ role: 'user', content: question });
+    let assistantMessageCreated = false;
+
     renderMessages(container);
     renderSuggestions(container);
 
@@ -1904,6 +2172,11 @@
         body.model = userSettings.model;
       }
 
+      // Enable streaming if configured
+      if (CONFIG.streamingEnabled) {
+        body.stream = true;
+      }
+
       if (!isValidCommunityId(CONFIG.communityId)) {
         throw new Error('Invalid community configuration. Please reload the page.');
       }
@@ -1921,6 +2194,7 @@
         method: 'POST',
         headers: headers,
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(120000), // 2 minute timeout for connection + streaming
       });
 
       if (!response.ok) {
@@ -1945,21 +2219,94 @@
         throw new Error(errorMessage);
       }
 
-      const data = await response.json();
-      const answer = (data && typeof data.answer === 'string') ? data.answer : null;
-      if (!answer) {
-        throw new Error('Invalid response from server');
+      // Check if response is streaming (SSE)
+      const contentType = response.headers.get('content-type') || '';
+      if (CONFIG.streamingEnabled && contentType.includes('text/event-stream')) {
+        // Handle streaming response
+        assistantMessageCreated = true; // handleStreamingResponse creates assistant message
+        await handleStreamingResponse(response, container);
+      } else if (CONFIG.streamingEnabled && !contentType.includes('text/event-stream')) {
+        // Streaming was expected but not received - log for debugging
+        console.warn('[OSA] Expected streaming response but got content-type:', contentType);
+        console.warn('[OSA] Falling back to non-streaming mode');
+
+        // Handle non-streaming response (fallback)
+        const data = await response.json();
+        const answer = (data && typeof data.answer === 'string') ? data.answer : null;
+        if (!answer) {
+          throw new Error('Invalid response from server');
+        }
+        messages.push({ role: 'assistant', content: answer });
+        try {
+          saveHistory();
+        } catch (saveError) {
+          console.error('[OSA] Failed to save history:', saveError);
+          showError(container, 'Warning: Unable to save conversation');
+        }
+        updateStatusDisplay(true);
+      } else {
+        // Streaming not enabled, expected behavior
+        const data = await response.json();
+        const answer = (data && typeof data.answer === 'string') ? data.answer : null;
+        if (!answer) {
+          throw new Error('Invalid response from server');
+        }
+        messages.push({ role: 'assistant', content: answer });
+        try {
+          saveHistory();
+        } catch (saveError) {
+          console.error('[OSA] Failed to save history:', saveError);
+          showError(container, 'Warning: Unable to save conversation');
+        }
+        updateStatusDisplay(true);
       }
-      messages.push({ role: 'assistant', content: answer });
-      saveHistory();
-      updateStatusDisplay(true);
 
     } catch (error) {
-      console.error('Chat error:', error);
-      showError(container, error.message || 'Failed to get response');
-      // Remove the user message on error and sync localStorage
-      messages.pop();
-      saveHistory();
+      // Categorize error for better user messaging
+      let userMessage = 'Failed to get response';
+
+      if (error.name === 'AbortError') {
+        userMessage = 'Request timed out. Please try again.';
+      } else if (error.name === 'TypeError' && error.message.includes('fetch')) {
+        userMessage = 'Network error. Please check your connection.';
+      } else if (error.message && error.message.includes('JSON')) {
+        userMessage = 'Invalid response from server. Please try again.';
+      } else if (error.message && error.message.includes('Backend streaming error')) {
+        userMessage = error.message.replace('Backend streaming error: ', '');
+      } else if (error.message && error.message.includes('Stream')) {
+        userMessage = 'Connection interrupted. Please try again.';
+      } else if (error.message) {
+        userMessage = error.message;
+      }
+
+      console.error('[OSA] Send message error:', error);
+      showError(container, userMessage);
+
+      // Clean up messages based on what was created
+      // If streaming was attempted, handleStreamingResponse manages its own assistant message
+      // We only need to remove the user message if no assistant response exists
+      if (assistantMessageCreated) {
+        // handleStreamingResponse created an assistant message
+        // If it has content (partial or complete), keep both user and assistant messages
+        // If it has no content, handleStreamingResponse already removed it, so remove user message too
+        const lastMessage = messages[messages.length - 1];
+        if (lastMessage && lastMessage.role === 'user' && messages.length === userMessageIndex + 1) {
+          // No assistant message remains, remove user message
+          messages.splice(userMessageIndex, 1);
+        }
+      } else {
+        // No streaming attempted, no assistant message created, remove user message
+        if (messages.length > userMessageIndex && messages[userMessageIndex].role === 'user') {
+          messages.splice(userMessageIndex, 1);
+        }
+      }
+
+      try {
+        saveHistory();
+      } catch (saveError) {
+        console.error('[OSA] Failed to save history after error:', saveError);
+        // saveHistory already showed error to user
+      }
       updateStatusDisplay(false);
     } finally {
       isLoading = false;

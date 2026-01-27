@@ -198,6 +198,29 @@ async function proxyToBackend(request, env, path, body, corsHeaders, CONFIG) {
       signal: AbortSignal.timeout(CONFIG.REQUEST_TIMEOUT),
     });
 
+    // For non-2xx responses, pass through backend error details
+    if (!response.ok) {
+      let backendError = { error: `Backend returned ${response.status}` };
+      const contentType = response.headers.get('Content-Type');
+
+      // Try to extract backend error message
+      try {
+        if (contentType?.includes('application/json')) {
+          backendError = await response.json();
+        } else {
+          const text = await response.text();
+          backendError = { error: text.substring(0, 500) };
+        }
+      } catch {
+        // Use default error if parsing fails
+      }
+
+      return new Response(JSON.stringify(backendError), {
+        status: response.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
     // Check if streaming response
     const contentType = response.headers.get('Content-Type');
     if (contentType?.includes('text/event-stream')) {
@@ -217,6 +240,7 @@ async function proxyToBackend(request, env, path, body, corsHeaders, CONFIG) {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   } catch (error) {
+    // Only network/proxy errors reach here, not HTTP errors
     console.error('Backend proxy error:', {
       path: path,
       errorName: error.name,
@@ -274,10 +298,16 @@ export default {
         return await handleFeedback(request, env, corsHeaders, CONFIG);
       }
 
-      // Community-based endpoints: /communities/:id
-      const communityGetMatch = url.pathname.match(/^\/communities\/([^\/]+)$/);
-      if (communityGetMatch && request.method === 'GET') {
-        const communityId = communityGetMatch[1];
+      // Community config endpoint: /:communityId/ (GET)
+      const communityConfigMatch = url.pathname.match(/^\/([^\/]+)\/?$/);
+      if (communityConfigMatch && request.method === 'GET') {
+        const communityId = communityConfigMatch[1];
+
+        // Reject reserved path segments as community IDs
+        const reservedPaths = ['health', 'version', 'feedback', 'communities'];
+        if (reservedPaths.includes(communityId)) {
+          return new Response('Not Found', { status: 404, headers: corsHeaders });
+        }
 
         // Validate community ID format
         if (!isValidCommunityId(communityId)) {
@@ -287,7 +317,7 @@ export default {
           });
         }
 
-        // Rate limit community lookups
+        // Rate limit community config lookups
         const rateLimitResult = await checkRateLimit(request, env, CONFIG);
         if (!rateLimitResult.allowed) {
           return new Response(JSON.stringify({
@@ -299,7 +329,7 @@ export default {
           });
         }
 
-        return await proxyToBackend(request, env, `/communities/${communityId}`, null, corsHeaders, CONFIG);
+        return await proxyToBackend(request, env, `/${communityId}/`, null, corsHeaders, CONFIG);
       }
 
       // Community endpoints: /:communityId/ask and /:communityId/chat
@@ -344,7 +374,7 @@ function handleRoot(corsHeaders, CONFIG) {
     description: 'Security proxy for Open Science Assistant backend',
     environment: CONFIG.IS_DEV ? 'development' : 'production',
     endpoints: {
-      'GET /communities/:id': 'Get community configuration',
+      'GET /:communityId/': 'Get community configuration',
       'POST /:communityId/ask': 'Ask a single question to a community',
       'POST /:communityId/chat': 'Multi-turn conversation with a community',
       'POST /feedback': 'Submit feedback',

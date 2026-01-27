@@ -130,6 +130,18 @@ class SessionInfo(BaseModel):
     last_active: str = Field(..., description="ISO timestamp of last activity")
 
 
+class CommunityConfigResponse(BaseModel):
+    """Community configuration information."""
+
+    id: str = Field(..., description="Community identifier")
+    name: str = Field(..., description="Community display name")
+    description: str = Field(..., description="Community description")
+    default_model: str = Field(..., description="Default LLM model for this community")
+    default_model_provider: str | None = Field(
+        default=None, description="Default provider for model routing"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Session Management (In-Memory, per-community isolation)
 # ---------------------------------------------------------------------------
@@ -934,6 +946,46 @@ def create_community_router(community_id: str) -> APIRouter:
         """List all active chat sessions for this community."""
         return [session.to_info() for session in list_sessions(community_id)]
 
+    @router.get("/", response_model=CommunityConfigResponse)
+    async def get_community_config() -> CommunityConfigResponse:
+        """Get community configuration including default model settings.
+
+        Returns community information and model configuration that the
+        frontend widget uses to display settings and defaults.
+
+        No authentication required - this is public configuration info.
+        """
+        settings = get_settings()
+
+        # Determine default model: community-specific or platform default
+        default_model = settings.default_model
+        default_provider = settings.default_model_provider
+
+        if info.community_config and info.community_config.default_model:
+            default_model = info.community_config.default_model
+            default_provider = info.community_config.default_model_provider
+
+        # Validate required configuration
+        if not default_model:
+            logger.error(
+                "No default model configured for community %s (platform: %s, community: %s)",
+                info.id,
+                settings.default_model,
+                info.community_config.default_model if info.community_config else None,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="Community configuration incomplete: no default model configured",
+            )
+
+        return CommunityConfigResponse(
+            id=info.id,
+            name=info.name,
+            description=info.description,
+            default_model=default_model,
+            default_model_provider=default_provider,
+        )
+
     return router
 
 
@@ -1008,14 +1060,40 @@ async def _stream_ask_response(
         sse_event = {"event": "done"}
         yield f"data: {json.dumps(sse_event)}\n\n"
 
+    except HTTPException:
+        # Don't catch our own HTTP exceptions - let them propagate
+        raise
+    except ValueError as e:
+        # Input validation errors - user's fault
+        logger.warning("Invalid input in streaming for community %s: %s", community_id, e)
+        sse_event = {
+            "event": "error",
+            "message": f"Invalid request: {str(e)}",
+            "retryable": False,
+        }
+        yield f"data: {json.dumps(sse_event)}\n\n"
     except Exception as e:
+        # Unexpected errors - log with full context
+        import uuid
+
+        error_id = str(uuid.uuid4())
         logger.error(
-            "Streaming error in ask endpoint for community %s: %s",
+            "Unexpected streaming error (ID: %s) in ask endpoint for community %s: %s",
+            error_id,
             community_id,
             e,
             exc_info=True,
+            extra={
+                "error_id": error_id,
+                "community_id": community_id,
+                "error_type": type(e).__name__,
+            },
         )
-        sse_event = {"event": "error", "message": str(e)}
+        sse_event = {
+            "event": "error",
+            "message": "An error occurred while generating the response. Please try again.",
+            "error_id": error_id,
+        }
         yield f"data: {json.dumps(sse_event)}\n\n"
 
 
