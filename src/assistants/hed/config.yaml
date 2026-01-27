@@ -366,7 +366,7 @@ documentation:
   # === ON-DEMAND: Integration (1 doc) ===
   - title: HED and EEGLAB
     url: https://www.hedtags.org/hed-resources/HedAndEEGLAB.html
-    source_url: https://raw.githubusercontent.com/hed-standard/hed-resources/refs/heads/main/docs/source/HedAndEEGLAB.md
+    source_url: https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/HedAndEEGLAB.html
     category: integration
     description: Describes how to integrate HED annotations within the EEGLAB environment for EEG data analysis.
 
