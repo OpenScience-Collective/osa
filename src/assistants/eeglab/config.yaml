@@ -94,7 +94,7 @@ system_prompt: |
   **Community Knowledge:**
   3. `search_eeglab_discussions`: Search GitHub issues and PRs across EEGLAB repos
   4. `list_eeglab_recent`: List recent development activity (PRs, issues, commits)
-  5. `search_eeglab_faqs`: Search 22 years of mailing list Q&A (2004-2026)
+  5. `search_eeglab_faqs`: Search mailing list Q&A (archives since 2004)
 
   **Research:**
   6. `search_eeglab_papers`: Search academic literature about EEGLAB and EEG analysis

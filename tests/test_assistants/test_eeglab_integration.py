@@ -1,11 +1,13 @@
 """Integration tests for EEGLab assistant."""
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
 from src.assistants import discover_assistants
 from src.assistants.registry import registry
+from src.knowledge.db import get_connection, init_db
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -13,6 +15,84 @@ def discover_eeglab():
     """Discover and register all assistants before running tests."""
     discover_assistants()
     yield
+
+
+@pytest.fixture
+def populated_test_db(tmp_path: Path, monkeypatch):
+    """Create a minimal test database with sample data."""
+    # Create test database
+    db_path = tmp_path / "knowledge" / "test-eeglab.db"
+
+    # Patch get_db_path to return our test database
+    def mock_get_db_path(_project: str):
+        return db_path
+
+    monkeypatch.setattr("src.knowledge.db.get_db_path", mock_get_db_path)
+
+    # Initialize database
+    init_db("test-eeglab")
+
+    # Insert sample docstring
+    with get_connection("test-eeglab") as conn:
+        conn.execute(
+            """
+            INSERT INTO docstrings (symbol_name, docstring, file_path, repo, language, symbol_type, line_number, synced_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "pop_loadset",
+                "Load an EEGLAB dataset file. This function loads .set files.",
+                "functions/popfunc/pop_loadset.m",
+                "sccn/eeglab",
+                "matlab",
+                "function",
+                42,
+                "2024-01-15T10:00:00Z",
+            ),
+        )
+        # Insert into FTS5 table
+        conn.execute(
+            "INSERT INTO docstrings_fts(docstring) VALUES (?)",
+            ("Load an EEGLAB dataset file. This function loads .set files.",),
+        )
+
+        # Insert sample FAQ
+        import json
+
+        conn.execute(
+            """
+            INSERT INTO faq_entries (list_name, thread_id, question, answer, tags, category, quality_score, thread_url, message_count, first_message_date, summarized_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "eeglablist",
+                "thread123",
+                "How do I remove artifacts?",
+                "Use ICA decomposition and ICLabel for automatic artifact classification.",
+                json.dumps(["artifacts", "ica", "iclabel"]),
+                "how-to",
+                0.85,
+                "https://sccn.ucsd.edu/pipermail/eeglablist/2024/thread123.html",
+                5,
+                "2024-01-15",
+                "2024-01-16T10:00:00Z",
+            ),
+        )
+        # Insert into FTS5 table
+        conn.execute(
+            "INSERT INTO faq_entries_fts(question, answer) VALUES (?, ?)",
+            (
+                "How do I remove artifacts?",
+                "Use ICA decomposition and ICLabel for automatic artifact classification.",
+            ),
+        )
+        conn.commit()
+
+    yield db_path
+
+    # Cleanup
+    if db_path.exists():
+        db_path.unlink()
 
 
 class TestEEGLabConfig:
@@ -81,12 +161,30 @@ class TestEEGLabTools:
         assert "EEGLab" in prompt or "EEGLAB" in prompt
         assert "search_eeglab" in prompt.lower()
 
-    def test_tool_count(self, mock_model):
-        """Test that assistant has expected number of tools."""
+    def test_has_minimum_required_tools(self, mock_model):
+        """Test that assistant has all required tools."""
         assistant = registry.create_assistant("eeglab", model=mock_model)
-        # Standard tools: retrieve_docs, search_discussions, list_recent, search_papers
-        # Plugin tools: search_docstrings, search_faqs
-        assert len(assistant.tools) == 6
+        tool_names = {t.name for t in assistant.tools}
+
+        # Verify required standard tools
+        required_standard = {
+            "retrieve_eeglab_docs",
+            "search_eeglab_discussions",
+            "list_eeglab_recent",
+            "search_eeglab_papers",
+        }
+        assert required_standard.issubset(tool_names), (
+            f"Missing standard tools: {required_standard - tool_names}"
+        )
+
+        # Verify required plugin tools
+        required_plugins = {
+            "search_eeglab_docstrings",
+            "search_eeglab_faqs",
+        }
+        assert required_plugins.issubset(tool_names), (
+            f"Missing plugin tools: {required_plugins - tool_names}"
+        )
 
 
 class TestEEGLabRealQuestions:
@@ -125,10 +223,6 @@ class TestEEGLabRealQuestions:
 class TestToolImplementations:
     """Test individual tool implementations."""
 
-    @pytest.mark.skipif(
-        not registry.get("eeglab"),
-        reason="EEGLab config not found",
-    )
     def test_docstring_tool_handles_empty_db(self):
         """Test docstring tool with empty database."""
         from src.assistants.eeglab.tools import search_eeglab_docstrings
@@ -140,12 +234,32 @@ class TestToolImplementations:
         # Should return helpful error message when DB doesn't exist
         result = search_eeglab_docstrings.invoke({"query": "pop_loadset"})
         assert isinstance(result, str)
-        assert "not initialized" in result.lower() or "no" in result.lower()
+        assert "not initialized" in result.lower()
 
-    @pytest.mark.skipif(
-        not registry.get("eeglab"),
-        reason="EEGLab config not found",
-    )
+    def test_docstring_tool_with_populated_db(self, _populated_test_db):
+        """Test docstring search returns and formats results correctly."""
+        from src.assistants.eeglab.tools import search_eeglab_docstrings
+
+        result = search_eeglab_docstrings.invoke({"query": "pop_loadset"})
+
+        # Verify no AttributeError (was the critical bug)
+        assert isinstance(result, str)
+        assert "Found" in result
+        assert "pop_loadset" in result
+        # Verify it uses correct SearchResult attributes
+        assert "Language:" in result
+        assert "matlab" in result
+        assert "View source" in result or "github.com" in result.lower()
+
+    def test_docstring_tool_handles_no_results(self, _populated_test_db):
+        """Test docstring search with query that returns no results."""
+        from src.assistants.eeglab.tools import search_eeglab_docstrings
+
+        result = search_eeglab_docstrings.invoke({"query": "nonexistent_function_xyz"})
+
+        assert isinstance(result, str)
+        assert "No function documentation found" in result
+
     def test_faq_tool_handles_empty_db(self):
         """Test FAQ tool with empty database."""
         from src.assistants.eeglab.tools import search_eeglab_faqs
@@ -157,7 +271,31 @@ class TestToolImplementations:
         # Should return helpful error message when DB doesn't exist
         result = search_eeglab_faqs.invoke({"query": "artifact removal"})
         assert isinstance(result, str)
-        assert "not initialized" in result.lower() or "no" in result.lower()
+        assert "not initialized" in result.lower()
+
+    def test_faq_tool_with_populated_db(self, _populated_test_db):
+        """Test FAQ search returns and formats results correctly."""
+        from src.assistants.eeglab.tools import search_eeglab_faqs
+
+        result = search_eeglab_faqs.invoke({"query": "artifacts"})
+
+        # Verify correct formatting
+        assert isinstance(result, str)
+        assert "Found" in result
+        assert "How do I remove artifacts?" in result
+        assert "Category:" in result
+        assert "Quality:" in result
+        assert "Tags:" in result
+        assert "View thread" in result
+
+    def test_faq_tool_handles_no_results(self, _populated_test_db):
+        """Test FAQ search with query that returns no results."""
+        from src.assistants.eeglab.tools import search_eeglab_faqs
+
+        result = search_eeglab_faqs.invoke({"query": "nonexistent_topic_xyz"})
+
+        assert isinstance(result, str)
+        assert "No FAQ entries found" in result
 
     def test_plugin_tools_have_descriptions(self):
         """Test that plugin tools have comprehensive descriptions."""

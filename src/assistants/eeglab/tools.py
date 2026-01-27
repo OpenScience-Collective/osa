@@ -28,13 +28,14 @@ def search_eeglab_docstrings(
 
     Example:
         >>> search_eeglab_docstrings("pop_loadset")
-        Found 1 functions:
-        **1. pop_loadset** (matlab)
-        File: functions/popfunc/pop_loadset.m
-        ```matlab
-        function [EEG, com] = pop_loadset(filename, filepath)
-        ```
-        Load an EEGLAB dataset file...
+        Found 1 function(s):
+
+        **1. pop_loadset (function) - functions/popfunc/pop_loadset.m**
+        Language: matlab
+        [View source](https://github.com/sccn/eeglab/blob/main/functions/popfunc/pop_loadset.m#L1)
+
+        Load an EEGLAB dataset file. POP_LOADSET is used to load or import
+        EEGLAB datasets...
     """
     from src.knowledge.db import get_db_path
     from src.knowledge.search import search_docstrings
@@ -44,7 +45,12 @@ def search_eeglab_docstrings(
     # Check if database exists
     db_path = get_db_path(community_id)
     if not db_path.exists():
-        return f"Database not initialized. Run: osa sync docstrings --community {community_id}"
+        return (
+            f"Knowledge base not initialized for {community_id}.\n\n"
+            f"To populate function documentation:\n"
+            f"  osa sync docstrings --community {community_id}\n\n"
+            f"Contact your administrator if you don't have sync permissions."
+        )
 
     # Search docstrings table
     results = search_docstrings(
@@ -58,14 +64,13 @@ def search_eeglab_docstrings(
         return f"No function documentation found for: {query}"
 
     # Format results
-    lines = [f"Found {len(results)} functions:\n"]
+    lines = [f"Found {len(results)} function(s):\n"]
     for i, result in enumerate(results, 1):
-        lines.append(f"**{i}. {result.name}** ({result.language})")
-        lines.append(f"File: {result.file_path}")
-        if result.signature:
-            lines.append(f"```{result.language}\n{result.signature}\n```")
-        lines.append(f"{result.docstring[:300]}...")
-        lines.append("")
+        # SearchResult has: title, url, snippet, source (language), item_type, status, created_at
+        lines.append(f"**{i}. {result.title}**")
+        lines.append(f"Language: {result.source}")
+        lines.append(f"[View source]({result.url})")
+        lines.append(f"\n{result.snippet}\n")
 
     return "\n".join(lines)
 
@@ -76,11 +81,11 @@ def search_eeglab_faqs(
     category: str | None = None,
     limit: int = 5,
 ) -> str:
-    """Search FAQ from EEGLab mailing list history (2004-2026).
+    """Search FAQ from EEGLab mailing list history (since 2004).
 
-    Search 22 years of mailing list discussions to find solutions to common problems
-    and learn from past Q&A. The FAQ database is generated from community discussions
-    using LLM summarization.
+    Search over 20 years of mailing list discussions to find solutions to common
+    problems and learn from past Q&A. The FAQ database is generated from community
+    discussions using LLM summarization.
 
     Args:
         query: Search query (topic or question)
@@ -109,7 +114,13 @@ def search_eeglab_faqs(
     # Check if database exists
     db_path = get_db_path(community_id)
     if not db_path.exists():
-        return f"FAQ database not initialized. Run: osa sync mailman && osa sync faq --community {community_id}"
+        return (
+            f"Knowledge base not initialized for {community_id}.\n\n"
+            f"To populate FAQ database:\n"
+            f"  Step 1: osa sync mailman --community {community_id}\n"
+            f"  Step 2: osa sync faq --community {community_id}\n\n"
+            f"Contact your administrator if you don't have sync permissions."
+        )
 
     # Search FAQ entries
     results = search_faq_entries(

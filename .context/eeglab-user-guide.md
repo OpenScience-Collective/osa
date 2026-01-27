@@ -5,7 +5,7 @@
 The EEGLab Assistant helps EEG researchers with:
 - Finding function documentation (MATLAB/Python)
 - Troubleshooting common issues
-- Learning from 22 years of community discussions (2004-2026)
+- Learning from over 20 years of community discussions (since 2004)
 - Accessing tutorials and guides
 - Tracking development activity
 
@@ -28,7 +28,7 @@ The EEGLab Assistant helps EEG researchers with:
 ### Community Knowledge
 
 **search_eeglab_faqs**
-- Search 22 years of mailing list Q&A (2004-2026)
+- Search mailing list Q&A (archives since 2004)
 - Example: "Artifact removal best practices"
 - Returns: Question, answer summary, category, quality score, thread link
 - Useful for: Finding solutions to common problems, learning from past discussions
@@ -108,7 +108,7 @@ The EEGLab Assistant helps EEG researchers with:
 - Synced from sccn/eeglab, sccn/ICLabel, and other repos
 
 ### FAQ Database (search_eeglab_faqs)
-- Generated from EEGLAB mailing list archives (2004-2026)
+- Generated from EEGLAB mailing list archives (since 2004)
 - Uses LLM to summarize threads into Q&A format
 - Quality-scored to surface best answers
 - Links back to original threads

@@ -135,8 +135,8 @@ osa sync github --community eeglab --repo sccn/eeglab
 ```bash
 # Sync from local clones (faster, recommended)
 osa sync docstrings --community eeglab \
-  --repo ~/git/eeglab \
-  --repo ~/git/ICLabel
+  --repo /path/to/eeglab \
+  --repo /path/to/ICLabel
 
 # Sync from GitHub (slower, network intensive)
 osa sync docstrings --community eeglab
@@ -271,10 +271,12 @@ ORDER BY quality_score DESC
 LIMIT 5;
 ```
 
-**Expected performance:**
+**Expected performance (based on ~1000 FAQ entries, ~500 docstrings, local database, warm cache):**
 - FAQ search: < 100ms
 - Docstring search: < 100ms
 - Full-text search: < 200ms
+
+**Note:** First query after database connection may be slower due to cold cache. Performance degrades linearly with database size (10,000+ entries may take 300-500ms).
 
 ### API Response Times
 
