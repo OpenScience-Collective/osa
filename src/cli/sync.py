@@ -602,3 +602,150 @@ def sync_search(
                 console.print(f"    [dim]{r.url}[/dim]")
         else:
             console.print("  [dim]No results[/dim]")
+
+
+@sync_app.command("mailman")
+def sync_mailman(
+    community: Annotated[
+        str,
+        typer.Option("--community", "-c", help="Community ID to sync (e.g., eeglab, hed)"),
+    ] = "eeglab",
+    list_name: Annotated[
+        str | None,
+        typer.Option("--list", help="Specific mailing list to sync"),
+    ] = None,
+    start_year: Annotated[
+        int | None,
+        typer.Option("--start-year", help="Earliest year to sync"),
+    ] = None,
+    end_year: Annotated[
+        int | None,
+        typer.Option("--end-year", help="Latest year to sync"),
+    ] = None,
+) -> None:
+    """Sync mailing list messages from Mailman archives."""
+    _require_admin()
+    _validate_community(community)
+
+    if not _safe_init_db(community):
+        raise typer.Exit(1)
+
+    # Get mailing list config from community
+    info = registry.get(community)
+    if not info or not info.community_config.mailman:
+        console.print(f"[red]Error: No mailing list configured for {community}[/red]")
+        raise typer.Exit(1)
+
+    from src.knowledge.mailman_sync import sync_mailing_list
+
+    # Sync each configured mailing list
+    for mailman_config in info.community_config.mailman:
+        # Skip if specific list requested and this isn't it
+        if list_name and mailman_config.list_name != list_name:
+            continue
+
+        results = sync_mailing_list(
+            list_name=mailman_config.list_name,
+            base_url=str(mailman_config.base_url),
+            project=community,
+            start_year=start_year or mailman_config.start_year,
+            end_year=end_year,
+        )
+
+        # Show summary table
+        if results:
+            table = Table(title=f"Mailman Sync Results ({mailman_config.list_name})")
+            table.add_column("Year", style="cyan", justify="right")
+            table.add_column("Messages", style="green", justify="right")
+
+            for year in sorted(results.keys()):
+                table.add_row(str(year), str(results[year]))
+
+            total = sum(results.values())
+            table.add_row("[bold]Total[/bold]", f"[bold]{total}[/bold]")
+            console.print(table)
+
+
+@sync_app.command("faq")
+def sync_faq(
+    community: Annotated[
+        str,
+        typer.Option("--community", "-c", help="Community ID to sync (e.g., eeglab, hed)"),
+    ] = "eeglab",
+    estimate_only: Annotated[
+        bool,
+        typer.Option("--estimate", help="Estimate cost without summarizing"),
+    ] = False,
+    quality_threshold: Annotated[
+        float,
+        typer.Option("--quality", help="Minimum quality score (0.0-1.0)"),
+    ] = 0.6,
+    max_threads: Annotated[
+        int | None,
+        typer.Option("--max", help="Maximum threads to process"),
+    ] = None,
+) -> None:
+    """Generate FAQ summaries from mailing list threads using LLM."""
+    _require_admin()
+    _validate_community(community)
+
+    if not _safe_init_db(community):
+        raise typer.Exit(1)
+
+    # Get mailing list config
+    info = registry.get(community)
+    if not info or not info.community_config.mailman:
+        console.print(f"[red]Error: No mailing list configured for {community}[/red]")
+        raise typer.Exit(1)
+
+    from src.knowledge.faq_summarizer import estimate_summarization_cost, summarize_threads
+
+    list_names = [m.list_name for m in info.community_config.mailman]
+
+    for list_name in list_names:
+        if estimate_only:
+            console.print(f"\n[bold]Estimating cost for {list_name}...[/bold]")
+            estimate = estimate_summarization_cost(list_name, project=community)
+
+            table = Table(title="Cost Estimation")
+            table.add_column("Metric", style="cyan")
+            table.add_column("Value", style="green", justify="right")
+
+            table.add_row("Thread count", str(estimate["thread_count"]))
+            table.add_row("Est. input tokens", f"{estimate['estimated_input_tokens']:,}")
+            table.add_row("Est. output tokens", f"{estimate['estimated_output_tokens']:,}")
+            table.add_row("Haiku cost", f"${estimate['haiku_cost']:.2f}")
+            table.add_row("Sonnet cost", f"${estimate['sonnet_cost']:.2f}")
+            table.add_row("Hybrid cost (recommended)", f"${estimate['hybrid_cost']:.2f}")
+
+            console.print(table)
+        else:
+            # Confirm before proceeding
+            if max_threads is None:
+                console.print(
+                    "[yellow]Warning: Running without --max will process ALL threads.[/yellow]"
+                )
+                console.print("[yellow]This may incur significant LLM costs.[/yellow]")
+                confirm = typer.confirm("Continue?")
+                if not confirm:
+                    console.print("[dim]Cancelled.[/dim]")
+                    return
+
+            result = summarize_threads(
+                list_name=list_name,
+                project=community,
+                quality_threshold=quality_threshold,
+                max_threads=max_threads,
+            )
+
+            # Show results table
+            table = Table(title=f"FAQ Summarization Results ({list_name})")
+            table.add_column("Metric", style="cyan")
+            table.add_column("Value", style="green", justify="right")
+
+            table.add_row("Processed", str(result["processed"]))
+            table.add_row("Summarized", str(result["summarized"]))
+            table.add_row("Skipped", str(result["skipped"]))
+            table.add_row("Estimated cost", f"${result['total_cost']:.2f}")
+
+            console.print(table)

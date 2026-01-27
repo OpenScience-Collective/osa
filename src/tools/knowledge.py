@@ -312,6 +312,83 @@ def create_search_docstrings_tool(
     )
 
 
+def create_search_faq_tool(
+    community_id: str,
+    community_name: str,
+    list_names: list[str] | None = None,
+) -> BaseTool:
+    """Create a tool for searching FAQ entries from mailing lists.
+
+    Args:
+        community_id: The community identifier (e.g., 'eeglab', 'hed')
+        community_name: Display name (e.g., 'EEGLAB', 'HED')
+        list_names: Optional list of mailing list names for help text
+
+    Returns:
+        A LangChain tool for searching FAQ entries
+    """
+    list_help = ""
+    if list_names:
+        list_str = ", ".join(list_names)
+        list_help = f" Sources: {list_str} mailing list archives."
+
+    def search_faq_impl(
+        query: str,
+        category: str | None = None,
+        limit: int = 5,
+    ) -> str:
+        """Search FAQ entries implementation."""
+        if not _check_db_exists(community_id):
+            return (
+                f"FAQ database for {community_name} not initialized. "
+                "Run 'osa sync mailman' and 'osa sync faq' to populate it."
+            )
+
+        from src.knowledge.search import search_faq_entries
+
+        results = search_faq_entries(
+            query=query,
+            project=community_id,
+            limit=limit,
+            category=category,
+        )
+
+        if not results:
+            cat_str = f" (category: {category})" if category else ""
+            return f"No FAQ entries found for '{query}'{cat_str}."
+
+        lines = [f"Found {len(results)} FAQ entries:\n"]
+        for i, result in enumerate(results, 1):
+            lines.append(f"**{i}. {result.question}**")
+            lines.append(
+                f"Category: {result.category} | Quality: {result.quality_score:.1f}/1.0 | "
+                f"Messages: {result.message_count}"
+            )
+            if result.tags:
+                lines.append(f"Tags: {', '.join(result.tags)}")
+
+            # Truncate answer if too long
+            answer = result.answer
+            if len(answer) > 500:
+                answer = answer[:500] + "..."
+            lines.append(f"\n{answer}\n")
+            lines.append(f"[View full thread]({result.thread_url})\n")
+
+        return "\n".join(lines)
+
+    description = (
+        f"Search {community_name} mailing list FAQ entries for answered questions. "
+        "**Use this for:** Finding solutions to common problems, learning from past discussions. "
+        f"Returns: question, answer summary, category, quality score, link to original thread.{list_help}"
+    )
+
+    return StructuredTool.from_function(
+        func=search_faq_impl,
+        name=f"search_{community_id}_faq",
+        description=description,
+    )
+
+
 def create_knowledge_tools(
     community_id: str,
     community_name: str,
@@ -321,6 +398,8 @@ def create_knowledge_tools(
     include_papers: bool = True,
     include_docstrings: bool = False,
     docstrings_language: str | None = None,
+    include_faq: bool = False,
+    faq_list_names: list[str] | None = None,
 ) -> list[BaseTool]:
     """Create all knowledge discovery tools for a community.
 
@@ -336,6 +415,8 @@ def create_knowledge_tools(
         include_papers: Include paper search tool (default: True)
         include_docstrings: Include code docstring search tool (default: False)
         docstrings_language: Filter docstrings by language ('matlab' or 'python')
+        include_faq: Include mailing list FAQ search tool (default: False)
+        faq_list_names: List of mailing list names for FAQ help text
 
     Returns:
         List of LangChain tools for the community
@@ -355,5 +436,8 @@ def create_knowledge_tools(
         tools.append(
             create_search_docstrings_tool(community_id, community_name, docstrings_language)
         )
+
+    if include_faq:
+        tools.append(create_search_faq_tool(community_id, community_name, faq_list_names))
 
     return tools

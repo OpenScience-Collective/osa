@@ -326,3 +326,10 @@ citations:
     - "10.1016/j.jneumeth.2003.10.009"  # EEGLAB: an open source toolbox (Delorme & Makeig, 2004)
     - "10.1016/j.neuroimage.2019.05.026"  # ICLabel: automated EEG IC classification (Pion-Tonachini et al., 2019)
     - "10.3389/fninf.2015.00016"  # PREP: standardized preprocessing (Bigdely-Shamlo et al., 2015)
+
+# Mailing list configuration for FAQ generation
+mailman:
+  - list_name: eeglablist
+    base_url: https://sccn.ucsd.edu/pipermail/eeglablist/
+    display_name: EEGLAB Mailing List
+    start_year: 2004

@@ -241,6 +241,24 @@ class DiscourseConfig(BaseModel):
     """Tags to filter forum topics by."""
 
 
+class MailmanConfig(BaseModel):
+    """Mailing list configuration for FAQ generation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    list_name: str
+    """Mailing list identifier (e.g., 'eeglablist')."""
+
+    base_url: HttpUrl
+    """Base URL to pipermail archive."""
+
+    display_name: str | None = None
+    """Human-readable name."""
+
+    start_year: int | None = None
+    """Earliest year to sync (default: all available)."""
+
+
 class PythonPlugin(BaseModel):
     """Python plugin extension configuration."""
 
@@ -409,6 +427,9 @@ class CommunityConfig(BaseModel):
 
     discourse: list[DiscourseConfig] = Field(default_factory=list)
     """Discourse forum configurations (Phase 2)."""
+
+    mailman: list[MailmanConfig] = Field(default_factory=list)
+    """Mailing list configurations for FAQ generation."""
 
     extensions: ExtensionsConfig | None = None
     """Extension points for specialized tools."""
