@@ -1951,6 +1951,10 @@
     messages.push({ role: 'assistant', content: '' });
     const messageIndex = messages.length - 1;
 
+    // Hide loading indicator immediately when streaming starts
+    isLoading = false;
+    renderMessages(container);
+
     try {
       while (true) {
         // Check for stream timeout
