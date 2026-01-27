@@ -156,13 +156,7 @@ documentation:
     category: quickstart
     description: How to work with multiple datasets in EEGLAB.
 
-  # === ON-DEMAND: Setup (2 docs) ===
-  - title: Installation and updates
-    url: https://sccn.github.io/tutorials/01_Install/Install.html
-    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/01_Install/Install.md
-    category: setup
-    description: Detailed installation instructions and update procedures.
-
+  # === ON-DEMAND: Setup (1 doc) ===
   - title: EEGLAB extensions
     url: https://sccn.github.io/tutorials/01_Install/Using_EEGLAB_extensions.html
     source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/01_Install/Using_EEGLAB_extensions.md

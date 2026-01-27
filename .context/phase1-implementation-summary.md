@@ -11,7 +11,7 @@
 Created `src/assistants/eeglab/config.yaml` with:
 - Community metadata (id, name, description, status)
 - Custom system prompt with EEG-specific guidance
-- Comprehensive documentation registry (25 sources)
+- Comprehensive documentation registry (26 sources)
 - GitHub repository configuration (6 repos)
 - Citation tracking (3 DOIs + 6 queries)
 
@@ -22,13 +22,13 @@ src/assistants/eeglab/
 └── config.yaml          # Complete configuration (500+ lines)
 ```
 
-### 3. Documentation Sources (25 Total)
+### 3. Documentation Sources (26 Total)
 **Preloaded (2 docs):**
 - EEGLAB quickstart
 - Dataset management
 
-**On-Demand (23 docs by category):**
-- Setup (2): Installation, Extensions
+**On-Demand (24 docs by category):**
+- Setup (1): Extensions
 - Data Import (3): Continuous data, Events, Channel locations
 - Preprocessing (4): Filtering, Re-referencing, Resampling, Artifact rejection
 - ICA and Artifacts (4): ICA, ICLabel, clean_rawdata, Manual scrolling
@@ -49,7 +49,7 @@ src/assistants/eeglab/
 ### 5. Academic Papers (3 Core DOIs)
 - `10.1016/j.jneumeth.2003.10.009` - EEGLAB (Delorme & Makeig, 2004)
 - `10.1016/j.neuroimage.2019.05.026` - ICLabel (Pion-Tonachini et al., 2019)
-- `10.3389/ffinf.2015.00016` - PREP pipeline (Bigdely-Shamlo et al., 2015)
+- `10.3389/fninf.2015.00016` - PREP pipeline (Bigdely-Shamlo et al., 2015)
 
 ### 6. Citation Queries (6)
 - EEGLAB tutorial
@@ -144,8 +144,8 @@ uv run python -m pytest tests/test_assistants/test_eeglab_config.py --cov=src/as
 ## Files Created
 
 - `src/assistants/eeglab/__init__.py` (3 lines)
-- `src/assistants/eeglab/config.yaml` (504 lines)
-- `tests/test_assistants/test_eeglab_config.py` (445 lines)
+- `src/assistants/eeglab/config.yaml` (340 lines)
+- `tests/test_assistants/test_eeglab_config.py` (317 lines, simplified from 449)
 - `.context/phase1-implementation-summary.md` (this file)
 
 ## Next Steps
