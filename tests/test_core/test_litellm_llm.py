@@ -1,4 +1,31 @@
-"""Tests for LiteLLM integration and caching functionality."""
+"""Tests for LiteLLM integration and caching functionality.
+
+Testing Approach:
+-----------------
+This test suite uses a two-tier testing strategy to balance the NO MOCKS policy
+with practical test requirements:
+
+1. **Unit Tests (FakeListChatModel)**: Test CachingLLMWrapper's internal mechanics
+   - Message transformation logic (_add_cache_control)
+   - Input validation and error handling
+   - Wrapper initialization and double-wrapping prevention
+
+   These tests use FakeListChatModel (a LangChain test utility) because they're
+   testing the WRAPPER's logic, not LLM behavior. The wrapper mechanics are
+   deterministic and don't require real API calls.
+
+2. **Integration Tests (Real API)**: Test actual LLM behavior with caching
+   - Real Anthropic API calls with @pytest.mark.llm marker
+   - Tool binding with actual models
+   - Streaming responses with cache_control
+
+   These tests verify the wrapper works correctly with real LLMs and that
+   cache_control parameters are properly transmitted.
+
+This separation allows fast unit tests for wrapper logic while ensuring real
+LLM integration is thoroughly tested. The FakeListChatModel is NOT used to
+test LLM responses or behavior - only wrapper mechanics.
+"""
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
