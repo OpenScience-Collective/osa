@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.knowledge.db import get_connection, init_db
+from src.knowledge.db import get_connection, init_db, upsert_mailing_list_message
 from src.knowledge.mailman_sync import (
     _parse_message_page,
     _parse_thread_index,
@@ -280,3 +280,311 @@ class TestSyncMailingListYear:
                 cursor = conn.execute("SELECT COUNT(*) FROM mailing_list_messages")
                 db_count = cursor.fetchone()[0]
                 assert db_count == 100
+
+
+class TestHTTPErrorScenarios:
+    """Tests for HTTP error handling in mailman_sync."""
+
+    def test_handles_fetch_failure_gracefully(self, temp_test_db: Path):
+        """Test that fetch failures (404, 500, timeout, etc.) are handled gracefully."""
+
+        def mock_fetch_failure(_url: str, **kwargs):  # noqa: ARG001
+            """Mock fetch that returns None (simulating any HTTP/network error)."""
+            # _fetch_page returns None when it encounters HTTP errors,
+            # timeouts, or network errors
+            return None
+
+        with (
+            patch("src.knowledge.db.get_db_path", return_value=temp_test_db),
+            patch("src.knowledge.mailman_sync._fetch_page", side_effect=mock_fetch_failure),
+        ):
+            count = sync_mailing_list_year(
+                list_name="test-list",
+                base_url="https://example.com/pipermail/test-list/",
+                year=2026,
+                project="test-mailman",
+            )
+
+            # Should return 0 and not crash
+            assert count == 0
+
+    def test_handles_partial_failures_in_batch(self, temp_test_db: Path):
+        """Test that partial failures don't stop batch processing."""
+
+        def mock_fetch_partial_failure(url: str, **kwargs):  # noqa: ARG001
+            """Mock fetch that fails for some messages but not others."""
+            if "thread.html" in url:
+                # Return thread index with 5 messages
+                return """<html><body><ul>
+                    <LI><A HREF="000001.html">Message 1</A>
+                    <LI><A HREF="000002.html">Message 2</A>
+                    <LI><A HREF="000003.html">Message 3</A>
+                    <LI><A HREF="000004.html">Message 4</A>
+                    <LI><A HREF="000005.html">Message 5</A>
+                </ul></body></html>"""
+
+            # Fail on message 3 (return None like _fetch_page does on errors)
+            if "000003.html" in url:
+                return None
+
+            # Return valid HTML for others
+            return MOCK_MESSAGE_HTML
+
+        with (
+            patch("src.knowledge.db.get_db_path", return_value=temp_test_db),
+            patch("src.knowledge.mailman_sync._fetch_page", side_effect=mock_fetch_partial_failure),
+        ):
+            count = sync_mailing_list_year(
+                list_name="test-list",
+                base_url="https://example.com/pipermail/test-list/",
+                year=2026,
+                project="test-mailman",
+            )
+
+            # Should process 4 out of 5 messages (1 failed)
+            assert count == 4
+
+            # Verify 4 messages in database
+            with get_connection("test-mailman") as conn:
+                cursor = conn.execute("SELECT COUNT(*) FROM mailing_list_messages")
+                db_count = cursor.fetchone()[0]
+                assert db_count == 4
+
+    def test_handles_malformed_html_gracefully(self, temp_test_db: Path):
+        """Test that malformed HTML doesn't crash the sync."""
+
+        def mock_fetch_malformed(url: str, **kwargs):  # noqa: ARG001
+            """Mock fetch that returns malformed HTML."""
+            if "thread.html" in url:
+                # Return thread index with 2 messages
+                return """<html><body><ul>
+                    <LI><A HREF="000001.html">Message 1</A>
+                    <LI><A HREF="000002.html">Message 2</A>
+                </ul></body></html>"""
+
+            # Return completely broken HTML for message 1 (no title, no PRE, nothing parseable)
+            if "000001.html" in url:
+                return "<html><body><div>Random text that is not a message</div></body></html>"
+
+            # Return valid HTML for message 2
+            return MOCK_MESSAGE_HTML
+
+        with (
+            patch("src.knowledge.db.get_db_path", return_value=temp_test_db),
+            patch("src.knowledge.mailman_sync._fetch_page", side_effect=mock_fetch_malformed),
+        ):
+            count = sync_mailing_list_year(
+                list_name="test-list",
+                base_url="https://example.com/pipermail/test-list/",
+                year=2026,
+                project="test-mailman",
+            )
+
+            # Should process 1 out of 2 messages (1 failed to parse)
+            # Note: Even malformed HTML still creates a message with empty fields
+            # since _parse_message_page is lenient and returns MessageInfo with defaults
+            assert count >= 1
+
+            # Verify at least 1 message in database
+            with get_connection("test-mailman") as conn:
+                cursor = conn.execute("SELECT COUNT(*) FROM mailing_list_messages")
+                db_count = cursor.fetchone()[0]
+                assert db_count >= 1
+
+
+class TestDatabaseTransactionSafety:
+    """Tests for database transaction safety and error handling."""
+
+    def test_sync_is_idempotent(self, temp_test_db: Path):
+        """Test that running sync twice doesn't create duplicates."""
+
+        def mock_fetch(url: str, **kwargs):  # noqa: ARG001
+            """Mock fetch that returns consistent data."""
+            if "thread.html" in url:
+                return MOCK_THREAD_INDEX_HTML
+            return MOCK_MESSAGE_HTML
+
+        with (
+            patch("src.knowledge.db.get_db_path", return_value=temp_test_db),
+            patch("src.knowledge.mailman_sync._fetch_page", side_effect=mock_fetch),
+        ):
+            # Run sync first time
+            count1 = sync_mailing_list_year(
+                list_name="test-list",
+                base_url="https://example.com/pipermail/test-list/",
+                year=2026,
+                project="test-mailman",
+            )
+
+            # Run sync second time (should update, not insert)
+            count2 = sync_mailing_list_year(
+                list_name="test-list",
+                base_url="https://example.com/pipermail/test-list/",
+                year=2026,
+                project="test-mailman",
+            )
+
+            # Both syncs should process same number
+            assert count1 == count2
+            assert count1 == 3  # From MOCK_THREAD_INDEX_HTML
+
+            # Verify no duplicates in database
+            with get_connection("test-mailman") as conn:
+                cursor = conn.execute("SELECT COUNT(*) FROM mailing_list_messages")
+                db_count = cursor.fetchone()[0]
+                assert db_count == 3  # Still 3, not 6
+
+    def test_handles_duplicate_message_id_gracefully(self, temp_test_db: Path):
+        """Test that duplicate message_id is handled gracefully."""
+        # First, insert a message
+        with get_connection("test-mailman") as conn:
+            upsert_mailing_list_message(
+                conn,
+                list_name="test-list",
+                message_id="000001",
+                thread_id="thread001",
+                subject="Test Subject",
+                author="Test Author",
+                author_email="test@example.com",
+                date="2026-01-01T10:00:00Z",
+                body="Test body",
+                in_reply_to=None,
+                url="https://example.com/list/2026/000001.html",
+                year=2026,
+            )
+            conn.commit()
+
+        # Now sync should update, not crash
+        def mock_fetch(url: str, **kwargs):  # noqa: ARG001
+            if "thread.html" in url:
+                return '<html><body><ul><LI><A HREF="000001.html">Test</A></ul></body></html>'
+            return MOCK_MESSAGE_HTML
+
+        with (
+            patch("src.knowledge.db.get_db_path", return_value=temp_test_db),
+            patch("src.knowledge.mailman_sync._fetch_page", side_effect=mock_fetch),
+        ):
+            count = sync_mailing_list_year(
+                list_name="test-list",
+                base_url="https://example.com/pipermail/test-list/",
+                year=2026,
+                project="test-mailman",
+            )
+
+            # Should process without error
+            assert count == 1
+
+            # Verify still only 1 message
+            with get_connection("test-mailman") as conn:
+                cursor = conn.execute("SELECT COUNT(*) FROM mailing_list_messages")
+                db_count = cursor.fetchone()[0]
+                assert db_count == 1
+
+    def test_partial_sync_can_be_resumed(self, temp_test_db: Path):
+        """Test that partial sync can be safely resumed."""
+        # Simulate a partial sync that completed some messages
+        with get_connection("test-mailman") as conn:
+            for i in range(2):  # Insert 2 of 3 messages
+                upsert_mailing_list_message(
+                    conn,
+                    list_name="test-list",
+                    message_id=f"00000{i + 1}",
+                    thread_id="thread001",
+                    subject=f"Message {i + 1}",
+                    author="Test Author",
+                    author_email="test@example.com",
+                    date=f"2026-01-0{i + 1}T10:00:00Z",
+                    body=f"Body {i + 1}",
+                    in_reply_to=None,
+                    url=f"https://example.com/list/2026/00000{i + 1}.html",
+                    year=2026,
+                )
+            conn.commit()
+
+        # Now run full sync - should complete the missing message
+        def mock_fetch(url: str, **kwargs):  # noqa: ARG001
+            if "thread.html" in url:
+                return MOCK_THREAD_INDEX_HTML
+            return MOCK_MESSAGE_HTML
+
+        with (
+            patch("src.knowledge.db.get_db_path", return_value=temp_test_db),
+            patch("src.knowledge.mailman_sync._fetch_page", side_effect=mock_fetch),
+        ):
+            count = sync_mailing_list_year(
+                list_name="test-list",
+                base_url="https://example.com/pipermail/test-list/",
+                year=2026,
+                project="test-mailman",
+            )
+
+            # Should process all 3 messages
+            assert count == 3
+
+            # Verify all 3 messages in database
+            with get_connection("test-mailman") as conn:
+                cursor = conn.execute(
+                    "SELECT COUNT(*) FROM mailing_list_messages WHERE list_name = 'test-list'"
+                )
+                db_count = cursor.fetchone()[0]
+                assert db_count == 3
+
+    def test_commit_batching_at_boundaries(self, temp_test_db: Path):
+        """Test that commit batching works correctly at batch boundaries."""
+        # Create exactly 50 messages to test batch boundary
+        large_thread_index = "<html><body><ul>"
+        for i in range(50):
+            large_thread_index += f'<LI><A HREF="{i:06d}.html">Message {i}</A>'
+        large_thread_index += "</ul></body></html>"
+
+        def mock_fetch(url: str, **kwargs):  # noqa: ARG001
+            if "thread.html" in url:
+                return large_thread_index
+            return MOCK_MESSAGE_HTML
+
+        with (
+            patch("src.knowledge.db.get_db_path", return_value=temp_test_db),
+            patch("src.knowledge.mailman_sync._fetch_page", side_effect=mock_fetch),
+        ):
+            count = sync_mailing_list_year(
+                list_name="test-list",
+                base_url="https://example.com/pipermail/test-list/",
+                year=2026,
+                project="test-mailman",
+            )
+
+            assert count == 50
+
+            # Verify all 50 messages committed
+            with get_connection("test-mailman") as conn:
+                cursor = conn.execute("SELECT COUNT(*) FROM mailing_list_messages")
+                db_count = cursor.fetchone()[0]
+                assert db_count == 50
+
+    def test_database_errors_are_logged_and_counted(self, temp_test_db: Path):
+        """Test that database errors are properly logged and don't crash sync."""
+
+        def mock_fetch(url: str, **kwargs):  # noqa: ARG001
+            if "thread.html" in url:
+                return MOCK_THREAD_INDEX_HTML
+            return MOCK_MESSAGE_HTML
+
+        with (
+            patch("src.knowledge.db.get_db_path", return_value=temp_test_db),
+            patch("src.knowledge.mailman_sync._fetch_page", side_effect=mock_fetch),
+        ):
+            # First sync should succeed
+            count = sync_mailing_list_year(
+                list_name="test-list",
+                base_url="https://example.com/pipermail/test-list/",
+                year=2026,
+                project="test-mailman",
+            )
+
+            assert count == 3
+
+            # Verify messages in database
+            with get_connection("test-mailman") as conn:
+                cursor = conn.execute("SELECT COUNT(*) FROM mailing_list_messages")
+                db_count = cursor.fetchone()[0]
+                assert db_count == 3

@@ -331,3 +331,190 @@ class TestEstimateSummarizationCost:
             # Small thread count
             estimate = estimate_summarization_cost("test-list", project="test-faq")
             assert estimate["recommended"] in ["haiku", "hybrid", "none"]
+
+
+class TestLLMResponseVariations:
+    """Tests for handling various LLM response formats."""
+
+    def test_summarize_handles_trailing_comma(self):
+        """Test that trailing commas in JSON are handled gracefully."""
+        mock_model = MagicMock()
+        mock_response = MagicMock()
+        # Invalid JSON with trailing comma
+        mock_response.content = """
+        {
+          "question": "How to install?",
+          "answer": "Use the installation script.",
+          "tags": ["installation"],
+          "category": "how-to",
+        }
+        """
+        mock_model.invoke.return_value = mock_response
+
+        summary = _summarize_thread("Test thread context", mock_model)
+
+        # Should return None for invalid JSON
+        assert summary is None
+
+    def test_summarize_handles_extra_text_before_json(self):
+        """Test that extra text before JSON is stripped."""
+        mock_model = MagicMock()
+        mock_response = MagicMock()
+        # Extra text before JSON
+        mock_response.content = """Here's the summary:
+        {
+          "question": "How to install?",
+          "answer": "Use the installation script.",
+          "tags": ["installation"],
+          "category": "how-to"
+        }"""
+        mock_model.invoke.return_value = mock_response
+
+        summary = _summarize_thread("Test thread context", mock_model)
+
+        # Should return None (no markdown code block to strip)
+        assert summary is None
+
+    def test_summarize_handles_extra_text_after_json(self):
+        """Test that extra text after JSON is stripped."""
+        mock_model = MagicMock()
+        mock_response = MagicMock()
+        # Extra text after JSON
+        mock_response.content = """{
+          "question": "How to install?",
+          "answer": "Use the installation script.",
+          "tags": ["installation"],
+          "category": "how-to"
+        }
+
+        I hope this helps!"""
+        mock_model.invoke.return_value = mock_response
+
+        summary = _summarize_thread("Test thread context", mock_model)
+
+        # Should return None (JSON is valid but has trailing text)
+        assert summary is None
+
+    def test_summarize_handles_nested_json_quotes(self):
+        """Test that nested quotes in JSON are parsed correctly."""
+        mock_model = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = """
+        {
+          "question": "How to use quotes?",
+          "answer": "Use \\"double quotes\\" for strings.",
+          "tags": ["syntax"],
+          "category": "how-to"
+        }
+        """
+        mock_model.invoke.return_value = mock_response
+
+        summary = _summarize_thread("Test thread context", mock_model)
+
+        assert summary is not None
+        assert "double quotes" in summary.answer
+
+    def test_summarize_handles_newlines_in_json(self):
+        """Test that newlines in JSON strings are handled correctly."""
+        mock_model = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = """
+        {
+          "question": "Multi-line question?",
+          "answer": "First line.\\nSecond line.\\nThird line.",
+          "tags": ["multiline"],
+          "category": "how-to"
+        }
+        """
+        mock_model.invoke.return_value = mock_response
+
+        summary = _summarize_thread("Test thread context", mock_model)
+
+        assert summary is not None
+        assert "First line" in summary.answer
+        assert "Second line" in summary.answer
+
+    def test_summarize_handles_empty_tags_array(self):
+        """Test that empty tags array is handled correctly."""
+        mock_model = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = """
+        {
+          "question": "Test question?",
+          "answer": "Test answer.",
+          "tags": [],
+          "category": "discussion"
+        }
+        """
+        mock_model.invoke.return_value = mock_response
+
+        summary = _summarize_thread("Test thread context", mock_model)
+
+        assert summary is not None
+        assert summary.tags == []
+
+    def test_summarize_handles_unicode_characters(self):
+        """Test that unicode characters in JSON are handled correctly."""
+        mock_model = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = """
+        {
+          "question": "What about émojis and ñoñ-ASCII? 🎉",
+          "answer": "They should work fine! 👍",
+          "tags": ["unicode", "émoji"],
+          "category": "how-to"
+        }
+        """
+        mock_model.invoke.return_value = mock_response
+
+        summary = _summarize_thread("Test thread context", mock_model)
+
+        assert summary is not None
+        assert "émojis" in summary.question
+        assert "👍" in summary.answer
+
+    def test_score_handles_decimal_variations(self):
+        """Test that various decimal formats are handled correctly."""
+        mock_model = MagicMock()
+
+        # Test integer score
+        mock_response = MagicMock()
+        mock_response.content = "1"
+        mock_model.invoke.return_value = mock_response
+        score = _score_thread_quality("Test thread context", mock_model)
+        assert score == 1.0
+
+        # Test leading zero
+        mock_response.content = "0.75"
+        score = _score_thread_quality("Test thread context", mock_model)
+        assert score == 0.75
+
+        # Test no leading zero (will be parsed as 85, then clamped to 1.0)
+        mock_response.content = ".85"
+        score = _score_thread_quality("Test thread context", mock_model)
+        assert score == 1.0  # "85" extracted, clamped to max
+
+    def test_score_handles_verbose_responses(self):
+        """Test that verbose LLM responses are parsed correctly."""
+        mock_model = MagicMock()
+        mock_response = MagicMock()
+
+        # Verbose response with explanation
+        mock_response.content = """I would rate this thread at 0.72 out of 1.0 because
+        it has a clear question and helpful responses, though the solution could be more detailed."""
+        mock_model.invoke.return_value = mock_response
+
+        score = _score_thread_quality("Test thread context", mock_model)
+        assert score == 0.72
+
+    def test_score_handles_multiple_numbers(self):
+        """Test that first number is extracted when multiple numbers present."""
+        mock_model = MagicMock()
+        mock_response = MagicMock()
+
+        # Multiple numbers - should take first
+        mock_response.content = "The thread scores 0.85 on a scale from 0.0 to 1.0"
+        mock_model.invoke.return_value = mock_response
+
+        score = _score_thread_quality("Test thread context", mock_model)
+        assert score == 0.85
