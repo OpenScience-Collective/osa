@@ -11,6 +11,7 @@ import httpx
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
+from src.api.config import get_settings
 from src.knowledge.db import get_connection, update_sync_metadata, upsert_docstring
 from src.knowledge.matlab_parser import parse_matlab_file
 from src.knowledge.python_parser import parse_python_file
@@ -57,6 +58,9 @@ def sync_repo_docstrings(
 
     # Process files and extract docstrings
     total_docstrings = 0
+    failed_files: list[tuple[str, str]] = []
+    uncommitted = 0
+
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -89,13 +93,29 @@ def sync_repo_docstrings(
                             line_number=doc.line_number,
                         )
                         total_docstrings += 1
+                        uncommitted += 1
 
-                    # Commit every 50 files for efficiency
-                    if total_docstrings % 50 == 0:
+                    # Commit every 50 docstrings to avoid large transactions
+                    if uncommitted >= 50:
                         conn.commit()
+                        uncommitted = 0
 
+                except httpx.HTTPStatusError as e:
+                    error_msg = f"HTTP {e.response.status_code}"
+                    logger.error("HTTP error fetching %s: %s", file_path, e)
+                    failed_files.append((file_path, error_msg))
+                except httpx.TimeoutException:
+                    logger.error("Timeout fetching %s", file_path)
+                    failed_files.append((file_path, "Timeout"))
+                except SyntaxError as e:
+                    logger.error("Syntax error in %s: %s", file_path, e)
+                    failed_files.append((file_path, f"Syntax error: {e}"))
+                except UnicodeDecodeError as e:
+                    logger.error("Encoding error in %s: %s", file_path, e)
+                    failed_files.append((file_path, "Invalid encoding"))
                 except Exception as e:
-                    logger.warning("Failed to process %s: %s", file_path, e)
+                    logger.error("Unexpected error processing %s: %s", file_path, e, exc_info=True)
+                    failed_files.append((file_path, f"Error: {type(e).__name__}"))
 
                 progress.update(task, advance=1)
 
@@ -105,12 +125,23 @@ def sync_repo_docstrings(
     # Update sync metadata
     update_sync_metadata("docstrings", f"{repo}:{language}", total_docstrings, project)
 
+    # Report results
     console.print(f"[green]✓ Extracted {total_docstrings} docstrings[/green]")
+
+    if failed_files:
+        console.print(f"\n[yellow]Warning: Failed to process {len(failed_files)} files:[/yellow]")
+        for path, error in failed_files[:10]:  # Show first 10
+            console.print(f"  ✗ {path}: {error}")
+        if len(failed_files) > 10:
+            console.print(f"  ... and {len(failed_files) - 10} more")
+
     return total_docstrings
 
 
 def _get_repo_files(repo: str, branch: str, extension: str) -> list[str]:
     """Get list of files with given extension from repository.
+
+    Uses GitHub API with optional authentication for higher rate limits.
 
     Args:
         repo: Repository in owner/name format
@@ -122,12 +153,39 @@ def _get_repo_files(repo: str, branch: str, extension: str) -> list[str]:
 
     Raises:
         httpx.HTTPStatusError: If API request fails
+        ValueError: If response format is unexpected
     """
-    url = f"{GITHUB_API_BASE}/repos/{repo}/git/trees/{branch}?recursive=1"
-    response = httpx.get(url, timeout=30, follow_redirects=True)
-    response.raise_for_status()
+    settings = get_settings()
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
 
-    tree = response.json()
+    # Optional token for higher rate limits (60 req/hr -> 5000 req/hr)
+    if settings.github_token:
+        headers["Authorization"] = f"Bearer {settings.github_token}"
+        logger.debug("Using GitHub token for authentication")
+
+    url = f"{GITHUB_API_BASE}/repos/{repo}/git/trees/{branch}?recursive=1"
+
+    try:
+        response = httpx.get(url, headers=headers, timeout=30, follow_redirects=True)
+        response.raise_for_status()
+    except httpx.TimeoutException as e:
+        logger.error("Timeout fetching file tree from %s", repo)
+        raise TimeoutError(
+            f"GitHub request timed out after 30 seconds. Repo: {repo}, branch: {branch}"
+        ) from e
+
+    try:
+        tree = response.json()
+    except ValueError as e:
+        logger.error("Invalid JSON from GitHub API for %s: %s", repo, e)
+        raise ValueError(f"GitHub returned invalid response for {repo}") from e
+
+    if "tree" not in tree:
+        logger.error("Unexpected GitHub response format for %s: missing 'tree' key", repo)
+        raise ValueError(f"Unexpected response format from GitHub for {repo}")
 
     # Filter for files with the target extension
     files = [
@@ -152,8 +210,15 @@ def _fetch_file_content(repo: str, branch: str, file_path: str) -> str:
 
     Raises:
         httpx.HTTPStatusError: If request fails
+        TimeoutError: If request times out after 30 seconds
     """
     url = f"{GITHUB_RAW_BASE}/{repo}/{branch}/{file_path}"
-    response = httpx.get(url, timeout=30, follow_redirects=True)
-    response.raise_for_status()
+
+    try:
+        response = httpx.get(url, timeout=30, follow_redirects=True)
+        response.raise_for_status()
+    except httpx.TimeoutException as e:
+        logger.error("Timeout fetching %s from %s", file_path, repo)
+        raise TimeoutError(f"GitHub request timed out after 30 seconds. File: {file_path}") from e
+
     return response.text

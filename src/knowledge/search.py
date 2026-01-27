@@ -114,10 +114,10 @@ def search_github_items(
     status: str | None = None,
     repo: str | None = None,
 ) -> list[SearchResult]:
-    """Search GitHub issues and PRs using FTS5.
+    """Search GitHub issues and PRs using phrase matching.
 
     Args:
-        query: Search query (FTS5 syntax supported, e.g., "validation AND error")
+        query: Search phrase (treated as exact phrase, not FTS5 operators)
         project: Assistant/project name for database isolation. Defaults to 'hed'.
         limit: Maximum number of results
         item_type: Filter by 'issue' or 'pr'
@@ -198,10 +198,10 @@ def search_papers(
     limit: int = 10,
     source: str | None = None,
 ) -> list[SearchResult]:
-    """Search papers using FTS5.
+    """Search papers using phrase matching.
 
     Args:
-        query: Search query (FTS5 syntax supported)
+        query: Search phrase (treated as exact phrase, not FTS5 operators)
         project: Assistant/project name for database isolation. Defaults to 'hed'.
         limit: Maximum number of results
         source: Filter by source ('openalex', 'semanticscholar', 'pubmed')
@@ -393,10 +393,10 @@ def search_docstrings(
     language: str | None = None,
     repo: str | None = None,
 ) -> list[SearchResult]:
-    """Search code docstrings using FTS5.
+    """Search code docstrings using phrase matching.
 
     Args:
-        query: Search query (FTS5 syntax supported)
+        query: Search phrase (treated as exact phrase, not FTS5 operators)
         project: Assistant/project name for database isolation. Defaults to 'hed'.
         limit: Maximum number of results
         language: Filter by 'matlab' or 'python'
@@ -442,8 +442,9 @@ def search_docstrings(
                 file_path = row["file_path"]
                 repo_name = row["repo"]
                 line_number = row["line_number"]
-                # Assume default branch is 'main' or 'develop'
-                # In production, should track branch per repo
+                # LIMITATION: Hardcoded to 'main' branch - links will break
+                # for repos using 'develop', 'master', or other default branches.
+                # TODO: Store branch name during sync and use it here.
                 github_url = f"https://github.com/{repo_name}/blob/main/{file_path}"
                 if line_number:
                     github_url += f"#L{line_number}"

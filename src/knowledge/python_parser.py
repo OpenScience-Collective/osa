@@ -36,11 +36,14 @@ def parse_python_file(content: str, file_path: str) -> list[PythonDocstring]:
     """
     results: list[PythonDocstring] = []
 
-    try:
-        tree = ast.parse(content)
-    except SyntaxError as e:
-        logger.warning("Failed to parse %s: %s", file_path, e)
-        return results
+    # Let SyntaxError propagate to caller for proper error handling
+    tree = ast.parse(content)
+
+    # Build parent map once for efficient method detection
+    parents: dict[ast.AST, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
 
     # Module-level docstring
     module_doc = ast.get_docstring(tree)
@@ -60,8 +63,9 @@ def parse_python_file(content: str, file_path: str) -> list[PythonDocstring]:
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             docstring = ast.get_docstring(node)
             if docstring:
-                # Determine if it's a method or function
-                symbol_type = _get_function_type(node, tree)
+                # Determine if it's a method or function using parent map
+                parent = parents.get(node)
+                symbol_type = "method" if isinstance(parent, ast.ClassDef) else "function"
                 results.append(
                     PythonDocstring(
                         symbol_name=node.name,
@@ -98,22 +102,3 @@ def _get_module_name(file_path: str) -> str:
     import os
 
     return os.path.splitext(os.path.basename(file_path))[0]
-
-
-def _get_function_type(func_node: ast.FunctionDef | ast.AsyncFunctionDef, tree: ast.Module) -> str:
-    """Determine if a function is a method or standalone function.
-
-    Args:
-        func_node: The FunctionDef or AsyncFunctionDef node
-        tree: The module AST
-
-    Returns:
-        'method' if the function is inside a class, otherwise 'function'
-    """
-    # Check if this function is directly inside a ClassDef
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef):
-            for item in node.body:
-                if item is func_node:
-                    return "method"
-    return "function"

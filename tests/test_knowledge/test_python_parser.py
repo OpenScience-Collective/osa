@@ -1,5 +1,7 @@
 """Tests for Python docstring parser."""
 
+import pytest
+
 from src.knowledge.python_parser import parse_python_file
 
 
@@ -161,9 +163,9 @@ def invalid syntax here:
     """This won't parse."""
     pass
 '''
-    # Should return empty list, not raise exception
-    results = parse_python_file(code, "test.py")
-    assert len(results) == 0
+    # Should raise SyntaxError (not return empty list)
+    with pytest.raises(SyntaxError):
+        parse_python_file(code, "test.py")
 
 
 def test_parse_nested_functions():
