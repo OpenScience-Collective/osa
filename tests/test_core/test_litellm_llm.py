@@ -13,13 +13,52 @@ def calculator(expression: str) -> str:
     """Calculate a mathematical expression.
 
     Args:
-        expression: A mathematical expression to evaluate
+        expression: A mathematical expression to evaluate (basic arithmetic only)
 
     Returns:
         The result of the calculation
     """
+    import ast
+    import operator
+
+    # Safe operators mapping
+    safe_operators = {
+        ast.Add: operator.add,
+        ast.Sub: operator.sub,
+        ast.Mult: operator.mul,
+        ast.Div: operator.truediv,
+        ast.Mod: operator.mod,
+        ast.Pow: operator.pow,
+        ast.UAdd: operator.pos,
+        ast.USub: operator.neg,
+    }
+
+    def safe_eval(node):
+        """Safely evaluate an AST node with only basic arithmetic."""
+        if isinstance(node, ast.Constant):
+            return node.value
+        elif isinstance(node, ast.BinOp):
+            left = safe_eval(node.left)
+            right = safe_eval(node.right)
+            op = safe_operators.get(type(node.op))
+            if op is None:
+                raise ValueError(f"Unsupported operator: {type(node.op).__name__}")
+            return op(left, right)
+        elif isinstance(node, ast.UnaryOp):
+            operand = safe_eval(node.operand)
+            op = safe_operators.get(type(node.op))
+            if op is None:
+                raise ValueError(f"Unsupported operator: {type(node.op).__name__}")
+            return op(operand)
+        else:
+            raise ValueError(f"Unsupported expression: {type(node).__name__}")
+
     try:
-        return str(eval(expression))
+        # Parse the expression into an AST
+        tree = ast.parse(expression, mode="eval")
+        # Evaluate using only safe operations
+        result = safe_eval(tree.body)
+        return str(result)
     except Exception as e:
         return f"Error: {str(e)}"
 
