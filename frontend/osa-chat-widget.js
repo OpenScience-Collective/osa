@@ -61,7 +61,6 @@
   }
 
   // Default model options for settings dropdown
-  // Note: Community default model is shown as first option, so don't duplicate it here
   const DEFAULT_MODELS = [
     { value: 'openai/gpt-5.2-chat', label: 'GPT-5.2 Chat' },
     { value: 'openai/gpt-5-mini', label: 'GPT-5 Mini' },
@@ -69,8 +68,15 @@
     { value: 'anthropic/claude-sonnet-4.5', label: 'Claude Sonnet 4.5' },
     { value: 'google/gemini-3-flash-preview', label: 'Gemini 3 Flash' },
     { value: 'google/gemini-3-pro-preview', label: 'Gemini 3 Pro' },
-    { value: 'moonshotai/kimi-k2-0905', label: 'Kimi K2' }
+    { value: 'moonshotai/kimi-k2-0905', label: 'Kimi K2' },
+    { value: 'qwen/qwen3-235b-a22b-2507', label: 'Qwen3 235B' }
   ];
+
+  // Helper to get human-readable label for a model
+  function getModelLabel(modelId) {
+    const model = DEFAULT_MODELS.find(m => m.value === modelId);
+    return model ? model.label : modelId;
+  }
 
   // State
   let isOpen = false;
@@ -1437,7 +1443,9 @@
           defaultOption.disabled = true;
           console.error('[OSA] Cannot populate model selector - no default model loaded');
         } else {
-          defaultOption.textContent = `Default (${communityDefaultModel})`;
+          // Use human-readable label if available
+          const modelLabel = getModelLabel(communityDefaultModel);
+          defaultOption.textContent = `Default (${modelLabel})`;
           defaultOption.disabled = false;
         }
       }
@@ -1464,7 +1472,8 @@
     // Update hint with current default model
     if (modelHint) {
       if (communityDefaultModel) {
-        modelHint.textContent = `Community default: ${communityDefaultModel}`;
+        const modelLabel = getModelLabel(communityDefaultModel);
+        modelHint.textContent = `Community default: ${modelLabel}`;
         modelHint.style.color = '';  // Reset to default color
       } else {
         modelHint.textContent = 'ERROR: Default model not loaded. Widget may not function correctly.';
@@ -1765,7 +1774,7 @@
               </label>
               <select id="osa-settings-model" class="osa-settings-select">
                 <option value="default">Default (Community Setting)</option>
-                ${DEFAULT_MODELS.map(m => `<option value="${escapeHtml(m.value)}">${escapeHtml(m.label)}</option>`).join('')}
+                ${DEFAULT_MODELS.filter(m => m.value !== communityDefaultModel).map(m => `<option value="${escapeHtml(m.value)}">${escapeHtml(m.label)}</option>`).join('')}
                 <option value="custom">Custom</option>
               </select>
               <span class="osa-settings-hint" id="osa-settings-model-hint">
