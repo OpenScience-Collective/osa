@@ -11,6 +11,10 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    # Skip tests for automated version-strip PRs (version-only changes)
+    if: |
+      !(github.actor == 'github-actions[bot]' &&
+        startsWith(github.head_ref, 'bot/strip-dev-suffix-'))
     steps:
       - uses: actions/checkout@v4
 
@@ -32,6 +36,10 @@ jobs:
   unit-tests:
     name: Unit Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    # Skip tests for automated version-strip PRs (version-only changes)
+    if: |
+      !(github.actor == 'github-actions[bot]' &&
+        startsWith(github.head_ref, 'bot/strip-dev-suffix-'))
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
@@ -105,11 +113,12 @@ jobs:
     steps:
       - name: Check results
         run: |
-          if [ "${{ needs.lint.result }}" != "success" ]; then
+          # Skipped tests (for bot version-strip PRs) count as success
+          if [ "${{ needs.lint.result }}" != "success" ] && [ "${{ needs.lint.result }}" != "skipped" ]; then
             echo "Lint failed"
             exit 1
           fi
-          if [ "${{ needs.unit-tests.result }}" != "success" ]; then
+          if [ "${{ needs.unit-tests.result }}" != "success" ] && [ "${{ needs.unit-tests.result }}" != "skipped" ]; then
             echo "Unit tests failed"
             exit 1
           fi
