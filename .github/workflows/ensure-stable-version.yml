@@ -78,16 +78,31 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           BRANCH="${{ steps.commit.outputs.branch }}"
-          git push -u origin "$BRANCH"
+
+          # Push branch with error handling
+          if ! git push -u origin "$BRANCH"; then
+            echo "ERROR: Failed to push branch $BRANCH to remote"
+            exit 1
+          fi
 
           # Check if PR already exists
-          EXISTING_PR=$(gh pr list --head "$BRANCH" --base main --json number --jq '.[0].number // empty')
+          if ! EXISTING_PR=$(gh pr list --head "$BRANCH" --base main --json number,state --jq '.[0] // empty'); then
+            echo "ERROR: Failed to check for existing PRs"
+            exit 1
+          fi
 
           if [ -n "$EXISTING_PR" ]; then
-            echo "✓ PR #$EXISTING_PR already exists for branch $BRANCH"
-            PR_NUMBER="$EXISTING_PR"
+            PR_NUMBER=$(echo "$EXISTING_PR" | jq -r '.number')
+            PR_STATE=$(echo "$EXISTING_PR" | jq -r '.state')
+
+            if [ "$PR_STATE" != "OPEN" ]; then
+              echo "PR #$PR_NUMBER is $PR_STATE, skipping auto-merge"
+              exit 0
+            fi
+
+            echo "✓ PR #$PR_NUMBER already exists for branch $BRANCH"
           else
-            PR_NUMBER=$(gh pr create \
+            if ! PR_NUMBER=$(gh pr create \
               --base main \
               --head "$BRANCH" \
               --title "chore: strip dev suffix for stable release ${{ env.new_version }}" \
@@ -101,7 +116,15 @@ jobs:
 
           **Tests:**
           Tests are automatically skipped for this version-only change to save CI resources." \
-              --json number --jq '.number')
+              --json number --jq '.number'); then
+              echo "ERROR: Failed to create PR for branch $BRANCH"
+              exit 1
+            fi
+
+            if [ -z "$PR_NUMBER" ]; then
+              echo "ERROR: PR creation succeeded but failed to capture PR number"
+              exit 1
+            fi
 
             echo "✅ Created PR #$PR_NUMBER from $BRANCH"
           fi
@@ -115,10 +138,37 @@ jobs:
         run: |
           PR_NUMBER="${{ steps.create_pr.outputs.pr_number }}"
 
+          # Validate PR number exists
+          if [ -z "$PR_NUMBER" ]; then
+            echo "ERROR: PR number is empty, cannot auto-merge"
+            exit 1
+          fi
+
           # Add comment explaining auto-merge
-          gh pr comment "$PR_NUMBER" --body "🤖 Auto-merging this automated version change. Tests are skipped for version-only changes."
+          if ! gh pr comment "$PR_NUMBER" --body "🤖 Auto-merging this automated version change. Tests are skipped for version-only changes."; then
+            echo "ERROR: Failed to add comment to PR #$PR_NUMBER"
+            exit 1
+          fi
 
           # Auto-merge with admin override (bypasses branch protection)
-          gh pr merge "$PR_NUMBER" --squash --admin --delete-branch
+          # Note: Requires admin permissions or use --auto for standard auto-merge
+          if ! gh pr merge "$PR_NUMBER" --squash --admin --delete-branch; then
+            echo "ERROR: Failed to auto-merge PR #$PR_NUMBER"
+            echo "This may be due to insufficient permissions or branch protection rules"
+            echo "Please merge manually: https://github.com/${{ github.repository }}/pull/$PR_NUMBER"
+
+            # Add failure comment to PR
+            gh pr comment "$PR_NUMBER" --body "⚠️ Auto-merge failed. Please merge manually." || true
+
+            exit 1
+          fi
+
+          # Verify merge completed
+          if ! PR_STATE=$(gh pr view "$PR_NUMBER" --json state --jq '.state'); then
+            echo "WARNING: Could not verify PR state after merge"
+          elif [ "$PR_STATE" != "MERGED" ]; then
+            echo "ERROR: PR #$PR_NUMBER merge command succeeded but PR state is $PR_STATE"
+            exit 1
+          fi
 
           echo "✅ Auto-merged PR #$PR_NUMBER and deleted branch"

@@ -14,7 +14,8 @@ jobs:
     # Skip tests for automated version-strip PRs (version-only changes)
     if: |
       !(github.actor == 'github-actions[bot]' &&
-        startsWith(github.head_ref, 'bot/strip-dev-suffix-'))
+        (startsWith(github.head_ref, 'bot/strip-dev-suffix-') ||
+         contains(github.event.head_commit.message, 'strip dev suffix')))
     steps:
       - uses: actions/checkout@v4
 
@@ -39,7 +40,8 @@ jobs:
     # Skip tests for automated version-strip PRs (version-only changes)
     if: |
       !(github.actor == 'github-actions[bot]' &&
-        startsWith(github.head_ref, 'bot/strip-dev-suffix-'))
+        (startsWith(github.head_ref, 'bot/strip-dev-suffix-') ||
+         contains(github.event.head_commit.message, 'strip dev suffix')))
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
@@ -74,7 +76,11 @@ jobs:
     name: Integration Tests
     runs-on: ubuntu-latest
     # Run on push to main or workflow_dispatch, but not on PRs (to save API costs)
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    # Skip for automated version-strip commits (version-only changes)
+    if: |
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      !(github.actor == 'github-actions[bot]' &&
+        contains(github.event.head_commit.message, 'strip dev suffix'))
     steps:
       - uses: actions/checkout@v4
 
