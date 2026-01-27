@@ -6,6 +6,8 @@ Catches YAML syntax errors, schema validation errors, and missing dependencies.
 
 import logging
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import httpx
@@ -22,23 +24,59 @@ logger = logging.getLogger(__name__)
 
 
 def validate(
-    config_path: Path = typer.Argument(..., help="Path to community config.yaml file"),
+    config_path: Path | None = typer.Argument(None, help="Path to community config.yaml file"),
+    community: str | None = typer.Option(
+        None,
+        "--community",
+        "-c",
+        help="Community ID to validate (runs full test suite including URL checks)",
+    ),
     test_api_key: bool = typer.Option(
         False,
         "--test-api-key",
         help="Test that API key works by making a request to OpenRouter",
     ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Show verbose pytest output when using --community",
+    ),
 ) -> None:
     """Validate a community configuration file.
 
-    Checks:
-    - YAML syntax
-    - Pydantic schema validation
-    - Environment variable presence
-    - Optionally: API key functionality
+    Two modes:
+    1. File mode: osa validate <config_path>
+       - YAML syntax, schema validation, env vars
+       - Optionally test API key with --test-api-key
+    2. Community mode: osa validate --community <id>
+       - Full test suite including URL accessibility, GitHub repo validation
+       - Use --verbose for detailed pytest output
 
     Returns exit code 0 on success, 1 on failure.
     """
+    # Validate arguments
+    if community and config_path:
+        console.print("[red]Error: Cannot specify both config_path and --community[/red]")
+        console.print("Use either:")
+        console.print("  • osa validate <config_path>")
+        console.print("  • osa validate --community <id>")
+        raise typer.Exit(1)
+
+    if not community and not config_path:
+        console.print("[red]Error: Must specify either config_path or --community[/red]")
+        console.print("Use either:")
+        console.print("  • osa validate <config_path>")
+        console.print("  • osa validate --community <id>")
+        raise typer.Exit(1)
+
+    # Community mode: Run pytest tests
+    if community:
+        _validate_community_with_tests(community, verbose)
+        return
+
+    # File mode: Direct config validation
+    assert config_path is not None  # Guaranteed by argument validation above
     logger.info("Starting validation for config: %s", config_path)
 
     if not config_path.exists():
@@ -200,6 +238,87 @@ def validate(
         logger.info("Validation passed successfully for %s", config_path)
         console.print("\n[green]✓ Validation passed[/green]\n")
         raise typer.Exit(0)
+
+
+def _validate_community_with_tests(community_id: str, verbose: bool) -> None:
+    """Run pytest tests for a specific community via subprocess.
+
+    Executes the generic test suite (test_community_yaml_generic.py) filtered
+    to the specified community. Runs pytest in a subprocess to provide clean
+    test isolation and user-friendly output formatting.
+
+    Args:
+        community_id: The community ID to validate (e.g., 'hed', 'eeglab')
+        verbose: Whether to show verbose pytest output (-v flag)
+
+    Raises:
+        typer.Exit: With code 0 on success, 1 on failure
+    """
+    console.print(f"\n[bold]Validating community:[/bold] {community_id}\n")
+
+    # Check if community exists
+    from src.assistants import discover_assistants, registry
+
+    registry._assistants.clear()
+    discover_assistants()
+
+    if community_id not in registry:
+        console.print(f"[red]Error: Community '{community_id}' not found[/red]\n")
+        console.print("Available communities:")
+        for info in registry.list_all():
+            console.print(f"  • {info.id}")
+        raise typer.Exit(1)
+
+    # Get community info
+    info = registry.get(community_id)
+    assert info is not None  # Guaranteed by community_id in registry check above
+    console.print(f"[cyan]Name:[/cyan] {info.name}")
+    console.print(f"[cyan]Description:[/cyan] {info.description}")
+    console.print(f"[cyan]Status:[/cyan] {info.status}\n")
+
+    # Show configuration summary
+    config = registry.get_community_config(community_id)
+    if config.documentation:
+        console.print(f"[dim]Documentation sources: {len(config.documentation)}[/dim]")
+    if config.github and config.github.repos:
+        console.print(f"[dim]GitHub repositories: {len(config.github.repos)}[/dim]")
+
+    # Run pytest tests for this community
+    console.print("[dim]Running test suite (this may take a few seconds)...[/dim]\n")
+
+    # Build pytest command
+    pytest_args = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "tests/test_assistants/test_community_yaml_generic.py",
+        "-k",
+        community_id,
+        "--tb=short",
+        "-q" if not verbose else "-v",
+        "--color=yes",
+    ]
+
+    # Run pytest
+    result = subprocess.run(pytest_args, capture_output=True, text=True)
+
+    # Display output
+    if result.stdout:
+        console.print(result.stdout)
+    if result.stderr:
+        console.print(result.stderr)
+
+    # Check result
+    if result.returncode == 0:
+        console.print(f"\n[green]✓ All tests passed for {community_id}[/green]\n")
+        raise typer.Exit(0)
+    else:
+        console.print(f"\n[red]✗ Tests failed for {community_id}[/red]\n")
+        console.print("[yellow]Tip:[/yellow] Run with --verbose for more details")
+        console.print(
+            f"[yellow]Or:[/yellow] pytest tests/test_assistants/test_community_yaml_generic.py -k {community_id} -v"
+        )
+        raise typer.Exit(1)
 
 
 def _interpret_api_response(status_code: int, response_text: str = "") -> dict:

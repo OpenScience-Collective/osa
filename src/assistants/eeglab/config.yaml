@@ -158,8 +158,8 @@ documentation:
 
   # === ON-DEMAND: Setup (1 doc) ===
   - title: EEGLAB extensions
-    url: https://sccn.github.io/tutorials/01_Install/Using_EEGLAB_extensions.html
-    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/01_Install/Using_EEGLAB_extensions.md
+    url: https://sccn.github.io/others/EEGLAB_Extensions.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/others/EEGLAB_Extensions.md
     category: setup
     description: How to install and manage EEGLAB plugins and extensions.
 
@@ -190,22 +190,22 @@ documentation:
     description: Applying filters to EEG data (high-pass, low-pass, notch).
 
   - title: Re-referencing
-    url: https://sccn.github.io/tutorials/05_Preprocess/Rereferencing.html
-    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/05_Preprocess/Rereferencing.md
+    url: https://sccn.github.io/tutorials/05_Preprocess/rereferencing.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/05_Preprocess/rereferencing.md
     category: preprocessing
     description: Re-referencing EEG data to different reference schemes.
 
   - title: Resampling data
-    url: https://sccn.github.io/tutorials/05_Preprocess/Resampling.html
-    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/05_Preprocess/Resampling.md
+    url: https://sccn.github.io/tutorials/05_Preprocess/resampling.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/05_Preprocess/resampling.md
     category: preprocessing
     description: Downsampling or upsampling EEG data.
 
-  - title: Artifact rejection
-    url: https://sccn.github.io/tutorials/05_Preprocess/Artifact_Rejection.html
-    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/05_Preprocess/Artifact_Rejection.md
+  - title: Channel rejection
+    url: https://sccn.github.io/tutorials/06_RejectArtifacts/Channel_rejection.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/06_RejectArtifacts/Channel_rejection.md
     category: preprocessing
-    description: Methods for detecting and rejecting artifactual data segments.
+    description: Methods for detecting and rejecting bad channels.
 
   # === ON-DEMAND: ICA and Artifacts (4 docs) ===
   - title: Independent Component Analysis (ICA)
@@ -215,35 +215,29 @@ documentation:
     description: Running ICA decomposition for artifact removal.
 
   - title: ICLabel for automatic artifact classification
-    url: https://sccn.github.io/tutorials/06_RejectArtifacts/ICLabel.html
-    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/06_RejectArtifacts/ICLabel.md
+    url: https://sccn.github.io/plugins/ICLabel/
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/plugins/ICLabel/index.md
     category: artifacts
     description: Using ICLabel plugin for automatic ICA component classification.
 
   - title: clean_rawdata and ASR
-    url: https://sccn.github.io/tutorials/06_RejectArtifacts/ASR.html
-    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/06_RejectArtifacts/ASR.md
+    url: https://sccn.github.io/plugins/clean_rawdata/
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/plugins/clean_rawdata/index.md
     category: artifacts
     description: Artifact Subspace Reconstruction (ASR) for automatic artifact removal.
 
   - title: Scrolling through data
-    url: https://sccn.github.io/tutorials/05_Preprocess/Scrolling_Through_Data.html
-    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/05_Preprocess/Scrolling_Through_Data.md
+    url: https://sccn.github.io/tutorials/06_RejectArtifacts/Scrolling_data.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/06_RejectArtifacts/Scrolling_data.md
     category: artifacts
     description: Visual inspection and manual artifact marking.
 
-  # === ON-DEMAND: Epoching (2 docs) ===
+  # === ON-DEMAND: Epoching (1 doc) ===
   - title: Extracting data epochs
     url: https://sccn.github.io/tutorials/07_Extract_epochs/Extracting_Data_Epochs.html
     source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/07_Extract_epochs/Extracting_Data_Epochs.md
     category: epoching
     description: Creating time-locked data epochs around events.
-
-  - title: Selecting data epochs
-    url: https://sccn.github.io/tutorials/07_Extract_epochs/Selecting_Data_Epochs.html
-    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/07_Extract_epochs/Selecting_Data_Epochs.md
-    category: epoching
-    description: Criteria for selecting and removing epochs.
 
   # === ON-DEMAND: Visualization (4 docs) ===
   - title: Plotting channel spectra and maps
@@ -298,14 +292,14 @@ documentation:
 
   # === ON-DEMAND: Integration (2 docs) ===
   - title: BIDS integration
-    url: https://sccn.github.io/tutorials/01_Install/BIDS.html
-    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/01_Install/BIDS.md
+    url: https://sccn.github.io/plugins/EEG-BIDS/
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/plugins/EEG-BIDS/index.md
     category: integration
     description: Importing and exporting BIDS-formatted datasets.
 
   - title: Lab Streaming Layer (LSL)
     url: https://labstreaminglayer.readthedocs.io/
-    source_url: https://raw.githubusercontent.com/sccn/labstreaminglayer/master/README.md
+    source_url: https://raw.githubusercontent.com/sccn/labstreaminglayer/master/README.rst
     category: integration
     description: Real-time data streaming with Lab Streaming Layer.
 
