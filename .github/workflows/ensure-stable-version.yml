@@ -33,8 +33,20 @@ jobs:
       - name: Check version for dev suffix
         id: check_version
         run: |
-          VERSION=$(python -c "from src.version import __version__; print(__version__)")
+          # Extract version with error checking
+          if ! VERSION=$(python -c "from src.version import __version__; print(__version__)" 2>&1); then
+            echo "ERROR: Failed to import version from src.version"
+            echo "Output: $VERSION"
+            exit 1
+          fi
+
+          if [ -z "$VERSION" ]; then
+            echo "ERROR: Version string is empty"
+            exit 1
+          fi
+
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Detected version: $VERSION"
 
           if [[ "$VERSION" == *"dev"* ]]; then
             echo "has_dev=true" >> $GITHUB_OUTPUT
@@ -44,27 +56,87 @@ jobs:
             echo "Version $VERSION is stable - no action needed"
           fi
 
+      - name: Validate CI_ADMIN_TOKEN
+        if: steps.check_version.outputs.has_dev == 'true'
+        run: |
+          if [ -z "${{ secrets.CI_ADMIN_TOKEN }}" ]; then
+            echo "ERROR: CI_ADMIN_TOKEN secret is not set"
+            echo "This workflow requires a Personal Access Token with admin:repo permissions"
+            echo "Set it in repository Settings > Secrets > Actions"
+            exit 1
+          fi
+          echo "CI_ADMIN_TOKEN is configured"
+
       - name: Strip dev suffix and push to main
         if: steps.check_version.outputs.has_dev == 'true'
         run: |
           # Strip dev suffix
-          uv run python scripts/bump_version.py --prerelease stable --no-git
+          if ! uv run python scripts/bump_version.py --prerelease stable --no-git; then
+            echo "ERROR: Failed to run bump_version.py"
+            echo "Check script for errors or version.py format issues"
+            exit 1
+          fi
 
-          NEW_VERSION=$(python -c "from src.version import __version__; print(__version__)")
-          echo "Stripped dev suffix: ${{ steps.check_version.outputs.version }} -> $NEW_VERSION"
+          # Verify version was actually changed
+          if ! NEW_VERSION=$(python -c "from src.version import __version__; print(__version__)" 2>&1); then
+            echo "ERROR: Failed to read new version after bump"
+            exit 1
+          fi
+
+          if [ -z "$NEW_VERSION" ]; then
+            echo "ERROR: New version string is empty"
+            exit 1
+          fi
+
+          if [[ "$NEW_VERSION" == *"dev"* ]]; then
+            echo "ERROR: Version still contains dev suffix after strip: $NEW_VERSION"
+            exit 1
+          fi
+
+          if [ "$NEW_VERSION" = "${{ steps.check_version.outputs.version }}" ]; then
+            echo "ERROR: Version unchanged after bump: $NEW_VERSION"
+            exit 1
+          fi
+
+          echo "Successfully stripped dev suffix: ${{ steps.check_version.outputs.version }} -> $NEW_VERSION"
+
+          # Check if file actually changed
+          if git diff --quiet src/version.py; then
+            echo "ERROR: src/version.py has no changes despite version string changing"
+            exit 1
+          fi
 
           # Configure git
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Commit and push directly to main (bypassing branch protection with CI_ADMIN_TOKEN)
+          # Commit
           git add src/version.py
           git commit -m "chore: strip dev suffix for stable release"
 
+          # Get commit hash before push
+          LOCAL_COMMIT=$(git rev-parse HEAD)
+          echo "Local commit: $LOCAL_COMMIT"
+
+          # Push to main
           if ! git push origin main; then
             echo "ERROR: Failed to push to main"
             echo "Verify CI_ADMIN_TOKEN has admin permissions to bypass branch protection"
             exit 1
           fi
 
+          # Verify remote was updated
+          echo "Verifying remote branch was updated..."
+          sleep 2
+          REMOTE_COMMIT=$(git ls-remote origin main | awk '{print $1}')
+
+          if [ "$LOCAL_COMMIT" != "$REMOTE_COMMIT" ]; then
+            echo "ERROR: Push appeared to succeed but remote branch not updated"
+            echo "Local commit:  $LOCAL_COMMIT"
+            echo "Remote commit: $REMOTE_COMMIT"
+            echo "This may indicate a GitHub API issue or pre-receive hook rejection"
+            exit 1
+          fi
+
           echo "✅ Successfully stripped dev suffix and pushed to main: $NEW_VERSION"
+          echo "Remote branch verified: $REMOTE_COMMIT"
