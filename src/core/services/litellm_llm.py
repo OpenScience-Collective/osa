@@ -33,6 +33,7 @@ from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage
+from langchain_core.runnables import Runnable
 
 
 def create_openrouter_llm(
@@ -117,16 +118,19 @@ class CachingLLMWrapper(BaseChatModel):
     The cache_control parameter tells Anthropic to cache the content, reducing
     costs by 90% on cache hits (after initial 25% cache write premium).
 
+    Supports wrapping both direct LLMs (BaseChatModel) and tool-bound models
+    (RunnableBinding) to preserve caching through tool binding.
+
     Minimum cacheable prompt: 1024 tokens for Claude Sonnet/Opus, 4096 for Haiku 4.5
     Cache TTL: 5 minutes (refreshed on each hit)
     """
 
-    llm: BaseChatModel
-    """The underlying LLM to wrap."""
+    llm: BaseChatModel | Runnable
+    """The underlying LLM or Runnable to wrap."""
 
     model_config = {"arbitrary_types_allowed": True}
 
-    def __init__(self, llm: BaseChatModel, **kwargs):
+    def __init__(self, llm: BaseChatModel | Runnable, **kwargs):
         super().__init__(llm=llm, **kwargs)
 
     @property
@@ -134,13 +138,20 @@ class CachingLLMWrapper(BaseChatModel):
         return "caching_llm_wrapper"
 
     def bind_tools(self, tools: list, **kwargs):
-        """Bind tools to the underlying LLM.
+        """Bind tools while preserving caching functionality.
 
-        Delegates tool binding to the underlying LLM and returns the bound model.
-        Note: Returns a RunnableBinding, not a CachingLLMWrapper, because
-        tool-bound models need to handle tool calls directly.
+        Returns a CachingLLMWrapper that wraps the tool-bound model,
+        ensuring cache_control markers are added to all invocations.
+
+        Args:
+            tools: List of tools to bind
+            **kwargs: Additional arguments for tool binding
+
+        Returns:
+            CachingLLMWrapper wrapping the tool-bound model
         """
-        return self.llm.bind_tools(tools, **kwargs)
+        bound_llm = self.llm.bind_tools(tools, **kwargs)
+        return CachingLLMWrapper(llm=bound_llm)
 
     def _add_cache_control(self, messages: list[BaseMessage]) -> list[dict]:
         """Transform messages to add cache_control to system messages.
@@ -198,6 +209,37 @@ class CachingLLMWrapper(BaseChatModel):
         """Async invoke LLM with cache_control on system messages."""
         cached_messages = self._add_cache_control(messages)
         return await self.llm.ainvoke(cached_messages, **kwargs)
+
+    def stream(self, input, config=None, **kwargs):
+        """Stream with cache_control applied to system messages.
+
+        Args:
+            input: Messages to stream (can be list of BaseMessage or other formats)
+            config: Optional runtime configuration
+            **kwargs: Additional arguments for streaming
+
+        Yields:
+            Stream chunks from the underlying LLM
+        """
+        if isinstance(input, list):
+            input = self._add_cache_control(input)
+        return self.llm.stream(input, config=config, **kwargs)
+
+    async def astream(self, input, config=None, **kwargs):
+        """Async stream with cache_control applied to system messages.
+
+        Args:
+            input: Messages to stream (can be list of BaseMessage or other formats)
+            config: Optional runtime configuration
+            **kwargs: Additional arguments for streaming
+
+        Yields:
+            Stream chunks from the underlying LLM
+        """
+        if isinstance(input, list):
+            input = self._add_cache_control(input)
+        async for chunk in self.llm.astream(input, config=config, **kwargs):
+            yield chunk
 
 
 # Current Anthropic models (for reference)
