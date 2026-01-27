@@ -39,6 +39,8 @@ from langchain_core.runnables import Runnable
 
 logger = logging.getLogger(__name__)
 
+logger = logging.getLogger(__name__)
+
 
 def create_openrouter_llm(
     model: str = "openai/gpt-oss-120b",
@@ -55,12 +57,18 @@ def create_openrouter_llm(
     When caching is enabled, system messages are automatically transformed
     to include cache_control markers for 90% cost reduction on cache hits.
 
+    Provider Selection:
+        - Anthropic models (anthropic/*) automatically use provider="Anthropic"
+          for best performance, regardless of the provider parameter
+        - Other models use the specified provider or default routing
+
     Args:
         model: Model identifier (e.g., "openai/gpt-oss-120b", "anthropic/claude-haiku-4.5")
         api_key: OpenRouter API key (defaults to OPENROUTER_API_KEY env var)
         temperature: Sampling temperature (0.0-1.0)
         max_tokens: Maximum tokens to generate
-        provider: Specific provider to use (e.g., "Cerebras", "Anthropic")
+        provider: Specific provider to use (e.g., "Cerebras", "DeepInfra/FP8").
+                 Ignored for Anthropic models, which always use "Anthropic" provider.
         user_id: User identifier for cache optimization (sticky routing)
         enable_caching: Enable prompt caching. If None (default), enabled for all models.
             OpenRouter/LiteLLM gracefully handles models that don't support caching.
@@ -82,10 +90,18 @@ def create_openrouter_llm(
         },
     }
 
+    # Auto-select Anthropic provider for Anthropic models (better performance)
+    # Override any default provider if this is an Anthropic model
+    if model.startswith("anthropic/"):
+        effective_provider = "Anthropic"
+        logger.debug("Auto-selected Anthropic provider for model %s (better performance)", model)
+    else:
+        effective_provider = provider
+
     # Provider routing (e.g., {"order": ["DeepInfra/FP8"]})
     # Use "order" not "only" - OpenRouter requires exact routing field name
-    if provider:
-        model_kwargs["provider"] = {"order": [provider]}
+    if effective_provider:
+        model_kwargs["provider"] = {"order": [effective_provider]}
 
     # User ID for sticky cache routing
     if user_id:
