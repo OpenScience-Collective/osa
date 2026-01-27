@@ -24,6 +24,36 @@ def calculator(expression: str) -> str:
         return f"Error: {str(e)}"
 
 
+class TestCachingLLMWrapperInitialization:
+    """Test CachingLLMWrapper initialization and validation."""
+
+    def test_prevents_double_wrapping(self):
+        """Verify double-wrapping is prevented with clear error."""
+        from langchain_community.chat_models import FakeListChatModel
+
+        fake_llm = FakeListChatModel(responses=["Test"])
+        wrapper = CachingLLMWrapper(llm=fake_llm)
+
+        # Attempt to wrap a wrapper should raise ValueError
+        with pytest.raises(ValueError) as exc_info:
+            CachingLLMWrapper(llm=wrapper)
+
+        assert "Cannot wrap a CachingLLMWrapper" in str(exc_info.value)
+        assert "infinite recursion" in str(exc_info.value)
+
+    def test_validates_llm_has_invoke_method(self):
+        """Verify initialization requires invoke method."""
+
+        # Create a mock object without invoke method
+        class InvalidLLM:
+            pass
+
+        with pytest.raises(TypeError) as exc_info:
+            CachingLLMWrapper(llm=InvalidLLM())
+
+        assert "missing required 'invoke' method" in str(exc_info.value)
+
+
 class TestCachingLLMWrapperMessageTransformation:
     """Test message transformation with cache_control markers."""
 
@@ -104,6 +134,30 @@ class TestCachingLLMWrapperMessageTransformation:
         assert result[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
         assert result[1]["content"][0]["cache_control"] == {"type": "ephemeral"}
 
+    def test_add_cache_control_rejects_none_input(self):
+        """Verify None input raises ValueError."""
+        from langchain_community.chat_models import FakeListChatModel
+
+        fake_llm = FakeListChatModel(responses=["Test"])
+        wrapper = CachingLLMWrapper(llm=fake_llm)
+
+        with pytest.raises(ValueError) as exc_info:
+            wrapper._add_cache_control(None)
+
+        assert "cannot be None" in str(exc_info.value)
+
+    def test_add_cache_control_rejects_non_list_input(self):
+        """Verify non-list input raises TypeError."""
+        from langchain_community.chat_models import FakeListChatModel
+
+        fake_llm = FakeListChatModel(responses=["Test"])
+        wrapper = CachingLLMWrapper(llm=fake_llm)
+
+        with pytest.raises(TypeError) as exc_info:
+            wrapper._add_cache_control("not a list")
+
+        assert "Expected list of messages" in str(exc_info.value)
+
 
 class TestCachingLLMWrapperToolBinding:
     """Test tool binding preserves caching.
@@ -111,6 +165,36 @@ class TestCachingLLMWrapperToolBinding:
     Note: Tool binding tests use real models in integration tests below,
     since bind_tools() behavior is model-specific and hard to test in isolation.
     """
+
+    def test_bind_tools_rejects_empty_list(self):
+        """Verify empty tools list raises ValueError."""
+        from langchain_community.chat_models import FakeListChatModel
+
+        fake_llm = FakeListChatModel(responses=["Test"])
+        wrapper = CachingLLMWrapper(llm=fake_llm)
+
+        with pytest.raises(ValueError) as exc_info:
+            wrapper.bind_tools([])
+
+        assert "empty tools list" in str(exc_info.value)
+
+    def test_bind_tools_checks_for_method_support(self):
+        """Verify error when LLM doesn't support bind_tools."""
+        from langchain_community.chat_models import FakeListChatModel
+
+        # Check if FakeListChatModel has bind_tools
+        fake_llm = FakeListChatModel(responses=["Test"])
+        if not hasattr(fake_llm, "bind_tools"):
+            # If it doesn't have bind_tools, test the error path
+            wrapper = CachingLLMWrapper(llm=fake_llm)
+
+            with pytest.raises(NotImplementedError) as exc_info:
+                wrapper.bind_tools([calculator])
+
+            assert "does not support tool binding" in str(exc_info.value)
+        else:
+            # If it does have bind_tools, skip this test
+            pytest.skip("FakeListChatModel has bind_tools, cannot test missing method error")
 
     @pytest.mark.llm
     def test_bind_tools_returns_caching_wrapper(self):
@@ -249,6 +333,66 @@ class TestCachingLLMWrapperIntegration:
 
         chunks = []
         for chunk in llm.stream(messages):
+            chunks.append(chunk)
+
+        # Verify chunks received
+        assert len(chunks) > 0
+
+        # Assemble full response
+        full_response = "".join(str(chunk.content) for chunk in chunks if hasattr(chunk, "content"))
+        assert len(full_response) > 0
+
+    @pytest.mark.llm
+    async def test_async_invoke_with_caching(self):
+        """Verify async invoke works with caching."""
+        import os
+
+        api_key = os.getenv("OPENROUTER_API_KEY_FOR_TESTING")
+        if not api_key:
+            pytest.skip("OPENROUTER_API_KEY_FOR_TESTING not set")
+
+        llm = create_openrouter_llm(
+            model="anthropic/claude-haiku-4.5",
+            api_key=api_key,
+            provider="Anthropic",
+            enable_caching=True,
+        )
+
+        messages = [
+            SystemMessage(content="You are a helpful assistant. Always respond concisely."),
+            HumanMessage(content="Say 'Hello' and nothing else."),
+        ]
+
+        response = await llm.ainvoke(messages)
+
+        # Verify response received
+        assert response is not None
+        assert hasattr(response, "content")
+        assert "hello" in response.content.lower()
+
+    @pytest.mark.llm
+    async def test_async_streaming_with_caching(self):
+        """Verify async streaming works with caching."""
+        import os
+
+        api_key = os.getenv("OPENROUTER_API_KEY_FOR_TESTING")
+        if not api_key:
+            pytest.skip("OPENROUTER_API_KEY_FOR_TESTING not set")
+
+        llm = create_openrouter_llm(
+            model="anthropic/claude-haiku-4.5",
+            api_key=api_key,
+            provider="Anthropic",
+            enable_caching=True,
+        )
+
+        messages = [
+            SystemMessage(content="You are a helpful assistant."),
+            HumanMessage(content="Count from 1 to 3."),
+        ]
+
+        chunks = []
+        async for chunk in llm.astream(messages):
             chunks.append(chunk)
 
         # Verify chunks received
