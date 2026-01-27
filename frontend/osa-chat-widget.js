@@ -52,7 +52,9 @@
     pageContextStorageKey: 'osa-page-context-enabled',
     pageContextLabel: 'Share page URL to help answer questions',
     // Fullscreen mode (for pop-out windows)
-    fullscreen: false
+    fullscreen: false,
+    // Streaming responses - enable progressive text display for better UX
+    streamingEnabled: true
   };
 
   // Log environment for debugging
@@ -1912,6 +1914,105 @@
     }, 5000);
   }
 
+  // Parse SSE (Server-Sent Events) format
+  // Returns parsed event object or null if line is not a data event
+  function parseSSE(line) {
+    if (!line || !line.startsWith('data: ')) {
+      return null;
+    }
+    try {
+      const jsonStr = line.substring(6); // Remove 'data: ' prefix
+      return JSON.parse(jsonStr);
+    } catch (error) {
+      console.warn('[OSA] Failed to parse SSE line:', line, error);
+      return null;
+    }
+  }
+
+  // Handle streaming response from API
+  async function handleStreamingResponse(response, container) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let accumulatedContent = '';
+    let lastUpdateTime = 0;
+    const UPDATE_THROTTLE_MS = 100; // Update UI every 100ms max
+
+    // Create placeholder assistant message
+    messages.push({ role: 'assistant', content: '' });
+    const messageIndex = messages.length - 1;
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+
+        if (done) {
+          break;
+        }
+
+        // Decode chunk and add to buffer
+        buffer += decoder.decode(value, { stream: true });
+
+        // Process complete lines (SSE format uses \n\n as delimiter)
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+        for (const line of lines) {
+          const event = parseSSE(line);
+          if (!event) continue;
+
+          if (event.type === 'chunk' && event.content) {
+            // Accumulate content
+            accumulatedContent += event.content;
+
+            // Throttle UI updates for performance
+            const now = Date.now();
+            if (now - lastUpdateTime >= UPDATE_THROTTLE_MS) {
+              messages[messageIndex].content = accumulatedContent;
+              renderMessages(container);
+              lastUpdateTime = now;
+            }
+          } else if (event.type === 'tool_call') {
+            // Optional: Log tool execution for debugging
+            console.log('[OSA] Tool call:', event.tool, event.args);
+          } else if (event.type === 'done') {
+            // Finalize message
+            messages[messageIndex].content = accumulatedContent;
+            renderMessages(container);
+            saveHistory();
+            updateStatusDisplay(true);
+            return; // Successfully completed
+          }
+        }
+      }
+
+      // Stream ended - ensure final content is saved
+      if (accumulatedContent) {
+        messages[messageIndex].content = accumulatedContent;
+        renderMessages(container);
+        saveHistory();
+        updateStatusDisplay(true);
+      } else {
+        throw new Error('Stream ended without content');
+      }
+
+    } catch (error) {
+      console.error('[OSA] Streaming error:', error);
+
+      // Keep partial content if we have any
+      if (accumulatedContent) {
+        messages[messageIndex].content = accumulatedContent + '\n\n_[Stream interrupted]_';
+        renderMessages(container);
+        saveHistory();
+      } else {
+        // No content received - remove placeholder message
+        messages.pop();
+      }
+
+      throw error; // Re-throw to be handled by sendMessage
+    }
+  }
+
   // Send message to API
   async function sendMessage(container, question) {
     if (isLoading || !question.trim()) return;
@@ -1946,6 +2047,11 @@
       // Add model selection if set
       if (userSettings.model) {
         body.model = userSettings.model;
+      }
+
+      // Enable streaming if configured
+      if (CONFIG.streamingEnabled) {
+        body.stream = true;
       }
 
       if (!isValidCommunityId(CONFIG.communityId)) {
@@ -1989,14 +2095,22 @@
         throw new Error(errorMessage);
       }
 
-      const data = await response.json();
-      const answer = (data && typeof data.answer === 'string') ? data.answer : null;
-      if (!answer) {
-        throw new Error('Invalid response from server');
+      // Check if response is streaming (SSE)
+      const contentType = response.headers.get('content-type') || '';
+      if (CONFIG.streamingEnabled && contentType.includes('text/event-stream')) {
+        // Handle streaming response
+        await handleStreamingResponse(response, container);
+      } else {
+        // Handle non-streaming response (fallback)
+        const data = await response.json();
+        const answer = (data && typeof data.answer === 'string') ? data.answer : null;
+        if (!answer) {
+          throw new Error('Invalid response from server');
+        }
+        messages.push({ role: 'assistant', content: answer });
+        saveHistory();
+        updateStatusDisplay(true);
       }
-      messages.push({ role: 'assistant', content: answer });
-      saveHistory();
-      updateStatusDisplay(true);
 
     } catch (error) {
       console.error('Chat error:', error);
