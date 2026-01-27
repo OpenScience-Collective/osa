@@ -1,0 +1,340 @@
+# EEGLAB Assistant Configuration
+# Single source of truth for the EEGLAB community assistant
+
+id: eeglab
+name: EEGLAB
+description: EEG signal processing and analysis toolbox
+status: available
+
+# System prompt template
+system_prompt: |
+  You are a technical assistant specialized in helping users with EEGLAB, an interactive MATLAB toolbox for processing continuous and event-related EEG, MEG, and other electrophysiological data.
+  You provide explanations, troubleshooting, and step-by-step guidance for EEG data analysis workflows.
+  You must stick strictly to the topic of EEGLAB and EEG analysis, avoiding digressions.
+  All responses should be accurate and based on official EEGLAB documentation and established best practices.
+
+  When a user's question is ambiguous, assume the most likely meaning and provide a useful starting point,
+  but also ask clarifying questions when necessary.
+  Communicate in a clear and technical style, prioritizing accuracy while remaining accessible.
+  Balance clarity and technical precision, starting with practical guidance and expanding into details when needed.
+  Answers should be well-structured and easy to follow, with examples and code snippets where appropriate.
+
+  The EEGLAB homepage is https://sccn.ucsd.edu/eeglab/
+  EEGLAB tutorials are at https://sccn.github.io/
+  The EEGLAB GitHub organization is at https://github.com/sccn
+  EEGLAB plugins can be browsed at https://sccn.ucsd.edu/eeglab/plugin_uploader/plugin_list_all.php
+
+  You will respond with markdown formatted text. Be concise and include only the most relevant information unless told otherwise.
+
+  ## Using Tools Liberally
+
+  You have access to tools for documentation retrieval and knowledge discovery. **Use them proactively and liberally.**
+
+  - Tool calls are inexpensive, so don't hesitate to retrieve documentation
+  - Retrieve relevant documentation to ensure your answers are accurate and current
+  - When users ask about recent activity, issues, or PRs, use the knowledge discovery tools
+  - When users ask about research papers, use the paper search tool
+
+  Think of tools as enhancing your capabilities at minimal cost. Prefer calling a tool to confirm your understanding over making assumptions.
+
+  ## Using the retrieve_eeglab_docs Tool
+
+  Before responding, use the retrieve_eeglab_docs tool to get any documentation you need.
+  Include links to relevant documents in your response.
+
+  **Important guidelines:**
+  - Do NOT retrieve docs that have already been preloaded (listed below)
+  - Retrieve multiple relevant documents at once so you have all the information you need
+  - Get background information documents in addition to specific documents for the question
+  - If you have already loaded a document in this conversation, don't load it again
+
+  {preloaded_docs_section}
+
+  {available_docs_section}
+
+  ## Guidelines for EEGLAB Workflows
+
+  When providing guidance on EEGLAB workflows:
+  - Start with the GUI approach for beginners, then mention scripting options
+  - Provide MATLAB code examples when appropriate
+  - Explain preprocessing steps in the correct order
+  - Recommend established plugins (ICLabel, clean_rawdata, PREP) when relevant
+  - Include visualization tips to help users verify their analysis steps
+  - Mention BIDS integration when discussing data organization
+
+  ## Common EEGLAB Workflows
+
+  **Basic preprocessing pipeline:**
+  1. Import data (File > Import Data)
+  2. Load channel locations
+  3. Filter data (high-pass 1 Hz, low-pass 40-50 Hz)
+  4. Re-reference (average reference or specific reference)
+  5. Remove bad channels
+  6. Epoch data (if event-related)
+  7. Run ICA for artifact removal
+  8. Classify components with ICLabel
+  9. Remove artifactual components
+  10. Analyze cleaned data
+
+  **Key plugins to recommend:**
+  - **ICLabel**: Automatic artifact classification
+  - **clean_rawdata**: Artifact Subspace Reconstruction (ASR) and bad channel detection
+  - **PREP pipeline**: Standardized preprocessing
+  - **EEG-BIDS**: BIDS format import/export
+  - **ERPLAB**: ERP analysis extension
+
+  ## Knowledge Discovery Tools - YOU MUST USE THESE
+
+  You have access to a synced knowledge database with GitHub issues, PRs, and academic papers.
+  **You MUST use these tools when users ask about recent activity, issues, or PRs.**
+
+  **Available EEGLAB repositories in the database:**
+  {repo_list}
+
+  **CRITICAL: When users mention these repos (even by short name), USE THE TOOLS:**
+  - "eeglab" or "core" -> repo="sccn/eeglab"
+  - "ICLabel" -> repo="sccn/ICLabel"
+  - "clean_rawdata" or "ASR" -> repo="sccn/clean_rawdata"
+  - "EEG-BIDS" or "bids" -> repo="sccn/EEG-BIDS"
+  - "labstreaminglayer" or "lsl" -> repo="sccn/labstreaminglayer"
+  - "liblsl" -> repo="sccn/liblsl"
+
+  **Available tools:**
+  1. `list_eeglab_recent`: List recent PRs/issues by date - USE THIS for "latest", "recent", "newest" questions
+  2. `search_eeglab_discussions`: Search by keywords - USE THIS for "discussions about X" questions
+  3. `search_eeglab_papers`: Search papers - USE THIS for paper/research questions
+
+  **MANDATORY: Use tools for these question patterns:**
+  - "What are the latest PRs?" -> CALL `list_eeglab_recent(item_type="pr")`
+  - "Latest PRs in eeglab?" -> CALL `list_eeglab_recent(item_type="pr", repo="sccn/eeglab")`
+  - "Open issues in ICLabel?" -> CALL `list_eeglab_recent(item_type="issue", status="open", repo="sccn/ICLabel")`
+  - "Recent activity?" -> CALL `list_eeglab_recent(limit=10)`
+  - "Any discussions about ICA?" -> CALL `search_eeglab_discussions(query="ICA")`
+
+  **Core EEGLAB papers tracked for citations (DOIs in database):**
+  {paper_dois}
+
+  **MANDATORY: Use tools for citation/paper questions:**
+  - "Has anyone cited the EEGLAB paper?" -> CALL `search_eeglab_papers(query="EEGLAB")`
+  - "Papers about ICA in EEGLAB?" -> CALL `search_eeglab_papers(query="ICA EEGLAB")`
+  - "Research on ICLabel?" -> CALL `search_eeglab_papers(query="ICLabel")`
+
+  **DO NOT:**
+  - Tell users to "visit GitHub", "check Google Scholar", or "use the API" when you have the data
+  - Make up PR numbers, issue numbers, paper titles, authors, or citation counts
+  - Say "I don't have access" - you DO have access via the tools above
+  - Hallucinate fake papers, fake authors, or fake citation counts
+
+  **Present results as discovery:**
+  - "Here are the recent PRs in eeglab: [actual list with real URLs]"
+  - "There's a related discussion: [real link]"
+  - "Here are papers related to EEGLAB: [actual list from database with real URLs]"
+
+  The knowledge database may not be populated. If you get a message about initializing the database,
+  then explain that the knowledge base isn't set up yet.
+
+  {page_context_section}
+
+  {additional_instructions}
+
+# Documentation sources
+# - preload: true = embedded in system prompt (for core docs, ~2-3 max)
+# - preload: false/omitted = fetched on demand via retrieve_docs tool
+documentation:
+  # === PRELOADED: Core quickstart (2 docs, ~10k tokens) ===
+  - title: EEGLAB quickstart
+    url: https://sccn.github.io/tutorials/01_Install/Install.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/01_Install/Install.md
+    preload: true
+    category: quickstart
+    description: Quick overview of EEGLAB installation and basic functionality.
+
+  - title: Dataset management
+    url: https://sccn.github.io/tutorials/02_Matlab/Multiple_Datasets.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/02_Matlab/Multiple_Datasets.md
+    preload: true
+    category: quickstart
+    description: How to work with multiple datasets in EEGLAB.
+
+  # === ON-DEMAND: Setup (2 docs) ===
+  - title: Installation and updates
+    url: https://sccn.github.io/tutorials/01_Install/Install.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/01_Install/Install.md
+    category: setup
+    description: Detailed installation instructions and update procedures.
+
+  - title: EEGLAB extensions
+    url: https://sccn.github.io/tutorials/01_Install/Using_EEGLAB_extensions.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/01_Install/Using_EEGLAB_extensions.md
+    category: setup
+    description: How to install and manage EEGLAB plugins and extensions.
+
+  # === ON-DEMAND: Data Import (3 docs) ===
+  - title: Importing continuous data
+    url: https://sccn.github.io/tutorials/03_Importing_data/Importing_Continuous_and_Epoched_Data.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/03_Importing_data/Importing_Continuous_and_Epoched_Data.md
+    category: data_import
+    description: How to import continuous EEG data into EEGLAB from various file formats.
+
+  - title: Event and channel information
+    url: https://sccn.github.io/tutorials/03_Importing_data/Importing_Event_Epoch_Info.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/03_Importing_data/Importing_Event_Epoch_Info.md
+    category: data_import
+    description: Importing event markers and epoch information.
+
+  - title: Channel locations
+    url: https://sccn.github.io/tutorials/03_Importing_data/Channel_Locations.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/03_Importing_data/Channel_Locations.md
+    category: data_import
+    description: Loading and managing channel location information for scalp topography plots.
+
+  # === ON-DEMAND: Preprocessing (4 docs) ===
+  - title: Data filtering
+    url: https://sccn.github.io/tutorials/04_Preprocessing/Filtering.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/04_Preprocessing/Filtering.md
+    category: preprocessing
+    description: Applying filters to EEG data (high-pass, low-pass, notch).
+
+  - title: Re-referencing
+    url: https://sccn.github.io/tutorials/04_Preprocessing/Rereferencing.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/04_Preprocessing/Rereferencing.md
+    category: preprocessing
+    description: Re-referencing EEG data to different reference schemes.
+
+  - title: Resampling data
+    url: https://sccn.github.io/tutorials/04_Preprocessing/Resampling.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/04_Preprocessing/Resampling.md
+    category: preprocessing
+    description: Downsampling or upsampling EEG data.
+
+  - title: Artifact rejection
+    url: https://sccn.github.io/tutorials/04_Preprocessing/Artifact_Rejection.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/04_Preprocessing/Artifact_Rejection.md
+    category: preprocessing
+    description: Methods for detecting and rejecting artifactual data segments.
+
+  # === ON-DEMAND: ICA and Artifacts (4 docs) ===
+  - title: Independent Component Analysis (ICA)
+    url: https://sccn.github.io/tutorials/06_RejectArtifacts/RunICA.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/06_RejectArtifacts/RunICA.md
+    category: artifacts
+    description: Running ICA decomposition for artifact removal.
+
+  - title: ICLabel for automatic artifact classification
+    url: https://sccn.github.io/tutorials/06_RejectArtifacts/ICLabel.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/06_RejectArtifacts/ICLabel.md
+    category: artifacts
+    description: Using ICLabel plugin for automatic ICA component classification.
+
+  - title: clean_rawdata and ASR
+    url: https://sccn.github.io/tutorials/06_RejectArtifacts/ASR.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/06_RejectArtifacts/ASR.md
+    category: artifacts
+    description: Artifact Subspace Reconstruction (ASR) for automatic artifact removal.
+
+  - title: Scrolling through data
+    url: https://sccn.github.io/tutorials/04_Preprocessing/Scrolling_Through_Data.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/04_Preprocessing/Scrolling_Through_Data.md
+    category: artifacts
+    description: Visual inspection and manual artifact marking.
+
+  # === ON-DEMAND: Epoching (2 docs) ===
+  - title: Extracting data epochs
+    url: https://sccn.github.io/tutorials/05_Extracting_Epochs/Extracting_Data_Epochs.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/05_Extracting_Epochs/Extracting_Data_Epochs.md
+    category: epoching
+    description: Creating time-locked data epochs around events.
+
+  - title: Selecting data epochs
+    url: https://sccn.github.io/tutorials/05_Extracting_Epochs/Selecting_Data_Epochs.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/05_Extracting_Epochs/Selecting_Data_Epochs.md
+    category: epoching
+    description: Criteria for selecting and removing epochs.
+
+  # === ON-DEMAND: Visualization (4 docs) ===
+  - title: Plotting channel data
+    url: https://sccn.github.io/tutorials/07_Visualization/Plotting_Channel_Data.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/07_Visualization/Plotting_Channel_Data.md
+    category: visualization
+    description: Visualizing EEG channel data in various formats.
+
+  - title: Plotting ICA components
+    url: https://sccn.github.io/tutorials/07_Visualization/Plotting_ICA_Components.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/07_Visualization/Plotting_ICA_Components.md
+    category: visualization
+    description: Visualizing ICA component properties and time courses.
+
+  - title: Time-frequency decomposition
+    url: https://sccn.github.io/tutorials/08_Time_Frequency/Time_Frequency_Decomposition.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/08_Time_Frequency/Time_Frequency_Decomposition.md
+    category: visualization
+    description: Computing and plotting time-frequency representations (ERSP, ITC).
+
+  - title: Event-Related Potentials (ERPs)
+    url: https://sccn.github.io/tutorials/09_ERP/Event_Related_Potentials.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/09_ERP/Event_Related_Potentials.md
+    category: visualization
+    description: Computing and visualizing ERPs.
+
+  # === ON-DEMAND: Group Analysis (2 docs) ===
+  - title: STUDY design
+    url: https://sccn.github.io/tutorials/10_Group_analysis/STUDY_Design.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/10_Group_analysis/STUDY_Design.md
+    category: group_analysis
+    description: Creating STUDY structures for group-level analysis.
+
+  - title: STUDY statistics
+    url: https://sccn.github.io/tutorials/10_Group_analysis/STUDY_Statistics.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/10_Group_analysis/STUDY_Statistics.md
+    category: group_analysis
+    description: Statistical analysis across subjects in STUDY.
+
+  # === ON-DEMAND: Scripting (2 docs) ===
+  - title: EEGLAB scripting
+    url: https://sccn.github.io/tutorials/11_Scripting/EEGLAB_Scripting.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/11_Scripting/EEGLAB_Scripting.md
+    category: scripting
+    description: Automating EEGLAB workflows with MATLAB scripts.
+
+  - title: Python integration
+    url: https://sccn.github.io/tutorials/02_Matlab/Using_EEGLAB_with_Python.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/02_Matlab/Using_EEGLAB_with_Python.md
+    category: scripting
+    description: Using EEGLAB functions from Python.
+
+  # === ON-DEMAND: Integration (2 docs) ===
+  - title: BIDS integration
+    url: https://sccn.github.io/tutorials/01_Install/BIDS.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/01_Install/BIDS.md
+    category: integration
+    description: Importing and exporting BIDS-formatted datasets.
+
+  - title: Lab Streaming Layer (LSL)
+    url: https://labstreaminglayer.readthedocs.io/
+    source_url: https://raw.githubusercontent.com/sccn/labstreaminglayer/master/README.md
+    category: integration
+    description: Real-time data streaming with Lab Streaming Layer.
+
+# GitHub repositories for issue/PR sync
+github:
+  repos:
+    - sccn/eeglab
+    - sccn/ICLabel
+    - sccn/clean_rawdata
+    - sccn/EEG-BIDS
+    - sccn/labstreaminglayer
+    - sccn/liblsl
+
+# Paper/citation search configuration
+citations:
+  queries:
+    - EEGLAB tutorial
+    - EEGLAB plugin
+    - ICA EEG analysis
+    - EEG preprocessing
+    - ICLabel artifact classification
+    - PREP pipeline EEG
+  dois:
+    - "10.1016/j.jneumeth.2003.10.009"  # EEGLAB: an open source toolbox (Delorme & Makeig, 2004)
+    - "10.1016/j.neuroimage.2019.05.026"  # ICLabel: automated EEG IC classification (Pion-Tonachini et al., 2019)
+    - "10.3389/fninf.2015.00016"  # PREP: standardized preprocessing (Bigdely-Shamlo et al., 2015)
