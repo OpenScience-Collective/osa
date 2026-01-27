@@ -52,7 +52,9 @@
     pageContextStorageKey: 'osa-page-context-enabled',
     pageContextLabel: 'Share page URL to help answer questions',
     // Fullscreen mode (for pop-out windows)
-    fullscreen: false
+    fullscreen: false,
+    // Streaming responses - enable progressive text display for better UX
+    streamingEnabled: true
   };
 
   // Log environment for debugging
@@ -1912,6 +1914,187 @@
     }, 5000);
   }
 
+  // Parse SSE (Server-Sent Events) format
+  // Returns parsed event object or null if line is not a data event
+  function parseSSE(line) {
+    if (!line || !line.startsWith('data: ')) {
+      return null;
+    }
+    try {
+      const jsonStr = line.substring(6); // Remove 'data: ' prefix
+      return JSON.parse(jsonStr);
+    } catch (error) {
+      console.warn('[OSA] Failed to parse SSE line:', line, error);
+      return null;
+    }
+  }
+
+  // Handle streaming response from API
+  // SSE Event formats:
+  //   data: {"event": "content", "content": "text chunk"}
+  //   data: {"event": "tool_start", "name": "tool_name", "input": {...}}
+  //   data: {"event": "tool_end", "name": "tool_name", "output": "result"}
+  //   data: {"event": "done"}
+  //   data: {"event": "error", "message": "error description"}
+  async function handleStreamingResponse(response, container) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let accumulatedContent = '';
+    let lastUpdateTime = 0;
+    let lastChunkTime = Date.now();
+    const UPDATE_THROTTLE_MS = 100; // Update UI every 100ms max
+    const STREAM_TIMEOUT_MS = 60000; // 60 seconds with no data = timeout
+    let receivedDoneEvent = false;
+
+    // Create placeholder assistant message
+    messages.push({ role: 'assistant', content: '' });
+    const messageIndex = messages.length - 1;
+
+    try {
+      while (true) {
+        // Check for stream timeout
+        const now = Date.now();
+        if (now - lastChunkTime > STREAM_TIMEOUT_MS) {
+          console.error('[OSA] Stream timeout - no data received for', STREAM_TIMEOUT_MS, 'ms');
+          throw new Error('Stream timeout - server stopped responding');
+        }
+
+        const { done, value } = await reader.read();
+
+        if (done) {
+          break;
+        }
+
+        lastChunkTime = Date.now(); // Reset timeout on each chunk
+
+        // Decode chunk and add to buffer
+        buffer += decoder.decode(value, { stream: true });
+
+        // Process complete lines (SSE format uses \n\n as delimiter)
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+        for (const line of lines) {
+          const event = parseSSE(line);
+          if (!event) continue;
+
+          if (event.event === 'content' && event.content) {
+            // Accumulate content
+            accumulatedContent += event.content;
+
+            // Throttle UI updates for performance
+            const now = Date.now();
+            if (now - lastUpdateTime >= UPDATE_THROTTLE_MS) {
+              messages[messageIndex].content = accumulatedContent;
+              renderMessages(container);
+              lastUpdateTime = now;
+            }
+          } else if (event.event === 'tool_start') {
+            // Log tool execution for debugging
+            console.log('[OSA] Tool started:', event.name, event.input);
+          } else if (event.event === 'tool_end') {
+            // Log tool completion
+            console.log('[OSA] Tool completed:', event.name);
+          } else if (event.event === 'done') {
+            // Finalize message
+            receivedDoneEvent = true;
+            messages[messageIndex].content = accumulatedContent;
+            renderMessages(container);
+            try {
+              saveHistory();
+            } catch (saveError) {
+              console.error('[OSA] Failed to save history:', saveError);
+              showError(container, 'Warning: Unable to save conversation');
+            }
+            updateStatusDisplay(true);
+            return; // Successfully completed
+          } else if (event.event === 'error') {
+            // Backend sent an error event
+            const errorMsg = event.message || 'An error occurred during response generation';
+            console.error('[OSA] Backend error event:', errorMsg);
+
+            // Show partial content with error indicator
+            if (accumulatedContent) {
+              messages[messageIndex].content = accumulatedContent + `\n\n_[Error: ${errorMsg}]_`;
+            } else {
+              messages[messageIndex].content = `_[Error: ${errorMsg}]_`;
+            }
+            renderMessages(container);
+            try {
+              saveHistory();
+            } catch (saveError) {
+              console.error('[OSA] Failed to save history:', saveError);
+            }
+
+            throw new Error(`Backend streaming error: ${errorMsg}`);
+          } else if (event.event) {
+            // Unknown event type - log for debugging
+            console.warn('[OSA] Unknown SSE event type:', event.event, event);
+          }
+        }
+      }
+
+      // Stream ended without receiving 'done' event - this is abnormal
+      if (!receivedDoneEvent) {
+        console.error('[OSA] Stream ended without done event');
+
+        if (accumulatedContent) {
+          messages[messageIndex].content = accumulatedContent +
+            '\n\n_[Response may be incomplete - connection ended unexpectedly]_';
+          renderMessages(container);
+          try {
+            saveHistory();
+          } catch (saveError) {
+            console.error('[OSA] Failed to save history:', saveError);
+          }
+          updateStatusDisplay(false);
+          showError(container, 'Connection ended unexpectedly. Response may be incomplete.');
+        } else {
+          throw new Error('Stream ended without content or completion signal');
+        }
+      }
+
+    } catch (error) {
+      console.error('[OSA] Streaming error:', error);
+
+      // Keep partial content if we have any
+      if (accumulatedContent) {
+        const errorType = error.name || 'Error';
+        let userMessage = 'Stream interrupted';
+
+        if (error.name === 'AbortError') {
+          userMessage = 'Connection timeout';
+        } else if (error.message && error.message.includes('timeout')) {
+          userMessage = 'Stream timeout';
+        } else if (error.message && error.message.includes('Backend streaming error')) {
+          // Backend error already handled above, don't modify message
+          throw error;
+        }
+
+        messages[messageIndex].content = accumulatedContent + `\n\n_[${userMessage}]_`;
+        renderMessages(container);
+        try {
+          saveHistory();
+        } catch (saveError) {
+          console.error('[OSA] Failed to save history:', saveError);
+        }
+      } else {
+        // No content received - remove placeholder message
+        messages.pop();
+      }
+
+      throw error; // Re-throw to be handled by sendMessage
+    } finally {
+      // Always release the reader to free resources
+      try {
+        reader.releaseLock();
+      } catch (e) {
+        // Reader may already be closed, ignore errors
+      }
+    }
+  }
+
   // Send message to API
   async function sendMessage(container, question) {
     if (isLoading || !question.trim()) return;
@@ -1946,6 +2129,11 @@
       // Add model selection if set
       if (userSettings.model) {
         body.model = userSettings.model;
+      }
+
+      // Enable streaming if configured
+      if (CONFIG.streamingEnabled) {
+        body.stream = true;
       }
 
       if (!isValidCommunityId(CONFIG.communityId)) {
@@ -1989,21 +2177,82 @@
         throw new Error(errorMessage);
       }
 
-      const data = await response.json();
-      const answer = (data && typeof data.answer === 'string') ? data.answer : null;
-      if (!answer) {
-        throw new Error('Invalid response from server');
+      // Check if response is streaming (SSE)
+      const contentType = response.headers.get('content-type') || '';
+      if (CONFIG.streamingEnabled && contentType.includes('text/event-stream')) {
+        // Handle streaming response
+        await handleStreamingResponse(response, container);
+      } else if (CONFIG.streamingEnabled && !contentType.includes('text/event-stream')) {
+        // Streaming was expected but not received - log for debugging
+        console.warn('[OSA] Expected streaming response but got content-type:', contentType);
+        console.warn('[OSA] Falling back to non-streaming mode');
+
+        // Handle non-streaming response (fallback)
+        const data = await response.json();
+        const answer = (data && typeof data.answer === 'string') ? data.answer : null;
+        if (!answer) {
+          throw new Error('Invalid response from server');
+        }
+        messages.push({ role: 'assistant', content: answer });
+        try {
+          saveHistory();
+        } catch (saveError) {
+          console.error('[OSA] Failed to save history:', saveError);
+          showError(container, 'Warning: Unable to save conversation');
+        }
+        updateStatusDisplay(true);
+      } else {
+        // Streaming not enabled, expected behavior
+        const data = await response.json();
+        const answer = (data && typeof data.answer === 'string') ? data.answer : null;
+        if (!answer) {
+          throw new Error('Invalid response from server');
+        }
+        messages.push({ role: 'assistant', content: answer });
+        try {
+          saveHistory();
+        } catch (saveError) {
+          console.error('[OSA] Failed to save history:', saveError);
+          showError(container, 'Warning: Unable to save conversation');
+        }
+        updateStatusDisplay(true);
       }
-      messages.push({ role: 'assistant', content: answer });
-      saveHistory();
-      updateStatusDisplay(true);
 
     } catch (error) {
-      console.error('Chat error:', error);
-      showError(container, error.message || 'Failed to get response');
-      // Remove the user message on error and sync localStorage
-      messages.pop();
-      saveHistory();
+      // Categorize error for better user messaging
+      let userMessage = 'Failed to get response';
+
+      if (error.name === 'AbortError') {
+        userMessage = 'Request timed out. Please try again.';
+      } else if (error.name === 'TypeError' && error.message.includes('fetch')) {
+        userMessage = 'Network error. Please check your connection.';
+      } else if (error.message && error.message.includes('JSON')) {
+        userMessage = 'Invalid response from server. Please try again.';
+      } else if (error.message && error.message.includes('Backend streaming error')) {
+        userMessage = error.message.replace('Backend streaming error: ', '');
+      } else if (error.message && error.message.includes('Stream')) {
+        userMessage = 'Connection interrupted. Please try again.';
+      } else if (error.message) {
+        userMessage = error.message;
+      }
+
+      console.error('[OSA] Send message error:', error);
+      showError(container, userMessage);
+
+      // Check if we need to clean up messages
+      // If handleStreamingResponse threw and kept partial content, assistant message is already in array
+      // If handleStreamingResponse threw and had no content, it already popped the assistant message
+      // We need to remove the user message only if it's the last message
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage && lastMessage.role === 'user' && lastMessage.content === question) {
+        messages.pop();
+      }
+
+      try {
+        saveHistory();
+      } catch (saveError) {
+        console.error('[OSA] Failed to save history after error:', saveError);
+      }
       updateStatusDisplay(false);
     } finally {
       isLoading = false;

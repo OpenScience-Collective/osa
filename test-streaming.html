@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OSA Widget Streaming Test</title>
+</head>
+<body>
+  <h1>OSA Widget Streaming Test</h1>
+  <p>This page tests the streaming response feature of the OSA chat widget.</p>
+  <p>Open the widget (bottom-right corner) and ask a question to test streaming.</p>
+
+  <!-- Load the widget -->
+  <script src="frontend/osa-chat-widget.js"></script>
+  <script>
+    // Configure the widget for testing
+    OSAChatWidget.setConfig({
+      communityId: 'hed',
+      apiEndpoint: 'https://osa-worker-dev.shirazi-10f.workers.dev',
+      streamingEnabled: true,
+      title: 'HED Assistant (Streaming Test)',
+      initialMessage: 'Testing streaming responses. Try asking a question that will generate a long response!'
+    });
+  </script>
+
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 800px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+      line-height: 1.6;
+    }
+    h1 {
+      color: #333;
+    }
+    p {
+      color: #666;
+    }
+  </style>
+</body>
+</html>
