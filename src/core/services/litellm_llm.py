@@ -30,6 +30,7 @@ Usage:
 
 import logging
 import os
+from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
@@ -264,19 +265,21 @@ class CachingLLMWrapper(BaseChatModel):
             try:
                 # Validate message has content attribute
                 if not hasattr(msg, "content"):
-                    logger.warning("Message at index %d missing content attribute, skipping", i)
-                    continue
+                    logger.error("Message at index %d missing content attribute", i)
+                    raise ValueError(
+                        f"Invalid message at index {i}: missing 'content' attribute. "
+                        f"Message type: {type(msg).__name__}. All messages must have a 'content' attribute."
+                    )
 
                 if isinstance(msg, SystemMessage):
                     # Validate content is not None
                     if msg.content is None:
-                        logger.warning(
-                            "SystemMessage at index %d has None content, using empty string",
-                            i,
+                        logger.error("SystemMessage at index %d has None content", i)
+                        raise ValueError(
+                            f"SystemMessage at index {i} has None content. "
+                            "All system messages must have non-None content."
                         )
-                        content = ""
-                    else:
-                        content = str(msg.content)
+                    content = str(msg.content)
 
                     # Transform system message to multipart format with cache_control
                     result.append(
@@ -294,12 +297,22 @@ class CachingLLMWrapper(BaseChatModel):
                     logger.debug("Added cache_control to SystemMessage at index %d", i)
 
                 elif isinstance(msg, HumanMessage):
-                    content = str(msg.content) if msg.content is not None else ""
-                    result.append({"role": "user", "content": content})
+                    if msg.content is None:
+                        logger.error("HumanMessage at index %d has None content", i)
+                        raise ValueError(
+                            f"HumanMessage at index {i} has None content. "
+                            "All messages must have non-None content."
+                        )
+                    result.append({"role": "user", "content": str(msg.content)})
 
                 elif isinstance(msg, AIMessage):
-                    content = str(msg.content) if msg.content is not None else ""
-                    result.append({"role": "assistant", "content": content})
+                    if msg.content is None:
+                        logger.error("AIMessage at index %d has None content", i)
+                        raise ValueError(
+                            f"AIMessage at index {i} has None content. "
+                            "All messages must have non-None content."
+                        )
+                    result.append({"role": "assistant", "content": str(msg.content)})
 
                 else:
                     # Fallback for other message types
@@ -308,12 +321,31 @@ class CachingLLMWrapper(BaseChatModel):
                         type(msg).__name__,
                         i,
                     )
-                    content = str(msg.content) if msg.content is not None else ""
-                    result.append({"role": "user", "content": content})
+                    if msg.content is None:
+                        logger.error("Message at index %d has None content", i)
+                        raise ValueError(
+                            f"Message at index {i} has None content. "
+                            "All messages must have non-None content."
+                        )
+                    result.append({"role": "user", "content": str(msg.content)})
 
+            except (ValueError, AttributeError, UnicodeError) as e:
+                logger.error(
+                    "Error processing message at index %d: %s (%s)",
+                    i,
+                    str(e),
+                    type(e).__name__,
+                )
+                raise
             except Exception as e:
-                logger.error("Error processing message at index %d: %s", i, str(e))
-                raise TypeError(f"Failed to process message at index {i}: {str(e)}") from e
+                logger.error(
+                    "Unexpected error processing message at index %d: %s (%s)",
+                    i,
+                    str(e),
+                    type(e).__name__,
+                    exc_info=True,
+                )
+                raise
 
         logger.debug(
             "Transformed %d messages, added cache_control to %d system messages",
@@ -324,26 +356,69 @@ class CachingLLMWrapper(BaseChatModel):
 
     def _generate(self, messages: list[BaseMessage], **kwargs) -> Any:
         """Generate response with cache_control on system messages."""
-        cached_messages = self._add_cache_control(messages)
-        return self.llm._generate(cached_messages, **kwargs)
+        logger.debug("Generating response for %d messages", len(messages))
+        try:
+            cached_messages = self._add_cache_control(messages)
+            return self.llm._generate(cached_messages, **kwargs)
+        except Exception as e:
+            logger.error(
+                "Error in _generate for %s: %s",
+                type(self.llm).__name__,
+                str(e),
+                exc_info=True,
+            )
+            raise
 
     async def _agenerate(self, messages: list[BaseMessage], **kwargs) -> Any:
         """Async generate response with cache_control on system messages."""
-        cached_messages = self._add_cache_control(messages)
-        return await self.llm._agenerate(cached_messages, **kwargs)
+        logger.debug("Async generating response for %d messages", len(messages))
+        try:
+            cached_messages = self._add_cache_control(messages)
+            return await self.llm._agenerate(cached_messages, **kwargs)
+        except Exception as e:
+            logger.error(
+                "Error in _agenerate for %s: %s",
+                type(self.llm).__name__,
+                str(e),
+                exc_info=True,
+            )
+            raise
 
     def invoke(self, messages: list[BaseMessage], **kwargs) -> Any:
         """Invoke LLM with cache_control on system messages."""
-        cached_messages = self._add_cache_control(messages)
-        return self.llm.invoke(cached_messages, **kwargs)
+        logger.debug("Invoking %s with %d messages", type(self.llm).__name__, len(messages))
+        try:
+            cached_messages = self._add_cache_control(messages)
+            return self.llm.invoke(cached_messages, **kwargs)
+        except Exception as e:
+            logger.error(
+                "Error invoking %s: %s",
+                type(self.llm).__name__,
+                str(e),
+                exc_info=True,
+            )
+            raise
 
     async def ainvoke(self, messages: list[BaseMessage], **kwargs) -> Any:
         """Async invoke LLM with cache_control on system messages."""
-        cached_messages = self._add_cache_control(messages)
-        return await self.llm.ainvoke(cached_messages, **kwargs)
+        logger.debug("Async invoking %s with %d messages", type(self.llm).__name__, len(messages))
+        try:
+            cached_messages = self._add_cache_control(messages)
+            return await self.llm.ainvoke(cached_messages, **kwargs)
+        except Exception as e:
+            logger.error(
+                "Error async invoking %s: %s",
+                type(self.llm).__name__,
+                str(e),
+                exc_info=True,
+            )
+            raise
 
-    def stream(self, input, config=None, **kwargs):
+    def stream(self, input: list[BaseMessage] | Any, config: Any = None, **kwargs) -> Iterator[Any]:
         """Stream with cache_control applied to system messages.
+
+        Applies cache_control transformation only if input is a list of messages.
+        Non-list inputs are passed through unchanged to the underlying LLM's stream method.
 
         Args:
             input: Messages to stream (can be list of BaseMessage or other formats)
@@ -356,6 +431,7 @@ class CachingLLMWrapper(BaseChatModel):
         Raises:
             ValueError: If input is None or invalid
             NotImplementedError: If underlying LLM doesn't support streaming
+            Exception: Any exception raised by the underlying LLM's stream() method
         """
         # Validate input
         if input is None:
@@ -363,35 +439,38 @@ class CachingLLMWrapper(BaseChatModel):
             raise ValueError("Input cannot be None for streaming")
 
         # Check if underlying LLM supports streaming
-        if not hasattr(self.llm, "stream"):
+        if not (hasattr(self.llm, "stream") and callable(self.llm.stream)):
             logger.error(
                 "Underlying LLM %s does not support streaming",
                 type(self.llm).__name__,
             )
             raise NotImplementedError(
-                f"Underlying LLM {type(self.llm).__name__} does not support streaming"
+                f"Underlying LLM {type(self.llm).__name__} does not support streaming. "
+                "To use streaming, either: (1) use a different LLM model that supports streaming, "
+                "or (2) use invoke() instead of stream() for non-streaming responses."
             )
 
-        try:
-            # Apply caching if input is a message list
-            if isinstance(input, list):
-                logger.debug("Applying cache_control to %d messages", len(input))
-                input = self._add_cache_control(input)
-            else:
-                logger.debug(
-                    "Input is not a list (%s), passing through without caching",
-                    type(input).__name__,
-                )
+        # Apply caching if input is a message list
+        if isinstance(input, list):
+            logger.debug("Applying cache_control to %d messages for streaming", len(input))
+            input = self._add_cache_control(input)
+        else:
+            logger.warning(
+                "Input is not a message list (got %s), caching disabled for this stream. "
+                "This may result in higher API costs.",
+                type(input).__name__,
+            )
 
-            logger.debug("Starting stream from %s", type(self.llm).__name__)
-            return self.llm.stream(input, config=config, **kwargs)
+        logger.debug("Starting stream from %s", type(self.llm).__name__)
+        return self.llm.stream(input, config=config, **kwargs)
 
-        except Exception as e:
-            logger.error("Error during streaming: %s", str(e))
-            raise
-
-    async def astream(self, input, config=None, **kwargs):
+    async def astream(
+        self, input: list[BaseMessage] | Any, config: Any = None, **kwargs
+    ) -> AsyncIterator[Any]:
         """Async stream with cache_control applied to system messages.
+
+        Applies cache_control transformation only if input is a list of messages.
+        Non-list inputs are passed through unchanged to the underlying LLM's astream method.
 
         Args:
             input: Messages to stream (can be list of BaseMessage or other formats)
@@ -404,43 +483,42 @@ class CachingLLMWrapper(BaseChatModel):
         Raises:
             ValueError: If input is None or invalid
             NotImplementedError: If underlying LLM doesn't support async streaming
+            Exception: Any exception raised by the underlying LLM's astream() method
         """
         # Validate input
         if input is None:
             logger.error("Cannot async stream with None input")
-            raise ValueError("Input cannot be None for async streaming")
+            raise ValueError("Input cannot be None for streaming")
 
         # Check if underlying LLM supports async streaming
-        if not hasattr(self.llm, "astream"):
+        if not (hasattr(self.llm, "astream") and callable(self.llm.astream)):
             logger.error(
                 "Underlying LLM %s does not support async streaming",
                 type(self.llm).__name__,
             )
             raise NotImplementedError(
-                f"Underlying LLM {type(self.llm).__name__} does not support async streaming"
+                f"Underlying LLM {type(self.llm).__name__} does not support async streaming. "
+                "To use streaming, either: (1) use a different LLM model that supports streaming, "
+                "or (2) use ainvoke() instead of astream() for non-streaming responses."
             )
 
-        try:
-            # Apply caching if input is a message list
-            if isinstance(input, list):
-                logger.debug(
-                    "Applying cache_control to %d messages for async stream",
-                    len(input),
-                )
-                input = self._add_cache_control(input)
-            else:
-                logger.debug(
-                    "Input is not a list (%s), passing through without caching",
-                    type(input).__name__,
-                )
+        # Apply caching if input is a message list
+        if isinstance(input, list):
+            logger.debug(
+                "Applying cache_control to %d messages for async stream",
+                len(input),
+            )
+            input = self._add_cache_control(input)
+        else:
+            logger.warning(
+                "Input is not a message list (got %s), caching disabled for this stream. "
+                "This may result in higher API costs.",
+                type(input).__name__,
+            )
 
-            logger.debug("Starting async stream from %s", type(self.llm).__name__)
-            async for chunk in self.llm.astream(input, config=config, **kwargs):
-                yield chunk
-
-        except Exception as e:
-            logger.error("Error during async streaming: %s", str(e))
-            raise
+        logger.debug("Starting async stream from %s", type(self.llm).__name__)
+        async for chunk in self.llm.astream(input, config=config, **kwargs):
+            yield chunk
 
 
 # Current Anthropic models (for reference)
