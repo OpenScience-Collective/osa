@@ -480,3 +480,104 @@ def search_docstrings(
         raise
 
     return results
+
+
+@dataclass
+class FAQResult:
+    """A FAQ search result from mailing list archives."""
+
+    question: str
+    answer: str
+    thread_url: str
+    tags: list[str]
+    category: str
+    quality_score: float
+    message_count: int
+    first_message_date: str
+
+
+def search_faq_entries(
+    query: str,
+    project: str = "eeglab",
+    limit: int = 5,
+    list_name: str | None = None,
+    category: str | None = None,
+    min_quality: float = 0.0,
+) -> list[FAQResult]:
+    """Search FAQ entries using phrase matching.
+
+    Args:
+        query: Search phrase (treated as exact phrase, not FTS5 operators)
+        project: Community ID for database isolation. Defaults to 'eeglab'.
+        limit: Maximum number of results
+        list_name: Filter by mailing list name
+        category: Filter by category (e.g., 'troubleshooting', 'how-to')
+        min_quality: Minimum quality score (0.0-1.0)
+
+    Returns:
+        List of matching FAQ entries, ordered by quality score and relevance
+    """
+    sql = """
+        SELECT f.question, f.answer, f.thread_url, f.tags, f.category,
+               f.quality_score, f.message_count, f.first_message_date
+        FROM faq_entries_fts fts
+        JOIN faq_entries f ON fts.rowid = f.id
+        WHERE faq_entries_fts MATCH ?
+    """
+    params: list[str | int | float] = [query]
+
+    if list_name:
+        sql += " AND f.list_name = ?"
+        params.append(list_name)
+
+    if category:
+        sql += " AND f.category = ?"
+        params.append(category)
+
+    if min_quality > 0:
+        sql += " AND f.quality_score >= ?"
+        params.append(min_quality)
+
+    sql += " ORDER BY f.quality_score DESC, rank LIMIT ?"
+    params.append(limit)
+
+    results = []
+    try:
+        with get_connection(project) as conn:
+            # Sanitize user query to prevent FTS5 injection
+            safe_query = _sanitize_fts5_query(query)
+            params[0] = safe_query
+
+            for row in conn.execute(sql, params):
+                # Parse tags from JSON
+                import json
+
+                tags = json.loads(row["tags"]) if row["tags"] else []
+
+                results.append(
+                    FAQResult(
+                        question=row["question"],
+                        answer=row["answer"],
+                        thread_url=row["thread_url"],
+                        tags=tags,
+                        category=row["category"],
+                        quality_score=row["quality_score"],
+                        message_count=row["message_count"],
+                        first_message_date=row["first_message_date"] or "",
+                    )
+                )
+    except sqlite3.OperationalError as e:
+        # Infrastructure failure (corruption, disk full, permissions) - must propagate
+        logger.error(
+            "Database operational error during FAQ search: %s",
+            e,
+            exc_info=True,
+            extra={"query": query, "project": project},
+        )
+        raise  # Let API layer return 500, not empty results
+    except sqlite3.Error as e:
+        # Other database errors - still raise for debugging
+        logger.warning("Database error during FAQ search '%s': %s", query, e)
+        raise
+
+    return results
