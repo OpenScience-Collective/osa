@@ -965,6 +965,19 @@ def create_community_router(community_id: str) -> APIRouter:
             default_model = info.community_config.default_model
             default_provider = info.community_config.default_model_provider
 
+        # Validate required configuration
+        if not default_model:
+            logger.error(
+                "No default model configured for community %s (platform: %s, community: %s)",
+                info.id,
+                settings.default_model,
+                info.community_config.default_model if info.community_config else None,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="Community configuration incomplete: no default model configured",
+            )
+
         return CommunityConfigResponse(
             id=info.id,
             name=info.name,

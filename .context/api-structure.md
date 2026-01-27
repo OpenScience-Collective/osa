@@ -310,6 +310,9 @@ model_kwargs["provider"] = {"order": [provider]}  # ✅ OpenRouter accepts this
 ## Testing the API Structure
 
 ```bash
+# Note: Examples use dev port 38529. Default prod port is 38528.
+# Adjust port based on your deployment.
+
 # 1. Test config endpoint
 curl http://localhost:38529/hed/ | jq .
 # Should return: id, name, description, default_model, default_model_provider
