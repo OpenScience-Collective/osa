@@ -1060,14 +1060,40 @@ async def _stream_ask_response(
         sse_event = {"event": "done"}
         yield f"data: {json.dumps(sse_event)}\n\n"
 
+    except HTTPException:
+        # Don't catch our own HTTP exceptions - let them propagate
+        raise
+    except ValueError as e:
+        # Input validation errors - user's fault
+        logger.warning("Invalid input in streaming for community %s: %s", community_id, e)
+        sse_event = {
+            "event": "error",
+            "message": f"Invalid request: {str(e)}",
+            "retryable": False,
+        }
+        yield f"data: {json.dumps(sse_event)}\n\n"
     except Exception as e:
+        # Unexpected errors - log with full context
+        import uuid
+
+        error_id = str(uuid.uuid4())
         logger.error(
-            "Streaming error in ask endpoint for community %s: %s",
+            "Unexpected streaming error (ID: %s) in ask endpoint for community %s: %s",
+            error_id,
             community_id,
             e,
             exc_info=True,
+            extra={
+                "error_id": error_id,
+                "community_id": community_id,
+                "error_type": type(e).__name__,
+            },
         )
-        sse_event = {"event": "error", "message": str(e)}
+        sse_event = {
+            "event": "error",
+            "message": "An error occurred while generating the response. Please try again.",
+            "error_id": error_id,
+        }
         yield f"data: {json.dumps(sse_event)}\n\n"
 
 

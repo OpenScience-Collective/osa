@@ -198,6 +198,29 @@ async function proxyToBackend(request, env, path, body, corsHeaders, CONFIG) {
       signal: AbortSignal.timeout(CONFIG.REQUEST_TIMEOUT),
     });
 
+    // For non-2xx responses, pass through backend error details
+    if (!response.ok) {
+      let backendError = { error: `Backend returned ${response.status}` };
+      const contentType = response.headers.get('Content-Type');
+
+      // Try to extract backend error message
+      try {
+        if (contentType?.includes('application/json')) {
+          backendError = await response.json();
+        } else {
+          const text = await response.text();
+          backendError = { error: text.substring(0, 500) };
+        }
+      } catch {
+        // Use default error if parsing fails
+      }
+
+      return new Response(JSON.stringify(backendError), {
+        status: response.status,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
     // Check if streaming response
     const contentType = response.headers.get('Content-Type');
     if (contentType?.includes('text/event-stream')) {
@@ -217,6 +240,7 @@ async function proxyToBackend(request, env, path, body, corsHeaders, CONFIG) {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   } catch (error) {
+    // Only network/proxy errors reach here, not HTTP errors
     console.error('Backend proxy error:', {
       path: path,
       errorName: error.name,
