@@ -1227,19 +1227,45 @@
   // Save chat history to localStorage
   let saveErrorShown = false;
   function saveHistory() {
+    if (!CONFIG.storageKey) {
+      console.warn('[OSA] Cannot save history - no storage key configured');
+      return;
+    }
+
     try {
-      localStorage.setItem(CONFIG.storageKey, JSON.stringify(messages));
+      const data = JSON.stringify(messages);
+      localStorage.setItem(CONFIG.storageKey, data);
       saveErrorShown = false;
     } catch (e) {
-      console.error('Failed to save chat history:', e);
-      // Show error once per session to avoid spam
-      if (!saveErrorShown) {
-        const container = document.querySelector('.osa-chat-widget');
-        if (container) {
-          showError(container, 'Chat history could not be saved. Storage may be full or disabled.');
-        }
-        saveErrorShown = true;
+      console.error('[OSA] localStorage save failed:', {
+        errorName: e.name,
+        errorMessage: e.message,
+        messageCount: messages.length,
+        isQuotaError: e.name === 'QuotaExceededError'
+      });
+
+      // Determine error type for better user messaging
+      let errorMsg = 'Chat history could not be saved';
+      const isQuotaError = e.name === 'QuotaExceededError';
+      const isSecurityError = e.name === 'SecurityError';
+
+      if (isQuotaError) {
+        errorMsg = 'Storage full - conversation NOT saved. Clear browser data or export chat.';
+      } else if (isSecurityError) {
+        errorMsg = 'Browser privacy settings prevent saving. Enable local storage.';
+      } else {
+        errorMsg = 'Storage unavailable - conversation will be lost on refresh.';
       }
+
+      // Show error (not just once - user needs to know every time save fails)
+      const container = document.querySelector('.osa-chat-widget');
+      if (container && !saveErrorShown) {
+        showError(container, errorMsg);
+        saveErrorShown = true; // Show once per session to avoid spam
+      }
+
+      // Re-throw so callers know save failed
+      throw e;
     }
   }
 
@@ -2091,10 +2117,16 @@
       throw error; // Re-throw to be handled by sendMessage
     } finally {
       // Always release the reader to free resources
-      try {
-        reader.releaseLock();
-      } catch (e) {
-        // Reader may already be closed, ignore errors
+      if (reader) {
+        try {
+          reader.releaseLock();
+        } catch (releaseError) {
+          // Log cleanup failures - they indicate serious issues
+          console.error('[OSA] Failed to release stream reader:', {
+            errorName: releaseError.name,
+            errorMessage: releaseError.message
+          });
+        }
       }
     }
   }
@@ -2104,7 +2136,12 @@
     if (isLoading || !question.trim()) return;
 
     isLoading = true;
+
+    // Track message indices to avoid corruption on error
+    const userMessageIndex = messages.length;
     messages.push({ role: 'user', content: question });
+    let assistantMessageCreated = false;
+
     renderMessages(container);
     renderSuggestions(container);
 
@@ -2157,6 +2194,7 @@
         method: 'POST',
         headers: headers,
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(120000), // 2 minute timeout for connection + streaming
       });
 
       if (!response.ok) {
@@ -2185,6 +2223,7 @@
       const contentType = response.headers.get('content-type') || '';
       if (CONFIG.streamingEnabled && contentType.includes('text/event-stream')) {
         // Handle streaming response
+        assistantMessageCreated = true; // handleStreamingResponse creates assistant message
         await handleStreamingResponse(response, container);
       } else if (CONFIG.streamingEnabled && !contentType.includes('text/event-stream')) {
         // Streaming was expected but not received - log for debugging
@@ -2243,19 +2282,30 @@
       console.error('[OSA] Send message error:', error);
       showError(container, userMessage);
 
-      // Check if we need to clean up messages
-      // If handleStreamingResponse threw and kept partial content, assistant message is already in array
-      // If handleStreamingResponse threw and had no content, it already popped the assistant message
-      // We need to remove the user message only if it's the last message
-      const lastMessage = messages[messages.length - 1];
-      if (lastMessage && lastMessage.role === 'user' && lastMessage.content === question) {
-        messages.pop();
+      // Clean up messages based on what was created
+      // If streaming was attempted, handleStreamingResponse manages its own assistant message
+      // We only need to remove the user message if no assistant response exists
+      if (assistantMessageCreated) {
+        // handleStreamingResponse created an assistant message
+        // If it has content (partial or complete), keep both user and assistant messages
+        // If it has no content, handleStreamingResponse already removed it, so remove user message too
+        const lastMessage = messages[messages.length - 1];
+        if (lastMessage && lastMessage.role === 'user' && messages.length === userMessageIndex + 1) {
+          // No assistant message remains, remove user message
+          messages.splice(userMessageIndex, 1);
+        }
+      } else {
+        // No streaming attempted, no assistant message created, remove user message
+        if (messages.length > userMessageIndex && messages[userMessageIndex].role === 'user') {
+          messages.splice(userMessageIndex, 1);
+        }
       }
 
       try {
         saveHistory();
       } catch (saveError) {
         console.error('[OSA] Failed to save history after error:', saveError);
+        // saveHistory already showed error to user
       }
       updateStatusDisplay(false);
     } finally {

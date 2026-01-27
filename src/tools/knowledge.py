@@ -23,6 +23,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 from src.knowledge.db import get_db_path
 from src.knowledge.search import (
     list_recent_github_items,
+    search_docstrings,
     search_github_items,
     search_papers,
 )
@@ -252,6 +253,65 @@ def create_search_papers_tool(
     )
 
 
+def create_search_docstrings_tool(
+    community_id: str,
+    community_name: str,
+    language: str | None = None,
+) -> BaseTool:
+    """Create a tool for searching code docstrings for a community.
+
+    Args:
+        community_id: The community identifier (e.g., 'hed', 'bids', 'eeglab')
+        community_name: Display name (e.g., 'HED', 'BIDS', 'EEGLAB')
+        language: Optional language filter ('matlab' or 'python')
+
+    Returns:
+        A LangChain tool for searching code documentation
+    """
+    lang_help = ""
+    if language:
+        lang_help = f" Only searches {language.upper()} code."
+    else:
+        lang_help = " Searches both MATLAB and Python code."
+
+    def search_docstrings_impl(query: str, limit: int = 5) -> str:
+        """Search code docstrings implementation."""
+        if not _check_db_exists(community_id):
+            return (
+                f"Knowledge database for {community_name} not initialized. "
+                "Run 'osa sync init' and 'osa sync docstrings' to populate it."
+            )
+
+        results = search_docstrings(query, project=community_id, limit=limit, language=language)
+
+        if not results:
+            lang_str = f" ({language})" if language else ""
+            return f"No code documentation found for '{query}'{lang_str}."
+
+        lines = [f"Code documentation in {community_name}:\n"]
+        for r in results:
+            lines.append(f"- {r.title}")
+            lines.append(f"  [View source on GitHub]({r.url})")
+            if r.snippet:
+                snippet = r.snippet[:200] + "..." if len(r.snippet) > 200 else r.snippet
+                lines.append(f"  Documentation: {snippet}")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    description = (
+        f"Search {community_name} code documentation (docstrings from functions, classes, scripts).{lang_help} "
+        "Use this to find how specific functions work, what parameters they accept, "
+        "and see usage examples. Results include direct links to source code on GitHub."
+    )
+
+    return StructuredTool.from_function(
+        func=search_docstrings_impl,
+        name=f"search_{community_id}_code_docs",
+        description=description,
+    )
+
+
 def create_knowledge_tools(
     community_id: str,
     community_name: str,
@@ -259,6 +319,8 @@ def create_knowledge_tools(
     include_discussions: bool = True,
     include_recent: bool = True,
     include_papers: bool = True,
+    include_docstrings: bool = False,
+    docstrings_language: str | None = None,
 ) -> list[BaseTool]:
     """Create all knowledge discovery tools for a community.
 
@@ -266,12 +328,14 @@ def create_knowledge_tools(
     based on the community configuration.
 
     Args:
-        community_id: The community identifier (e.g., 'hed', 'bids')
-        community_name: Display name (e.g., 'HED', 'BIDS')
+        community_id: The community identifier (e.g., 'hed', 'bids', 'eeglab')
+        community_name: Display name (e.g., 'HED', 'BIDS', 'EEGLAB')
         repos: Optional list of GitHub repos for help text
         include_discussions: Include discussion search tool (default: True)
         include_recent: Include recent activity tool (default: True)
         include_papers: Include paper search tool (default: True)
+        include_docstrings: Include code docstring search tool (default: False)
+        docstrings_language: Filter docstrings by language ('matlab' or 'python')
 
     Returns:
         List of LangChain tools for the community
@@ -286,5 +350,10 @@ def create_knowledge_tools(
 
     if include_papers:
         tools.append(create_search_papers_tool(community_id, community_name))
+
+    if include_docstrings:
+        tools.append(
+            create_search_docstrings_tool(community_id, community_name, docstrings_language)
+        )
 
     return tools
