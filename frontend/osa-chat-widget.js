@@ -1347,27 +1347,50 @@
     }
   }
 
+  // Disable widget when configuration is invalid
+  function disableWidget(container, message) {
+    if (!container) return;
+
+    showError(container, message);
+
+    // Disable input and send button
+    const input = container.querySelector('.osa-chat-input input');
+    const sendBtn = container.querySelector('.osa-send-btn');
+
+    if (input) {
+      input.disabled = true;
+      input.placeholder = 'Widget unavailable';
+    }
+    if (sendBtn) {
+      sendBtn.disabled = true;
+      sendBtn.style.opacity = '0.5';
+      sendBtn.style.cursor = 'not-allowed';
+    }
+  }
+
   // Fetch community default model from API
   async function fetchCommunityDefaultModel() {
     // Validate communityId before making request
     if (!isValidCommunityId(CONFIG.communityId)) {
       console.error('[OSA] Invalid communityId, cannot fetch default model');
-      communityDefaultModel = 'openai/gpt-oss-120b'; // Hardcoded fallback (Cerebras provider)
+      const container = document.querySelector('.osa-chat-widget');
+      if (container && isOpen) {
+        disableWidget(container, 'Invalid community configuration. Please check your widget setup.');
+      }
       return;
     }
 
     try {
-      const response = await fetch(`${CONFIG.apiEndpoint}/communities/${CONFIG.communityId}`, {
+      const response = await fetch(`${CONFIG.apiEndpoint}/${CONFIG.communityId}`, {
         method: 'GET',
         signal: AbortSignal.timeout(5000)
       });
 
       if (!response.ok) {
-        console.error(`[OSA] Community default model fetch failed: HTTP ${response.status}`);
-        communityDefaultModel = 'openai/gpt-oss-120b'; // Hardcoded fallback (Cerebras provider)
+        console.error(`[OSA] Community config fetch failed: HTTP ${response.status}`);
         const container = document.querySelector('.osa-chat-widget');
         if (container && isOpen) {
-          showError(container, `Could not load default model settings (HTTP ${response.status}). Using fallback.`);
+          disableWidget(container, `Failed to load community configuration (HTTP ${response.status}). Please try again later.`);
         }
         return;
       }
@@ -1375,20 +1398,19 @@
       const data = await response.json();
       if (data && data.default_model) {
         communityDefaultModel = data.default_model;
+        console.log(`[OSA] Loaded default model: ${communityDefaultModel}`);
       } else {
         console.error('[OSA] Community default model not found in API response');
-        communityDefaultModel = 'openai/gpt-oss-120b';
         const container = document.querySelector('.osa-chat-widget');
         if (container && isOpen) {
-          showError(container, 'Default model settings incomplete. Using fallback.');
+          disableWidget(container, 'Community configuration is incomplete. Please contact support.');
         }
       }
     } catch (e) {
-      console.error('[OSA] Could not fetch community default model:', e.message || e);
-      communityDefaultModel = 'openai/gpt-oss-120b';
+      console.error('[OSA] Could not fetch community config:', e.message || e);
       const container = document.querySelector('.osa-chat-widget');
       if (container && isOpen) {
-        showError(container, 'Network error loading model settings. Using fallback.');
+        disableWidget(container, 'Network error loading configuration. Please check your connection and try again.');
       }
     }
   }
@@ -1409,8 +1431,15 @@
     if (modelSelect) {
       const defaultOption = modelSelect.querySelector('option[value="default"]');
       if (defaultOption) {
-        const modelLabel = communityDefaultModel || 'Community Setting';
-        defaultOption.textContent = `Default (${modelLabel})`;
+        if (!communityDefaultModel) {
+          // Make it obvious something is wrong
+          defaultOption.textContent = 'Default (ERROR: Not configured)';
+          defaultOption.disabled = true;
+          console.error('[OSA] Cannot populate model selector - no default model loaded');
+        } else {
+          defaultOption.textContent = `Default (${communityDefaultModel})`;
+          defaultOption.disabled = false;
+        }
       }
     }
 
@@ -1433,8 +1462,14 @@
     }
 
     // Update hint with current default model
-    if (modelHint && communityDefaultModel) {
-      modelHint.textContent = `Community default: ${communityDefaultModel}`;
+    if (modelHint) {
+      if (communityDefaultModel) {
+        modelHint.textContent = `Community default: ${communityDefaultModel}`;
+        modelHint.style.color = '';  // Reset to default color
+      } else {
+        modelHint.textContent = 'ERROR: Default model not loaded. Widget may not function correctly.';
+        modelHint.style.color = '#e53e3e';  // Red color for error
+      }
     }
 
     if (overlay) {
