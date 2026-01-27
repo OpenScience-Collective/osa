@@ -1347,11 +1347,36 @@
     }
   }
 
+  // Disable widget when configuration is invalid
+  function disableWidget(container, message) {
+    if (!container) return;
+
+    showError(container, message);
+
+    // Disable input and send button
+    const input = container.querySelector('.osa-chat-input input');
+    const sendBtn = container.querySelector('.osa-send-btn');
+
+    if (input) {
+      input.disabled = true;
+      input.placeholder = 'Widget unavailable';
+    }
+    if (sendBtn) {
+      sendBtn.disabled = true;
+      sendBtn.style.opacity = '0.5';
+      sendBtn.style.cursor = 'not-allowed';
+    }
+  }
+
   // Fetch community default model from API
   async function fetchCommunityDefaultModel() {
     // Validate communityId before making request
     if (!isValidCommunityId(CONFIG.communityId)) {
       console.error('[OSA] Invalid communityId, cannot fetch default model');
+      const container = document.querySelector('.osa-chat-widget');
+      if (container && isOpen) {
+        disableWidget(container, 'Invalid community configuration. Please check your widget setup.');
+      }
       return;
     }
 
@@ -1365,7 +1390,7 @@
         console.error(`[OSA] Community config fetch failed: HTTP ${response.status}`);
         const container = document.querySelector('.osa-chat-widget');
         if (container && isOpen) {
-          showError(container, `Could not load community configuration (HTTP ${response.status}).`);
+          disableWidget(container, `Failed to load community configuration (HTTP ${response.status}). Please try again later.`);
         }
         return;
       }
@@ -1373,18 +1398,19 @@
       const data = await response.json();
       if (data && data.default_model) {
         communityDefaultModel = data.default_model;
+        console.log(`[OSA] Loaded default model: ${communityDefaultModel}`);
       } else {
         console.error('[OSA] Community default model not found in API response');
         const container = document.querySelector('.osa-chat-widget');
         if (container && isOpen) {
-          showError(container, 'Default model not configured for this community.');
+          disableWidget(container, 'Community configuration is incomplete. Please contact support.');
         }
       }
     } catch (e) {
       console.error('[OSA] Could not fetch community config:', e.message || e);
       const container = document.querySelector('.osa-chat-widget');
       if (container && isOpen) {
-        showError(container, 'Network error loading community configuration.');
+        disableWidget(container, 'Network error loading configuration. Please check your connection and try again.');
       }
     }
   }
@@ -1405,8 +1431,15 @@
     if (modelSelect) {
       const defaultOption = modelSelect.querySelector('option[value="default"]');
       if (defaultOption) {
-        const modelLabel = communityDefaultModel || 'Community Setting';
-        defaultOption.textContent = `Default (${modelLabel})`;
+        if (!communityDefaultModel) {
+          // Make it obvious something is wrong
+          defaultOption.textContent = 'Default (ERROR: Not configured)';
+          defaultOption.disabled = true;
+          console.error('[OSA] Cannot populate model selector - no default model loaded');
+        } else {
+          defaultOption.textContent = `Default (${communityDefaultModel})`;
+          defaultOption.disabled = false;
+        }
       }
     }
 
@@ -1429,8 +1462,14 @@
     }
 
     // Update hint with current default model
-    if (modelHint && communityDefaultModel) {
-      modelHint.textContent = `Community default: ${communityDefaultModel}`;
+    if (modelHint) {
+      if (communityDefaultModel) {
+        modelHint.textContent = `Community default: ${communityDefaultModel}`;
+        modelHint.style.color = '';  // Reset to default color
+      } else {
+        modelHint.textContent = 'ERROR: Default model not loaded. Widget may not function correctly.';
+        modelHint.style.color = '#e53e3e';  // Red color for error
+      }
     }
 
     if (overlay) {
