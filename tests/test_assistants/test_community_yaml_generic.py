@@ -20,7 +20,14 @@ import requests
 
 
 def discover_all_communities():
-    """Discover all registered community IDs for parametrized testing."""
+    """Discover all registered community IDs for parametrized testing.
+
+    Clears and repopulates the registry to ensure a fresh state for test
+    parameterization. This must happen at collection time, not test execution time.
+
+    Returns:
+        List of community IDs found in src/assistants/*/config.yaml files
+    """
     from src.assistants import discover_assistants, registry
 
     registry._assistants.clear()
@@ -92,8 +99,8 @@ class TestCommunityYAMLConfiguration:
         """All documentation source URLs should return HTTP 200.
 
         This test makes real HTTP requests and is marked as 'slow'.
-        Run with: pytest -m slow
-        Skip with: pytest -m "not slow"
+        Slow tests are included by default in test runs.
+        To skip slow tests: pytest -m "not slow"
         """
         from src.assistants import registry
 
@@ -137,8 +144,8 @@ class TestCommunityYAMLConfiguration:
         """All GitHub repos should exist and be accessible.
 
         This test makes real GitHub API requests and is marked as 'slow'.
-        Run with: pytest -m slow
-        Skip with: pytest -m "not slow"
+        Slow tests are included by default in test runs.
+        To skip slow tests: pytest -m "not slow"
         """
         from src.assistants import registry
 
@@ -304,3 +311,65 @@ class TestCommunityYAMLSecurity:
                         violations.append(f"{doc.title}: {doc.source_url}")
 
         assert not violations, f"{community_id} has forbidden URLs:\n" + "\n".join(violations)
+
+
+@pytest.mark.parametrize("community_id", discover_all_communities())
+class TestCommunityYAMLBehavioral:
+    """Behavioral tests for community functionality beyond config structure."""
+
+    def test_retrieve_docs_tool_description_includes_doc_list(self, community_id):
+        """Retrieve docs tool should list available documents in description."""
+        from src.assistants import registry
+
+        mock_model = MagicMock()
+        assistant = registry.create_assistant(community_id, model=mock_model, preload_docs=False)
+
+        retrieve_tool = next(
+            (t for t in assistant.tools if t.name == f"retrieve_{community_id}_docs"),
+            None,
+        )
+        assert retrieve_tool is not None, f"retrieve_{community_id}_docs tool not found"
+
+        config = registry.get_community_config(community_id)
+        on_demand_docs = [d for d in config.documentation if not d.preload]
+
+        if on_demand_docs:
+            # Verify each on-demand doc appears in the description
+            for doc in on_demand_docs[:5]:  # Check first 5 to avoid too slow
+                assert doc.title in retrieve_tool.description, (
+                    f"Doc '{doc.title}' not in tool description"
+                )
+
+    def test_system_prompt_contains_actual_github_repos(self, community_id):
+        """System prompt should include actual GitHub repo names when configured."""
+        from src.assistants import registry
+
+        mock_model = MagicMock()
+        assistant = registry.create_assistant(community_id, model=mock_model, preload_docs=False)
+        prompt = assistant.get_system_prompt()
+
+        config = registry.get_community_config(community_id)
+        if config.github and config.github.repos:
+            # Verify at least one repo appears in prompt
+            repo_found = any(repo in prompt for repo in config.github.repos)
+            assert repo_found, "No GitHub repos from config found in system prompt"
+
+    def test_knowledge_tools_are_callable(self, community_id):
+        """Knowledge discovery tools should be callable functions."""
+        from src.assistants import registry
+
+        mock_model = MagicMock()
+        assistant = registry.create_assistant(community_id, model=mock_model, preload_docs=False)
+
+        knowledge_tool_names = {
+            f"search_{community_id}_discussions",
+            f"list_{community_id}_recent",
+            f"search_{community_id}_papers",
+        }
+
+        for tool in assistant.tools:
+            if tool.name in knowledge_tool_names:
+                # Verify tool has callable function
+                assert hasattr(tool, "func") or hasattr(tool, "_run"), (
+                    f"{tool.name} is not callable"
+                )

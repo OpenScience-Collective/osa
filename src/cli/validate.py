@@ -48,8 +48,10 @@ def validate(
     Two modes:
     1. File mode: osa validate <config_path>
        - YAML syntax, schema validation, env vars
+       - Optionally test API key with --test-api-key
     2. Community mode: osa validate --community <id>
        - Full test suite including URL accessibility, GitHub repo validation
+       - Use --verbose for detailed pytest output
 
     Returns exit code 0 on success, 1 on failure.
     """
@@ -239,11 +241,15 @@ def validate(
 
 
 def _validate_community_with_tests(community_id: str, verbose: bool) -> None:
-    """Run pytest tests for a specific community.
+    """Run pytest tests for a specific community via subprocess.
+
+    Executes the generic test suite (test_community_yaml_generic.py) filtered
+    to the specified community. Runs pytest in a subprocess to provide clean
+    test isolation and user-friendly output formatting.
 
     Args:
         community_id: The community ID to validate (e.g., 'hed', 'eeglab')
-        verbose: Whether to show verbose pytest output
+        verbose: Whether to show verbose pytest output (-v flag)
 
     Raises:
         typer.Exit: With code 0 on success, 1 on failure
@@ -259,8 +265,8 @@ def _validate_community_with_tests(community_id: str, verbose: bool) -> None:
     if community_id not in registry:
         console.print(f"[red]Error: Community '{community_id}' not found[/red]\n")
         console.print("Available communities:")
-        for cid in registry._assistants:
-            console.print(f"  • {cid}")
+        for info in registry.list_all():
+            console.print(f"  • {info.id}")
         raise typer.Exit(1)
 
     # Get community info
@@ -269,6 +275,13 @@ def _validate_community_with_tests(community_id: str, verbose: bool) -> None:
     console.print(f"[cyan]Name:[/cyan] {info.name}")
     console.print(f"[cyan]Description:[/cyan] {info.description}")
     console.print(f"[cyan]Status:[/cyan] {info.status}\n")
+
+    # Show configuration summary
+    config = registry.get_community_config(community_id)
+    if config.documentation:
+        console.print(f"[dim]Documentation sources: {len(config.documentation)}[/dim]")
+    if config.github and config.github.repos:
+        console.print(f"[dim]GitHub repositories: {len(config.github.repos)}[/dim]")
 
     # Run pytest tests for this community
     console.print("[dim]Running test suite (this may take a few seconds)...[/dim]\n")
