@@ -315,3 +315,150 @@ class TestEEGLABSyncConfiguration:
 
         for doi in eeglab_config.citations.dois:
             assert doi.startswith("10.")
+
+
+class TestEEGLABErrorHandling:
+    """Tests for error handling and edge cases."""
+
+    def test_knowledge_tools_handle_missing_database(self, eeglab_assistant) -> None:
+        """Knowledge tools should return helpful error when database doesn't exist."""
+        from src.knowledge.db import get_db_path
+
+        db_path = get_db_path("eeglab")
+
+        if db_path.exists():
+            pytest.skip("Database exists, cannot test missing database scenario")
+
+        tool_names = {
+            "search_eeglab_discussions",
+            "list_eeglab_recent",
+            "search_eeglab_papers",
+        }
+
+        for tool in eeglab_assistant.tools:
+            if tool.name in tool_names:
+                result = (
+                    tool.invoke({"query": "test"}) if "search" in tool.name else tool.invoke({})
+                )
+                assert isinstance(result, str)
+                assert "not initialized" in result.lower() or "knowledge" in result.lower()
+                assert "sync" in result.lower()
+
+    def test_system_prompt_has_no_unsubstituted_placeholders(self, eeglab_assistant) -> None:
+        """System prompt should not contain unfilled template placeholders."""
+        prompt = eeglab_assistant.get_system_prompt()
+
+        assert "{repo_list}" not in prompt, "repo_list placeholder not substituted"
+        assert "{paper_dois}" not in prompt, "paper_dois placeholder not substituted"
+        assert "{preloaded_docs_section}" not in prompt, (
+            "preloaded_docs_section placeholder not substituted"
+        )
+        assert "{available_docs_section}" not in prompt, (
+            "available_docs_section placeholder not substituted"
+        )
+
+
+class TestEEGLABSecurityValidation:
+    """Tests for security features (SSRF protection)."""
+
+    def test_rejects_localhost_documentation_urls(self) -> None:
+        """Should reject documentation with localhost URLs (SSRF protection)."""
+        from pydantic import ValidationError
+
+        from src.core.config.community import CommunityConfig
+
+        malicious_configs = [
+            "http://localhost/docs",
+            "http://127.0.0.1/docs",
+            "http://169.254.169.254/latest/meta-data",
+            "http://192.168.1.1/internal",
+            "http://10.0.0.1/internal",
+        ]
+
+        for bad_url in malicious_configs:
+            with pytest.raises(ValidationError, match="localhost|private|metadata"):
+                CommunityConfig(
+                    id="test",
+                    name="Test",
+                    description="Test",
+                    status="available",
+                    documentation=[
+                        {
+                            "title": "Bad Doc",
+                            "url": "https://example.com",
+                            "source_url": bad_url,
+                            "preload": True,
+                            "category": "test",
+                            "description": "Test doc",
+                        }
+                    ],
+                )
+
+    def test_github_repo_format_validation(self) -> None:
+        """Should reject invalid GitHub repo formats."""
+        from pydantic import ValidationError
+
+        from src.core.config.community import CommunityConfig
+
+        invalid_repos = [
+            ["not-a-repo"],
+            ["/just-repo"],
+            ["org/"],
+            ["org/repo/extra"],
+            [""],
+        ]
+
+        for bad_repos in invalid_repos:
+            with pytest.raises(ValidationError):
+                CommunityConfig(
+                    id="test",
+                    name="Test",
+                    description="Test",
+                    status="available",
+                    github={"repos": bad_repos},
+                )
+
+
+class TestEEGLABToolRobustness:
+    """Tests for tool robustness with edge case inputs."""
+
+    def test_knowledge_tools_handle_empty_queries(self, eeglab_assistant) -> None:
+        """Knowledge tools should handle empty queries gracefully."""
+        search_tools = [
+            t for t in eeglab_assistant.tools if "search" in t.name and "eeglab" in t.name
+        ]
+
+        for tool in search_tools:
+            result = tool.invoke({"query": ""})
+            assert isinstance(result, str)
+            assert len(result) > 0
+
+    def test_knowledge_tools_handle_long_queries(self, eeglab_assistant) -> None:
+        """Knowledge tools should handle very long queries without crashing."""
+        search_tools = [
+            t for t in eeglab_assistant.tools if "search" in t.name and "eeglab" in t.name
+        ]
+
+        long_query = "x" * 10000
+
+        for tool in search_tools:
+            result = tool.invoke({"query": long_query})
+            assert isinstance(result, str)
+
+
+class TestEEGLABPreloadHandling:
+    """Tests for preloaded documentation handling."""
+
+    def test_assistant_creation_succeeds_without_preload(self) -> None:
+        """Assistant should create successfully even if preload is disabled."""
+        from src.assistants import registry
+
+        mock_model = MagicMock()
+        assistant = registry.create_assistant("eeglab", model=mock_model, preload_docs=False)
+
+        assert assistant is not None
+        assert assistant.config.id == "eeglab"
+
+        prompt = assistant.get_system_prompt()
+        assert isinstance(prompt, str)
+        assert len(prompt) > 0

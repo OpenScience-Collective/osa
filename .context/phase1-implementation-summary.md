@@ -33,9 +33,9 @@ src/assistants/eeglab/
 - Preprocessing (4): Filtering, Re-referencing, Resampling, Artifact rejection
 - ICA and Artifacts (4): ICA, ICLabel, clean_rawdata, Manual scrolling
 - Epoching (2): Extracting epochs, Selecting epochs
-- Visualization (4): Channel data, ICA components, Time-frequency, ERPs
-- Group Analysis (2): STUDY design, STUDY statistics
-- Scripting (2): MATLAB scripting, Python integration
+- Visualization (4): Channel spectra, ICA components, Time-frequency, ERP images
+- Group Analysis (2): STUDY designs, STUDY statistics
+- Scripting (2): Automated pipeline, Using history
 - Integration (2): BIDS, Lab Streaming Layer
 
 ### 4. GitHub Repositories (6)
@@ -86,17 +86,17 @@ Created `tests/test_assistants/test_eeglab_config.py` with:
 ### Configuration ✅
 - [x] config.yaml follows HED pattern
 - [x] Assistant auto-discovered at startup
-- [x] 25 documentation sources mapped
+- [x] 26 documentation sources mapped
 - [x] 6 GitHub repos configured
 - [x] 3 core papers tracked
 
-### Knowledge Base (Skipped - Requires API Keys)
+### Knowledge Base (Deferred - Requires Backend Setup)
 - [ ] Database initialized (requires API_KEYS env var)
-- [ ] GitHub sync: 150+ issues, 470+ PRs (requires API_KEYS env var)
-- [ ] Paper sync: 500+ papers (requires API_KEYS env var)
+- [ ] GitHub sync: ~150+ issues, ~470+ PRs expected (requires API_KEYS env var)
+- [ ] Paper sync: ~500+ papers expected (requires API_KEYS env var)
 - [ ] Search functionality working (requires database)
 
-**Note:** Knowledge base initialization and sync steps require `API_KEYS` environment variable for admin access. These steps will be performed on the backend server.
+**Note:** Knowledge base initialization and sync steps require `API_KEYS` environment variable for admin access. These steps will be performed on the backend server. The counts above are projections based on repository analysis, not actual sync results.
 
 ### Tools ✅
 - [x] retrieve_eeglab_docs tool created
@@ -135,18 +135,19 @@ uv run python -m pytest tests/test_assistants/test_eeglab_config.py --cov=src/as
 ## Key Design Decisions
 
 1. **Followed HED Pattern**: Used identical structure to HED assistant for consistency
-2. **Comprehensive Documentation**: 25 sources organized by workflow categories
+2. **Comprehensive Documentation**: 26 sources organized by workflow categories
 3. **Plugin Focus**: System prompt emphasizes key plugins (ICLabel, clean_rawdata, PREP)
-4. **MATLAB + Python**: Documentation covers both MATLAB GUI and scripting approaches
+4. **MATLAB + Scripting**: Documentation covers both MATLAB GUI and automated workflows
 5. **BIDS Integration**: Included BIDS and LSL for modern workflows
 6. **Preload Strategy**: Only 2 preloaded docs (~10k tokens) to keep system prompt lean
 
 ## Files Created
 
 - `src/assistants/eeglab/__init__.py` (3 lines)
-- `src/assistants/eeglab/config.yaml` (340 lines)
+- `src/assistants/eeglab/config.yaml` (334 lines)
 - `tests/test_assistants/test_eeglab_config.py` (317 lines, simplified from 449)
 - `.context/phase1-implementation-summary.md` (this file)
+- `scripts/test_eeglab_interactive.py` (test script for manual validation)
 
 ## Next Steps
 

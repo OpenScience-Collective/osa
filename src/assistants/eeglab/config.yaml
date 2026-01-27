@@ -138,7 +138,7 @@ system_prompt: |
   {additional_instructions}
 
 # Documentation sources
-# - preload: true = embedded in system prompt (for core docs, ~2-3 max)
+# - preload: true = embedded in system prompt (recommended: 2-3 core docs to keep prompt lean)
 # - preload: false/omitted = fetched on demand via retrieve_docs tool
 documentation:
   # === PRELOADED: Core quickstart (2 docs, ~10k tokens) ===
@@ -150,8 +150,8 @@ documentation:
     description: Quick overview of EEGLAB installation and basic functionality.
 
   - title: Dataset management
-    url: https://sccn.github.io/tutorials/02_Matlab/Multiple_Datasets.html
-    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/02_Matlab/Multiple_Datasets.md
+    url: https://sccn.github.io/tutorials/03_Dataset_management/datasets.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/03_Dataset_management/datasets.md
     preload: true
     category: quickstart
     description: How to work with multiple datasets in EEGLAB.
@@ -165,45 +165,45 @@ documentation:
 
   # === ON-DEMAND: Data Import (3 docs) ===
   - title: Importing continuous data
-    url: https://sccn.github.io/tutorials/03_Importing_data/Importing_Continuous_and_Epoched_Data.html
-    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/03_Importing_data/Importing_Continuous_and_Epoched_Data.md
+    url: https://sccn.github.io/tutorials/04_Import/Importing_Continuous_and_Epoched_Data.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/04_Import/Importing_Continuous_and_Epoched_Data.md
     category: data_import
     description: How to import continuous EEG data into EEGLAB from various file formats.
 
   - title: Event and channel information
-    url: https://sccn.github.io/tutorials/03_Importing_data/Importing_Event_Epoch_Info.html
-    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/03_Importing_data/Importing_Event_Epoch_Info.md
+    url: https://sccn.github.io/tutorials/04_Import/Importing_Event_Epoch_Info.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/04_Import/Importing_Event_Epoch_Info.md
     category: data_import
     description: Importing event markers and epoch information.
 
   - title: Channel locations
-    url: https://sccn.github.io/tutorials/03_Importing_data/Channel_Locations.html
-    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/03_Importing_data/Channel_Locations.md
+    url: https://sccn.github.io/tutorials/04_Import/Channel_Locations.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/04_Import/Channel_Locations.md
     category: data_import
     description: Loading and managing channel location information for scalp topography plots.
 
   # === ON-DEMAND: Preprocessing (4 docs) ===
   - title: Data filtering
-    url: https://sccn.github.io/tutorials/04_Preprocessing/Filtering.html
-    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/04_Preprocessing/Filtering.md
+    url: https://sccn.github.io/tutorials/05_Preprocess/Filtering.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/05_Preprocess/Filtering.md
     category: preprocessing
     description: Applying filters to EEG data (high-pass, low-pass, notch).
 
   - title: Re-referencing
-    url: https://sccn.github.io/tutorials/04_Preprocessing/Rereferencing.html
-    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/04_Preprocessing/Rereferencing.md
+    url: https://sccn.github.io/tutorials/05_Preprocess/Rereferencing.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/05_Preprocess/Rereferencing.md
     category: preprocessing
     description: Re-referencing EEG data to different reference schemes.
 
   - title: Resampling data
-    url: https://sccn.github.io/tutorials/04_Preprocessing/Resampling.html
-    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/04_Preprocessing/Resampling.md
+    url: https://sccn.github.io/tutorials/05_Preprocess/Resampling.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/05_Preprocess/Resampling.md
     category: preprocessing
     description: Downsampling or upsampling EEG data.
 
   - title: Artifact rejection
-    url: https://sccn.github.io/tutorials/04_Preprocessing/Artifact_Rejection.html
-    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/04_Preprocessing/Artifact_Rejection.md
+    url: https://sccn.github.io/tutorials/05_Preprocess/Artifact_Rejection.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/05_Preprocess/Artifact_Rejection.md
     category: preprocessing
     description: Methods for detecting and rejecting artifactual data segments.
 
@@ -227,74 +227,74 @@ documentation:
     description: Artifact Subspace Reconstruction (ASR) for automatic artifact removal.
 
   - title: Scrolling through data
-    url: https://sccn.github.io/tutorials/04_Preprocessing/Scrolling_Through_Data.html
-    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/04_Preprocessing/Scrolling_Through_Data.md
+    url: https://sccn.github.io/tutorials/05_Preprocess/Scrolling_Through_Data.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/05_Preprocess/Scrolling_Through_Data.md
     category: artifacts
     description: Visual inspection and manual artifact marking.
 
   # === ON-DEMAND: Epoching (2 docs) ===
   - title: Extracting data epochs
-    url: https://sccn.github.io/tutorials/05_Extracting_Epochs/Extracting_Data_Epochs.html
-    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/05_Extracting_Epochs/Extracting_Data_Epochs.md
+    url: https://sccn.github.io/tutorials/07_Extract_epochs/Extracting_Data_Epochs.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/07_Extract_epochs/Extracting_Data_Epochs.md
     category: epoching
     description: Creating time-locked data epochs around events.
 
   - title: Selecting data epochs
-    url: https://sccn.github.io/tutorials/05_Extracting_Epochs/Selecting_Data_Epochs.html
-    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/05_Extracting_Epochs/Selecting_Data_Epochs.md
+    url: https://sccn.github.io/tutorials/07_Extract_epochs/Selecting_Data_Epochs.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/07_Extract_epochs/Selecting_Data_Epochs.md
     category: epoching
     description: Criteria for selecting and removing epochs.
 
   # === ON-DEMAND: Visualization (4 docs) ===
-  - title: Plotting channel data
-    url: https://sccn.github.io/tutorials/07_Visualization/Plotting_Channel_Data.html
-    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/07_Visualization/Plotting_Channel_Data.md
+  - title: Plotting channel spectra and maps
+    url: https://sccn.github.io/tutorials/08_Plot_data/Plotting_Channel_Spectra_and_Maps.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/08_Plot_data/Plotting_Channel_Spectra_and_Maps.md
     category: visualization
-    description: Visualizing EEG channel data in various formats.
+    description: Visualizing EEG channel data spectra and scalp maps.
 
   - title: Plotting ICA components
-    url: https://sccn.github.io/tutorials/07_Visualization/Plotting_ICA_Components.html
-    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/07_Visualization/Plotting_ICA_Components.md
+    url: https://sccn.github.io/tutorials/08_Plot_data/Plotting_ICA_components.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/08_Plot_data/Plotting_ICA_components.md
     category: visualization
     description: Visualizing ICA component properties and time courses.
 
   - title: Time-frequency decomposition
-    url: https://sccn.github.io/tutorials/08_Time_Frequency/Time_Frequency_Decomposition.html
-    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/08_Time_Frequency/Time_Frequency_Decomposition.md
+    url: https://sccn.github.io/tutorials/08_Plot_data/Time-Frequency_decomposition.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/08_Plot_data/Time-Frequency_decomposition.md
     category: visualization
     description: Computing and plotting time-frequency representations (ERSP, ITC).
 
-  - title: Event-Related Potentials (ERPs)
-    url: https://sccn.github.io/tutorials/09_ERP/Event_Related_Potentials.html
-    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/09_ERP/Event_Related_Potentials.md
+  - title: Plotting ERP images
+    url: https://sccn.github.io/tutorials/08_Plot_data/Plotting_ERP_images.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/08_Plot_data/Plotting_ERP_images.md
     category: visualization
-    description: Computing and visualizing ERPs.
+    description: Computing and visualizing event-related potential images.
 
   # === ON-DEMAND: Group Analysis (2 docs) ===
-  - title: STUDY design
-    url: https://sccn.github.io/tutorials/10_Group_analysis/STUDY_Design.html
-    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/10_Group_analysis/STUDY_Design.md
+  - title: Working with STUDY designs
+    url: https://sccn.github.io/tutorials/10_Group_analysis/working_with_study_designs.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/10_Group_analysis/working_with_study_designs.md
     category: group_analysis
-    description: Creating STUDY structures for group-level analysis.
+    description: Creating and managing STUDY structures for group-level analysis.
 
   - title: STUDY statistics
-    url: https://sccn.github.io/tutorials/10_Group_analysis/STUDY_Statistics.html
-    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/10_Group_analysis/STUDY_Statistics.md
+    url: https://sccn.github.io/tutorials/10_Group_analysis/study_statistics.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/10_Group_analysis/study_statistics.md
     category: group_analysis
     description: Statistical analysis across subjects in STUDY.
 
   # === ON-DEMAND: Scripting (2 docs) ===
-  - title: EEGLAB scripting
-    url: https://sccn.github.io/tutorials/11_Scripting/EEGLAB_Scripting.html
-    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/11_Scripting/EEGLAB_Scripting.md
+  - title: Automated EEGLAB pipeline
+    url: https://sccn.github.io/tutorials/11_Scripting/automated_pipeline.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/11_Scripting/automated_pipeline.md
     category: scripting
     description: Automating EEGLAB workflows with MATLAB scripts.
 
-  - title: Python integration
-    url: https://sccn.github.io/tutorials/02_Matlab/Using_EEGLAB_with_Python.html
-    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/02_Matlab/Using_EEGLAB_with_Python.md
+  - title: Using EEGLAB history
+    url: https://sccn.github.io/tutorials/11_Scripting/Using_EEGLAB_history.html
+    source_url: https://raw.githubusercontent.com/sccn/sccn.github.io/master/tutorials/11_Scripting/Using_EEGLAB_history.md
     category: scripting
-    description: Using EEGLAB functions from Python.
+    description: Leveraging EEGLAB's command history for script generation.
 
   # === ON-DEMAND: Integration (2 docs) ===
   - title: BIDS integration
