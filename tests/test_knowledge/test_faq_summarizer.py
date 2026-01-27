@@ -173,7 +173,7 @@ class TestScoreThreadQuality:
         assert score == 1.0
 
     def test_score_handles_non_numeric_response(self):
-        """Test that non-numeric responses return 0.0."""
+        """Test that non-numeric responses return None."""
         mock_model = MagicMock()
         mock_response = MagicMock()
         mock_response.content = "I cannot determine a score"
@@ -181,16 +181,16 @@ class TestScoreThreadQuality:
 
         score = _score_thread_quality("Test thread context", mock_model)
 
-        assert score == 0.0
+        assert score is None
 
     def test_score_handles_llm_errors(self):
-        """Test that LLM errors return 0.0 gracefully."""
+        """Test that unexpected LLM errors are raised."""
         mock_model = MagicMock()
         mock_model.invoke.side_effect = Exception("API timeout")
 
-        score = _score_thread_quality("Test thread context", mock_model)
-
-        assert score == 0.0
+        # Unexpected errors should be raised
+        with pytest.raises(Exception, match="API timeout"):
+            _score_thread_quality("Test thread context", mock_model)
 
 
 class TestSummarizeThread:
@@ -267,13 +267,13 @@ class TestSummarizeThread:
         assert summary is None
 
     def test_summarize_handles_llm_errors(self):
-        """Test that LLM errors return None gracefully."""
+        """Test that unexpected LLM errors are raised."""
         mock_model = MagicMock()
         mock_model.invoke.side_effect = Exception("API error")
 
-        summary = _summarize_thread("Test thread context", mock_model)
-
-        assert summary is None
+        # Unexpected errors should be raised
+        with pytest.raises(Exception, match="API error"):
+            _summarize_thread("Test thread context", mock_model)
 
 
 class TestEstimateSummarizationCost:

@@ -94,7 +94,7 @@ class TestMailmanEndToEnd:
     def test_full_pipeline_scrape_to_search(self, e2e_test_db: Path):
         """Test the complete pipeline from scraping to searching."""
 
-        def mock_fetch(url: str, _cache_key: str | None = None):
+        def mock_fetch(url: str, **kwargs):  # noqa: ARG001
             """Mock fetch that returns appropriate HTML."""
             if "thread.html" in url:
                 return MOCK_THREAD_HTML
@@ -142,7 +142,7 @@ class TestMailmanEndToEnd:
     def test_full_pipeline_with_summarization(self, e2e_test_db: Path):
         """Test the complete pipeline including FAQ summarization."""
 
-        def mock_fetch(url: str, _cache_key: str | None = None):
+        def mock_fetch(url: str, **kwargs):  # noqa: ARG001
             if "thread.html" in url:
                 return MOCK_THREAD_HTML
             elif "000001.html" in url:
@@ -187,16 +187,24 @@ class TestMailmanEndToEnd:
                 project="test-e2e",
             )
 
-            # Step 2: Mark all messages as same thread (simulate thread detection)
+            # Step 2: Verify thread_id was automatically assigned
             with get_connection("test-e2e") as conn:
-                conn.execute(
+                cursor = conn.execute(
                     """
-                    UPDATE mailing_list_messages
-                    SET thread_id = '000001'
+                    SELECT message_id, thread_id, subject
+                    FROM mailing_list_messages
                     WHERE list_name = 'test-list'
+                    ORDER BY date
                     """
                 )
-                conn.commit()
+                messages_check = cursor.fetchall()
+                # All messages should have same normalized subject "Question about setup"
+                # So they should all get the same thread_id (the first message's ID)
+                thread_ids = {msg["thread_id"] for msg in messages_check}
+                assert len(thread_ids) == 1, f"Expected 1 thread, got {len(thread_ids)}"
+                assert all(msg["thread_id"] is not None for msg in messages_check), (
+                    "All messages should have thread_id set"
+                )
 
             # Step 3: Summarize threads
             result = summarize_threads(
@@ -239,7 +247,7 @@ class TestMailmanEndToEnd:
     def test_pipeline_handles_no_threads(self, e2e_test_db: Path):
         """Test pipeline gracefully handles database with no threads."""
 
-        def mock_fetch(url: str, _cache_key: str | None = None):
+        def mock_fetch(url: str, **kwargs):  # noqa: ARG001
             # Return empty thread index
             if "thread.html" in url:
                 return "<html><body><ul></ul></body></html>"
@@ -271,7 +279,7 @@ class TestMailmanEndToEnd:
     def test_pipeline_fts5_search_works(self, e2e_test_db: Path):
         """Test that FTS5 full-text search works correctly."""
 
-        def mock_fetch(url: str, _cache_key: str | None = None):
+        def mock_fetch(url: str, **kwargs):  # noqa: ARG001
             if "thread.html" in url:
                 return MOCK_THREAD_HTML
             elif "000001.html" in url:
@@ -307,19 +315,13 @@ class TestMailmanEndToEnd:
                 side_effect=[mock_scoring_model, mock_summary_model],
             ),
         ):
-            # Scrape and set thread_id
+            # Scrape (thread_id will be automatically assigned)
             sync_mailing_list_year(
                 list_name="test-list",
                 base_url="https://example.com/pipermail/test-list/",
                 year=2026,
                 project="test-e2e",
             )
-
-            with get_connection("test-e2e") as conn:
-                conn.execute(
-                    "UPDATE mailing_list_messages SET thread_id = '000001' WHERE list_name = 'test-list'"
-                )
-                conn.commit()
 
             # Summarize
             summarize_threads(

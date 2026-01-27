@@ -12,6 +12,7 @@ Features:
 
 import logging
 import re
+import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -116,8 +117,36 @@ def _parse_year_index(html: str) -> list[int]:
     return years
 
 
-def _parse_thread_index(html: str, base_url: str, year: int) -> list[tuple[str, str]]:
-    """Parse thread.html to extract message URLs.
+def _normalize_subject(subject: str) -> str:
+    """Normalize email subject for thread matching.
+
+    Strips prefixes like Re:, Fwd:, [list-name], etc. to find thread root subject.
+
+    Args:
+        subject: Original email subject line
+
+    Returns:
+        Normalized subject for thread matching
+    """
+    # Remove list name prefixes like [EEGLAB] or [hed-dev]
+    subject = re.sub(r"^\[[\w-]+\]\s*", "", subject, flags=re.IGNORECASE)
+
+    # Remove reply/forward prefixes (Re:, RE:, Fwd:, FW:, etc.)
+    # Handle multiple levels: Re: Re: Re:
+    while True:
+        old_subject = subject
+        subject = re.sub(r"^(Re|Fwd?|AW|WG):\s*", "", subject, flags=re.IGNORECASE).strip()
+        if subject == old_subject:
+            break
+
+    # Normalize whitespace
+    subject = " ".join(subject.split())
+
+    return subject.lower()
+
+
+def _parse_thread_index(html: str, base_url: str, year: int) -> list[tuple[str, str, str]]:
+    """Parse thread.html to extract message URLs and subjects.
 
     Args:
         html: HTML content of thread index
@@ -125,18 +154,18 @@ def _parse_thread_index(html: str, base_url: str, year: int) -> list[tuple[str, 
         year: Year being processed
 
     Returns:
-        List of (message_url, message_id) tuples
+        List of (message_url, message_id, subject) tuples
     """
     # Pipermail thread.html uses <LI> with indentation for threading
     # Pattern: <LI><A HREF="017633.html">Subject</A>
-    pattern = r'<LI><A HREF="(\d+\.html)"'
+    pattern = r'<LI><A HREF="(\d+\.html)">([^<]+)</A>'
     matches = re.findall(pattern, html)
 
     results = []
-    for msg_file in matches:
+    for msg_file, subject in matches:
         message_id = msg_file.replace(".html", "")
         message_url = f"{base_url}{year}/{msg_file}"
-        results.append((message_url, message_id))
+        results.append((message_url, message_id, subject.strip()))
 
     return results
 
@@ -196,9 +225,25 @@ def _parse_message_page(html: str, url: str) -> MessageInfo | None:
             url=url,
         )
 
-    except Exception as e:
-        logger.error("Error parsing message page %s: %s", url, e)
+    except (AttributeError, ValueError, UnicodeDecodeError) as e:
+        # Expected errors from malformed HTML or encoding issues
+        logger.warning(
+            "Failed to parse message page %s: %s. This may indicate unexpected HTML structure.",
+            url,
+            e,
+            extra={"url": url, "error_type": type(e).__name__},
+        )
         return None
+    except Exception as e:
+        # Unexpected error - likely a programming bug
+        logger.error(
+            "Unexpected error parsing message page %s: %s. This is likely a bug.",
+            url,
+            e,
+            exc_info=True,
+            extra={"url": url, "error_type": type(e).__name__},
+        )
+        raise
 
 
 def sync_mailing_list_year(
@@ -234,6 +279,21 @@ def sync_mailing_list_year(
     if not messages:
         return 0
 
+    # Build thread mapping based on normalized subjects
+    # Key: normalized_subject -> first message_id in that thread
+    thread_mapping: dict[str, str] = {}
+    for _message_url, message_id, subject in messages:
+        normalized = _normalize_subject(subject)
+        if normalized not in thread_mapping:
+            # First message with this subject becomes the thread root
+            thread_mapping[normalized] = message_id
+
+    logger.debug(
+        "Found %d unique thread roots from %d messages",
+        len(thread_mapping),
+        len(messages),
+    )
+
     # Fetch and parse each message
     count = 0
     failed = 0
@@ -244,7 +304,7 @@ def sync_mailing_list_year(
         task = progress.add_task(f"Processing {year}...", total=len(messages))
 
         with get_connection(project) as conn:
-            for message_url, message_id in messages:
+            for message_url, message_id, subject in messages:
                 try:
                     # Fetch message page
                     cache_key = f"{list_name}_{message_id}"
@@ -261,30 +321,76 @@ def sync_mailing_list_year(
                         progress.update(task, advance=1)
                         continue
 
-                    # Upsert to database
-                    upsert_mailing_list_message(
-                        conn,
-                        list_name=list_name,
-                        message_id=msg_info.message_id,
-                        thread_id=None,  # TODO: Determine thread_id from structure
-                        subject=msg_info.subject,
-                        author=msg_info.author,
-                        author_email=msg_info.author_email,
-                        date=msg_info.date,
-                        body=msg_info.body,
-                        in_reply_to=msg_info.in_reply_to,
-                        url=msg_info.url,
-                        year=year,
-                    )
-                    count += 1
+                    # Determine thread_id from normalized subject
+                    normalized_subject = _normalize_subject(subject)
+                    thread_id = thread_mapping.get(normalized_subject, message_id)
 
-                    # Commit every 50 messages
-                    if count % 50 == 0:
-                        conn.commit()
+                    # Upsert to database
+                    try:
+                        upsert_mailing_list_message(
+                            conn,
+                            list_name=list_name,
+                            message_id=msg_info.message_id,
+                            thread_id=thread_id,
+                            subject=msg_info.subject,
+                            author=msg_info.author,
+                            author_email=msg_info.author_email,
+                            date=msg_info.date,
+                            body=msg_info.body,
+                            in_reply_to=msg_info.in_reply_to,
+                            url=msg_info.url,
+                            year=year,
+                        )
+                        count += 1
+
+                        # Commit every 50 messages
+                        if count % 50 == 0:
+                            try:
+                                conn.commit()
+                                logger.debug("Committed batch of 50 messages")
+                            except sqlite3.Error as commit_err:
+                                logger.error(
+                                    "Failed to commit batch at message %d: %s. Last 50 messages may be lost.",
+                                    count,
+                                    commit_err,
+                                    exc_info=True,
+                                    extra={"batch_size": 50, "total_processed": count},
+                                )
+                                # Re-raise database errors as they indicate serious problems
+                                raise
+
+                    except sqlite3.IntegrityError as db_err:
+                        # Constraint violation - likely duplicate message
+                        logger.warning(
+                            "Database constraint violation for message %s: %s. Skipping.",
+                            message_id,
+                            db_err,
+                            extra={"message_id": message_id, "url": message_url},
+                        )
+                        failed += 1
+                    except sqlite3.OperationalError as db_err:
+                        # Database locked, disk full, or other operational issue
+                        logger.error(
+                            "Database operational error for message %s: %s. This may require intervention.",
+                            message_id,
+                            db_err,
+                            exc_info=True,
+                            extra={"message_id": message_id, "url": message_url},
+                        )
+                        # Re-raise to abort sync - these are serious problems
+                        raise
 
                 except Exception as e:
-                    logger.error("Error processing message %s: %s", message_url, e)
+                    # Unexpected error - likely a programming bug
+                    logger.error(
+                        "Unexpected error processing message %s: %s",
+                        message_url,
+                        e,
+                        exc_info=True,
+                        extra={"message_id": message_id, "url": message_url},
+                    )
                     failed += 1
+                    # Continue processing other messages despite unexpected errors
 
                 progress.update(task, advance=1)
 

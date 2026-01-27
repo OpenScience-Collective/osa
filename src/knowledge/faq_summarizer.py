@@ -10,6 +10,7 @@ Cost tracking and estimation included for budget management.
 import json
 import logging
 import re
+import sqlite3
 from dataclasses import dataclass
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -66,7 +67,7 @@ def _build_thread_context(messages: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _score_thread_quality(thread_context: str, model) -> float:
+def _score_thread_quality(thread_context: str, model) -> float | None:
     """Use LLM to score thread quality (0.0-1.0).
 
     Args:
@@ -74,7 +75,7 @@ def _score_thread_quality(thread_context: str, model) -> float:
         model: LLM instance for scoring
 
     Returns:
-        Quality score between 0.0 and 1.0
+        Quality score between 0.0 and 1.0, or None if scoring failed
     """
     prompt = f"""Rate the value of this mailing list thread as a FAQ entry on a scale of 0.0 to 1.0.
 
@@ -90,6 +91,8 @@ Thread:
 Respond with ONLY a number between 0.0 and 1.0 (e.g., "0.75"):"""
 
     try:
+        import httpx
+
         response = model.invoke([HumanMessage(content=prompt)])
         score_text = response.content.strip()
         # Extract first float found
@@ -97,10 +100,37 @@ Respond with ONLY a number between 0.0 and 1.0 (e.g., "0.75"):"""
         if match:
             score = float(match.group(1))
             return max(0.0, min(1.0, score))
-        return 0.0
+
+        # LLM didn't return a parseable score
+        logger.warning(
+            "LLM returned unparseable score: %s",
+            score_text[:100],
+            extra={"response_preview": score_text[:100]},
+        )
+        return None
+
+    except httpx.HTTPStatusError as e:
+        logger.error(
+            "LLM API error (HTTP %d) while scoring thread: %s",
+            e.response.status_code,
+            e,
+            extra={"status_code": e.response.status_code},
+        )
+        return None
+    except httpx.TimeoutException as e:
+        logger.error("LLM API timeout while scoring thread: %s", e)
+        return None
+    except httpx.RequestError as e:
+        logger.error("Network error while scoring thread: %s", e)
+        return None
     except Exception as e:
-        logger.error("Error scoring thread: %s", e)
-        return 0.0
+        # Unexpected error - likely a bug
+        logger.error(
+            "Unexpected error scoring thread: %s",
+            e,
+            exc_info=True,
+        )
+        raise
 
 
 def _summarize_thread(thread_context: str, model) -> FAQSummary | None:
@@ -133,6 +163,8 @@ Format as JSON:
 {thread_context}"""
 
     try:
+        import httpx
+
         response = model.invoke(
             [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
         )
@@ -148,7 +180,28 @@ Format as JSON:
             if content.endswith("```"):
                 content = content[:-3]
 
-        data = json.loads(content.strip())
+        try:
+            data = json.loads(content.strip())
+        except json.JSONDecodeError as e:
+            logger.error(
+                "LLM returned invalid JSON: %s. Response was: %s",
+                e,
+                content[:500],
+                extra={"response_preview": content[:500], "error_position": e.pos},
+            )
+            return None
+
+        # Validate required fields
+        required_fields = ["question", "answer"]
+        missing_fields = [f for f in required_fields if f not in data]
+        if missing_fields:
+            logger.error(
+                "LLM response missing required fields: %s. Response was: %s",
+                missing_fields,
+                data,
+                extra={"missing_fields": missing_fields, "response": data},
+            )
+            return None
 
         return FAQSummary(
             question=data["question"],
@@ -158,9 +211,28 @@ Format as JSON:
             quality_score=0.0,  # Set externally
         )
 
-    except Exception as e:
-        logger.error("Error summarizing thread: %s", e)
+    except httpx.HTTPStatusError as e:
+        logger.error(
+            "LLM API error (HTTP %d) while summarizing thread: %s",
+            e.response.status_code,
+            e,
+            extra={"status_code": e.response.status_code},
+        )
         return None
+    except httpx.TimeoutException as e:
+        logger.error("LLM API timeout while summarizing thread: %s", e)
+        return None
+    except httpx.RequestError as e:
+        logger.error("Network error while summarizing thread: %s", e)
+        return None
+    except Exception as e:
+        # Unexpected error - likely a bug
+        logger.error(
+            "Unexpected error summarizing thread: %s",
+            e,
+            exc_info=True,
+        )
+        raise
 
 
 def estimate_summarization_cost(
@@ -323,6 +395,19 @@ def summarize_threads(
                     # Score quality
                     quality_score = _score_thread_quality(thread_context, haiku)
 
+                    if quality_score is None:
+                        # Scoring failed - this is different from a low score
+                        skipped += 1
+                        update_summarization_status(
+                            conn,
+                            list_name=list_name,
+                            thread_id=thread_id,
+                            status="failed",
+                            failure_reason="Failed to score thread quality (LLM error)",
+                        )
+                        progress.update(task, advance=1)
+                        continue
+
                     if quality_score < quality_threshold:
                         skipped += 1
                         update_summarization_status(
@@ -388,14 +473,41 @@ def summarize_threads(
                     if summarized % batch_size == 0:
                         conn.commit()
 
+                except sqlite3.Error as db_err:
+                    # Database errors should probably abort the entire batch
+                    logger.error(
+                        "Database error processing thread %s: %s",
+                        thread_id,
+                        db_err,
+                        exc_info=True,
+                        extra={
+                            "list_name": list_name,
+                            "thread_id": thread_id,
+                            "operation": "database",
+                        },
+                    )
+                    # Re-raise database errors as they indicate serious problems
+                    raise
+
                 except Exception as e:
-                    logger.error("Error processing thread %s: %s", thread_id, e)
+                    # Unexpected error - likely a programming bug
+                    logger.error(
+                        "Unexpected error processing thread %s: %s",
+                        thread_id,
+                        e,
+                        exc_info=True,
+                        extra={
+                            "list_name": list_name,
+                            "thread_id": thread_id,
+                            "message_count": len(messages) if "messages" in locals() else None,
+                        },
+                    )
                     update_summarization_status(
                         conn,
                         list_name=list_name,
                         thread_id=thread_id,
                         status="failed",
-                        failure_reason=str(e),
+                        failure_reason=f"Unexpected error: {type(e).__name__}",
                     )
 
                 processed += 1

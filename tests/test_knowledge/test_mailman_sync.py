@@ -109,10 +109,11 @@ class TestParseThreadIndex:
         assert isinstance(messages, list)
         assert len(messages) == 3
 
-        # Check first message
-        url, msg_id = messages[0]
+        # Check first message (now returns url, msg_id, subject)
+        url, msg_id, subject = messages[0]
         assert url == "https://example.com/pipermail/test-list/2026/000001.html"
         assert msg_id == "000001"
+        assert "First test message" in subject
 
     def test_parse_empty_thread_index(self):
         """Test parsing an empty thread index."""
@@ -188,7 +189,7 @@ class TestSyncMailingListYear:
     def test_sync_year_with_mocked_responses(self, temp_test_db: Path):
         """Test syncing a year with mocked HTTP responses."""
 
-        def mock_fetch(url: str, _cache_key: str | None = None):
+        def mock_fetch(url: str, **kwargs):  # noqa: ARG001
             """Mock fetch function that returns appropriate HTML."""
             if "thread.html" in url:
                 return MOCK_THREAD_INDEX_HTML
@@ -228,7 +229,7 @@ class TestSyncMailingListYear:
     def test_sync_year_handles_fetch_failures(self, temp_test_db: Path):
         """Test that sync handles HTTP fetch failures gracefully."""
 
-        def mock_fetch_failing(_url: str, _cache_key: str | None = None):
+        def mock_fetch_failing(_url: str, **kwargs):  # noqa: ARG001
             """Mock fetch that always fails."""
             return None
 
@@ -254,7 +255,7 @@ class TestSyncMailingListYear:
             large_thread_index += f'<LI><A HREF="{i:06d}.html">Message {i}</A>'
         large_thread_index += "</ul></body></html>"
 
-        def mock_fetch(url: str, _cache_key: str | None = None):
+        def mock_fetch(url: str, **kwargs):  # noqa: ARG001
             if "thread.html" in url:
                 return large_thread_index
             elif url.endswith(".html"):
