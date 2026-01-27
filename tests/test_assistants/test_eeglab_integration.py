@@ -236,7 +236,7 @@ class TestToolImplementations:
         assert isinstance(result, str)
         assert "not initialized" in result.lower()
 
-    def test_docstring_tool_with_populated_db(self, _populated_test_db):
+    def test_docstring_tool_with_populated_db(self, populated_test_db):  # noqa: ARG002
         """Test docstring search returns and formats results correctly."""
         from src.assistants.eeglab.tools import search_eeglab_docstrings
 
@@ -251,7 +251,7 @@ class TestToolImplementations:
         assert "matlab" in result
         assert "View source" in result or "github.com" in result.lower()
 
-    def test_docstring_tool_handles_no_results(self, _populated_test_db):
+    def test_docstring_tool_handles_no_results(self, populated_test_db):  # noqa: ARG002
         """Test docstring search with query that returns no results."""
         from src.assistants.eeglab.tools import search_eeglab_docstrings
 
@@ -273,7 +273,7 @@ class TestToolImplementations:
         assert isinstance(result, str)
         assert "not initialized" in result.lower()
 
-    def test_faq_tool_with_populated_db(self, _populated_test_db):
+    def test_faq_tool_with_populated_db(self, populated_test_db):  # noqa: ARG002
         """Test FAQ search returns and formats results correctly."""
         from src.assistants.eeglab.tools import search_eeglab_faqs
 
@@ -288,7 +288,7 @@ class TestToolImplementations:
         assert "Tags:" in result
         assert "View thread" in result
 
-    def test_faq_tool_handles_no_results(self, _populated_test_db):
+    def test_faq_tool_handles_no_results(self, populated_test_db):  # noqa: ARG002
         """Test FAQ search with query that returns no results."""
         from src.assistants.eeglab.tools import search_eeglab_faqs
 

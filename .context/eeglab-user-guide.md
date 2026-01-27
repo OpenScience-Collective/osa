@@ -152,7 +152,7 @@ osa sync mailman --community eeglab --start-year 2004
 osa sync faq --community eeglab --quality 0.7
 ```
 
-**Note:** Full sync takes several hours for 22 years of mailing list data. Run overnight or in background.
+**Note:** Full sync takes several hours for the complete mailing list archive (since 2004). Run overnight or in background.
 
 ## Troubleshooting
 
