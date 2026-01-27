@@ -123,7 +123,13 @@ class CachingLLMWrapper(BaseChatModel):
     costs by 90% on cache hits (after initial 25% cache write premium).
 
     Supports wrapping both direct LLMs (BaseChatModel) and tool-bound models
-    (RunnableBinding) to preserve caching through tool binding.
+    (RunnableBinding) to preserve caching through tool binding. When bind_tools()
+    is called, it returns a new CachingLLMWrapper around the RunnableBinding,
+    creating a chain: CachingLLMWrapper -> RunnableBinding -> BaseChatModel.
+
+    This nested structure ensures cache_control markers are applied to all
+    invocations, including tool calls, preventing the 10x cost increase that
+    would occur if caching were bypassed.
 
     Minimum cacheable prompt: 1024 tokens for Claude Sonnet/Opus, 4096 for Haiku 4.5
     Cache TTL: 5 minutes (refreshed on each hit)
@@ -170,15 +176,20 @@ class CachingLLMWrapper(BaseChatModel):
     def bind_tools(self, tools: list, **kwargs) -> "CachingLLMWrapper":
         """Bind tools while preserving caching functionality.
 
-        Returns a CachingLLMWrapper that wraps the tool-bound model,
-        ensuring cache_control markers are added to all invocations.
+        This method performs a two-step process:
+        1. Delegates tool binding to the underlying LLM (returns RunnableBinding)
+        2. Wraps the result in a new CachingLLMWrapper to preserve caching
+
+        This ensures cache_control markers are applied to all invocations of the
+        tool-bound model, preventing the 10x cost increase that would occur if
+        caching were bypassed during tool calls.
 
         Args:
             tools: List of tools to bind
             **kwargs: Additional arguments for tool binding
 
         Returns:
-            CachingLLMWrapper wrapping the tool-bound model
+            New CachingLLMWrapper instance wrapping the tool-bound RunnableBinding
 
         Raises:
             ValueError: If tools list is empty
@@ -239,6 +250,14 @@ class CachingLLMWrapper(BaseChatModel):
     def _add_cache_control(self, messages: list[BaseMessage]) -> list[dict]:
         """Transform messages to add cache_control to system messages.
 
+        Applies cache_control markers only to SystemMessage instances. Other message
+        types (HumanMessage, AIMessage) are passed through unchanged.
+
+        Validation is strict with fail-fast behavior:
+        - Messages must have a 'content' attribute (ValueError if missing)
+        - Message content must not be None (ValueError if None)
+        - Messages list must be a list, not None (ValueError/TypeError)
+
         Args:
             messages: List of LangChain messages
 
@@ -246,8 +265,9 @@ class CachingLLMWrapper(BaseChatModel):
             List of message dicts with cache_control on system messages
 
         Raises:
-            ValueError: If messages list is None or contains invalid messages
-            TypeError: If message content is not string-compatible
+            ValueError: If messages is None, contains messages without content,
+                       or contains messages with None content
+            TypeError: If messages is not a list
         """
         from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
@@ -521,8 +541,11 @@ class CachingLLMWrapper(BaseChatModel):
             yield chunk
 
 
-# Current Anthropic models (for reference)
-# Note: Caching is enabled for ALL models by default; OpenRouter handles gracefully
+# Reference list of known Anthropic Claude models supporting prompt caching
+# This is informational only - the is_cacheable_model() function uses a permissive
+# heuristic (any "anthropic/claude-*" model) rather than this restrictive list.
+# Caching is enabled by default for all models; OpenRouter/LiteLLM handle
+# unsupported models gracefully by ignoring cache_control parameters.
 CACHEABLE_MODELS = {
     "claude-opus-4.5": "anthropic/claude-opus-4.5",
     "claude-sonnet-4.5": "anthropic/claude-sonnet-4.5",
@@ -531,16 +554,23 @@ CACHEABLE_MODELS = {
 
 
 def is_cacheable_model(model: str) -> bool:
-    """Check if a model supports Anthropic prompt caching.
+    """Check if a model identifier suggests Anthropic prompt caching support.
+
+    Uses a heuristic check: returns True for model identifiers in the known
+    cacheable models list, or any identifier starting with "anthropic/claude-".
+
+    Note: This is optimistic and may return True for models that don't actually
+    support caching. The LiteLLM/OpenRouter layer handles unsupported models
+    gracefully by ignoring cache_control parameters.
 
     Args:
-        model: Model identifier
+        model: Model identifier (e.g., "anthropic/claude-haiku-4.5")
 
     Returns:
-        True if the model supports cache_control
+        True if the model likely supports cache_control based on its identifier
     """
     # Check exact match in aliases
     if model in CACHEABLE_MODELS:
         return True
-    # Check if it's an Anthropic Claude model
+    # Check if it's an Anthropic Claude model (permissive heuristic)
     return model.startswith("anthropic/claude-")
