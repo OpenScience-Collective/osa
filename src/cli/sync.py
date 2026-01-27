@@ -18,6 +18,7 @@ from rich.table import Table
 from src.assistants import registry
 from src.cli.config import load_config
 from src.knowledge.db import get_db_path, get_stats, init_db
+from src.knowledge.docstring_sync import sync_repo_docstrings
 from src.knowledge.github_sync import sync_repo, sync_repos
 from src.knowledge.papers_sync import (
     sync_all_papers,
@@ -328,6 +329,80 @@ def sync_papers(
             console.print(f"[dim]Citing papers: {citing_count}[/dim]")
 
     console.print(f"\n[green]Total papers synced for {community}: {total}[/green]")
+
+
+@sync_app.command("docstrings")
+def sync_docstrings(
+    community: Annotated[
+        str,
+        typer.Option("--community", "-c", help="Community ID to sync (e.g., hed, bids, eeglab)"),
+    ] = "hed",
+    language: Annotated[
+        str,
+        typer.Option("--language", "-l", help="Language: matlab or python"),
+    ] = "matlab",
+    repo: Annotated[
+        str | None,
+        typer.Option("--repo", "-r", help="Single repo to sync (owner/name format)"),
+    ] = None,
+    branch: Annotated[
+        str,
+        typer.Option("--branch", "-b", help="Branch to sync from"),
+    ] = "main",
+) -> None:
+    """Sync code docstrings from GitHub repositories.
+
+    Extracts docstrings from MATLAB (.m) or Python (.py) files and indexes them
+    for search. If --repo is specified, syncs that single repo. Otherwise, syncs
+    all repos configured for the community.
+    """
+    _require_admin()
+    _validate_community(community)
+
+    if language not in ("matlab", "python"):
+        console.print("[red]Error: Language must be 'matlab' or 'python'[/red]")
+        raise typer.Exit(1)
+
+    if not _safe_init_db(community):
+        raise typer.Exit(1)
+
+    if repo:
+        # Sync single repo
+        try:
+            count = sync_repo_docstrings(repo, language, project=community, branch=branch)
+            console.print(f"\n[green]✓ Synced {count} {language} docstrings from {repo}[/green]")
+        except Exception as e:
+            console.print(f"[red]Error syncing {repo}: {e}[/red]")
+            logger.exception("Failed to sync docstrings from %s", repo)
+            raise typer.Exit(1)
+    else:
+        # Sync all repos from community config
+        repos = _get_community_repos(community)
+        if not repos:
+            console.print(f"[yellow]No repos configured for community '{community}'[/yellow]")
+            console.print("[dim]Use --repo to specify a repository explicitly[/dim]")
+            raise typer.Exit(1)
+
+        console.print(f"[dim]Syncing {language} docstrings from {len(repos)} repos...[/dim]\n")
+        total = 0
+        failed = []
+
+        for repo_name in repos:
+            try:
+                count = sync_repo_docstrings(repo_name, language, project=community, branch=branch)
+                total += count
+                if count > 0:
+                    console.print(f"  ✓ {repo_name}: {count} docstrings")
+                else:
+                    console.print(f"  - {repo_name}: no {language} files found")
+            except Exception as e:
+                console.print(f"  ✗ {repo_name}: {e}")
+                logger.warning("Failed to sync docstrings from %s: %s", repo_name, e)
+                failed.append(repo_name)
+
+        console.print(f"\n[green]Total {language} docstrings synced: {total}[/green]")
+        if failed:
+            console.print(f"[yellow]Failed repos ({len(failed)}): {', '.join(failed)}[/yellow]")
 
 
 @sync_app.command("all")

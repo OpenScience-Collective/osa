@@ -384,3 +384,98 @@ def list_recent_github_items(
         raise
 
     return results
+
+
+def search_docstrings(
+    query: str,
+    project: str = "hed",
+    limit: int = 10,
+    language: str | None = None,
+    repo: str | None = None,
+) -> list[SearchResult]:
+    """Search code docstrings using FTS5.
+
+    Args:
+        query: Search query (FTS5 syntax supported)
+        project: Assistant/project name for database isolation. Defaults to 'hed'.
+        limit: Maximum number of results
+        language: Filter by 'matlab' or 'python'
+        repo: Filter by repository name
+
+    Returns:
+        List of matching results with GitHub source links, ordered by relevance
+    """
+    sql = """
+        SELECT d.symbol_name, d.docstring, d.file_path, d.repo,
+               d.language, d.symbol_type, d.line_number
+        FROM docstrings_fts f
+        JOIN docstrings d ON f.rowid = d.id
+        WHERE docstrings_fts MATCH ?
+    """
+    params: list[str | int] = [query]
+
+    if language:
+        sql += " AND d.language = ?"
+        params.append(language)
+    if repo:
+        sql += " AND d.repo = ?"
+        params.append(repo)
+
+    sql += " ORDER BY rank LIMIT ?"
+    params.append(limit)
+
+    results = []
+    try:
+        with get_connection(project) as conn:
+            # Sanitize user query to prevent FTS5 injection
+            safe_query = _sanitize_fts5_query(query)
+            params[0] = safe_query
+
+            for row in conn.execute(sql, params):
+                # Create snippet from docstring (first 200 chars)
+                docstring = row["docstring"] or ""
+                snippet = docstring[:200].strip()
+                if len(docstring) > 200:
+                    snippet += "..."
+
+                # Build GitHub URL to the specific line
+                file_path = row["file_path"]
+                repo_name = row["repo"]
+                line_number = row["line_number"]
+                # Assume default branch is 'main' or 'develop'
+                # In production, should track branch per repo
+                github_url = f"https://github.com/{repo_name}/blob/main/{file_path}"
+                if line_number:
+                    github_url += f"#L{line_number}"
+
+                # Format title as "symbol_name (type) - file_path"
+                symbol_name = row["symbol_name"]
+                symbol_type = row["symbol_type"]
+                title = f"{symbol_name} ({symbol_type}) - {file_path}"
+
+                results.append(
+                    SearchResult(
+                        title=title,
+                        url=github_url,
+                        snippet=snippet,
+                        source=row["language"],
+                        item_type=symbol_type,
+                        status="documented",
+                        created_at="",
+                    )
+                )
+    except sqlite3.OperationalError as e:
+        # Infrastructure failure (corruption, disk full, permissions) - must propagate
+        logger.error(
+            "Database operational error during docstring search: %s",
+            e,
+            exc_info=True,
+            extra={"query": query, "project": project},
+        )
+        raise  # Let API layer return 500, not empty results
+    except sqlite3.Error as e:
+        # Other database errors - still raise for debugging
+        logger.warning("Database error during docstring search '%s': %s", query, e)
+        raise
+
+    return results

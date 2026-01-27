@@ -114,11 +114,53 @@ CREATE TABLE IF NOT EXISTS sync_metadata (
     UNIQUE(source_type, source_name)
 );
 
+-- Docstrings extracted from source code
+CREATE TABLE IF NOT EXISTS docstrings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    language TEXT NOT NULL,
+    symbol_name TEXT NOT NULL,
+    symbol_type TEXT NOT NULL,
+    docstring TEXT NOT NULL,
+    line_number INTEGER,
+    synced_at TEXT NOT NULL,
+    UNIQUE(repo, file_path, symbol_name)
+);
+
+-- FTS5 virtual table for full-text search on docstrings
+CREATE VIRTUAL TABLE IF NOT EXISTS docstrings_fts USING fts5(
+    symbol_name,
+    docstring,
+    content='docstrings',
+    content_rowid='id'
+);
+
+-- Triggers to keep FTS in sync with docstrings
+CREATE TRIGGER IF NOT EXISTS docstrings_ai AFTER INSERT ON docstrings BEGIN
+    INSERT INTO docstrings_fts(rowid, symbol_name, docstring)
+    VALUES (new.id, new.symbol_name, new.docstring);
+END;
+
+CREATE TRIGGER IF NOT EXISTS docstrings_ad AFTER DELETE ON docstrings BEGIN
+    INSERT INTO docstrings_fts(docstrings_fts, rowid, symbol_name, docstring)
+    VALUES('delete', old.id, old.symbol_name, old.docstring);
+END;
+
+CREATE TRIGGER IF NOT EXISTS docstrings_au AFTER UPDATE ON docstrings BEGIN
+    INSERT INTO docstrings_fts(docstrings_fts, rowid, symbol_name, docstring)
+    VALUES('delete', old.id, old.symbol_name, old.docstring);
+    INSERT INTO docstrings_fts(rowid, symbol_name, docstring)
+    VALUES (new.id, new.symbol_name, new.docstring);
+END;
+
 -- Indexes for efficient queries
 CREATE INDEX IF NOT EXISTS idx_github_items_repo ON github_items(repo);
 CREATE INDEX IF NOT EXISTS idx_github_items_status ON github_items(status);
 CREATE INDEX IF NOT EXISTS idx_github_items_type ON github_items(item_type);
 CREATE INDEX IF NOT EXISTS idx_papers_source ON papers(source);
+CREATE INDEX IF NOT EXISTS idx_docstrings_repo ON docstrings(repo);
+CREATE INDEX IF NOT EXISTS idx_docstrings_language ON docstrings(language);
 """
 
 
@@ -278,6 +320,48 @@ def upsert_paper(
     )
 
 
+def upsert_docstring(
+    conn: sqlite3.Connection,
+    *,
+    repo: str,
+    file_path: str,
+    language: str,
+    symbol_name: str,
+    symbol_type: str,
+    docstring: str,
+    line_number: int | None = None,
+) -> None:
+    """Insert or update a docstring entry.
+
+    Args:
+        conn: Database connection
+        repo: Repository in owner/name format
+        file_path: Relative path from repo root
+        language: 'matlab' or 'python'
+        symbol_name: Function/class/method name
+        symbol_type: 'function', 'class', 'method', 'script', 'module'
+        docstring: Full docstring text
+        line_number: Starting line in source file (optional)
+    """
+    # Limit docstring size to prevent bloat
+    if len(docstring) > 10000:
+        docstring = docstring[:10000]
+
+    conn.execute(
+        """
+        INSERT INTO docstrings (repo, file_path, language, symbol_name,
+                                symbol_type, docstring, line_number, synced_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(repo, file_path, symbol_name) DO UPDATE SET
+            docstring=excluded.docstring,
+            symbol_type=excluded.symbol_type,
+            line_number=excluded.line_number,
+            synced_at=excluded.synced_at
+        """,
+        (repo, file_path, language, symbol_name, symbol_type, docstring, line_number, _now_iso()),
+    )
+
+
 def get_last_sync(source_type: str, source_name: str, project: str = "hed") -> str | None:
     """Get last sync time for a source.
 
@@ -356,6 +440,15 @@ def get_stats(project: str = "hed") -> dict[str, int]:
         ).fetchone()[0]
         stats["papers_pubmed"] = conn.execute(
             "SELECT COUNT(*) FROM papers WHERE source='pubmed'"
+        ).fetchone()[0]
+
+        # Docstring stats
+        stats["docstrings_total"] = conn.execute("SELECT COUNT(*) FROM docstrings").fetchone()[0]
+        stats["docstrings_matlab"] = conn.execute(
+            "SELECT COUNT(*) FROM docstrings WHERE language='matlab'"
+        ).fetchone()[0]
+        stats["docstrings_python"] = conn.execute(
+            "SELECT COUNT(*) FROM docstrings WHERE language='python'"
         ).fetchone()[0]
 
         return stats
