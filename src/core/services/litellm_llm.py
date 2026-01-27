@@ -64,7 +64,7 @@ def create_openrouter_llm(
         temperature: Sampling temperature (0.0-1.0)
         max_tokens: Maximum tokens to generate
         provider: Specific provider to use (e.g., "Cerebras", "DeepInfra/FP8").
-                 Note: Anthropic models always use "Anthropic" provider for optimal performance.
+                 Ignored for Anthropic models, which always use "Anthropic" provider.
         user_id: User identifier for cache optimization (sticky routing)
         enable_caching: Enable prompt caching. If None (default), enabled for all models.
             OpenRouter/LiteLLM gracefully handles models that don't support caching.
