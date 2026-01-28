@@ -330,11 +330,34 @@ def get_connection(project: str = "hed") -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+def _migrate_db(conn: sqlite3.Connection) -> None:
+    """Run database migrations for schema changes.
+
+    Handles adding new columns to existing tables that were created
+    before the column was added to the schema.
+    """
+    # Migration: Add branch column to docstrings table (added 2026-01-27)
+    try:
+        # Check if branch column exists
+        cursor = conn.execute("PRAGMA table_info(docstrings)")
+        columns = [row[1] for row in cursor.fetchall()]
+
+        if "branch" not in columns:
+            logger.info("Migrating docstrings table: adding branch column")
+            conn.execute("ALTER TABLE docstrings ADD COLUMN branch TEXT NOT NULL DEFAULT 'main'")
+            conn.commit()
+            logger.info("Migration complete: branch column added to docstrings")
+    except sqlite3.OperationalError as e:
+        # Table doesn't exist yet - this is fine, schema will create it
+        logger.debug("Docstrings table not found during migration (will be created): %s", e)
+
+
 def init_db(project: str = "hed") -> None:
     """Initialize database schema for a project.
 
     Creates all tables, FTS5 virtual tables, triggers, and indexes.
     Safe to call multiple times (uses IF NOT EXISTS).
+    Runs migrations to handle schema changes for existing databases.
 
     Args:
         project: Assistant/project name. Defaults to 'hed'.
@@ -342,6 +365,10 @@ def init_db(project: str = "hed") -> None:
     with get_connection(project) as conn:
         conn.executescript(SCHEMA_SQL)
         conn.commit()
+
+        # Run migrations for existing databases
+        _migrate_db(conn)
+
     logger.info("Knowledge database initialized at %s", get_db_path(project))
 
 
