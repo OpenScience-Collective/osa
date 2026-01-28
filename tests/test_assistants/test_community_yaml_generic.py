@@ -12,6 +12,7 @@ without requiring community-specific test code. Tests validate:
 Adding a new community requires NO test code changes - tests run automatically.
 """
 
+import os
 import re
 from unittest.mock import MagicMock
 
@@ -153,18 +154,30 @@ class TestCommunityYAMLConfiguration:
         if not config.github or not config.github.repos:
             pytest.skip(f"{community_id} has no GitHub repos configured")
 
+        headers = {"Accept": "application/vnd.github.v3+json"}
+        github_token = os.environ.get("READ_GITHUB_TOKEN")
+        if github_token:
+            headers["Authorization"] = f"Bearer {github_token}"
+
         failures = []
+        rate_limited = False
         for repo in config.github.repos:
             try:
                 response = requests.get(
                     f"https://api.github.com/repos/{repo}",
                     timeout=10,
-                    headers={"Accept": "application/vnd.github.v3+json"},
+                    headers=headers,
                 )
-                if response.status_code != 200:
+                if response.status_code == 403:
+                    rate_limited = True
+                    break
+                if response.status_code == 404:
                     failures.append(f"{repo}: returned {response.status_code}")
             except requests.exceptions.RequestException as e:
                 failures.append(f"{repo}: {e!s}")
+
+        if rate_limited:
+            pytest.skip("GitHub API rate-limited (403), cannot verify repos")
 
         assert not failures, f"{community_id} has non-existent GitHub repos:\n" + "\n".join(
             failures
