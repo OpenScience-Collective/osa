@@ -8,6 +8,11 @@ status: available
 default_model: qwen/qwen3-235b-a22b-2507
 default_model_provider: DeepInfra/FP8
 
+cors_origins:
+  - https://eeglab.org
+  - https://www.eeglab.org
+  - https://sccn.github.io
+
 # System prompt template
 system_prompt: |
   You are a technical assistant specialized in helping users with EEGLAB, an interactive MATLAB toolbox for processing continuous and event-related EEG, MEG, and other electrophysiological data.
