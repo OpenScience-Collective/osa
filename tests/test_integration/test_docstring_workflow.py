@@ -255,12 +255,12 @@ def test_branch_fallback_for_null(clean_db):
     from src.knowledge.db import get_connection
 
     with get_connection(clean_db) as conn:
-        # Manually insert with NULL branch (simulating old data)
+        # Manually insert without specifying branch (uses DEFAULT 'main')
         conn.execute(
             """
             INSERT INTO docstrings (repo, file_path, language, symbol_name,
-                                   symbol_type, docstring, line_number, branch, synced_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, datetime('now'))
+                                   symbol_type, docstring, line_number, synced_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
             """,
             (
                 "test/repo",

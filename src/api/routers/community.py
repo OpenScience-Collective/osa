@@ -1189,5 +1189,8 @@ async def _stream_chat_response(
             e,
             exc_info=True,
         )
-        sse_event = {"event": "error", "message": str(e)}
+        sse_event = {
+            "event": "error",
+            "message": "An error occurred while processing your request.",
+        }
         yield f"data: {json.dumps(sse_event)}\n\n"

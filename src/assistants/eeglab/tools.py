@@ -64,6 +64,7 @@ def search_eeglab_docstrings(
         )
     except sqlite3.OperationalError:
         # Database exists but tables not initialized (e.g., FTS5 tables missing)
+        logger.warning("Docstrings table not initialized for %s", community_id, exc_info=True)
         return (
             f"Knowledge base not initialized for {community_id}.\n\n"
             f"To populate function documentation:\n"
@@ -145,6 +146,7 @@ def search_eeglab_faqs(
         )
     except sqlite3.OperationalError:
         # Database exists but tables not initialized (e.g., FTS5 tables missing)
+        logger.warning("FAQ table not initialized for %s", community_id, exc_info=True)
         return (
             f"Knowledge base not initialized for {community_id}.\n\n"
             f"To populate FAQ database:\n"
@@ -162,7 +164,10 @@ def search_eeglab_faqs(
         lines.append(f"**{i}. {result.question}**")
         lines.append(f"Category: {result.category} | Quality: {result.quality_score:.1f}/1.0")
         lines.append(f"Tags: {', '.join(result.tags)}")
-        lines.append(f"\n{result.answer[:400]}...")
+        answer_preview = result.answer[:400]
+        if len(result.answer) > 400:
+            answer_preview += "..."
+        lines.append(f"\n{answer_preview}")
         lines.append(f"\n[View thread]({result.thread_url})\n")
 
     return "\n".join(lines)

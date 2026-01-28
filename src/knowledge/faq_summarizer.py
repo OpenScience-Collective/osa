@@ -91,8 +91,6 @@ Thread:
 Respond with ONLY a number between 0.0 and 1.0 (e.g., "0.75"):"""
 
     try:
-        import httpx
-
         response = model.invoke([HumanMessage(content=prompt)])
         score_text = response.content.strip()
         # Extract first float found
@@ -109,24 +107,9 @@ Respond with ONLY a number between 0.0 and 1.0 (e.g., "0.75"):"""
         )
         return None
 
-    except httpx.HTTPStatusError as e:
-        logger.error(
-            "LLM API error (HTTP %d) while scoring thread: %s",
-            e.response.status_code,
-            e,
-            extra={"status_code": e.response.status_code},
-        )
-        return None
-    except httpx.TimeoutException as e:
-        logger.error("LLM API timeout while scoring thread: %s", e)
-        return None
-    except httpx.RequestError as e:
-        logger.error("Network error while scoring thread: %s", e)
-        return None
     except Exception as e:
-        # Unexpected error - likely a bug
         logger.error(
-            "Unexpected error scoring thread: %s",
+            "Error scoring thread: %s",
             e,
             exc_info=True,
         )
@@ -163,8 +146,6 @@ Format as JSON:
 {thread_context}"""
 
     try:
-        import httpx
-
         response = model.invoke(
             [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
         )
@@ -234,24 +215,9 @@ Format as JSON:
             quality_score=0.0,  # Set externally
         )
 
-    except httpx.HTTPStatusError as e:
-        logger.error(
-            "LLM API error (HTTP %d) while summarizing thread: %s",
-            e.response.status_code,
-            e,
-            extra={"status_code": e.response.status_code},
-        )
-        return None
-    except httpx.TimeoutException as e:
-        logger.error("LLM API timeout while summarizing thread: %s", e)
-        return None
-    except httpx.RequestError as e:
-        logger.error("Network error while summarizing thread: %s", e)
-        return None
     except Exception as e:
-        # Unexpected error - likely a bug
         logger.error(
-            "Unexpected error summarizing thread: %s",
+            "Error summarizing thread: %s",
             e,
             exc_info=True,
         )
