@@ -105,18 +105,21 @@ function isAllowedOrigin(origin) {
 
   // Allowed origins for OSA
   const allowedPatterns = [
-    'https://hedtags.org',
-    'https://hed-examples.org',
     'https://osc.earth',
+    'https://eeglab.org',
+    'https://hedtags.org',
+    'https://sccn.github.io',
+    'https://www.eeglab.org',
+    'https://www.hedtags.org'
   ];
 
   // Check exact matches
   if (allowedPatterns.includes(origin)) return true;
 
   // Check subdomains
+  if (origin.endsWith('.eeglab.org')) return true;
+  if (origin.endsWith('.github.io')) return true;
   if (origin.endsWith('.hedtags.org')) return true;
-  if (origin.endsWith('.hed-examples.org')) return true;
-  if (origin.endsWith('.osc.earth')) return true;
 
   // Allow osa-demo.pages.dev and all subdomains (previews, branches)
   if (origin === 'https://osa-demo.pages.dev') return true;
