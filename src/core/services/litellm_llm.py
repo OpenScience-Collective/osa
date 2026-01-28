@@ -39,6 +39,7 @@ from langchain_core.runnables import Runnable
 
 logger = logging.getLogger(__name__)
 
+
 def create_openrouter_llm(
     model: str = "openai/gpt-oss-120b",
     api_key: str | None = None,
