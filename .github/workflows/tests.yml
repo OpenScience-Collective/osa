@@ -57,6 +57,8 @@ jobs:
           uv pip install --system -e ".[dev]"
 
       - name: Run tests
+        env:
+          READ_GITHUB_TOKEN: ${{ secrets.READ_GITHUB_TOKEN }}
         run: |
           pytest --ignore=tests/test_integration -v --cov=src --cov-report=xml
 

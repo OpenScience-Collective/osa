@@ -4,6 +4,23 @@
 
 Tests should verify **behavior and consistency**, not specific values that may change with configuration. This ensures tests remain valid as the system evolves.
 
+## No Mocks Policy (with Exception)
+
+**General Rule:** NO MOCKS. Real tests with real data only.
+
+**Exception:** LLM model mocks are acceptable in configuration and structural tests where the LLM behavior is not being exercised. This avoids expensive API calls for tests that only validate configuration structure, registry behavior, or tool creation.
+
+```python
+# ACCEPTABLE: Mock model for config validation tests
+mock_model = MagicMock()
+assistant = registry.create_assistant("hed", model=mock_model, preload_docs=False)
+# Test only validates that assistant was created and has correct tools
+
+# NOT ACCEPTABLE: Mock for behavior tests
+mock_fetcher = MagicMock(return_value="fake content")
+# Should use real HTTP requests or real test fixtures
+```
+
 ## Document Registry Tests
 
 ### DO: Query the registry dynamically

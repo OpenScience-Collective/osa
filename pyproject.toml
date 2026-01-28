@@ -43,7 +43,6 @@ dependencies = [
     "langchain-community>=0.4.0",
     "langgraph>=1.0.0",
     "langgraph-checkpoint-postgres>=3.0.0",
-    "langfuse>=3.11.0",
 
     # LiteLLM for prompt caching
     "litellm>=1.50.0",
@@ -69,6 +68,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+observability = [
+    "langfuse>=3.11.0",
+]
+
 dev = [
     "pytest>=9.0.0",
     "pytest-cov>=7.0.0",

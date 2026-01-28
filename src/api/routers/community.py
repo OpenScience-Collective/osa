@@ -946,7 +946,8 @@ def create_community_router(community_id: str) -> APIRouter:
         """List all active chat sessions for this community."""
         return [session.to_info() for session in list_sessions(community_id)]
 
-    @router.get("/", response_model=CommunityConfigResponse)
+    @router.get("", response_model=CommunityConfigResponse)
+    @router.get("/", response_model=CommunityConfigResponse, include_in_schema=False)
     async def get_community_config() -> CommunityConfigResponse:
         """Get community configuration including default model settings.
 
@@ -1188,5 +1189,8 @@ async def _stream_chat_response(
             e,
             exc_info=True,
         )
-        sse_event = {"event": "error", "message": str(e)}
+        sse_event = {
+            "event": "error",
+            "message": "An error occurred while processing your request.",
+        }
         yield f"data: {json.dumps(sse_event)}\n\n"

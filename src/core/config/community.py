@@ -241,6 +241,87 @@ class DiscourseConfig(BaseModel):
     """Tags to filter forum topics by."""
 
 
+class MailmanConfig(BaseModel):
+    """Mailing list configuration for FAQ generation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    list_name: str
+    """Mailing list identifier (e.g., 'eeglablist')."""
+
+    base_url: HttpUrl
+    """Base URL to pipermail archive."""
+
+    display_name: str | None = None
+    """Human-readable name."""
+
+    start_year: int | None = None
+    """Earliest year to sync (default: all available)."""
+
+
+class DocstringsRepoConfig(BaseModel):
+    """Configuration for extracting docstrings from a repository."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repo: str
+    """Repository in 'org/name' format (e.g., 'sccn/eeglab')."""
+
+    branch: str = "main"
+    """Default branch to extract from (e.g., 'main', 'develop', 'master')."""
+
+    languages: list[Literal["matlab", "python"]] = Field(
+        default_factory=lambda: ["matlab", "python"]
+    )
+    """Languages to extract docstrings from."""
+
+    @field_validator("repo")
+    @classmethod
+    def validate_repo(cls, v: str) -> str:
+        """Validate repo matches 'org/repo' format."""
+        repo_pattern = re.compile(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$")
+        v = v.strip()
+        if not v:
+            raise ValueError("Repository name cannot be empty")
+        if not repo_pattern.match(v):
+            raise ValueError(f"Repository must be in 'org/repo' format, got: {v}")
+        return v
+
+    @field_validator("branch")
+    @classmethod
+    def validate_branch(cls, v: str) -> str:
+        """Validate branch name is non-empty."""
+        v = v.strip()
+        if not v:
+            raise ValueError("Branch name cannot be empty")
+        return v
+
+
+class DocstringsConfig(BaseModel):
+    """Configuration for docstring extraction."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repos: list[DocstringsRepoConfig] = Field(default_factory=list)
+    """Repositories to extract docstrings from."""
+
+    @model_validator(mode="after")
+    def validate_unique_repos(self) -> "DocstringsConfig":
+        """Ensure all repo names are unique."""
+        seen_repos: set[str] = set()
+        duplicates: list[str] = []
+
+        for repo_config in self.repos:
+            if repo_config.repo in seen_repos:
+                duplicates.append(repo_config.repo)
+            seen_repos.add(repo_config.repo)
+
+        if duplicates:
+            raise ValueError(f"Duplicate docstring repos: {', '.join(duplicates)}")
+
+        return self
+
+
 class PythonPlugin(BaseModel):
     """Python plugin extension configuration."""
 
@@ -409,6 +490,12 @@ class CommunityConfig(BaseModel):
 
     discourse: list[DiscourseConfig] = Field(default_factory=list)
     """Discourse forum configurations (Phase 2)."""
+
+    mailman: list[MailmanConfig] = Field(default_factory=list)
+    """Mailing list configurations for FAQ generation."""
+
+    docstrings: DocstringsConfig | None = None
+    """Docstring extraction configuration for function documentation."""
 
     extensions: ExtensionsConfig | None = None
     """Extension points for specialized tools."""
