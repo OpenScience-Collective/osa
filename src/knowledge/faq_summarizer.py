@@ -203,11 +203,34 @@ Format as JSON:
             )
             return None
 
+        # Validate and normalize optional fields
+        category = data.get("category", "discussion") or "discussion"
+        tags = data.get("tags", []) or []
+        answer = data["answer"]
+
+        # Validate category is one of expected values
+        valid_categories = {
+            "troubleshooting",
+            "how-to",
+            "bug-report",
+            "feature-request",
+            "discussion",
+            "reference",
+        }
+        if category not in valid_categories:
+            logger.warning("LLM returned invalid category '%s', using 'discussion'", category)
+            category = "discussion"
+
+        # Limit answer length to prevent bloat
+        if len(answer) > 10000:
+            logger.warning("Answer too long (%d chars), truncating to 10000", len(answer))
+            answer = answer[:10000] + "\n\n[Answer truncated due to length]"
+
         return FAQSummary(
             question=data["question"],
-            answer=data["answer"],
-            tags=data.get("tags", []),
-            category=data.get("category", "discussion"),
+            answer=answer,
+            tags=tags,
+            category=category,
             quality_score=0.0,  # Set externally
         )
 

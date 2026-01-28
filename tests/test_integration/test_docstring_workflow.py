@@ -220,3 +220,63 @@ def test_docstring_size_limit(clean_db):
         ).fetchone()
         assert row is not None
         assert len(row["docstring"]) <= 10000
+
+
+def test_branch_in_github_url(clean_db):
+    """Test that docstrings store and use correct branch in GitHub URLs."""
+    from src.knowledge.db import get_connection, upsert_docstring
+
+    with get_connection(clean_db) as conn:
+        # Insert docstring with specific branch
+        upsert_docstring(
+            conn,
+            repo="sccn/eeglab",
+            file_path="functions/test.m",
+            language="matlab",
+            symbol_name="test_func",
+            symbol_type="function",
+            docstring="Test function",
+            line_number=42,
+            branch="develop",  # EEGLAB uses 'develop' not 'main'
+        )
+        conn.commit()
+
+    # Search and verify URL uses correct branch
+    results = search_docstrings("test", project=clean_db)
+    assert len(results) == 1
+    assert "/blob/develop/" in results[0].url, (
+        f"Expected /blob/develop/ in URL, got: {results[0].url}"
+    )
+    assert "#L42" in results[0].url  # Line number should be included
+
+
+def test_branch_fallback_for_null(clean_db):
+    """Test that NULL branch values fallback to 'main' in URLs."""
+    from src.knowledge.db import get_connection
+
+    with get_connection(clean_db) as conn:
+        # Manually insert with NULL branch (simulating old data)
+        conn.execute(
+            """
+            INSERT INTO docstrings (repo, file_path, language, symbol_name,
+                                   symbol_type, docstring, line_number, branch, synced_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, datetime('now'))
+            """,
+            (
+                "test/repo",
+                "old_file.m",
+                "matlab",
+                "old_func",
+                "function",
+                "Old docstring from before branch tracking",
+                10,
+            ),
+        )
+        conn.commit()
+
+    # Search and verify URL falls back to 'main'
+    results = search_docstrings("old", project=clean_db)
+    assert len(results) == 1
+    assert "/blob/main/" in results[0].url, (
+        f"Expected fallback to /blob/main/, got: {results[0].url}"
+    )
