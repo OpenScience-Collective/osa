@@ -23,6 +23,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 from src.knowledge.db import get_db_path
 from src.knowledge.search import (
     list_recent_github_items,
+    search_docstrings,
     search_github_items,
     search_papers,
 )
@@ -252,6 +253,142 @@ def create_search_papers_tool(
     )
 
 
+def create_search_docstrings_tool(
+    community_id: str,
+    community_name: str,
+    language: str | None = None,
+) -> BaseTool:
+    """Create a tool for searching code docstrings for a community.
+
+    Args:
+        community_id: The community identifier (e.g., 'hed', 'bids', 'eeglab')
+        community_name: Display name (e.g., 'HED', 'BIDS', 'EEGLAB')
+        language: Optional language filter ('matlab' or 'python')
+
+    Returns:
+        A LangChain tool for searching code documentation
+    """
+    lang_help = ""
+    if language:
+        lang_help = f" Only searches {language.upper()} code."
+    else:
+        lang_help = " Searches both MATLAB and Python code."
+
+    def search_docstrings_impl(query: str, limit: int = 5) -> str:
+        """Search code docstrings implementation."""
+        if not _check_db_exists(community_id):
+            return (
+                f"Knowledge database for {community_name} not initialized. "
+                "Run 'osa sync init' and 'osa sync docstrings' to populate it."
+            )
+
+        results = search_docstrings(query, project=community_id, limit=limit, language=language)
+
+        if not results:
+            lang_str = f" ({language})" if language else ""
+            return f"No code documentation found for '{query}'{lang_str}."
+
+        lines = [f"Code documentation in {community_name}:\n"]
+        for r in results:
+            lines.append(f"- {r.title}")
+            lines.append(f"  [View source on GitHub]({r.url})")
+            if r.snippet:
+                snippet = r.snippet[:200] + "..." if len(r.snippet) > 200 else r.snippet
+                lines.append(f"  Documentation: {snippet}")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    description = (
+        f"Search {community_name} code documentation (docstrings from functions, classes, scripts).{lang_help} "
+        "Use this to find how specific functions work, what parameters they accept, "
+        "and see usage examples. Results include direct links to source code on GitHub."
+    )
+
+    return StructuredTool.from_function(
+        func=search_docstrings_impl,
+        name=f"search_{community_id}_code_docs",
+        description=description,
+    )
+
+
+def create_search_faq_tool(
+    community_id: str,
+    community_name: str,
+    list_names: list[str] | None = None,
+) -> BaseTool:
+    """Create a tool for searching FAQ entries from mailing lists.
+
+    Args:
+        community_id: The community identifier (e.g., 'eeglab', 'hed')
+        community_name: Display name (e.g., 'EEGLAB', 'HED')
+        list_names: Optional list of mailing list names for help text
+
+    Returns:
+        A LangChain tool for searching FAQ entries
+    """
+    list_help = ""
+    if list_names:
+        list_str = ", ".join(list_names)
+        list_help = f" Sources: {list_str} mailing list archives."
+
+    def search_faq_impl(
+        query: str,
+        category: str | None = None,
+        limit: int = 5,
+    ) -> str:
+        """Search FAQ entries implementation."""
+        if not _check_db_exists(community_id):
+            return (
+                f"FAQ database for {community_name} not initialized. "
+                "Run 'osa sync mailman' and 'osa sync faq' to populate it."
+            )
+
+        from src.knowledge.search import search_faq_entries
+
+        results = search_faq_entries(
+            query=query,
+            project=community_id,
+            limit=limit,
+            category=category,
+        )
+
+        if not results:
+            cat_str = f" (category: {category})" if category else ""
+            return f"No FAQ entries found for '{query}'{cat_str}."
+
+        lines = [f"Found {len(results)} FAQ entries:\n"]
+        for i, result in enumerate(results, 1):
+            lines.append(f"**{i}. {result.question}**")
+            lines.append(
+                f"Category: {result.category} | Quality: {result.quality_score:.1f}/1.0 | "
+                f"Messages: {result.message_count}"
+            )
+            if result.tags:
+                lines.append(f"Tags: {', '.join(result.tags)}")
+
+            # Truncate answer if too long
+            answer = result.answer
+            if len(answer) > 500:
+                answer = answer[:500] + "..."
+            lines.append(f"\n{answer}\n")
+            lines.append(f"[View full thread]({result.thread_url})\n")
+
+        return "\n".join(lines)
+
+    description = (
+        f"Search {community_name} mailing list FAQ entries for answered questions. "
+        "**Use this for:** Finding solutions to common problems, learning from past discussions. "
+        f"Returns: question, answer summary, category, quality score, link to original thread.{list_help}"
+    )
+
+    return StructuredTool.from_function(
+        func=search_faq_impl,
+        name=f"search_{community_id}_faq",
+        description=description,
+    )
+
+
 def create_knowledge_tools(
     community_id: str,
     community_name: str,
@@ -259,6 +396,10 @@ def create_knowledge_tools(
     include_discussions: bool = True,
     include_recent: bool = True,
     include_papers: bool = True,
+    include_docstrings: bool = False,
+    docstrings_language: str | None = None,
+    include_faq: bool = False,
+    faq_list_names: list[str] | None = None,
 ) -> list[BaseTool]:
     """Create all knowledge discovery tools for a community.
 
@@ -266,12 +407,16 @@ def create_knowledge_tools(
     based on the community configuration.
 
     Args:
-        community_id: The community identifier (e.g., 'hed', 'bids')
-        community_name: Display name (e.g., 'HED', 'BIDS')
+        community_id: The community identifier (e.g., 'hed', 'bids', 'eeglab')
+        community_name: Display name (e.g., 'HED', 'BIDS', 'EEGLAB')
         repos: Optional list of GitHub repos for help text
         include_discussions: Include discussion search tool (default: True)
         include_recent: Include recent activity tool (default: True)
         include_papers: Include paper search tool (default: True)
+        include_docstrings: Include code docstring search tool (default: False)
+        docstrings_language: Filter docstrings by language ('matlab' or 'python')
+        include_faq: Include mailing list FAQ search tool (default: False)
+        faq_list_names: List of mailing list names for FAQ help text
 
     Returns:
         List of LangChain tools for the community
@@ -286,5 +431,13 @@ def create_knowledge_tools(
 
     if include_papers:
         tools.append(create_search_papers_tool(community_id, community_name))
+
+    if include_docstrings:
+        tools.append(
+            create_search_docstrings_tool(community_id, community_name, docstrings_language)
+        )
+
+    if include_faq:
+        tools.append(create_search_faq_tool(community_id, community_name, faq_list_names))
 
     return tools

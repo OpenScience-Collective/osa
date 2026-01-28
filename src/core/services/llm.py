@@ -6,7 +6,6 @@ from typing import Any
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
-from langfuse.langchain import CallbackHandler as LangfuseHandler
 
 from src.api.config import Settings, get_settings
 
@@ -74,7 +73,7 @@ class LLMService:
     def get_langfuse_handler(
         self,
         trace_id: str | None = None,
-    ) -> LangfuseHandler | None:
+    ) -> Any | None:
         """Create a LangFuse callback handler for tracing.
 
         LangFuse uses environment variables for authentication:
@@ -84,12 +83,31 @@ class LLMService:
 
         This method sets these from settings before creating the handler.
 
+        Note: Langfuse import is lazy to avoid Python 3.14 compatibility issues
+        with Pydantic v1 (used by langfuse internally).
+
         Args:
             trace_id: Optional custom trace ID for the root LangChain run.
 
-        Returns None if LangFuse is not configured.
+        Returns:
+            CallbackHandler instance if langfuse is configured and importable,
+            None otherwise.
         """
         if not self.settings.langfuse_public_key or not self.settings.langfuse_secret_key:
+            return None
+
+        # Lazy import to avoid Pydantic v1 compatibility issues on Python 3.14
+        # See: https://github.com/OpenScience-Collective/osa/issues/108
+        try:
+            from langfuse.langchain import CallbackHandler as LangfuseHandler
+        except (ImportError, Exception) as e:
+            import warnings
+
+            warnings.warn(
+                f"Langfuse import failed: {e}. Observability disabled. "
+                "Install with: uv pip install 'open-science-assistant[observability]'",
+                stacklevel=2,
+            )
             return None
 
         # Set environment variables for LangFuse client

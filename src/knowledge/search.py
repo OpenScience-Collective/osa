@@ -114,10 +114,10 @@ def search_github_items(
     status: str | None = None,
     repo: str | None = None,
 ) -> list[SearchResult]:
-    """Search GitHub issues and PRs using FTS5.
+    """Search GitHub issues and PRs using phrase matching.
 
     Args:
-        query: Search query (FTS5 syntax supported, e.g., "validation AND error")
+        query: Search phrase (treated as exact phrase, not FTS5 operators)
         project: Assistant/project name for database isolation. Defaults to 'hed'.
         limit: Maximum number of results
         item_type: Filter by 'issue' or 'pr'
@@ -198,10 +198,10 @@ def search_papers(
     limit: int = 10,
     source: str | None = None,
 ) -> list[SearchResult]:
-    """Search papers using FTS5.
+    """Search papers using phrase matching.
 
     Args:
-        query: Search query (FTS5 syntax supported)
+        query: Search phrase (treated as exact phrase, not FTS5 operators)
         project: Assistant/project name for database isolation. Defaults to 'hed'.
         limit: Maximum number of results
         source: Filter by source ('openalex', 'semanticscholar', 'pubmed')
@@ -381,6 +381,203 @@ def list_recent_github_items(
     except sqlite3.Error as e:
         # Other database errors - still raise for debugging
         logger.warning("Database error listing recent items: %s", e)
+        raise
+
+    return results
+
+
+def search_docstrings(
+    query: str,
+    project: str = "hed",
+    limit: int = 10,
+    language: str | None = None,
+    repo: str | None = None,
+) -> list[SearchResult]:
+    """Search code docstrings using phrase matching.
+
+    Args:
+        query: Search phrase (treated as exact phrase, not FTS5 operators)
+        project: Assistant/project name for database isolation. Defaults to 'hed'.
+        limit: Maximum number of results
+        language: Filter by 'matlab' or 'python'
+        repo: Filter by repository name
+
+    Returns:
+        List of matching results with GitHub source links, ordered by relevance
+    """
+    sql = """
+        SELECT d.symbol_name, d.docstring, d.file_path, d.repo,
+               d.language, d.symbol_type, d.line_number, d.branch
+        FROM docstrings_fts f
+        JOIN docstrings d ON f.rowid = d.id
+        WHERE docstrings_fts MATCH ?
+    """
+    params: list[str | int] = [query]
+
+    if language:
+        sql += " AND d.language = ?"
+        params.append(language)
+    if repo:
+        sql += " AND d.repo = ?"
+        params.append(repo)
+
+    sql += " ORDER BY rank LIMIT ?"
+    params.append(limit)
+
+    results = []
+    try:
+        with get_connection(project) as conn:
+            # Sanitize user query to prevent FTS5 injection
+            safe_query = _sanitize_fts5_query(query)
+            params[0] = safe_query
+
+            for row in conn.execute(sql, params):
+                # Create snippet from docstring (first 200 chars)
+                docstring = row["docstring"] or ""
+                snippet = docstring[:200].strip()
+                if len(docstring) > 200:
+                    snippet += "..."
+
+                # Build GitHub URL to the specific line
+                file_path = row["file_path"]
+                repo_name = row["repo"]
+                line_number = row["line_number"]
+                branch = row["branch"] or "main"  # Fallback to 'main' if NULL
+
+                # Use repo-specific branch (e.g., 'develop', 'main', 'master')
+                github_url = f"https://github.com/{repo_name}/blob/{branch}/{file_path}"
+                if line_number:
+                    github_url += f"#L{line_number}"
+
+                # Format title as "symbol_name (type) - file_path"
+                symbol_name = row["symbol_name"]
+                symbol_type = row["symbol_type"]
+                title = f"{symbol_name} ({symbol_type}) - {file_path}"
+
+                results.append(
+                    SearchResult(
+                        title=title,
+                        url=github_url,
+                        snippet=snippet,
+                        source=row["language"],
+                        item_type=symbol_type,
+                        status="documented",
+                        created_at="",
+                    )
+                )
+    except sqlite3.OperationalError as e:
+        # Infrastructure failure (corruption, disk full, permissions) - must propagate
+        logger.error(
+            "Database operational error during docstring search: %s",
+            e,
+            exc_info=True,
+            extra={"query": query, "project": project},
+        )
+        raise  # Let API layer return 500, not empty results
+    except sqlite3.Error as e:
+        # Other database errors - still raise for debugging
+        logger.warning("Database error during docstring search '%s': %s", query, e)
+        raise
+
+    return results
+
+
+@dataclass
+class FAQResult:
+    """A FAQ search result from mailing list archives."""
+
+    question: str
+    answer: str
+    thread_url: str
+    tags: list[str]
+    category: str
+    quality_score: float
+    message_count: int
+    first_message_date: str
+
+
+def search_faq_entries(
+    query: str,
+    project: str = "eeglab",
+    limit: int = 5,
+    list_name: str | None = None,
+    category: str | None = None,
+    min_quality: float = 0.0,
+) -> list[FAQResult]:
+    """Search FAQ entries using phrase matching.
+
+    Args:
+        query: Search phrase (treated as exact phrase, not FTS5 operators)
+        project: Community ID for database isolation. Defaults to 'eeglab'.
+        limit: Maximum number of results
+        list_name: Filter by mailing list name
+        category: Filter by category (e.g., 'troubleshooting', 'how-to')
+        min_quality: Minimum quality score (0.0-1.0)
+
+    Returns:
+        List of matching FAQ entries, ordered by quality score and relevance
+    """
+    sql = """
+        SELECT f.question, f.answer, f.thread_url, f.tags, f.category,
+               f.quality_score, f.message_count, f.first_message_date
+        FROM faq_entries_fts fts
+        JOIN faq_entries f ON fts.rowid = f.id
+        WHERE faq_entries_fts MATCH ?
+    """
+    params: list[str | int | float] = [query]
+
+    if list_name:
+        sql += " AND f.list_name = ?"
+        params.append(list_name)
+
+    if category:
+        sql += " AND f.category = ?"
+        params.append(category)
+
+    if min_quality > 0:
+        sql += " AND f.quality_score >= ?"
+        params.append(min_quality)
+
+    sql += " ORDER BY f.quality_score DESC, rank LIMIT ?"
+    params.append(limit)
+
+    results = []
+    try:
+        with get_connection(project) as conn:
+            # Sanitize user query to prevent FTS5 injection
+            safe_query = _sanitize_fts5_query(query)
+            params[0] = safe_query
+
+            for row in conn.execute(sql, params):
+                # Parse tags from JSON
+                import json
+
+                tags = json.loads(row["tags"]) if row["tags"] else []
+
+                results.append(
+                    FAQResult(
+                        question=row["question"],
+                        answer=row["answer"],
+                        thread_url=row["thread_url"],
+                        tags=tags,
+                        category=row["category"],
+                        quality_score=row["quality_score"],
+                        message_count=row["message_count"],
+                        first_message_date=row["first_message_date"] or "",
+                    )
+                )
+    except sqlite3.OperationalError as e:
+        # Infrastructure failure (corruption, disk full, permissions) - must propagate
+        logger.error(
+            "Database operational error during FAQ search: %s",
+            e,
+            exc_info=True,
+            extra={"query": query, "project": project},
+        )
+        raise  # Let API layer return 500, not empty results
+    except sqlite3.Error as e:
+        # Other database errors - still raise for debugging
+        logger.warning("Database error during FAQ search '%s': %s", query, e)
         raise
 
     return results
