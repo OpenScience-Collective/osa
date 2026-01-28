@@ -91,6 +91,7 @@ def sync_repo_docstrings(
                             symbol_type=doc.symbol_type,
                             docstring=doc.docstring,
                             line_number=doc.line_number,
+                            branch=branch,
                         )
                         total_docstrings += 1
                         uncommitted += 1

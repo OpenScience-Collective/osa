@@ -69,6 +69,25 @@ def _get_community_paper_queries(community_id: str) -> list[str]:
     return []
 
 
+def _get_community_docstring_repos(community_id: str) -> list[tuple[str, str, list[str]]]:
+    """Get docstring extraction repos with branches and languages.
+
+    Returns:
+        List of (repo, branch, languages) tuples.
+        Example: [('sccn/eeglab', 'develop', ['matlab', 'python'])]
+    """
+    info = registry.get(community_id)
+    if info and info.community_config and info.community_config.docstrings:
+        return [
+            (repo_config.repo, repo_config.branch, repo_config.languages)
+            for repo_config in info.community_config.docstrings.repos
+        ]
+    console.print(
+        f"[yellow]Warning: No docstring repos found for community '{community_id}'[/yellow]"
+    )
+    return []
+
+
 def _get_community_paper_dois(community_id: str) -> list[str]:
     """Get paper DOIs for citation tracking from the registry."""
     info = registry.get(community_id)
@@ -376,25 +395,44 @@ def sync_docstrings(
             logger.exception("Failed to sync docstrings from %s", repo)
             raise typer.Exit(1)
     else:
-        # Sync all repos from community config
-        repos = _get_community_repos(community)
-        if not repos:
-            console.print(f"[yellow]No repos configured for community '{community}'[/yellow]")
+        # Sync all repos from community docstrings config
+        repo_configs = _get_community_docstring_repos(community)
+        if not repo_configs:
+            console.print(
+                f"[yellow]No docstring repos configured for community '{community}'[/yellow]"
+            )
             console.print("[dim]Use --repo to specify a repository explicitly[/dim]")
+            console.print("[dim]Or add 'docstrings:' section to config.yaml[/dim]")
             raise typer.Exit(1)
 
-        console.print(f"[dim]Syncing {language} docstrings from {len(repos)} repos...[/dim]\n")
+        # Filter repos by language if specified
+        repos_to_sync = []
+        for repo_name, repo_branch, repo_languages in repo_configs:
+            if language in repo_languages:
+                repos_to_sync.append((repo_name, repo_branch))
+
+        if not repos_to_sync:
+            console.print(f"[yellow]No repos configured for {language} docstrings[/yellow]")
+            raise typer.Exit(1)
+
+        console.print(
+            f"[dim]Syncing {language} docstrings from {len(repos_to_sync)} repos...[/dim]\n"
+        )
         total = 0
         failed = []
 
-        for repo_name in repos:
+        for repo_name, repo_branch in repos_to_sync:
             try:
-                count = sync_repo_docstrings(repo_name, language, project=community, branch=branch)
+                count = sync_repo_docstrings(
+                    repo_name, language, project=community, branch=repo_branch
+                )
                 total += count
                 if count > 0:
-                    console.print(f"  ✓ {repo_name}: {count} docstrings")
+                    console.print(f"  ✓ {repo_name} (branch: {repo_branch}): {count} docstrings")
                 else:
-                    console.print(f"  - {repo_name}: no {language} files found")
+                    console.print(
+                        f"  - {repo_name} (branch: {repo_branch}): no {language} files found"
+                    )
             except Exception as e:
                 console.print(f"  ✗ {repo_name}: {e}")
                 logger.warning("Failed to sync docstrings from %s: %s", repo_name, e)

@@ -442,10 +442,10 @@ def search_docstrings(
                 file_path = row["file_path"]
                 repo_name = row["repo"]
                 line_number = row["line_number"]
-                # LIMITATION: Hardcoded to 'main' branch - links will break
-                # for repos using 'develop', 'master', or other default branches.
-                # TODO: Store branch name during sync and use it here.
-                github_url = f"https://github.com/{repo_name}/blob/main/{file_path}"
+                branch = row["branch"]  # Get branch from database
+
+                # Use repo-specific branch (e.g., 'develop', 'main', 'master')
+                github_url = f"https://github.com/{repo_name}/blob/{branch}/{file_path}"
                 if line_number:
                     github_url += f"#L{line_number}"
 

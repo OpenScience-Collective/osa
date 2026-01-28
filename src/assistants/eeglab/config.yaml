@@ -363,6 +363,19 @@ mailman:
     display_name: EEGLAB Mailing List
     start_year: 2004
 
+# Docstring extraction configuration (Phase 2)
+docstrings:
+  repos:
+    - repo: sccn/eeglab
+      branch: develop  # EEGLAB uses 'develop' as default branch
+      languages: [matlab, python]
+    - repo: sccn/ICLabel
+      branch: master
+      languages: [matlab]
+    - repo: sccn/clean_rawdata
+      branch: master
+      languages: [matlab]
+
 # Plugin tools (Phase 2 & Phase 3)
 extensions:
   python_plugins:

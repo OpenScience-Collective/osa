@@ -124,6 +124,7 @@ CREATE TABLE IF NOT EXISTS docstrings (
     symbol_type TEXT NOT NULL,
     docstring TEXT NOT NULL,
     line_number INTEGER,
+    branch TEXT NOT NULL DEFAULT 'main',
     synced_at TEXT NOT NULL,
     UNIQUE(repo, file_path, symbol_name)
 );
@@ -442,6 +443,7 @@ def upsert_docstring(
     symbol_type: str,
     docstring: str,
     line_number: int | None = None,
+    branch: str = "main",
 ) -> None:
     """Insert or update a docstring entry.
 
@@ -454,6 +456,7 @@ def upsert_docstring(
         symbol_type: 'function', 'class', 'method', 'script', 'module'
         docstring: Full docstring text
         line_number: Starting line in source file (optional)
+        branch: Git branch name (e.g., 'main', 'develop', 'master')
     """
     # Limit docstring size to prevent bloat
     if len(docstring) > 10000:
@@ -462,15 +465,26 @@ def upsert_docstring(
     conn.execute(
         """
         INSERT INTO docstrings (repo, file_path, language, symbol_name,
-                                symbol_type, docstring, line_number, synced_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                symbol_type, docstring, line_number, branch, synced_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(repo, file_path, symbol_name) DO UPDATE SET
             docstring=excluded.docstring,
             symbol_type=excluded.symbol_type,
             line_number=excluded.line_number,
+            branch=excluded.branch,
             synced_at=excluded.synced_at
         """,
-        (repo, file_path, language, symbol_name, symbol_type, docstring, line_number, _now_iso()),
+        (
+            repo,
+            file_path,
+            language,
+            symbol_name,
+            symbol_type,
+            docstring,
+            line_number,
+            branch,
+            _now_iso(),
+        ),
     )
 
 
