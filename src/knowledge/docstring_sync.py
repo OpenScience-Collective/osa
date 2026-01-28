@@ -108,15 +108,12 @@ def sync_repo_docstrings(
                 except httpx.TimeoutException:
                     logger.error("Timeout fetching %s", file_path)
                     failed_files.append((file_path, "Timeout"))
-                except SyntaxError as e:
-                    logger.error("Syntax error in %s: %s", file_path, e)
-                    failed_files.append((file_path, f"Syntax error: {e}"))
-                except UnicodeDecodeError as e:
-                    logger.error("Encoding error in %s: %s", file_path, e)
-                    failed_files.append((file_path, "Invalid encoding"))
-                except Exception as e:
-                    logger.error("Unexpected error processing %s: %s", file_path, e, exc_info=True)
-                    failed_files.append((file_path, f"Error: {type(e).__name__}"))
+                except (SyntaxError, UnicodeDecodeError) as e:
+                    # Expected errors from malformed or incorrectly encoded source files
+                    logger.error("Parse/encoding error in %s: %s", file_path, e)
+                    failed_files.append((file_path, f"Parse error: {type(e).__name__}"))
+                # Removed broad Exception catch - let programming bugs in parsers propagate
+                # This ensures parser bugs are visible rather than silently skipped
 
                 progress.update(task, advance=1)
 

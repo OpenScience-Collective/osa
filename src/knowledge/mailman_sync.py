@@ -305,93 +305,83 @@ def sync_mailing_list_year(
 
         with get_connection(project) as conn:
             for message_url, message_id, subject in messages:
+                # Fetch message page
+                cache_key = f"{list_name}_{message_id}"
+                msg_html = _fetch_page(message_url, cache_key=cache_key)
+                if not msg_html:
+                    failed += 1
+                    progress.update(task, advance=1)
+                    continue
+
+                # Parse message
+                msg_info = _parse_message_page(msg_html, message_url)
+                if not msg_info:
+                    failed += 1
+                    progress.update(task, advance=1)
+                    continue
+
+                # Determine thread_id from normalized subject
+                normalized_subject = _normalize_subject(subject)
+                thread_id = thread_mapping.get(normalized_subject, message_id)
+
+                # Upsert to database
                 try:
-                    # Fetch message page
-                    cache_key = f"{list_name}_{message_id}"
-                    msg_html = _fetch_page(message_url, cache_key=cache_key)
-                    if not msg_html:
-                        failed += 1
-                        progress.update(task, advance=1)
-                        continue
+                    upsert_mailing_list_message(
+                        conn,
+                        list_name=list_name,
+                        message_id=msg_info.message_id,
+                        thread_id=thread_id,
+                        subject=msg_info.subject,
+                        author=msg_info.author,
+                        author_email=msg_info.author_email,
+                        date=msg_info.date,
+                        body=msg_info.body,
+                        in_reply_to=msg_info.in_reply_to,
+                        url=msg_info.url,
+                        year=year,
+                    )
+                    count += 1
 
-                    # Parse message
-                    msg_info = _parse_message_page(msg_html, message_url)
-                    if not msg_info:
-                        failed += 1
-                        progress.update(task, advance=1)
-                        continue
+                    # Commit every 50 messages
+                    if count % 50 == 0:
+                        try:
+                            conn.commit()
+                            logger.debug("Committed batch of 50 messages")
+                        except sqlite3.Error as commit_err:
+                            logger.error(
+                                "Failed to commit batch at message %d: %s. Last 50 messages may be lost.",
+                                count,
+                                commit_err,
+                                exc_info=True,
+                                extra={"batch_size": 50, "total_processed": count},
+                            )
+                            # Re-raise database errors as they indicate serious problems
+                            raise
 
-                    # Determine thread_id from normalized subject
-                    normalized_subject = _normalize_subject(subject)
-                    thread_id = thread_mapping.get(normalized_subject, message_id)
-
-                    # Upsert to database
-                    try:
-                        upsert_mailing_list_message(
-                            conn,
-                            list_name=list_name,
-                            message_id=msg_info.message_id,
-                            thread_id=thread_id,
-                            subject=msg_info.subject,
-                            author=msg_info.author,
-                            author_email=msg_info.author_email,
-                            date=msg_info.date,
-                            body=msg_info.body,
-                            in_reply_to=msg_info.in_reply_to,
-                            url=msg_info.url,
-                            year=year,
-                        )
-                        count += 1
-
-                        # Commit every 50 messages
-                        if count % 50 == 0:
-                            try:
-                                conn.commit()
-                                logger.debug("Committed batch of 50 messages")
-                            except sqlite3.Error as commit_err:
-                                logger.error(
-                                    "Failed to commit batch at message %d: %s. Last 50 messages may be lost.",
-                                    count,
-                                    commit_err,
-                                    exc_info=True,
-                                    extra={"batch_size": 50, "total_processed": count},
-                                )
-                                # Re-raise database errors as they indicate serious problems
-                                raise
-
-                    except sqlite3.IntegrityError as db_err:
-                        # Constraint violation - likely duplicate message
-                        logger.warning(
-                            "Database constraint violation for message %s: %s. Skipping.",
-                            message_id,
-                            db_err,
-                            extra={"message_id": message_id, "url": message_url},
-                        )
-                        failed += 1
-                    except sqlite3.OperationalError as db_err:
-                        # Database locked, disk full, or other operational issue
-                        logger.error(
-                            "Database operational error for message %s: %s. This may require intervention.",
-                            message_id,
-                            db_err,
-                            exc_info=True,
-                            extra={"message_id": message_id, "url": message_url},
-                        )
-                        # Re-raise to abort sync - these are serious problems
-                        raise
-
-                except Exception as e:
-                    # Unexpected error - likely a programming bug
-                    logger.error(
-                        "Unexpected error processing message %s: %s",
-                        message_url,
-                        e,
-                        exc_info=True,
+                except sqlite3.IntegrityError as db_err:
+                    # Constraint violation - likely duplicate message
+                    logger.warning(
+                        "Database constraint violation for message %s: %s. Skipping.",
+                        message_id,
+                        db_err,
                         extra={"message_id": message_id, "url": message_url},
                     )
                     failed += 1
-                    # Continue processing other messages despite unexpected errors
+                except sqlite3.OperationalError as db_err:
+                    # Database locked, disk full, or other operational issue
+                    logger.error(
+                        "Database operational error for message %s: %s. This may require intervention.",
+                        message_id,
+                        db_err,
+                        exc_info=True,
+                        extra={"message_id": message_id, "url": message_url},
+                    )
+                    # Re-raise to abort sync - these are serious problems
+                    raise
+                # Removed broad Exception catch - let programming bugs propagate
+                # This ensures errors in parsing logic or data handling are visible
 
+                # Update progress after processing each message
                 progress.update(task, advance=1)
 
             # Final commit

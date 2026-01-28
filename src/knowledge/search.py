@@ -407,7 +407,7 @@ def search_docstrings(
     """
     sql = """
         SELECT d.symbol_name, d.docstring, d.file_path, d.repo,
-               d.language, d.symbol_type, d.line_number
+               d.language, d.symbol_type, d.line_number, d.branch
         FROM docstrings_fts f
         JOIN docstrings d ON f.rowid = d.id
         WHERE docstrings_fts MATCH ?
@@ -442,7 +442,7 @@ def search_docstrings(
                 file_path = row["file_path"]
                 repo_name = row["repo"]
                 line_number = row["line_number"]
-                branch = row["branch"]  # Get branch from database
+                branch = row["branch"] or "main"  # Fallback to 'main' if NULL
 
                 # Use repo-specific branch (e.g., 'develop', 'main', 'master')
                 github_url = f"https://github.com/{repo_name}/blob/{branch}/{file_path}"

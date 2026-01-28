@@ -366,7 +366,11 @@ def sync_docstrings(
     ] = None,
     branch: Annotated[
         str,
-        typer.Option("--branch", "-b", help="Branch to sync from"),
+        typer.Option(
+            "--branch",
+            "-b",
+            help="Branch to sync from (check repo's default: 'main', 'develop', 'master', etc.)",
+        ),
     ] = "main",
 ) -> None:
     """Sync code docstrings from GitHub repositories.
