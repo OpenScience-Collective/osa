@@ -101,7 +101,7 @@ jobs:
       - name: Create GitHub Release
         if: steps.check_tag.outputs.exists == 'false' && steps.get_version.outputs.has_dev_suffix == 'false'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.CI_ADMIN_TOKEN }}
         run: |
           TAG="v${{ steps.get_version.outputs.version }}"
           VERSION="${{ steps.get_version.outputs.version }}"
