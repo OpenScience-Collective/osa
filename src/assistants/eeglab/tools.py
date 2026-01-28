@@ -37,6 +37,8 @@ def search_eeglab_docstrings(
         Load an EEGLAB dataset file. POP_LOADSET is used to load or import
         EEGLAB datasets...
     """
+    import sqlite3
+
     from src.knowledge.db import get_db_path
     from src.knowledge.search import search_docstrings
 
@@ -53,12 +55,21 @@ def search_eeglab_docstrings(
         )
 
     # Search docstrings table
-    results = search_docstrings(
-        query=query,
-        project=community_id,
-        limit=limit,
-        language=language,
-    )
+    try:
+        results = search_docstrings(
+            query=query,
+            project=community_id,
+            limit=limit,
+            language=language,
+        )
+    except sqlite3.OperationalError:
+        # Database exists but tables not initialized (e.g., FTS5 tables missing)
+        return (
+            f"Knowledge base not initialized for {community_id}.\n\n"
+            f"To populate function documentation:\n"
+            f"  osa sync docstrings --community {community_id}\n\n"
+            f"Contact your administrator if you don't have sync permissions."
+        )
 
     if not results:
         return f"No function documentation found for: {query}"
@@ -106,6 +117,8 @@ def search_eeglab_faqs(
 
         [View thread](https://sccn.ucsd.edu/pipermail/eeglablist/...)
     """
+    import sqlite3
+
     from src.knowledge.db import get_db_path
     from src.knowledge.search import search_faq_entries
 
@@ -123,12 +136,22 @@ def search_eeglab_faqs(
         )
 
     # Search FAQ entries
-    results = search_faq_entries(
-        query=query,
-        project=community_id,
-        limit=limit,
-        category=category,
-    )
+    try:
+        results = search_faq_entries(
+            query=query,
+            project=community_id,
+            limit=limit,
+            category=category,
+        )
+    except sqlite3.OperationalError:
+        # Database exists but tables not initialized (e.g., FTS5 tables missing)
+        return (
+            f"Knowledge base not initialized for {community_id}.\n\n"
+            f"To populate FAQ database:\n"
+            f"  Step 1: osa sync mailman --community {community_id}\n"
+            f"  Step 2: osa sync faq --community {community_id}\n\n"
+            f"Contact your administrator if you don't have sync permissions."
+        )
 
     if not results:
         return f"No FAQ entries found for: {query}"

@@ -9,6 +9,14 @@ import pytest
 from src.api.config import Settings
 from src.core.services.llm import LLMService, get_llm_service
 
+# Check if langfuse is available
+try:
+    import langfuse  # noqa: F401
+
+    LANGFUSE_AVAILABLE = True
+except ImportError:
+    LANGFUSE_AVAILABLE = False
+
 
 class TestLLMServiceModelMappings:
     """Tests for model name mappings."""
@@ -139,6 +147,7 @@ class TestLLMServiceGetModel:
         assert model.temperature == 0.2
 
 
+@pytest.mark.skipif(not LANGFUSE_AVAILABLE, reason="Langfuse not installed")
 class TestLangfuseIntegration:
     """Tests for LangFuse integration."""
 
