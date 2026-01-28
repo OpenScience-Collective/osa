@@ -114,11 +114,166 @@ CREATE TABLE IF NOT EXISTS sync_metadata (
     UNIQUE(source_type, source_name)
 );
 
+-- Docstrings extracted from source code
+CREATE TABLE IF NOT EXISTS docstrings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    language TEXT NOT NULL,
+    symbol_name TEXT NOT NULL,
+    symbol_type TEXT NOT NULL,
+    docstring TEXT NOT NULL,
+    line_number INTEGER,
+    branch TEXT NOT NULL DEFAULT 'main',
+    synced_at TEXT NOT NULL,
+    UNIQUE(repo, file_path, symbol_name)
+);
+
+-- FTS5 virtual table for full-text search on docstrings
+CREATE VIRTUAL TABLE IF NOT EXISTS docstrings_fts USING fts5(
+    symbol_name,
+    docstring,
+    content='docstrings',
+    content_rowid='id'
+);
+
+-- Triggers to keep FTS in sync with docstrings
+CREATE TRIGGER IF NOT EXISTS docstrings_ai AFTER INSERT ON docstrings BEGIN
+    INSERT INTO docstrings_fts(rowid, symbol_name, docstring)
+    VALUES (new.id, new.symbol_name, new.docstring);
+END;
+
+CREATE TRIGGER IF NOT EXISTS docstrings_ad AFTER DELETE ON docstrings BEGIN
+    INSERT INTO docstrings_fts(docstrings_fts, rowid, symbol_name, docstring)
+    VALUES('delete', old.id, old.symbol_name, old.docstring);
+END;
+
+CREATE TRIGGER IF NOT EXISTS docstrings_au AFTER UPDATE ON docstrings BEGIN
+    INSERT INTO docstrings_fts(docstrings_fts, rowid, symbol_name, docstring)
+    VALUES('delete', old.id, old.symbol_name, old.docstring);
+    INSERT INTO docstrings_fts(rowid, symbol_name, docstring)
+    VALUES (new.id, new.symbol_name, new.docstring);
+END;
+
+-- Raw mailing list messages (complete archive)
+CREATE TABLE IF NOT EXISTS mailing_list_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    list_name TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    thread_id TEXT,
+    subject TEXT NOT NULL,
+    author TEXT,
+    author_email TEXT,
+    date TEXT NOT NULL,
+    body TEXT,
+    in_reply_to TEXT,
+    url TEXT NOT NULL,
+    year INTEGER NOT NULL,
+    synced_at TEXT NOT NULL,
+    UNIQUE(list_name, message_id)
+);
+
+-- FTS5 for message search
+CREATE VIRTUAL TABLE IF NOT EXISTS mailing_list_messages_fts USING fts5(
+    subject,
+    body,
+    author,
+    content='mailing_list_messages',
+    content_rowid='id'
+);
+
+-- Triggers to keep FTS in sync with mailing_list_messages
+CREATE TRIGGER IF NOT EXISTS mailing_list_messages_ai AFTER INSERT ON mailing_list_messages BEGIN
+    INSERT INTO mailing_list_messages_fts(rowid, subject, body, author)
+    VALUES (new.id, new.subject, new.body, new.author);
+END;
+
+CREATE TRIGGER IF NOT EXISTS mailing_list_messages_ad AFTER DELETE ON mailing_list_messages BEGIN
+    INSERT INTO mailing_list_messages_fts(mailing_list_messages_fts, rowid, subject, body, author)
+    VALUES('delete', old.id, old.subject, old.body, old.author);
+END;
+
+CREATE TRIGGER IF NOT EXISTS mailing_list_messages_au AFTER UPDATE ON mailing_list_messages BEGIN
+    INSERT INTO mailing_list_messages_fts(mailing_list_messages_fts, rowid, subject, body, author)
+    VALUES('delete', old.id, old.subject, old.body, old.author);
+    INSERT INTO mailing_list_messages_fts(rowid, subject, body, author)
+    VALUES (new.id, new.subject, new.body, new.author);
+END;
+
+-- FAQ summaries (LLM-generated from threads)
+CREATE TABLE IF NOT EXISTS faq_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    list_name TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    thread_url TEXT NOT NULL,
+    question TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    tags TEXT,
+    category TEXT,
+    message_count INTEGER DEFAULT 1,
+    participant_count INTEGER DEFAULT 1,
+    first_message_date TEXT,
+    quality_score REAL,
+    summarized_at TEXT NOT NULL,
+    summary_model TEXT,
+    UNIQUE(list_name, thread_id)
+);
+
+-- FTS5 for FAQ search
+CREATE VIRTUAL TABLE IF NOT EXISTS faq_entries_fts USING fts5(
+    question,
+    answer,
+    tags,
+    content='faq_entries',
+    content_rowid='id'
+);
+
+-- Triggers to keep FTS in sync with faq_entries
+CREATE TRIGGER IF NOT EXISTS faq_entries_ai AFTER INSERT ON faq_entries BEGIN
+    INSERT INTO faq_entries_fts(rowid, question, answer, tags)
+    VALUES (new.id, new.question, new.answer, new.tags);
+END;
+
+CREATE TRIGGER IF NOT EXISTS faq_entries_ad AFTER DELETE ON faq_entries BEGIN
+    INSERT INTO faq_entries_fts(faq_entries_fts, rowid, question, answer, tags)
+    VALUES('delete', old.id, old.question, old.answer, old.tags);
+END;
+
+CREATE TRIGGER IF NOT EXISTS faq_entries_au AFTER UPDATE ON faq_entries BEGIN
+    INSERT INTO faq_entries_fts(faq_entries_fts, rowid, question, answer, tags)
+    VALUES('delete', old.id, old.question, old.answer, old.tags);
+    INSERT INTO faq_entries_fts(rowid, question, answer, tags)
+    VALUES (new.id, new.question, new.answer, new.tags);
+END;
+
+-- Track summarization progress
+CREATE TABLE IF NOT EXISTS summarization_status (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    list_name TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    failure_reason TEXT,
+    token_count INTEGER,
+    cost_estimate REAL,
+    attempted_at TEXT,
+    UNIQUE(list_name, thread_id)
+);
+
 -- Indexes for efficient queries
 CREATE INDEX IF NOT EXISTS idx_github_items_repo ON github_items(repo);
 CREATE INDEX IF NOT EXISTS idx_github_items_status ON github_items(status);
 CREATE INDEX IF NOT EXISTS idx_github_items_type ON github_items(item_type);
 CREATE INDEX IF NOT EXISTS idx_papers_source ON papers(source);
+CREATE INDEX IF NOT EXISTS idx_docstrings_repo ON docstrings(repo);
+CREATE INDEX IF NOT EXISTS idx_docstrings_language ON docstrings(language);
+CREATE INDEX IF NOT EXISTS idx_messages_list ON mailing_list_messages(list_name);
+CREATE INDEX IF NOT EXISTS idx_messages_thread ON mailing_list_messages(thread_id);
+CREATE INDEX IF NOT EXISTS idx_messages_year ON mailing_list_messages(year);
+CREATE INDEX IF NOT EXISTS idx_messages_date ON mailing_list_messages(date);
+CREATE INDEX IF NOT EXISTS idx_faq_list ON faq_entries(list_name);
+CREATE INDEX IF NOT EXISTS idx_faq_category ON faq_entries(category);
+CREATE INDEX IF NOT EXISTS idx_faq_quality ON faq_entries(quality_score);
+CREATE INDEX IF NOT EXISTS idx_summarization_status ON summarization_status(list_name, status);
 """
 
 
@@ -175,11 +330,34 @@ def get_connection(project: str = "hed") -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+def _migrate_db(conn: sqlite3.Connection) -> None:
+    """Run database migrations for schema changes.
+
+    Handles adding new columns to existing tables that were created
+    before the column was added to the schema.
+    """
+    # Migration: Add branch column to docstrings table (added 2026-01-27)
+    try:
+        # Check if branch column exists
+        cursor = conn.execute("PRAGMA table_info(docstrings)")
+        columns = [row[1] for row in cursor.fetchall()]
+
+        if "branch" not in columns:
+            logger.info("Migrating docstrings table: adding branch column")
+            conn.execute("ALTER TABLE docstrings ADD COLUMN branch TEXT NOT NULL DEFAULT 'main'")
+            conn.commit()
+            logger.info("Migration complete: branch column added to docstrings")
+    except sqlite3.OperationalError as e:
+        # Table doesn't exist yet - this is fine, schema will create it
+        logger.debug("Docstrings table not found during migration (will be created): %s", e)
+
+
 def init_db(project: str = "hed") -> None:
     """Initialize database schema for a project.
 
     Creates all tables, FTS5 virtual tables, triggers, and indexes.
     Safe to call multiple times (uses IF NOT EXISTS).
+    Runs migrations to handle schema changes for existing databases.
 
     Args:
         project: Assistant/project name. Defaults to 'hed'.
@@ -187,6 +365,10 @@ def init_db(project: str = "hed") -> None:
     with get_connection(project) as conn:
         conn.executescript(SCHEMA_SQL)
         conn.commit()
+
+        # Run migrations for existing databases
+        _migrate_db(conn)
+
     logger.info("Knowledge database initialized at %s", get_db_path(project))
 
 
@@ -278,6 +460,61 @@ def upsert_paper(
     )
 
 
+def upsert_docstring(
+    conn: sqlite3.Connection,
+    *,
+    repo: str,
+    file_path: str,
+    language: str,
+    symbol_name: str,
+    symbol_type: str,
+    docstring: str,
+    line_number: int | None = None,
+    branch: str = "main",
+) -> None:
+    """Insert or update a docstring entry.
+
+    Args:
+        conn: Database connection
+        repo: Repository in owner/name format
+        file_path: Relative path from repo root
+        language: 'matlab' or 'python'
+        symbol_name: Function/class/method name
+        symbol_type: 'function', 'class', 'method', 'script', 'module'
+        docstring: Full docstring text
+        line_number: Starting line in source file (optional)
+        branch: Git branch name (e.g., 'main', 'develop', 'master')
+    """
+    # Limit docstring size to prevent bloat
+    if len(docstring) > 10000:
+        docstring = docstring[:10000]
+
+    conn.execute(
+        """
+        INSERT INTO docstrings (repo, file_path, language, symbol_name,
+                                symbol_type, docstring, line_number, branch, synced_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(repo, file_path, symbol_name) DO UPDATE SET
+            docstring=excluded.docstring,
+            symbol_type=excluded.symbol_type,
+            line_number=excluded.line_number,
+            branch=excluded.branch,
+            synced_at=excluded.synced_at
+        """,
+        (
+            repo,
+            file_path,
+            language,
+            symbol_name,
+            symbol_type,
+            docstring,
+            line_number,
+            branch,
+            _now_iso(),
+        ),
+    )
+
+
 def get_last_sync(source_type: str, source_name: str, project: str = "hed") -> str | None:
     """Get last sync time for a source.
 
@@ -358,4 +595,199 @@ def get_stats(project: str = "hed") -> dict[str, int]:
             "SELECT COUNT(*) FROM papers WHERE source='pubmed'"
         ).fetchone()[0]
 
+        # Docstring stats
+        stats["docstrings_total"] = conn.execute("SELECT COUNT(*) FROM docstrings").fetchone()[0]
+        stats["docstrings_matlab"] = conn.execute(
+            "SELECT COUNT(*) FROM docstrings WHERE language='matlab'"
+        ).fetchone()[0]
+        stats["docstrings_python"] = conn.execute(
+            "SELECT COUNT(*) FROM docstrings WHERE language='python'"
+        ).fetchone()[0]
+
+        # Mailing list stats
+        stats["mailing_list_total"] = conn.execute(
+            "SELECT COUNT(*) FROM mailing_list_messages"
+        ).fetchone()[0]
+        stats["faq_total"] = conn.execute("SELECT COUNT(*) FROM faq_entries").fetchone()[0]
+
         return stats
+
+
+def upsert_mailing_list_message(
+    conn: sqlite3.Connection,
+    *,
+    list_name: str,
+    message_id: str,
+    thread_id: str | None,
+    subject: str,
+    author: str | None,
+    author_email: str | None,
+    date: str,
+    body: str | None,
+    in_reply_to: str | None,
+    url: str,
+    year: int,
+) -> None:
+    """Insert or update a mailing list message.
+
+    Args:
+        conn: Database connection
+        list_name: Mailing list identifier (e.g., 'eeglablist')
+        message_id: Unique message identifier
+        thread_id: Thread identifier (first message_id in thread)
+        subject: Message subject
+        author: Author name
+        author_email: Author email
+        date: ISO 8601 timestamp
+        body: Message content in markdown
+        in_reply_to: Parent message_id
+        url: URL to original message
+        year: Year for partitioning
+    """
+    # Limit body size to prevent bloat
+    if body and len(body) > 10000:
+        body = body[:10000]
+
+    conn.execute(
+        """
+        INSERT INTO mailing_list_messages (list_name, message_id, thread_id, subject,
+                                           author, author_email, date, body, in_reply_to,
+                                           url, year, synced_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(list_name, message_id) DO UPDATE SET
+            thread_id=excluded.thread_id,
+            subject=excluded.subject,
+            author=excluded.author,
+            author_email=excluded.author_email,
+            date=excluded.date,
+            body=excluded.body,
+            in_reply_to=excluded.in_reply_to,
+            synced_at=excluded.synced_at
+        """,
+        (
+            list_name,
+            message_id,
+            thread_id,
+            subject,
+            author,
+            author_email,
+            date,
+            body,
+            in_reply_to,
+            url,
+            year,
+            _now_iso(),
+        ),
+    )
+
+
+def upsert_faq_entry(
+    conn: sqlite3.Connection,
+    *,
+    list_name: str,
+    thread_id: str,
+    thread_url: str,
+    question: str,
+    answer: str,
+    tags: list[str],
+    category: str,
+    message_count: int,
+    participant_count: int,
+    first_message_date: str,
+    quality_score: float,
+    summary_model: str,
+) -> None:
+    """Insert or update a FAQ entry.
+
+    Args:
+        conn: Database connection
+        list_name: Mailing list identifier
+        thread_id: Thread identifier
+        thread_url: URL to thread view
+        question: Extracted core question
+        answer: Synthesized answer from thread
+        tags: Topic keywords
+        category: 'troubleshooting', 'how-to', 'bug-report', 'feature-request', etc.
+        message_count: Number of messages in thread
+        participant_count: Unique participants
+        first_message_date: Thread start date
+        quality_score: 0.0-1.0, from LLM scoring
+        summary_model: Model used for summarization
+    """
+    import json
+
+    # Limit answer size
+    if len(answer) > 5000:
+        answer = answer[:5000]
+
+    conn.execute(
+        """
+        INSERT INTO faq_entries (list_name, thread_id, thread_url, question, answer,
+                                tags, category, message_count, participant_count,
+                                first_message_date, quality_score, summarized_at,
+                                summary_model)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(list_name, thread_id) DO UPDATE SET
+            question=excluded.question,
+            answer=excluded.answer,
+            tags=excluded.tags,
+            category=excluded.category,
+            message_count=excluded.message_count,
+            participant_count=excluded.participant_count,
+            quality_score=excluded.quality_score,
+            summarized_at=excluded.summarized_at,
+            summary_model=excluded.summary_model
+        """,
+        (
+            list_name,
+            thread_id,
+            thread_url,
+            question,
+            answer,
+            json.dumps(tags),
+            category,
+            message_count,
+            participant_count,
+            first_message_date,
+            quality_score,
+            _now_iso(),
+            summary_model,
+        ),
+    )
+
+
+def update_summarization_status(
+    conn: sqlite3.Connection,
+    *,
+    list_name: str,
+    thread_id: str,
+    status: str,
+    failure_reason: str | None = None,
+    token_count: int | None = None,
+    cost_estimate: float | None = None,
+) -> None:
+    """Track summarization progress.
+
+    Args:
+        conn: Database connection
+        list_name: Mailing list identifier
+        thread_id: Thread identifier
+        status: 'pending', 'summarized', 'failed', 'skipped'
+        failure_reason: Error message if failed
+        token_count: Estimated tokens processed
+        cost_estimate: Estimated cost in USD
+    """
+    conn.execute(
+        """
+        INSERT INTO summarization_status (list_name, thread_id, status, failure_reason,
+                                         token_count, cost_estimate, attempted_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(list_name, thread_id) DO UPDATE SET
+            status=excluded.status,
+            failure_reason=excluded.failure_reason,
+            token_count=excluded.token_count,
+            cost_estimate=excluded.cost_estimate,
+            attempted_at=excluded.attempted_at
+        """,
+        (list_name, thread_id, status, failure_reason, token_count, cost_estimate, _now_iso()),
+    )

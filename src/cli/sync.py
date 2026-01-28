@@ -18,6 +18,7 @@ from rich.table import Table
 from src.assistants import registry
 from src.cli.config import load_config
 from src.knowledge.db import get_db_path, get_stats, init_db
+from src.knowledge.docstring_sync import sync_repo_docstrings
 from src.knowledge.github_sync import sync_repo, sync_repos
 from src.knowledge.papers_sync import (
     sync_all_papers,
@@ -64,6 +65,25 @@ def _get_community_paper_queries(community_id: str) -> list[str]:
         return info.community_config.citations.queries
     console.print(
         f"[yellow]Warning: No paper queries found for community '{community_id}'[/yellow]"
+    )
+    return []
+
+
+def _get_community_docstring_repos(community_id: str) -> list[tuple[str, str, list[str]]]:
+    """Get docstring extraction repos with branches and languages.
+
+    Returns:
+        List of (repo, branch, languages) tuples.
+        Example: [('sccn/eeglab', 'develop', ['matlab', 'python'])]
+    """
+    info = registry.get(community_id)
+    if info and info.community_config and info.community_config.docstrings:
+        return [
+            (repo_config.repo, repo_config.branch, repo_config.languages)
+            for repo_config in info.community_config.docstrings.repos
+        ]
+    console.print(
+        f"[yellow]Warning: No docstring repos found for community '{community_id}'[/yellow]"
     )
     return []
 
@@ -330,6 +350,103 @@ def sync_papers(
     console.print(f"\n[green]Total papers synced for {community}: {total}[/green]")
 
 
+@sync_app.command("docstrings")
+def sync_docstrings(
+    community: Annotated[
+        str,
+        typer.Option("--community", "-c", help="Community ID to sync (e.g., hed, bids, eeglab)"),
+    ] = "hed",
+    language: Annotated[
+        str,
+        typer.Option("--language", "-l", help="Language: matlab or python"),
+    ] = "matlab",
+    repo: Annotated[
+        str | None,
+        typer.Option("--repo", "-r", help="Single repo to sync (owner/name format)"),
+    ] = None,
+    branch: Annotated[
+        str,
+        typer.Option(
+            "--branch",
+            "-b",
+            help="Branch to sync from (check repo's default: 'main', 'develop', 'master', etc.)",
+        ),
+    ] = "main",
+) -> None:
+    """Sync code docstrings from GitHub repositories.
+
+    Extracts docstrings from MATLAB (.m) or Python (.py) files and indexes them
+    for search. If --repo is specified, syncs that single repo. Otherwise, syncs
+    all repos configured for the community.
+    """
+    _require_admin()
+    _validate_community(community)
+
+    if language not in ("matlab", "python"):
+        console.print("[red]Error: Language must be 'matlab' or 'python'[/red]")
+        raise typer.Exit(1)
+
+    if not _safe_init_db(community):
+        raise typer.Exit(1)
+
+    if repo:
+        # Sync single repo
+        try:
+            count = sync_repo_docstrings(repo, language, project=community, branch=branch)
+            console.print(f"\n[green]✓ Synced {count} {language} docstrings from {repo}[/green]")
+        except Exception as e:
+            console.print(f"[red]Error syncing {repo}: {e}[/red]")
+            logger.exception("Failed to sync docstrings from %s", repo)
+            raise typer.Exit(1)
+    else:
+        # Sync all repos from community docstrings config
+        repo_configs = _get_community_docstring_repos(community)
+        if not repo_configs:
+            console.print(
+                f"[yellow]No docstring repos configured for community '{community}'[/yellow]"
+            )
+            console.print("[dim]Use --repo to specify a repository explicitly[/dim]")
+            console.print("[dim]Or add 'docstrings:' section to config.yaml[/dim]")
+            raise typer.Exit(1)
+
+        # Filter repos by language if specified
+        repos_to_sync = []
+        for repo_name, repo_branch, repo_languages in repo_configs:
+            if language in repo_languages:
+                repos_to_sync.append((repo_name, repo_branch))
+
+        if not repos_to_sync:
+            console.print(f"[yellow]No repos configured for {language} docstrings[/yellow]")
+            raise typer.Exit(1)
+
+        console.print(
+            f"[dim]Syncing {language} docstrings from {len(repos_to_sync)} repos...[/dim]\n"
+        )
+        total = 0
+        failed = []
+
+        for repo_name, repo_branch in repos_to_sync:
+            try:
+                count = sync_repo_docstrings(
+                    repo_name, language, project=community, branch=repo_branch
+                )
+                total += count
+                if count > 0:
+                    console.print(f"  ✓ {repo_name} (branch: {repo_branch}): {count} docstrings")
+                else:
+                    console.print(
+                        f"  - {repo_name} (branch: {repo_branch}): no {language} files found"
+                    )
+            except Exception as e:
+                console.print(f"  ✗ {repo_name}: {e}")
+                logger.warning("Failed to sync docstrings from %s: %s", repo_name, e)
+                failed.append(repo_name)
+
+        console.print(f"\n[green]Total {language} docstrings synced: {total}[/green]")
+        if failed:
+            console.print(f"[yellow]Failed repos ({len(failed)}): {', '.join(failed)}[/yellow]")
+
+
 @sync_app.command("all")
 def sync_all(
     community: Annotated[
@@ -527,3 +644,150 @@ def sync_search(
                 console.print(f"    [dim]{r.url}[/dim]")
         else:
             console.print("  [dim]No results[/dim]")
+
+
+@sync_app.command("mailman")
+def sync_mailman(
+    community: Annotated[
+        str,
+        typer.Option("--community", "-c", help="Community ID to sync (e.g., eeglab, hed)"),
+    ] = "eeglab",
+    list_name: Annotated[
+        str | None,
+        typer.Option("--list", help="Specific mailing list to sync"),
+    ] = None,
+    start_year: Annotated[
+        int | None,
+        typer.Option("--start-year", help="Earliest year to sync"),
+    ] = None,
+    end_year: Annotated[
+        int | None,
+        typer.Option("--end-year", help="Latest year to sync"),
+    ] = None,
+) -> None:
+    """Sync mailing list messages from Mailman archives."""
+    _require_admin()
+    _validate_community(community)
+
+    if not _safe_init_db(community):
+        raise typer.Exit(1)
+
+    # Get mailing list config from community
+    info = registry.get(community)
+    if not info or not info.community_config.mailman:
+        console.print(f"[red]Error: No mailing list configured for {community}[/red]")
+        raise typer.Exit(1)
+
+    from src.knowledge.mailman_sync import sync_mailing_list
+
+    # Sync each configured mailing list
+    for mailman_config in info.community_config.mailman:
+        # Skip if specific list requested and this isn't it
+        if list_name and mailman_config.list_name != list_name:
+            continue
+
+        results = sync_mailing_list(
+            list_name=mailman_config.list_name,
+            base_url=str(mailman_config.base_url),
+            project=community,
+            start_year=start_year or mailman_config.start_year,
+            end_year=end_year,
+        )
+
+        # Show summary table
+        if results:
+            table = Table(title=f"Mailman Sync Results ({mailman_config.list_name})")
+            table.add_column("Year", style="cyan", justify="right")
+            table.add_column("Messages", style="green", justify="right")
+
+            for year in sorted(results.keys()):
+                table.add_row(str(year), str(results[year]))
+
+            total = sum(results.values())
+            table.add_row("[bold]Total[/bold]", f"[bold]{total}[/bold]")
+            console.print(table)
+
+
+@sync_app.command("faq")
+def sync_faq(
+    community: Annotated[
+        str,
+        typer.Option("--community", "-c", help="Community ID to sync (e.g., eeglab, hed)"),
+    ] = "eeglab",
+    estimate_only: Annotated[
+        bool,
+        typer.Option("--estimate", help="Estimate cost without summarizing"),
+    ] = False,
+    quality_threshold: Annotated[
+        float,
+        typer.Option("--quality", help="Minimum quality score (0.0-1.0)"),
+    ] = 0.6,
+    max_threads: Annotated[
+        int | None,
+        typer.Option("--max", help="Maximum threads to process"),
+    ] = None,
+) -> None:
+    """Generate FAQ summaries from mailing list threads using LLM."""
+    _require_admin()
+    _validate_community(community)
+
+    if not _safe_init_db(community):
+        raise typer.Exit(1)
+
+    # Get mailing list config
+    info = registry.get(community)
+    if not info or not info.community_config.mailman:
+        console.print(f"[red]Error: No mailing list configured for {community}[/red]")
+        raise typer.Exit(1)
+
+    from src.knowledge.faq_summarizer import estimate_summarization_cost, summarize_threads
+
+    list_names = [m.list_name for m in info.community_config.mailman]
+
+    for list_name in list_names:
+        if estimate_only:
+            console.print(f"\n[bold]Estimating cost for {list_name}...[/bold]")
+            estimate = estimate_summarization_cost(list_name, project=community)
+
+            table = Table(title="Cost Estimation")
+            table.add_column("Metric", style="cyan")
+            table.add_column("Value", style="green", justify="right")
+
+            table.add_row("Thread count", str(estimate["thread_count"]))
+            table.add_row("Est. input tokens", f"{estimate['estimated_input_tokens']:,}")
+            table.add_row("Est. output tokens", f"{estimate['estimated_output_tokens']:,}")
+            table.add_row("Haiku cost", f"${estimate['haiku_cost']:.2f}")
+            table.add_row("Sonnet cost", f"${estimate['sonnet_cost']:.2f}")
+            table.add_row("Hybrid cost (recommended)", f"${estimate['hybrid_cost']:.2f}")
+
+            console.print(table)
+        else:
+            # Confirm before proceeding
+            if max_threads is None:
+                console.print(
+                    "[yellow]Warning: Running without --max will process ALL threads.[/yellow]"
+                )
+                console.print("[yellow]This may incur significant LLM costs.[/yellow]")
+                confirm = typer.confirm("Continue?")
+                if not confirm:
+                    console.print("[dim]Cancelled.[/dim]")
+                    return
+
+            result = summarize_threads(
+                list_name=list_name,
+                project=community,
+                quality_threshold=quality_threshold,
+                max_threads=max_threads,
+            )
+
+            # Show results table
+            table = Table(title=f"FAQ Summarization Results ({list_name})")
+            table.add_column("Metric", style="cyan")
+            table.add_column("Value", style="green", justify="right")
+
+            table.add_row("Processed", str(result["processed"]))
+            table.add_row("Summarized", str(result["summarized"]))
+            table.add_row("Skipped", str(result["skipped"]))
+            table.add_row("Estimated cost", f"${result['total_cost']:.2f}")
+
+            console.print(table)
