@@ -1,9 +1,10 @@
 """LLM-based FAQ summarization from mailing list threads.
 
 Uses a two-stage approach to balance cost and quality:
-1. Score thread quality with Haiku (fast, cheap)
-2. Summarize high-quality threads with Sonnet (high quality)
+1. Score thread quality with evaluation agent (fast, cheap model)
+2. Summarize high-quality threads with summary agent (quality model)
 
+Models are configured per-community in config.yaml under faq_generation.
 Cost tracking and estimation included for budget management.
 """
 
@@ -17,7 +18,6 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from src.core.services.litellm_llm import create_openrouter_llm
 from src.knowledge.db import get_connection, update_summarization_status, upsert_faq_entry
 
 logger = logging.getLogger(__name__)
@@ -297,34 +297,78 @@ def estimate_summarization_cost(
 def summarize_threads(
     list_name: str,
     project: str = "eeglab",
-    quality_threshold: float = 0.6,
+    quality_threshold: float | None = None,
     batch_size: int = 10,
     max_threads: int | None = None,
 ) -> dict:
     """Summarize mailing list threads into FAQ entries.
 
+    Uses community-specific FAQ generation config for model selection
+    and quality thresholds. Falls back to defaults if not configured.
+
     Args:
         list_name: Mailing list identifier
         project: Community ID
         quality_threshold: Minimum quality score to summarize (0.0-1.0)
+                          If None, uses community config (default: 0.7)
         batch_size: Number of threads per LLM batch
         max_threads: Maximum threads to process (for testing/budgeting)
 
     Returns:
         Summary stats: {processed, summarized, skipped, total_cost, total_tokens}
     """
-    # Create LLM instances
-    haiku = create_openrouter_llm(
-        model="anthropic/claude-3-5-haiku",
-        temperature=0.1,
-        enable_caching=True,
-    )
+    # Load community config for FAQ generation settings
+    from src.assistants import registry
+    from src.core.services.litellm_llm import create_openrouter_llm
 
-    sonnet = create_openrouter_llm(
-        model="anthropic/claude-3-5-sonnet",
-        temperature=0.1,
-        enable_caching=True,
-    )
+    config = registry.get_community_config(project)
+    faq_config = config.faq_generation if config else None
+
+    # Use config-based models or fall back to defaults
+    if faq_config:
+        # Evaluation agent (for scoring quality)
+        eval_agent = create_openrouter_llm(
+            model=faq_config.evaluation_agent.model,
+            provider=faq_config.evaluation_agent.provider,
+            temperature=faq_config.evaluation_agent.temperature,
+            enable_caching=faq_config.evaluation_agent.enable_caching,
+        )
+
+        # Summary agent (for creating FAQs)
+        summary_agent = create_openrouter_llm(
+            model=faq_config.summary_agent.model,
+            provider=faq_config.summary_agent.provider,
+            temperature=faq_config.summary_agent.temperature,
+            enable_caching=faq_config.summary_agent.enable_caching,
+        )
+
+        # Track model name for database
+        summary_model_name = faq_config.summary_agent.model
+
+        # Use config threshold if not overridden
+        if quality_threshold is None:
+            quality_threshold = faq_config.quality_threshold
+    else:
+        # Fallback to hardcoded defaults (backward compatibility)
+        logger.warning(
+            "No faq_generation config found for %s, using defaults",
+            project,
+        )
+        summary_model_name = "anthropic/claude-haiku-4.5"
+        eval_agent = create_openrouter_llm(
+            model=summary_model_name,
+            provider="Anthropic",
+            temperature=0.0,
+            enable_caching=True,
+        )
+        summary_agent = create_openrouter_llm(
+            model=summary_model_name,
+            provider="Anthropic",
+            temperature=0.1,
+            enable_caching=True,
+        )
+        if quality_threshold is None:
+            quality_threshold = 0.7
 
     with get_connection(project) as conn:
         # Get threads needing summarization
@@ -382,7 +426,7 @@ def summarize_threads(
                     thread_context = _build_thread_context(messages)
 
                     # Score quality
-                    quality_score = _score_thread_quality(thread_context, haiku)
+                    quality_score = _score_thread_quality(thread_context, eval_agent)
 
                     if quality_score is None:
                         # Scoring failed - this is different from a low score
@@ -409,8 +453,8 @@ def summarize_threads(
                         progress.update(task, advance=1)
                         continue
 
-                    # Summarize with Sonnet (for high-quality threads)
-                    summary = _summarize_thread(thread_context, sonnet)
+                    # Summarize with summary agent (for high-quality threads)
+                    summary = _summarize_thread(thread_context, summary_agent)
                     if not summary:
                         update_summarization_status(
                             conn,
@@ -439,7 +483,7 @@ def summarize_threads(
                         participant_count=thread_info["participant_count"],
                         first_message_date=thread_info["first_date"],
                         quality_score=quality_score,
-                        summary_model="anthropic/claude-3-5-sonnet",
+                        summary_model=summary_model_name,
                     )
 
                     update_summarization_status(

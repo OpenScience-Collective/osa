@@ -422,6 +422,61 @@ class ExtensionsConfig(BaseModel):
         return self
 
 
+class AgentConfig(BaseModel):
+    """LLM agent configuration for FAQ generation tasks."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: str
+    """Model identifier in OpenRouter format (creator/model-name)."""
+
+    provider: str | None = None
+    """Provider routing preference (e.g., 'Anthropic', 'DeepInfra/FP8')."""
+
+    temperature: float = Field(default=0.1, ge=0.0, le=2.0)
+    """Sampling temperature for model responses."""
+
+    enable_caching: bool = True
+    """Enable prompt caching to reduce costs."""
+
+
+class FAQSourceConfig(BaseModel):
+    """Configuration for a specific FAQ source type."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    """Whether this source is enabled for FAQ generation."""
+
+    min_messages: int = Field(default=2, ge=1)
+    """Minimum messages in a thread to consider for FAQ."""
+
+    min_participants: int = Field(default=2, ge=1)
+    """Minimum unique participants in a thread to consider for FAQ."""
+
+
+class FAQGenerationConfig(BaseModel):
+    """FAQ generation configuration for threaded discussions.
+
+    Supports multiple source types (mailman, discourse, forums) with
+    configurable evaluation and summarization agents.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    evaluation_agent: AgentConfig
+    """Agent for scoring thread quality (many calls, needs speed/cost efficiency)."""
+
+    summary_agent: AgentConfig
+    """Agent for creating FAQ entries (fewer calls, needs quality)."""
+
+    quality_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+    """Minimum quality score (0.0-1.0) required for FAQ generation."""
+
+    sources: dict[str, FAQSourceConfig] = Field(default_factory=dict)
+    """Source-specific settings (mailman, discourse, etc.)."""
+
+
 class CommunityConfig(BaseModel):
     """Configuration for a single research community assistant.
 
@@ -496,6 +551,9 @@ class CommunityConfig(BaseModel):
 
     docstrings: DocstringsConfig | None = None
     """Docstring extraction configuration for function documentation."""
+
+    faq_generation: FAQGenerationConfig | None = None
+    """FAQ generation configuration from threaded discussions (mailman, discourse, etc.)."""
 
     extensions: ExtensionsConfig | None = None
     """Extension points for specialized tools."""

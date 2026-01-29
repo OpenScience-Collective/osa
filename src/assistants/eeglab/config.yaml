@@ -384,6 +384,38 @@ docstrings:
       languages: [matlab]
 
 # Plugin tools (Phase 2 & Phase 3)
+
+# FAQ Generation Configuration
+# Two-agent system for cost-efficient FAQ creation from threaded discussions
+# Process: Eval agent scores all threads (cheap) → Summary agent creates FAQs for high-quality threads (quality)
+faq_generation:
+  # Evaluation Agent: Scores thread quality (1000s of calls, optimized for speed/cost)
+  # Model: EEGLAB's default fast model via DeepInfra FP8 quantization
+  evaluation_agent:
+    model: qwen/qwen3-235b-a22b-2507
+    provider: DeepInfra/FP8  # FP8 quantization for cost efficiency
+    temperature: 0.0         # Deterministic scoring
+    enable_caching: true     # Prompt caching enabled for cost reduction
+
+  # Summary Agent: Creates FAQ entries (100s of calls after filtering, optimized for quality)
+  # Model: Claude Haiku 4.5 via Anthropic for high-quality summaries
+  summary_agent:
+    model: anthropic/claude-haiku-4.5
+    provider: Anthropic      # Direct Anthropic provider for best performance
+    temperature: 0.1         # Slightly creative for natural FAQ phrasing
+    enable_caching: true     # Prompt caching enabled for cost reduction
+
+  # Quality Threshold: Only create FAQs for threads scoring >= 0.7
+  # Reduces summary agent calls by ~85%, significantly lowering costs
+  quality_threshold: 0.7
+
+  # Source-specific settings for different discussion platforms
+  sources:
+    mailman:
+      enabled: true
+      min_messages: 2         # Require at least 2 messages (question + answer)
+      min_participants: 2     # Require at least 2 participants (not monologue)
+
 extensions:
   python_plugins:
     - module: src.assistants.eeglab.tools
