@@ -74,11 +74,34 @@ async function verifyTurnstileToken(token, secretKey, ip) {
  * - 50% reduction in KV writes (1 vs 2 per request)
  * - Faster bot protection (<1ms vs ~10-50ms for critical first check)
  * - Global hourly limits across all edge locations
+ *
+ * Known limitation:
+ * - KV read-then-write is not atomic; concurrent requests from same IP
+ *   may slightly exceed hourly limit. Per-minute guard constrains this.
  */
 async function checkRateLimit(request, env, CONFIG) {
   const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
 
-  // Per-minute bot protection (built-in API, fast)
+  // Check hourly limit first (KV, read-only, no token consumed)
+  // This prevents wasting per-minute tokens on already-rejected requests
+  if (env.RATE_LIMITER_KV) {
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      const hourKey = `rl:hour:${ip}:${Math.floor(now / 3600)}`;
+
+      // Check current count
+      const hourCount = parseInt(await env.RATE_LIMITER_KV.get(hourKey) || '0', 10);
+      if (hourCount >= CONFIG.RATE_LIMIT_PER_HOUR) {
+        return { allowed: false, reason: 'Too many requests per hour' };
+      }
+    } catch (error) {
+      console.error('Per-hour rate limit check error:', error);
+      // Fail open for KV errors
+    }
+  }
+
+  // Check per-minute limit (built-in API, fast, consumes token)
+  // Only check this AFTER hourly passes to avoid wasting tokens
   if (env.RATE_LIMITER_MINUTE) {
     try {
       const { success } = await env.RATE_LIMITER_MINUTE.limit({ key: ip });
@@ -91,23 +114,17 @@ async function checkRateLimit(request, env, CONFIG) {
     }
   }
 
-  // Per-hour human abuse protection (KV, global)
+  // Increment hourly counter (1 write per request instead of 2)
+  // Done last, after both checks pass
   if (env.RATE_LIMITER_KV) {
     try {
       const now = Math.floor(Date.now() / 1000);
       const hourKey = `rl:hour:${ip}:${Math.floor(now / 3600)}`;
-
-      // Check current count
-      const hourCount = parseInt(await env.RATE_LIMITER_KV.get(hourKey) || '0');
-      if (hourCount >= CONFIG.RATE_LIMIT_PER_HOUR) {
-        return { allowed: false, reason: 'Too many requests per hour' };
-      }
-
-      // Increment counter (1 write per request instead of 2)
+      const hourCount = parseInt(await env.RATE_LIMITER_KV.get(hourKey) || '0', 10);
       await env.RATE_LIMITER_KV.put(hourKey, (hourCount + 1).toString(), { expirationTtl: 7200 });
     } catch (error) {
-      console.error('Per-hour rate limit check error:', error);
-      // Fail open for KV errors
+      console.error('Per-hour rate limit increment error:', error);
+      // Already allowed, so don't fail the request
     }
   }
 

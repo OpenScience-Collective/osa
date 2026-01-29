@@ -100,7 +100,7 @@ jobs:
         run: |
           npm install -g wrangler
           cd workers/osa-worker
-          wrangler deploy --env=""
+          wrangler deploy
           echo "✅ Deployed to production worker"
 
       - name: Deploy to Cloudflare Workers (dev)
