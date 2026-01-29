@@ -175,7 +175,7 @@ class TestMailmanEndToEnd:
             patch("src.knowledge.db.get_db_path", return_value=e2e_test_db),
             patch("src.knowledge.mailman_sync._fetch_page", side_effect=mock_fetch),
             patch(
-                "src.knowledge.faq_summarizer.create_openrouter_llm",
+                "src.core.services.litellm_llm.create_openrouter_llm",
                 side_effect=[mock_scoring_model, mock_summary_model],
             ),
         ):
@@ -311,7 +311,7 @@ class TestMailmanEndToEnd:
             patch("src.knowledge.db.get_db_path", return_value=e2e_test_db),
             patch("src.knowledge.mailman_sync._fetch_page", side_effect=mock_fetch),
             patch(
-                "src.knowledge.faq_summarizer.create_openrouter_llm",
+                "src.core.services.litellm_llm.create_openrouter_llm",
                 side_effect=[mock_scoring_model, mock_summary_model],
             ),
         ):
