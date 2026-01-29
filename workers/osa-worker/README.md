@@ -2,7 +2,9 @@
 
 Security proxy for the Open Science Assistant backend. Provides:
 - **Turnstile verification** (visible widget) for bot protection
-- **Rate limiting** (IP-based, per-minute and per-hour, using Cloudflare's built-in API)
+- **Hybrid rate limiting** (IP-based, per-minute and per-hour)
+  - Per-minute: Built-in API (fast bot protection, <1ms)
+  - Per-hour: KV (global human abuse prevention)
 - **CORS validation** for allowed origins
 - **API key injection** for backend authentication
 - **BYOK mode** for CLI/programmatic access
@@ -39,7 +41,11 @@ npm install -g wrangler
 wrangler login
 ```
 
-### 2. Set up Turnstile
+### 2. KV namespaces
+
+KV namespaces are already configured in `wrangler.toml` for per-hour rate limiting. No additional setup needed.
+
+### 3. Set up Turnstile
 
 1. Go to Cloudflare Dashboard > Turnstile
 2. Create a new widget with **Visible** mode
@@ -51,7 +57,7 @@ wrangler login
 4. Copy the Site Key (for frontend integration)
 5. Copy the Secret Key (for this worker)
 
-### 3. Set secrets
+### 4. Set secrets
 
 ```bash
 # Backend API key (generate with: python -c "import secrets; print(secrets.token_urlsafe(32))")
@@ -65,7 +71,7 @@ wrangler secret put BACKEND_API_KEY --env dev
 wrangler secret put TURNSTILE_SECRET_KEY --env dev
 ```
 
-### 4. Deploy
+### 5. Deploy
 
 ```bash
 # Production
@@ -88,10 +94,17 @@ wrangler deploy --env dev
 
 ## Rate Limits
 
-| Environment | Per Minute | Per Hour |
-|-------------|------------|----------|
-| Production | 10 | 100 |
-| Development | 60 | 600 |
+Hybrid approach for optimal performance and protection:
+
+| Environment | Per Minute (Bot Protection) | Per Hour (Human Abuse) |
+|-------------|----------------------------|----------------------|
+| Production | 10 (built-in API) | 100 (KV, global) |
+| Development | 60 (built-in API) | 600 (KV, global) |
+
+**Why hybrid?**
+- **Per-minute**: Needs to be fast (<1ms), catches bots immediately → Built-in API
+- **Per-hour**: Needs global consistency across edge locations → KV
+- **Result**: 50% fewer KV writes (1 vs 2 per request), faster bot protection
 
 ## BYOK Mode
 
