@@ -98,13 +98,18 @@ Hybrid approach for optimal performance and protection:
 
 | Environment | Per Minute (Bot Protection) | Per Hour (Human Abuse) |
 |-------------|----------------------------|----------------------|
-| Production | 10 (built-in API) | 100 (KV, global) |
-| Development | 60 (built-in API) | 600 (KV, global) |
+| Production | 10 (built-in API) | 20 (KV, global) |
+| Development | 60 (built-in API) | 100 (KV, global) |
 
 **Why hybrid?**
 - **Per-minute**: Needs to be fast (<1ms), catches bots immediately → Built-in API
 - **Per-hour**: Needs global consistency across edge locations → KV
 - **Result**: 50% fewer KV writes (1 vs 2 per request), faster bot protection
+
+**Rate limit scope:**
+- Limits are **per IP address**, not per session
+- 20/hour in production = ~1 question every 3 minutes (reasonable for research)
+- Prevents abuse while allowing legitimate use
 
 ## BYOK Mode
 

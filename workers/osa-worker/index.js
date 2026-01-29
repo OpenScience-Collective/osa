@@ -14,7 +14,7 @@ function getConfig(env) {
   const isDev = env.ENVIRONMENT === 'development';
   return {
     RATE_LIMIT_PER_MINUTE: isDev ? 60 : 10,
-    RATE_LIMIT_PER_HOUR: isDev ? 600 : 100,
+    RATE_LIMIT_PER_HOUR: isDev ? 100 : 20,
     REQUEST_TIMEOUT: 120000, // 2 minutes for LLM responses
     IS_DEV: isDev,
   };
