@@ -66,35 +66,43 @@ async function verifyTurnstileToken(token, secretKey, ip) {
 }
 
 /**
- * Check rate limit using KV storage
+ * Check rate limit using Cloudflare's built-in Rate Limiting API
+ * Free, in-memory, no KV writes required
  */
 async function checkRateLimit(request, env, CONFIG) {
   if (!env.RATE_LIMITER) return { allowed: true };
 
   const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
-  const now = Math.floor(Date.now() / 1000);
-  const minuteKey = `rl:min:${ip}:${Math.floor(now / 60)}`;
-  const hourKey = `rl:hour:${ip}:${Math.floor(now / 3600)}`;
 
-  // Check per-minute limit
-  const minuteCount = parseInt(await env.RATE_LIMITER.get(minuteKey) || '0');
-  if (minuteCount >= CONFIG.RATE_LIMIT_PER_MINUTE) {
-    return { allowed: false, reason: 'Too many requests per minute' };
+  try {
+    // Check per-minute limit
+    const minuteResult = await env.RATE_LIMITER.limit({
+      key: `min:${ip}`,
+      limit: CONFIG.RATE_LIMIT_PER_MINUTE,
+      period: 60, // seconds
+    });
+
+    if (!minuteResult.success) {
+      return { allowed: false, reason: 'Too many requests per minute' };
+    }
+
+    // Check per-hour limit
+    const hourResult = await env.RATE_LIMITER.limit({
+      key: `hour:${ip}`,
+      limit: CONFIG.RATE_LIMIT_PER_HOUR,
+      period: 3600, // seconds
+    });
+
+    if (!hourResult.success) {
+      return { allowed: false, reason: 'Too many requests per hour' };
+    }
+
+    return { allowed: true };
+  } catch (error) {
+    console.error('Rate limit check error:', error);
+    // Fail open - allow request if rate limiting fails
+    return { allowed: true };
   }
-
-  // Check per-hour limit
-  const hourCount = parseInt(await env.RATE_LIMITER.get(hourKey) || '0');
-  if (hourCount >= CONFIG.RATE_LIMIT_PER_HOUR) {
-    return { allowed: false, reason: 'Too many requests per hour' };
-  }
-
-  // Increment counters
-  await Promise.all([
-    env.RATE_LIMITER.put(minuteKey, (minuteCount + 1).toString(), { expirationTtl: 120 }),
-    env.RATE_LIMITER.put(hourKey, (hourCount + 1).toString(), { expirationTtl: 7200 }),
-  ]);
-
-  return { allowed: true };
 }
 
 /**

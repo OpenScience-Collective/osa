@@ -2,7 +2,7 @@
 
 Security proxy for the Open Science Assistant backend. Provides:
 - **Turnstile verification** (visible widget) for bot protection
-- **Rate limiting** (IP-based, per-minute and per-hour)
+- **Rate limiting** (IP-based, per-minute and per-hour, using Cloudflare's built-in API)
 - **CORS validation** for allowed origins
 - **API key injection** for backend authentication
 - **BYOK mode** for CLI/programmatic access
@@ -39,23 +39,7 @@ npm install -g wrangler
 wrangler login
 ```
 
-### 2. Create KV namespaces for rate limiting
-
-```bash
-# Production
-wrangler kv:namespace create "RATE_LIMITER"
-# Copy the ID and update wrangler.toml
-
-# Development
-wrangler kv:namespace create "RATE_LIMITER" --env dev
-# Copy the ID and update wrangler.toml [env.dev.kv_namespaces]
-```
-
-### 3. Update wrangler.toml
-
-Replace `REPLACE_WITH_KV_ID` and `REPLACE_WITH_DEV_KV_ID` with the IDs from step 2.
-
-### 4. Set up Turnstile
+### 2. Set up Turnstile
 
 1. Go to Cloudflare Dashboard > Turnstile
 2. Create a new widget with **Visible** mode
@@ -67,7 +51,7 @@ Replace `REPLACE_WITH_KV_ID` and `REPLACE_WITH_DEV_KV_ID` with the IDs from step
 4. Copy the Site Key (for frontend integration)
 5. Copy the Secret Key (for this worker)
 
-### 5. Set secrets
+### 3. Set secrets
 
 ```bash
 # Backend API key (generate with: python -c "import secrets; print(secrets.token_urlsafe(32))")
@@ -81,7 +65,7 @@ wrangler secret put BACKEND_API_KEY --env dev
 wrangler secret put TURNSTILE_SECRET_KEY --env dev
 ```
 
-### 6. Deploy
+### 4. Deploy
 
 ```bash
 # Production
