@@ -1,6 +1,6 @@
 """Version information for OSA."""
 
-__version__ = "0.5.5.dev0"
+__version__ = "0.5.5"
 __version_info__ = (0, 5, 5)
 
 
