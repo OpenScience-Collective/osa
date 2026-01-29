@@ -5,7 +5,7 @@ Uses a two-stage approach to balance cost and quality:
 2. Summarize high-quality threads with summary agent (quality model)
 
 Models are configured per-community in config.yaml under faq_generation.
-Cost tracking and estimation included for budget management.
+Cost tracking and estimation included for budget management (Anthropic models only).
 """
 
 import json
@@ -23,7 +23,10 @@ from src.knowledge.db import get_connection, update_summarization_status, upsert
 logger = logging.getLogger(__name__)
 console = Console()
 
-# Cost tracking (per 1M tokens)
+# Cost tracking (per 1M tokens) - ANTHROPIC MODELS ONLY
+# Note: These constants are used for legacy cost estimation and may not
+# reflect actual costs when using non-Anthropic models (e.g., qwen, deepseek).
+# Cost estimates should be considered approximate.
 HAIKU_COST_PER_1M_INPUT = 0.25
 HAIKU_COST_PER_1M_OUTPUT = 1.25
 SONNET_COST_PER_1M_INPUT = 3.0
@@ -350,6 +353,10 @@ def summarize_threads(
             quality_threshold = faq_config.quality_threshold
     else:
         # Fallback to hardcoded defaults (backward compatibility)
+        # Note: Uses same model for both agents (Haiku 4.5) with different temperatures.
+        # This is a simplified approach for communities without FAQ config.
+        # The temperature difference (0.0 for scoring, 0.1 for summarization) provides
+        # deterministic evaluation while allowing slight creativity in FAQ phrasing.
         logger.warning(
             "No faq_generation config found for %s, using defaults",
             project,
@@ -358,13 +365,13 @@ def summarize_threads(
         eval_agent = create_openrouter_llm(
             model=summary_model_name,
             provider="Anthropic",
-            temperature=0.0,
+            temperature=0.0,  # Deterministic scoring
             enable_caching=True,
         )
         summary_agent = create_openrouter_llm(
             model=summary_model_name,
             provider="Anthropic",
-            temperature=0.1,
+            temperature=0.1,  # Slightly creative for natural phrasing
             enable_caching=True,
         )
         if quality_threshold is None:
@@ -372,6 +379,9 @@ def summarize_threads(
 
     with get_connection(project) as conn:
         # Get threads needing summarization
+        # TODO: Use faq_config.sources settings for min_messages, min_participants, enabled
+        # Currently hardcoded to msg_count >= 2 for backward compatibility
+        # See FAQSourceConfig in src/core/config/community.py
         cursor = conn.execute(
             """
             SELECT m.thread_id, COUNT(*) as msg_count,
@@ -429,7 +439,10 @@ def summarize_threads(
                     quality_score = _score_thread_quality(thread_context, eval_agent)
 
                     if quality_score is None:
-                        # Scoring failed - this is different from a low score
+                        # Scoring failed due to LLM error (not a low score, which would be < threshold)
+                        # These threads are marked 'failed' and won't be retried automatically
+                        # This prevents problematic threads from blocking batch processing
+                        # Manual retry: Delete failed entry from DB or run sync with --retry-failed flag
                         skipped += 1
                         update_summarization_status(
                             conn,

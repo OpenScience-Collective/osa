@@ -24,7 +24,7 @@ Example config.yaml:
 import ipaddress
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from urllib.parse import urlparse
 
 import yaml
@@ -431,13 +431,64 @@ class AgentConfig(BaseModel):
     """Model identifier in OpenRouter format (creator/model-name)."""
 
     provider: str | None = None
-    """Provider routing preference (e.g., 'Anthropic', 'DeepInfra/FP8')."""
+    """Provider routing preference (e.g., 'Anthropic', 'DeepInfra/FP8').
+
+    Provider format examples:
+    - 'Anthropic' - Direct Anthropic API for best performance
+    - 'DeepInfra/FP8' - DeepInfra with FP8 (8-bit) quantization for cost reduction
+    - 'Cerebras' - Cerebras for ultra-fast inference
+    """
 
     temperature: float = Field(default=0.1, ge=0.0, le=2.0)
     """Sampling temperature for model responses."""
 
     enable_caching: bool = True
     """Enable prompt caching to reduce costs."""
+
+    @field_validator("model")
+    @classmethod
+    def validate_model(cls, v: str) -> str:
+        """Validate model identifier format.
+
+        Ensures model follows provider/model-name pattern to prevent
+        injection or confusion.
+        """
+        v = v.strip()
+        if not v:
+            raise ValueError("Model identifier cannot be empty")
+
+        # Validate format: provider/model-name
+        # Allow alphanumeric, hyphens, underscores, and dots
+        model_pattern = re.compile(r"^[a-zA-Z0-9_-]+/[a-zA-Z0-9._-]+$")
+        if not model_pattern.match(v):
+            raise ValueError(
+                f"Invalid model identifier: '{v}'. "
+                "Must match pattern: provider/model-name "
+                "(e.g., 'anthropic/claude-3.5-sonnet')"
+            )
+
+        # Max length check
+        if len(v) > 100:
+            raise ValueError(f"Model identifier too long (max 100 chars): {v[:50]}...")
+
+        return v
+
+    @field_validator("provider")
+    @classmethod
+    def validate_provider(cls, v: str | None) -> str | None:
+        """Validate provider identifier if specified."""
+        if v is None:
+            return None
+
+        v = v.strip()
+        if not v:
+            return None
+
+        # Reasonable length check for provider names
+        if len(v) > 50:
+            raise ValueError(f"Provider name too long (max 50 chars): {v[:30]}...")
+
+        return v
 
 
 class FAQSourceConfig(BaseModel):
@@ -449,10 +500,32 @@ class FAQSourceConfig(BaseModel):
     """Whether this source is enabled for FAQ generation."""
 
     min_messages: int = Field(default=2, ge=1)
-    """Minimum messages in a thread to consider for FAQ."""
+    """Minimum messages in a thread to consider for FAQ.
+
+    Default of 2 ensures at least a question and answer.
+    """
 
     min_participants: int = Field(default=2, ge=1)
-    """Minimum unique participants in a thread to consider for FAQ."""
+    """Minimum unique participants in a thread to consider for FAQ.
+
+    Default of 2 ensures dialogue rather than monologue.
+    """
+
+    @model_validator(mode="after")
+    def validate_minimums(self) -> "FAQSourceConfig":
+        """Ensure minimum values make sense together.
+
+        Multi-participant threads should have enough messages for conversation.
+        """
+        # A single-message thread from multiple participants is unusual
+        # If we require multiple participants, we should require enough messages
+        # for them to have a conversation
+        if self.min_participants >= 2 and self.min_messages < 2:
+            raise ValueError(
+                f"min_messages ({self.min_messages}) should be at least 2 "
+                f"when min_participants is {self.min_participants}"
+            )
+        return self
 
 
 class FAQGenerationConfig(BaseModel):
@@ -464,6 +537,9 @@ class FAQGenerationConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # Known source types that have sync implementations
+    VALID_SOURCE_TYPES: ClassVar[set[str]] = {"mailman", "discourse", "github_discussions"}
+
     evaluation_agent: AgentConfig
     """Agent for scoring thread quality (many calls, needs speed/cost efficiency)."""
 
@@ -471,10 +547,53 @@ class FAQGenerationConfig(BaseModel):
     """Agent for creating FAQ entries (fewer calls, needs quality)."""
 
     quality_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
-    """Minimum quality score (0.0-1.0) required for FAQ generation."""
+    """Minimum quality score (0.0-1.0) required for FAQ generation.
+
+    Recommended ranges:
+    - 0.5-0.6: Permissive, captures more FAQs but may include marginal content
+    - 0.7-0.8: Balanced, good quality with reasonable coverage (recommended)
+    - 0.9+: Restrictive, only highest quality content
+    """
 
     sources: dict[str, FAQSourceConfig] = Field(default_factory=dict)
-    """Source-specific settings (mailman, discourse, etc.)."""
+    """Source-specific settings for different discussion platforms.
+
+    Valid source types: mailman, discourse, github_discussions
+    """
+
+    @field_validator("sources")
+    @classmethod
+    def validate_source_types(cls, v: dict[str, FAQSourceConfig]) -> dict[str, FAQSourceConfig]:
+        """Validate source type keys are recognized."""
+        if not v:
+            # Empty sources dict is allowed during initial config
+            return v
+
+        invalid_types = set(v.keys()) - cls.VALID_SOURCE_TYPES
+        if invalid_types:
+            raise ValueError(
+                f"Unknown source types: {', '.join(sorted(invalid_types))}. "
+                f"Valid types: {', '.join(sorted(cls.VALID_SOURCE_TYPES))}"
+            )
+
+        return v
+
+    @model_validator(mode="after")
+    def validate_agent_roles(self) -> "FAQGenerationConfig":
+        """Warn if agent configurations don't match their intended roles."""
+        import warnings
+
+        # Check if the same model is used for both (which defeats the purpose)
+        if self.evaluation_agent.model == self.summary_agent.model:
+            # This might be intentional for small communities, so warn rather than error
+            warnings.warn(
+                f"Both agents use the same model ({self.evaluation_agent.model}). "
+                "Consider using a faster/cheaper model for evaluation_agent to reduce costs.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+        return self
 
 
 class CommunityConfig(BaseModel):
@@ -705,9 +824,11 @@ class CommunityConfig(BaseModel):
             # No model specified or BYOK configured - OK
             return self
 
-        # Hardcoded list of known expensive models (>$15/1M tokens)
+        # Hardcoded list of known expensive models (>$15/1M output tokens)
         # This prevents communities from setting ultra-expensive models on platform key
-        # Note: This list must be manually maintained as model pricing changes
+        # Pricing source: https://openrouter.ai/models (check regularly for updates)
+        # Last updated: 2025-01-28
+        # Maintainer: Update when new expensive models are released or pricing changes
         ultra_expensive_models = {
             "openai/o1",
             "openai/o1-preview",
