@@ -104,17 +104,34 @@ def _fetch_page(url: str, cache_key: str | None = None) -> str | None:
 def _parse_year_index(html: str) -> list[int]:
     """Extract available years from index page.
 
+    Handles both directory-style and table-style year listings:
+    - Directory: <a href="2024/">2024</a>
+    - Table: <td>2024:</td> or <a href="2024/thread.html">
+
     Args:
         html: HTML content of index page
 
     Returns:
         Sorted list of available years
     """
-    # Look for links like: <a href="2024/">2024</a>
-    pattern = r'<a href="(\d{4})/">(\d{4})</a>'
-    matches = re.findall(pattern, html)
-    years = sorted({int(year) for _, year in matches})
-    return years
+    years = set()
+
+    # Pattern 1: Directory-style links <a href="2024/">2024</a>
+    pattern1 = r'<a href="(\d{4})/">(\d{4})</a>'
+    matches1 = re.findall(pattern1, html, re.IGNORECASE)
+    years.update(int(year) for _, year in matches1)
+
+    # Pattern 2: Table cells <td>2024:</td>
+    pattern2 = r"<td>(\d{4}):</td>"
+    matches2 = re.findall(pattern2, html, re.IGNORECASE)
+    years.update(int(year) for year in matches2)
+
+    # Pattern 3: Year directory links (href="2024/...")
+    pattern3 = r'href="(\d{4})/'
+    matches3 = re.findall(pattern3, html, re.IGNORECASE)
+    years.update(int(year) for year in matches3)
+
+    return sorted(years)
 
 
 def _normalize_subject(subject: str) -> str:
