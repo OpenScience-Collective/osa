@@ -14,7 +14,7 @@ function getConfig(env) {
   const isDev = env.ENVIRONMENT === 'development';
   return {
     RATE_LIMIT_PER_MINUTE: isDev ? 60 : 10,
-    RATE_LIMIT_PER_HOUR: isDev ? 600 : 100,
+    RATE_LIMIT_PER_HOUR: isDev ? 100 : 20,
     REQUEST_TIMEOUT: 120000, // 2 minutes for LLM responses
     IS_DEV: isDev,
   };
@@ -66,33 +66,67 @@ async function verifyTurnstileToken(token, secretKey, ip) {
 }
 
 /**
- * Check rate limit using KV storage
+ * Hybrid rate limiting approach:
+ * - Per-minute (bot protection): Built-in API (fast, <1ms, in-memory)
+ * - Per-hour (human abuse): KV (global consistency, 1 write per request)
+ *
+ * Benefits:
+ * - 50% reduction in KV writes (1 vs 2 per request)
+ * - Faster bot protection (<1ms vs ~10-50ms for critical first check)
+ * - Global hourly limits across all edge locations
+ *
+ * Known limitation:
+ * - KV read-then-write is not atomic; concurrent requests from same IP
+ *   may slightly exceed hourly limit. Per-minute guard constrains this.
  */
 async function checkRateLimit(request, env, CONFIG) {
-  if (!env.RATE_LIMITER) return { allowed: true };
-
   const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
-  const now = Math.floor(Date.now() / 1000);
-  const minuteKey = `rl:min:${ip}:${Math.floor(now / 60)}`;
-  const hourKey = `rl:hour:${ip}:${Math.floor(now / 3600)}`;
 
-  // Check per-minute limit
-  const minuteCount = parseInt(await env.RATE_LIMITER.get(minuteKey) || '0');
-  if (minuteCount >= CONFIG.RATE_LIMIT_PER_MINUTE) {
-    return { allowed: false, reason: 'Too many requests per minute' };
+  // Check hourly limit first (KV, read-only, no token consumed)
+  // This prevents wasting per-minute tokens on already-rejected requests
+  if (env.RATE_LIMITER_KV) {
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      const hourKey = `rl:hour:${ip}:${Math.floor(now / 3600)}`;
+
+      // Check current count
+      const hourCount = parseInt(await env.RATE_LIMITER_KV.get(hourKey) || '0', 10);
+      if (hourCount >= CONFIG.RATE_LIMIT_PER_HOUR) {
+        return { allowed: false, reason: 'Too many requests per hour' };
+      }
+    } catch (error) {
+      console.error('Per-hour rate limit check error:', error);
+      // Fail open for KV errors
+    }
   }
 
-  // Check per-hour limit
-  const hourCount = parseInt(await env.RATE_LIMITER.get(hourKey) || '0');
-  if (hourCount >= CONFIG.RATE_LIMIT_PER_HOUR) {
-    return { allowed: false, reason: 'Too many requests per hour' };
+  // Check per-minute limit (built-in API, fast, consumes token)
+  // Only check this AFTER hourly passes to avoid wasting tokens
+  if (env.RATE_LIMITER_MINUTE) {
+    try {
+      const { success } = await env.RATE_LIMITER_MINUTE.limit({ key: ip });
+      if (!success) {
+        return { allowed: false, reason: 'Too many requests per minute' };
+      }
+    } catch (error) {
+      console.error('Per-minute rate limit check error:', error);
+      // Fail open for built-in API errors
+    }
   }
 
-  // Increment counters
-  await Promise.all([
-    env.RATE_LIMITER.put(minuteKey, (minuteCount + 1).toString(), { expirationTtl: 120 }),
-    env.RATE_LIMITER.put(hourKey, (hourCount + 1).toString(), { expirationTtl: 7200 }),
-  ]);
+  // Increment hourly counter (1 write per request instead of 2)
+  // Done last, after both checks pass
+  if (env.RATE_LIMITER_KV) {
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      const hourKey = `rl:hour:${ip}:${Math.floor(now / 3600)}`;
+      const hourCount = parseInt(await env.RATE_LIMITER_KV.get(hourKey) || '0', 10);
+      await env.RATE_LIMITER_KV.put(hourKey, (hourCount + 1).toString(), { expirationTtl: 7200 });
+    } catch (error) {
+      console.error('Per-hour rate limit increment error:', error);
+      // Already allowed, so don't fail the request
+    }
+  }
 
   return { allowed: true };
 }
