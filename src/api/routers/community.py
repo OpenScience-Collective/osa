@@ -30,6 +30,7 @@ from src.metrics.db import (
     RequestLogEntry,
     extract_token_usage,
     extract_tool_names,
+    get_metrics_connection,
     log_request,
     now_iso,
 )
@@ -631,14 +632,13 @@ def create_community_assistant(
     requested_model: str | None = None,
     preload_docs: bool = True,
     page_context: PageContext | None = None,
-    return_metrics: bool = False,
-) -> CommunityAssistant | AssistantWithMetrics:
+) -> AssistantWithMetrics:
     """Create a community assistant instance with authorization checks.
 
     **Authorization:**
-    - If BYOK provided → always allowed
-    - If origin matches community CORS → can use community/platform keys
-    - Otherwise → rejects with 403 (CLI/unauthorized must provide BYOK)
+    - If BYOK provided -> always allowed
+    - If origin matches community CORS -> can use community/platform keys
+    - Otherwise -> rejects with 403 (CLI/unauthorized must provide BYOK)
 
     **Model Selection:**
     - Custom model requests require BYOK
@@ -652,10 +652,10 @@ def create_community_assistant(
         requested_model: Optional model override from request body
         preload_docs: Whether to preload documents
         page_context: Optional context about the page where the widget is embedded
-        return_metrics: If True, return AssistantWithMetrics with model/key metadata.
 
     Returns:
-        CommunityAssistant if return_metrics is False, else AssistantWithMetrics.
+        AssistantWithMetrics containing the assistant, resolved model, and key source.
+        Access the assistant via .assistant attribute.
 
     Raises:
         ValueError: If community_id is not registered
@@ -711,13 +711,11 @@ def create_community_assistant(
         page_context=agent_page_context,
     )
 
-    if return_metrics:
-        return AssistantWithMetrics(
-            assistant=assistant,
-            model=selected_model,
-            key_source=key_source,
-        )
-    return assistant
+    return AssistantWithMetrics(
+        assistant=assistant,
+        model=selected_model,
+        key_source=key_source,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -811,7 +809,6 @@ def create_community_router(community_id: str) -> APIRouter:
                 user_id=x_user_id,
                 requested_model=body.model,
                 page_context=body.page_context,
-                return_metrics=True,
             )
             assistant = awm.assistant
             messages = [HumanMessage(content=body.question)]
@@ -925,7 +922,6 @@ def create_community_router(community_id: str) -> APIRouter:
                 origin=origin,
                 user_id=user_id,
                 requested_model=body.model,
-                return_metrics=True,
             )
             assistant = awm.assistant
             result = await assistant.ainvoke(session.messages)
@@ -1058,11 +1054,17 @@ def create_community_router(community_id: str) -> APIRouter:
     @router.get("/metrics")
     async def community_metrics(_auth: RequireAdminAuth) -> dict[str, Any]:
         """Get metrics summary for this community. Requires admin auth."""
-        from src.metrics.db import get_metrics_connection
+        import sqlite3
 
         conn = get_metrics_connection()
         try:
             return get_community_summary(community_id, conn)
+        except sqlite3.Error:
+            logger.exception("Failed to query metrics for community %s", community_id)
+            raise HTTPException(
+                status_code=503,
+                detail="Metrics database is temporarily unavailable.",
+            )
         finally:
             conn.close()
 
@@ -1076,13 +1078,19 @@ def create_community_router(community_id: str) -> APIRouter:
         ),
     ) -> dict[str, Any]:
         """Get time-bucketed usage stats for this community. Requires admin auth."""
-        from src.metrics.db import get_metrics_connection
+        import sqlite3
 
         conn = get_metrics_connection()
         try:
             return get_usage_stats(community_id, period, conn)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
+        except sqlite3.Error:
+            logger.exception("Failed to query usage stats for community %s", community_id)
+            raise HTTPException(
+                status_code=503,
+                detail="Metrics database is temporarily unavailable.",
+            )
         finally:
             conn.close()
 
@@ -1106,29 +1114,33 @@ def _log_streaming_metrics(
     """Log metrics at the end of a streaming response.
 
     Called directly from streaming generators since middleware fires
-    before streaming completes.
+    before streaming completes. Wrapped in try/except to never disrupt
+    the SSE stream on failure.
     """
-    duration_ms = (time.monotonic() - start_time) * 1000
-    request_id = str(uuid.uuid4())
-    if http_request:
-        request_id = getattr(http_request.state, "request_id", request_id)
-        # Mark as logged so middleware doesn't double-log
-        http_request.state.metrics_logged = True
+    try:
+        duration_ms = (time.monotonic() - start_time) * 1000
+        request_id = str(uuid.uuid4())
+        if http_request:
+            request_id = getattr(http_request.state, "request_id", request_id)
+            # Mark as logged so middleware doesn't double-log
+            http_request.state.metrics_logged = True
 
-    entry = RequestLogEntry(
-        request_id=request_id,
-        timestamp=now_iso(),
-        endpoint=endpoint,
-        method="POST",
-        community_id=community_id,
-        duration_ms=round(duration_ms, 1),
-        status_code=status_code,
-        model=awm.model if awm else None,
-        key_source=awm.key_source if awm else None,
-        tools_called=tools_called,
-        stream=True,
-    )
-    log_request(entry)
+        entry = RequestLogEntry(
+            request_id=request_id,
+            timestamp=now_iso(),
+            endpoint=endpoint,
+            method="POST",
+            community_id=community_id,
+            duration_ms=round(duration_ms, 1),
+            status_code=status_code,
+            model=awm.model if awm else None,
+            key_source=awm.key_source if awm else None,
+            tools_called=tools_called,
+            stream=True,
+        )
+        log_request(entry)
+    except Exception:
+        logger.exception("Failed to log streaming metrics for %s", endpoint)
 
 
 # ---------------------------------------------------------------------------
@@ -1168,7 +1180,6 @@ async def _stream_ask_response(
             requested_model=requested_model,
             preload_docs=True,
             page_context=page_context,
-            return_metrics=True,
         )
         graph = awm.assistant.build_graph()
 
@@ -1234,10 +1245,17 @@ async def _stream_ask_response(
             "retryable": False,
         }
         yield f"data: {json.dumps(sse_event)}\n\n"
+        _log_streaming_metrics(
+            http_request=http_request,
+            community_id=community_id,
+            endpoint=f"/{community_id}/ask",
+            awm=awm,
+            tools_called=tools_called,
+            start_time=start_time,
+            status_code=400,
+        )
     except Exception as e:
         # Unexpected errors - log with full context
-        import uuid
-
         error_id = str(uuid.uuid4())
         logger.error(
             "Unexpected streaming error (ID: %s) in ask endpoint for community %s: %s",
@@ -1257,6 +1275,15 @@ async def _stream_ask_response(
             "error_id": error_id,
         }
         yield f"data: {json.dumps(sse_event)}\n\n"
+        _log_streaming_metrics(
+            http_request=http_request,
+            community_id=community_id,
+            endpoint=f"/{community_id}/ask",
+            awm=awm,
+            tools_called=tools_called,
+            start_time=start_time,
+            status_code=500,
+        )
 
 
 async def _stream_chat_response(
@@ -1289,7 +1316,6 @@ async def _stream_chat_response(
             user_id=user_id,
             requested_model=requested_model,
             preload_docs=True,
-            return_metrics=True,
         )
         graph = awm.assistant.build_graph()
 
@@ -1362,6 +1388,15 @@ async def _stream_chat_response(
         logger.error("Session limit error: %s", e)
         sse_event = {"event": "error", "message": str(e)}
         yield f"data: {json.dumps(sse_event)}\n\n"
+        _log_streaming_metrics(
+            http_request=http_request,
+            community_id=community_id,
+            endpoint=f"/{community_id}/chat",
+            awm=awm,
+            tools_called=tools_called,
+            start_time=start_time,
+            status_code=400,
+        )
     except Exception as e:
         logger.error(
             "Streaming error in chat endpoint for session %s (community: %s): %s",
@@ -1375,3 +1410,12 @@ async def _stream_chat_response(
             "message": "An error occurred while processing your request.",
         }
         yield f"data: {json.dumps(sse_event)}\n\n"
+        _log_streaming_metrics(
+            http_request=http_request,
+            community_id=community_id,
+            endpoint=f"/{community_id}/chat",
+            awm=awm,
+            tools_called=tools_called,
+            start_time=start_time,
+            status_code=500,
+        )

@@ -5,9 +5,10 @@ All endpoints require admin authentication.
 """
 
 import logging
+import sqlite3
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from src.api.security import RequireAdminAuth
 from src.metrics.db import get_metrics_connection
@@ -28,6 +29,12 @@ async def metrics_overview(_auth: RequireAdminAuth) -> dict[str, Any]:
     conn = get_metrics_connection()
     try:
         return get_overview(conn)
+    except sqlite3.Error:
+        logger.exception("Failed to query metrics database for overview")
+        raise HTTPException(
+            status_code=503,
+            detail="Metrics database is temporarily unavailable.",
+        )
     finally:
         conn.close()
 
@@ -44,5 +51,11 @@ async def token_breakdown(
     conn = get_metrics_connection()
     try:
         return get_token_breakdown(conn, community_id=community_id)
+    except sqlite3.Error:
+        logger.exception("Failed to query metrics database for token breakdown")
+        raise HTTPException(
+            status_code=503,
+            detail="Metrics database is temporarily unavailable.",
+        )
     finally:
         conn.close()

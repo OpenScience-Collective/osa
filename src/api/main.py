@@ -55,8 +55,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.settings = settings
     app.state.start_time = datetime.now(UTC)
 
-    # Initialize metrics database
-    init_metrics_db()
+    # Initialize metrics database (non-critical; degrade gracefully if unavailable)
+    try:
+        init_metrics_db()
+    except Exception:
+        logger.error(
+            "Failed to initialize metrics database. Metrics collection will be unavailable. "
+            "Check DATA_DIR permissions and disk space.",
+            exc_info=True,
+        )
 
     # Start background scheduler for knowledge sync
     scheduler = start_scheduler()
@@ -158,7 +165,7 @@ def create_app() -> FastAPI:
         cors_kwargs["allow_origin_regex"] = origin_regex
     app.add_middleware(CORSMiddleware, **cors_kwargs)
 
-    # Metrics middleware (added after CORS so it runs inside CORS handling)
+    # Metrics middleware - captures request timing and logs to metrics DB
     app.add_middleware(MetricsMiddleware)
 
     # Register routes

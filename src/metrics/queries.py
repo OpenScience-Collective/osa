@@ -5,8 +5,11 @@ for both per-community and cross-community metrics.
 """
 
 import json
+import logging
 import sqlite3
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def get_community_summary(community_id: str, conn: sqlite3.Connection) -> dict[str, Any]:
@@ -68,7 +71,11 @@ def get_community_summary(community_id: str, conn: sqlite3.Connection) -> dict[s
             for tool in tools:
                 tool_counts[tool] = tool_counts.get(tool, 0) + 1
         except (json.JSONDecodeError, TypeError):
-            pass
+            logger.warning(
+                "Malformed tools_called data in request_log for community %s: %r",
+                community_id,
+                tr["tools_called"],
+            )
     top_tools = sorted(tool_counts.items(), key=lambda x: x[1], reverse=True)[:5]
 
     return {
@@ -111,6 +118,7 @@ def get_usage_stats(
 
     fmt = format_map[period]
 
+    # Safe to use f-string: fmt is from a hardcoded whitelist, not user input
     rows = conn.execute(
         f"""
         SELECT

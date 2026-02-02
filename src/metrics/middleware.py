@@ -50,35 +50,43 @@ class MetricsMiddleware(BaseHTTPMiddleware):
 
         response = await call_next(request)
 
-        # If handler already logged metrics (streaming), skip
-        if getattr(request.state, "metrics_logged", False):
-            return response
+        try:
+            # If handler already logged metrics (streaming), skip
+            if getattr(request.state, "metrics_logged", False):
+                return response
 
-        duration_ms = (time.monotonic() - request.state.start_time) * 1000
-        community_id = _extract_community_id(request.url.path)
+            duration_ms = (time.monotonic() - request.state.start_time) * 1000
+            community_id = _extract_community_id(request.url.path)
 
-        # Check if handler set agent metrics on request.state
-        agent_data = getattr(request.state, "metrics_agent_data", None)
+            # Check if handler set agent metrics on request.state
+            agent_data = getattr(request.state, "metrics_agent_data", None)
 
-        entry = RequestLogEntry(
-            request_id=request_id,
-            timestamp=now_iso(),
-            endpoint=request.url.path,
-            method=request.method,
-            community_id=community_id,
-            duration_ms=round(duration_ms, 1),
-            status_code=response.status_code,
-        )
+            agent_kwargs = {}
+            if agent_data and isinstance(agent_data, dict):
+                agent_kwargs = {
+                    "model": agent_data.get("model"),
+                    "input_tokens": agent_data.get("input_tokens"),
+                    "output_tokens": agent_data.get("output_tokens"),
+                    "total_tokens": agent_data.get("total_tokens"),
+                    "estimated_cost": agent_data.get("estimated_cost"),
+                    "tools_called": agent_data.get("tools_called", []),
+                    "key_source": agent_data.get("key_source"),
+                    "stream": agent_data.get("stream", False),
+                }
 
-        if agent_data and isinstance(agent_data, dict):
-            entry.model = agent_data.get("model")
-            entry.input_tokens = agent_data.get("input_tokens")
-            entry.output_tokens = agent_data.get("output_tokens")
-            entry.total_tokens = agent_data.get("total_tokens")
-            entry.estimated_cost = agent_data.get("estimated_cost")
-            entry.tools_called = agent_data.get("tools_called", [])
-            entry.key_source = agent_data.get("key_source")
-            entry.stream = agent_data.get("stream", False)
+            entry = RequestLogEntry(
+                request_id=request_id,
+                timestamp=now_iso(),
+                endpoint=request.url.path,
+                method=request.method,
+                community_id=community_id,
+                duration_ms=round(duration_ms, 1),
+                status_code=response.status_code,
+                **agent_kwargs,
+            )
 
-        log_request(entry)
+            log_request(entry)
+        except Exception:
+            logger.exception("Metrics middleware failed for request %s", request_id)
+
         return response

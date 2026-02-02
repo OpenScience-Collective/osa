@@ -148,8 +148,13 @@ def log_request(entry: RequestLogEntry, db_path: Path | None = None) -> None:
             ),
         )
         conn.commit()
-    except Exception:
-        logger.exception("Failed to log request %s", entry.request_id)
+    except sqlite3.Error:
+        logger.exception(
+            "Failed to log metrics request %s (endpoint=%s, community=%s)",
+            entry.request_id,
+            entry.endpoint,
+            entry.community_id,
+        )
     finally:
         conn.close()
 
