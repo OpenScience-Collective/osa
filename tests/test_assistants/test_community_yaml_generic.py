@@ -96,6 +96,7 @@ class TestCommunityYAMLConfiguration:
                 )
 
     @pytest.mark.slow
+    @pytest.mark.skip(reason="Disabled: upstream HED URL broken (404). See #139")
     def test_documentation_urls_accessible(self, community_id):
         """All documentation source URLs should return HTTP 200.
 
