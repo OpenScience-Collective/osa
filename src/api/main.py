@@ -14,11 +14,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from src.api.config import get_settings
-from src.api.routers import create_community_router, sync_router
+from src.api.routers import create_community_router, metrics_router, sync_router
 from src.api.routers.health import router as health_router
 from src.api.routers.widget_test import router as widget_test_router
 from src.api.scheduler import start_scheduler, stop_scheduler
 from src.assistants import discover_assistants, registry
+from src.metrics.db import init_metrics_db
+from src.metrics.middleware import MetricsMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +54,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Starting %s v%s", settings.app_name, settings.app_version)
     app.state.settings = settings
     app.state.start_time = datetime.now(UTC)
+
+    # Initialize metrics database
+    init_metrics_db()
 
     # Start background scheduler for knowledge sync
     scheduler = start_scheduler()
@@ -153,6 +158,9 @@ def create_app() -> FastAPI:
         cors_kwargs["allow_origin_regex"] = origin_regex
     app.add_middleware(CORSMiddleware, **cors_kwargs)
 
+    # Metrics middleware (added after CORS so it runs inside CORS handling)
+    app.add_middleware(MetricsMiddleware)
+
     # Register routes
     register_routes(app)
 
@@ -178,6 +186,9 @@ def register_routes(app: FastAPI) -> None:
 
     # Sync router (not community-specific)
     app.include_router(sync_router)
+
+    # Metrics router (global metrics endpoints)
+    app.include_router(metrics_router)
 
     # Health check router
     app.include_router(health_router)
@@ -226,6 +237,8 @@ def register_routes(app: FastAPI) -> None:
         endpoints["GET /sync/status"] = "Knowledge sync status"
         endpoints["GET /sync/health"] = "Sync health check"
         endpoints["POST /sync/trigger"] = "Trigger sync (requires API key)"
+        endpoints["GET /metrics/overview"] = "Metrics overview (requires admin key)"
+        endpoints["GET /metrics/tokens"] = "Token breakdown (requires admin key)"
         endpoints["GET /health"] = "Health check"
 
         return {

@@ -7,23 +7,33 @@ Each community gets endpoints like /{community_id}/ask, /{community_id}/chat, et
 import hashlib
 import json
 import logging
+import time
 import uuid
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field, field_validator
 
 from src.api.config import get_settings
-from src.api.security import RequireAuth
+from src.api.security import RequireAdminAuth, RequireAuth
 from src.assistants import registry
 from src.assistants.community import CommunityAssistant
 from src.assistants.community import PageContext as AgentPageContext
 from src.assistants.registry import AssistantInfo
 from src.core.services.litellm_llm import create_openrouter_llm
+from src.metrics.db import (
+    RequestLogEntry,
+    extract_token_usage,
+    extract_tool_names,
+    log_request,
+    now_iso,
+)
+from src.metrics.queries import get_community_summary, get_usage_stats
 
 logger = logging.getLogger(__name__)
 
@@ -604,6 +614,15 @@ def _get_cache_user_id(community_id: str, api_key: str | None, user_id: str | No
     return f"{community_id}_widget"
 
 
+@dataclass
+class AssistantWithMetrics:
+    """Community assistant bundled with metadata for metrics logging."""
+
+    assistant: CommunityAssistant
+    model: str
+    key_source: str
+
+
 def create_community_assistant(
     community_id: str,
     byok: str | None = None,
@@ -612,7 +631,8 @@ def create_community_assistant(
     requested_model: str | None = None,
     preload_docs: bool = True,
     page_context: PageContext | None = None,
-) -> CommunityAssistant:
+    return_metrics: bool = False,
+) -> CommunityAssistant | AssistantWithMetrics:
     """Create a community assistant instance with authorization checks.
 
     **Authorization:**
@@ -632,9 +652,10 @@ def create_community_assistant(
         requested_model: Optional model override from request body
         preload_docs: Whether to preload documents
         page_context: Optional context about the page where the widget is embedded
+        return_metrics: If True, return AssistantWithMetrics with model/key metadata.
 
     Returns:
-        Configured CommunityAssistant instance
+        CommunityAssistant if return_metrics is False, else AssistantWithMetrics.
 
     Raises:
         ValueError: If community_id is not registered
@@ -683,12 +704,20 @@ def create_community_assistant(
             title=page_context.title,
         )
 
-    return registry.create_assistant(
+    assistant = registry.create_assistant(
         community_id,
         model=model,
         preload_docs=preload_docs,
         page_context=agent_page_context,
     )
+
+    if return_metrics:
+        return AssistantWithMetrics(
+            assistant=assistant,
+            model=selected_model,
+            key_source=key_source,
+        )
+    return assistant
 
 
 # ---------------------------------------------------------------------------
@@ -765,6 +794,7 @@ def create_community_router(community_id: str) -> APIRouter:
                     x_user_id,
                     body.page_context,
                     body.model,
+                    http_request=http_request,
                 ),
                 media_type="text/event-stream",
                 headers={
@@ -774,14 +804,16 @@ def create_community_router(community_id: str) -> APIRouter:
             )
 
         try:
-            assistant = create_community_assistant(
+            awm = create_community_assistant(
                 community_id,
                 byok=x_openrouter_key,
                 origin=origin,
                 user_id=x_user_id,
                 requested_model=body.model,
                 page_context=body.page_context,
+                return_metrics=True,
             )
+            assistant = awm.assistant
             messages = [HumanMessage(content=body.question)]
             result = await assistant.ainvoke(messages)
 
@@ -797,6 +829,18 @@ def create_community_router(community_id: str) -> APIRouter:
                 ToolCallInfo(name=tc.get("name", ""), args=tc.get("args", {}))
                 for tc in result.get("tool_calls", [])
             ]
+
+            # Store agent metrics on request.state for middleware to log
+            inp, out, total = extract_token_usage(result)
+            http_request.state.metrics_agent_data = {
+                "model": awm.model,
+                "key_source": awm.key_source,
+                "input_tokens": inp,
+                "output_tokens": out,
+                "total_tokens": total,
+                "tools_called": extract_tool_names(result),
+                "stream": False,
+            }
 
             return AskResponse(answer=response_content, tool_calls=tool_calls_info)
 
@@ -858,7 +902,13 @@ def create_community_router(community_id: str) -> APIRouter:
         if body.stream:
             return StreamingResponse(
                 _stream_chat_response(
-                    community_id, session, x_openrouter_key, origin, user_id, body.model
+                    community_id,
+                    session,
+                    x_openrouter_key,
+                    origin,
+                    user_id,
+                    body.model,
+                    http_request=http_request,
                 ),
                 media_type="text/event-stream",
                 headers={
@@ -869,13 +919,15 @@ def create_community_router(community_id: str) -> APIRouter:
             )
 
         try:
-            assistant = create_community_assistant(
+            awm = create_community_assistant(
                 community_id,
                 byok=x_openrouter_key,
                 origin=origin,
                 user_id=user_id,
                 requested_model=body.model,
+                return_metrics=True,
             )
+            assistant = awm.assistant
             result = await assistant.ainvoke(session.messages)
 
             response_content = ""
@@ -890,6 +942,18 @@ def create_community_router(community_id: str) -> APIRouter:
                 ToolCallInfo(name=tc.get("name", ""), args=tc.get("args", {}))
                 for tc in result.get("tool_calls", [])
             ]
+
+            # Store agent metrics on request.state for middleware to log
+            inp, out, total = extract_token_usage(result)
+            http_request.state.metrics_agent_data = {
+                "model": awm.model,
+                "key_source": awm.key_source,
+                "input_tokens": inp,
+                "output_tokens": out,
+                "total_tokens": total,
+                "tools_called": extract_tool_names(result),
+                "stream": False,
+            }
 
             # Add assistant message with constraint validation
             try:
@@ -987,7 +1051,84 @@ def create_community_router(community_id: str) -> APIRouter:
             default_model_provider=default_provider,
         )
 
+    # -----------------------------------------------------------------------
+    # Per-community Metrics Endpoints
+    # -----------------------------------------------------------------------
+
+    @router.get("/metrics")
+    async def community_metrics(_auth: RequireAdminAuth) -> dict[str, Any]:
+        """Get metrics summary for this community. Requires admin auth."""
+        from src.metrics.db import get_metrics_connection
+
+        conn = get_metrics_connection()
+        try:
+            return get_community_summary(community_id, conn)
+        finally:
+            conn.close()
+
+    @router.get("/metrics/usage")
+    async def community_usage(
+        _auth: RequireAdminAuth,
+        period: str = Query(
+            default="daily",
+            description="Time bucket period",
+            pattern="^(daily|weekly|monthly)$",
+        ),
+    ) -> dict[str, Any]:
+        """Get time-bucketed usage stats for this community. Requires admin auth."""
+        from src.metrics.db import get_metrics_connection
+
+        conn = get_metrics_connection()
+        try:
+            return get_usage_stats(community_id, period, conn)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        finally:
+            conn.close()
+
     return router
+
+
+# ---------------------------------------------------------------------------
+# Metrics Helpers
+# ---------------------------------------------------------------------------
+
+
+def _log_streaming_metrics(
+    http_request: Request | None,
+    community_id: str,
+    endpoint: str,
+    awm: AssistantWithMetrics | None,
+    tools_called: list[str],
+    start_time: float,
+    status_code: int,
+) -> None:
+    """Log metrics at the end of a streaming response.
+
+    Called directly from streaming generators since middleware fires
+    before streaming completes.
+    """
+    duration_ms = (time.monotonic() - start_time) * 1000
+    request_id = str(uuid.uuid4())
+    if http_request:
+        request_id = getattr(http_request.state, "request_id", request_id)
+        # Mark as logged so middleware doesn't double-log
+        http_request.state.metrics_logged = True
+
+    entry = RequestLogEntry(
+        request_id=request_id,
+        timestamp=now_iso(),
+        endpoint=endpoint,
+        method="POST",
+        community_id=community_id,
+        duration_ms=round(duration_ms, 1),
+        status_code=status_code,
+        model=awm.model if awm else None,
+        key_source=awm.key_source if awm else None,
+        tools_called=tools_called,
+        stream=True,
+    )
+    log_request(entry)
 
 
 # ---------------------------------------------------------------------------
@@ -1003,6 +1144,7 @@ async def _stream_ask_response(
     user_id: str | None,
     page_context: PageContext | None = None,
     requested_model: str | None = None,
+    http_request: Request | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream response for ask endpoint with JSON-encoded SSE events.
 
@@ -1013,8 +1155,12 @@ async def _stream_ask_response(
         data: {"event": "done"}
         data: {"event": "error", "message": "error text"}
     """
+    start_time = time.monotonic()
+    tools_called: list[str] = []
+    awm: AssistantWithMetrics | None = None
+
     try:
-        assistant = create_community_assistant(
+        awm = create_community_assistant(
             community_id,
             byok=byok,
             origin=origin,
@@ -1022,8 +1168,9 @@ async def _stream_ask_response(
             requested_model=requested_model,
             preload_docs=True,
             page_context=page_context,
+            return_metrics=True,
         )
-        graph = assistant.build_graph()
+        graph = awm.assistant.build_graph()
 
         state = {
             "messages": [HumanMessage(content=question)],
@@ -1042,9 +1189,12 @@ async def _stream_ask_response(
 
             elif kind == "on_tool_start":
                 tool_input = event.get("data", {}).get("input", {})
+                tool_name = event.get("name", "")
+                if tool_name:
+                    tools_called.append(tool_name)
                 sse_event = {
                     "event": "tool_start",
-                    "name": event.get("name", ""),
+                    "name": tool_name,
                     "input": tool_input if isinstance(tool_input, dict) else {},
                 }
                 yield f"data: {json.dumps(sse_event)}\n\n"
@@ -1060,6 +1210,17 @@ async def _stream_ask_response(
 
         sse_event = {"event": "done"}
         yield f"data: {json.dumps(sse_event)}\n\n"
+
+        # Log metrics at end of streaming
+        _log_streaming_metrics(
+            http_request=http_request,
+            community_id=community_id,
+            endpoint=f"/{community_id}/ask",
+            awm=awm,
+            tools_called=tools_called,
+            start_time=start_time,
+            status_code=200,
+        )
 
     except HTTPException:
         # Don't catch our own HTTP exceptions - let them propagate
@@ -1105,6 +1266,7 @@ async def _stream_chat_response(
     origin: str | None,
     user_id: str | None,
     requested_model: str | None = None,
+    http_request: Request | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream assistant response as JSON-encoded Server-Sent Events.
 
@@ -1115,16 +1277,21 @@ async def _stream_chat_response(
         data: {"event": "done", "session_id": "..."}
         data: {"event": "error", "message": "error text"}
     """
+    start_time = time.monotonic()
+    tools_called: list[str] = []
+    awm: AssistantWithMetrics | None = None
+
     try:
-        assistant = create_community_assistant(
+        awm = create_community_assistant(
             community_id,
             byok=byok,
             origin=origin,
             user_id=user_id,
             requested_model=requested_model,
             preload_docs=True,
+            return_metrics=True,
         )
-        graph = assistant.build_graph()
+        graph = awm.assistant.build_graph()
 
         state = {
             "messages": session.messages.copy(),
@@ -1147,9 +1314,12 @@ async def _stream_chat_response(
 
             elif kind == "on_tool_start":
                 tool_input = event.get("data", {}).get("input", {})
+                tool_name = event.get("name", "")
+                if tool_name:
+                    tools_called.append(tool_name)
                 sse_event = {
                     "event": "tool_start",
-                    "name": event.get("name", ""),
+                    "name": tool_name,
                     "input": tool_input if isinstance(tool_input, dict) else {},
                 }
                 yield f"data: {json.dumps(sse_event)}\n\n"
@@ -1175,6 +1345,17 @@ async def _stream_chat_response(
 
         sse_event = {"event": "done", "session_id": session.session_id}
         yield f"data: {json.dumps(sse_event)}\n\n"
+
+        # Log metrics at end of streaming
+        _log_streaming_metrics(
+            http_request=http_request,
+            community_id=community_id,
+            endpoint=f"/{community_id}/chat",
+            awm=awm,
+            tools_called=tools_called,
+            start_time=start_time,
+            status_code=200,
+        )
 
     except ValueError as e:
         # Session limit errors
