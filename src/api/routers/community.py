@@ -21,7 +21,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field, field_validator
 
 from src.api.config import get_settings
-from src.api.security import RequireAuth, RequireScopedAuth
+from src.api.security import AuthScope, RequireAuth, RequireScopedAuth
 from src.assistants import registry
 from src.assistants.community import CommunityAssistant
 from src.assistants.community import PageContext as AgentPageContext
@@ -727,15 +727,22 @@ def create_community_assistant(
     langfuse_trace_id = None
     try:
         from src.core.services.llm import get_llm_service
-
-        llm_service = get_llm_service(settings)
-        trace_id = f"{community_id}-{uuid.uuid4().hex[:12]}"
-        config = llm_service.get_config_with_tracing(trace_id=trace_id)
-        if config.get("callbacks"):
-            langfuse_config = config
-            langfuse_trace_id = trace_id
-    except Exception:
-        logger.debug("LangFuse tracing not available, continuing without it")
+    except ImportError:
+        logger.debug("LangFuse tracing not available (module not installed)")
+    else:
+        try:
+            llm_service = get_llm_service(settings)
+            trace_id = f"{community_id}-{uuid.uuid4().hex[:12]}"
+            config = llm_service.get_config_with_tracing(trace_id=trace_id)
+            if config.get("callbacks"):
+                langfuse_config = config
+                langfuse_trace_id = trace_id
+        except Exception:
+            logger.warning(
+                "LangFuse tracing setup failed for %s, continuing without it",
+                community_id,
+                exc_info=True,
+            )
 
     return AssistantWithMetrics(
         assistant=assistant,
@@ -1087,14 +1094,18 @@ def create_community_router(community_id: str) -> APIRouter:
     # Per-community Metrics Endpoints
     # -----------------------------------------------------------------------
 
-    @router.get("/metrics")
-    async def community_metrics(auth: RequireScopedAuth) -> dict[str, Any]:
-        """Get metrics summary for this community. Requires admin or community key."""
+    def _require_community_access(auth: AuthScope) -> None:
+        """Raise 403 if the scoped key cannot access this community."""
         if not auth.can_access_community(community_id):
             raise HTTPException(
                 status_code=403,
                 detail=f"Your API key does not have access to {community_id} metrics",
             )
+
+    @router.get("/metrics")
+    async def community_metrics(auth: RequireScopedAuth) -> dict[str, Any]:
+        """Get metrics summary for this community. Requires admin or community key."""
+        _require_community_access(auth)
         try:
             with metrics_connection() as conn:
                 return get_community_summary(community_id, conn)
@@ -1115,11 +1126,7 @@ def create_community_router(community_id: str) -> APIRouter:
         ),
     ) -> dict[str, Any]:
         """Get time-bucketed usage stats for this community. Requires admin or community key."""
-        if not auth.can_access_community(community_id):
-            raise HTTPException(
-                status_code=403,
-                detail=f"Your API key does not have access to {community_id} metrics",
-            )
+        _require_community_access(auth)
         try:
             with metrics_connection() as conn:
                 return get_usage_stats(community_id, period, conn)
@@ -1142,11 +1149,7 @@ def create_community_router(community_id: str) -> APIRouter:
         ),
     ) -> dict[str, Any]:
         """Get quality metrics for this community. Requires admin or community key."""
-        if not auth.can_access_community(community_id):
-            raise HTTPException(
-                status_code=403,
-                detail=f"Your API key does not have access to {community_id} metrics",
-            )
+        _require_community_access(auth)
         try:
             with metrics_connection() as conn:
                 return get_quality_metrics(community_id, conn, period)
@@ -1162,11 +1165,7 @@ def create_community_router(community_id: str) -> APIRouter:
     @router.get("/metrics/quality/summary")
     async def community_quality_summary(auth: RequireScopedAuth) -> dict[str, Any]:
         """Get overall quality summary for this community. Requires admin or community key."""
-        if not auth.can_access_community(community_id):
-            raise HTTPException(
-                status_code=403,
-                detail=f"Your API key does not have access to {community_id} metrics",
-            )
+        _require_community_access(auth)
         try:
             with metrics_connection() as conn:
                 return get_quality_summary(community_id, conn)

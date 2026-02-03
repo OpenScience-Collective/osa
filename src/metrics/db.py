@@ -134,9 +134,12 @@ def _migrate_columns(conn: sqlite3.Connection) -> None:
         try:
             conn.execute(f"ALTER TABLE request_log ADD COLUMN {col_name} {col_def}")
             logger.info("Added column %s to request_log", col_name)
-        except sqlite3.OperationalError:
-            # Column already exists; this is expected on subsequent runs
-            pass
+        except sqlite3.OperationalError as e:
+            if "duplicate column" in str(e).lower():
+                pass  # Expected on subsequent runs
+            else:
+                logger.error("Failed to add column %s to request_log: %s", col_name, e)
+                raise
 
 
 def init_metrics_db(db_path: Path | None = None) -> None:

@@ -1,11 +1,14 @@
 """Configuration management for the OSA API."""
 
+import logging
 from functools import lru_cache
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from src.version import __version__
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -134,6 +137,16 @@ class Settings(BaseSettings):
         description="Cron schedule for papers sync (default: weekly Sunday at 3am UTC)",
     )
 
+    def parse_admin_keys(self) -> set[str]:
+        """Parse API_KEYS into a set of valid admin keys.
+
+        Returns:
+            Set of valid API key strings.
+        """
+        if not self.api_keys:
+            return set()
+        return {k.strip() for k in self.api_keys.split(",") if k.strip()}
+
     def parse_community_admin_keys(self) -> dict[str, set[str]]:
         """Parse COMMUNITY_ADMIN_KEYS into {community_id: {keys}} mapping.
 
@@ -148,7 +161,10 @@ class Settings(BaseSettings):
         result: dict[str, set[str]] = {}
         for entry in self.community_admin_keys.split(","):
             entry = entry.strip()
+            if not entry:
+                continue
             if ":" not in entry:
+                logger.warning("Skipping malformed community_admin_keys entry (no ':'): %r", entry)
                 continue
             community_id, key = entry.split(":", 1)
             community_id = community_id.strip()

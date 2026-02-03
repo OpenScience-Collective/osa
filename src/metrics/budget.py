@@ -11,7 +11,7 @@ from dataclasses import dataclass
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(frozen=True)
 class BudgetStatus:
     """Result of a budget check for a community."""
 
@@ -38,12 +38,12 @@ class BudgetStatus:
 
     @property
     def daily_exceeded(self) -> bool:
-        """Whether daily spend exceeds the daily limit."""
+        """Whether daily spend has reached or exceeded the daily limit."""
         return self.daily_spend_usd >= self.daily_limit_usd
 
     @property
     def monthly_exceeded(self) -> bool:
-        """Whether monthly spend exceeds the monthly limit."""
+        """Whether monthly spend has reached or exceeded the monthly limit."""
         return self.monthly_spend_usd >= self.monthly_limit_usd
 
     @property

@@ -614,6 +614,16 @@ class BudgetConfig(BaseModel):
         description="Percentage of limit at which to trigger alert (default: 80%)",
     )
 
+    @model_validator(mode="after")
+    def validate_limits(self) -> "BudgetConfig":
+        """Ensure daily limit does not exceed monthly limit."""
+        if self.daily_limit_usd > self.monthly_limit_usd:
+            raise ValueError(
+                f"daily_limit_usd ({self.daily_limit_usd}) cannot exceed "
+                f"monthly_limit_usd ({self.monthly_limit_usd})"
+            )
+        return self
+
 
 class CommunityConfig(BaseModel):
     """Configuration for a single research community assistant.

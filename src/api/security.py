@@ -1,7 +1,7 @@
 """Security and authentication for the OSA API."""
 
 from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import Depends, HTTPException, Security, status
 from fastapi.security import APIKeyHeader
@@ -46,8 +46,7 @@ async def verify_api_key(
     if openai_key or anthropic_key or openrouter_key:
         return None
 
-    # Parse comma-separated API keys
-    valid_keys = {k.strip() for k in settings.api_keys.split(",") if k.strip()}
+    valid_keys = settings.parse_admin_keys()
 
     # If auth is enabled, require valid API key
     if not api_key:
@@ -87,8 +86,7 @@ async def verify_admin_api_key(
     if not settings.api_keys:
         return None
 
-    # Parse comma-separated API keys
-    valid_keys = {k.strip() for k in settings.api_keys.split(",") if k.strip()}
+    valid_keys = settings.parse_admin_keys()
 
     # Admin endpoints require valid server API key (no BYOK bypass)
     if not api_key:
@@ -111,17 +109,26 @@ async def verify_admin_api_key(
 RequireAdminAuth = Annotated[str | None, Depends(verify_admin_api_key)]
 
 
-@dataclass
+@dataclass(frozen=True)
 class AuthScope:
     """Scoped authentication result for community-level access control.
 
     Attributes:
         role: "admin" for global admin keys, "community" for per-community keys.
         community_id: The community this key is scoped to, or None for global admin.
+
+    Use ``can_access_community(id)`` to check whether this scope permits
+    access to a given community's data.
     """
 
-    role: str  # "admin" | "community"
+    role: Literal["admin", "community"]
     community_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.role == "community" and not self.community_id:
+            raise ValueError("community role requires a community_id")
+        if self.role == "admin" and self.community_id is not None:
+            raise ValueError("admin role must not have a community_id")
 
     def can_access_community(self, community_id: str) -> bool:
         """Check if this auth scope permits access to a given community."""
@@ -160,10 +167,8 @@ async def verify_scoped_admin_key(
         )
 
     # Check global admin keys first
-    if settings.api_keys:
-        valid_keys = {k.strip() for k in settings.api_keys.split(",") if k.strip()}
-        if api_key in valid_keys:
-            return AuthScope(role="admin")
+    if settings.api_keys and api_key in settings.parse_admin_keys():
+        return AuthScope(role="admin")
 
     # Check per-community keys
     community_keys = settings.parse_community_admin_keys()

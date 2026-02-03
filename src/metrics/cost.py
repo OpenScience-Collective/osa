@@ -58,11 +58,11 @@ def estimate_cost(
     """
     if model and model in MODEL_PRICING:
         input_rate, output_rate = MODEL_PRICING[model]
+    elif model:
+        logger.warning("No pricing data for model %s, using fallback rates", model)
+        input_rate, output_rate = _FALLBACK_INPUT_RATE, _FALLBACK_OUTPUT_RATE
     else:
-        if model:
-            logger.debug("No pricing data for model %s, using fallback rates", model)
-        input_rate = _FALLBACK_INPUT_RATE
-        output_rate = _FALLBACK_OUTPUT_RATE
+        input_rate, output_rate = _FALLBACK_INPUT_RATE, _FALLBACK_OUTPUT_RATE
 
     cost = (input_tokens * input_rate + output_tokens * output_rate) / 1_000_000
     return round(cost, 6)

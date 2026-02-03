@@ -4,6 +4,7 @@ Creates GitHub issues when budget thresholds are exceeded,
 with deduplication to avoid spamming.
 """
 
+import json
 import logging
 import subprocess
 
@@ -42,16 +43,14 @@ def _issue_exists(title: str, repo: str = ALERT_REPO) -> bool:
             timeout=30,
         )
         if result.returncode != 0:
-            logger.warning("gh issue list failed: %s", result.stderr)
-            return False
-
-        import json
+            logger.error("gh issue list failed: %s", result.stderr)
+            return True  # Conservative: assume duplicate exists to prevent spam
 
         issues = json.loads(result.stdout)
         return any(issue.get("title") == title for issue in issues)
-    except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+    except Exception:
         logger.exception("Failed to check existing issues")
-        return False
+        return True  # Conservative: assume duplicate exists to prevent spam
 
 
 def create_budget_alert_issue(
@@ -148,6 +147,6 @@ Configured at {budget_status.alert_threshold_pct:.0f}% of limits.
         issue_url = result.stdout.strip()
         logger.info("Created budget alert issue: %s", issue_url)
         return issue_url
-    except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+    except Exception:
         logger.exception("Failed to create budget alert issue for %s", budget_status.community_id)
         return None
