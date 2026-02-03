@@ -1,20 +1,20 @@
 """Tests for the dashboard static HTML page.
 
-The dashboard is a standalone static site in dashboard/index.html,
+The dashboard is a standalone static site in dashboard/osa/index.html,
 deployed separately to Cloudflare Pages. These tests verify the HTML
 contains the expected structure and API references.
 """
 
 from pathlib import Path
 
-DASHBOARD_HTML_PATH = Path(__file__).parent.parent.parent / "dashboard" / "index.html"
+DASHBOARD_HTML_PATH = Path(__file__).parent.parent.parent / "dashboard" / "osa" / "index.html"
 
 
 class TestDashboardHTML:
-    """Tests for dashboard/index.html static file."""
+    """Tests for dashboard/osa/index.html static file."""
 
     def test_file_exists(self) -> None:
-        assert DASHBOARD_HTML_PATH.exists(), "dashboard/index.html must exist"
+        assert DASHBOARD_HTML_PATH.exists(), "dashboard/osa/index.html must exist"
 
     def test_is_valid_html(self) -> None:
         content = DASHBOARD_HTML_PATH.read_text()
@@ -82,6 +82,11 @@ class TestDashboardHTML:
         # Should support ?api= query param or window.OSA_API_BASE override
         assert "OSA_API_BASE" in content
 
+    def test_has_base_path_constant(self) -> None:
+        content = DASHBOARD_HTML_PATH.read_text()
+        assert "BASE_PATH" in content
+        assert "const BASE_PATH = '/osa'" in content
+
     def test_cloudflare_redirects_file_exists(self) -> None:
-        redirects_path = DASHBOARD_HTML_PATH.parent / "_redirects"
+        redirects_path = DASHBOARD_HTML_PATH.parent.parent / "_redirects"
         assert redirects_path.exists(), "_redirects needed for Cloudflare Pages SPA routing"
