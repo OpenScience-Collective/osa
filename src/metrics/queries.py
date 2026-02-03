@@ -57,7 +57,7 @@ def _count_tools(
                 tr["tools_called"],
             )
     top = sorted(tool_counts.items(), key=lambda x: x[1], reverse=True)[:limit]
-    return [{"tool": t[0], "count": t[1]} for t in top]
+    return [{"tool": name, "count": count} for name, count in top]
 
 
 def get_community_summary(community_id: str, conn: sqlite3.Connection) -> dict[str, Any]:

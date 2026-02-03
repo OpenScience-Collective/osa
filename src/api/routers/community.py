@@ -7,6 +7,7 @@ Each community gets endpoints like /{community_id}/ask, /{community_id}/chat, et
 import hashlib
 import json
 import logging
+import sqlite3
 import time
 import uuid
 from collections.abc import AsyncGenerator
@@ -30,8 +31,8 @@ from src.metrics.db import (
     RequestLogEntry,
     extract_token_usage,
     extract_tool_names,
-    get_metrics_connection,
     log_request,
+    metrics_connection,
     now_iso,
 )
 from src.metrics.queries import (
@@ -1059,14 +1060,9 @@ def create_community_router(community_id: str) -> APIRouter:
     @router.get("/metrics")
     async def community_metrics(_auth: RequireAdminAuth) -> dict[str, Any]:
         """Get metrics summary for this community. Requires admin auth."""
-        import sqlite3
-
         try:
-            conn = get_metrics_connection()
-            try:
+            with metrics_connection() as conn:
                 return get_community_summary(community_id, conn)
-            finally:
-                conn.close()
         except sqlite3.Error:
             logger.exception("Failed to query metrics for community %s", community_id)
             raise HTTPException(
@@ -1084,14 +1080,9 @@ def create_community_router(community_id: str) -> APIRouter:
         ),
     ) -> dict[str, Any]:
         """Get time-bucketed usage stats for this community. Requires admin auth."""
-        import sqlite3
-
         try:
-            conn = get_metrics_connection()
-            try:
+            with metrics_connection() as conn:
                 return get_usage_stats(community_id, period, conn)
-            finally:
-                conn.close()
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         except sqlite3.Error:
@@ -1112,14 +1103,9 @@ def create_community_router(community_id: str) -> APIRouter:
         Returns request counts, error rate, and top tools.
         No tokens, costs, or model information exposed.
         """
-        import sqlite3
-
         try:
-            conn = get_metrics_connection()
-            try:
+            with metrics_connection() as conn:
                 return get_public_community_summary(community_id, conn)
-            finally:
-                conn.close()
         except sqlite3.Error:
             logger.exception("Failed to query public metrics for community %s", community_id)
             raise HTTPException(
@@ -1140,14 +1126,9 @@ def create_community_router(community_id: str) -> APIRouter:
         Returns request counts and errors per time bucket.
         No tokens or costs exposed.
         """
-        import sqlite3
-
         try:
-            conn = get_metrics_connection()
-            try:
+            with metrics_connection() as conn:
                 return get_public_usage_stats(community_id, period, conn)
-            finally:
-                conn.close()
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         except sqlite3.Error:

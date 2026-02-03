@@ -296,6 +296,24 @@ class TestPublicAdminBoundary:
         response = client.get("/metrics/tokens")
         assert response.status_code in (401, 403)
 
+    @pytest.mark.usefixtures("isolated_metrics", "auth_env")
+    def test_public_overview_accessible_with_auth_enabled(self, client):
+        """Public overview must return 200 even when auth is required."""
+        response = client.get("/metrics/public/overview")
+        assert response.status_code == 200
+
+    @pytest.mark.usefixtures("isolated_metrics", "auth_env")
+    def test_community_public_metrics_accessible_with_auth_enabled(self, client):
+        """Per-community public metrics must return 200 even when auth is required."""
+        response = client.get("/hed/metrics/public")
+        assert response.status_code == 200
+
+    @pytest.mark.usefixtures("isolated_metrics", "auth_env")
+    def test_community_public_usage_accessible_with_auth_enabled(self, client):
+        """Per-community public usage must return 200 even when auth is required."""
+        response = client.get("/hed/metrics/public/usage")
+        assert response.status_code == 200
+
 
 class TestEmptyDatabase:
     """Verify public endpoints handle empty databases gracefully."""

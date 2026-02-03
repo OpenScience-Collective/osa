@@ -13,7 +13,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from src.metrics.db import get_metrics_connection
+from src.metrics.db import metrics_connection
 from src.metrics.queries import get_public_overview
 
 logger = logging.getLogger(__name__)
@@ -29,11 +29,8 @@ async def public_overview() -> dict[str, Any]:
     and per-community request counts. No tokens, costs, or model info.
     """
     try:
-        conn = get_metrics_connection()
-        try:
+        with metrics_connection() as conn:
             return get_public_overview(conn)
-        finally:
-            conn.close()
     except sqlite3.Error:
         logger.exception("Failed to query metrics database for public overview")
         raise HTTPException(

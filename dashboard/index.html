@@ -439,8 +439,8 @@
             const [summaryResp, usageResp, syncResp, healthResp] = await Promise.all([
                 fetch(`${API_BASE}/${encodeURIComponent(communityId)}/metrics/public`),
                 fetch(`${API_BASE}/${encodeURIComponent(communityId)}/metrics/public/usage?period=${activePeriod}`),
-                fetch(`${API_BASE}/sync/status`).catch(() => null),
-                fetch(`${API_BASE}/sync/health`).catch(() => null),
+                fetch(`${API_BASE}/sync/status`).catch(err => { console.warn('Sync status fetch failed (non-critical):', err.message); return null; }),
+                fetch(`${API_BASE}/sync/health`).catch(err => { console.warn('Health check fetch failed (non-critical):', err.message); return null; }),
             ]);
 
             if (!summaryResp.ok) throw new Error(`HTTP ${summaryResp.status}`);
@@ -456,6 +456,7 @@
 
             if (adminKey) loadAdminData(communityId);
         } catch (err) {
+            console.error('Failed to load community view:', communityId, err);
             app.className = '';
             app.innerHTML = `<div class="error-msg">Failed to load data for ${safeName}: ${escapeHtml(err.message)}</div>`;
         }
@@ -467,10 +468,11 @@
         const successRate = summary.total_requests > 0
             ? ((1 - summary.error_rate) * 100).toFixed(1) : '0.0';
 
+        const VALID_STATUSES = ['healthy', 'degraded', 'error'];
         let healthStatus = 'unknown';
         let healthLabel = 'Unknown';
-        if (health && health.status) {
-            healthStatus = escapeHtml(health.status);
+        if (health && health.status && VALID_STATUSES.includes(health.status)) {
+            healthStatus = health.status;
             healthLabel = healthStatus.charAt(0).toUpperCase() + healthStatus.slice(1);
         }
 
@@ -496,9 +498,9 @@
             <div class="card">
                 <h2>Activity</h2>
                 <div class="period-toggle">
-                    <button class="period-btn ${activePeriod === 'daily' ? 'active' : ''}" onclick="changePeriod('daily','${safeName}')">Daily</button>
-                    <button class="period-btn ${activePeriod === 'weekly' ? 'active' : ''}" onclick="changePeriod('weekly','${safeName}')">Weekly</button>
-                    <button class="period-btn ${activePeriod === 'monthly' ? 'active' : ''}" onclick="changePeriod('monthly','${safeName}')">Monthly</button>
+                    <button class="period-btn ${activePeriod === 'daily' ? 'active' : ''}" onclick="changePeriod('daily','${encodeURIComponent(communityId)}')">Daily</button>
+                    <button class="period-btn ${activePeriod === 'weekly' ? 'active' : ''}" onclick="changePeriod('weekly','${encodeURIComponent(communityId)}')">Weekly</button>
+                    <button class="period-btn ${activePeriod === 'monthly' ? 'active' : ''}" onclick="changePeriod('monthly','${encodeURIComponent(communityId)}')">Monthly</button>
                 </div>
                 <div class="chart-row">
                     <div>
@@ -638,7 +640,7 @@
 
     function changePeriod(period, communityId) {
         activePeriod = period;
-        loadCommunityView(communityId);
+        loadCommunityView(decodeURIComponent(communityId));
     }
 
     // -----------------------------------------------------------------------
