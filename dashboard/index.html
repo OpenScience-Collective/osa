@@ -100,6 +100,36 @@
         }
         .community-card .stats strong { color: #374151; }
 
+        /* Tab bar */
+        .tab-bar {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1.5rem;
+            flex-wrap: wrap;
+        }
+        .tab-link {
+            display: inline-block;
+            padding: 0.6rem 1.2rem;
+            border: 2px solid rgba(255, 255, 255, 0.4);
+            background: rgba(255, 255, 255, 0.15);
+            color: white;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 0.9rem;
+            text-decoration: none;
+            transition: all 0.2s;
+        }
+        .tab-link:hover {
+            background: rgba(255, 255, 255, 0.3);
+            border-color: rgba(255, 255, 255, 0.6);
+        }
+        .tab-link.active {
+            background: white;
+            color: #667eea;
+            border-color: white;
+        }
+
         /* Period toggle */
         .period-toggle { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
         .period-btn {
@@ -235,6 +265,7 @@
             <h1>Open Science Assistant</h1>
             <p>Community Dashboard</p>
         </div>
+        <div id="tabBar" class="tab-bar"></div>
         <div id="app" class="loading">Loading...</div>
 
         <!-- Admin Key Input (shown on all views) -->
@@ -271,6 +302,7 @@
     // -----------------------------------------------------------------------
     let adminKey = null;
     let activePeriod = 'daily';
+    let overviewData = null;
     let usageChartInstance = null;
     let toolsChartInstance = null;
     let adminTokenChartInstance = null;
@@ -285,37 +317,56 @@
     // Router - read path to decide view
     // -----------------------------------------------------------------------
     function getRoute() {
-        // Strip trailing slash and leading slash
         const path = window.location.pathname.replace(/^\/+|\/+$/g, '');
         if (!path) return { view: 'aggregate', community: null };
         return { view: 'community', community: path.split('/')[0] };
     }
 
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', async () => {
+        const app = document.getElementById('app');
         const route = getRoute();
+
+        // Always fetch overview first to populate tabs
+        try {
+            const resp = await fetch(`${API_BASE}/metrics/public/overview`);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            overviewData = await resp.json();
+            renderTabs(overviewData.communities, route.community);
+        } catch (err) {
+            // Tabs fail gracefully; continue to load the view
+        }
+
         if (route.view === 'community') {
             loadCommunityView(route.community);
         } else {
-            loadAggregateView();
+            if (overviewData) {
+                renderAggregateView(overviewData);
+                document.getElementById('adminCard').style.display = '';
+            } else {
+                app.className = '';
+                app.innerHTML = '<div class="error-msg">Failed to load metrics.</div>';
+            }
         }
     });
 
     // -----------------------------------------------------------------------
+    // Tabs
+    // -----------------------------------------------------------------------
+    function renderTabs(communities, activeCommunity) {
+        const tabBar = document.getElementById('tabBar');
+        if (!communities || communities.length === 0) return;
+
+        let html = `<a href="/" class="tab-link${activeCommunity === null ? ' active' : ''}">All</a>`;
+        for (const c of communities) {
+            const isActive = c.community_id === activeCommunity;
+            html += `<a href="/${c.community_id}" class="tab-link${isActive ? ' active' : ''}">${c.community_id.toUpperCase()}</a>`;
+        }
+        tabBar.innerHTML = html;
+    }
+
+    // -----------------------------------------------------------------------
     // Aggregate View (root /)
     // -----------------------------------------------------------------------
-    async function loadAggregateView() {
-        const app = document.getElementById('app');
-        try {
-            const resp = await fetch(`${API_BASE}/metrics/public/overview`);
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            const data = await resp.json();
-            renderAggregateView(data);
-            document.getElementById('adminCard').style.display = '';
-        } catch (err) {
-            app.className = '';
-            app.innerHTML = `<div class="error-msg">Failed to load metrics: ${err.message}</div>`;
-        }
-    }
 
     function renderAggregateView(data) {
         const app = document.getElementById('app');
@@ -337,7 +388,7 @@
                     </a>`;
             }).join('');
         } else {
-            communityCards = '<p style="color:#6b7280;">No community data yet.</p>';
+            communityCards = '<p style="color:#6b7280;">No community data yet. Select a community tab above.</p>';
         }
 
         app.className = '';
@@ -371,13 +422,6 @@
     // -----------------------------------------------------------------------
     async function loadCommunityView(communityId) {
         const app = document.getElementById('app');
-        const header = document.getElementById('pageHeader');
-
-        // Update header with back link
-        header.innerHTML = `
-            <h1>${communityId.toUpperCase()}</h1>
-            <p><a href="/">Back to all communities</a></p>
-        `;
         document.title = `${communityId.toUpperCase()} - OSA Dashboard`;
 
         try {

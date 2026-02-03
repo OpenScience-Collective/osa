@@ -47,13 +47,18 @@ class TestDashboardHTML:
 
     def test_has_aggregate_view(self) -> None:
         content = DASHBOARD_HTML_PATH.read_text()
-        assert "loadAggregateView" in content
+        assert "renderAggregateView" in content
         assert "Questions Answered" in content
 
     def test_has_community_view(self) -> None:
         content = DASHBOARD_HTML_PATH.read_text()
         assert "loadCommunityView" in content
-        assert "Back to all communities" in content
+
+    def test_has_tab_bar(self) -> None:
+        content = DASHBOARD_HTML_PATH.read_text()
+        assert "tabBar" in content
+        assert "tab-link" in content
+        assert "renderTabs" in content
 
     def test_has_admin_key_input(self) -> None:
         content = DASHBOARD_HTML_PATH.read_text()
