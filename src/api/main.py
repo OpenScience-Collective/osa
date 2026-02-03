@@ -14,7 +14,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from src.api.config import get_settings
-from src.api.routers import create_community_router, metrics_router, sync_router
+from src.api.routers import (
+    create_community_router,
+    metrics_public_router,
+    metrics_router,
+    sync_router,
+)
+from src.api.routers.dashboard import router as dashboard_router
 from src.api.routers.health import router as health_router
 from src.api.routers.widget_test import router as widget_test_router
 from src.api.scheduler import start_scheduler, stop_scheduler
@@ -194,8 +200,12 @@ def register_routes(app: FastAPI) -> None:
     # Sync router (not community-specific)
     app.include_router(sync_router)
 
-    # Metrics router (global metrics endpoints)
+    # Metrics routers (admin + public)
     app.include_router(metrics_router)
+    app.include_router(metrics_public_router)
+
+    # Dashboard
+    app.include_router(dashboard_router)
 
     # Health check router
     app.include_router(health_router)
@@ -246,6 +256,10 @@ def register_routes(app: FastAPI) -> None:
         endpoints["POST /sync/trigger"] = "Trigger sync (requires API key)"
         endpoints["GET /metrics/overview"] = "Metrics overview (requires admin key)"
         endpoints["GET /metrics/tokens"] = "Token breakdown (requires admin key)"
+        endpoints["GET /metrics/public/overview"] = "Public metrics overview"
+        endpoints["GET /metrics/public/{community_id}"] = "Public community summary"
+        endpoints["GET /metrics/public/{community_id}/usage"] = "Public usage stats"
+        endpoints["GET /dashboard"] = "Community dashboard"
         endpoints["GET /health"] = "Health check"
 
         return {

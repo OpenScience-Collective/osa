@@ -288,3 +288,171 @@ def get_token_breakdown(
             for r in by_key_source
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# Public query functions (no tokens, costs, or model info)
+# ---------------------------------------------------------------------------
+
+
+def get_public_overview(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Get public metrics overview with only non-sensitive data.
+
+    Returns request counts and error rates; no tokens, costs, or model info.
+
+    Args:
+        conn: SQLite connection.
+
+    Returns:
+        Dict with total_requests, error_rate, communities_active,
+        and per-community request counts.
+    """
+    totals = conn.execute(
+        """
+        SELECT
+            COUNT(*) as total_requests,
+            COUNT(CASE WHEN status_code >= 400 THEN 1 END) as total_errors
+        FROM request_log
+        """
+    ).fetchone()
+
+    total_req = totals["total_requests"]
+
+    community_rows = conn.execute(
+        """
+        SELECT
+            community_id,
+            COUNT(*) as requests,
+            COUNT(CASE WHEN status_code >= 400 THEN 1 END) as errors
+        FROM request_log
+        WHERE community_id IS NOT NULL
+        GROUP BY community_id
+        ORDER BY requests DESC
+        """
+    ).fetchall()
+
+    return {
+        "total_requests": total_req,
+        "error_rate": round(totals["total_errors"] / total_req, 4) if total_req > 0 else 0.0,
+        "communities_active": len(community_rows),
+        "communities": [
+            {
+                "community_id": r["community_id"],
+                "requests": r["requests"],
+                "error_rate": round(r["errors"] / r["requests"], 4) if r["requests"] > 0 else 0.0,
+            }
+            for r in community_rows
+        ],
+    }
+
+
+def get_public_community_summary(community_id: str, conn: sqlite3.Connection) -> dict[str, Any]:
+    """Get public summary for a single community.
+
+    Returns request counts and top tools; no tokens, costs, or model info.
+
+    Args:
+        community_id: The community identifier.
+        conn: SQLite connection.
+
+    Returns:
+        Dict with community_id, total_requests, error_rate, top_tools.
+    """
+    row = conn.execute(
+        """
+        SELECT
+            COUNT(*) as total_requests,
+            COUNT(CASE WHEN status_code >= 400 THEN 1 END) as error_count
+        FROM request_log
+        WHERE community_id = ?
+        """,
+        (community_id,),
+    ).fetchone()
+
+    total = row["total_requests"]
+    error_rate = row["error_count"] / total if total > 0 else 0.0
+
+    # Top tools (from JSON array in tools_called column)
+    tool_rows = conn.execute(
+        """
+        SELECT tools_called
+        FROM request_log
+        WHERE community_id = ? AND tools_called IS NOT NULL
+        """,
+        (community_id,),
+    ).fetchall()
+    tool_counts: dict[str, int] = {}
+    for tr in tool_rows:
+        try:
+            tools = json.loads(tr["tools_called"])
+            for tool in tools:
+                tool_counts[tool] = tool_counts.get(tool, 0) + 1
+        except (json.JSONDecodeError, TypeError):
+            logger.warning(
+                "Malformed tools_called data in request_log for community %s: %r",
+                community_id,
+                tr["tools_called"],
+            )
+    top_tools = sorted(tool_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+
+    return {
+        "community_id": community_id,
+        "total_requests": total,
+        "error_rate": round(error_rate, 4),
+        "top_tools": [{"tool": t[0], "count": t[1]} for t in top_tools],
+    }
+
+
+def get_public_usage_stats(
+    community_id: str,
+    period: str,
+    conn: sqlite3.Connection,
+) -> dict[str, Any]:
+    """Get public time-bucketed usage statistics.
+
+    Returns request counts and errors per bucket; no tokens or costs.
+
+    Args:
+        community_id: The community identifier.
+        period: One of "daily", "weekly", "monthly".
+        conn: SQLite connection.
+
+    Returns:
+        Dict with period, community_id, and buckets list.
+    """
+    format_map = {
+        "daily": "%Y-%m-%d",
+        "weekly": "%Y-W%W",
+        "monthly": "%Y-%m",
+    }
+    if period not in format_map:
+        raise ValueError(f"Invalid period: {period}. Must be one of: daily, weekly, monthly")
+
+    fmt = format_map[period]
+
+    rows = conn.execute(
+        f"""
+        SELECT
+            strftime('{fmt}', timestamp) as bucket,
+            COUNT(*) as requests,
+            COUNT(CASE WHEN status_code >= 400 THEN 1 END) as errors
+        FROM request_log
+        WHERE community_id = ?
+        GROUP BY bucket
+        ORDER BY bucket
+        """,
+        (community_id,),
+    ).fetchall()
+
+    return {
+        "community_id": community_id,
+        "period": period,
+        "buckets": [
+            {
+                "bucket": r["bucket"],
+                "requests": r["requests"],
+                "errors": r["errors"],
+            }
+            for r in rows
+        ],
+    }
