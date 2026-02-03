@@ -1265,6 +1265,8 @@ def _log_streaming_metrics(
             key_source=awm.key_source if awm else None,
             tools_called=tools_called,
             stream=True,
+            tool_call_count=len(tools_called),
+            langfuse_trace_id=awm.langfuse_trace_id if awm else None,
         )
         log_request(entry)
     except Exception:
