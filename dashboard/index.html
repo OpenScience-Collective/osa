@@ -268,7 +268,7 @@
         <div id="tabBar" class="tab-bar"></div>
         <div id="app" class="loading">Loading...</div>
 
-        <!-- Admin Key Input (shown on all views) -->
+        <!-- Admin Key Input (hidden until view loads successfully) -->
         <div class="card" id="adminCard" style="display:none;">
             <h2>Admin Access</h2>
             <p style="margin-bottom: 0.5rem; color: #6b7280;">
@@ -287,15 +287,21 @@
     // -----------------------------------------------------------------------
     // Configuration
     // -----------------------------------------------------------------------
-    // API base URL. Override via global before this script loads, or via
-    // ?api= query parameter: index.html?api=https://api.osc.earth/osa
+    // API base URL. Priority: ?api= query param > window.OSA_API_BASE > same origin.
+    // Same-origin default only works for local dev; deployed dashboards MUST set
+    // ?api= or window.OSA_API_BASE (e.g., https://api.osc.earth/osa).
     const API_BASE = (function() {
         const params = new URLSearchParams(window.location.search);
         if (params.get('api')) return params.get('api').replace(/\/+$/, '');
         if (window.OSA_API_BASE) return window.OSA_API_BASE.replace(/\/+$/, '');
-        // Default: same origin (for local dev); prod override via query param
         return window.location.origin;
     })();
+
+    function escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
 
     // -----------------------------------------------------------------------
     // State
@@ -333,7 +339,9 @@
             overviewData = await resp.json();
             renderTabs(overviewData.communities, route.community);
         } catch (err) {
-            // Tabs fail gracefully; continue to load the view
+            // If overview fetch fails, tabs won't render. Aggregate view will
+            // show error; community views can still proceed.
+            console.error('Failed to load overview for tab navigation:', err);
         }
 
         if (route.view === 'community') {
@@ -359,7 +367,8 @@
         let html = `<a href="/" class="tab-link${activeCommunity === null ? ' active' : ''}">All</a>`;
         for (const c of communities) {
             const isActive = c.community_id === activeCommunity;
-            html += `<a href="/${c.community_id}" class="tab-link${isActive ? ' active' : ''}">${c.community_id.toUpperCase()}</a>`;
+            const safe = escapeHtml(c.community_id);
+            html += `<a href="/${safe}" class="tab-link${isActive ? ' active' : ''}">${safe.toUpperCase()}</a>`;
         }
         tabBar.innerHTML = html;
     }
@@ -378,9 +387,10 @@
             communityCards = data.communities.map(c => {
                 const cRate = c.requests > 0
                     ? ((1 - c.error_rate) * 100).toFixed(1) : '0.0';
+                const safe = escapeHtml(c.community_id);
                 return `
-                    <a href="/${c.community_id}" class="community-card">
-                        <h3>${c.community_id.toUpperCase()}</h3>
+                    <a href="/${safe}" class="community-card">
+                        <h3>${safe.toUpperCase()}</h3>
                         <div class="stats">
                             <span><strong>${c.requests.toLocaleString()}</strong> requests</span>
                             <span><strong>${cRate}%</strong> success</span>
@@ -422,12 +432,13 @@
     // -----------------------------------------------------------------------
     async function loadCommunityView(communityId) {
         const app = document.getElementById('app');
-        document.title = `${communityId.toUpperCase()} - OSA Dashboard`;
+        const safeName = escapeHtml(communityId);
+        document.title = `${safeName.toUpperCase()} - OSA Dashboard`;
 
         try {
             const [summaryResp, usageResp, syncResp, healthResp] = await Promise.all([
-                fetch(`${API_BASE}/${communityId}/metrics/public`),
-                fetch(`${API_BASE}/${communityId}/metrics/public/usage?period=${activePeriod}`),
+                fetch(`${API_BASE}/${encodeURIComponent(communityId)}/metrics/public`),
+                fetch(`${API_BASE}/${encodeURIComponent(communityId)}/metrics/public/usage?period=${activePeriod}`),
                 fetch(`${API_BASE}/sync/status`).catch(() => null),
                 fetch(`${API_BASE}/sync/health`).catch(() => null),
             ]);
@@ -446,27 +457,28 @@
             if (adminKey) loadAdminData(communityId);
         } catch (err) {
             app.className = '';
-            app.innerHTML = `<div class="error-msg">Failed to load data for ${communityId}: ${err.message}</div>`;
+            app.innerHTML = `<div class="error-msg">Failed to load data for ${safeName}: ${escapeHtml(err.message)}</div>`;
         }
     }
 
     function renderCommunityView(summary, usage, sync, health, communityId) {
         const app = document.getElementById('app');
+        const safeName = escapeHtml(communityId);
         const successRate = summary.total_requests > 0
             ? ((1 - summary.error_rate) * 100).toFixed(1) : '0.0';
 
         let healthStatus = 'unknown';
         let healthLabel = 'Unknown';
         if (health && health.status) {
-            healthStatus = health.status;
-            healthLabel = health.status.charAt(0).toUpperCase() + health.status.slice(1);
+            healthStatus = escapeHtml(health.status);
+            healthLabel = healthStatus.charAt(0).toUpperCase() + healthStatus.slice(1);
         }
 
         app.className = '';
         app.innerHTML = `
             <div class="card">
                 <div class="community-header">
-                    <h2 style="border:none;padding:0;margin:0;">${communityId.toUpperCase()} Community</h2>
+                    <h2 style="border:none;padding:0;margin:0;">${safeName.toUpperCase()} Community</h2>
                     <span class="status-badge status-${healthStatus}">${healthLabel}</span>
                 </div>
                 <div class="overview-grid">
@@ -484,9 +496,9 @@
             <div class="card">
                 <h2>Activity</h2>
                 <div class="period-toggle">
-                    <button class="period-btn ${activePeriod === 'daily' ? 'active' : ''}" onclick="changePeriod('daily','${communityId}')">Daily</button>
-                    <button class="period-btn ${activePeriod === 'weekly' ? 'active' : ''}" onclick="changePeriod('weekly','${communityId}')">Weekly</button>
-                    <button class="period-btn ${activePeriod === 'monthly' ? 'active' : ''}" onclick="changePeriod('monthly','${communityId}')">Monthly</button>
+                    <button class="period-btn ${activePeriod === 'daily' ? 'active' : ''}" onclick="changePeriod('daily','${safeName}')">Daily</button>
+                    <button class="period-btn ${activePeriod === 'weekly' ? 'active' : ''}" onclick="changePeriod('weekly','${safeName}')">Weekly</button>
+                    <button class="period-btn ${activePeriod === 'monthly' ? 'active' : ''}" onclick="changePeriod('monthly','${safeName}')">Monthly</button>
                 </div>
                 <div class="chart-row">
                     <div>
@@ -553,7 +565,7 @@
             if (diffHrs < 24) return `${diffHrs} hour${diffHrs === 1 ? '' : 's'} ago`;
             const diffDays = Math.floor(diffHrs / 24);
             return `${diffDays} day${diffDays === 1 ? '' : 's'} ago`;
-        } catch { return isoStr || 'N/A'; }
+        } catch (err) { console.warn('Failed to parse timestamp:', isoStr, err); return isoStr || 'N/A'; }
     }
 
     // -----------------------------------------------------------------------
@@ -659,7 +671,8 @@
                 status.textContent = `Error (${resp.status})`;
                 status.className = 'admin-status error';
             }
-        } catch {
+        } catch (err) {
+            console.error('Admin unlock failed:', err);
             status.textContent = 'Connection error';
             status.className = 'admin-status error';
         }
@@ -669,11 +682,10 @@
         if (!adminKey) return;
         const section = document.getElementById('adminSection');
         if (!section) return;
-        section.classList.add('visible');
 
         try {
             const resp = await fetch(
-                `${API_BASE}/metrics/tokens?community_id=${communityId}`,
+                `${API_BASE}/metrics/tokens?community_id=${encodeURIComponent(communityId)}`,
                 { headers: { 'X-API-Key': adminKey } }
             );
             if (!resp.ok) {
@@ -682,11 +694,20 @@
                     section.classList.remove('visible');
                     document.getElementById('adminStatus').textContent = 'Key expired or invalid';
                     document.getElementById('adminStatus').className = 'admin-status error';
+                } else {
+                    console.error('Admin data fetch failed with status', resp.status);
+                    section.classList.add('visible');
+                    section.innerHTML = `<p class="error-msg">Failed to load admin data (HTTP ${resp.status})</p>`;
                 }
                 return;
             }
+            section.classList.add('visible');
             renderAdminCharts(await resp.json());
-        } catch { /* degrade silently */ }
+        } catch (err) {
+            console.error('Failed to load admin data:', err);
+            section.classList.add('visible');
+            section.innerHTML = '<p class="error-msg">Failed to load admin data. Check console for details.</p>';
+        }
     }
 
     function renderAdminCharts(data) {

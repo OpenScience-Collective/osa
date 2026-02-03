@@ -249,3 +249,129 @@ class TestCommunityPublicUsage:
         assert response.status_code == 200
         data = response.json()
         assert data["period"] == "daily"
+
+    @pytest.mark.usefixtures("isolated_metrics", "noauth_env")
+    def test_daily_buckets_count_and_errors(self, client):
+        """Verify bucket count and error values match fixture data."""
+        response = client.get("/hed/metrics/public/usage", params={"period": "daily"})
+        data = response.json()
+        buckets = data["buckets"]
+        # Fixture has HED requests on 2025-01-15 and 2025-01-16
+        assert len(buckets) == 2
+        bucket_map = {b["bucket"]: b for b in buckets}
+        # 2025-01-16 has one request with status_code=500
+        assert bucket_map["2025-01-16"]["errors"] == 1
+
+
+class TestPublicAdminBoundary:
+    """Verify public endpoints work without auth while admin endpoints require it."""
+
+    @pytest.fixture
+    def auth_env(self):
+        """Enable auth with a test API key so admin endpoints reject anonymous requests."""
+        from src.api.config import get_settings
+
+        os.environ["REQUIRE_API_AUTH"] = "true"
+        os.environ["API_KEYS"] = "test-secret-key"
+        get_settings.cache_clear()
+        yield
+        del os.environ["REQUIRE_API_AUTH"]
+        del os.environ["API_KEYS"]
+        get_settings.cache_clear()
+
+    @pytest.mark.usefixtures("isolated_metrics", "noauth_env")
+    def test_public_overview_no_auth_200(self, client):
+        response = client.get("/metrics/public/overview")
+        assert response.status_code == 200
+
+    @pytest.mark.usefixtures("isolated_metrics", "auth_env")
+    def test_admin_overview_no_auth_rejected(self, client):
+        """Admin endpoint must reject unauthenticated requests."""
+        response = client.get("/metrics/overview")
+        assert response.status_code in (401, 403)
+
+    @pytest.mark.usefixtures("isolated_metrics", "auth_env")
+    def test_admin_tokens_no_auth_rejected(self, client):
+        """Admin token endpoint must reject unauthenticated requests."""
+        response = client.get("/metrics/tokens")
+        assert response.status_code in (401, 403)
+
+
+class TestEmptyDatabase:
+    """Verify public endpoints handle empty databases gracefully."""
+
+    @pytest.fixture
+    def empty_metrics_db(self, tmp_path):
+        db_path = tmp_path / "empty_metrics.db"
+        init_metrics_db(db_path)
+        return db_path
+
+    @pytest.fixture
+    def isolated_empty_metrics(self, empty_metrics_db):
+        with patch("src.metrics.db.get_metrics_db_path", return_value=empty_metrics_db):
+            yield
+
+    @pytest.mark.usefixtures("isolated_empty_metrics", "noauth_env")
+    def test_overview_empty_db(self, client):
+        response = client.get("/metrics/public/overview")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total_requests"] == 0
+        assert data["error_rate"] == 0.0
+        assert data["communities_active"] == 0
+        assert data["communities"] == []
+
+    @pytest.mark.usefixtures("isolated_empty_metrics", "noauth_env")
+    def test_community_metrics_empty_db(self, client):
+        response = client.get("/hed/metrics/public")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total_requests"] == 0
+        assert data["error_rate"] == 0.0
+        assert data["top_tools"] == []
+
+    @pytest.mark.usefixtures("isolated_empty_metrics", "noauth_env")
+    def test_community_usage_empty_db(self, client):
+        response = client.get("/hed/metrics/public/usage")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["buckets"] == []
+
+
+class TestCommunityMetricsValues:
+    """Verify computed values per community match fixture data dynamically."""
+
+    @pytest.mark.usefixtures("isolated_metrics", "noauth_env")
+    def test_community_values_from_overview(self, client):
+        """Check each community's request count and error rate from overview."""
+        response = client.get("/metrics/public/overview")
+        data = response.json()
+        checked = 0
+        for community in data["communities"]:
+            cid = community["community_id"]
+            resp = client.get(f"/{cid}/metrics/public")
+            if resp.status_code != 200:
+                continue  # community route not registered in test app
+            detail = resp.json()
+            assert detail["total_requests"] == community["requests"]
+            assert detail["total_requests"] > 0
+            assert detail["error_rate"] == community["error_rate"]
+            checked += 1
+        assert checked > 0, "Expected at least one community with a registered route"
+
+    @pytest.mark.usefixtures("isolated_metrics", "noauth_env")
+    def test_per_community_tool_counts_consistent(self, client):
+        """Each tool count should be a positive integer."""
+        response = client.get("/metrics/public/overview")
+        checked = 0
+        for community in response.json()["communities"]:
+            cid = community["community_id"]
+            resp = client.get(f"/{cid}/metrics/public")
+            if resp.status_code != 200:
+                continue  # community route not registered in test app
+            detail = resp.json()
+            for tool_entry in detail["top_tools"]:
+                assert isinstance(tool_entry["tool"], str)
+                assert tool_entry["count"] > 0
+            checked += 1
+        assert checked > 0, "Expected at least one community with a registered route"

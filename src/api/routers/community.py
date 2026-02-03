@@ -1061,17 +1061,18 @@ def create_community_router(community_id: str) -> APIRouter:
         """Get metrics summary for this community. Requires admin auth."""
         import sqlite3
 
-        conn = get_metrics_connection()
         try:
-            return get_community_summary(community_id, conn)
+            conn = get_metrics_connection()
+            try:
+                return get_community_summary(community_id, conn)
+            finally:
+                conn.close()
         except sqlite3.Error:
             logger.exception("Failed to query metrics for community %s", community_id)
             raise HTTPException(
                 status_code=503,
                 detail="Metrics database is temporarily unavailable.",
             )
-        finally:
-            conn.close()
 
     @router.get("/metrics/usage")
     async def community_usage(
@@ -1085,9 +1086,12 @@ def create_community_router(community_id: str) -> APIRouter:
         """Get time-bucketed usage stats for this community. Requires admin auth."""
         import sqlite3
 
-        conn = get_metrics_connection()
         try:
-            return get_usage_stats(community_id, period, conn)
+            conn = get_metrics_connection()
+            try:
+                return get_usage_stats(community_id, period, conn)
+            finally:
+                conn.close()
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         except sqlite3.Error:
@@ -1096,8 +1100,6 @@ def create_community_router(community_id: str) -> APIRouter:
                 status_code=503,
                 detail="Metrics database is temporarily unavailable.",
             )
-        finally:
-            conn.close()
 
     # -----------------------------------------------------------------------
     # Per-community Public Metrics Endpoints (no auth required)
@@ -1112,17 +1114,18 @@ def create_community_router(community_id: str) -> APIRouter:
         """
         import sqlite3
 
-        conn = get_metrics_connection()
         try:
-            return get_public_community_summary(community_id, conn)
+            conn = get_metrics_connection()
+            try:
+                return get_public_community_summary(community_id, conn)
+            finally:
+                conn.close()
         except sqlite3.Error:
             logger.exception("Failed to query public metrics for community %s", community_id)
             raise HTTPException(
                 status_code=503,
                 detail="Metrics database is temporarily unavailable.",
             )
-        finally:
-            conn.close()
 
     @router.get("/metrics/public/usage")
     async def community_usage_public(
@@ -1139,9 +1142,12 @@ def create_community_router(community_id: str) -> APIRouter:
         """
         import sqlite3
 
-        conn = get_metrics_connection()
         try:
-            return get_public_usage_stats(community_id, period, conn)
+            conn = get_metrics_connection()
+            try:
+                return get_public_usage_stats(community_id, period, conn)
+            finally:
+                conn.close()
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         except sqlite3.Error:
@@ -1150,8 +1156,6 @@ def create_community_router(community_id: str) -> APIRouter:
                 status_code=503,
                 detail="Metrics database is temporarily unavailable.",
             )
-        finally:
-            conn.close()
 
     return router
 

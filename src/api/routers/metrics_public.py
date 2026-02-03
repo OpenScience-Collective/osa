@@ -28,14 +28,15 @@ async def public_overview() -> dict[str, Any]:
     Returns total requests, error rate, active community count,
     and per-community request counts. No tokens, costs, or model info.
     """
-    conn = get_metrics_connection()
     try:
-        return get_public_overview(conn)
+        conn = get_metrics_connection()
+        try:
+            return get_public_overview(conn)
+        finally:
+            conn.close()
     except sqlite3.Error:
         logger.exception("Failed to query metrics database for public overview")
         raise HTTPException(
             status_code=503,
             detail="Metrics database is temporarily unavailable.",
         )
-    finally:
-        conn.close()
