@@ -48,9 +48,10 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           # Deploy with branch name so Cloudflare Pages routes correctly:
-          # - main branch -> osa-dash.pages.dev (production)
+          # - main branch -> osa-dash.pages.dev (production), custom domain: status.osc.earth
           # - develop branch -> develop.osa-dash.pages.dev (preview)
           # - PR branches -> {branch}.osa-dash.pages.dev (preview)
+          # Dashboard is served at /osa/ path (e.g., status.osc.earth/osa/)
           command: pages deploy dashboard --project-name=osa-dash --branch=${{ steps.branch.outputs.name }}
 
       - name: Comment on PR with preview URL

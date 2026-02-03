@@ -322,10 +322,14 @@
     // -----------------------------------------------------------------------
     // Router - read path to decide view
     // -----------------------------------------------------------------------
+    const BASE_PATH = '/osa';
+
     function getRoute() {
-        const path = window.location.pathname.replace(/^\/+|\/+$/g, '');
+        let path = window.location.pathname;
+        if (path.startsWith(BASE_PATH)) path = path.slice(BASE_PATH.length);
+        path = path.replace(/^\/+|\/+$/g, '');
         if (!path) return { view: 'aggregate', community: null };
-        return { view: 'community', community: path.split('/')[0] };
+        return { view: 'community', community: decodeURIComponent(path.split('/')[0]) };
     }
 
     document.addEventListener('DOMContentLoaded', async () => {
@@ -364,11 +368,11 @@
         const tabBar = document.getElementById('tabBar');
         if (!communities || communities.length === 0) return;
 
-        let html = `<a href="/" class="tab-link${activeCommunity === null ? ' active' : ''}">All</a>`;
+        let html = `<a href="${BASE_PATH}/" class="tab-link${activeCommunity === null ? ' active' : ''}">All</a>`;
         for (const c of communities) {
             const isActive = c.community_id === activeCommunity;
             const safe = escapeHtml(c.community_id);
-            html += `<a href="/${safe}" class="tab-link${isActive ? ' active' : ''}">${safe.toUpperCase()}</a>`;
+            html += `<a href="${BASE_PATH}/${safe}" class="tab-link${isActive ? ' active' : ''}">${safe.toUpperCase()}</a>`;
         }
         tabBar.innerHTML = html;
     }
@@ -389,7 +393,7 @@
                     ? ((1 - c.error_rate) * 100).toFixed(1) : '0.0';
                 const safe = escapeHtml(c.community_id);
                 return `
-                    <a href="/${safe}" class="community-card">
+                    <a href="${BASE_PATH}/${safe}" class="community-card">
                         <h3>${safe.toUpperCase()}</h3>
                         <div class="stats">
                             <span><strong>${c.requests.toLocaleString()}</strong> requests</span>
