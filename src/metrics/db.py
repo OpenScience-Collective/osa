@@ -7,6 +7,8 @@ WAL mode enables concurrent reads during writes.
 import json
 import logging
 import sqlite3
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -91,6 +93,22 @@ def get_metrics_connection(db_path: Path | None = None) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     return conn
+
+
+@contextmanager
+def metrics_connection(db_path: Path | None = None) -> Generator[sqlite3.Connection, None, None]:
+    """Context manager for a metrics database connection.
+
+    Ensures the connection is closed after use, even if an exception occurs.
+
+    Args:
+        db_path: Optional path override (for testing).
+    """
+    conn = get_metrics_connection(db_path)
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def init_metrics_db(db_path: Path | None = None) -> None:
