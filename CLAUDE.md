@@ -239,6 +239,38 @@ docker exec osa-dev python -m src.cli.main sync github --full
 - Dev: https://develop.osa-demo.pages.dev
 - Prod: https://osa-demo.pages.dev
 
+### Inspecting Knowledge Databases
+
+Knowledge databases (SQLite) live **inside the Docker containers**, not locally.
+Do NOT look for `.db` files in the local repo; they won't be there.
+
+```bash
+# List databases in a container
+ssh -o "RequestTTY=no" -J hallu hedtools \
+  "docker exec osa find /app/data/knowledge -name '*.db'"
+
+# Containers: osa (prod), osa-dev (dev)
+# Database paths: /app/data/knowledge/{community_id}.db
+#   e.g., /app/data/knowledge/eeglab.db, /app/data/knowledge/hed.db
+
+# List tables (no sqlite3 binary; use python)
+ssh -o "RequestTTY=no" -J hallu hedtools \
+  "docker exec osa python3 -c 'import sqlite3; conn = sqlite3.connect(\"/app/data/knowledge/eeglab.db\"); print([r[0] for r in conn.execute(\"SELECT name FROM sqlite_master WHERE type=\\\"table\\\"\")]); conn.close()'"
+
+# Query example: count docstrings
+ssh -o "RequestTTY=no" -J hallu hedtools \
+  "docker exec osa python3 -c 'import sqlite3; conn = sqlite3.connect(\"/app/data/knowledge/eeglab.db\"); print(conn.execute(\"SELECT COUNT(*) FROM docstrings\").fetchone()[0]); conn.close()'"
+
+# Query example: search for a symbol
+ssh -o "RequestTTY=no" -J hallu hedtools \
+  "docker exec osa python3 -c 'import sqlite3; conn = sqlite3.connect(\"/app/data/knowledge/eeglab.db\"); [print(r) for r in conn.execute(\"SELECT symbol_name, file_path FROM docstrings WHERE symbol_name LIKE \\\"%erpimage%\\\"\").fetchall()]; conn.close()'"
+```
+
+**Important notes:**
+- `sqlite3` CLI is not installed in containers; use `python3 -c` with the `sqlite3` module
+- Use `ssh -o "RequestTTY=no"` to avoid interactive shell banners
+- Dev and prod databases may differ; always check the right container
+
 ## References
 
 - **API structure**: `.context/api-structure.md` (read first for API work)
