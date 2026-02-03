@@ -382,6 +382,16 @@ class TestBudgetConfig:
                 unknown_field="value",  # type: ignore
             )
 
+    def test_rejects_daily_exceeding_monthly(self) -> None:
+        """Should reject daily limit greater than monthly limit."""
+        with pytest.raises(ValidationError, match="cannot exceed"):
+            BudgetConfig(daily_limit_usd=100.0, monthly_limit_usd=50.0)
+
+    def test_accepts_equal_daily_and_monthly(self) -> None:
+        """Should accept daily limit equal to monthly limit."""
+        config = BudgetConfig(daily_limit_usd=50.0, monthly_limit_usd=50.0)
+        assert config.daily_limit_usd == config.monthly_limit_usd
+
 
 class TestCommunityConfigBudget:
     """Tests for CommunityConfig.budget field."""

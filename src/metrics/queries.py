@@ -494,21 +494,13 @@ def get_quality_metrics(
         total = r["requests"]
         error_rate = r["errors"] / total if total > 0 else 0.0
 
-        # Get sorted durations for percentile calculation
-        durations = conn.execute(
-            f"""
-            SELECT duration_ms
-            FROM request_log
-            WHERE community_id = ? AND strftime('{fmt}', timestamp) = ?
-                AND duration_ms IS NOT NULL
-            ORDER BY duration_ms
-            """,
-            (community_id, bucket_name),
-        ).fetchall()
-
-        duration_values = [d["duration_ms"] for d in durations]
-        p50 = _percentile(duration_values, 0.5)
-        p95 = _percentile(duration_values, 0.95)
+        # Latency percentiles for this bucket
+        p50, p95 = _fetch_latency_percentiles(
+            conn,
+            community_id,
+            extra_where=f"AND strftime('{fmt}', timestamp) = ?",
+            extra_params=(bucket_name,),
+        )
 
         buckets.append(
             {
@@ -539,7 +531,7 @@ def get_quality_summary(community_id: str, conn: sqlite3.Connection) -> dict[str
 
     Returns:
         Dict with overall quality stats: error_rate, avg_tool_calls,
-        agent_error_count, p50/p95 latency, traced percentage.
+        agent_errors, p50/p95 latency, traced percentage.
     """
     row = conn.execute(
         """
@@ -560,18 +552,7 @@ def get_quality_summary(community_id: str, conn: sqlite3.Connection) -> dict[str
     traced_pct = row["traced"] / total if total > 0 else 0.0
 
     # Latency percentiles
-    durations = conn.execute(
-        """
-        SELECT duration_ms
-        FROM request_log
-        WHERE community_id = ? AND duration_ms IS NOT NULL
-        ORDER BY duration_ms
-        """,
-        (community_id,),
-    ).fetchall()
-    duration_values = [d["duration_ms"] for d in durations]
-    p50 = _percentile(duration_values, 0.5)
-    p95 = _percentile(duration_values, 0.95)
+    p50, p95 = _fetch_latency_percentiles(conn, community_id)
 
     return {
         "community_id": community_id,
@@ -588,7 +569,7 @@ def get_quality_summary(community_id: str, conn: sqlite3.Connection) -> dict[str
 def _percentile(sorted_values: list[float], pct: float) -> float | None:
     """Compute percentile from a sorted list of values.
 
-    Uses nearest-rank method.
+    Uses floor-rank method: index = floor(pct * len), clamped to valid range.
 
     Args:
         sorted_values: Pre-sorted list of numeric values.
@@ -602,3 +583,33 @@ def _percentile(sorted_values: list[float], pct: float) -> float | None:
     idx = int(pct * len(sorted_values))
     idx = min(idx, len(sorted_values) - 1)
     return sorted_values[idx]
+
+
+def _fetch_latency_percentiles(
+    conn: sqlite3.Connection,
+    community_id: str,
+    extra_where: str = "",
+    extra_params: tuple[str, ...] = (),
+) -> tuple[float | None, float | None]:
+    """Fetch p50 and p95 latency for a community with optional filters.
+
+    Args:
+        conn: SQLite connection with row_factory set.
+        community_id: The community identifier.
+        extra_where: Additional SQL WHERE clause (e.g., "AND strftime(...) = ?").
+        extra_params: Parameters for the extra WHERE clause.
+
+    Returns:
+        Tuple of (p50, p95) duration in ms, or None if no data.
+    """
+    durations = conn.execute(
+        f"""
+        SELECT duration_ms
+        FROM request_log
+        WHERE community_id = ? AND duration_ms IS NOT NULL {extra_where}
+        ORDER BY duration_ms
+        """,
+        (community_id, *extra_params),
+    ).fetchall()
+    values = [d["duration_ms"] for d in durations]
+    return _percentile(values, 0.5), _percentile(values, 0.95)

@@ -16,10 +16,13 @@ logger = logging.getLogger(__name__)
 ALERT_REPO = "OpenScience-Collective/osa"
 
 
-def _issue_exists(title: str, repo: str = ALERT_REPO) -> bool:
+def _issue_exists(title: str, repo: str = ALERT_REPO) -> bool | None:
     """Check if an open issue with this title already exists.
 
     Uses gh CLI to search for existing issues to prevent duplicates.
+
+    Returns:
+        True if a matching issue exists, False if not, None if the check failed.
     """
     try:
         result = subprocess.run(
@@ -44,13 +47,13 @@ def _issue_exists(title: str, repo: str = ALERT_REPO) -> bool:
         )
         if result.returncode != 0:
             logger.error("gh issue list failed: %s", result.stderr)
-            return True  # Conservative: assume duplicate exists to prevent spam
+            return None
 
         issues = json.loads(result.stdout)
         return any(issue.get("title") == title for issue in issues)
     except Exception:
         logger.exception("Failed to check existing issues")
-        return True  # Conservative: assume duplicate exists to prevent spam
+        return None
 
 
 def create_budget_alert_issue(
@@ -88,8 +91,16 @@ def create_budget_alert_issue(
     alert_type = ", ".join(alert_parts)
     title = f"[Budget Alert] {budget_status.community_id}: {alert_type}"
 
-    # Check for existing open issue
-    if _issue_exists(title, repo):
+    # Check for existing open issue (three-state: True/False/None)
+    exists = _issue_exists(title, repo)
+    if exists is None:
+        logger.warning(
+            "Could not verify deduplication for %s; suppressing alert to prevent spam. "
+            "Check gh CLI and GitHub token configuration.",
+            budget_status.community_id,
+        )
+        return None
+    if exists:
         logger.info(
             "Budget alert issue already exists for %s, skipping", budget_status.community_id
         )

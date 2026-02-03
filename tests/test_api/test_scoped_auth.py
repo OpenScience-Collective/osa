@@ -69,6 +69,14 @@ class TestAuthScope:
         scope = AuthScope(role="community", community_id="hed")
         assert scope.can_access_community("eeglab") is False
 
+    def test_community_role_requires_community_id(self):
+        with pytest.raises(ValueError, match="community role requires a community_id"):
+            AuthScope(role="community")
+
+    def test_admin_role_rejects_community_id(self):
+        with pytest.raises(ValueError, match="admin role must not have a community_id"):
+            AuthScope(role="admin", community_id="hed")
+
 
 class TestVerifyScopedAdminKey:
     """Tests for verify_scoped_admin_key dependency."""

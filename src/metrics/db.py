@@ -127,8 +127,9 @@ def metrics_connection(db_path: Path | None = None) -> Generator[sqlite3.Connect
 def _migrate_columns(conn: sqlite3.Connection) -> None:
     """Add new columns to existing databases (backward-compatible migration).
 
-    Uses ALTER TABLE ADD COLUMN which is a no-op if column already exists
-    (SQLite raises OperationalError for duplicate columns, which we catch).
+    Attempts ALTER TABLE ADD COLUMN for each new column. If the column
+    already exists, SQLite raises OperationalError with 'duplicate column',
+    which we catch and ignore, making this function idempotent.
     """
     for col_name, col_def in _MIGRATION_COLUMNS:
         try:

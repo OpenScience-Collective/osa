@@ -14,6 +14,7 @@ from src.metrics.db import (
 )
 
 ADMIN_KEY = "test-metrics-admin-key"
+COMMUNITY_KEY = "hed-community-key"
 
 
 @pytest.fixture
@@ -95,6 +96,24 @@ def auth_env():
 
     del os.environ["API_KEYS"]
     del os.environ["REQUIRE_API_AUTH"]
+    get_settings.cache_clear()
+
+
+@pytest.fixture
+def scoped_auth_env():
+    """Set up environment with both admin and community keys."""
+    from src.api.config import get_settings
+
+    os.environ["API_KEYS"] = ADMIN_KEY
+    os.environ["REQUIRE_API_AUTH"] = "true"
+    os.environ["COMMUNITY_ADMIN_KEYS"] = f"hed:{COMMUNITY_KEY}"
+    get_settings.cache_clear()
+
+    yield
+
+    del os.environ["API_KEYS"]
+    del os.environ["REQUIRE_API_AUTH"]
+    del os.environ["COMMUNITY_ADMIN_KEYS"]
     get_settings.cache_clear()
 
 
@@ -355,3 +374,47 @@ class TestGlobalQuality:
     def test_returns_403_with_invalid_key(self, client):
         response = client.get("/metrics/quality", headers={"X-API-Key": "wrong-key"})
         assert response.status_code == 403
+
+
+class TestScopedKeyOnGlobalEndpoints:
+    """Tests for community-scoped keys on global metrics endpoints."""
+
+    @pytest.mark.usefixtures("isolated_metrics", "scoped_auth_env")
+    def test_community_key_on_overview_returns_scoped_data(self, client):
+        """Community key on /metrics/overview should return only their community summary."""
+        response = client.get("/metrics/overview", headers={"X-API-Key": COMMUNITY_KEY})
+        assert response.status_code == 200
+        data = response.json()
+        # Scoped key gets community summary, not the full overview with communities list
+        assert data["community_id"] == "hed"
+
+    @pytest.mark.usefixtures("isolated_metrics", "scoped_auth_env")
+    def test_community_key_on_tokens_is_auto_scoped(self, client):
+        """Community key on /metrics/tokens should be auto-scoped to own community."""
+        response = client.get(
+            "/metrics/tokens",
+            params={"community_id": "eeglab"},  # Try to view another community
+            headers={"X-API-Key": COMMUNITY_KEY},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        # Should be forced to own community, ignoring the query param
+        assert data["community_id"] == "hed"
+
+    @pytest.mark.usefixtures("isolated_metrics", "scoped_auth_env")
+    def test_community_key_on_quality_returns_own_summary(self, client):
+        """Community key on /metrics/quality should return only own community quality."""
+        response = client.get("/metrics/quality", headers={"X-API-Key": COMMUNITY_KEY})
+        assert response.status_code == 200
+        data = response.json()
+        # Scoped key gets single community summary, not communities list
+        assert data["community_id"] == "hed"
+        assert "error_rate" in data
+
+    @pytest.mark.usefixtures("isolated_metrics", "scoped_auth_env")
+    def test_admin_key_still_sees_all(self, client):
+        """Admin key should still see full data on all global endpoints."""
+        response = client.get("/metrics/overview", headers={"X-API-Key": ADMIN_KEY})
+        assert response.status_code == 200
+        data = response.json()
+        assert "communities" in data

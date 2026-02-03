@@ -167,3 +167,12 @@ class TestCreateBudgetAlertIssue:
         body_idx = cmd.index("--body") + 1
         body = cmd[body_idx]
         assert "No maintainers configured" in body
+
+    @patch("src.metrics.alerts._issue_exists", return_value=None)
+    @patch("src.metrics.alerts.subprocess")
+    def test_suppresses_alert_when_dedup_check_fails(self, mock_subprocess, _mock_exists):
+        """Returns None and does not create issue when dedup check fails."""
+        status = _make_budget_status()
+        result = create_budget_alert_issue(status, maintainers=["user1"])
+        assert result is None
+        mock_subprocess.run.assert_not_called()

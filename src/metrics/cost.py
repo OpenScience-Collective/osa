@@ -1,7 +1,7 @@
 """Cost estimation for LLM requests.
 
 Model pricing table with per-token costs (USD per million tokens).
-Pricing is from OpenRouter as of 2025-01-28; update regularly.
+Pricing is from OpenRouter as of 2025-07; update regularly.
 """
 
 import logging
@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 # Pricing: USD per 1M tokens (input, output)
 # Source: https://openrouter.ai/models
-# Last updated: 2025-01-28
+# Last updated: 2025-07
 MODEL_PRICING: dict[str, tuple[float, float]] = {
     # Qwen models
     "qwen/qwen3-235b-a22b-2507": (0.14, 0.34),
@@ -58,10 +58,9 @@ def estimate_cost(
     """
     if model and model in MODEL_PRICING:
         input_rate, output_rate = MODEL_PRICING[model]
-    elif model:
-        logger.warning("No pricing data for model %s, using fallback rates", model)
-        input_rate, output_rate = _FALLBACK_INPUT_RATE, _FALLBACK_OUTPUT_RATE
     else:
+        if model:
+            logger.warning("No pricing data for model %s, using fallback rates", model)
         input_rate, output_rate = _FALLBACK_INPUT_RATE, _FALLBACK_OUTPUT_RATE
 
     cost = (input_tokens * input_rate + output_tokens * output_rate) / 1_000_000

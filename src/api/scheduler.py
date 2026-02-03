@@ -221,7 +221,16 @@ def _check_community_budgets() -> None:
             communities_failed,
             alerts_created,
         )
-        _budget_check_failures = 0  # Reset on successful completion
+        if communities_failed:
+            _budget_check_failures += 1
+            if _budget_check_failures >= MAX_CONSECUTIVE_FAILURES:
+                logger.critical(
+                    "Budget check has had community failures for %d consecutive runs. "
+                    "Manual intervention required.",
+                    _budget_check_failures,
+                )
+        else:
+            _budget_check_failures = 0
     except Exception:
         _budget_check_failures += 1
         logger.error(

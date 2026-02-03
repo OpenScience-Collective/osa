@@ -164,7 +164,7 @@ class Settings(BaseSettings):
             if not entry:
                 continue
             if ":" not in entry:
-                logger.warning("Skipping malformed community_admin_keys entry (no ':'): %r", entry)
+                logger.error("Skipping malformed community_admin_keys entry (no ':'): %r", entry)
                 continue
             community_id, key = entry.split(":", 1)
             community_id = community_id.strip()

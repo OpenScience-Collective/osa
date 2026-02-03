@@ -603,7 +603,7 @@ class BudgetConfig(BaseModel):
     these limits and creates GitHub issues when thresholds are exceeded.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     daily_limit_usd: float = Field(..., gt=0, description="Maximum daily spend in USD")
     monthly_limit_usd: float = Field(..., gt=0, description="Maximum monthly spend in USD")
@@ -763,8 +763,8 @@ class CommunityConfig(BaseModel):
     """GitHub usernames of community maintainers.
 
     Used for:
-    - Scoping admin access to community-specific metrics
     - @mentioning in automated alert issues (budget alerts, etc.)
+    - Documenting who is responsible for the community
 
     Example:
         maintainers:
@@ -817,7 +817,7 @@ class CommunityConfig(BaseModel):
         """Validate GitHub usernames in maintainers list.
 
         GitHub usernames: 1-39 chars, alphanumeric or hyphens,
-        cannot start or end with hyphen, no consecutive hyphens.
+        cannot start or end with hyphen.
         """
         gh_username_pattern = re.compile(r"^[a-zA-Z0-9]([a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$")
         validated = []
