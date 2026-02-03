@@ -1,11 +1,14 @@
 """Configuration management for the OSA API."""
 
+import logging
 from functools import lru_cache
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from src.version import __version__
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -55,6 +58,13 @@ class Settings(BaseSettings):
         default=None, description="Server API keys for authentication (comma-separated)"
     )
     require_api_auth: bool = Field(default=True, description="Require API key authentication")
+
+    # Per-community admin keys for scoped dashboard access
+    # Format: "community_id:key1,community_id:key2" (e.g., "hed:abc123,eeglab:xyz789")
+    community_admin_keys: str | None = Field(
+        default=None,
+        description="Per-community admin API keys (format: community_id:key,...)",
+    )
 
     # LLM Provider Settings (server defaults, can be overridden by BYOK)
     openrouter_api_key: str | None = Field(default=None, description="OpenRouter API key")
@@ -126,6 +136,42 @@ class Settings(BaseSettings):
         default="0 3 * * 0",
         description="Cron schedule for papers sync (default: weekly Sunday at 3am UTC)",
     )
+
+    def parse_admin_keys(self) -> set[str]:
+        """Parse API_KEYS into a set of valid admin keys.
+
+        Returns:
+            Set of valid API key strings.
+        """
+        if not self.api_keys:
+            return set()
+        return {k.strip() for k in self.api_keys.split(",") if k.strip()}
+
+    def parse_community_admin_keys(self) -> dict[str, set[str]]:
+        """Parse COMMUNITY_ADMIN_KEYS into {community_id: {keys}} mapping.
+
+        Format: "community_id:key1,community_id:key2"
+        Multiple keys per community are supported.
+
+        Returns:
+            Dict mapping community_id to set of valid API keys.
+        """
+        if not self.community_admin_keys:
+            return {}
+        result: dict[str, set[str]] = {}
+        for entry in self.community_admin_keys.split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            if ":" not in entry:
+                logger.error("Skipping malformed community_admin_keys entry (no ':'): %r", entry)
+                continue
+            community_id, key = entry.split(":", 1)
+            community_id = community_id.strip()
+            key = key.strip()
+            if community_id and key:
+                result.setdefault(community_id, set()).add(key)
+        return result
 
 
 @lru_cache

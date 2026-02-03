@@ -34,7 +34,10 @@ CREATE TABLE IF NOT EXISTS request_log (
     estimated_cost REAL,
     tools_called TEXT,
     key_source TEXT,
-    stream INTEGER DEFAULT 0
+    stream INTEGER DEFAULT 0,
+    tool_call_count INTEGER DEFAULT 0,
+    error_message TEXT,
+    langfuse_trace_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_request_log_community
@@ -44,6 +47,13 @@ CREATE INDEX IF NOT EXISTS idx_request_log_timestamp
 CREATE INDEX IF NOT EXISTS idx_request_log_community_timestamp
     ON request_log(community_id, timestamp);
 """
+
+# Columns added after initial schema; ALTER TABLE for existing databases
+_MIGRATION_COLUMNS = [
+    ("tool_call_count", "INTEGER DEFAULT 0"),
+    ("error_message", "TEXT"),
+    ("langfuse_trace_id", "TEXT"),
+]
 
 
 @dataclass
@@ -65,6 +75,9 @@ class RequestLogEntry:
     tools_called: list[str] = field(default_factory=list)
     key_source: str | None = None
     stream: bool = False
+    tool_call_count: int = 0
+    error_message: str | None = None
+    langfuse_trace_id: str | None = None
 
 
 def get_metrics_db_path() -> Path:
@@ -111,11 +124,31 @@ def metrics_connection(db_path: Path | None = None) -> Generator[sqlite3.Connect
         conn.close()
 
 
+def _migrate_columns(conn: sqlite3.Connection) -> None:
+    """Add new columns to existing databases (backward-compatible migration).
+
+    Attempts ALTER TABLE ADD COLUMN for each new column. If the column
+    already exists, SQLite raises OperationalError with 'duplicate column',
+    which we catch and ignore, making this function idempotent.
+    """
+    for col_name, col_def in _MIGRATION_COLUMNS:
+        try:
+            conn.execute(f"ALTER TABLE request_log ADD COLUMN {col_name} {col_def}")
+            logger.info("Added column %s to request_log", col_name)
+        except sqlite3.OperationalError as e:
+            if "duplicate column" in str(e).lower():
+                pass  # Expected on subsequent runs
+            else:
+                logger.error("Failed to add column %s to request_log: %s", col_name, e)
+                raise
+
+
 def init_metrics_db(db_path: Path | None = None) -> None:
     """Initialize the metrics database schema. Idempotent.
 
     Creates the request_log table and indexes if they don't exist.
     Enables WAL mode for concurrent read/write access.
+    Runs migrations to add new columns to existing databases.
 
     Args:
         db_path: Optional path override (for testing).
@@ -124,6 +157,7 @@ def init_metrics_db(db_path: Path | None = None) -> None:
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(METRICS_SCHEMA_SQL)
+        _migrate_columns(conn)
         conn.commit()
         logger.info("Metrics database initialized at %s", db_path or get_metrics_db_path())
     finally:
@@ -144,8 +178,9 @@ def log_request(entry: RequestLogEntry, db_path: Path | None = None) -> None:
             INSERT INTO request_log (
                 request_id, timestamp, community_id, endpoint, method,
                 duration_ms, status_code, model, input_tokens, output_tokens,
-                total_tokens, estimated_cost, tools_called, key_source, stream
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                total_tokens, estimated_cost, tools_called, key_source, stream,
+                tool_call_count, error_message, langfuse_trace_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry.request_id,
@@ -163,6 +198,9 @@ def log_request(entry: RequestLogEntry, db_path: Path | None = None) -> None:
                 json.dumps(entry.tools_called) if entry.tools_called else None,
                 entry.key_source,
                 1 if entry.stream else 0,
+                entry.tool_call_count,
+                entry.error_message,
+                entry.langfuse_trace_id,
             ),
         )
         conn.commit()

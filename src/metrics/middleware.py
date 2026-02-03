@@ -72,6 +72,9 @@ class MetricsMiddleware(BaseHTTPMiddleware):
                     "tools_called": agent_data.get("tools_called", []),
                     "key_source": agent_data.get("key_source"),
                     "stream": agent_data.get("stream", False),
+                    "tool_call_count": agent_data.get("tool_call_count", 0),
+                    "error_message": agent_data.get("error_message"),
+                    "langfuse_trace_id": agent_data.get("langfuse_trace_id"),
                 }
 
             entry = RequestLogEntry(
