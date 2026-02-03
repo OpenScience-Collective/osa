@@ -1,4 +1,9 @@
-"""Tests for public metrics API endpoints."""
+"""Tests for public metrics API endpoints.
+
+Global overview: GET /metrics/public/overview (no auth)
+Per-community: GET /{community_id}/metrics/public (no auth)
+Per-community usage: GET /{community_id}/metrics/public/usage (no auth)
+"""
 
 import os
 from unittest.mock import patch
@@ -158,17 +163,17 @@ class TestPublicOverview:
             assert "estimated_cost" not in community
 
 
-class TestPublicCommunitySummary:
-    """Tests for GET /metrics/public/{community_id}."""
+class TestCommunityPublicMetrics:
+    """Tests for GET /{community_id}/metrics/public."""
 
     @pytest.mark.usefixtures("isolated_metrics", "noauth_env")
     def test_returns_200_without_auth(self, client):
-        response = client.get("/metrics/public/hed")
+        response = client.get("/hed/metrics/public")
         assert response.status_code == 200
 
     @pytest.mark.usefixtures("isolated_metrics", "noauth_env")
     def test_response_structure(self, client):
-        response = client.get("/metrics/public/hed")
+        response = client.get("/hed/metrics/public")
         data = response.json()
         assert data["community_id"] == "hed"
         assert "total_requests" in data
@@ -177,7 +182,7 @@ class TestPublicCommunitySummary:
 
     @pytest.mark.usefixtures("isolated_metrics", "noauth_env")
     def test_no_sensitive_fields(self, client):
-        response = client.get("/metrics/public/hed")
+        response = client.get("/hed/metrics/public")
         data = response.json()
         assert "total_tokens" not in data
         assert "total_estimated_cost" not in data
@@ -186,31 +191,24 @@ class TestPublicCommunitySummary:
 
     @pytest.mark.usefixtures("isolated_metrics", "noauth_env")
     def test_top_tools_populated(self, client):
-        response = client.get("/metrics/public/hed")
+        response = client.get("/hed/metrics/public")
         data = response.json()
         tools = {t["tool"]: t["count"] for t in data["top_tools"]}
         assert "search_docs" in tools
         assert tools["search_docs"] == 2
 
-    @pytest.mark.usefixtures("isolated_metrics", "noauth_env")
-    def test_unknown_community_returns_empty(self, client):
-        response = client.get("/metrics/public/nonexistent")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["total_requests"] == 0
 
-
-class TestPublicCommunityUsage:
-    """Tests for GET /metrics/public/{community_id}/usage."""
+class TestCommunityPublicUsage:
+    """Tests for GET /{community_id}/metrics/public/usage."""
 
     @pytest.mark.usefixtures("isolated_metrics", "noauth_env")
     def test_daily_usage_returns_200(self, client):
-        response = client.get("/metrics/public/hed/usage", params={"period": "daily"})
+        response = client.get("/hed/metrics/public/usage", params={"period": "daily"})
         assert response.status_code == 200
 
     @pytest.mark.usefixtures("isolated_metrics", "noauth_env")
     def test_daily_usage_structure(self, client):
-        response = client.get("/metrics/public/hed/usage", params={"period": "daily"})
+        response = client.get("/hed/metrics/public/usage", params={"period": "daily"})
         data = response.json()
         assert data["community_id"] == "hed"
         assert data["period"] == "daily"
@@ -218,7 +216,7 @@ class TestPublicCommunityUsage:
 
     @pytest.mark.usefixtures("isolated_metrics", "noauth_env")
     def test_buckets_no_sensitive_fields(self, client):
-        response = client.get("/metrics/public/hed/usage", params={"period": "daily"})
+        response = client.get("/hed/metrics/public/usage", params={"period": "daily"})
         data = response.json()
         for bucket in data["buckets"]:
             assert "bucket" in bucket
@@ -230,24 +228,24 @@ class TestPublicCommunityUsage:
 
     @pytest.mark.usefixtures("isolated_metrics", "noauth_env")
     def test_monthly_usage(self, client):
-        response = client.get("/metrics/public/hed/usage", params={"period": "monthly"})
+        response = client.get("/hed/metrics/public/usage", params={"period": "monthly"})
         assert response.status_code == 200
         data = response.json()
         assert data["period"] == "monthly"
 
     @pytest.mark.usefixtures("isolated_metrics", "noauth_env")
     def test_weekly_usage(self, client):
-        response = client.get("/metrics/public/hed/usage", params={"period": "weekly"})
+        response = client.get("/hed/metrics/public/usage", params={"period": "weekly"})
         assert response.status_code == 200
 
     @pytest.mark.usefixtures("isolated_metrics", "noauth_env")
     def test_invalid_period_returns_422(self, client):
-        response = client.get("/metrics/public/hed/usage", params={"period": "hourly"})
+        response = client.get("/hed/metrics/public/usage", params={"period": "hourly"})
         assert response.status_code == 422
 
     @pytest.mark.usefixtures("isolated_metrics", "noauth_env")
     def test_default_period_is_daily(self, client):
-        response = client.get("/metrics/public/hed/usage")
+        response = client.get("/hed/metrics/public/usage")
         assert response.status_code == 200
         data = response.json()
         assert data["period"] == "daily"

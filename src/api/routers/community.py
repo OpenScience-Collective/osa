@@ -34,7 +34,12 @@ from src.metrics.db import (
     log_request,
     now_iso,
 )
-from src.metrics.queries import get_community_summary, get_usage_stats
+from src.metrics.queries import (
+    get_community_summary,
+    get_public_community_summary,
+    get_public_usage_stats,
+    get_usage_stats,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1087,6 +1092,60 @@ def create_community_router(community_id: str) -> APIRouter:
             raise HTTPException(status_code=400, detail=str(e)) from e
         except sqlite3.Error:
             logger.exception("Failed to query usage stats for community %s", community_id)
+            raise HTTPException(
+                status_code=503,
+                detail="Metrics database is temporarily unavailable.",
+            )
+        finally:
+            conn.close()
+
+    # -----------------------------------------------------------------------
+    # Per-community Public Metrics Endpoints (no auth required)
+    # -----------------------------------------------------------------------
+
+    @router.get("/metrics/public")
+    async def community_metrics_public() -> dict[str, Any]:
+        """Get public metrics summary for this community.
+
+        Returns request counts, error rate, and top tools.
+        No tokens, costs, or model information exposed.
+        """
+        import sqlite3
+
+        conn = get_metrics_connection()
+        try:
+            return get_public_community_summary(community_id, conn)
+        except sqlite3.Error:
+            logger.exception("Failed to query public metrics for community %s", community_id)
+            raise HTTPException(
+                status_code=503,
+                detail="Metrics database is temporarily unavailable.",
+            )
+        finally:
+            conn.close()
+
+    @router.get("/metrics/public/usage")
+    async def community_usage_public(
+        period: str = Query(
+            default="daily",
+            description="Time bucket period",
+            pattern="^(daily|weekly|monthly)$",
+        ),
+    ) -> dict[str, Any]:
+        """Get public time-bucketed usage stats for this community.
+
+        Returns request counts and errors per time bucket.
+        No tokens or costs exposed.
+        """
+        import sqlite3
+
+        conn = get_metrics_connection()
+        try:
+            return get_public_usage_stats(community_id, period, conn)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except sqlite3.Error:
+            logger.exception("Failed to query public usage stats for community %s", community_id)
             raise HTTPException(
                 status_code=503,
                 detail="Metrics database is temporarily unavailable.",

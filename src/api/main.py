@@ -20,7 +20,6 @@ from src.api.routers import (
     metrics_router,
     sync_router,
 )
-from src.api.routers.dashboard import router as dashboard_router
 from src.api.routers.health import router as health_router
 from src.api.routers.widget_test import router as widget_test_router
 from src.api.scheduler import start_scheduler, stop_scheduler
@@ -204,9 +203,6 @@ def register_routes(app: FastAPI) -> None:
     app.include_router(metrics_router)
     app.include_router(metrics_public_router)
 
-    # Dashboard
-    app.include_router(dashboard_router)
-
     # Health check router
     app.include_router(health_router)
 
@@ -249,6 +245,8 @@ def register_routes(app: FastAPI) -> None:
             endpoints[f"GET /{community_id}/sessions"] = f"List active {name} sessions"
             endpoints[f"GET /{community_id}/sessions/{{session_id}}"] = "Get session info"
             endpoints[f"DELETE /{community_id}/sessions/{{session_id}}"] = "Delete a session"
+            endpoints[f"GET /{community_id}/metrics/public"] = f"Public {name} metrics"
+            endpoints[f"GET /{community_id}/metrics/public/usage"] = f"Public {name} usage stats"
 
         # Add non-community endpoints
         endpoints["GET /sync/status"] = "Knowledge sync status"
@@ -257,9 +255,6 @@ def register_routes(app: FastAPI) -> None:
         endpoints["GET /metrics/overview"] = "Metrics overview (requires admin key)"
         endpoints["GET /metrics/tokens"] = "Token breakdown (requires admin key)"
         endpoints["GET /metrics/public/overview"] = "Public metrics overview"
-        endpoints["GET /metrics/public/{community_id}"] = "Public community summary"
-        endpoints["GET /metrics/public/{community_id}/usage"] = "Public usage stats"
-        endpoints["GET /dashboard"] = "Community dashboard"
         endpoints["GET /health"] = "Health check"
 
         return {

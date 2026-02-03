@@ -1,73 +1,82 @@
-"""Tests for the dashboard HTML page."""
+"""Tests for the dashboard static HTML page.
 
-import os
+The dashboard is a standalone static site in dashboard/index.html,
+deployed separately to Cloudflare Pages. These tests verify the HTML
+contains the expected structure and API references.
+"""
 
-import pytest
-from fastapi.testclient import TestClient
+from pathlib import Path
 
-from src.api.main import app
-
-
-@pytest.fixture
-def client() -> TestClient:
-    """Create test client with auth disabled."""
-    from src.api.config import get_settings
-
-    os.environ["REQUIRE_API_AUTH"] = "false"
-    get_settings.cache_clear()
-    yield TestClient(app)
-    del os.environ["REQUIRE_API_AUTH"]
-    get_settings.cache_clear()
+DASHBOARD_HTML_PATH = Path(__file__).parent.parent.parent / "dashboard" / "index.html"
 
 
-class TestDashboardPage:
-    """Tests for GET /dashboard."""
+class TestDashboardHTML:
+    """Tests for dashboard/index.html static file."""
 
-    def test_returns_200(self, client: TestClient) -> None:
-        response = client.get("/dashboard")
-        assert response.status_code == 200
+    def test_file_exists(self) -> None:
+        assert DASHBOARD_HTML_PATH.exists(), "dashboard/index.html must exist"
 
-    def test_returns_html_content_type(self, client: TestClient) -> None:
-        response = client.get("/dashboard")
-        assert "text/html" in response.headers["content-type"]
+    def test_is_valid_html(self) -> None:
+        content = DASHBOARD_HTML_PATH.read_text()
+        assert "<!DOCTYPE html>" in content
+        assert "<html" in content
+        assert "</html>" in content
 
-    def test_contains_page_title(self, client: TestClient) -> None:
-        response = client.get("/dashboard")
-        assert "Open Science Assistant" in response.text
-        assert "Community Dashboard" in response.text
+    def test_contains_page_title(self) -> None:
+        content = DASHBOARD_HTML_PATH.read_text()
+        assert "Open Science Assistant" in content
 
-    def test_contains_chart_js_cdn(self, client: TestClient) -> None:
-        response = client.get("/dashboard")
-        assert "chart.js" in response.text
+    def test_contains_chart_js_cdn(self) -> None:
+        content = DASHBOARD_HTML_PATH.read_text()
+        assert "chart.js" in content
 
-    def test_contains_overview_section(self, client: TestClient) -> None:
-        response = client.get("/dashboard")
-        assert "overviewContent" in response.text
-        assert "Questions Answered" in response.text or "Loading metrics" in response.text
+    def test_references_public_overview_api(self) -> None:
+        content = DASHBOARD_HTML_PATH.read_text()
+        assert "/metrics/public/overview" in content
 
-    def test_contains_community_tabs(self, client: TestClient) -> None:
-        response = client.get("/dashboard")
-        assert "tabBar" in response.text
+    def test_references_community_public_metrics_api(self) -> None:
+        content = DASHBOARD_HTML_PATH.read_text()
+        # Should use /{community}/metrics/public pattern
+        assert "/metrics/public" in content
+        assert "/metrics/public/usage" in content
 
-    def test_contains_admin_input(self, client: TestClient) -> None:
-        response = client.get("/dashboard")
-        assert "adminKeyInput" in response.text
-        assert "Admin Access" in response.text
+    def test_has_client_side_routing(self) -> None:
+        content = DASHBOARD_HTML_PATH.read_text()
+        assert "getRoute" in content
+        assert "window.location.pathname" in content
 
-    def test_contains_period_toggle_logic(self, client: TestClient) -> None:
-        response = client.get("/dashboard")
-        assert "changePeriod" in response.text
-        assert "daily" in response.text
-        assert "weekly" in response.text
-        assert "monthly" in response.text
+    def test_has_aggregate_view(self) -> None:
+        content = DASHBOARD_HTML_PATH.read_text()
+        assert "loadAggregateView" in content
+        assert "Questions Answered" in content
 
-    def test_contains_public_metrics_api_calls(self, client: TestClient) -> None:
-        response = client.get("/dashboard")
-        assert "/metrics/public/overview" in response.text
-        assert "/metrics/public/" in response.text
+    def test_has_community_view(self) -> None:
+        content = DASHBOARD_HTML_PATH.read_text()
+        assert "loadCommunityView" in content
+        assert "Back to all communities" in content
 
-    def test_admin_section_hidden_by_default(self, client: TestClient) -> None:
-        response = client.get("/dashboard")
-        # Admin section has display:none by default, shown via JS
-        assert "admin-section" in response.text
-        assert "display: none" in response.text or "display:none" in response.text
+    def test_has_admin_key_input(self) -> None:
+        content = DASHBOARD_HTML_PATH.read_text()
+        assert "adminKeyInput" in content
+        assert "Admin Access" in content
+
+    def test_admin_section_hidden_by_default(self) -> None:
+        content = DASHBOARD_HTML_PATH.read_text()
+        assert "admin-section" in content
+        assert "display: none" in content or "display:none" in content
+
+    def test_has_period_toggle(self) -> None:
+        content = DASHBOARD_HTML_PATH.read_text()
+        assert "changePeriod" in content
+        assert "daily" in content
+        assert "weekly" in content
+        assert "monthly" in content
+
+    def test_api_base_configurable(self) -> None:
+        content = DASHBOARD_HTML_PATH.read_text()
+        # Should support ?api= query param or window.OSA_API_BASE override
+        assert "OSA_API_BASE" in content
+
+    def test_cloudflare_redirects_file_exists(self) -> None:
+        redirects_path = DASHBOARD_HTML_PATH.parent / "_redirects"
+        assert redirects_path.exists(), "_redirects needed for Cloudflare Pages SPA routing"
