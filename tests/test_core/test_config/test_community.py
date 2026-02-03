@@ -13,6 +13,7 @@ import pytest
 from pydantic import ValidationError
 
 from src.core.config.community import (
+    BudgetConfig,
     CitationConfig,
     CommunitiesConfig,
     CommunityConfig,
@@ -320,6 +321,106 @@ class TestExtensionsConfig:
         assert len(config.mcp_servers) == 2
 
 
+class TestBudgetConfig:
+    """Tests for BudgetConfig model."""
+
+    def test_valid_budget_config(self) -> None:
+        """Should create BudgetConfig with valid inputs."""
+        config = BudgetConfig(
+            daily_limit_usd=5.0,
+            monthly_limit_usd=50.0,
+            alert_threshold_pct=80.0,
+        )
+        assert config.daily_limit_usd == 5.0
+        assert config.monthly_limit_usd == 50.0
+        assert config.alert_threshold_pct == 80.0
+
+    def test_default_alert_threshold(self) -> None:
+        """Should default alert_threshold_pct to 80.0."""
+        config = BudgetConfig(daily_limit_usd=5.0, monthly_limit_usd=50.0)
+        assert config.alert_threshold_pct == 80.0
+
+    def test_rejects_zero_daily_limit(self) -> None:
+        """Should reject zero daily limit."""
+        with pytest.raises(ValidationError):
+            BudgetConfig(daily_limit_usd=0.0, monthly_limit_usd=50.0)
+
+    def test_rejects_negative_daily_limit(self) -> None:
+        """Should reject negative daily limit."""
+        with pytest.raises(ValidationError):
+            BudgetConfig(daily_limit_usd=-1.0, monthly_limit_usd=50.0)
+
+    def test_rejects_zero_monthly_limit(self) -> None:
+        """Should reject zero monthly limit."""
+        with pytest.raises(ValidationError):
+            BudgetConfig(daily_limit_usd=5.0, monthly_limit_usd=0.0)
+
+    def test_rejects_negative_threshold(self) -> None:
+        """Should reject negative alert threshold."""
+        with pytest.raises(ValidationError):
+            BudgetConfig(
+                daily_limit_usd=5.0,
+                monthly_limit_usd=50.0,
+                alert_threshold_pct=-1.0,
+            )
+
+    def test_rejects_threshold_over_100(self) -> None:
+        """Should reject alert threshold over 100."""
+        with pytest.raises(ValidationError):
+            BudgetConfig(
+                daily_limit_usd=5.0,
+                monthly_limit_usd=50.0,
+                alert_threshold_pct=101.0,
+            )
+
+    def test_rejects_extra_fields(self) -> None:
+        """Should reject extra fields (strict schema)."""
+        with pytest.raises(ValidationError):
+            BudgetConfig(
+                daily_limit_usd=5.0,
+                monthly_limit_usd=50.0,
+                unknown_field="value",  # type: ignore
+            )
+
+
+class TestCommunityConfigBudget:
+    """Tests for CommunityConfig.budget field."""
+
+    def test_budget_none_by_default(self) -> None:
+        """Should default budget to None."""
+        config = CommunityConfig(id="test", name="Test", description="Test")
+        assert config.budget is None
+
+    def test_budget_config_set(self) -> None:
+        """Should accept valid budget config."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            budget=BudgetConfig(
+                daily_limit_usd=5.0,
+                monthly_limit_usd=50.0,
+            ),
+        )
+        assert config.budget is not None
+        assert config.budget.daily_limit_usd == 5.0
+
+    def test_budget_from_yaml_dict(self) -> None:
+        """Should parse budget from YAML-like dict."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            budget={
+                "daily_limit_usd": 10.0,
+                "monthly_limit_usd": 100.0,
+                "alert_threshold_pct": 90.0,
+            },
+        )
+        assert config.budget.daily_limit_usd == 10.0
+        assert config.budget.alert_threshold_pct == 90.0
+
+
 class TestCommunityConfig:
     """Tests for CommunityConfig model."""
 
@@ -582,6 +683,85 @@ class TestCommunityConfigCorsOrigins:
             cors_origins=["https://123.456.789:8080"],
         )
         assert len(config.cors_origins) == 1
+
+
+class TestCommunityConfigMaintainers:
+    """Tests for CommunityConfig.maintainers validation."""
+
+    def test_valid_maintainers(self) -> None:
+        """Should accept valid GitHub usernames."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            maintainers=["octocat", "jane-doe", "user123"],
+        )
+        assert config.maintainers == ["octocat", "jane-doe", "user123"]
+
+    def test_defaults_to_empty(self) -> None:
+        """Should default to empty list."""
+        config = CommunityConfig(id="test", name="Test", description="Test")
+        assert config.maintainers == []
+
+    def test_rejects_invalid_username_with_special_chars(self) -> None:
+        """Should reject usernames with special characters."""
+        with pytest.raises(ValidationError, match="Invalid GitHub username"):
+            CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                maintainers=["bad@user"],
+            )
+
+    def test_rejects_username_starting_with_hyphen(self) -> None:
+        """Should reject usernames starting with hyphen."""
+        with pytest.raises(ValidationError, match="Invalid GitHub username"):
+            CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                maintainers=["-badstart"],
+            )
+
+    def test_rejects_username_ending_with_hyphen(self) -> None:
+        """Should reject usernames ending with hyphen."""
+        with pytest.raises(ValidationError, match="Invalid GitHub username"):
+            CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                maintainers=["badend-"],
+            )
+
+    def test_deduplicates_maintainers(self) -> None:
+        """Should remove duplicate usernames."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            maintainers=["octocat", "octocat", "jane"],
+        )
+        assert config.maintainers == ["octocat", "jane"]
+
+    def test_strips_whitespace(self) -> None:
+        """Should strip whitespace from usernames."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            maintainers=["  octocat  ", " jane "],
+        )
+        assert config.maintainers == ["octocat", "jane"]
+
+    def test_single_char_username(self) -> None:
+        """Should accept single-character usernames."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            maintainers=["a"],
+        )
+        assert config.maintainers == ["a"]
 
 
 class TestCommunitiesConfig:

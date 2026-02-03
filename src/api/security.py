@@ -1,5 +1,6 @@
 """Security and authentication for the OSA API."""
 
+from dataclasses import dataclass
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Security, status
@@ -108,6 +109,76 @@ async def verify_admin_api_key(
 
 # Dependency for admin routes (no BYOK bypass)
 RequireAdminAuth = Annotated[str | None, Depends(verify_admin_api_key)]
+
+
+@dataclass
+class AuthScope:
+    """Scoped authentication result for community-level access control.
+
+    Attributes:
+        role: "admin" for global admin keys, "community" for per-community keys.
+        community_id: The community this key is scoped to, or None for global admin.
+    """
+
+    role: str  # "admin" | "community"
+    community_id: str | None = None
+
+    def can_access_community(self, community_id: str) -> bool:
+        """Check if this auth scope permits access to a given community."""
+        if self.role == "admin":
+            return True
+        return self.community_id == community_id
+
+
+async def verify_scoped_admin_key(
+    api_key: Annotated[str | None, Security(api_key_header)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> AuthScope:
+    """Verify API key and return scoped auth context.
+
+    Checks in order:
+    1. Global admin keys (api_keys setting) -> AuthScope(role="admin")
+    2. Per-community keys (community_admin_keys) -> AuthScope(role="community", community_id=X)
+    3. No match -> 401/403
+
+    When auth is disabled (require_api_auth=False or no keys configured),
+    returns admin scope for backward compatibility.
+    """
+    # If auth is not required, grant full admin access
+    if not settings.require_api_auth:
+        return AuthScope(role="admin")
+
+    # If no API keys configured at all, auth is effectively disabled
+    if not settings.api_keys and not settings.community_admin_keys:
+        return AuthScope(role="admin")
+
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API key required for metrics access",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+
+    # Check global admin keys first
+    if settings.api_keys:
+        valid_keys = {k.strip() for k in settings.api_keys.split(",") if k.strip()}
+        if api_key in valid_keys:
+            return AuthScope(role="admin")
+
+    # Check per-community keys
+    community_keys = settings.parse_community_admin_keys()
+    for community_id, keys in community_keys.items():
+        if api_key in keys:
+            return AuthScope(role="community", community_id=community_id)
+
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Invalid API key",
+    )
+
+
+# Dependency for scoped admin routes (supports per-community keys)
+RequireScopedAuth = Annotated[AuthScope, Depends(verify_scoped_admin_key)]
 
 
 class BYOKHeaders:

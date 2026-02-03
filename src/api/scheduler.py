@@ -16,6 +16,9 @@ from src.assistants import registry
 from src.knowledge.db import init_db
 from src.knowledge.github_sync import sync_repos
 from src.knowledge.papers_sync import sync_all_papers, sync_citing_papers
+from src.metrics.alerts import create_budget_alert_issue
+from src.metrics.budget import check_budget
+from src.metrics.db import metrics_connection
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +169,55 @@ def _run_papers_sync() -> None:
             )
 
 
+def _check_community_budgets() -> None:
+    """Check budget limits for all communities and create alert issues if exceeded."""
+    logger.info("Starting scheduled budget check for all communities")
+    try:
+        communities_checked = 0
+        alerts_created = 0
+
+        for info in registry.list_all():
+            if not info.community_config or not info.community_config.budget:
+                continue
+
+            budget_cfg = info.community_config.budget
+            maintainers = info.community_config.maintainers
+
+            try:
+                with metrics_connection() as conn:
+                    status = check_budget(
+                        community_id=info.id,
+                        daily_limit_usd=budget_cfg.daily_limit_usd,
+                        monthly_limit_usd=budget_cfg.monthly_limit_usd,
+                        alert_threshold_pct=budget_cfg.alert_threshold_pct,
+                        conn=conn,
+                    )
+                communities_checked += 1
+
+                if status.needs_alert:
+                    issue_url = create_budget_alert_issue(
+                        budget_status=status,
+                        maintainers=maintainers,
+                    )
+                    if issue_url:
+                        alerts_created += 1
+                        logger.warning(
+                            "Budget alert created for %s: %s",
+                            info.id,
+                            issue_url,
+                        )
+            except Exception:
+                logger.exception("Failed to check budget for community %s", info.id)
+
+        logger.info(
+            "Budget check complete: %d communities checked, %d alerts created",
+            communities_checked,
+            alerts_created,
+        )
+    except Exception:
+        logger.exception("Budget check job failed")
+
+
 def start_scheduler() -> BackgroundScheduler | None:
     """Start the background scheduler with configured sync jobs.
 
@@ -223,6 +275,20 @@ def start_scheduler() -> BackgroundScheduler | None:
         logger.info("Papers sync scheduled: %s", settings.sync_papers_cron)
     except ValueError as e:
         logger.error("Invalid papers sync cron expression: %s", e)
+
+    # Add budget check job (every 15 minutes)
+    try:
+        budget_trigger = CronTrigger(minute="*/15")
+        _scheduler.add_job(
+            _check_community_budgets,
+            trigger=budget_trigger,
+            id="budget_check",
+            name="Community Budget Check",
+            replace_existing=True,
+        )
+        logger.info("Budget check scheduled: every 15 minutes")
+    except ValueError as e:
+        logger.error("Failed to schedule budget check: %s", e)
 
     # Start the scheduler
     _scheduler.start()

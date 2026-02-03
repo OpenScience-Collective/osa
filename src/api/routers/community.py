@@ -21,12 +21,13 @@ from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field, field_validator
 
 from src.api.config import get_settings
-from src.api.security import RequireAdminAuth, RequireAuth
+from src.api.security import RequireAuth, RequireScopedAuth
 from src.assistants import registry
 from src.assistants.community import CommunityAssistant
 from src.assistants.community import PageContext as AgentPageContext
 from src.assistants.registry import AssistantInfo
 from src.core.services.litellm_llm import create_openrouter_llm
+from src.metrics.cost import estimate_cost
 from src.metrics.db import (
     RequestLogEntry,
     extract_token_usage,
@@ -39,6 +40,8 @@ from src.metrics.queries import (
     get_community_summary,
     get_public_community_summary,
     get_public_usage_stats,
+    get_quality_metrics,
+    get_quality_summary,
     get_usage_stats,
 )
 
@@ -628,6 +631,8 @@ class AssistantWithMetrics:
     assistant: CommunityAssistant
     model: str
     key_source: str
+    langfuse_config: dict | None = None
+    langfuse_trace_id: str | None = None
 
 
 def create_community_assistant(
@@ -717,10 +722,27 @@ def create_community_assistant(
         page_context=agent_page_context,
     )
 
+    # Wire LangFuse tracing if configured
+    langfuse_config = None
+    langfuse_trace_id = None
+    try:
+        from src.core.services.llm import get_llm_service
+
+        llm_service = get_llm_service(settings)
+        trace_id = f"{community_id}-{uuid.uuid4().hex[:12]}"
+        config = llm_service.get_config_with_tracing(trace_id=trace_id)
+        if config.get("callbacks"):
+            langfuse_config = config
+            langfuse_trace_id = trace_id
+    except Exception:
+        logger.debug("LangFuse tracing not available, continuing without it")
+
     return AssistantWithMetrics(
         assistant=assistant,
         model=selected_model,
         key_source=key_source,
+        langfuse_config=langfuse_config,
+        langfuse_trace_id=langfuse_trace_id,
     )
 
 
@@ -818,7 +840,7 @@ def create_community_router(community_id: str) -> APIRouter:
             )
             assistant = awm.assistant
             messages = [HumanMessage(content=body.question)]
-            result = await assistant.ainvoke(messages)
+            result = await assistant.ainvoke(messages, config=awm.langfuse_config)
 
             response_content = ""
             if result.get("messages"):
@@ -828,6 +850,7 @@ def create_community_router(community_id: str) -> APIRouter:
                     content = last_msg.content
                     response_content = content if isinstance(content, str) else str(content)
 
+            tools_called = extract_tool_names(result)
             tool_calls_info = [
                 ToolCallInfo(name=tc.get("name", ""), args=tc.get("args", {}))
                 for tc in result.get("tool_calls", [])
@@ -841,7 +864,10 @@ def create_community_router(community_id: str) -> APIRouter:
                 "input_tokens": inp,
                 "output_tokens": out,
                 "total_tokens": total,
-                "tools_called": extract_tool_names(result),
+                "estimated_cost": estimate_cost(awm.model, inp, out),
+                "tools_called": tools_called,
+                "tool_call_count": len(tools_called),
+                "langfuse_trace_id": awm.langfuse_trace_id,
                 "stream": False,
             }
 
@@ -930,7 +956,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 requested_model=body.model,
             )
             assistant = awm.assistant
-            result = await assistant.ainvoke(session.messages)
+            result = await assistant.ainvoke(session.messages, config=awm.langfuse_config)
 
             response_content = ""
             if result.get("messages"):
@@ -940,6 +966,7 @@ def create_community_router(community_id: str) -> APIRouter:
                     content = last_msg.content
                     response_content = content if isinstance(content, str) else str(content)
 
+            tools_called = extract_tool_names(result)
             tool_calls_info = [
                 ToolCallInfo(name=tc.get("name", ""), args=tc.get("args", {}))
                 for tc in result.get("tool_calls", [])
@@ -953,7 +980,10 @@ def create_community_router(community_id: str) -> APIRouter:
                 "input_tokens": inp,
                 "output_tokens": out,
                 "total_tokens": total,
-                "tools_called": extract_tool_names(result),
+                "estimated_cost": estimate_cost(awm.model, inp, out),
+                "tools_called": tools_called,
+                "tool_call_count": len(tools_called),
+                "langfuse_trace_id": awm.langfuse_trace_id,
                 "stream": False,
             }
 
@@ -1058,8 +1088,13 @@ def create_community_router(community_id: str) -> APIRouter:
     # -----------------------------------------------------------------------
 
     @router.get("/metrics")
-    async def community_metrics(_auth: RequireAdminAuth) -> dict[str, Any]:
-        """Get metrics summary for this community. Requires admin auth."""
+    async def community_metrics(auth: RequireScopedAuth) -> dict[str, Any]:
+        """Get metrics summary for this community. Requires admin or community key."""
+        if not auth.can_access_community(community_id):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Your API key does not have access to {community_id} metrics",
+            )
         try:
             with metrics_connection() as conn:
                 return get_community_summary(community_id, conn)
@@ -1072,14 +1107,19 @@ def create_community_router(community_id: str) -> APIRouter:
 
     @router.get("/metrics/usage")
     async def community_usage(
-        _auth: RequireAdminAuth,
+        auth: RequireScopedAuth,
         period: str = Query(
             default="daily",
             description="Time bucket period",
             pattern="^(daily|weekly|monthly)$",
         ),
     ) -> dict[str, Any]:
-        """Get time-bucketed usage stats for this community. Requires admin auth."""
+        """Get time-bucketed usage stats for this community. Requires admin or community key."""
+        if not auth.can_access_community(community_id):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Your API key does not have access to {community_id} metrics",
+            )
         try:
             with metrics_connection() as conn:
                 return get_usage_stats(community_id, period, conn)
@@ -1087,6 +1127,51 @@ def create_community_router(community_id: str) -> APIRouter:
             raise HTTPException(status_code=400, detail=str(e)) from e
         except sqlite3.Error:
             logger.exception("Failed to query usage stats for community %s", community_id)
+            raise HTTPException(
+                status_code=503,
+                detail="Metrics database is temporarily unavailable.",
+            )
+
+    @router.get("/metrics/quality")
+    async def community_quality(
+        auth: RequireScopedAuth,
+        period: str = Query(
+            default="daily",
+            description="Time bucket period",
+            pattern="^(daily|weekly|monthly)$",
+        ),
+    ) -> dict[str, Any]:
+        """Get quality metrics for this community. Requires admin or community key."""
+        if not auth.can_access_community(community_id):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Your API key does not have access to {community_id} metrics",
+            )
+        try:
+            with metrics_connection() as conn:
+                return get_quality_metrics(community_id, conn, period)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except sqlite3.Error:
+            logger.exception("Failed to query quality metrics for community %s", community_id)
+            raise HTTPException(
+                status_code=503,
+                detail="Metrics database is temporarily unavailable.",
+            )
+
+    @router.get("/metrics/quality/summary")
+    async def community_quality_summary(auth: RequireScopedAuth) -> dict[str, Any]:
+        """Get overall quality summary for this community. Requires admin or community key."""
+        if not auth.can_access_community(community_id):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Your API key does not have access to {community_id} metrics",
+            )
+        try:
+            with metrics_connection() as conn:
+                return get_quality_summary(community_id, conn)
+        except sqlite3.Error:
+            logger.exception("Failed to query quality summary for community %s", community_id)
             raise HTTPException(
                 status_code=503,
                 detail="Metrics database is temporarily unavailable.",
@@ -1233,7 +1318,8 @@ async def _stream_ask_response(
             "tool_calls": [],
         }
 
-        async for event in graph.astream_events(state, version="v2"):
+        stream_config = awm.langfuse_config or {}
+        async for event in graph.astream_events(state, version="v2", config=stream_config):
             kind = event.get("event")
 
             if kind == "on_chat_model_stream":
@@ -1369,9 +1455,10 @@ async def _stream_chat_response(
             "tool_calls": [],
         }
 
+        stream_config = awm.langfuse_config or {}
         full_response = ""
 
-        async for event in graph.astream_events(state, version="v2"):
+        async for event in graph.astream_events(state, version="v2", config=stream_config):
             kind = event.get("event")
 
             if kind == "on_chat_model_stream":
