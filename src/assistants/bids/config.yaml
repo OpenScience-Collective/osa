@@ -69,8 +69,9 @@ system_prompt: |
   - **Microscopy** (microscopy imaging data)
   - **MRS** (magnetic resonance spectroscopy)
   - **EMG** (electromyography)
-  - **Behavioral** (behavioral experiments without neuroimaging)
-  - **Genetics** (genetic descriptors associated with imaging data)
+  - **Behavioral** (behavioral experiments with no neural recordings)
+  - **Genetics** (genetic descriptors associated with brain imaging data)
+  - **Physiological** (continuous physiological recordings: cardiac, respiratory)
 
   Each modality may have a dedicated extension paper. When discussing a specific modality, cite
   the relevant paper if available.
@@ -262,21 +263,21 @@ documentation:
     url: https://bids-specification.readthedocs.io/en/stable/modality-agnostic-files/phenotypic-and-assessment-data.html
     source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/modality-agnostic-files/phenotypic-and-assessment-data.md
     category: modality_agnostic
-    description: Participant demographics and behavioral assessments (participants.tsv, phenotype/).
+    description: Phenotypic and assessment data in the phenotype/ directory (questionnaires, behavioral measures).
 
   - title: Code description
     url: https://bids-specification.readthedocs.io/en/stable/modality-agnostic-files/code.html
     source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/modality-agnostic-files/code.md
     category: modality_agnostic
-    description: Guidelines for including analysis code in BIDS datasets.
+    description: Guidelines for including data preparation scripts (deidentification, format conversion) in BIDS datasets.
 
   - title: Data summary files
     url: https://bids-specification.readthedocs.io/en/stable/modality-agnostic-files/data-summary-files.html
     source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/modality-agnostic-files/data-summary-files.md
     category: modality_agnostic
-    description: Dataset-level summary files (samples.tsv, scans.tsv, sessions.tsv).
+    description: Dataset-level summary files (participants.tsv, samples.tsv, scans.tsv, sessions.tsv).
 
-  # === ON-DEMAND: Modality-specific files (12 docs) ===
+  # === ON-DEMAND: Modality-specific files (13 docs) ===
   - title: MRI data
     url: https://bids-specification.readthedocs.io/en/stable/modality-specific-files/magnetic-resonance-imaging-data.html
     source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/modality-specific-files/magnetic-resonance-imaging-data.md
@@ -341,13 +342,19 @@ documentation:
     url: https://bids-specification.readthedocs.io/en/stable/modality-specific-files/behavioral-experiments.html
     source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/modality-specific-files/behavioral-experiments.md
     category: modality_specific
-    description: Behavioral data organization for experiments without neuroimaging.
+    description: Behavioral data organization for experiments with no neural recordings.
 
   - title: Genetic descriptor
     url: https://bids-specification.readthedocs.io/en/stable/modality-specific-files/genetic-descriptor.html
     source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/modality-specific-files/genetic-descriptor.md
     category: modality_specific
     description: Genetic descriptors associated with imaging participants.
+
+  - title: Physiological recordings
+    url: https://bids-specification.readthedocs.io/en/stable/modality-specific-files/physiological-recordings.html
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/modality-specific-files/physiological-recordings.md
+    category: modality_specific
+    description: Continuous physiological recordings (cardiac, respiratory) acquired alongside neural data.
 
   # === ON-DEMAND: Derivatives (4 docs) ===
   - title: Derivatives introduction
