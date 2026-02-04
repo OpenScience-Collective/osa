@@ -7,6 +7,8 @@ Each community gets endpoints like /{community_id}/ask, /{community_id}/chat, et
 import hashlib
 import json
 import logging
+import os
+import re
 import sqlite3
 import time
 import uuid
@@ -332,21 +334,24 @@ def delete_session(community_id: str, session_id: str) -> bool:
 
 def list_sessions(community_id: str) -> list[ChatSession]:
     """List all active (non-expired) sessions for a community."""
+    _evict_expired_sessions(community_id)
     store = _get_session_store(community_id)
-    # Filter out expired sessions
-    active_sessions = [s for s in store.values() if not s.is_expired()]
-    # Clean up expired sessions from store
-    expired = [sid for sid, s in store.items() if s.is_expired()]
-    for sid in expired:
-        del store[sid]
-    if expired:
-        logger.info("Cleaned %d expired sessions from %s", len(expired), community_id)
-    return active_sessions
+    return list(store.values())
 
 
 # ---------------------------------------------------------------------------
 # Assistant Factory
 # ---------------------------------------------------------------------------
+
+
+def _match_wildcard_origin(pattern: str, origin: str) -> bool:
+    """Check if an origin matches a wildcard pattern like 'https://*.example.com'.
+
+    Converts '*' to a subdomain-safe regex and uses fullmatch.
+    """
+    escaped = re.escape(pattern)
+    regex = escaped.replace(r"\*", r"[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?")
+    return bool(re.fullmatch(regex, origin))
 
 
 def _is_authorized_origin(origin: str | None, community_id: str) -> bool:
@@ -370,8 +375,6 @@ def _is_authorized_origin(origin: str | None, community_id: str) -> bool:
     if not origin:
         return False
 
-    import re
-
     # Platform default origins - always allowed for all communities
     platform_exact_origins = [
         "https://osa-demo.pages.dev",
@@ -386,9 +389,7 @@ def _is_authorized_origin(origin: str | None, community_id: str) -> bool:
 
     # Check platform wildcard patterns
     for allowed in platform_wildcard_origins:
-        escaped = re.escape(allowed)
-        pattern = escaped.replace(r"\*", r"[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?")
-        if re.fullmatch(pattern, origin):
+        if _match_wildcard_origin(allowed, origin):
             return True
 
     # Check community-specific origins
@@ -400,19 +401,12 @@ def _is_authorized_origin(origin: str | None, community_id: str) -> bool:
     if not cors_origins:
         return False
 
-    # Check exact matches first
     for allowed in cors_origins:
-        if "*" not in allowed and origin == allowed:
-            return True
-
-    # Check wildcard patterns
-    for allowed in cors_origins:
-        if "*" in allowed:
-            # Convert wildcard pattern to regex (same logic as main.py)
-            escaped = re.escape(allowed)
-            pattern = escaped.replace(r"\*", r"[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?")
-            if re.fullmatch(pattern, origin):
+        if "*" not in allowed:
+            if origin == allowed:
                 return True
+        elif _match_wildcard_origin(allowed, origin):
+            return True
 
     return False
 
@@ -446,8 +440,6 @@ def _select_api_key(
         HTTPException(403): If origin is not authorized and BYOK is not provided
         HTTPException(500): If no platform API key is configured and no other key is available
     """
-    import os
-
     # Case 1: BYOK provided - always allowed
     if byok:
         logger.debug(
@@ -753,6 +745,69 @@ def create_community_assistant(
     )
 
 
+@dataclass
+class AgentResult:
+    """Extracted response content and metrics from an agent invocation."""
+
+    response_content: str
+    tool_calls_info: list[ToolCallInfo]
+    tools_called: list[str]
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+
+
+def _extract_agent_result(result: dict) -> AgentResult:
+    """Extract response content, tool calls, and token usage from agent result.
+
+    Consolidates the common post-invocation logic shared by ask and chat endpoints.
+    """
+    response_content = ""
+    if result.get("messages"):
+        last_msg = result["messages"][-1]
+        if isinstance(last_msg, AIMessage):
+            content = last_msg.content
+            response_content = content if isinstance(content, str) else str(content)
+
+    tools_called = extract_tool_names(result)
+    tool_calls_info = [
+        ToolCallInfo(name=tc.get("name", ""), args=tc.get("args", {}))
+        for tc in result.get("tool_calls", [])
+    ]
+
+    inp, out, total = extract_token_usage(result)
+    return AgentResult(
+        response_content=response_content,
+        tool_calls_info=tool_calls_info,
+        tools_called=tools_called,
+        input_tokens=inp,
+        output_tokens=out,
+        total_tokens=total,
+    )
+
+
+def _set_metrics_on_request(
+    http_request: Request,
+    awm: AssistantWithMetrics,
+    agent_result: AgentResult,
+) -> None:
+    """Store agent metrics on request.state for the metrics middleware to log."""
+    http_request.state.metrics_agent_data = {
+        "model": awm.model,
+        "key_source": awm.key_source,
+        "input_tokens": agent_result.input_tokens,
+        "output_tokens": agent_result.output_tokens,
+        "total_tokens": agent_result.total_tokens,
+        "estimated_cost": estimate_cost(
+            awm.model, agent_result.input_tokens, agent_result.output_tokens
+        ),
+        "tools_called": agent_result.tools_called,
+        "tool_call_count": len(agent_result.tools_called),
+        "langfuse_trace_id": awm.langfuse_trace_id,
+        "stream": False,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Router Factory
 # ---------------------------------------------------------------------------
@@ -845,40 +900,13 @@ def create_community_router(community_id: str) -> APIRouter:
                 requested_model=body.model,
                 page_context=body.page_context,
             )
-            assistant = awm.assistant
             messages = [HumanMessage(content=body.question)]
-            result = await assistant.ainvoke(messages, config=awm.langfuse_config)
+            result = await awm.assistant.ainvoke(messages, config=awm.langfuse_config)
 
-            response_content = ""
-            if result.get("messages"):
-                last_msg = result["messages"][-1]
-                if isinstance(last_msg, AIMessage):
-                    # Handle both string and list content (multimodal responses)
-                    content = last_msg.content
-                    response_content = content if isinstance(content, str) else str(content)
+            ar = _extract_agent_result(result)
+            _set_metrics_on_request(http_request, awm, ar)
 
-            tools_called = extract_tool_names(result)
-            tool_calls_info = [
-                ToolCallInfo(name=tc.get("name", ""), args=tc.get("args", {}))
-                for tc in result.get("tool_calls", [])
-            ]
-
-            # Store agent metrics on request.state for middleware to log
-            inp, out, total = extract_token_usage(result)
-            http_request.state.metrics_agent_data = {
-                "model": awm.model,
-                "key_source": awm.key_source,
-                "input_tokens": inp,
-                "output_tokens": out,
-                "total_tokens": total,
-                "estimated_cost": estimate_cost(awm.model, inp, out),
-                "tools_called": tools_called,
-                "tool_call_count": len(tools_called),
-                "langfuse_trace_id": awm.langfuse_trace_id,
-                "stream": False,
-            }
-
-            return AskResponse(answer=response_content, tool_calls=tool_calls_info)
+            return AskResponse(answer=ar.response_content, tool_calls=ar.tool_calls_info)
 
         except Exception as e:
             logger.error(
@@ -962,41 +990,14 @@ def create_community_router(community_id: str) -> APIRouter:
                 user_id=user_id,
                 requested_model=body.model,
             )
-            assistant = awm.assistant
-            result = await assistant.ainvoke(session.messages, config=awm.langfuse_config)
+            result = await awm.assistant.ainvoke(session.messages, config=awm.langfuse_config)
 
-            response_content = ""
-            if result.get("messages"):
-                last_msg = result["messages"][-1]
-                if isinstance(last_msg, AIMessage):
-                    # Handle both string and list content (multimodal responses)
-                    content = last_msg.content
-                    response_content = content if isinstance(content, str) else str(content)
-
-            tools_called = extract_tool_names(result)
-            tool_calls_info = [
-                ToolCallInfo(name=tc.get("name", ""), args=tc.get("args", {}))
-                for tc in result.get("tool_calls", [])
-            ]
-
-            # Store agent metrics on request.state for middleware to log
-            inp, out, total = extract_token_usage(result)
-            http_request.state.metrics_agent_data = {
-                "model": awm.model,
-                "key_source": awm.key_source,
-                "input_tokens": inp,
-                "output_tokens": out,
-                "total_tokens": total,
-                "estimated_cost": estimate_cost(awm.model, inp, out),
-                "tools_called": tools_called,
-                "tool_call_count": len(tools_called),
-                "langfuse_trace_id": awm.langfuse_trace_id,
-                "stream": False,
-            }
+            ar = _extract_agent_result(result)
+            _set_metrics_on_request(http_request, awm, ar)
 
             # Add assistant message with constraint validation
             try:
-                session.add_assistant_message(response_content)
+                session.add_assistant_message(ar.response_content)
             except ValueError as e:
                 logger.error("Session limit exceeded: %s", e)
                 raise HTTPException(
@@ -1006,8 +1007,8 @@ def create_community_router(community_id: str) -> APIRouter:
 
             return ChatResponse(
                 session_id=session.session_id,
-                message=ChatMessage(role="assistant", content=response_content),
-                tool_calls=tool_calls_info,
+                message=ChatMessage(role="assistant", content=ar.response_content),
+                tool_calls=ar.tool_calls_info,
             )
 
         except ValueError as e:
@@ -1364,9 +1365,26 @@ async def _stream_ask_response(
             status_code=200,
         )
 
-    except HTTPException:
-        # Don't catch our own HTTP exceptions - let them propagate
-        raise
+    except HTTPException as e:
+        # HTTPException in streaming context (e.g., auth failure, rate limit).
+        # Cannot re-raise because response headers are already sent as 200.
+        logger.warning(
+            "HTTP error in ask streaming for community %s: %d %s",
+            community_id,
+            e.status_code,
+            e.detail,
+        )
+        sse_event = {"event": "error", "message": str(e.detail)}
+        yield f"data: {json.dumps(sse_event)}\n\n"
+        _log_streaming_metrics(
+            http_request=http_request,
+            community_id=community_id,
+            endpoint=f"/{community_id}/ask",
+            awm=awm,
+            tools_called=tools_called,
+            start_time=start_time,
+            status_code=e.status_code,
+        )
     except ValueError as e:
         # Input validation errors - user's fault
         logger.warning("Invalid input in streaming for community %s: %s", community_id, e)
@@ -1515,6 +1533,27 @@ async def _stream_chat_response(
             status_code=200,
         )
 
+    except HTTPException as e:
+        # HTTPException in streaming context (e.g., auth failure, rate limit).
+        # Cannot re-raise because response headers are already sent as 200.
+        logger.warning(
+            "HTTP error in chat streaming for session %s (community: %s): %d %s",
+            session.session_id,
+            community_id,
+            e.status_code,
+            e.detail,
+        )
+        sse_event = {"event": "error", "message": str(e.detail)}
+        yield f"data: {json.dumps(sse_event)}\n\n"
+        _log_streaming_metrics(
+            http_request=http_request,
+            community_id=community_id,
+            endpoint=f"/{community_id}/chat",
+            awm=awm,
+            tools_called=tools_called,
+            start_time=start_time,
+            status_code=e.status_code,
+        )
     except ValueError as e:
         # Session limit errors
         logger.error("Session limit error: %s", e)
@@ -1530,16 +1569,24 @@ async def _stream_chat_response(
             status_code=400,
         )
     except Exception as e:
+        error_id = str(uuid.uuid4())
         logger.error(
-            "Streaming error in chat endpoint for session %s (community: %s): %s",
+            "Unexpected streaming error (ID: %s) in chat endpoint for session %s (community: %s): %s",
+            error_id,
             session.session_id,
             community_id,
             e,
             exc_info=True,
+            extra={
+                "error_id": error_id,
+                "community_id": community_id,
+                "error_type": type(e).__name__,
+            },
         )
         sse_event = {
             "event": "error",
             "message": "An error occurred while processing your request.",
+            "error_id": error_id,
         }
         yield f"data: {json.dumps(sse_event)}\n\n"
         _log_streaming_metrics(

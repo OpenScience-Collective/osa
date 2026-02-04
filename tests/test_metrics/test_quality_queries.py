@@ -235,6 +235,89 @@ class TestGetQualitySummary:
             conn.close()
 
 
+class TestPercentileEdgeCases:
+    """Tests for _percentile() helper edge cases."""
+
+    def test_single_element(self):
+        from src.metrics.queries import _percentile
+
+        assert _percentile([100.0], 0.5) == 100.0
+        assert _percentile([100.0], 0.95) == 100.0
+
+    def test_two_elements(self):
+        from src.metrics.queries import _percentile
+
+        values = [100.0, 200.0]
+        assert _percentile(values, 0.5) == 200.0  # idx=int(0.5*2)=1
+        assert _percentile(values, 0.95) == 200.0  # idx=int(0.95*2)=1
+
+    def test_empty_returns_none(self):
+        from src.metrics.queries import _percentile
+
+        assert _percentile([], 0.5) is None
+
+
+class TestCountToolsMalformedJSON:
+    """Tests for _count_tools() with malformed data."""
+
+    def test_malformed_json_skipped(self, tmp_path):
+        """Rows with invalid tools_called JSON should be skipped gracefully."""
+
+        from src.metrics.queries import get_quality_metrics
+
+        db_path = tmp_path / "malformed.db"
+        init_metrics_db(db_path)
+
+        # Insert a valid entry first
+        log_request(
+            RequestLogEntry(
+                request_id="valid",
+                timestamp="2025-01-15T10:00:00+00:00",
+                endpoint="/hed/ask",
+                method="POST",
+                community_id="hed",
+                duration_ms=200.0,
+                status_code=200,
+                tools_called=["search_docs"],
+            ),
+            db_path=db_path,
+        )
+
+        # Insert a row with invalid JSON directly via SQL
+        conn = get_metrics_connection(db_path)
+        try:
+            conn.execute(
+                """INSERT INTO request_log
+                   (request_id, timestamp, endpoint, method, community_id,
+                    duration_ms, status_code, tools_called)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "bad",
+                    "2025-01-15T11:00:00+00:00",
+                    "/hed/ask",
+                    "POST",
+                    "hed",
+                    300.0,
+                    200,
+                    "not-valid-json{{{",
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Query should still work, returning valid tool counts
+        conn = get_metrics_connection(db_path)
+        try:
+            result = get_quality_metrics("hed", conn, "daily")
+            assert len(result["buckets"]) == 1
+            # Should have at least the valid entry's tool
+            bucket = result["buckets"][0]
+            assert bucket["requests"] == 2
+        finally:
+            conn.close()
+
+
 class TestMigrationColumns:
     """Tests for backward-compatible column migration."""
 

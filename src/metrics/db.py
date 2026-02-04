@@ -17,6 +17,9 @@ from langchain_core.messages import AIMessage, BaseMessage
 
 logger = logging.getLogger(__name__)
 
+# Track consecutive log_request failures for escalation
+_log_request_failures: int = 0
+
 METRICS_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS request_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -171,6 +174,7 @@ def log_request(entry: RequestLogEntry, db_path: Path | None = None) -> None:
         entry: The log entry to insert.
         db_path: Optional path override (for testing).
     """
+    global _log_request_failures
     conn = get_metrics_connection(db_path)
     try:
         conn.execute(
@@ -205,12 +209,23 @@ def log_request(entry: RequestLogEntry, db_path: Path | None = None) -> None:
         )
         conn.commit()
     except sqlite3.Error:
+        _log_request_failures += 1
         logger.exception(
-            "Failed to log metrics request %s (endpoint=%s, community=%s)",
+            "Failed to log metrics request %s (endpoint=%s, community=%s) [failure #%d]",
             entry.request_id,
             entry.endpoint,
             entry.community_id,
+            _log_request_failures,
         )
+        if _log_request_failures >= 10:
+            logger.critical(
+                "Metrics DB write has failed %d times. "
+                "Possible disk/database issue requiring investigation.",
+                _log_request_failures,
+            )
+    else:
+        # Reset counter on success
+        _log_request_failures = 0
     finally:
         conn.close()
 

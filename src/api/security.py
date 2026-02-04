@@ -24,7 +24,11 @@ async def verify_api_key(
     anthropic_key: Annotated[str | None, Security(anthropic_key_header)] = None,
     openrouter_key: Annotated[str | None, Security(openrouter_key_header)] = None,
 ) -> str | None:
-    """Verify the API key if server authentication is enabled.
+    """Verify the global admin API key if server authentication is enabled.
+
+    Only checks keys from the API_KEYS setting (global admin keys).
+    Does not handle per-community scoped keys; see verify_scoped_admin_key
+    for community-level auth.
 
     Returns the API key if valid, None if auth is disabled or BYOK is used.
     Raises HTTPException if auth is enabled but key is invalid (and no BYOK).

@@ -8,6 +8,8 @@ import logging
 import sqlite3
 from dataclasses import dataclass
 
+from src.core.config.community import BudgetConfig
+
 logger = logging.getLogger(__name__)
 
 
@@ -21,6 +23,14 @@ class BudgetStatus:
     daily_limit_usd: float
     monthly_limit_usd: float
     alert_threshold_pct: float
+
+    def __post_init__(self) -> None:
+        if self.daily_spend_usd < 0:
+            raise ValueError(f"daily_spend_usd must be non-negative, got {self.daily_spend_usd}")
+        if self.monthly_spend_usd < 0:
+            raise ValueError(
+                f"monthly_spend_usd must be non-negative, got {self.monthly_spend_usd}"
+            )
 
     @property
     def daily_pct(self) -> float:
@@ -64,9 +74,7 @@ class BudgetStatus:
 
 def check_budget(
     community_id: str,
-    daily_limit_usd: float,
-    monthly_limit_usd: float,
-    alert_threshold_pct: float,
+    config: BudgetConfig,
     conn: sqlite3.Connection,
 ) -> BudgetStatus:
     """Check current spend against budget limits.
@@ -75,9 +83,7 @@ def check_budget(
 
     Args:
         community_id: The community identifier.
-        daily_limit_usd: Maximum daily spend.
-        monthly_limit_usd: Maximum monthly spend.
-        alert_threshold_pct: Alert threshold percentage.
+        config: Budget configuration with limits and alert threshold.
         conn: SQLite connection.
 
     Returns:
@@ -109,7 +115,7 @@ def check_budget(
         community_id=community_id,
         daily_spend_usd=round(daily_row["spend"], 6),
         monthly_spend_usd=round(monthly_row["spend"], 6),
-        daily_limit_usd=daily_limit_usd,
-        monthly_limit_usd=monthly_limit_usd,
-        alert_threshold_pct=alert_threshold_pct,
+        daily_limit_usd=config.daily_limit_usd,
+        monthly_limit_usd=config.monthly_limit_usd,
+        alert_threshold_pct=config.alert_threshold_pct,
     )

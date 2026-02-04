@@ -1,8 +1,9 @@
-"""Background scheduler for automated knowledge sync.
+"""Background scheduler for automated tasks.
 
-Uses APScheduler to run periodic sync jobs for:
-- GitHub issues/PRs (daily by default)
-- Academic papers (weekly by default)
+Uses APScheduler to run periodic jobs for:
+- GitHub issues/PRs sync (daily by default)
+- Academic papers sync (weekly by default)
+- Community budget checks with alert issue creation (every 15 minutes)
 """
 
 import logging
@@ -32,11 +33,7 @@ def _get_communities_with_sync() -> list[str]:
     Returns:
         List of community IDs with GitHub repos or citation config.
     """
-    communities = []
-    for info in registry.list_all():
-        if info.sync_config:
-            communities.append(info.id)
-    return communities
+    return [info.id for info in registry.list_all() if info.sync_config]
 
 
 def _get_community_repos(community_id: str) -> list[str]:
@@ -190,9 +187,7 @@ def _check_community_budgets() -> None:
                 try:
                     budget_status = check_budget(
                         community_id=info.id,
-                        daily_limit_usd=budget_cfg.daily_limit_usd,
-                        monthly_limit_usd=budget_cfg.monthly_limit_usd,
-                        alert_threshold_pct=budget_cfg.alert_threshold_pct,
+                        config=budget_cfg,
                         conn=conn,
                     )
                     communities_checked += 1
