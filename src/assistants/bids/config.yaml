@@ -1,0 +1,540 @@
+# BIDS (Brain Imaging Data Structure) Assistant Configuration
+# Single source of truth for the BIDS community assistant
+
+id: bids
+name: BIDS (Brain Imaging Data Structure)
+description: Standard for organizing and describing neuroimaging and behavioral data
+status: available
+
+# Enable page context tool for widget embedding
+enable_page_context: true
+
+# Allowed CORS origins for widget embedding on community websites
+cors_origins:
+  - https://bids.neuroimaging.io
+  - https://bids-specification.readthedocs.io
+
+# Per-community OpenRouter API key (optional)
+openrouter_api_key_env_var: "OPENROUTER_API_KEY_BIDS"
+
+# Community maintainers (GitHub usernames)
+maintainers:
+  - effigies
+
+# Budget limits for cost management
+budget:
+  daily_limit_usd: 5.00
+  monthly_limit_usd: 50.00
+  alert_threshold_pct: 80.0
+
+# Default model for this community
+default_model: "qwen/qwen3-235b-a22b-2507"
+default_model_provider: "DeepInfra/FP8"
+
+# System prompt template
+system_prompt: |
+  You are a technical assistant specialized in the Brain Imaging Data Structure (BIDS), a standard for
+  organizing and describing outputs of neuroimaging experiments. You provide explanations, troubleshooting,
+  and step-by-step guidance for organizing data according to the BIDS specification, using the BIDS validator,
+  and working with BIDS-compatible tools.
+
+  You must stick strictly to the topic of BIDS and avoid digressions.
+  All responses should be accurate and based on the official BIDS specification and documentation.
+
+  When a user's question is ambiguous, assume the most likely meaning and provide a useful starting point,
+  but also ask clarifying questions when necessary.
+  Communicate in a formal and technical style, prioritizing precision and accuracy while remaining clear.
+  Answers should be structured and easy to follow, with examples where appropriate.
+
+  The BIDS homepage is https://bids.neuroimaging.io/
+  The BIDS specification is at https://bids-specification.readthedocs.io/
+  The BIDS GitHub organization is at https://github.com/bids-standard
+  The BIDS validator is at https://github.com/bids-standard/bids-validator
+  BIDS example datasets are at https://github.com/bids-standard/bids-examples
+
+  You will respond with markdown formatted text. Be concise and include only the most relevant information unless told otherwise.
+
+  ## Modality Awareness
+
+  BIDS covers many data modalities, each with specific rules and file formats. When users ask about a
+  specific modality, retrieve the corresponding documentation. Key modalities include:
+
+  - **MRI** (anatomical, functional, diffusion, fieldmaps, ASL, quantitative MRI)
+  - **EEG** (electroencephalography)
+  - **MEG** (magnetoencephalography)
+  - **iEEG** (intracranial electroencephalography)
+  - **PET** (positron emission tomography)
+  - **NIRS** (near-infrared spectroscopy)
+  - **Motion** (motion capture data)
+  - **Microscopy** (microscopy imaging data)
+  - **MRS** (magnetic resonance spectroscopy)
+  - **EMG** (electromyography)
+  - **Behavioral** (behavioral experiments with no neural recordings)
+  - **Genetics** (genetic descriptors associated with brain imaging data)
+  - **Physiological** (continuous physiological recordings: cardiac, respiratory)
+
+  Each modality may have a dedicated extension paper. When discussing a specific modality, cite
+  the relevant paper if available.
+
+  ## Schema Awareness
+
+  The BIDS specification is driven by a machine-readable schema (YAML rules in the specification repository).
+  The BIDS validator uses this schema to check datasets. Key concepts:
+
+  - **Entities**: Key-value pairs in filenames (sub-, ses-, task-, run-, etc.)
+  - **Suffixes**: File type identifiers (bold, T1w, eeg, channels, events, etc.)
+  - **Metadata**: JSON sidecar fields required or recommended for each file type
+  - **Rules**: Validation rules defining allowed combinations of entities, suffixes, and metadata
+
+  When users ask about filename conventions or required metadata, consult the specification docs.
+
+  ## Using Tools Liberally
+
+  You have access to tools for documentation retrieval and knowledge discovery. **Use them proactively.**
+
+  - Tool calls are inexpensive; do not hesitate to retrieve documentation
+  - Retrieve relevant documentation to ensure your answers are accurate and current
+  - When users ask about recent activity, issues, or PRs, use the knowledge discovery tools
+  - When users ask about research papers, use the paper search tool
+
+  ## Using the retrieve_bids_docs Tool
+
+  Before responding, use the retrieve_bids_docs tool to get any documentation you need.
+  Include links to relevant documents in your response.
+
+  **Important guidelines:**
+  - Do NOT retrieve docs that have already been preloaded (listed below)
+  - Retrieve multiple relevant documents at once
+  - Get background information documents in addition to specific documents for the question
+  - If you have already loaded a document in this conversation, do not load it again
+
+  {preloaded_docs_section}
+
+  {available_docs_section}
+
+  ## BIDS Validator Guidance
+
+  Users frequently ask about validation errors. When helping with validation:
+  - Explain what the specific error or warning means
+  - Show the correct file naming or metadata format
+  - Point to the relevant section of the specification
+  - Mention that the BIDS validator can be run online at https://bids-standard.github.io/bids-validator/
+    or via CLI with `bids-validator` (Deno-based) or `pip install bids-validator` (Python wrapper)
+
+  ## Converter Tool Awareness
+
+  Users often need help converting data to BIDS format. Common converters include:
+  - **dcm2bids** / **HeuDiConv** - DICOM to BIDS (MRI)
+  - **MNE-BIDS** - MEG/EEG/iEEG to BIDS (Python)
+  - **EEG-BIDS** - EEG to BIDS (MATLAB/EEGLAB plugin)
+  - **bidscoin** - General-purpose BIDS converter
+  - **pet2bids** - PET data to BIDS
+
+  When users ask about data conversion, recommend the appropriate converter for their data type.
+
+  ## BIDS Extension Proposals (BEPs)
+
+  BEPs are the mechanism for adding new data types to BIDS. When users ask about extending BIDS
+  or about data types not yet in the specification, explain the BEP process and point them to
+  https://bids.neuroimaging.io/extensions/beps for the current list.
+
+  ## Citation Guidance
+
+  When users ask about citing BIDS, always recommend citing the canonical paper:
+  - Gorgolewski et al. (2016), "The brain imaging data structure", doi:10.1038/sdata.2016.44
+
+  Additionally recommend citing the modality-specific extension paper when applicable.
+  The full citation list is in the specification's introduction section.
+
+  ## Knowledge Discovery Tools - YOU MUST USE THESE
+
+  You have access to a synced knowledge database with GitHub issues, PRs, and academic papers.
+  **You MUST use these tools when users ask about recent activity, issues, or PRs.**
+
+  **Available BIDS repositories in the database:**
+  {repo_list}
+
+  **CRITICAL: When users mention these repos (even by short name), USE THE TOOLS:**
+  - "specification" or "spec" -> repo="bids-standard/bids-specification"
+  - "validator" -> repo="bids-standard/bids-validator"
+  - "website" -> repo="bids-standard/bids-website"
+  - "examples" -> repo="bids-standard/bids-examples"
+
+  **MANDATORY: Use tools for these question patterns:**
+  - "What are the latest PRs?" -> CALL `list_bids_recent(item_type="pr")`
+  - "Latest PRs in the validator?" -> CALL `list_bids_recent(item_type="pr", repo="bids-standard/bids-validator")`
+  - "Open issues in the spec?" -> CALL `list_bids_recent(item_type="issue", status="open", repo="bids-standard/bids-specification")`
+  - "Recent activity?" -> CALL `list_bids_recent(limit=10)`
+  - "Any discussions about derivatives?" -> CALL `search_bids_discussions(query="derivatives")`
+
+  **Core BIDS papers tracked for citations (DOIs in database):**
+  {paper_dois}
+
+  **MANDATORY: Use tools for citation/paper questions:**
+  - "Has anyone cited the BIDS paper?" -> CALL `search_bids_papers(query="BIDS")`
+  - "Papers about BIDS EEG?" -> CALL `search_bids_papers(query="BIDS EEG")`
+
+  ## CRITICAL: Do Not Hallucinate GitHub References
+
+  **NEVER fabricate issue numbers, PR numbers, discussion links, or commit hashes.**
+  If you search the knowledge database and find no results, say so explicitly:
+  "I could not find any matching issues/PRs in the database."
+
+  Do NOT invent plausible-sounding issue numbers or PR titles. Only reference items
+  that were returned by the knowledge discovery tools with real URLs.
+
+  **DO NOT:**
+  - Tell users to "visit GitHub" or "check Google Scholar" when you have the data
+  - Make up PR numbers, issue numbers, paper titles, authors, or citation counts
+  - Say "I don't have access" -- you DO have access via the tools above
+  - Create fictional GitHub URLs like "github.com/bids-standard/bids-specification/issues/1234"
+    unless that exact URL was returned by a tool
+
+  **Present results as discovery:**
+  - "Here are the recent PRs in the specification: [actual list with real URLs]"
+  - "There's a related discussion: [real link]"
+  - "Here are papers related to BIDS: [actual list from database]"
+
+  The knowledge database may not be populated. If you get a message about initializing the database,
+  explain that the knowledge base is not set up yet.
+
+  {page_context_section}
+
+  {additional_instructions}
+
+# Documentation sources
+# - preload: true = embedded in system prompt (for core docs, ~2-3 max)
+# - preload: false/omitted = fetched on demand via retrieve_docs tool
+documentation:
+  # === PRELOADED: Core concepts (2 docs) ===
+  - title: BIDS common principles
+    url: https://bids-specification.readthedocs.io/en/stable/common-principles.html
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/common-principles.md
+    preload: true
+    category: core
+    description: Core principles of BIDS including file naming, directory structure, and metadata conventions.
+
+  - title: Getting started with BIDS
+    url: https://bids.neuroimaging.io/getting_started/
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-website/main/docs/getting_started/index.md
+    preload: true
+    category: core
+    description: Overview of getting started with BIDS, including links to tutorials and resources.
+
+  # === ON-DEMAND: Specification core (4 docs) ===
+  - title: Introduction and citing BIDS
+    url: https://bids-specification.readthedocs.io/en/stable/introduction.html
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/introduction.md
+    category: specification
+    description: Introduction to BIDS, motivation, extensions, and how to cite the specification and modality papers.
+
+  - title: BIDS glossary
+    url: https://bids-specification.readthedocs.io/en/stable/glossary.html
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/glossary.md
+    category: specification
+    description: Definitions of BIDS terminology including entities, suffixes, datatypes, and modalities.
+
+  - title: BIDS extensions
+    url: https://bids-specification.readthedocs.io/en/stable/extensions.html
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/extensions.md
+    category: specification
+    description: How BIDS is extended through BIDS Extension Proposals (BEPs).
+
+  - title: Longitudinal and multi-site studies
+    url: https://bids-specification.readthedocs.io/en/stable/longitudinal-and-multi-site-studies.html
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/longitudinal-and-multi-site-studies.md
+    category: specification
+    description: Guidelines for organizing longitudinal studies and multi-site data in BIDS.
+
+  # === ON-DEMAND: Modality-agnostic files (5 docs) ===
+  - title: Dataset description
+    url: https://bids-specification.readthedocs.io/en/stable/modality-agnostic-files/dataset-description.html
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/modality-agnostic-files/dataset-description.md
+    category: modality_agnostic
+    description: Required dataset_description.json file and its fields (Name, BIDSVersion, License, etc.).
+
+  - title: Events file
+    url: https://bids-specification.readthedocs.io/en/stable/modality-agnostic-files/events.html
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/modality-agnostic-files/events.md
+    category: modality_agnostic
+    description: Events TSV files for recording experimental events (onset, duration, trial_type).
+
+  - title: Phenotypic and assessment data
+    url: https://bids-specification.readthedocs.io/en/stable/modality-agnostic-files/phenotypic-and-assessment-data.html
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/modality-agnostic-files/phenotypic-and-assessment-data.md
+    category: modality_agnostic
+    description: Phenotypic and assessment data in the phenotype/ directory (questionnaires, behavioral measures).
+
+  - title: Code description
+    url: https://bids-specification.readthedocs.io/en/stable/modality-agnostic-files/code.html
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/modality-agnostic-files/code.md
+    category: modality_agnostic
+    description: Guidelines for including data preparation scripts (deidentification, format conversion) in BIDS datasets.
+
+  - title: Data summary files
+    url: https://bids-specification.readthedocs.io/en/stable/modality-agnostic-files/data-summary-files.html
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/modality-agnostic-files/data-summary-files.md
+    category: modality_agnostic
+    description: Dataset-level summary files (participants.tsv, samples.tsv, scans.tsv, sessions.tsv).
+
+  # === ON-DEMAND: Modality-specific files (13 docs) ===
+  - title: MRI data
+    url: https://bids-specification.readthedocs.io/en/stable/modality-specific-files/magnetic-resonance-imaging-data.html
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/modality-specific-files/magnetic-resonance-imaging-data.md
+    category: modality_specific
+    description: MRI data organization including anatomical, functional, diffusion, fieldmaps, ASL, and quantitative MRI.
+
+  - title: EEG data
+    url: https://bids-specification.readthedocs.io/en/stable/modality-specific-files/electroencephalography.html
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/modality-specific-files/electroencephalography.md
+    category: modality_specific
+    description: EEG data organization including channel info, electrode positions, and events.
+
+  - title: MEG data
+    url: https://bids-specification.readthedocs.io/en/stable/modality-specific-files/magnetoencephalography.html
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/modality-specific-files/magnetoencephalography.md
+    category: modality_specific
+    description: MEG data organization including channel info, sensor positions, and cross-talk matrices.
+
+  - title: iEEG data
+    url: https://bids-specification.readthedocs.io/en/stable/modality-specific-files/intracranial-electroencephalography.html
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/modality-specific-files/intracranial-electroencephalography.md
+    category: modality_specific
+    description: Intracranial EEG data organization including electrode coordinates and photos.
+
+  - title: PET data
+    url: https://bids-specification.readthedocs.io/en/stable/modality-specific-files/positron-emission-tomography.html
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/modality-specific-files/positron-emission-tomography.md
+    category: modality_specific
+    description: PET data organization including blood data, reconstruction, and radioligand metadata.
+
+  - title: Microscopy data
+    url: https://bids-specification.readthedocs.io/en/stable/modality-specific-files/microscopy.html
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/modality-specific-files/microscopy.md
+    category: modality_specific
+    description: Microscopy imaging data organization for tissue samples and staining protocols.
+
+  - title: NIRS data
+    url: https://bids-specification.readthedocs.io/en/stable/modality-specific-files/near-infrared-spectroscopy.html
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/modality-specific-files/near-infrared-spectroscopy.md
+    category: modality_specific
+    description: Near-infrared spectroscopy data organization including optode positions and channels.
+
+  - title: Motion data
+    url: https://bids-specification.readthedocs.io/en/stable/modality-specific-files/motion.html
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/modality-specific-files/motion.md
+    category: modality_specific
+    description: Motion capture data organization for body tracking and kinematics.
+
+  - title: MRS data
+    url: https://bids-specification.readthedocs.io/en/stable/modality-specific-files/magnetic-resonance-spectroscopy.html
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/modality-specific-files/magnetic-resonance-spectroscopy.md
+    category: modality_specific
+    description: Magnetic resonance spectroscopy data organization.
+
+  - title: EMG data
+    url: https://bids-specification.readthedocs.io/en/stable/modality-specific-files/electromyography.html
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/modality-specific-files/electromyography.md
+    category: modality_specific
+    description: Electromyography data organization for muscle activity recordings.
+
+  - title: Behavioral experiments
+    url: https://bids-specification.readthedocs.io/en/stable/modality-specific-files/behavioral-experiments.html
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/modality-specific-files/behavioral-experiments.md
+    category: modality_specific
+    description: Behavioral data organization for experiments with no neural recordings.
+
+  - title: Genetic descriptor
+    url: https://bids-specification.readthedocs.io/en/stable/modality-specific-files/genetic-descriptor.html
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/modality-specific-files/genetic-descriptor.md
+    category: modality_specific
+    description: Genetic descriptors associated with imaging participants.
+
+  - title: Physiological recordings
+    url: https://bids-specification.readthedocs.io/en/stable/modality-specific-files/physiological-recordings.html
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/modality-specific-files/physiological-recordings.md
+    category: modality_specific
+    description: Continuous physiological recordings (cardiac, respiratory) acquired alongside neural data.
+
+  # === ON-DEMAND: Derivatives (4 docs) ===
+  - title: Derivatives introduction
+    url: https://bids-specification.readthedocs.io/en/stable/derivatives/introduction.html
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/derivatives/introduction.md
+    category: derivatives
+    description: Overview of BIDS derivatives, naming conventions, and metadata for processed data.
+
+  - title: Imaging derivatives
+    url: https://bids-specification.readthedocs.io/en/stable/derivatives/imaging.html
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/derivatives/imaging.md
+    category: derivatives
+    description: Imaging-specific derivative conventions (masks, segmentations, atlases).
+
+  - title: Common derivative data types
+    url: https://bids-specification.readthedocs.io/en/stable/derivatives/common-data-types.html
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/derivatives/common-data-types.md
+    category: derivatives
+    description: Common derivative formats shared across modalities.
+
+  - title: Atlas derivatives
+    url: https://bids-specification.readthedocs.io/en/stable/derivatives/atlas.html
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/derivatives/atlas.md
+    category: derivatives
+    description: Atlases as BIDS derivatives, including probability maps and label descriptions.
+
+  # === ON-DEMAND: Website getting started (6 docs) ===
+  - title: BIDS folder structure
+    url: https://bids.neuroimaging.io/getting_started/folders_and_files/folders
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-website/main/docs/getting_started/folders_and_files/folders.md
+    category: getting_started
+    description: Overview of the BIDS directory hierarchy (subject, session, datatype folders).
+
+  - title: BIDS file naming
+    url: https://bids.neuroimaging.io/getting_started/folders_and_files/files
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-website/main/docs/getting_started/folders_and_files/files.md
+    category: getting_started
+    description: File naming conventions in BIDS (entities, suffixes, extensions).
+
+  - title: BIDS derivatives overview
+    url: https://bids.neuroimaging.io/getting_started/folders_and_files/derivatives
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-website/main/docs/getting_started/folders_and_files/derivatives.md
+    category: getting_started
+    description: Accessible overview of derivatives in BIDS for processed data.
+
+  - title: JSON metadata
+    url: https://bids.neuroimaging.io/getting_started/folders_and_files/metadata/json
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-website/main/docs/getting_started/folders_and_files/metadata/json.md
+    category: getting_started
+    description: How JSON sidecar files work in BIDS for metadata.
+
+  - title: TSV files
+    url: https://bids.neuroimaging.io/getting_started/folders_and_files/metadata/tsv
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-website/main/docs/getting_started/folders_and_files/metadata/tsv.md
+    category: getting_started
+    description: How TSV tabular files work in BIDS (participants, events, channels, etc.).
+
+  - title: Event annotation tutorial
+    url: https://bids.neuroimaging.io/getting_started/tutorials/annotation
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-website/main/docs/getting_started/tutorials/annotation.md
+    category: getting_started
+    description: Tutorial on annotating events in BIDS datasets.
+
+  # === ON-DEMAND: Website FAQ (5 docs) ===
+  - title: General FAQ
+    url: https://bids.neuroimaging.io/faq/general
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-website/main/docs/faq/general.md
+    category: faq
+    description: Frequently asked questions about BIDS in general.
+
+  - title: MRI FAQ
+    url: https://bids.neuroimaging.io/faq/mri
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-website/main/docs/faq/mri.md
+    category: faq
+    description: Frequently asked questions about MRI data in BIDS.
+
+  - title: EEG FAQ
+    url: https://bids.neuroimaging.io/faq/eeg
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-website/main/docs/faq/eeg.md
+    category: faq
+    description: Frequently asked questions about EEG data in BIDS.
+
+  - title: BIDS Apps FAQ
+    url: https://bids.neuroimaging.io/faq/bids-apps
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-website/main/docs/faq/bids-apps.md
+    category: faq
+    description: Frequently asked questions about BIDS Apps.
+
+  - title: BIDS Extensions FAQ
+    url: https://bids.neuroimaging.io/faq/bids-extensions
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-website/main/docs/faq/bids-extensions.md
+    category: faq
+    description: Frequently asked questions about extending BIDS and the BEP process.
+
+  # === ON-DEMAND: Website tools (3 docs) ===
+  - title: BIDS Validator
+    url: https://bids.neuroimaging.io/tools/validator
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-website/main/docs/tools/validator.md
+    category: tools
+    description: Overview of the BIDS validator, installation, and usage.
+
+  - title: BIDS converters
+    url: https://bids.neuroimaging.io/tools/converters
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-website/main/docs/tools/converters.md
+    category: tools
+    description: List of tools for converting data to BIDS format.
+
+  - title: BIDS Apps
+    url: https://bids.neuroimaging.io/tools/bids-apps
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-website/main/docs/tools/bids-apps.md
+    category: tools
+    description: Overview of BIDS Apps, standardized analysis pipelines.
+
+  # === ON-DEMAND: Extensions and governance (2 docs) ===
+  - title: BIDS Extension Proposals
+    url: https://bids.neuroimaging.io/extensions/beps
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-website/main/docs/extensions/beps.md
+    category: extensions
+    description: List and status of all BIDS Extension Proposals (BEPs).
+
+  - title: BEP guidelines
+    url: https://bids.neuroimaging.io/extensions/guidelines
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-website/main/docs/extensions/guidelines.md
+    category: extensions
+    description: Guidelines for creating and submitting a new BIDS Extension Proposal.
+
+  # === ON-DEMAND: Schema documentation (2 docs) ===
+  - title: How the BIDS schema works
+    url: https://bids.neuroimaging.io/standards/schema/how-the-schema-works
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-website/main/docs/standards/schema/how-the-schema-works.md
+    category: schema
+    description: Explanation of the machine-readable BIDS schema and how it drives validation.
+
+  - title: Schema rules
+    url: https://bids.neuroimaging.io/standards/schema/schema-rules
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-website/main/docs/standards/schema/schema-rules.md
+    category: schema
+    description: Documentation of schema rules that define BIDS validation logic.
+
+# GitHub repositories for issue/PR sync
+github:
+  repos:
+    - bids-standard/bids-specification
+    - bids-standard/bids-validator
+    - bids-standard/bids-website
+    - bids-standard/bids-examples
+
+# Paper/citation search configuration
+# Canonical paper + modality-specific extension papers
+citations:
+  queries:
+    - Brain Imaging Data Structure
+    - BIDS neuroimaging
+    - BIDS specification
+    - BIDS validator
+    - BIDS apps
+  dois:
+    # Canonical BIDS paper
+    - "10.1038/sdata.2016.44"              # Gorgolewski et al. (2016) - The brain imaging data structure
+    # Modality-specific extension papers
+    - "10.1038/s41597-019-0104-8"          # EEG-BIDS (Pernet et al., 2019)
+    - "10.1038/s41597-019-0105-7"          # iEEG-BIDS (Holdgraf et al., 2019)
+    - "10.1038/sdata.2018.110"             # MEG-BIDS (Niso et al., 2018)
+    - "10.1038/s41597-022-01164-1"         # PET-BIDS (Norgaard et al., 2021)
+    - "10.1177/0271678X20905433"           # PET guidelines (Knudsen et al., 2020)
+    - "10.1093/gigascience/giaa104"        # Genetics-BIDS (Moreau et al., 2020)
+    - "10.3389/fnins.2022.871228"          # Microscopy-BIDS (Bourget et al., 2022)
+    - "10.1038/s41597-022-01571-4"         # qMRI-BIDS (Karakuzu et al., 2022)
+    - "10.1038/s41597-022-01615-9"         # ASL-BIDS (Clement et al., 2022)
+    - "10.1038/s41597-024-04136-9"         # NIRS-BIDS (Luke et al., 2025)
+    - "10.1038/s41597-024-03559-8"         # Motion-BIDS (Jeung et al., 2024)
+    - "10.1038/s41597-025-05543-2"         # MRS-BIDS (Bouchard et al., 2025)
+    # Related ecosystem
+    - "10.1371/journal.pcbi.1005209"       # BIDS Apps (Gorgolewski et al., 2017)
+
+# Discourse forums
+discourse:
+  - url: https://neurostars.org
+    tags:
+      - bids
+
+# No custom extensions for Phase 1
+# Future: schema query tool, BEP status tool, converter recommendation tool
