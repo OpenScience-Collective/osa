@@ -596,6 +596,35 @@ class FAQGenerationConfig(BaseModel):
         return self
 
 
+class BudgetConfig(BaseModel):
+    """Budget limits and alert thresholds for a community.
+
+    When configured, the scheduler periodically checks spend against
+    these limits and creates GitHub issues when thresholds are exceeded.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    daily_limit_usd: float = Field(..., gt=0, description="Maximum daily spend in USD")
+    monthly_limit_usd: float = Field(..., gt=0, description="Maximum monthly spend in USD")
+    alert_threshold_pct: float = Field(
+        default=80.0,
+        ge=0,
+        le=100,
+        description="Percentage of limit at which to trigger alert (default: 80%)",
+    )
+
+    @model_validator(mode="after")
+    def validate_limits(self) -> "BudgetConfig":
+        """Ensure daily limit does not exceed monthly limit."""
+        if self.daily_limit_usd > self.monthly_limit_usd:
+            raise ValueError(
+                f"daily_limit_usd ({self.daily_limit_usd}) cannot exceed "
+                f"monthly_limit_usd ({self.monthly_limit_usd})"
+            )
+        return self
+
+
 class CommunityConfig(BaseModel):
     """Configuration for a single research community assistant.
 
@@ -730,6 +759,32 @@ class CommunityConfig(BaseModel):
     If not specified, uses default routing for the model.
     """
 
+    maintainers: list[str] = Field(default_factory=list)
+    """GitHub usernames of community maintainers.
+
+    Used for:
+    - @mentioning in automated alert issues (budget alerts, etc.)
+    - Documenting who is responsible for the community
+
+    Example:
+        maintainers:
+          - octocat
+          - janedoe
+    """
+
+    budget: BudgetConfig | None = None
+    """Budget limits and alert thresholds for cost management.
+
+    When configured, the scheduler checks spend against these limits
+    and creates GitHub issues when thresholds are exceeded.
+
+    Example:
+        budget:
+          daily_limit_usd: 5.0
+          monthly_limit_usd: 50.0
+          alert_threshold_pct: 80
+    """
+
     @field_validator("cors_origins")
     @classmethod
     def validate_cors_origins(cls, v: list[str]) -> list[str]:
@@ -754,6 +809,30 @@ class CommunityConfig(BaseModel):
                 )
             if origin not in validated:
                 validated.append(origin)
+        return validated
+
+    @field_validator("maintainers")
+    @classmethod
+    def validate_maintainers(cls, v: list[str]) -> list[str]:
+        """Validate GitHub usernames in maintainers list.
+
+        GitHub usernames: 1-39 chars, alphanumeric or hyphens,
+        cannot start or end with hyphen.
+        """
+        gh_username_pattern = re.compile(r"^[a-zA-Z0-9]([a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$")
+        validated = []
+        for username in v:
+            username = username.strip()
+            if not username:
+                continue
+            if not gh_username_pattern.match(username):
+                raise ValueError(
+                    f"Invalid GitHub username: '{username}'. "
+                    "Must be 1-39 alphanumeric characters or hyphens, "
+                    "cannot start/end with hyphen."
+                )
+            if username not in validated:
+                validated.append(username)
         return validated
 
     @field_validator("openrouter_api_key_env_var")
