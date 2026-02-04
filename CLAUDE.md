@@ -146,9 +146,16 @@ src/
 - **.context/api_key_authorization_design.md** - API key auth and CORS
 - **.context/security-architecture.md** - Security patterns
 
-### Community Configuration
-- **.context/yaml_registry.md** - YAML-based community config
-- **.context/community_onboarding_review.md** - Onboarding guidelines
+### Community Development (Adding/Modifying Communities)
+- **Full docs site**: https://docs.osc.earth/osa/registry/ (canonical reference)
+  - [Adding a Community](https://docs.osc.earth/osa/registry/quick-start/) - Step-by-step guide
+  - [Local Testing](https://docs.osc.earth/osa/registry/local-testing/) - Testing a new community end-to-end
+  - [Schema Reference](https://docs.osc.earth/osa/registry/schema-reference/) - Full YAML config schema
+  - [Extensions](https://docs.osc.earth/osa/registry/extensions/) - Python plugins and MCP servers
+- **.context/yaml_registry.md** - YAML-based community config (internal notes)
+- **.context/community_onboarding_review.md** - Onboarding gap analysis
+- **.context/local-testing-guide.md** - Quick local testing reference
+- **Existing configs to reference**: `src/assistants/hed/config.yaml`, `src/assistants/eeglab/config.yaml`
 
 ### Tool System
 - **.context/tool-system-guide.md** - How tools work and are registered
