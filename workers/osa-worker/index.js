@@ -140,6 +140,8 @@ function isAllowedOrigin(origin) {
   // Allowed origins for OSA
   const allowedPatterns = [
     'https://osc.earth',
+    'https://bids-specification.readthedocs.io',
+    'https://bids.neuroimaging.io',
     'https://eeglab.org',
     'https://hedtags.org',
     'https://sccn.github.io',
@@ -154,6 +156,8 @@ function isAllowedOrigin(origin) {
   if (origin.endsWith('.eeglab.org')) return true;
   if (origin.endsWith('.github.io')) return true;
   if (origin.endsWith('.hedtags.org')) return true;
+  if (origin.endsWith('.neuroimaging.io')) return true;
+  if (origin.endsWith('.readthedocs.io')) return true;
 
   // Allow osa-demo.pages.dev and all subdomains (previews, branches)
   if (origin === 'https://osa-demo.pages.dev') return true;
