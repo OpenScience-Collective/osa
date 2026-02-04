@@ -13,6 +13,7 @@ on:
     paths:
       - 'src/assistants/*/config.yaml'
       - 'workers/osa-worker/**'
+  workflow_dispatch:
 
 permissions:
   contents: write
