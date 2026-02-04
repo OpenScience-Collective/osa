@@ -1,257 +1,81 @@
-# Local Testing Guide for EEGLAB Assistant
+# Local Testing Guide for Community Assistants
 
-## Quick Test (Verify Configuration)
+Quick reference for testing any community assistant locally. For the full guide, see https://docs.osc.earth/osa/registry/local-testing/
+
+## Quick Validation
 
 ```bash
-cd /Users/yahya/Documents/git/osa-phase1
+# Validate config loads
+uv run pytest tests/test_core/ -k "community" -v
 
-# Run quick verification
-uv run python test_eeglab_interactive.py
+# Or programmatically
+uv run python -c "
+from pathlib import Path
+from src.core.config.community import CommunityConfig
+config = CommunityConfig.from_yaml(Path('src/assistants/COMMUNITY_ID/config.yaml'))
+print(f'Loaded: {config.name} with {len(config.documentation)} docs')
+"
 ```
 
-## Full Backend Testing
-
-### 1. Set Environment Variables
+## Environment Variables
 
 ```bash
-# Required: OpenRouter API key for LLM
 export OPENROUTER_API_KEY="your-key-here"
-
-# Optional: API keys for admin functions (sync)
+# Optional: for sync operations
 export API_KEYS="test-key-123"
-
-# Optional: Specific EEGLAB key (if community has BYOK)
-# export OPENROUTER_API_KEY_EEGLAB="eeglab-specific-key"
+# Optional: community-specific key
+# export OPENROUTER_API_KEY_COMMUNITY="key"
 ```
 
-### 2. Start Backend Server
+## Server Testing
 
 ```bash
-cd /Users/yahya/Documents/git/osa-phase1
-
-# Start development server
+# Start dev server
 uv run uvicorn src.api.main:app --reload --port 38528
-```
 
-Server will be available at: `http://localhost:38528`
-
-### 3. Test Endpoints
-
-#### A. List All Communities
-
-```bash
+# List communities (verify yours appears)
 curl http://localhost:38528/communities | jq
-```
 
-**Expected response:**
-```json
-{
-  "communities": [
-    {
-      "id": "eeglab",
-      "name": "EEGLAB",
-      "description": "EEG signal processing and analysis toolbox",
-      "status": "available"
-    },
-    {
-      "id": "hed",
-      "name": "HED (Hierarchical Event Descriptors)",
-      ...
-    }
-  ]
-}
-```
-
-#### B. Get EEGLAB Community Info
-
-```bash
-curl http://localhost:38528/communities/eeglab | jq
-```
-
-**Expected response:**
-```json
-{
-  "id": "eeglab",
-  "name": "EEGLAB",
-  "description": "EEG signal processing and analysis toolbox",
-  "status": "available",
-  "documentation_count": 26,
-  "github_repos": 6,
-  "has_sync_config": true
-}
-```
-
-#### C. Ask a Question (Simple)
-
-```bash
-curl -X POST http://localhost:38528/eeglab/ask \
+# Ask a question
+curl -X POST http://localhost:38528/COMMUNITY_ID/ask \
   -H "Content-Type: application/json" \
-  -d '{
-    "question": "What is EEGLAB?",
-    "api_key": "your-openrouter-key"
-  }' | jq
+  -d '{"question": "What is this tool?", "api_key": "your-key"}' | jq
 ```
 
-**Expected response:**
-```json
-{
-  "answer": "EEGLAB is an interactive MATLAB toolbox...",
-  "sources": [
-    {
-      "title": "EEGLAB quickstart",
-      "url": "https://sccn.github.io/..."
-    }
-  ]
-}
-```
-
-#### D. Ask About ICA
+## CLI Testing (No Server Needed)
 
 ```bash
-curl -X POST http://localhost:38528/eeglab/ask \
-  -H "Content-Type: application/json" \
-  -d '{
-    "question": "How do I run ICA in EEGLAB?",
-    "api_key": "your-openrouter-key"
-  }' | jq
+# Interactive chat
+uv run osa chat --community COMMUNITY_ID --standalone
+
+# Single question
+uv run osa ask --community COMMUNITY_ID "What is this tool?" --standalone
 ```
 
-**Should mention:** ICA decomposition, ICLabel, artifact removal
-
-#### E. Test Chat Endpoint
+## Knowledge Sync
 
 ```bash
-curl -X POST http://localhost:38528/eeglab/chat \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": [
-      {"role": "user", "content": "What preprocessing steps should I do?"}
-    ],
-    "api_key": "your-openrouter-key"
-  }' | jq
+uv run osa sync init --community COMMUNITY_ID
+uv run osa sync github --community COMMUNITY_ID --full
+uv run osa sync papers --community COMMUNITY_ID --citations
 ```
 
-**Should mention:** Filtering, re-referencing, ICA, artifact removal
+## Test Checklist
 
-### 4. Test Documentation Retrieval
-
-The assistant should automatically retrieve docs. Test by asking specific questions:
-
-```bash
-# Should trigger retrieve_eeglab_docs tool
-curl -X POST http://localhost:38528/eeglab/ask \
-  -H "Content-Type: application/json" \
-  -d '{
-    "question": "How do I filter my EEG data in EEGLAB?",
-    "api_key": "your-openrouter-key",
-    "stream": false
-  }' | jq '.tool_calls'
-```
-
-**Expected:** Should call `retrieve_eeglab_docs` with filter-related docs
-
-### 5. Test via CLI (Easier!)
-
-```bash
-cd /Users/yahya/Documents/git/osa-phase1
-
-# Set API key
-export OPENROUTER_API_KEY="your-key-here"
-
-# Start interactive chat
-uv run osa chat --community eeglab --standalone
-
-# Or ask single question
-uv run osa ask --community eeglab "What is EEGLAB?" --standalone
-```
-
-**CLI is easier for testing because:**
-- Handles API key automatically
-- Shows formatted output
-- Interactive mode for multi-turn conversations
-
-## Test Questions for EEGLAB
-
-Good test questions to verify configuration:
-
-1. **Basic Info:**
-   - "What is EEGLAB?"
-   - "What can EEGLAB do?"
-
-2. **Preprocessing:**
-   - "What preprocessing steps should I do?"
-   - "How do I filter EEG data?"
-   - "How do I re-reference my data?"
-
-3. **ICA:**
-   - "How do I run ICA in EEGLAB?"
-   - "What is ICLabel?"
-   - "How do I remove artifacts with ICA?"
-
-4. **Plugins:**
-   - "What is clean_rawdata?"
-   - "How do I use ASR?"
-   - "What is the PREP pipeline?"
-
-5. **Integration:**
-   - "How do I use EEGLAB with BIDS?"
-   - "Can I use EEGLAB with Python?"
-
-6. **Knowledge Base (requires sync):**
-   - "What are the latest issues in the eeglab repo?"
-   - "Show me recent PRs in ICLabel"
-   - "Papers about EEGLAB ICA"
+- [ ] Config validates without errors
+- [ ] Community appears in `/communities`
+- [ ] `/ask` endpoint returns relevant answers
+- [ ] `/chat` endpoint works for multi-turn
+- [ ] Preloaded docs are in context
+- [ ] On-demand docs retrieved when relevant
+- [ ] Documentation URLs in responses are valid
+- [ ] CLI standalone mode works
+- [ ] Knowledge sync completes (if configured)
+- [ ] Assistant does not hallucinate PR/issue numbers
 
 ## Troubleshooting
 
-### Server won't start
-
-```bash
-# Check if port is already in use
-lsof -i :38528
-
-# Use different port
-uv run uvicorn src.api.main:app --reload --port 38529
-```
-
-### "Assistant not found" error
-
-```bash
-# Verify EEGLAB is registered
-uv run python -c "from src.assistants import discover_assistants, registry; discover_assistants(); print('eeglab' in registry)"
-```
-
-### Documentation not retrieved
-
-- Check that `retrieve_eeglab_docs` tool is available
-- Check network access to sccn.github.io
-- Check tool calls in response
-
-### Knowledge base empty
-
-- Knowledge base requires `API_KEYS` env var for sync
-- Run sync locally:
-  ```bash
-  export API_KEYS="test-key"
-  uv run osa sync init --community eeglab
-  uv run osa sync github --community eeglab --full
-  ```
-
-## Expected Behavior
-
-**What works without knowledge sync:**
-- ✓ Assistant creation
-- ✓ System prompt
-- ✓ Documentation retrieval (fetches from URLs)
-- ✓ Answering questions about EEGLAB
-- ✓ Providing guidance on workflows
-
-**What needs knowledge sync:**
-- ✗ Searching GitHub issues/PRs
-- ✗ Listing recent activity
-- ✗ Searching papers
-- ✗ Citation counts
-
-## Next: Epic Branch Workflow
-
-See `epic-branch-workflow.md` for multi-phase development process.
+- **Server won't start**: Check port with `lsof -i :38528`
+- **Assistant not found**: Check discovery with `uv run python -c "from src.assistants import discover_assistants, registry; discover_assistants(); print([a.id for a in registry.list_available()])"`
+- **Docs not retrieved**: Test source_url with `curl -I <url>`
+- **Knowledge empty**: Run `uv run osa sync init --community COMMUNITY_ID` first
