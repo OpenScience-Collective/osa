@@ -117,11 +117,11 @@ def _is_pure_number_query(query: str) -> bool:
     if stripped.lstrip("#").isdigit():
         return True
     # Keyword + number with nothing else
-    if re.fullmatch(
-        r"(?:pr|pull|issue|bug|feature)\s*#?\s*\d+", stripped, re.IGNORECASE
-    ):
-        return True
-    return False
+    return bool(
+        re.fullmatch(
+            r"(?:pr|pull|issue|bug|feature)\s*#?\s*\d+", stripped, re.IGNORECASE
+        )
+    )
 
 
 def _extract_number(query: str) -> int | None:
