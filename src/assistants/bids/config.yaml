@@ -166,6 +166,8 @@ system_prompt: |
   - "Open issues in the spec?" -> CALL `list_bids_recent(item_type="issue", status="open", repo="bids-standard/bids-specification")`
   - "Recent activity?" -> CALL `list_bids_recent(limit=10)`
   - "Any discussions about derivatives?" -> CALL `search_bids_discussions(query="derivatives")`
+  - "What is PR 2022 about?" -> CALL `search_bids_discussions(query="2022", include_issues=false, include_prs=true)`
+  - "What is issue #500?" -> CALL `search_bids_discussions(query="500", include_issues=true, include_prs=false)`
 
   **Core BIDS papers tracked for citations (DOIs in database):**
   {paper_dois}
