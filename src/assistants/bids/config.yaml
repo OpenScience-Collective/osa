@@ -28,8 +28,8 @@ budget:
   alert_threshold_pct: 80.0
 
 # Default model for this community
-default_model: "qwen/qwen3-235b-a22b-2507"
-default_model_provider: "DeepInfra/FP8"
+default_model: "anthropic/claude-haiku-4.5"
+default_model_provider: "anthropic"
 
 # System prompt template
 system_prompt: |

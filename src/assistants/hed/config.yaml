@@ -34,8 +34,8 @@ budget:
 # Default model for this community (optional)
 # If specified, overrides the platform-level default model
 # Format: creator/model-name (OpenRouter format)
-default_model: "qwen/qwen3-235b-a22b-2507"
-default_model_provider: "DeepInfra/FP8"  # Optimized FP8 quantized inference
+default_model: "anthropic/claude-haiku-4.5"
+default_model_provider: "anthropic"
 
 # System prompt template
 # Available placeholders: {name}, {description}, {repo_list}, {paper_dois},

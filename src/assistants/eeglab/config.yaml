@@ -5,8 +5,8 @@ id: eeglab
 name: EEGLAB
 description: EEG signal processing and analysis toolbox
 status: available
-default_model: qwen/qwen3-235b-a22b-2507
-default_model_provider: DeepInfra/FP8
+default_model: anthropic/claude-haiku-4.5
+default_model_provider: anthropic
 
 cors_origins:
   - https://eeglab.org
