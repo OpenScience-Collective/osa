@@ -287,13 +287,18 @@
     // -----------------------------------------------------------------------
     // Configuration
     // -----------------------------------------------------------------------
-    // API base URL. Priority: ?api= query param > window.OSA_API_BASE > same origin.
-    // Same-origin default only works for local dev; deployed dashboards MUST set
-    // ?api= or window.OSA_API_BASE (e.g., https://api.osc.earth/osa).
+    // API base URL. Priority: ?api= query param > window.OSA_API_BASE > auto-detect.
+    // Auto-detection maps known dashboard hosts to their API backends.
+    // Falls back to same-origin for local dev (uvicorn serves both).
     const API_BASE = (function() {
         const params = new URLSearchParams(window.location.search);
         if (params.get('api')) return params.get('api').replace(/\/+$/, '');
         if (window.OSA_API_BASE) return window.OSA_API_BASE.replace(/\/+$/, '');
+        const host = window.location.hostname;
+        if (host === 'osa-dash.pages.dev' || host === 'status.osc.earth')
+            return 'https://api.osc.earth/osa';
+        if (host.endsWith('.osa-dash.pages.dev'))
+            return 'https://api.osc.earth/osa-dev';
         return window.location.origin;
     })();
 

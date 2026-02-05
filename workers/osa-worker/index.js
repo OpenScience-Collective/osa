@@ -163,6 +163,10 @@ function isAllowedOrigin(origin) {
   if (origin === 'https://osa-demo.pages.dev') return true;
   if (origin.endsWith('.osa-demo.pages.dev')) return true;
 
+  // Allow osa-dash.pages.dev (dashboard) and all subdomains
+  if (origin === 'https://osa-dash.pages.dev') return true;
+  if (origin.endsWith('.osa-dash.pages.dev')) return true;
+
   // Allow localhost for development
   if (origin.startsWith('http://localhost:')) return true;
   if (origin.startsWith('http://127.0.0.1:')) return true;
@@ -339,6 +343,30 @@ export default {
         return await handleFeedback(request, env, corsHeaders, CONFIG);
       }
 
+      // --- Dashboard read-only endpoints (GET only, rate-limited) ---
+
+      // Global public metrics: /metrics/public/overview
+      if (url.pathname === '/metrics/public/overview' && request.method === 'GET') {
+        const rl = await checkRateLimit(request, env, CONFIG);
+        if (!rl.allowed) {
+          return new Response(JSON.stringify({ error: 'Rate limit exceeded', details: rl.reason }), {
+            status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+        return await proxyToBackend(request, env, '/metrics/public/overview', null, corsHeaders, CONFIG);
+      }
+
+      // Admin metrics endpoints (authenticated via X-API-Key header)
+      if (url.pathname.match(/^\/metrics\/(overview|tokens|quality)$/) && request.method === 'GET') {
+        const path = url.pathname + url.search;
+        return await proxyToBackend(request, env, path, null, corsHeaders, CONFIG);
+      }
+
+      // Sync status endpoints (public, read-only)
+      if ((url.pathname === '/sync/status' || url.pathname === '/sync/health') && request.method === 'GET') {
+        return await proxyToBackend(request, env, url.pathname, null, corsHeaders, CONFIG);
+      }
+
       // Community config endpoint: /:communityId/ (GET)
       const communityConfigMatch = url.pathname.match(/^\/([^\/]+)\/?$/);
       if (communityConfigMatch && request.method === 'GET') {
@@ -371,6 +399,22 @@ export default {
         }
 
         return await proxyToBackend(request, env, `/${communityId}/`, null, corsHeaders, CONFIG);
+      }
+
+      // Community read-only endpoints: metrics/public, sessions (GET)
+      const communityReadMatch = url.pathname.match(/^\/([^\/]+)\/(metrics\/public(?:\/usage)?|sessions)$/);
+      if (communityReadMatch && request.method === 'GET') {
+        const communityId = communityReadMatch[1];
+        const reservedPaths = ['health', 'version', 'feedback', 'communities', 'metrics', 'sync'];
+        if (!reservedPaths.includes(communityId) && isValidCommunityId(communityId)) {
+          const rl = await checkRateLimit(request, env, CONFIG);
+          if (!rl.allowed) {
+            return new Response(JSON.stringify({ error: 'Rate limit exceeded', details: rl.reason }), {
+              status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            });
+          }
+          return await proxyToBackend(request, env, url.pathname, null, corsHeaders, CONFIG);
+        }
       }
 
       // Community endpoints: /:communityId/ask and /:communityId/chat
