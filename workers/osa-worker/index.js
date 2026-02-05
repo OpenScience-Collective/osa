@@ -169,20 +169,16 @@ function isAllowedOrigin(origin) {
   // Check exact matches
   if (allowedPatterns.includes(origin)) return true;
 
-  // Check subdomains (require https:// protocol)
-  if (origin.startsWith('https://') && origin.endsWith('.eeglab.org')) return true;
-  if (origin.startsWith('https://') && origin.endsWith('.github.io')) return true;
-  if (origin.startsWith('https://') && origin.endsWith('.hedtags.org')) return true;
-  if (origin.startsWith('https://') && origin.endsWith('.neuroimaging.io')) return true;
-  if (origin.startsWith('https://') && origin.endsWith('.readthedocs.io')) return true;
+  // Check subdomains
+  if (origin.endsWith('.eeglab.org')) return true;
+  if (origin.endsWith('.github.io')) return true;
+  if (origin.endsWith('.hedtags.org')) return true;
+  if (origin.endsWith('.neuroimaging.io')) return true;
+  if (origin.endsWith('.readthedocs.io')) return true;
 
   // Allow osa-demo.pages.dev and all subdomains (previews, branches)
   if (origin === 'https://osa-demo.pages.dev') return true;
-  if (origin.startsWith('https://') && origin.endsWith('.osa-demo.pages.dev')) return true;
-
-  // Allow osa-dash.pages.dev (dashboard) and all subdomains
-  if (origin === 'https://osa-dash.pages.dev') return true;
-  if (origin.startsWith('https://') && origin.endsWith('.osa-dash.pages.dev')) return true;
+  if (origin.endsWith('.osa-demo.pages.dev')) return true;
 
   // Allow localhost for development
   if (origin.startsWith('http://localhost:')) return true;
