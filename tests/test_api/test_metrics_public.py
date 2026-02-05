@@ -337,7 +337,10 @@ class TestEmptyDatabase:
         assert data["total_requests"] == 0
         assert data["error_rate"] == 0.0
         assert data["communities_active"] == 0
-        assert data["communities"] == []
+        # Registered communities still appear with zero requests
+        for c in data["communities"]:
+            assert c["requests"] == 0
+            assert c["error_rate"] == 0.0
 
     @pytest.mark.usefixtures("isolated_empty_metrics", "noauth_env")
     def test_community_metrics_empty_db(self, client):
@@ -372,10 +375,10 @@ class TestCommunityMetricsValues:
                 continue  # community route not registered in test app
             detail = resp.json()
             assert detail["total_requests"] == community["requests"]
-            assert detail["total_requests"] > 0
             assert detail["error_rate"] == community["error_rate"]
-            checked += 1
-        assert checked > 0, "Expected at least one community with a registered route"
+            if community["requests"] > 0:
+                checked += 1
+        assert checked > 0, "Expected at least one community with requests"
 
     @pytest.mark.usefixtures("isolated_metrics", "noauth_env")
     def test_per_community_tool_counts_consistent(self, client):

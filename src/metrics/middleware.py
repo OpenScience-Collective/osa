@@ -21,14 +21,28 @@ from src.metrics.db import RequestLogEntry, log_request, now_iso
 
 logger = logging.getLogger(__name__)
 
-# Path segments that indicate a community route
-_COMMUNITY_ENDPOINTS = {"/ask", "/chat"}
+# Path suffixes that indicate a community-scoped route
+_COMMUNITY_SUFFIXES = {"ask", "chat", "sessions", "metrics", "config"}
+
+# Top-level path prefixes that are NOT community IDs
+_RESERVED_PREFIXES = {"health", "metrics", "sync", "docs", "redoc", "openapi.json", "frontend"}
 
 
 def _extract_community_id(path: str) -> str | None:
-    """Extract community_id from URL path like /{community_id}/ask."""
+    """Extract community_id from community-scoped URL paths.
+
+    Matches patterns like /{community_id}/ask, /{community_id}/metrics/public,
+    /{community_id}/sessions, etc. Returns None for non-community routes
+    (health, sync, global metrics, docs).
+    """
     parts = path.strip("/").split("/")
-    if len(parts) >= 2 and f"/{parts[1]}" in _COMMUNITY_ENDPOINTS:
+    if not parts or not parts[0]:
+        return None
+    # Skip known non-community prefixes
+    if parts[0] in _RESERVED_PREFIXES:
+        return None
+    # Single segment (e.g., /health) or community with sub-path
+    if len(parts) >= 2 and parts[1] in _COMMUNITY_SUFFIXES:
         return parts[0]
     return None
 

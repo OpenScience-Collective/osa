@@ -312,24 +312,32 @@ def get_token_breakdown(
 # ---------------------------------------------------------------------------
 
 
-def get_public_overview(conn: sqlite3.Connection) -> dict[str, Any]:
+def get_public_overview(
+    conn: sqlite3.Connection,
+    registered_communities: list[str] | None = None,
+) -> dict[str, Any]:
     """Get public metrics overview with only non-sensitive data.
 
     Returns request counts and error rates; no tokens, costs, or model info.
+    Only counts community-scoped requests (not health checks, sync, etc.).
 
     Args:
         conn: SQLite connection.
+        registered_communities: If provided, ensures all these communities
+            appear in the response even if they have zero logged requests.
 
     Returns:
         Dict with total_requests, error_rate, communities_active,
         and per-community request counts.
     """
+    # Only count community-scoped requests, not infrastructure endpoints
     totals = conn.execute(
         """
         SELECT
             COUNT(*) as total_requests,
             COUNT(CASE WHEN status_code >= 400 THEN 1 END) as total_errors
         FROM request_log
+        WHERE community_id IS NOT NULL
         """
     ).fetchone()
 
@@ -348,18 +356,37 @@ def get_public_overview(conn: sqlite3.Connection) -> dict[str, Any]:
         """
     ).fetchall()
 
+    # Build community data from DB results
+    community_data: dict[str, dict[str, Any]] = {}
+    for r in community_rows:
+        cid = r["community_id"]
+        community_data[cid] = {
+            "community_id": cid,
+            "requests": r["requests"],
+            "error_rate": round(r["errors"] / r["requests"], 4) if r["requests"] > 0 else 0.0,
+        }
+
+    # Include registered communities with zero requests
+    if registered_communities:
+        for cid in registered_communities:
+            if cid not in community_data:
+                community_data[cid] = {
+                    "community_id": cid,
+                    "requests": 0,
+                    "error_rate": 0.0,
+                }
+
+    # Sort by requests descending, then alphabetically
+    communities_list = sorted(
+        community_data.values(),
+        key=lambda c: (-c["requests"], c["community_id"]),
+    )
+
     return {
         "total_requests": total_req,
         "error_rate": round(totals["total_errors"] / total_req, 4) if total_req > 0 else 0.0,
-        "communities_active": len(community_rows),
-        "communities": [
-            {
-                "community_id": r["community_id"],
-                "requests": r["requests"],
-                "error_rate": round(r["errors"] / r["requests"], 4) if r["requests"] > 0 else 0.0,
-            }
-            for r in community_rows
-        ],
+        "communities_active": sum(1 for c in communities_list if c["requests"] > 0),
+        "communities": communities_list,
     }
 
 

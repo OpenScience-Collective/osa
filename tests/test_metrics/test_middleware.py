@@ -26,18 +26,17 @@ class TestExtractCommunityId:
     def test_returns_none_for_root(self):
         assert _extract_community_id("/") is None
 
-    def test_returns_none_for_community_metrics_paths(self):
-        """Community metrics/session paths intentionally return None.
+    def test_extracts_from_community_metrics_paths(self):
+        """Community metrics/session/config paths return the community ID."""
+        assert _extract_community_id("/hed/metrics") == "hed"
+        assert _extract_community_id("/hed/metrics/public") == "hed"
+        assert _extract_community_id("/hed/sessions") == "hed"
+        assert _extract_community_id("/hed/config") == "hed"
 
-        These endpoints handle community_id directly in route handlers
-        rather than through middleware extraction.
-        """
-        assert _extract_community_id("/hed/metrics") is None
-        assert _extract_community_id("/hed/metrics/public") is None
-        assert _extract_community_id("/hed/metrics/usage") is None
-        assert _extract_community_id("/hed/metrics/quality") is None
-        assert _extract_community_id("/hed/sessions") is None
-        assert _extract_community_id("/hed/config") is None
+    def test_returns_none_for_deep_community_paths(self):
+        """Paths under community that don't match known suffixes return None."""
+        assert _extract_community_id("/hed/unknown") is None
+        assert _extract_community_id("/hed/something/else") is None
 
 
 class TestMetricsMiddleware:

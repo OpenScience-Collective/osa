@@ -13,6 +13,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
+from src.assistants import registry
 from src.metrics.db import metrics_connection
 from src.metrics.queries import get_public_overview
 
@@ -27,10 +28,12 @@ async def public_overview() -> dict[str, Any]:
 
     Returns total requests, error rate, active community count,
     and per-community request counts. No tokens, costs, or model info.
+    All registered communities appear even if they have zero requests.
     """
+    registered = [info.id for info in registry.list_available()]
     try:
         with metrics_connection() as conn:
-            return get_public_overview(conn)
+            return get_public_overview(conn, registered_communities=registered)
     except sqlite3.Error:
         logger.exception("Failed to query metrics database for public overview")
         raise HTTPException(
