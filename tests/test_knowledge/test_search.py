@@ -11,6 +11,7 @@ import pytest
 from src.knowledge.db import get_connection, init_db, upsert_github_item, upsert_paper
 from src.knowledge.search import (
     SearchResult,
+    _extract_number,
     _sanitize_fts5_query,
     search_all,
     search_github_items,
@@ -182,6 +183,77 @@ class TestSearchAll:
             assert "papers" in results
             assert isinstance(results["github"], list)
             assert isinstance(results["papers"], list)
+
+
+class TestNumberExtraction:
+    """Tests for extracting PR/issue numbers from queries."""
+
+    def test_plain_number(self):
+        assert _extract_number("2022") == 2022
+
+    def test_hash_prefix(self):
+        assert _extract_number("#500") == 500
+
+    def test_pr_prefix(self):
+        assert _extract_number("PR 2022") == 2022
+        assert _extract_number("pr #2022") == 2022
+
+    def test_issue_prefix(self):
+        assert _extract_number("issue 500") == 500
+        assert _extract_number("issue #500") == 500
+
+    def test_pull_prefix(self):
+        assert _extract_number("pull #100") == 100
+
+    def test_no_number(self):
+        assert _extract_number("validation error") is None
+        assert _extract_number("how to use BIDS") is None
+
+    def test_whitespace(self):
+        assert _extract_number("  2022  ") == 2022
+
+
+class TestNumberLookup:
+    """Tests for searching GitHub items by number."""
+
+    def test_search_by_number(self, populated_db: Path):
+        """Search for an item by its number."""
+        with patch("src.knowledge.db.get_db_path", return_value=populated_db):
+            results = search_github_items("10")
+
+            assert len(results) >= 1
+            assert results[0].url == "https://github.com/hed-standard/hed-schemas/pull/10"
+            assert results[0].title == "Add new sensory tags"
+
+    def test_search_by_hash_number(self, populated_db: Path):
+        """Search with # prefix."""
+        with patch("src.knowledge.db.get_db_path", return_value=populated_db):
+            results = search_github_items("#1")
+
+            assert len(results) >= 1
+            assert results[0].url == "https://github.com/hed-standard/hed-specification/issues/1"
+
+    def test_search_by_pr_number(self, populated_db: Path):
+        """Search with 'PR' prefix."""
+        with patch("src.knowledge.db.get_db_path", return_value=populated_db):
+            results = search_github_items("PR 10")
+
+            assert len(results) >= 1
+            assert results[0].item_type == "pr"
+
+    def test_number_lookup_with_type_filter(self, populated_db: Path):
+        """Number lookup respects item_type filter."""
+        with patch("src.knowledge.db.get_db_path", return_value=populated_db):
+            # Item #10 is a PR, filtering for issues should not return it
+            results = search_github_items("10", item_type="issue")
+            assert all(r.item_type == "issue" for r in results)
+
+    def test_number_lookup_deduplicates(self, populated_db: Path):
+        """Number match should not appear twice if also found by FTS."""
+        with patch("src.knowledge.db.get_db_path", return_value=populated_db):
+            results = search_github_items("1")
+            urls = [r.url for r in results]
+            assert len(urls) == len(set(urls)), "Duplicate URLs in results"
 
 
 class TestFTS5Sanitization:
