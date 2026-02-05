@@ -287,13 +287,18 @@
     // -----------------------------------------------------------------------
     // Configuration
     // -----------------------------------------------------------------------
-    // API base URL. Priority: ?api= query param > window.OSA_API_BASE > same origin.
-    // Same-origin default only works for local dev; deployed dashboards MUST set
-    // ?api= or window.OSA_API_BASE (e.g., https://api.osc.earth/osa).
+    // API base URL. Priority: ?api= query param > window.OSA_API_BASE > auto-detect.
+    // Auto-detection maps known dashboard hosts to their API backends.
+    // Falls back to same-origin for local dev (uvicorn serves both).
     const API_BASE = (function() {
         const params = new URLSearchParams(window.location.search);
         if (params.get('api')) return params.get('api').replace(/\/+$/, '');
         if (window.OSA_API_BASE) return window.OSA_API_BASE.replace(/\/+$/, '');
+        const host = window.location.hostname;
+        if (host === 'osa-dash.pages.dev' || host === 'status.osc.earth')
+            return 'https://api.osc.earth/osa';
+        if (host.endsWith('.osa-dash.pages.dev'))
+            return 'https://api.osc.earth/osa-dev';
         return window.location.origin;
     })();
 
@@ -301,6 +306,15 @@
         const div = document.createElement('div');
         div.textContent = str;
         return div.innerHTML;
+    }
+
+    function userFriendlyError(status, context) {
+        if (!status) return `Unable to reach the API server. Check your connection or try again later.`;
+        if (status === 429) return `Rate limit exceeded. Please wait a moment and try again.`;
+        if (status === 404) return `${context || 'Resource'} not found. It may not exist or the URL may be incorrect.`;
+        if (status === 401 || status === 403) return `Access denied. An API key may be required.`;
+        if (status >= 500) return `The server encountered an error (${status}). Try again later.`;
+        return `Unexpected error (HTTP ${status}). Try again later.`;
     }
 
     // -----------------------------------------------------------------------
@@ -337,8 +351,10 @@
         const route = getRoute();
 
         // Always fetch overview first to populate tabs
+        let overviewStatus = null;
         try {
             const resp = await fetch(`${API_BASE}/metrics/public/overview`);
+            overviewStatus = resp.status;
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             overviewData = await resp.json();
             renderTabs(overviewData.communities, route.community);
@@ -356,7 +372,8 @@
                 document.getElementById('adminCard').style.display = '';
             } else {
                 app.className = '';
-                app.innerHTML = '<div class="error-msg">Failed to load metrics.</div>';
+                const msg = userFriendlyError(overviewStatus, 'Metrics overview');
+                app.innerHTML = `<div class="error-msg">${escapeHtml(msg)}</div>`;
             }
         }
     });
@@ -447,8 +464,8 @@
                 fetch(`${API_BASE}/sync/health`).catch(err => { console.warn('Health check fetch failed (non-critical):', err.message); return null; }),
             ]);
 
-            if (!summaryResp.ok) throw new Error(`HTTP ${summaryResp.status}`);
-            if (!usageResp.ok) throw new Error(`HTTP ${usageResp.status}`);
+            const failedStatus = !summaryResp.ok ? summaryResp.status : (!usageResp.ok ? usageResp.status : null);
+            if (failedStatus) throw { status: failedStatus };
 
             const summary = await summaryResp.json();
             const usage = await usageResp.json();
@@ -462,7 +479,8 @@
         } catch (err) {
             console.error('Failed to load community view:', communityId, err);
             app.className = '';
-            app.innerHTML = `<div class="error-msg">Failed to load data for ${safeName}: ${escapeHtml(err.message)}</div>`;
+            const msg = userFriendlyError(err.status || null, `Community "${safeName}"`);
+            app.innerHTML = `<div class="error-msg">${escapeHtml(msg)}</div>`;
         }
     }
 
