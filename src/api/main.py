@@ -14,11 +14,18 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from src.api.config import get_settings
-from src.api.routers import create_community_router, sync_router
+from src.api.routers import (
+    create_community_router,
+    metrics_public_router,
+    metrics_router,
+    sync_router,
+)
 from src.api.routers.health import router as health_router
 from src.api.routers.widget_test import router as widget_test_router
 from src.api.scheduler import start_scheduler, stop_scheduler
 from src.assistants import discover_assistants, registry
+from src.metrics.db import init_metrics_db
+from src.metrics.middleware import MetricsMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +59,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Starting %s v%s", settings.app_name, settings.app_version)
     app.state.settings = settings
     app.state.start_time = datetime.now(UTC)
+
+    # Initialize metrics database (non-critical; degrade gracefully if unavailable)
+    try:
+        init_metrics_db()
+    except Exception:
+        logger.error(
+            "Failed to initialize metrics database. Metrics collection will be unavailable. "
+            "Check DATA_DIR permissions and disk space.",
+            exc_info=True,
+        )
 
     # Start background scheduler for knowledge sync
     scheduler = start_scheduler()
@@ -92,7 +109,7 @@ def _collect_cors_config() -> tuple[list[str], str | None]:
     Aggregates exact origins and wildcard patterns from:
     1. Platform-level settings (Settings.cors_origins)
     2. Per-community config (CommunityConfig.cors_origins)
-    3. Default platform wildcard (*.osa-demo.pages.dev)
+    3. Default platform wildcards (*.osa-demo.pages.dev, *.osa-dash.pages.dev)
 
     Returns:
         Tuple of (exact_origins, origin_regex_pattern).
@@ -101,10 +118,12 @@ def _collect_cors_config() -> tuple[list[str], str | None]:
     settings = get_settings()
 
     exact_origins: list[str] = list(settings.cors_origins)
-    # Add default demo page origins
+    # Add default demo/dashboard page origins
     exact_origins.append("https://osa-demo.pages.dev")
+    exact_origins.append("https://osa-dash.pages.dev")
     wildcard_patterns: list[str] = [
         "https://*.osa-demo.pages.dev",  # Default: preview/branch deploys
+        "https://*.osa-dash.pages.dev",  # Dashboard: preview/branch deploys
     ]
 
     # Collect from all registered communities
@@ -153,6 +172,9 @@ def create_app() -> FastAPI:
         cors_kwargs["allow_origin_regex"] = origin_regex
     app.add_middleware(CORSMiddleware, **cors_kwargs)
 
+    # Metrics middleware - captures request timing and logs to metrics DB
+    app.add_middleware(MetricsMiddleware)
+
     # Register routes
     register_routes(app)
 
@@ -178,6 +200,10 @@ def register_routes(app: FastAPI) -> None:
 
     # Sync router (not community-specific)
     app.include_router(sync_router)
+
+    # Metrics routers (admin + public)
+    app.include_router(metrics_router)
+    app.include_router(metrics_public_router)
 
     # Health check router
     app.include_router(health_router)
@@ -221,11 +247,16 @@ def register_routes(app: FastAPI) -> None:
             endpoints[f"GET /{community_id}/sessions"] = f"List active {name} sessions"
             endpoints[f"GET /{community_id}/sessions/{{session_id}}"] = "Get session info"
             endpoints[f"DELETE /{community_id}/sessions/{{session_id}}"] = "Delete a session"
+            endpoints[f"GET /{community_id}/metrics/public"] = f"Public {name} metrics"
+            endpoints[f"GET /{community_id}/metrics/public/usage"] = f"Public {name} usage stats"
 
         # Add non-community endpoints
         endpoints["GET /sync/status"] = "Knowledge sync status"
         endpoints["GET /sync/health"] = "Sync health check"
         endpoints["POST /sync/trigger"] = "Trigger sync (requires API key)"
+        endpoints["GET /metrics/overview"] = "Metrics overview (requires admin key)"
+        endpoints["GET /metrics/tokens"] = "Token breakdown (requires admin key)"
+        endpoints["GET /metrics/public/overview"] = "Public metrics overview"
         endpoints["GET /health"] = "Health check"
 
         return {

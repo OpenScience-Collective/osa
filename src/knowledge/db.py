@@ -38,6 +38,9 @@ CREATE TABLE IF NOT EXISTS github_items (
     UNIQUE(repo, item_type, number)
 );
 
+-- Index for direct number lookups (e.g. "What is PR #2022?")
+CREATE INDEX IF NOT EXISTS idx_github_items_number ON github_items(number);
+
 -- FTS5 virtual table for full-text search on GitHub items
 CREATE VIRTUAL TABLE IF NOT EXISTS github_items_fts USING fts5(
     title,

@@ -19,11 +19,23 @@ cors_origins:
 # The backend must have this environment variable set
 openrouter_api_key_env_var: "OPENROUTER_API_KEY_HED"
 
+# Community maintainers (GitHub usernames)
+# Used for scoped admin access and budget alert @mentions
+maintainers:
+  - VisLab
+  - yarikoptic
+
+# Budget limits for cost management
+budget:
+  daily_limit_usd: 5.00
+  monthly_limit_usd: 50.00
+  alert_threshold_pct: 80.0
+
 # Default model for this community (optional)
 # If specified, overrides the platform-level default model
 # Format: creator/model-name (OpenRouter format)
-default_model: "qwen/qwen3-235b-a22b-2507"
-default_model_provider: "DeepInfra/FP8"  # Optimized FP8 quantized inference
+default_model: "anthropic/claude-haiku-4.5"
+default_model_provider: "anthropic"
 
 # System prompt template
 # Available placeholders: {name}, {description}, {repo_list}, {paper_dois},

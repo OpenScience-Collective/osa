@@ -106,6 +106,59 @@ class SearchResult:
     created_at: str
 
 
+def _is_pure_number_query(query: str) -> bool:
+    """Check if the query is purely a number lookup with no useful text for FTS.
+
+    Returns True for queries like "2022", "#500", "PR 2022", "issue #500"
+    where FTS would produce poor results (searching for literal "#500" or "PR 10").
+    """
+    stripped = query.strip()
+    # Pure number or hash-number
+    if stripped.lstrip("#").isdigit():
+        return True
+    # Keyword + number with nothing else
+    return bool(re.fullmatch(r"(?:pr|pull|issue|bug|feature)\s*#?\s*\d+", stripped, re.IGNORECASE))
+
+
+def _extract_number(query: str) -> int | None:
+    """Extract an issue/PR number from a query string.
+
+    Handles patterns like "2022", "#2022", "PR 2022", "issue #500".
+    Pure numeric queries (e.g. "2022") are treated as number lookups first;
+    this may match a PR/issue number rather than items mentioning the year.
+
+    Returns:
+        The extracted number, or None if no number pattern found.
+    """
+    # Strip and try common patterns
+    stripped = query.strip().lstrip("#")
+    # Direct number
+    if stripped.isdigit():
+        return int(stripped)
+    # "PR 2022", "issue #500", "pull #2022", etc.
+    m = re.match(r"(?:pr|pull|issue|bug|feature)\s*#?\s*(\d+)", query.strip(), re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def _row_to_result(row: sqlite3.Row) -> SearchResult:
+    """Convert a database row to a SearchResult."""
+    first_message = row["first_message"] or ""
+    snippet = first_message[:200].strip()
+    if len(first_message) > 200:
+        snippet += "..."
+    return SearchResult(
+        title=row["title"],
+        url=row["url"],
+        snippet=snippet,
+        source="github",
+        item_type=row["item_type"],
+        status=row["status"],
+        created_at=row["created_at"] or "",
+    )
+
+
 def search_github_items(
     query: str,
     project: str = "hed",
@@ -114,10 +167,14 @@ def search_github_items(
     status: str | None = None,
     repo: str | None = None,
 ) -> list[SearchResult]:
-    """Search GitHub issues and PRs using phrase matching.
+    """Search GitHub issues and PRs by number, title, or body text.
+
+    When the query contains a number (e.g. "2022", "#500", "PR 2022"),
+    results matching that number are returned first, followed by
+    full-text search results.
 
     Args:
-        query: Search phrase (treated as exact phrase, not FTS5 operators)
+        query: Search phrase, PR/issue number, or keyword
         project: Assistant/project name for database isolation. Defaults to 'hed'.
         limit: Maximum number of results
         item_type: Filter by 'issue' or 'pr'
@@ -125,56 +182,74 @@ def search_github_items(
         repo: Filter by repository name
 
     Returns:
-        List of matching results, ordered by relevance
+        List of matching results, with number matches first
     """
-    # Build SQL query with optional filters
-    sql = """
-        SELECT g.title, g.url, g.first_message, g.item_type, g.status,
-               g.created_at, g.repo
-        FROM github_items_fts f
-        JOIN github_items g ON f.rowid = g.id
-        WHERE github_items_fts MATCH ?
-    """
-    params: list[str | int] = [query]
-
-    if item_type:
-        sql += " AND g.item_type = ?"
-        params.append(item_type)
-    if status:
-        sql += " AND g.status = ?"
-        params.append(status)
-    if repo:
-        sql += " AND g.repo = ?"
-        params.append(repo)
-
-    sql += " ORDER BY rank LIMIT ?"
-    params.append(limit)
-
     results = []
+    seen_urls: set[str] = set()
+
     try:
         with get_connection(project) as conn:
-            # Sanitize user query to prevent FTS5 injection
-            safe_query = _sanitize_fts5_query(query)
-            params[0] = safe_query
+            # Phase 1: Try direct number lookup
+            number = _extract_number(query)
+            is_pure_number = _is_pure_number_query(query)
+            if number is not None:
+                num_sql = """
+                    SELECT title, url, first_message, item_type, status,
+                           created_at, repo
+                    FROM github_items WHERE number = ?
+                """
+                num_params: list[str | int] = [number]
+                if item_type:
+                    num_sql += " AND item_type = ?"
+                    num_params.append(item_type)
+                if status:
+                    num_sql += " AND status = ?"
+                    num_params.append(status)
+                if repo:
+                    num_sql += " AND repo = ?"
+                    num_params.append(repo)
 
-            for row in conn.execute(sql, params):
-                # Create snippet from first_message (first 200 chars)
-                first_message = row["first_message"] or ""
-                snippet = first_message[:200].strip()
-                if len(first_message) > 200:
-                    snippet += "..."
+                for row in conn.execute(num_sql, num_params):
+                    result = _row_to_result(row)
+                    results.append(result)
+                    seen_urls.add(result.url)
 
-                results.append(
-                    SearchResult(
-                        title=row["title"],
-                        url=row["url"],
-                        snippet=snippet,
-                        source="github",
-                        item_type=row["item_type"],
-                        status=row["status"],
-                        created_at=row["created_at"] or "",
-                    )
-                )
+                if not results:
+                    logger.debug("Number lookup for %d found no items", number)
+
+            # Phase 2: Full-text search for remaining slots
+            # Skip FTS for pure number queries (e.g. "#500", "PR 2022") since
+            # the sanitized query would search for literal "#500" which won't
+            # match anything useful in title/body text.
+            remaining = limit - len(results)
+            if remaining > 0 and not is_pure_number:
+                fts_sql = """
+                    SELECT g.title, g.url, g.first_message, g.item_type, g.status,
+                           g.created_at, g.repo
+                    FROM github_items_fts f
+                    JOIN github_items g ON f.rowid = g.id
+                    WHERE github_items_fts MATCH ?
+                """
+                fts_params: list[str | int] = [_sanitize_fts5_query(query)]
+
+                if item_type:
+                    fts_sql += " AND g.item_type = ?"
+                    fts_params.append(item_type)
+                if status:
+                    fts_sql += " AND g.status = ?"
+                    fts_params.append(status)
+                if repo:
+                    fts_sql += " AND g.repo = ?"
+                    fts_params.append(repo)
+
+                fts_sql += " ORDER BY rank LIMIT ?"
+                fts_params.append(remaining)
+
+                for row in conn.execute(fts_sql, fts_params):
+                    if row["url"] not in seen_urls:
+                        results.append(_row_to_result(row))
+                        seen_urls.add(row["url"])
+
     except sqlite3.OperationalError as e:
         # Infrastructure failure (corruption, disk full, permissions) - must propagate
         logger.error(

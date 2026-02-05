@@ -146,9 +146,16 @@ src/
 - **.context/api_key_authorization_design.md** - API key auth and CORS
 - **.context/security-architecture.md** - Security patterns
 
-### Community Configuration
-- **.context/yaml_registry.md** - YAML-based community config
-- **.context/community_onboarding_review.md** - Onboarding guidelines
+### Community Development (Adding/Modifying Communities)
+- **Full docs site**: https://docs.osc.earth/osa/registry/ (canonical reference)
+  - [Adding a Community](https://docs.osc.earth/osa/registry/quick-start/) - Step-by-step guide
+  - [Local Testing](https://docs.osc.earth/osa/registry/local-testing/) - Testing a new community end-to-end
+  - [Schema Reference](https://docs.osc.earth/osa/registry/schema-reference/) - Full YAML config schema
+  - [Extensions](https://docs.osc.earth/osa/registry/extensions/) - Python plugins and MCP servers
+- **.context/yaml_registry.md** - YAML-based community config (internal notes)
+- **.context/community_onboarding_review.md** - Onboarding gap analysis
+- **.context/local-testing-guide.md** - Quick local testing reference
+- **Existing configs to reference**: `src/assistants/hed/config.yaml`, `src/assistants/eeglab/config.yaml`
 
 ### Tool System
 - **.context/tool-system-guide.md** - How tools work and are registered
@@ -238,6 +245,38 @@ docker exec osa-dev python -m src.cli.main sync github --full
 **Frontend:**
 - Dev: https://develop.osa-demo.pages.dev
 - Prod: https://osa-demo.pages.dev
+
+### Inspecting Knowledge Databases
+
+Knowledge databases (SQLite) live **inside the Docker containers**, not locally.
+Do NOT look for `.db` files in the local repo; they won't be there.
+
+```bash
+# List databases in a container
+ssh -o "RequestTTY=no" -J hallu hedtools \
+  "docker exec osa find /app/data/knowledge -name '*.db'"
+
+# Containers: osa (prod), osa-dev (dev)
+# Database paths: /app/data/knowledge/{community_id}.db
+#   e.g., /app/data/knowledge/eeglab.db, /app/data/knowledge/hed.db
+
+# List tables (no sqlite3 binary; use python)
+ssh -o "RequestTTY=no" -J hallu hedtools \
+  "docker exec osa python3 -c 'import sqlite3; conn = sqlite3.connect(\"/app/data/knowledge/eeglab.db\"); print([r[0] for r in conn.execute(\"SELECT name FROM sqlite_master WHERE type=\\\"table\\\"\")]); conn.close()'"
+
+# Query example: count docstrings
+ssh -o "RequestTTY=no" -J hallu hedtools \
+  "docker exec osa python3 -c 'import sqlite3; conn = sqlite3.connect(\"/app/data/knowledge/eeglab.db\"); print(conn.execute(\"SELECT COUNT(*) FROM docstrings\").fetchone()[0]); conn.close()'"
+
+# Query example: search for a symbol
+ssh -o "RequestTTY=no" -J hallu hedtools \
+  "docker exec osa python3 -c 'import sqlite3; conn = sqlite3.connect(\"/app/data/knowledge/eeglab.db\"); [print(r) for r in conn.execute(\"SELECT symbol_name, file_path FROM docstrings WHERE symbol_name LIKE \\\"%erpimage%\\\"\").fetchall()]; conn.close()'"
+```
+
+**Important notes:**
+- `sqlite3` CLI is not installed in containers; use `python3 -c` with the `sqlite3` module
+- Use `ssh -o "RequestTTY=no"` to avoid interactive shell banners
+- Dev and prod databases may differ; always check the right container
 
 ## References
 

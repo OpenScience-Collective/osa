@@ -5,13 +5,24 @@ id: eeglab
 name: EEGLAB
 description: EEG signal processing and analysis toolbox
 status: available
-default_model: qwen/qwen3-235b-a22b-2507
-default_model_provider: DeepInfra/FP8
+default_model: anthropic/claude-haiku-4.5
+default_model_provider: anthropic
 
 cors_origins:
   - https://eeglab.org
   - https://www.eeglab.org
   - https://sccn.github.io
+
+# Community maintainers (GitHub usernames)
+# Used for scoped admin access and budget alert @mentions
+maintainers:
+  - arnodelorme
+
+# Budget limits for cost management
+budget:
+  daily_limit_usd: 5.00
+  monthly_limit_usd: 50.00
+  alert_threshold_pct: 80.0
 
 # System prompt template with runtime-substituted placeholders
 # Placeholders (in curly braces) are replaced by CommunityAssistant at runtime:

@@ -7,23 +7,45 @@ Each community gets endpoints like /{community_id}/ask, /{community_id}/chat, et
 import hashlib
 import json
 import logging
+import os
+import re
+import sqlite3
+import time
 import uuid
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field, field_validator
 
 from src.api.config import get_settings
-from src.api.security import RequireAuth
+from src.api.security import AuthScope, RequireAuth, RequireScopedAuth
 from src.assistants import registry
 from src.assistants.community import CommunityAssistant
 from src.assistants.community import PageContext as AgentPageContext
 from src.assistants.registry import AssistantInfo
 from src.core.services.litellm_llm import create_openrouter_llm
+from src.metrics.cost import estimate_cost
+from src.metrics.db import (
+    RequestLogEntry,
+    extract_token_usage,
+    extract_tool_names,
+    log_request,
+    metrics_connection,
+    now_iso,
+)
+from src.metrics.queries import (
+    get_community_summary,
+    get_public_community_summary,
+    get_public_usage_stats,
+    get_quality_metrics,
+    get_quality_summary,
+    get_usage_stats,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -312,21 +334,24 @@ def delete_session(community_id: str, session_id: str) -> bool:
 
 def list_sessions(community_id: str) -> list[ChatSession]:
     """List all active (non-expired) sessions for a community."""
+    _evict_expired_sessions(community_id)
     store = _get_session_store(community_id)
-    # Filter out expired sessions
-    active_sessions = [s for s in store.values() if not s.is_expired()]
-    # Clean up expired sessions from store
-    expired = [sid for sid, s in store.items() if s.is_expired()]
-    for sid in expired:
-        del store[sid]
-    if expired:
-        logger.info("Cleaned %d expired sessions from %s", len(expired), community_id)
-    return active_sessions
+    return list(store.values())
 
 
 # ---------------------------------------------------------------------------
 # Assistant Factory
 # ---------------------------------------------------------------------------
+
+
+def _match_wildcard_origin(pattern: str, origin: str) -> bool:
+    """Check if an origin matches a wildcard pattern like 'https://*.example.com'.
+
+    Converts '*' to a subdomain-safe regex and uses fullmatch.
+    """
+    escaped = re.escape(pattern)
+    regex = escaped.replace(r"\*", r"[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?")
+    return bool(re.fullmatch(regex, origin))
 
 
 def _is_authorized_origin(origin: str | None, community_id: str) -> bool:
@@ -350,8 +375,6 @@ def _is_authorized_origin(origin: str | None, community_id: str) -> bool:
     if not origin:
         return False
 
-    import re
-
     # Platform default origins - always allowed for all communities
     platform_exact_origins = [
         "https://osa-demo.pages.dev",
@@ -366,9 +389,7 @@ def _is_authorized_origin(origin: str | None, community_id: str) -> bool:
 
     # Check platform wildcard patterns
     for allowed in platform_wildcard_origins:
-        escaped = re.escape(allowed)
-        pattern = escaped.replace(r"\*", r"[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?")
-        if re.fullmatch(pattern, origin):
+        if _match_wildcard_origin(allowed, origin):
             return True
 
     # Check community-specific origins
@@ -380,19 +401,12 @@ def _is_authorized_origin(origin: str | None, community_id: str) -> bool:
     if not cors_origins:
         return False
 
-    # Check exact matches first
     for allowed in cors_origins:
-        if "*" not in allowed and origin == allowed:
-            return True
-
-    # Check wildcard patterns
-    for allowed in cors_origins:
-        if "*" in allowed:
-            # Convert wildcard pattern to regex (same logic as main.py)
-            escaped = re.escape(allowed)
-            pattern = escaped.replace(r"\*", r"[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?")
-            if re.fullmatch(pattern, origin):
+        if "*" not in allowed:
+            if origin == allowed:
                 return True
+        elif _match_wildcard_origin(allowed, origin):
+            return True
 
     return False
 
@@ -426,8 +440,6 @@ def _select_api_key(
         HTTPException(403): If origin is not authorized and BYOK is not provided
         HTTPException(500): If no platform API key is configured and no other key is available
     """
-    import os
-
     # Case 1: BYOK provided - always allowed
     if byok:
         logger.debug(
@@ -604,6 +616,17 @@ def _get_cache_user_id(community_id: str, api_key: str | None, user_id: str | No
     return f"{community_id}_widget"
 
 
+@dataclass
+class AssistantWithMetrics:
+    """Community assistant bundled with metadata for metrics logging."""
+
+    assistant: CommunityAssistant
+    model: str
+    key_source: str
+    langfuse_config: dict | None = None
+    langfuse_trace_id: str | None = None
+
+
 def create_community_assistant(
     community_id: str,
     byok: str | None = None,
@@ -612,13 +635,13 @@ def create_community_assistant(
     requested_model: str | None = None,
     preload_docs: bool = True,
     page_context: PageContext | None = None,
-) -> CommunityAssistant:
+) -> AssistantWithMetrics:
     """Create a community assistant instance with authorization checks.
 
     **Authorization:**
-    - If BYOK provided → always allowed
-    - If origin matches community CORS → can use community/platform keys
-    - Otherwise → rejects with 403 (CLI/unauthorized must provide BYOK)
+    - If BYOK provided -> always allowed
+    - If origin matches community CORS -> can use community/platform keys
+    - Otherwise -> rejects with 403 (CLI/unauthorized must provide BYOK)
 
     **Model Selection:**
     - Custom model requests require BYOK
@@ -634,7 +657,8 @@ def create_community_assistant(
         page_context: Optional context about the page where the widget is embedded
 
     Returns:
-        Configured CommunityAssistant instance
+        AssistantWithMetrics containing the assistant, resolved model, and key source.
+        Access the assistant via .assistant attribute.
 
     Raises:
         ValueError: If community_id is not registered
@@ -683,12 +707,105 @@ def create_community_assistant(
             title=page_context.title,
         )
 
-    return registry.create_assistant(
+    assistant = registry.create_assistant(
         community_id,
         model=model,
         preload_docs=preload_docs,
         page_context=agent_page_context,
     )
+
+    # Wire LangFuse tracing if configured
+    langfuse_config = None
+    langfuse_trace_id = None
+    try:
+        from src.core.services.llm import get_llm_service
+    except ImportError:
+        logger.debug("LangFuse tracing not available (module not installed)")
+    else:
+        try:
+            llm_service = get_llm_service(settings)
+            trace_id = f"{community_id}-{uuid.uuid4().hex[:12]}"
+            config = llm_service.get_config_with_tracing(trace_id=trace_id)
+            if config.get("callbacks"):
+                langfuse_config = config
+                langfuse_trace_id = trace_id
+        except Exception:
+            logger.warning(
+                "LangFuse tracing setup failed for %s, continuing without it",
+                community_id,
+                exc_info=True,
+            )
+
+    return AssistantWithMetrics(
+        assistant=assistant,
+        model=selected_model,
+        key_source=key_source,
+        langfuse_config=langfuse_config,
+        langfuse_trace_id=langfuse_trace_id,
+    )
+
+
+@dataclass
+class AgentResult:
+    """Extracted response content and metrics from an agent invocation."""
+
+    response_content: str
+    tool_calls_info: list[ToolCallInfo]
+    tools_called: list[str]
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+
+
+def _extract_agent_result(result: dict) -> AgentResult:
+    """Extract response content, tool calls, and token usage from agent result.
+
+    Consolidates the common post-invocation logic shared by ask and chat endpoints.
+    """
+    response_content = ""
+    if result.get("messages"):
+        last_msg = result["messages"][-1]
+        if isinstance(last_msg, AIMessage):
+            content = last_msg.content
+            response_content = content if isinstance(content, str) else str(content)
+
+    tools_called = extract_tool_names(result)
+    tool_calls_info = [
+        ToolCallInfo(name=tc.get("name", ""), args=tc.get("args", {}))
+        for tc in result.get("tool_calls", [])
+    ]
+
+    inp, out, total = extract_token_usage(result)
+    return AgentResult(
+        response_content=response_content,
+        tool_calls_info=tool_calls_info,
+        tools_called=tools_called,
+        input_tokens=inp,
+        output_tokens=out,
+        total_tokens=total,
+    )
+
+
+def _set_metrics_on_request(
+    http_request: Request,
+    awm: AssistantWithMetrics,
+    agent_result: AgentResult,
+) -> None:
+    """Store agent metrics on request.state for the metrics middleware to log."""
+    http_request.state.metrics_agent_data = {
+        "model": awm.model,
+        "key_source": awm.key_source,
+        "input_tokens": agent_result.input_tokens,
+        "output_tokens": agent_result.output_tokens,
+        "total_tokens": agent_result.total_tokens,
+        "estimated_cost": estimate_cost(
+            awm.model, agent_result.input_tokens, agent_result.output_tokens
+        ),
+        "tools_called": agent_result.tools_called,
+        "tool_call_count": len(agent_result.tools_called),
+        "langfuse_trace_id": awm.langfuse_trace_id,
+        "stream": False,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -765,6 +882,7 @@ def create_community_router(community_id: str) -> APIRouter:
                     x_user_id,
                     body.page_context,
                     body.model,
+                    http_request=http_request,
                 ),
                 media_type="text/event-stream",
                 headers={
@@ -774,7 +892,7 @@ def create_community_router(community_id: str) -> APIRouter:
             )
 
         try:
-            assistant = create_community_assistant(
+            awm = create_community_assistant(
                 community_id,
                 byok=x_openrouter_key,
                 origin=origin,
@@ -783,22 +901,12 @@ def create_community_router(community_id: str) -> APIRouter:
                 page_context=body.page_context,
             )
             messages = [HumanMessage(content=body.question)]
-            result = await assistant.ainvoke(messages)
+            result = await awm.assistant.ainvoke(messages, config=awm.langfuse_config)
 
-            response_content = ""
-            if result.get("messages"):
-                last_msg = result["messages"][-1]
-                if isinstance(last_msg, AIMessage):
-                    # Handle both string and list content (multimodal responses)
-                    content = last_msg.content
-                    response_content = content if isinstance(content, str) else str(content)
+            ar = _extract_agent_result(result)
+            _set_metrics_on_request(http_request, awm, ar)
 
-            tool_calls_info = [
-                ToolCallInfo(name=tc.get("name", ""), args=tc.get("args", {}))
-                for tc in result.get("tool_calls", [])
-            ]
-
-            return AskResponse(answer=response_content, tool_calls=tool_calls_info)
+            return AskResponse(answer=ar.response_content, tool_calls=ar.tool_calls_info)
 
         except Exception as e:
             logger.error(
@@ -858,7 +966,13 @@ def create_community_router(community_id: str) -> APIRouter:
         if body.stream:
             return StreamingResponse(
                 _stream_chat_response(
-                    community_id, session, x_openrouter_key, origin, user_id, body.model
+                    community_id,
+                    session,
+                    x_openrouter_key,
+                    origin,
+                    user_id,
+                    body.model,
+                    http_request=http_request,
                 ),
                 media_type="text/event-stream",
                 headers={
@@ -869,31 +983,21 @@ def create_community_router(community_id: str) -> APIRouter:
             )
 
         try:
-            assistant = create_community_assistant(
+            awm = create_community_assistant(
                 community_id,
                 byok=x_openrouter_key,
                 origin=origin,
                 user_id=user_id,
                 requested_model=body.model,
             )
-            result = await assistant.ainvoke(session.messages)
+            result = await awm.assistant.ainvoke(session.messages, config=awm.langfuse_config)
 
-            response_content = ""
-            if result.get("messages"):
-                last_msg = result["messages"][-1]
-                if isinstance(last_msg, AIMessage):
-                    # Handle both string and list content (multimodal responses)
-                    content = last_msg.content
-                    response_content = content if isinstance(content, str) else str(content)
-
-            tool_calls_info = [
-                ToolCallInfo(name=tc.get("name", ""), args=tc.get("args", {}))
-                for tc in result.get("tool_calls", [])
-            ]
+            ar = _extract_agent_result(result)
+            _set_metrics_on_request(http_request, awm, ar)
 
             # Add assistant message with constraint validation
             try:
-                session.add_assistant_message(response_content)
+                session.add_assistant_message(ar.response_content)
             except ValueError as e:
                 logger.error("Session limit exceeded: %s", e)
                 raise HTTPException(
@@ -903,8 +1007,8 @@ def create_community_router(community_id: str) -> APIRouter:
 
             return ChatResponse(
                 session_id=session.session_id,
-                message=ChatMessage(role="assistant", content=response_content),
-                tool_calls=tool_calls_info,
+                message=ChatMessage(role="assistant", content=ar.response_content),
+                tool_calls=ar.tool_calls_info,
             )
 
         except ValueError as e:
@@ -987,7 +1091,187 @@ def create_community_router(community_id: str) -> APIRouter:
             default_model_provider=default_provider,
         )
 
+    # -----------------------------------------------------------------------
+    # Per-community Metrics Endpoints
+    # -----------------------------------------------------------------------
+
+    def _require_community_access(auth: AuthScope) -> None:
+        """Raise 403 if the scoped key cannot access this community."""
+        if not auth.can_access_community(community_id):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Your API key does not have access to {community_id} metrics",
+            )
+
+    @router.get("/metrics")
+    async def community_metrics(auth: RequireScopedAuth) -> dict[str, Any]:
+        """Get metrics summary for this community. Requires admin or community key."""
+        _require_community_access(auth)
+        try:
+            with metrics_connection() as conn:
+                return get_community_summary(community_id, conn)
+        except sqlite3.Error:
+            logger.exception("Failed to query metrics for community %s", community_id)
+            raise HTTPException(
+                status_code=503,
+                detail="Metrics database is temporarily unavailable.",
+            )
+
+    @router.get("/metrics/usage")
+    async def community_usage(
+        auth: RequireScopedAuth,
+        period: str = Query(
+            default="daily",
+            description="Time bucket period",
+            pattern="^(daily|weekly|monthly)$",
+        ),
+    ) -> dict[str, Any]:
+        """Get time-bucketed usage stats for this community. Requires admin or community key."""
+        _require_community_access(auth)
+        try:
+            with metrics_connection() as conn:
+                return get_usage_stats(community_id, period, conn)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except sqlite3.Error:
+            logger.exception("Failed to query usage stats for community %s", community_id)
+            raise HTTPException(
+                status_code=503,
+                detail="Metrics database is temporarily unavailable.",
+            )
+
+    @router.get("/metrics/quality")
+    async def community_quality(
+        auth: RequireScopedAuth,
+        period: str = Query(
+            default="daily",
+            description="Time bucket period",
+            pattern="^(daily|weekly|monthly)$",
+        ),
+    ) -> dict[str, Any]:
+        """Get quality metrics for this community. Requires admin or community key."""
+        _require_community_access(auth)
+        try:
+            with metrics_connection() as conn:
+                return get_quality_metrics(community_id, conn, period)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except sqlite3.Error:
+            logger.exception("Failed to query quality metrics for community %s", community_id)
+            raise HTTPException(
+                status_code=503,
+                detail="Metrics database is temporarily unavailable.",
+            )
+
+    @router.get("/metrics/quality/summary")
+    async def community_quality_summary(auth: RequireScopedAuth) -> dict[str, Any]:
+        """Get overall quality summary for this community. Requires admin or community key."""
+        _require_community_access(auth)
+        try:
+            with metrics_connection() as conn:
+                return get_quality_summary(community_id, conn)
+        except sqlite3.Error:
+            logger.exception("Failed to query quality summary for community %s", community_id)
+            raise HTTPException(
+                status_code=503,
+                detail="Metrics database is temporarily unavailable.",
+            )
+
+    # -----------------------------------------------------------------------
+    # Per-community Public Metrics Endpoints (no auth required)
+    # -----------------------------------------------------------------------
+
+    @router.get("/metrics/public")
+    async def community_metrics_public() -> dict[str, Any]:
+        """Get public metrics summary for this community.
+
+        Returns request counts, error rate, and top tools.
+        No tokens, costs, or model information exposed.
+        """
+        try:
+            with metrics_connection() as conn:
+                return get_public_community_summary(community_id, conn)
+        except sqlite3.Error:
+            logger.exception("Failed to query public metrics for community %s", community_id)
+            raise HTTPException(
+                status_code=503,
+                detail="Metrics database is temporarily unavailable.",
+            )
+
+    @router.get("/metrics/public/usage")
+    async def community_usage_public(
+        period: str = Query(
+            default="daily",
+            description="Time bucket period",
+            pattern="^(daily|weekly|monthly)$",
+        ),
+    ) -> dict[str, Any]:
+        """Get public time-bucketed usage stats for this community.
+
+        Returns request counts and errors per time bucket.
+        No tokens or costs exposed.
+        """
+        try:
+            with metrics_connection() as conn:
+                return get_public_usage_stats(community_id, period, conn)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except sqlite3.Error:
+            logger.exception("Failed to query public usage stats for community %s", community_id)
+            raise HTTPException(
+                status_code=503,
+                detail="Metrics database is temporarily unavailable.",
+            )
+
     return router
+
+
+# ---------------------------------------------------------------------------
+# Metrics Helpers
+# ---------------------------------------------------------------------------
+
+
+def _log_streaming_metrics(
+    http_request: Request | None,
+    community_id: str,
+    endpoint: str,
+    awm: AssistantWithMetrics | None,
+    tools_called: list[str],
+    start_time: float,
+    status_code: int,
+) -> None:
+    """Log metrics at the end of a streaming response.
+
+    Called directly from streaming generators since middleware fires
+    before streaming completes. Wrapped in try/except to never disrupt
+    the SSE stream on failure.
+    """
+    try:
+        duration_ms = (time.monotonic() - start_time) * 1000
+        request_id = str(uuid.uuid4())
+        if http_request:
+            request_id = getattr(http_request.state, "request_id", request_id)
+            # Mark as logged so middleware doesn't double-log
+            http_request.state.metrics_logged = True
+
+        entry = RequestLogEntry(
+            request_id=request_id,
+            timestamp=now_iso(),
+            endpoint=endpoint,
+            method="POST",
+            community_id=community_id,
+            duration_ms=round(duration_ms, 1),
+            status_code=status_code,
+            model=awm.model if awm else None,
+            key_source=awm.key_source if awm else None,
+            tools_called=tools_called,
+            stream=True,
+            tool_call_count=len(tools_called),
+            langfuse_trace_id=awm.langfuse_trace_id if awm else None,
+        )
+        log_request(entry)
+    except Exception:
+        logger.exception("Failed to log streaming metrics for %s", endpoint)
 
 
 # ---------------------------------------------------------------------------
@@ -1003,6 +1287,7 @@ async def _stream_ask_response(
     user_id: str | None,
     page_context: PageContext | None = None,
     requested_model: str | None = None,
+    http_request: Request | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream response for ask endpoint with JSON-encoded SSE events.
 
@@ -1013,8 +1298,12 @@ async def _stream_ask_response(
         data: {"event": "done"}
         data: {"event": "error", "message": "error text"}
     """
+    start_time = time.monotonic()
+    tools_called: list[str] = []
+    awm: AssistantWithMetrics | None = None
+
     try:
-        assistant = create_community_assistant(
+        awm = create_community_assistant(
             community_id,
             byok=byok,
             origin=origin,
@@ -1023,7 +1312,7 @@ async def _stream_ask_response(
             preload_docs=True,
             page_context=page_context,
         )
-        graph = assistant.build_graph()
+        graph = awm.assistant.build_graph()
 
         state = {
             "messages": [HumanMessage(content=question)],
@@ -1031,7 +1320,8 @@ async def _stream_ask_response(
             "tool_calls": [],
         }
 
-        async for event in graph.astream_events(state, version="v2"):
+        stream_config = awm.langfuse_config or {}
+        async for event in graph.astream_events(state, version="v2", config=stream_config):
             kind = event.get("event")
 
             if kind == "on_chat_model_stream":
@@ -1042,9 +1332,12 @@ async def _stream_ask_response(
 
             elif kind == "on_tool_start":
                 tool_input = event.get("data", {}).get("input", {})
+                tool_name = event.get("name", "")
+                if tool_name:
+                    tools_called.append(tool_name)
                 sse_event = {
                     "event": "tool_start",
-                    "name": event.get("name", ""),
+                    "name": tool_name,
                     "input": tool_input if isinstance(tool_input, dict) else {},
                 }
                 yield f"data: {json.dumps(sse_event)}\n\n"
@@ -1061,9 +1354,37 @@ async def _stream_ask_response(
         sse_event = {"event": "done"}
         yield f"data: {json.dumps(sse_event)}\n\n"
 
-    except HTTPException:
-        # Don't catch our own HTTP exceptions - let them propagate
-        raise
+        # Log metrics at end of streaming
+        _log_streaming_metrics(
+            http_request=http_request,
+            community_id=community_id,
+            endpoint=f"/{community_id}/ask",
+            awm=awm,
+            tools_called=tools_called,
+            start_time=start_time,
+            status_code=200,
+        )
+
+    except HTTPException as e:
+        # HTTPException in streaming context (e.g., auth failure, rate limit).
+        # Cannot re-raise because response headers are already sent as 200.
+        logger.warning(
+            "HTTP error in ask streaming for community %s: %d %s",
+            community_id,
+            e.status_code,
+            e.detail,
+        )
+        sse_event = {"event": "error", "message": str(e.detail)}
+        yield f"data: {json.dumps(sse_event)}\n\n"
+        _log_streaming_metrics(
+            http_request=http_request,
+            community_id=community_id,
+            endpoint=f"/{community_id}/ask",
+            awm=awm,
+            tools_called=tools_called,
+            start_time=start_time,
+            status_code=e.status_code,
+        )
     except ValueError as e:
         # Input validation errors - user's fault
         logger.warning("Invalid input in streaming for community %s: %s", community_id, e)
@@ -1073,10 +1394,17 @@ async def _stream_ask_response(
             "retryable": False,
         }
         yield f"data: {json.dumps(sse_event)}\n\n"
+        _log_streaming_metrics(
+            http_request=http_request,
+            community_id=community_id,
+            endpoint=f"/{community_id}/ask",
+            awm=awm,
+            tools_called=tools_called,
+            start_time=start_time,
+            status_code=400,
+        )
     except Exception as e:
         # Unexpected errors - log with full context
-        import uuid
-
         error_id = str(uuid.uuid4())
         logger.error(
             "Unexpected streaming error (ID: %s) in ask endpoint for community %s: %s",
@@ -1096,6 +1424,15 @@ async def _stream_ask_response(
             "error_id": error_id,
         }
         yield f"data: {json.dumps(sse_event)}\n\n"
+        _log_streaming_metrics(
+            http_request=http_request,
+            community_id=community_id,
+            endpoint=f"/{community_id}/ask",
+            awm=awm,
+            tools_called=tools_called,
+            start_time=start_time,
+            status_code=500,
+        )
 
 
 async def _stream_chat_response(
@@ -1105,6 +1442,7 @@ async def _stream_chat_response(
     origin: str | None,
     user_id: str | None,
     requested_model: str | None = None,
+    http_request: Request | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream assistant response as JSON-encoded Server-Sent Events.
 
@@ -1115,8 +1453,12 @@ async def _stream_chat_response(
         data: {"event": "done", "session_id": "..."}
         data: {"event": "error", "message": "error text"}
     """
+    start_time = time.monotonic()
+    tools_called: list[str] = []
+    awm: AssistantWithMetrics | None = None
+
     try:
-        assistant = create_community_assistant(
+        awm = create_community_assistant(
             community_id,
             byok=byok,
             origin=origin,
@@ -1124,7 +1466,7 @@ async def _stream_chat_response(
             requested_model=requested_model,
             preload_docs=True,
         )
-        graph = assistant.build_graph()
+        graph = awm.assistant.build_graph()
 
         state = {
             "messages": session.messages.copy(),
@@ -1132,9 +1474,10 @@ async def _stream_chat_response(
             "tool_calls": [],
         }
 
+        stream_config = awm.langfuse_config or {}
         full_response = ""
 
-        async for event in graph.astream_events(state, version="v2"):
+        async for event in graph.astream_events(state, version="v2", config=stream_config):
             kind = event.get("event")
 
             if kind == "on_chat_model_stream":
@@ -1147,9 +1490,12 @@ async def _stream_chat_response(
 
             elif kind == "on_tool_start":
                 tool_input = event.get("data", {}).get("input", {})
+                tool_name = event.get("name", "")
+                if tool_name:
+                    tools_called.append(tool_name)
                 sse_event = {
                     "event": "tool_start",
-                    "name": event.get("name", ""),
+                    "name": tool_name,
                     "input": tool_input if isinstance(tool_input, dict) else {},
                 }
                 yield f"data: {json.dumps(sse_event)}\n\n"
@@ -1176,21 +1522,79 @@ async def _stream_chat_response(
         sse_event = {"event": "done", "session_id": session.session_id}
         yield f"data: {json.dumps(sse_event)}\n\n"
 
+        # Log metrics at end of streaming
+        _log_streaming_metrics(
+            http_request=http_request,
+            community_id=community_id,
+            endpoint=f"/{community_id}/chat",
+            awm=awm,
+            tools_called=tools_called,
+            start_time=start_time,
+            status_code=200,
+        )
+
+    except HTTPException as e:
+        # HTTPException in streaming context (e.g., auth failure, rate limit).
+        # Cannot re-raise because response headers are already sent as 200.
+        logger.warning(
+            "HTTP error in chat streaming for session %s (community: %s): %d %s",
+            session.session_id,
+            community_id,
+            e.status_code,
+            e.detail,
+        )
+        sse_event = {"event": "error", "message": str(e.detail)}
+        yield f"data: {json.dumps(sse_event)}\n\n"
+        _log_streaming_metrics(
+            http_request=http_request,
+            community_id=community_id,
+            endpoint=f"/{community_id}/chat",
+            awm=awm,
+            tools_called=tools_called,
+            start_time=start_time,
+            status_code=e.status_code,
+        )
     except ValueError as e:
         # Session limit errors
         logger.error("Session limit error: %s", e)
         sse_event = {"event": "error", "message": str(e)}
         yield f"data: {json.dumps(sse_event)}\n\n"
+        _log_streaming_metrics(
+            http_request=http_request,
+            community_id=community_id,
+            endpoint=f"/{community_id}/chat",
+            awm=awm,
+            tools_called=tools_called,
+            start_time=start_time,
+            status_code=400,
+        )
     except Exception as e:
+        error_id = str(uuid.uuid4())
         logger.error(
-            "Streaming error in chat endpoint for session %s (community: %s): %s",
+            "Unexpected streaming error (ID: %s) in chat endpoint for session %s (community: %s): %s",
+            error_id,
             session.session_id,
             community_id,
             e,
             exc_info=True,
+            extra={
+                "error_id": error_id,
+                "community_id": community_id,
+                "error_type": type(e).__name__,
+            },
         )
         sse_event = {
             "event": "error",
             "message": "An error occurred while processing your request.",
+            "error_id": error_id,
         }
         yield f"data: {json.dumps(sse_event)}\n\n"
+        _log_streaming_metrics(
+            http_request=http_request,
+            community_id=community_id,
+            endpoint=f"/{community_id}/chat",
+            awm=awm,
+            tools_called=tools_called,
+            start_time=start_time,
+            status_code=500,
+        )
