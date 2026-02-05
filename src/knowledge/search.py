@@ -117,11 +117,7 @@ def _is_pure_number_query(query: str) -> bool:
     if stripped.lstrip("#").isdigit():
         return True
     # Keyword + number with nothing else
-    return bool(
-        re.fullmatch(
-            r"(?:pr|pull|issue|bug|feature)\s*#?\s*\d+", stripped, re.IGNORECASE
-        )
-    )
+    return bool(re.fullmatch(r"(?:pr|pull|issue|bug|feature)\s*#?\s*\d+", stripped, re.IGNORECASE))
 
 
 def _extract_number(query: str) -> int | None:
@@ -140,9 +136,7 @@ def _extract_number(query: str) -> int | None:
     if stripped.isdigit():
         return int(stripped)
     # "PR 2022", "issue #500", "pull #2022", etc.
-    m = re.match(
-        r"(?:pr|pull|issue|bug|feature)\s*#?\s*(\d+)", query.strip(), re.IGNORECASE
-    )
+    m = re.match(r"(?:pr|pull|issue|bug|feature)\s*#?\s*(\d+)", query.strip(), re.IGNORECASE)
     if m:
         return int(m.group(1))
     return None

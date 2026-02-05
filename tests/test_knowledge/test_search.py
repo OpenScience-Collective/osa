@@ -309,7 +309,9 @@ class TestNumberLookup:
             assert len(urls) == len(set(urls)), "Duplicate URLs in results"
             # Number match should be first in results
             if len(results) > 0:
-                assert results[0].url == "https://github.com/hed-standard/hed-specification/issues/1"
+                assert (
+                    results[0].url == "https://github.com/hed-standard/hed-specification/issues/1"
+                )
 
 
 class TestFTS5Sanitization:
