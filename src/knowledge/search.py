@@ -106,10 +106,30 @@ class SearchResult:
     created_at: str
 
 
+def _is_pure_number_query(query: str) -> bool:
+    """Check if the query is purely a number lookup with no useful text for FTS.
+
+    Returns True for queries like "2022", "#500", "PR 2022", "issue #500"
+    where FTS would produce poor results (searching for literal "#500" or "PR 10").
+    """
+    stripped = query.strip()
+    # Pure number or hash-number
+    if stripped.lstrip("#").isdigit():
+        return True
+    # Keyword + number with nothing else
+    if re.fullmatch(
+        r"(?:pr|pull|issue|bug|feature)\s*#?\s*\d+", stripped, re.IGNORECASE
+    ):
+        return True
+    return False
+
+
 def _extract_number(query: str) -> int | None:
     """Extract an issue/PR number from a query string.
 
     Handles patterns like "2022", "#2022", "PR 2022", "issue #500".
+    Pure numeric queries (e.g. "2022") are treated as number lookups first;
+    this may match a PR/issue number rather than items mentioning the year.
 
     Returns:
         The extracted number, or None if no number pattern found.
@@ -177,6 +197,7 @@ def search_github_items(
         with get_connection(project) as conn:
             # Phase 1: Try direct number lookup
             number = _extract_number(query)
+            is_pure_number = _is_pure_number_query(query)
             if number is not None:
                 num_sql = """
                     SELECT title, url, first_message, item_type, status,
@@ -199,9 +220,15 @@ def search_github_items(
                     results.append(result)
                     seen_urls.add(result.url)
 
+                if not results:
+                    logger.debug("Number lookup for %d found no items", number)
+
             # Phase 2: Full-text search for remaining slots
+            # Skip FTS for pure number queries (e.g. "#500", "PR 2022") since
+            # the sanitized query would search for literal "#500" which won't
+            # match anything useful in title/body text.
             remaining = limit - len(results)
-            if remaining > 0:
+            if remaining > 0 and not is_pure_number:
                 fts_sql = """
                     SELECT g.title, g.url, g.first_message, g.item_type, g.status,
                            g.created_at, g.repo
