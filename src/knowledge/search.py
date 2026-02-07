@@ -9,7 +9,7 @@ import logging
 import re
 import sqlite3
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from src.knowledge.db import get_connection
 
@@ -104,26 +104,6 @@ class SearchResult:
     item_type: str | None  # 'issue', 'pr', or None for papers
     status: str  # 'open', 'closed', or 'published'
     created_at: str
-    _sort_key: tuple[int, int] = field(default=(2, 0), repr=False)
-
-
-def _docstring_sort_key(
-    query: str, symbol_name: str, file_path: str, bm25_rank: int
-) -> tuple[int, int]:
-    """Compute sort key that prioritizes exact symbol/filename matches.
-
-    Returns a tuple (priority, bm25_rank) where lower values sort first:
-      (0, 0) - exact symbol_name match (e.g., query="erpimage", symbol="erpimage")
-      (1, 0) - file basename matches query (e.g., query="erpimage", file="erpimage.m")
-      (2, bm25_rank) - default BM25 order (preserves original rank position)
-    """
-    query_lower = query.strip().lower()
-    if symbol_name.lower() == query_lower:
-        return (0, 0)
-    basename = file_path.rsplit("/", 1)[-1].rsplit(".", 1)[0].lower()
-    if basename == query_lower:
-        return (1, 0)
-    return (2, bm25_rank)
 
 
 def _is_pure_number_query(query: str) -> bool:
@@ -516,13 +496,17 @@ def search_docstrings(
         sql += " AND d.repo = ?"
         params.append(repo)
 
-    # Over-fetch to ensure exact symbol_name matches aren't missed due to
-    # BM25 ranking bias (long docstrings dilute term frequency scores).
+    # Weight symbol_name matches 10x over docstring body matches via bm25().
+    # Over-fetch 3x then promote exact symbol_name matches to the top,
+    # since bm25 column weights alone can't distinguish exact vs partial
+    # symbol_name matches (see #141).
     fetch_limit = limit * 3
-    sql += " ORDER BY rank LIMIT ?"
+    sql += " ORDER BY bm25(docstrings_fts, 10.0, 1.0) LIMIT ?"
     params.append(fetch_limit)
 
-    results = []
+    ranked: list[tuple[int, int, SearchResult]] = []
+    results: list[SearchResult] = []
+    query_lower = query.strip().lower()
     try:
         with get_connection(project) as conn:
             # Sanitize user query to prevent FTS5 injection
@@ -537,7 +521,7 @@ def search_docstrings(
                     snippet += "..."
 
                 # Build GitHub URL to the specific line
-                file_path = row["file_path"]
+                file_path = row["file_path"] or ""
                 repo_name = row["repo"]
                 line_number = row["line_number"]
                 branch = row["branch"] or "main"  # Fallback to 'main' if NULL
@@ -548,26 +532,31 @@ def search_docstrings(
                     github_url += f"#L{line_number}"
 
                 # Format title as "symbol_name (type) - file_path"
-                symbol_name = row["symbol_name"]
+                symbol_name = row["symbol_name"] or ""
                 symbol_type = row["symbol_type"]
                 title = f"{symbol_name} ({symbol_type}) - {file_path}"
 
-                results.append(
-                    SearchResult(
-                        title=title,
-                        url=github_url,
-                        snippet=snippet,
-                        source=row["language"],
-                        item_type=symbol_type,
-                        status="documented",
-                        created_at="",
-                        _sort_key=_docstring_sort_key(query, symbol_name, file_path, idx),
+                # Rank: exact symbol_name match (0), then bm25 order (1)
+                priority = 0 if symbol_name.lower() == query_lower else 1
+
+                ranked.append(
+                    (
+                        priority,
+                        idx,
+                        SearchResult(
+                            title=title,
+                            url=github_url,
+                            snippet=snippet,
+                            source=row["language"],
+                            item_type=symbol_type,
+                            status="documented",
+                            created_at="",
+                        ),
                     )
                 )
 
-            # Re-rank: exact symbol/filename matches first, then BM25 order
-            results.sort(key=lambda r: r._sort_key)
-            results = results[:limit]
+            ranked.sort(key=lambda r: (r[0], r[1]))
+            results = [r[2] for r in ranked[:limit]]
 
     except sqlite3.OperationalError as e:
         # Infrastructure failure (corruption, disk full, permissions) - must propagate

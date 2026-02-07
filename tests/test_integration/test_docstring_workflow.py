@@ -250,6 +250,64 @@ def test_branch_in_github_url(clean_db):
     assert "#L42" in results[0].url  # Line number should be included
 
 
+def test_exact_symbol_match_ranks_above_wrappers(clean_db):
+    """Test that exact symbol_name matches rank above wrapper functions.
+
+    Reproduces issue #141: the standalone erpimage() function was buried
+    at rank 10 behind pop_erpimage, std_erpimage, etc. because its large
+    docstring diluted BM25 term frequency scores. FTS5 bm25() column
+    weights should boost symbol_name matches to fix this.
+    """
+    from src.knowledge.db import get_connection, upsert_docstring
+
+    with get_connection(clean_db) as conn:
+        # Wrapper with short docstring (BM25 would rank this higher)
+        upsert_docstring(
+            conn,
+            repo="sccn/eeglab",
+            file_path="functions/popfunc/pop_erpimage.m",
+            language="matlab",
+            symbol_name="pop_erpimage",
+            symbol_type="function",
+            docstring="pop_erpimage() - GUI wrapper for erpimage. Calls erpimage internally.",
+            line_number=1,
+        )
+        # Another wrapper
+        upsert_docstring(
+            conn,
+            repo="sccn/eeglab",
+            file_path="functions/studyfunc/std_erpimage.m",
+            language="matlab",
+            symbol_name="std_erpimage",
+            symbol_type="function",
+            docstring="std_erpimage() - STUDY wrapper for erpimage computations.",
+            line_number=1,
+        )
+        # Core function with large docstring (BM25 would rank this lower)
+        large_docstring = (
+            "erpimage() - Plot an event-related image of EEG data. "
+            + "Parameters: data - input EEG data matrix. " * 200
+        )
+        upsert_docstring(
+            conn,
+            repo="sccn/eeglab",
+            file_path="functions/sigprocfunc/erpimage.m",
+            language="matlab",
+            symbol_name="erpimage",
+            symbol_type="function",
+            docstring=large_docstring,
+            line_number=1,
+        )
+        conn.commit()
+
+    results = search_docstrings("erpimage", project=clean_db, limit=3)
+    assert len(results) == 3
+    # The exact symbol_name match should be first
+    assert results[0].title == "erpimage (function) - functions/sigprocfunc/erpimage.m", (
+        f"Expected exact match 'erpimage' first, got: {results[0].title}"
+    )
+
+
 def test_branch_fallback_for_null(clean_db):
     """Test that NULL branch values fallback to 'main' in URLs."""
     from src.knowledge.db import get_connection

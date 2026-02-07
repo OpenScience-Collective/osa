@@ -11,7 +11,6 @@ import pytest
 from src.knowledge.db import get_connection, init_db, upsert_github_item, upsert_paper
 from src.knowledge.search import (
     SearchResult,
-    _docstring_sort_key,
     _extract_number,
     _is_pure_number_query,
     _sanitize_fts5_query,
@@ -362,43 +361,3 @@ class TestFTS5Sanitization:
                 assert isinstance(results, list)
                 results = search_papers(query)
                 assert isinstance(results, list)
-
-
-class TestDocstringSortKey:
-    """Tests for _docstring_sort_key ranking logic."""
-
-    def test_exact_symbol_name_gets_highest_priority(self):
-        key = _docstring_sort_key("erpimage", "erpimage", "functions/sigprocfunc/erpimage.m", 10)
-        assert key == (0, 0)
-
-    def test_exact_symbol_name_case_insensitive(self):
-        key = _docstring_sort_key("ERPimage", "erpimage", "functions/sigprocfunc/erpimage.m", 5)
-        assert key == (0, 0)
-
-    def test_file_basename_match_gets_second_priority(self):
-        key = _docstring_sort_key(
-            "erpimage", "some_other_func", "functions/sigprocfunc/erpimage.m", 3
-        )
-        assert key == (1, 0)
-
-    def test_no_match_preserves_bm25_rank(self):
-        key = _docstring_sort_key("erpimage", "pop_erpimage", "functions/popfunc/pop_erpimage.m", 0)
-        assert key == (2, 0)
-
-    def test_sort_order_exact_before_basename_before_bm25(self):
-        keys = [
-            _docstring_sort_key("erpimage", "pop_erpimage", "popfunc/pop_erpimage.m", 0),
-            _docstring_sort_key("erpimage", "std_erpimage", "studyfunc/std_erpimage.m", 1),
-            _docstring_sort_key("erpimage", "other_func", "sigprocfunc/erpimage.m", 2),
-            _docstring_sort_key("erpimage", "erpimage", "sigprocfunc/erpimage.m", 9),
-        ]
-        sorted_keys = sorted(keys)
-        # Exact symbol match first, then basename match, then BM25 order
-        assert sorted_keys[0] == (0, 0)  # exact symbol_name
-        assert sorted_keys[1] == (1, 0)  # basename match
-        assert sorted_keys[2] == (2, 0)  # BM25 rank 0
-        assert sorted_keys[3] == (2, 1)  # BM25 rank 1
-
-    def test_query_with_whitespace_stripped(self):
-        key = _docstring_sort_key("  erpimage  ", "erpimage", "erpimage.m", 5)
-        assert key == (0, 0)
