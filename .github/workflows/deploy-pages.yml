@@ -51,9 +51,50 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           # Deploy with branch name so Cloudflare Pages routes correctly:
           # - main branch -> demo.osc.earth (production)
-          # - develop branch -> develop.demo.osc.earth (preview)
-          # - PR branches -> {branch}.demo.osc.earth (preview)
+          # - develop branch -> develop-demo.osc.earth (single-level subdomain)
+          # - PR branches -> {branch}-demo.osc.earth (single-level subdomain)
           command: pages deploy frontend --project-name=osa-demo --branch=${{ steps.branch.outputs.name }}
+
+      - name: Ensure DNS record for preview domain
+        if: steps.branch.outputs.name != 'main'
+        env:
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+        run: |
+          BRANCH="${{ steps.branch.outputs.name }}"
+          SUBDOMAIN="${BRANCH}-demo"
+          FQDN="${SUBDOMAIN}.osc.earth"
+          TARGET="osa-demo.pages.dev"
+
+          if [ -z "$CF_ZONE_ID" ]; then
+            echo "::warning::CLOUDFLARE_ZONE_ID not set, skipping DNS record creation"
+            exit 0
+          fi
+
+          # Check if CNAME record already exists
+          EXISTING=$(curl -sf -X GET \
+            "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${FQDN}&type=CNAME" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H "Content-Type: application/json")
+
+          COUNT=$(echo "$EXISTING" | jq '.result | length')
+
+          if [ "$COUNT" = "0" ]; then
+            echo "Creating CNAME: ${FQDN} -> ${TARGET}"
+            RESULT=$(curl -sf -X POST \
+              "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
+              -H "Authorization: Bearer ${CF_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              --data "{\"type\":\"CNAME\",\"name\":\"${SUBDOMAIN}\",\"content\":\"${TARGET}\",\"proxied\":true}")
+            SUCCESS=$(echo "$RESULT" | jq '.success')
+            if [ "$SUCCESS" = "true" ]; then
+              echo "DNS record created: ${FQDN}"
+            else
+              echo "::warning::Failed to create DNS record: $(echo "$RESULT" | jq -r '.errors')"
+            fi
+          else
+            echo "DNS record already exists: ${FQDN}"
+          fi
 
       - name: Comment on PR with preview URL
         if: github.event_name == 'pull_request'
@@ -61,7 +102,7 @@ jobs:
         with:
           script: |
             const branch = '${{ steps.branch.outputs.name }}';
-            const previewUrl = `https://${branch}.demo.osc.earth`;
+            const previewUrl = `https://${branch}-demo.osc.earth`;
 
             // Find existing comment from this workflow
             const { data: comments } = await github.rest.issues.listComments({
@@ -76,13 +117,15 @@ jobs:
             );
 
             const sha = '${{ github.sha }}'.substring(0, 7);
+            const pagesDevUrl = `https://${branch}.osa-demo.pages.dev`;
             const body = [
               '<!-- cloudflare-pages-preview -->',
-              '## 🚀 Preview Deployment',
+              '## Preview Deployment',
               '',
               '| Name | Link |',
               '|------|------|',
               `| **Preview URL** | ${previewUrl} |`,
+              `| **Pages.dev URL** | ${pagesDevUrl} |`,
               '| **Branch** | `${{ steps.branch.outputs.original }}` |',
               `| **Commit** | \`${sha}\` |`,
               '',

@@ -63,9 +63,9 @@ class TestIsAuthorizedOrigin:
 
     def test_platform_wildcard_origin_always_allowed(self, mock_registry):  # noqa: ARG002
         """Platform wildcard origins should be allowed for all communities."""
-        # Primary domain subdomains
-        assert _is_authorized_origin("https://develop.demo.osc.earth", "hed") is True
-        assert _is_authorized_origin("https://preview-123.demo.osc.earth", "bids") is True
+        # Primary domain single-level subdomains
+        assert _is_authorized_origin("https://develop-demo.osc.earth", "hed") is True
+        assert _is_authorized_origin("https://preview-123-demo.osc.earth", "bids") is True
         # Legacy pages.dev subdomains
         assert _is_authorized_origin("https://feature-branch.osa-demo.pages.dev", "no-cors") is True
 

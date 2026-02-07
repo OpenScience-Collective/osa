@@ -10,12 +10,13 @@
 
   // Auto-detect environment based on hostname
   // Production: demo.osc.earth routes to production API
-  // Development: develop.demo.osc.earth and other *.demo.osc.earth subdomains
+  // Development: develop-demo.osc.earth and other *-demo.osc.earth subdomains
   //              route to dev API for testing without affecting production data
+  // Single-level subdomains (develop-demo vs develop.demo) avoid SSL cert issues
   const hostname = window.location.hostname;
   const isProduction = hostname === 'demo.osc.earth' || hostname === 'osa-demo.pages.dev';
   const isDev = !isProduction && (
-                hostname.endsWith('.demo.osc.earth') ||
+                hostname.endsWith('-demo.osc.earth') ||
                 hostname.endsWith('.osa-demo.pages.dev') ||
                 hostname.includes('localhost') ||
                 hostname.includes('127.0.0.1'));

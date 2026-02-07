@@ -243,7 +243,7 @@ docker exec osa-dev python -m src.cli.main sync github --full
 - Prod: https://api.osc.earth/osa
 
 **Frontend:**
-- Dev: https://develop.demo.osc.earth
+- Dev: https://develop-demo.osc.earth
 - Prod: https://demo.osc.earth
 
 ### Inspecting Knowledge Databases

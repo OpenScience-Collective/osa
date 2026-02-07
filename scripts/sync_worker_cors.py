@@ -96,9 +96,9 @@ def update_worker_cors(origins):
   // Check subdomains
   {subdomain_checks}
 
-  // Allow demo.osc.earth and subdomains (develop, PR previews)
+  // Allow demo.osc.earth and single-level subdomains (develop-demo, PR previews)
   if (origin === 'https://demo.osc.earth') return true;
-  if (origin.startsWith('https://') && origin.endsWith('.demo.osc.earth')) return true;
+  if (origin.startsWith('https://') && origin.endsWith('-demo.osc.earth')) return true;
 
   // Allow osa-demo.pages.dev and subdomains (backward compatibility)
   if (origin === 'https://osa-demo.pages.dev') return true;

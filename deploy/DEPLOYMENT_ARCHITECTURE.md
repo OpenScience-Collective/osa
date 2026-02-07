@@ -39,7 +39,7 @@ This document explains the deployment architecture for OSA (Open Science Assista
 
 **Frontend:**
 - Production: `https://demo.osc.earth`
-- Development: `https://develop.demo.osc.earth`
+- Development: `https://develop-demo.osc.earth`
 
 ---
 

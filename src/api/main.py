@@ -110,7 +110,7 @@ def _collect_cors_config() -> tuple[list[str], str | None]:
     Aggregates exact origins and wildcard patterns from:
     1. Platform-level settings (Settings.cors_origins)
     2. Per-community config (CommunityConfig.cors_origins)
-    3. Default platform wildcards (*.demo.osc.earth, *.osa-demo.pages.dev)
+    3. Default platform wildcards (*-demo.osc.earth, *.osa-demo.pages.dev)
 
     Returns:
         Tuple of (exact_origins, origin_regex_pattern).
@@ -124,7 +124,7 @@ def _collect_cors_config() -> tuple[list[str], str | None]:
     exact_origins.append("https://osa-demo.pages.dev")
     exact_origins.append("https://osa-dash.pages.dev")
     wildcard_patterns: list[str] = [
-        "https://*.demo.osc.earth",  # Primary: develop + PR preview deploys
+        "https://*-demo.osc.earth",  # Primary: develop-demo + PR preview deploys
         "https://*.osa-demo.pages.dev",  # Backward compat: pages.dev deploys
         "https://*.osa-dash.pages.dev",  # Dashboard: preview/branch deploys
     ]

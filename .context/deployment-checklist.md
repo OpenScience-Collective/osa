@@ -120,7 +120,7 @@ python -m src.cli.main sync faq --community eeglab --quality 0.7
 
 ### 7. Test Frontend Widget
 
-Visit: https://develop.demo.osc.earth
+Visit: https://develop-demo.osc.earth
 
 - [ ] EEGLAB appears in community dropdown
 - [ ] Can select EEGLAB community
