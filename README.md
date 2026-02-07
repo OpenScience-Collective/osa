@@ -6,8 +6,9 @@ An extensible AI assistant platform for open science projects, built with LangGr
 
 OSA provides domain-specific AI assistants for open science tools with:
 - **HED Assistant**: Hierarchical Event Descriptors for neuroimaging annotation
-- **BIDS Assistant**: Brain Imaging Data Structure (coming soon)
-- **EEGLAB Assistant**: EEG analysis toolbox (coming soon)
+- **BIDS Assistant**: Brain Imaging Data Structure
+- **EEGLAB Assistant**: EEG analysis toolbox
+- **NEMAR Assistant**: BIDS-formatted EEG, MEG, and iEEG dataset discovery
 
 Features:
 - **YAML-driven community registry** - add a new assistant with just a config file

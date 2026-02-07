@@ -179,7 +179,7 @@
         name: 'BIDS',
         fullName: 'Brain Imaging Data Structure',
         description: 'Standard for organizing neuroimaging data',
-        status: 'soon',
+        status: 'active',
         widget: {
           communityId: 'bids',
           title: 'BIDS Assistant',
@@ -208,6 +208,24 @@
             'What preprocessing steps should I follow?',
             'How do I run ICA in EEGLAB?',
             'What plugins are available?'
+          ]
+        }
+      },
+      nemar: {
+        name: 'NEMAR',
+        fullName: 'NeuroElectroMagnetic Archive',
+        description: 'Repository of BIDS-formatted EEG, MEG, and iEEG datasets',
+        status: 'active',
+        widget: {
+          communityId: 'nemar',
+          title: 'NEMAR Assistant',
+          initialMessage: 'Hi! I\'m the NEMAR Assistant. I can help you discover and explore BIDS-formatted EEG, MEG, and iEEG datasets from the NEMAR archive. What are you looking for?',
+          placeholder: 'Search for datasets...',
+          suggestedQuestions: [
+            'Find EEG datasets with resting state recordings',
+            'What datasets have HED annotations?',
+            'Show me MEG datasets with at least 50 participants',
+            'Tell me about dataset ds000248'
           ]
         }
       }

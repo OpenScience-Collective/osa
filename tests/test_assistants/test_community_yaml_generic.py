@@ -216,23 +216,38 @@ class TestCommunityYAMLConfiguration:
         assert not unfilled, f"{community_id} has unfilled placeholders: {unfilled}"
 
     def test_knowledge_tools_generated(self, community_id):
-        """Knowledge discovery tools should be auto-generated for community."""
+        """Knowledge discovery tools should be auto-generated based on community config."""
         from src.assistants import registry
 
+        config = registry.get_community_config(community_id)
         mock_model = MagicMock()
         assistant = registry.create_assistant(community_id, model=mock_model, preload_docs=False)
 
         tool_names = {t.name for t in assistant.tools}
 
-        expected_tools = [
-            f"retrieve_{community_id}_docs",
-            f"search_{community_id}_discussions",
-            f"list_{community_id}_recent",
-            f"search_{community_id}_papers",
-        ]
+        # retrieve_docs is always generated when documentation exists
+        if config.documentation:
+            assert f"retrieve_{community_id}_docs" in tool_names, (
+                f"{community_id} missing tool: retrieve_{community_id}_docs"
+            )
 
-        for expected_tool in expected_tools:
-            assert expected_tool in tool_names, f"{community_id} missing tool: {expected_tool}"
+        # GitHub-dependent tools only when github config exists
+        has_github = getattr(config, "github", None)
+        if has_github:
+            for suffix in ["discussions", "recent"]:
+                tool_name = (
+                    f"search_{community_id}_{suffix}"
+                    if suffix == "discussions"
+                    else f"list_{community_id}_{suffix}"
+                )
+                assert tool_name in tool_names, f"{community_id} missing tool: {tool_name}"
+
+        # Paper search only when citations config exists
+        has_citations = getattr(config, "citations", None)
+        if has_citations:
+            assert f"search_{community_id}_papers" in tool_names, (
+                f"{community_id} missing tool: search_{community_id}_papers"
+            )
 
     def test_tools_have_descriptions(self, community_id):
         """All auto-generated tools should have descriptions."""
