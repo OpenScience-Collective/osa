@@ -12,6 +12,8 @@ small dataset count (<2s for full fetch).
 """
 
 import logging
+import re
+import time
 from typing import Any
 
 import httpx
@@ -23,16 +25,27 @@ NEMAR_API_BASE = "https://nemar.org/api/dataexplorer/datapipeline"
 TABLE_NAME = "dataexplorer_dataset"
 NEMAR_SEP = "===NEMAR-SEP==="
 
+# Simple TTL cache for dataset list (avoid hitting API on every search)
+_datasets_cache: list[dict[str, Any]] = []
+_cache_timestamp: float = 0.0
+_CACHE_TTL_SECONDS: float = 300.0  # 5 minutes
+
 
 def _fetch_all_datasets() -> list[dict[str, Any]]:
-    """Fetch all datasets from NEMAR API.
+    """Fetch all datasets from NEMAR API, with a 5-minute TTL cache.
 
     Returns:
-        List of dataset dicts sorted by dataset ID.
+        List of dataset dicts in API response order.
 
     Raises:
         httpx.HTTPError: If the API request fails.
     """
+    global _datasets_cache, _cache_timestamp  # noqa: PLW0603
+
+    now = time.monotonic()
+    if _datasets_cache and (now - _cache_timestamp) < _CACHE_TTL_SECONDS:
+        return _datasets_cache
+
     url = f"{NEMAR_API_BASE}/records"
     payload = {"table_name": TABLE_NAME, "start": 0, "limit": 1000}
 
@@ -42,8 +55,16 @@ def _fetch_all_datasets() -> list[dict[str, Any]]:
     data = response.json()
 
     entries = data.get("entries", {})
+    if not entries:
+        logger.warning("NEMAR API returned empty entries")
+        return []
+
     # entries is a dict with string indices: {"0": {...}, "1": {...}, ...}
-    datasets = [entries[k] for k in sorted(entries.keys(), key=int)]
+    numeric_keys = [k for k in entries if k.isdigit()]
+    datasets = [entries[k] for k in sorted(numeric_keys, key=int)]
+
+    _datasets_cache = datasets
+    _cache_timestamp = now
     return datasets
 
 
@@ -153,9 +174,12 @@ def search_nemar_datasets(
     except httpx.HTTPError as e:
         logger.warning("NEMAR API error: %s", e)
         return f"Failed to fetch datasets from NEMAR: {e}"
-    except Exception as e:
+    except (ValueError, KeyError) as e:
+        logger.warning("Failed to parse NEMAR API response: %s", e)
+        return "Failed to parse NEMAR API response. Please try again later."
+    except Exception:
         logger.exception("Unexpected error fetching NEMAR datasets")
-        return f"Failed to fetch datasets: {e}"
+        return "Failed to fetch datasets from NEMAR. Please try again later."
 
     # Apply filters
     matched = [
@@ -166,17 +190,14 @@ def search_nemar_datasets(
 
     total_matched = len(matched)
     if total_matched == 0:
-        filters_desc = []
-        if query:
-            filters_desc.append(f'query="{query}"')
-        if modality_filter:
-            filters_desc.append(f"modality={modality_filter}")
-        if task_filter:
-            filters_desc.append(f"task={task_filter}")
-        if has_hed:
-            filters_desc.append("has_hed=True")
-        if min_participants:
-            filters_desc.append(f"min_participants={min_participants}")
+        active_filters = {
+            "query": f'"{query}"' if query else None,
+            "modality": modality_filter,
+            "task": task_filter,
+            "has_hed": "True" if has_hed else None,
+            "min_participants": str(min_participants) if min_participants else None,
+        }
+        filters_desc = [f"{k}={v}" for k, v in active_filters.items() if v]
         return f"No datasets found matching: {', '.join(filters_desc)}. Total datasets in NEMAR: {len(datasets)}."
 
     # Cap results
@@ -208,27 +229,33 @@ def get_nemar_dataset_details(dataset_id: str) -> str:
         Formatted markdown string with complete dataset information,
         including OpenNeuro link, DOI, authors, license, and README.
     """
+    # Basic input validation
+    if not dataset_id or not re.match(r"^ds\d{4,6}$", dataset_id):
+        return f"Invalid dataset ID '{dataset_id}'. Expected format: ds000248 (ds + 4-6 digits)."
+
     url = f"{NEMAR_API_BASE}/datasetid"
     payload = {"table_name": TABLE_NAME, "dataset_id": dataset_id}
 
     try:
-        # NEMAR API uses GET with JSON body (unusual but required)
         response = httpx.request("GET", url, json=payload, timeout=30.0)
         response.raise_for_status()
         data = response.json()
+
+        entry = data.get("entry", {})
+        if not entry:
+            return f"Dataset '{dataset_id}' not found on NEMAR."
+
+        # entry is {"0": {...}} for single results
+        ds = next(iter(entry.values()))
     except httpx.HTTPError as e:
         logger.warning("NEMAR API error for dataset %s: %s", dataset_id, e)
         return f"Failed to fetch dataset {dataset_id} from NEMAR: {e}"
-    except Exception as e:
+    except (ValueError, KeyError, StopIteration) as e:
+        logger.warning("Failed to parse NEMAR response for %s: %s", dataset_id, e)
+        return f"Failed to parse NEMAR response for dataset {dataset_id}."
+    except Exception:
         logger.exception("Unexpected error fetching NEMAR dataset %s", dataset_id)
-        return f"Failed to fetch dataset {dataset_id}: {e}"
-
-    entry = data.get("entry", {})
-    if not entry:
-        return f"Dataset '{dataset_id}' not found on NEMAR."
-
-    # entry is {"0": {...}} for single results
-    ds = next(iter(entry.values()))
+        return f"Failed to fetch dataset {dataset_id}. Please try again later."
 
     ds_id = ds.get("id", dataset_id)
     name = ds.get("name", ds_id)
@@ -250,15 +277,11 @@ def get_nemar_dataset_details(dataset_id: str) -> str:
 
     lines.append("")
 
-    # Authors
+    # Authors (may use ===NEMAR-SEP=== or comma-separated)
     authors = ds.get("Authors", "")
     if authors:
-        # Authors can be ===NEMAR-SEP=== or comma-separated
-        if NEMAR_SEP in authors:
-            author_list = _parse_sep_field(authors)
-            lines.append(f"**Authors:** {', '.join(author_list)}")
-        else:
-            lines.append(f"**Authors:** {authors}")
+        author_list = _parse_sep_field(authors) if NEMAR_SEP in authors else [authors]
+        lines.append(f"**Authors:** {', '.join(author_list)}")
 
     # License
     license_val = ds.get("License", "")
@@ -326,8 +349,8 @@ def get_nemar_dataset_details(dataset_id: str) -> str:
         if fund_list:
             lines.append("")
             lines.append("## Funding")
-            for f in fund_list:
-                lines.append(f"- {f}")
+            for funder in fund_list:
+                lines.append(f"- {funder}")
 
     # Acknowledgements
     ack = ds.get("Acknowledgements", "")

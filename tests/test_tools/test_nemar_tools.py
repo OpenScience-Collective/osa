@@ -6,6 +6,7 @@ NO MOCKS - we test against the actual service.
 
 import pytest
 
+from src.assistants.nemar import tools as nemar_tools_module
 from src.assistants.nemar.tools import (
     _fetch_all_datasets,
     _matches,
@@ -245,3 +246,37 @@ class TestGetNemarDatasetDetails:
         result = get_nemar_dataset_details.invoke({"dataset_id": "ds002578"})
         assert "HED annotations:" in result
         assert "Yes" in result
+
+    def test_get_invalid_dataset_id_format(self):
+        """Test that invalid dataset IDs are rejected before API call."""
+        result = get_nemar_dataset_details.invoke({"dataset_id": "invalid"})
+        assert "Invalid dataset ID" in result
+
+    def test_get_empty_dataset_id(self):
+        """Test that empty dataset ID is rejected."""
+        result = get_nemar_dataset_details.invoke({"dataset_id": ""})
+        assert "Invalid dataset ID" in result
+
+    def test_get_dataset_id_too_short(self):
+        """Test that dataset ID with too few digits is rejected."""
+        result = get_nemar_dataset_details.invoke({"dataset_id": "ds12"})
+        assert "Invalid dataset ID" in result
+
+
+class TestCaching:
+    """Tests for the TTL cache on _fetch_all_datasets."""
+
+    def test_cache_returns_same_result(self):
+        """Test that consecutive calls return cached data."""
+        result1 = _fetch_all_datasets()
+        result2 = _fetch_all_datasets()
+        # Same object reference means cache was used
+        assert result1 is result2
+
+    def test_cache_can_be_cleared(self):
+        """Test that clearing the cache forces a fresh fetch."""
+        _fetch_all_datasets()  # populate cache
+        nemar_tools_module._datasets_cache = []
+        nemar_tools_module._cache_timestamp = 0.0
+        result = _fetch_all_datasets()
+        assert len(result) > 0
