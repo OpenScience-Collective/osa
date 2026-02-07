@@ -161,9 +161,11 @@ function isAllowedOrigin(origin) {
     'https://bids.neuroimaging.io',
     'https://eeglab.org',
     'https://hedtags.org',
+    'https://nemar.org',
     'https://sccn.github.io',
     'https://www.eeglab.org',
-    'https://www.hedtags.org'
+    'https://www.hedtags.org',
+    'https://www.nemar.org'
   ];
 
   // Check exact matches
@@ -173,6 +175,7 @@ function isAllowedOrigin(origin) {
   if (origin.endsWith('.eeglab.org')) return true;
   if (origin.endsWith('.github.io')) return true;
   if (origin.endsWith('.hedtags.org')) return true;
+  if (origin.endsWith('.nemar.org')) return true;
   if (origin.endsWith('.neuroimaging.io')) return true;
   if (origin.endsWith('.readthedocs.io')) return true;
 
