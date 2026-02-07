@@ -269,7 +269,7 @@
           <pre><code>&lt;script src="https://osa-demo.pages.dev/osa-chat-widget.js"&gt;&lt;/script&gt;
 &lt;script&gt;
   OSAChatWidget.setConfig({
-    communityId: 'hed'  // or 'bids', 'eeglab', etc.
+    communityId: '${Object.keys(COMMUNITIES)[0] || 'hed'}'  // ${Object.keys(COMMUNITIES).length > 1 ? `or '${Object.keys(COMMUNITIES).slice(1).join("', '")}'` : ''}
   });
 &lt;/script&gt;</code></pre>
           <p>The widget auto-configures the API endpoint based on the <code>communityId</code>.</p>
@@ -278,11 +278,12 @@
         <div class="info-box">
           <h2>Configuration Options</h2>
           <ul>
-            <li><code>communityId</code> - Which assistant to use (e.g., 'hed', 'bids')</li>
+            <li><code>communityId</code> - Which assistant to use (${Object.keys(COMMUNITIES).map(id => `'${id}'`).join(', ')})</li>
             <li><code>title</code> - Widget header title</li>
             <li><code>placeholder</code> - Input placeholder text</li>
             <li><code>initialMessage</code> - First greeting message from the assistant</li>
             <li><code>suggestedQuestions</code> - Array of clickable suggestion buttons</li>
+            <li><code>widgetInstructions</code> - Per-page context instructions for the assistant</li>
             <li><code>apiEndpoint</code> - Backend API URL (auto-detected by default)</li>
             <li><code>storageKey</code> - localStorage key (auto-derived from communityId)</li>
             <li><code>turnstileSiteKey</code> - Cloudflare Turnstile site key (optional)</li>
@@ -354,7 +355,9 @@
           <pre><code>&lt;script src="https://osa-demo.pages.dev/osa-chat-widget.js"&gt;&lt;/script&gt;
 &lt;script&gt;
   OSAChatWidget.setConfig({
-    communityId: '${communityId}'
+    communityId: '${communityId}',
+    // Optional: provide page-specific context
+    // widgetInstructions: 'Focus on topics relevant to this page.'
   });
 &lt;/script&gt;</code></pre>
         </div>
