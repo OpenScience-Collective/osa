@@ -3,7 +3,7 @@
 
 Reads all community config.yaml files, extracts cors_origins, and updates
 the worker's isAllowedOrigin function to match. Platform origins like
-osa-demo.pages.dev remain hardcoded.
+demo.osc.earth remain hardcoded.
 """
 
 import re
@@ -96,7 +96,12 @@ def update_worker_cors(origins):
   // Check subdomains
   {subdomain_checks}
 
-  // Allow osa-demo.pages.dev and all subdomains (previews, branches)
+  // Allow demo.osc.earth and all subdomains (develop, PR previews)
+  if (origin === 'https://demo.osc.earth') return true;
+  if (origin.endsWith('.demo.osc.earth')) return true;
+  if (origin.endsWith('.osc.earth')) return true;
+
+  // Allow osa-demo.pages.dev and subdomains (backward compatibility)
   if (origin === 'https://osa-demo.pages.dev') return true;
   if (origin.endsWith('.osa-demo.pages.dev')) return true;
 

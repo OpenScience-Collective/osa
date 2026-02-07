@@ -160,8 +160,8 @@
 
     // Determine API endpoint (same logic as the widget)
     const hostname = window.location.hostname;
-    const isDemoPage = hostname === 'osa-demo.pages.dev';
-    const API_BASE = isDemoPage
+    const isProduction = hostname === 'demo.osc.earth' || hostname === 'osa-demo.pages.dev';
+    const API_BASE = isProduction
       ? 'https://osa-worker.shirazi-10f.workers.dev'
       : 'https://osa-worker-dev.shirazi-10f.workers.dev';
 
@@ -269,7 +269,7 @@
         <div class="info-box">
           <h2>Integration</h2>
           <p>Add an assistant to your website:</p>
-          <pre><code>&lt;script src="https://osa-demo.pages.dev/osa-chat-widget.js"&gt;&lt;/script&gt;
+          <pre><code>&lt;script src="https://demo.osc.earth/osa-chat-widget.js"&gt;&lt;/script&gt;
 &lt;script&gt;
   OSAChatWidget.setConfig({
     communityId: '${exampleId}'  // ${otherIds ? `or ${otherIds}` : ''}
@@ -355,7 +355,7 @@
 
         <div class="info-box">
           <h2>Add to Your Site</h2>
-          <pre><code>&lt;script src="https://osa-demo.pages.dev/osa-chat-widget.js"&gt;&lt;/script&gt;
+          <pre><code>&lt;script src="https://demo.osc.earth/osa-chat-widget.js"&gt;&lt;/script&gt;
 &lt;script&gt;
   OSAChatWidget.setConfig({
     communityId: '${communityId}',

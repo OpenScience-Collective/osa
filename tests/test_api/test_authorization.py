@@ -53,17 +53,20 @@ class TestIsAuthorizedOrigin:
     """Tests for _is_authorized_origin helper function."""
 
     def test_platform_default_origin_always_allowed(self, mock_registry):  # noqa: ARG002
-        """Platform default origin (osa-demo.pages.dev) should be allowed for all communities."""
-        # Exact match
+        """Platform default origins should be allowed for all communities."""
+        # Primary domain
+        assert _is_authorized_origin("https://demo.osc.earth", "hed") is True
+        assert _is_authorized_origin("https://demo.osc.earth", "bids") is True
+        assert _is_authorized_origin("https://demo.osc.earth", "no-cors") is True
+        # Legacy pages.dev
         assert _is_authorized_origin("https://osa-demo.pages.dev", "hed") is True
-        assert _is_authorized_origin("https://osa-demo.pages.dev", "bids") is True
-        assert _is_authorized_origin("https://osa-demo.pages.dev", "no-cors") is True
 
     def test_platform_wildcard_origin_always_allowed(self, mock_registry):  # noqa: ARG002
-        """Platform wildcard origins (*.osa-demo.pages.dev) should be allowed for all communities."""
-        # Wildcard subdomains
-        assert _is_authorized_origin("https://develop.osa-demo.pages.dev", "hed") is True
-        assert _is_authorized_origin("https://preview-123.osa-demo.pages.dev", "bids") is True
+        """Platform wildcard origins should be allowed for all communities."""
+        # Primary domain subdomains
+        assert _is_authorized_origin("https://develop.demo.osc.earth", "hed") is True
+        assert _is_authorized_origin("https://preview-123.demo.osc.earth", "bids") is True
+        # Legacy pages.dev subdomains
         assert _is_authorized_origin("https://feature-branch.osa-demo.pages.dev", "no-cors") is True
 
     def test_exact_origin_match(self, mock_registry):  # noqa: ARG002

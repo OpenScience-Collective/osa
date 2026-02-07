@@ -50,9 +50,9 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           # Deploy with branch name so Cloudflare Pages routes correctly:
-          # - main branch -> osa-demo.pages.dev (production)
-          # - develop branch -> develop.osa-demo.pages.dev (preview)
-          # - PR branches -> {branch}.osa-demo.pages.dev (preview)
+          # - main branch -> demo.osc.earth (production)
+          # - develop branch -> develop.demo.osc.earth (preview)
+          # - PR branches -> {branch}.demo.osc.earth (preview)
           command: pages deploy frontend --project-name=osa-demo --branch=${{ steps.branch.outputs.name }}
 
       - name: Comment on PR with preview URL
@@ -61,7 +61,7 @@ jobs:
         with:
           script: |
             const branch = '${{ steps.branch.outputs.name }}';
-            const previewUrl = `https://${branch}.osa-demo.pages.dev`;
+            const previewUrl = `https://${branch}.demo.osc.earth`;
 
             // Find existing comment from this workflow
             const { data: comments } = await github.rest.issues.listComments({

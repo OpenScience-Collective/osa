@@ -179,7 +179,12 @@ function isAllowedOrigin(origin) {
   if (origin.endsWith('.neuroimaging.io')) return true;
   if (origin.endsWith('.readthedocs.io')) return true;
 
-  // Allow osa-demo.pages.dev and all subdomains (previews, branches)
+  // Allow demo.osc.earth and all subdomains (develop, PR previews)
+  if (origin === 'https://demo.osc.earth') return true;
+  if (origin.endsWith('.demo.osc.earth')) return true;
+  if (origin.endsWith('.osc.earth')) return true;
+
+  // Allow osa-demo.pages.dev and subdomains (backward compatibility)
   if (origin === 'https://osa-demo.pages.dev') return true;
   if (origin.endsWith('.osa-demo.pages.dev')) return true;
 
@@ -202,7 +207,7 @@ function isValidCommunityId(id) {
  * Build CORS headers
  */
 function getCorsHeaders(origin) {
-  const allowedOrigin = isAllowedOrigin(origin) ? origin : 'https://osc.earth';
+  const allowedOrigin = isAllowedOrigin(origin) ? origin : 'https://demo.osc.earth';
 
   return {
     'Access-Control-Allow-Origin': allowedOrigin,
