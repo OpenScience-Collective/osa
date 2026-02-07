@@ -120,7 +120,7 @@ def _matches(
 
 
 def _format_summary(dataset: dict[str, Any]) -> str:
-    """Format a compact one-line summary for search results."""
+    """Format a compact summary for search results."""
     ds_id = dataset.get("id", "unknown")
     name = dataset.get("name", ds_id)
     modalities = dataset.get("modalities", "N/A") or "N/A"
@@ -160,7 +160,7 @@ def search_nemar_datasets(
             "iEEG", "MRI" (partial match, case-insensitive).
         task_filter: Filter by experimental task name (partial match,
             case-insensitive). Example: "rest", "gonogo", "memory".
-        has_hed: If True, only return datasets with HED annotations.
+        has_hed: If True, only return datasets with HED annotations. None has no effect.
         min_participants: Minimum number of participants required.
         limit: Maximum results to return (default: 20, max: 50).
 

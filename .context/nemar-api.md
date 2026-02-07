@@ -13,7 +13,7 @@ Technical reference for the NEMAR (NeuroElectroMagnetic Archive) public API used
 Fetch paginated dataset records.
 
 ```bash
-curl -k --request GET \
+curl --request GET \
   --url 'https://nemar.org/api/dataexplorer/datapipeline/records' \
   -H 'Content-Type: application/json' \
   -d '{"table_name":"dataexplorer_dataset", "start": 0, "limit": 10}'
@@ -52,7 +52,7 @@ curl -k --request GET \
 Fetch a single dataset by its identifier.
 
 ```bash
-curl -k --request GET \
+curl --request GET \
   --url 'https://nemar.org/api/dataexplorer/datapipeline/datasetid' \
   -H 'Content-Type: application/json' \
   -d '{"table_name":"dataexplorer_dataset", "dataset_id": "ds005697"}'
