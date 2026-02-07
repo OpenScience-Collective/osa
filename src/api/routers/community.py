@@ -914,6 +914,8 @@ def create_community_router(community_id: str) -> APIRouter:
 
             return AskResponse(answer=ar.response_content, tool_calls=ar.tool_calls_info)
 
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(
                 "Error in ask endpoint for community %s: %s",
