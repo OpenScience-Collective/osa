@@ -496,17 +496,24 @@ def search_docstrings(
         sql += " AND d.repo = ?"
         params.append(repo)
 
-    sql += " ORDER BY rank LIMIT ?"
-    params.append(limit)
+    # Weight symbol_name matches 10x over docstring body matches via bm25().
+    # Over-fetch 3x then promote exact symbol_name matches to the top,
+    # since bm25 column weights alone can't distinguish exact vs partial
+    # symbol_name matches (see #141).
+    fetch_limit = limit * 3
+    sql += " ORDER BY bm25(docstrings_fts, 10.0, 1.0) LIMIT ?"
+    params.append(fetch_limit)
 
-    results = []
+    ranked: list[tuple[int, int, SearchResult]] = []
+    results: list[SearchResult] = []
+    query_lower = query.strip().lower()
     try:
         with get_connection(project) as conn:
             # Sanitize user query to prevent FTS5 injection
             safe_query = _sanitize_fts5_query(query)
             params[0] = safe_query
 
-            for row in conn.execute(sql, params):
+            for idx, row in enumerate(conn.execute(sql, params)):
                 # Create snippet from docstring (first 200 chars)
                 docstring = row["docstring"] or ""
                 snippet = docstring[:200].strip()
@@ -514,7 +521,7 @@ def search_docstrings(
                     snippet += "..."
 
                 # Build GitHub URL to the specific line
-                file_path = row["file_path"]
+                file_path = row["file_path"] or ""
                 repo_name = row["repo"]
                 line_number = row["line_number"]
                 branch = row["branch"] or "main"  # Fallback to 'main' if NULL
@@ -525,21 +532,32 @@ def search_docstrings(
                     github_url += f"#L{line_number}"
 
                 # Format title as "symbol_name (type) - file_path"
-                symbol_name = row["symbol_name"]
+                symbol_name = row["symbol_name"] or ""
                 symbol_type = row["symbol_type"]
                 title = f"{symbol_name} ({symbol_type}) - {file_path}"
 
-                results.append(
-                    SearchResult(
-                        title=title,
-                        url=github_url,
-                        snippet=snippet,
-                        source=row["language"],
-                        item_type=symbol_type,
-                        status="documented",
-                        created_at="",
+                # Rank: exact symbol_name match (0), then bm25 order (1)
+                priority = 0 if symbol_name.lower() == query_lower else 1
+
+                ranked.append(
+                    (
+                        priority,
+                        idx,
+                        SearchResult(
+                            title=title,
+                            url=github_url,
+                            snippet=snippet,
+                            source=row["language"],
+                            item_type=symbol_type,
+                            status="documented",
+                            created_at="",
+                        ),
                     )
                 )
+
+            ranked.sort(key=lambda r: (r[0], r[1]))
+            results = [r[2] for r in ranked[:limit]]
+
     except sqlite3.OperationalError as e:
         # Infrastructure failure (corruption, disk full, permissions) - must propagate
         logger.error(
