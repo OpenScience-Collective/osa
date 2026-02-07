@@ -242,6 +242,9 @@
     // Render landing page (no specific community)
     function renderLanding() {
       document.title = 'Open Science Assistant - Demo';
+      const communityIds = Object.keys(COMMUNITIES);
+      const exampleId = communityIds[0] || 'hed';
+      const otherIds = communityIds.slice(1).map(id => `'${id}'`).join(', ');
       const html = `
         <h1>Open Science Assistant</h1>
         <p>AI-powered assistants for research communities. Each community gets a specialized assistant with domain expertise, documentation, and tools.</p>
@@ -269,7 +272,7 @@
           <pre><code>&lt;script src="https://osa-demo.pages.dev/osa-chat-widget.js"&gt;&lt;/script&gt;
 &lt;script&gt;
   OSAChatWidget.setConfig({
-    communityId: '${Object.keys(COMMUNITIES)[0] || 'hed'}'  // ${Object.keys(COMMUNITIES).length > 1 ? `or '${Object.keys(COMMUNITIES).slice(1).join("', '")}'` : ''}
+    communityId: '${exampleId}'  // ${otherIds ? `or ${otherIds}` : ''}
   });
 &lt;/script&gt;</code></pre>
           <p>The widget auto-configures the API endpoint based on the <code>communityId</code>.</p>
@@ -278,7 +281,7 @@
         <div class="info-box">
           <h2>Configuration Options</h2>
           <ul>
-            <li><code>communityId</code> - Which assistant to use (${Object.keys(COMMUNITIES).map(id => `'${id}'`).join(', ')})</li>
+            <li><code>communityId</code> - Which assistant to use ('${exampleId}'${otherIds ? `, ${otherIds}` : ''})</li>
             <li><code>title</code> - Widget header title</li>
             <li><code>placeholder</code> - Input placeholder text</li>
             <li><code>initialMessage</code> - First greeting message from the assistant</li>
