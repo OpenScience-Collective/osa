@@ -38,6 +38,7 @@ class PageContext:
 
     url: str | None = None
     title: str | None = None
+    widget_instructions: str | None = None
 
 
 # Default system prompt template for generic communities
@@ -317,11 +318,16 @@ class CommunityAssistant(ToolAgent):
         """Format page context section for system prompt."""
         if not self.config.enable_page_context:
             return ""
-        if not self._page_context or not self._page_context.url:
+        if not self._page_context:
+            return ""
+        # Need at least a URL or widget instructions to include this section
+        if not self._page_context.url and not self._page_context.widget_instructions:
             return ""
 
-        return f"""## Page Context
+        lines = ["## Page Context"]
 
+        if self._page_context.url:
+            lines.append(f"""
 The user is asking this question from the following page:
 - **Page URL**: {self._page_context.url}
 - **Page Title**: {self._page_context.title or "(No title)"}
@@ -331,7 +337,17 @@ to retrieve the page content and provide more contextually relevant answers. Thi
 - The user references "this page" or "this documentation"
 - The question seems to be about specific content that might be on the page
 
-Only fetch the page content if it seems relevant to the question."""
+Only fetch the page content if it seems relevant to the question.""")
+
+        if self._page_context.widget_instructions:
+            lines.append(f"""
+## Widget Context Instructions
+
+The following instructions were provided by the page where this widget is embedded:
+
+{self._page_context.widget_instructions}""")
+
+        return "\n".join(lines)
 
     def _build_system_prompt(
         self,

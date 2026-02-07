@@ -34,6 +34,7 @@ class PageContext:
 
     url: str | None = None
     title: str | None = None
+    widget_instructions: str | None = None
 
 
 __all__ = [

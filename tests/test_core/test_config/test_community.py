@@ -22,6 +22,7 @@ from src.core.config.community import (
     GitHubConfig,
     McpServer,
     PythonPlugin,
+    WidgetConfig,
 )
 
 
@@ -391,6 +392,73 @@ class TestBudgetConfig:
         """Should accept daily limit equal to monthly limit."""
         config = BudgetConfig(daily_limit_usd=50.0, monthly_limit_usd=50.0)
         assert config.daily_limit_usd == config.monthly_limit_usd
+
+
+class TestWidgetConfig:
+    """Tests for WidgetConfig model."""
+
+    def test_defaults(self) -> None:
+        """Should have all-None/empty defaults."""
+        widget = WidgetConfig()
+        assert widget.title is None
+        assert widget.initial_message is None
+        assert widget.placeholder is None
+        assert widget.suggested_questions == []
+
+    def test_full_config(self) -> None:
+        """Should accept all fields."""
+        widget = WidgetConfig(
+            title="HED Assistant",
+            initial_message="Hi! I'm the HED Assistant.",
+            placeholder="Ask about HED...",
+            suggested_questions=[
+                "What is HED?",
+                "How do I annotate events?",
+            ],
+        )
+        assert widget.title == "HED Assistant"
+        assert widget.initial_message == "Hi! I'm the HED Assistant."
+        assert widget.placeholder == "Ask about HED..."
+        assert len(widget.suggested_questions) == 2
+
+    def test_rejects_extra_fields(self) -> None:
+        """Should reject unknown fields (extra='forbid')."""
+        with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+            WidgetConfig(title="Test", unknown_field="bad")
+
+    def test_empty_questions_list(self) -> None:
+        """Should accept an empty suggested_questions list."""
+        widget = WidgetConfig(suggested_questions=[])
+        assert widget.suggested_questions == []
+
+
+class TestCommunityConfigWidget:
+    """Tests for CommunityConfig.widget field."""
+
+    def test_widget_optional(self) -> None:
+        """Widget field should be optional and default to None."""
+        config = CommunityConfig(
+            id="test",
+            name="Test Community",
+            description="A test",
+        )
+        assert config.widget is None
+
+    def test_widget_in_config(self) -> None:
+        """Should accept widget config in CommunityConfig."""
+        config = CommunityConfig(
+            id="test",
+            name="Test Community",
+            description="A test",
+            widget=WidgetConfig(
+                title="Test Assistant",
+                placeholder="Ask...",
+                suggested_questions=["What is this?"],
+            ),
+        )
+        assert config.widget is not None
+        assert config.widget.title == "Test Assistant"
+        assert len(config.widget.suggested_questions) == 1
 
 
 class TestCommunityConfigBudget:

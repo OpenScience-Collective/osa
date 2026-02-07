@@ -27,6 +27,17 @@ budget:
   monthly_limit_usd: 50.00
   alert_threshold_pct: 80.0
 
+# Widget configuration for frontend embedding
+widget:
+  title: BIDS Assistant
+  initial_message: "Hi! I'm the BIDS Assistant. I can help with Brain Imaging Data Structure (BIDS), data organization, validation, and related tools."
+  placeholder: Ask about BIDS...
+  suggested_questions:
+    - What is BIDS and why should I use it?
+    - How do I organize my EEG data in BIDS?
+    - What are the BIDS Common Principles?
+    - How do I validate my BIDS dataset?
+
 # Default model for this community
 default_model: "anthropic/claude-haiku-4.5"
 default_model_provider: "anthropic"

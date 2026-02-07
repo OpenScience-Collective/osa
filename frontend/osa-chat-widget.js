@@ -42,6 +42,9 @@
       'What tools are available for working with HED?',
       'Explain this HED validation error.'
     ],
+    // Per-page instructions for the assistant (set by widget embedder)
+    // These are sent to the backend as part of page_context
+    widgetInstructions: null,
     showExperimentalBadge: true,
     repoUrl: 'https://github.com/OpenScience-Collective/osa',
     repoName: 'Open Science Assistant',
@@ -1269,15 +1272,25 @@
     }
   }
 
-  // Get page context (URL and title) for contextual answers
+  // Get page context (URL, title, and widget instructions) for contextual answers
   function getPageContext() {
-    if (!CONFIG.allowPageContext || !pageContextEnabled) {
+    // Widget instructions are always sent if configured, even if page context is off
+    const hasWidgetInstructions = CONFIG.widgetInstructions != null;
+    const hasPageContext = CONFIG.allowPageContext && pageContextEnabled;
+
+    if (!hasPageContext && !hasWidgetInstructions) {
       return null;
     }
-    return {
-      url: window.location.href,
-      title: document.title || null
-    };
+
+    const context = {};
+    if (hasPageContext) {
+      context.url = window.location.href;
+      context.title = document.title || null;
+    }
+    if (hasWidgetInstructions) {
+      context.widget_instructions = CONFIG.widgetInstructions;
+    }
+    return context;
   }
 
   // Load page context preference from localStorage

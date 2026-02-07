@@ -8,6 +8,17 @@ status: available
 default_model: anthropic/claude-haiku-4.5
 default_model_provider: anthropic
 
+# Widget configuration for frontend embedding
+widget:
+  title: EEGLAB Assistant
+  initial_message: "Hi! I'm the EEGLAB Assistant. I can help with EEG analysis, MATLAB scripting, and EEGLAB plugins."
+  placeholder: Ask about EEGLAB...
+  suggested_questions:
+    - How do I load EEG data in EEGLAB?
+    - What preprocessing steps should I follow?
+    - How do I run ICA in EEGLAB?
+    - What plugins are available?
+
 cors_origins:
   - https://eeglab.org
   - https://www.eeglab.org

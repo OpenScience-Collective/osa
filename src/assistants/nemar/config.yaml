@@ -8,6 +8,17 @@ status: available
 default_model: anthropic/claude-haiku-4.5
 default_model_provider: anthropic
 
+# Widget configuration for frontend embedding
+widget:
+  title: NEMAR Assistant
+  initial_message: "Hi! I'm the NEMAR Assistant. I can help you discover and explore BIDS-formatted EEG, MEG, and iEEG datasets from the NEMAR archive. What are you looking for?"
+  placeholder: Search for datasets...
+  suggested_questions:
+    - Find EEG datasets with resting state recordings
+    - What datasets have HED annotations?
+    - Show me MEG datasets with at least 50 participants
+    - Tell me about dataset ds000248
+
 cors_origins:
   - https://nemar.org
   - https://www.nemar.org

@@ -625,6 +625,29 @@ class BudgetConfig(BaseModel):
         return self
 
 
+class WidgetConfig(BaseModel):
+    """Widget display configuration for frontend embedding.
+
+    Controls how the chat widget appears and behaves when embedded on websites.
+    All fields are optional; the frontend applies sensible defaults
+    (title defaults to community name, placeholder to "Ask a question...").
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = None
+    """Widget header title. Defaults to community name if not specified."""
+
+    initial_message: str | None = None
+    """First greeting message shown when the widget opens."""
+
+    placeholder: str | None = None
+    """Input field placeholder text. Defaults to "Ask a question..." if not specified."""
+
+    suggested_questions: list[str] = Field(default_factory=list)
+    """Clickable suggestion buttons shown below the initial message."""
+
+
 class CommunityConfig(BaseModel):
     """Configuration for a single research community assistant.
 
@@ -783,6 +806,23 @@ class CommunityConfig(BaseModel):
           daily_limit_usd: 5.0
           monthly_limit_usd: 50.0
           alert_threshold_pct: 80
+    """
+
+    widget: WidgetConfig | None = None
+    """Widget configuration for frontend embedding.
+
+    Controls display properties like title, placeholder text, initial message,
+    and suggested questions. If not specified, the frontend uses defaults
+    derived from the community name.
+
+    Example:
+        widget:
+          title: HED Assistant
+          placeholder: Ask about HED...
+          initial_message: "Hi! I'm the HED Assistant..."
+          suggested_questions:
+            - What is HED and how is it used?
+            - How do I annotate an event with HED tags?
     """
 
     @field_validator("cors_origins")
