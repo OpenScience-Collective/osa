@@ -9,7 +9,7 @@ import logging
 import re
 import sqlite3
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from src.knowledge.db import get_connection
 
@@ -104,6 +104,26 @@ class SearchResult:
     item_type: str | None  # 'issue', 'pr', or None for papers
     status: str  # 'open', 'closed', or 'published'
     created_at: str
+    _sort_key: tuple[int, int] = field(default=(2, 0), repr=False)
+
+
+def _docstring_sort_key(
+    query: str, symbol_name: str, file_path: str, bm25_rank: int
+) -> tuple[int, int]:
+    """Compute sort key that prioritizes exact symbol/filename matches.
+
+    Returns a tuple (priority, bm25_rank) where lower values sort first:
+      (0, 0) - exact symbol_name match (e.g., query="erpimage", symbol="erpimage")
+      (1, 0) - file basename matches query (e.g., query="erpimage", file="erpimage.m")
+      (2, bm25_rank) - default BM25 order (preserves original rank position)
+    """
+    query_lower = query.strip().lower()
+    if symbol_name.lower() == query_lower:
+        return (0, 0)
+    basename = file_path.rsplit("/", 1)[-1].rsplit(".", 1)[0].lower()
+    if basename == query_lower:
+        return (1, 0)
+    return (2, bm25_rank)
 
 
 def _is_pure_number_query(query: str) -> bool:
@@ -496,8 +516,11 @@ def search_docstrings(
         sql += " AND d.repo = ?"
         params.append(repo)
 
+    # Over-fetch to ensure exact symbol_name matches aren't missed due to
+    # BM25 ranking bias (long docstrings dilute term frequency scores).
+    fetch_limit = limit * 3
     sql += " ORDER BY rank LIMIT ?"
-    params.append(limit)
+    params.append(fetch_limit)
 
     results = []
     try:
@@ -506,7 +529,7 @@ def search_docstrings(
             safe_query = _sanitize_fts5_query(query)
             params[0] = safe_query
 
-            for row in conn.execute(sql, params):
+            for idx, row in enumerate(conn.execute(sql, params)):
                 # Create snippet from docstring (first 200 chars)
                 docstring = row["docstring"] or ""
                 snippet = docstring[:200].strip()
@@ -538,8 +561,14 @@ def search_docstrings(
                         item_type=symbol_type,
                         status="documented",
                         created_at="",
+                        _sort_key=_docstring_sort_key(query, symbol_name, file_path, idx),
                     )
                 )
+
+            # Re-rank: exact symbol/filename matches first, then BM25 order
+            results.sort(key=lambda r: r._sort_key)
+            results = results[:limit]
+
     except sqlite3.OperationalError as e:
         # Infrastructure failure (corruption, disk full, permissions) - must propagate
         logger.error(
