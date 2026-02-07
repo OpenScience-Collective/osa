@@ -89,6 +89,11 @@ class PageContext(BaseModel):
         description="Title of the page where the assistant is embedded",
         max_length=500,
     )
+    widget_instructions: str | None = Field(
+        default=None,
+        description="Per-page instructions for the assistant set by the widget embedder",
+        max_length=2000,
+    )
 
     @field_validator("url")
     @classmethod
@@ -705,6 +710,7 @@ def create_community_assistant(
         agent_page_context = AgentPageContext(
             url=page_context.url,
             title=page_context.title,
+            widget_instructions=page_context.widget_instructions,
         )
 
     assistant = registry.create_assistant(

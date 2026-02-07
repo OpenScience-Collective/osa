@@ -31,6 +31,17 @@ budget:
   monthly_limit_usd: 50.00
   alert_threshold_pct: 80.0
 
+# Widget configuration for frontend embedding
+widget:
+  title: HED Assistant
+  initial_message: "Hi! I'm the HED Assistant. I can help with HED (Hierarchical Event Descriptors), annotation, validation, and related tools. What would you like to know?"
+  placeholder: Ask about HED...
+  suggested_questions:
+    - What is HED and how is it used?
+    - How do I annotate an event with HED tags?
+    - What tools are available for working with HED?
+    - Explain this HED validation error.
+
 # Default model for this community (optional)
 # If specified, overrides the platform-level default model
 # Format: creator/model-name (OpenRouter format)

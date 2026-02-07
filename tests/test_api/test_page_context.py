@@ -61,6 +61,28 @@ class TestPageContextModel:
         assert ctx.url is None
         assert ctx.title is None
 
+    def test_widget_instructions_valid(self):
+        """Should accept valid widget_instructions."""
+        ctx = PageContext(widget_instructions="Focus on online tools.")
+        assert ctx.widget_instructions == "Focus on online tools."
+
+    def test_widget_instructions_none(self):
+        """Should accept None widget_instructions."""
+        ctx = PageContext(widget_instructions=None)
+        assert ctx.widget_instructions is None
+
+    def test_widget_instructions_max_length(self):
+        """Should enforce widget_instructions max length."""
+        long_instructions = "x" * 2001
+        with pytest.raises(ValidationError):
+            PageContext(widget_instructions=long_instructions)
+
+    def test_widget_instructions_at_max_length(self):
+        """Should accept widget_instructions at exactly max length."""
+        instructions = "x" * 2000
+        ctx = PageContext(widget_instructions=instructions)
+        assert len(ctx.widget_instructions) == 2000
+
 
 class TestAskRequestWithPageContext:
     """Tests for AskRequest with page context."""

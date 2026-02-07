@@ -155,81 +155,73 @@
   <script src="osa-chat-widget.js"></script>
 
   <script>
-    // Community configurations for the demo page
-    const COMMUNITIES = {
-      hed: {
-        name: 'HED',
-        fullName: 'Hierarchical Event Descriptors',
-        description: 'Annotation standard for neuroimaging experiments',
-        status: 'active',
-        widget: {
-          communityId: 'hed',
-          title: 'HED Assistant',
-          initialMessage: 'Hi! I\'m the HED Assistant. I can help with HED (Hierarchical Event Descriptors), annotation, validation, and related tools. What would you like to know?',
-          placeholder: 'Ask about HED...',
-          suggestedQuestions: [
-            'What is HED and how is it used?',
-            'How do I annotate an event with HED tags?',
-            'What tools are available for working with HED?',
-            'Explain this HED validation error.'
-          ]
+    // Community configurations fetched from the API
+    let COMMUNITIES = {};
+
+    // Determine API endpoint (same logic as the widget)
+    const hostname = window.location.hostname;
+    const isDemoPage = hostname === 'osa-demo.pages.dev';
+    const API_BASE = isDemoPage
+      ? 'https://osa-worker.shirazi-10f.workers.dev'
+      : 'https://osa-worker-dev.shirazi-10f.workers.dev';
+
+    // Fetch community configs from the backend
+    async function loadCommunities() {
+      try {
+        const response = await fetch(`${API_BASE}/communities`);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
         }
-      },
-      bids: {
-        name: 'BIDS',
-        fullName: 'Brain Imaging Data Structure',
-        description: 'Standard for organizing neuroimaging data',
-        status: 'active',
-        widget: {
-          communityId: 'bids',
-          title: 'BIDS Assistant',
-          initialMessage: 'Hi! I\'m the BIDS Assistant. I can help with Brain Imaging Data Structure (BIDS), data organization, validation, and related tools.',
-          placeholder: 'Ask about BIDS...',
-          suggestedQuestions: [
-            'What is BIDS and why should I use it?',
-            'How do I organize my EEG data in BIDS?',
-            'What are the BIDS Common Principles?',
-            'How do I validate my BIDS dataset?'
-          ]
+        const data = await response.json();
+        if (!Array.isArray(data)) {
+          throw new Error('Invalid response format');
         }
-      },
-      eeglab: {
-        name: 'EEGLAB',
-        fullName: 'EEG Analysis Toolbox',
-        description: 'MATLAB toolbox for EEG analysis',
-        status: 'active',
-        widget: {
-          communityId: 'eeglab',
-          title: 'EEGLAB Assistant',
-          initialMessage: 'Hi! I\'m the EEGLAB Assistant. I can help with EEG analysis, MATLAB scripting, and EEGLAB plugins.',
-          placeholder: 'Ask about EEGLAB...',
-          suggestedQuestions: [
-            'How do I load EEG data in EEGLAB?',
-            'What preprocessing steps should I follow?',
-            'How do I run ICA in EEGLAB?',
-            'What plugins are available?'
-          ]
+
+        for (const community of data) {
+          const w = community.widget || {};
+          const shortName = community.name.split('(')[0].trim() || community.name;
+          COMMUNITIES[community.id] = {
+            name: shortName,
+            fullName: community.name,
+            description: community.description,
+            status: community.status === 'available' ? 'active' : 'soon',
+            widget: {
+              communityId: community.id,
+              title: w.title,
+              initialMessage: w.initial_message || `Hi! I'm the ${shortName} Assistant. How can I help you?`,
+              placeholder: w.placeholder,
+              suggestedQuestions: w.suggested_questions || []
+            }
+          };
         }
-      },
-      nemar: {
-        name: 'NEMAR',
-        fullName: 'NeuroElectroMagnetic Archive',
-        description: 'Repository of BIDS-formatted EEG, MEG, and iEEG datasets',
-        status: 'active',
-        widget: {
-          communityId: 'nemar',
-          title: 'NEMAR Assistant',
-          initialMessage: 'Hi! I\'m the NEMAR Assistant. I can help you discover and explore BIDS-formatted EEG, MEG, and iEEG datasets from the NEMAR archive. What are you looking for?',
-          placeholder: 'Search for datasets...',
-          suggestedQuestions: [
-            'Find EEG datasets with resting state recordings',
-            'What datasets have HED annotations?',
-            'Show me MEG datasets with at least 50 participants',
-            'Tell me about dataset ds000248'
-          ]
-        }
+      } catch (error) {
+        console.error('[OSA] Failed to load communities from API:', error);
+        const container = document.getElementById('page-content');
+        container.textContent = '';
+        const h1 = document.createElement('h1');
+        h1.textContent = 'Open Science Assistant';
+        const box = document.createElement('div');
+        box.className = 'info-box';
+        const h2 = document.createElement('h2');
+        h2.textContent = 'Could not load communities';
+        const p1 = document.createElement('p');
+        p1.textContent = 'Failed to connect to the backend API. Please try refreshing the page.';
+        const p2 = document.createElement('p');
+        p2.style.cssText = 'color: #6b7280; font-size: 0.9em;';
+        p2.textContent = `Error: ${error.message}`;
+        box.append(h2, p1, p2);
+        container.append(h1, box);
+        return;
       }
-    };
+
+      // Route after loading
+      const communityId = getCommunityFromPath();
+      if (communityId) {
+        renderCommunity(communityId);
+      } else {
+        renderLanding();
+      }
+    }
 
     // Determine community from URL path (first segment only)
     function getCommunityFromPath() {
@@ -250,6 +242,9 @@
     // Render landing page (no specific community)
     function renderLanding() {
       document.title = 'Open Science Assistant - Demo';
+      const communityIds = Object.keys(COMMUNITIES);
+      const exampleId = communityIds[0] || 'hed';
+      const otherIds = communityIds.slice(1).map(id => `'${id}'`).join(', ');
       const html = `
         <h1>Open Science Assistant</h1>
         <p>AI-powered assistants for research communities. Each community gets a specialized assistant with domain expertise, documentation, and tools.</p>
@@ -277,7 +272,7 @@
           <pre><code>&lt;script src="https://osa-demo.pages.dev/osa-chat-widget.js"&gt;&lt;/script&gt;
 &lt;script&gt;
   OSAChatWidget.setConfig({
-    communityId: 'hed'  // or 'bids', 'eeglab', etc.
+    communityId: '${exampleId}'  // ${otherIds ? `or ${otherIds}` : ''}
   });
 &lt;/script&gt;</code></pre>
           <p>The widget auto-configures the API endpoint based on the <code>communityId</code>.</p>
@@ -286,11 +281,12 @@
         <div class="info-box">
           <h2>Configuration Options</h2>
           <ul>
-            <li><code>communityId</code> - Which assistant to use (e.g., 'hed', 'bids')</li>
+            <li><code>communityId</code> - Which assistant to use ('${exampleId}'${otherIds ? `, ${otherIds}` : ''})</li>
             <li><code>title</code> - Widget header title</li>
             <li><code>placeholder</code> - Input placeholder text</li>
             <li><code>initialMessage</code> - First greeting message from the assistant</li>
             <li><code>suggestedQuestions</code> - Array of clickable suggestion buttons</li>
+            <li><code>widgetInstructions</code> - Per-page context instructions for the assistant</li>
             <li><code>apiEndpoint</code> - Backend API URL (auto-detected by default)</li>
             <li><code>storageKey</code> - localStorage key (auto-derived from communityId)</li>
             <li><code>turnstileSiteKey</code> - Cloudflare Turnstile site key (optional)</li>
@@ -362,7 +358,9 @@
           <pre><code>&lt;script src="https://osa-demo.pages.dev/osa-chat-widget.js"&gt;&lt;/script&gt;
 &lt;script&gt;
   OSAChatWidget.setConfig({
-    communityId: '${communityId}'
+    communityId: '${communityId}',
+    // Optional: provide page-specific context
+    // widgetInstructions: 'Focus on topics relevant to this page.'
   });
 &lt;/script&gt;</code></pre>
         </div>
@@ -406,13 +404,8 @@
       OSAChatWidget.setConfig(community.widget);
     }
 
-    // Route based on URL path
-    const communityId = getCommunityFromPath();
-    if (communityId) {
-      renderCommunity(communityId);
-    } else {
-      renderLanding();
-    }
+    // Load communities from API and then route
+    loadCommunities();
   </script>
 </body>
 </html>
