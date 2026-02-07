@@ -206,9 +206,9 @@
       position: fixed;
       bottom: 90px;
       right: 20px;
-      width: 380px;
+      width: 440px;
       max-width: calc(100vw - 40px);
-      height: 520px;
+      height: 680px;
       max-height: calc(100vh - 120px);
       min-width: 300px;
       min-height: 350px;
