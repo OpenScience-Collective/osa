@@ -4,6 +4,7 @@
 name = "osa-worker"
 main = "index.js"
 compatibility_date = "2024-01-01"
+account_id = "10f166f3ec8395ff4a219f581c5f359d"
 
 # Production environment (default)
 [vars]

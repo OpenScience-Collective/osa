@@ -625,6 +625,57 @@ class BudgetConfig(BaseModel):
         return self
 
 
+class WidgetConfig(BaseModel):
+    """Widget display configuration for frontend embedding.
+
+    Controls how the chat widget appears and behaves when embedded on websites.
+    All fields are optional; the frontend applies sensible defaults
+    (title defaults to community name, placeholder to "Ask a question...").
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    title: str | None = Field(default=None, max_length=100)
+    """Widget header title. Defaults to community name if not specified."""
+
+    initial_message: str | None = Field(default=None, max_length=1000)
+    """First greeting message shown when the widget opens."""
+
+    placeholder: str | None = Field(default=None, max_length=200)
+    """Input field placeholder text. Defaults to "Ask a question..." if not specified."""
+
+    suggested_questions: list[str] = Field(default_factory=list)
+    """Clickable suggestion buttons shown below the initial message."""
+
+    @field_validator("title", "initial_message", "placeholder", mode="before")
+    @classmethod
+    def normalize_empty_strings(cls, v: str | None) -> str | None:
+        """Normalize empty/whitespace-only strings to None."""
+        if isinstance(v, str):
+            v = v.strip()
+            return v if v else None
+        return v
+
+    @field_validator("suggested_questions")
+    @classmethod
+    def validate_suggested_questions(cls, v: list[str]) -> list[str]:
+        """Filter empty entries and enforce a reasonable maximum."""
+        cleaned = [q.strip() for q in v if isinstance(q, str) and q.strip()]
+        if len(cleaned) > 10:
+            msg = f"Too many suggested questions ({len(cleaned)}). Maximum is 10."
+            raise ValueError(msg)
+        return cleaned
+
+    def resolve(self, community_name: str) -> dict[str, Any]:
+        """Return widget config with defaults applied."""
+        return {
+            "title": self.title or community_name,
+            "initial_message": self.initial_message,
+            "placeholder": self.placeholder or "Ask a question...",
+            "suggested_questions": self.suggested_questions,
+        }
+
+
 class CommunityConfig(BaseModel):
     """Configuration for a single research community assistant.
 
@@ -783,6 +834,23 @@ class CommunityConfig(BaseModel):
           daily_limit_usd: 5.0
           monthly_limit_usd: 50.0
           alert_threshold_pct: 80
+    """
+
+    widget: WidgetConfig | None = None
+    """Widget configuration for frontend embedding.
+
+    Controls display properties like title, placeholder text, initial message,
+    and suggested questions. If not specified, the frontend uses defaults
+    derived from the community name.
+
+    Example:
+        widget:
+          title: HED Assistant
+          placeholder: Ask about HED...
+          initial_message: "Hi! I'm the HED Assistant..."
+          suggested_questions:
+            - What is HED and how is it used?
+            - How do I annotate an event with HED tags?
     """
 
     @field_validator("cors_origins")

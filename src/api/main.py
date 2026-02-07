@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from src.api.config import get_settings
 from src.api.routers import (
+    communities_router,
     create_community_router,
     metrics_public_router,
     metrics_router,
@@ -204,6 +205,9 @@ def register_routes(app: FastAPI) -> None:
     # Metrics routers (admin + public)
     app.include_router(metrics_router)
     app.include_router(metrics_public_router)
+
+    # Communities metadata endpoint (public, for widget config)
+    app.include_router(communities_router)
 
     # Health check router
     app.include_router(health_router)

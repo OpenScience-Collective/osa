@@ -161,9 +161,11 @@ function isAllowedOrigin(origin) {
     'https://bids.neuroimaging.io',
     'https://eeglab.org',
     'https://hedtags.org',
+    'https://nemar.org',
     'https://sccn.github.io',
     'https://www.eeglab.org',
-    'https://www.hedtags.org'
+    'https://www.hedtags.org',
+    'https://www.nemar.org'
   ];
 
   // Check exact matches
@@ -173,6 +175,7 @@ function isAllowedOrigin(origin) {
   if (origin.endsWith('.eeglab.org')) return true;
   if (origin.endsWith('.github.io')) return true;
   if (origin.endsWith('.hedtags.org')) return true;
+  if (origin.endsWith('.nemar.org')) return true;
   if (origin.endsWith('.neuroimaging.io')) return true;
   if (origin.endsWith('.readthedocs.io')) return true;
 
@@ -400,7 +403,14 @@ export default {
         return await handleFeedback(request, env, corsHeaders, CONFIG);
       }
 
-      // --- Dashboard read-only endpoints (GET only, rate-limited) ---
+      // --- Public read-only endpoints (GET only, rate-limited) ---
+
+      // Communities metadata (widget config)
+      if (url.pathname === '/communities' && request.method === 'GET') {
+        const rejected = await rateLimitOrReject(request, env, corsHeaders, CONFIG);
+        if (rejected) return rejected;
+        return await proxyToBackend(request, env, '/communities', null, corsHeaders, CONFIG);
+      }
 
       // Global public metrics: /metrics/public/overview
       if (url.pathname === '/metrics/public/overview' && request.method === 'GET') {
@@ -479,7 +489,8 @@ export default {
 
       return new Response('Not Found', { status: 404, headers: corsHeaders });
     } catch (error) {
-      return new Response(JSON.stringify({ error: error.message }), {
+      console.error('Unhandled worker error:', error);
+      return new Response(JSON.stringify({ error: 'Internal server error' }), {
         status: 500,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
@@ -502,6 +513,7 @@ function handleRoot(corsHeaders, CONFIG) {
       'POST /:communityId/chat': 'Multi-turn conversation with a community',
       'GET /:communityId/metrics/public': 'Public community metrics',
       'GET /:communityId/sessions': 'List sessions (requires API key)',
+      'GET /communities': 'List communities with widget configuration',
       'GET /metrics/public/overview': 'Public metrics overview',
       'GET /metrics/overview': 'Admin metrics overview (requires API key)',
       'GET /sync/status': 'Knowledge sync status',
@@ -515,7 +527,7 @@ function handleRoot(corsHeaders, CONFIG) {
       rate_limit: `${CONFIG.RATE_LIMIT_PER_MINUTE}/min, ${CONFIG.RATE_LIMIT_PER_HOUR}/hour`,
     },
     notes: {
-      communities: 'Available communities: hed, bids, eeglab (check backend /communities endpoint for full list)',
+      communities: 'Available communities: hed, bids, eeglab, nemar (check /communities endpoint for full list)',
     },
   }), {
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -579,7 +591,15 @@ async function handleHealth(env, corsHeaders, CONFIG) {
  * Handle protected endpoints (Turnstile + rate limiting)
  */
 async function handleProtectedEndpoint(request, env, ctx, path, corsHeaders, CONFIG) {
-  const body = await request.json();
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response(JSON.stringify({ error: 'Invalid JSON in request body' }), {
+      status: 400,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  }
 
   // Check for BYOK mode - CLI/programmatic access with user's own API key
   // BYOK users skip Turnstile but still get rate limited
@@ -625,6 +645,14 @@ async function handleFeedback(request, env, corsHeaders, CONFIG) {
   const rejected = await rateLimitOrReject(request, env, corsHeaders, CONFIG);
   if (rejected) return rejected;
 
-  const body = await request.json();
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response(JSON.stringify({ error: 'Invalid JSON in request body' }), {
+      status: 400,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  }
   return await proxyToBackend(request, env, '/feedback', body, corsHeaders, CONFIG);
 }
