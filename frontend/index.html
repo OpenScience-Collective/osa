@@ -173,34 +173,44 @@
           throw new Error(`HTTP ${response.status}`);
         }
         const data = await response.json();
+        if (!Array.isArray(data)) {
+          throw new Error('Invalid response format');
+        }
 
         for (const community of data) {
           const w = community.widget || {};
+          const shortName = community.name.split('(')[0].trim() || community.name;
           COMMUNITIES[community.id] = {
-            name: community.name.split('(')[0].trim() || community.name,
+            name: shortName,
             fullName: community.name,
             description: community.description,
             status: community.status === 'available' ? 'active' : 'soon',
             widget: {
               communityId: community.id,
-              title: w.title || community.name,
-              initialMessage: w.initial_message || `Hi! I'm the ${community.name} Assistant. How can I help you?`,
-              placeholder: w.placeholder || 'Ask a question...',
+              title: w.title,
+              initialMessage: w.initial_message || `Hi! I'm the ${shortName} Assistant. How can I help you?`,
+              placeholder: w.placeholder,
               suggestedQuestions: w.suggested_questions || []
             }
           };
         }
       } catch (error) {
         console.error('[OSA] Failed to load communities from API:', error);
-        // Show error on page
-        document.getElementById('page-content').innerHTML = `
-          <h1>Open Science Assistant</h1>
-          <div class="info-box">
-            <h2>Could not load communities</h2>
-            <p>Failed to connect to the backend API. Please try refreshing the page.</p>
-            <p style="color: #6b7280; font-size: 0.9em;">Error: ${error.message}</p>
-          </div>
-        `;
+        const container = document.getElementById('page-content');
+        container.textContent = '';
+        const h1 = document.createElement('h1');
+        h1.textContent = 'Open Science Assistant';
+        const box = document.createElement('div');
+        box.className = 'info-box';
+        const h2 = document.createElement('h2');
+        h2.textContent = 'Could not load communities';
+        const p1 = document.createElement('p');
+        p1.textContent = 'Failed to connect to the backend API. Please try refreshing the page.';
+        const p2 = document.createElement('p');
+        p2.style.cssText = 'color: #6b7280; font-size: 0.9em;';
+        p2.textContent = `Error: ${error.message}`;
+        box.append(h2, p1, p2);
+        container.append(h1, box);
         return;
       }
 

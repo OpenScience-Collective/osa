@@ -500,3 +500,53 @@ class TestCommunityAssistantWithPageContext:
         assert assistant.preloaded_doc_count == 0
         # Should still know about available docs
         assert assistant.available_doc_count > 0
+
+    def test_system_prompt_includes_widget_instructions(self):
+        """Should include widget instructions in system prompt with guardrails."""
+        model = MagicMock()
+        model.bind_tools = MagicMock(return_value=model)
+        page_context = PageContext(
+            url="https://hedtags.org/tools",
+            title="HED Tools",
+            widget_instructions="Focus on online validation tools.",
+        )
+        assistant = registry.create_assistant(
+            "hed", model=model, preload_docs=False, page_context=page_context
+        )
+
+        prompt = assistant.get_system_prompt()
+        assert "Widget Page Context" in prompt
+        assert "Focus on online validation tools." in prompt
+        # Should include prompt injection guardrails
+        assert "untrusted content" in prompt
+
+    def test_system_prompt_widget_instructions_only(self):
+        """Should include widget instructions even without URL."""
+        model = MagicMock()
+        model.bind_tools = MagicMock(return_value=model)
+        page_context = PageContext(
+            url=None,
+            widget_instructions="This page is about HED online tools.",
+        )
+        assistant = registry.create_assistant(
+            "hed", model=model, preload_docs=False, page_context=page_context
+        )
+
+        prompt = assistant.get_system_prompt()
+        assert "Widget Page Context" in prompt
+        assert "This page is about HED online tools." in prompt
+        # Should NOT include page URL section
+        assert "Page URL" not in prompt
+
+    def test_system_prompt_no_widget_instructions(self):
+        """Should not include widget instructions section when not provided."""
+        model = MagicMock()
+        model.bind_tools = MagicMock(return_value=model)
+        page_context = PageContext(url="https://hedtags.org/docs", title="HED Docs")
+        assistant = registry.create_assistant(
+            "hed", model=model, preload_docs=False, page_context=page_context
+        )
+
+        prompt = assistant.get_system_prompt()
+        assert "Widget Page Context" not in prompt
+        assert "Page Context" in prompt

@@ -26,30 +26,25 @@ def list_communities() -> list[dict[str, Any]]:
         if not config:
             continue
 
-        widget_data: dict[str, Any] = {}
-        if config.widget:
-            widget_data = {
-                "title": config.widget.title or config.name,
-                "initial_message": config.widget.initial_message,
-                "placeholder": config.widget.placeholder or "Ask a question...",
-                "suggested_questions": config.widget.suggested_questions,
-            }
-        else:
-            widget_data = {
-                "title": config.name,
-                "initial_message": None,
-                "placeholder": "Ask a question...",
-                "suggested_questions": [],
+        try:
+            widget = config.widget
+            widget_data: dict[str, Any] = {
+                "title": (widget.title if widget else None) or config.name,
+                "initial_message": widget.initial_message if widget else None,
+                "placeholder": (widget.placeholder if widget else None) or "Ask a question...",
+                "suggested_questions": widget.suggested_questions if widget else [],
             }
 
-        communities.append(
-            {
-                "id": config.id,
-                "name": config.name,
-                "description": config.description,
-                "status": config.status,
-                "widget": widget_data,
-            }
-        )
+            communities.append(
+                {
+                    "id": config.id,
+                    "name": config.name,
+                    "description": config.description,
+                    "status": config.status,
+                    "widget": widget_data,
+                }
+            )
+        except Exception:
+            logger.exception("Failed to build widget data for community %s", info.id)
 
     return communities

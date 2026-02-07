@@ -1275,7 +1275,8 @@
   // Get page context (URL, title, and widget instructions) for contextual answers
   function getPageContext() {
     // Widget instructions are always sent if configured, even if page context is off
-    const hasWidgetInstructions = CONFIG.widgetInstructions != null;
+    const hasWidgetInstructions = typeof CONFIG.widgetInstructions === 'string'
+      && CONFIG.widgetInstructions.trim() !== '';
     const hasPageContext = CONFIG.allowPageContext && pageContextEnabled;
 
     if (!hasPageContext && !hasWidgetInstructions) {
