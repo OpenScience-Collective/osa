@@ -431,6 +431,74 @@ class TestWidgetConfig:
         widget = WidgetConfig(suggested_questions=[])
         assert widget.suggested_questions == []
 
+    def test_empty_string_normalized_to_none(self) -> None:
+        """Empty strings should be normalized to None."""
+        widget = WidgetConfig(title="", placeholder="  ", initial_message="  \n  ")
+        assert widget.title is None
+        assert widget.placeholder is None
+        assert widget.initial_message is None
+
+    def test_strings_are_stripped(self) -> None:
+        """Whitespace should be stripped from string fields."""
+        widget = WidgetConfig(title="  HED Assistant  ", placeholder="  Ask... ")
+        assert widget.title == "HED Assistant"
+        assert widget.placeholder == "Ask..."
+
+    def test_title_max_length(self) -> None:
+        """Should enforce title max length."""
+        with pytest.raises(ValidationError):
+            WidgetConfig(title="x" * 101)
+
+    def test_initial_message_max_length(self) -> None:
+        """Should enforce initial_message max length."""
+        with pytest.raises(ValidationError):
+            WidgetConfig(initial_message="x" * 1001)
+
+    def test_placeholder_max_length(self) -> None:
+        """Should enforce placeholder max length."""
+        with pytest.raises(ValidationError):
+            WidgetConfig(placeholder="x" * 201)
+
+    def test_suggested_questions_filters_empty(self) -> None:
+        """Should filter out empty and whitespace-only questions."""
+        widget = WidgetConfig(suggested_questions=["What is HED?", "", "  ", "How?"])
+        assert widget.suggested_questions == ["What is HED?", "How?"]
+
+    def test_suggested_questions_strips_whitespace(self) -> None:
+        """Should strip whitespace from question entries."""
+        widget = WidgetConfig(suggested_questions=["  What is HED?  "])
+        assert widget.suggested_questions == ["What is HED?"]
+
+    def test_suggested_questions_max_count(self) -> None:
+        """Should reject more than 10 suggested questions."""
+        with pytest.raises(ValidationError, match="Maximum is 10"):
+            WidgetConfig(suggested_questions=[f"Question {i}" for i in range(11)])
+
+    def test_is_frozen(self) -> None:
+        """Should be immutable after construction."""
+        widget = WidgetConfig(title="Test")
+        with pytest.raises(ValidationError):
+            widget.title = "Changed"
+
+    def test_resolve_with_defaults(self) -> None:
+        """resolve() should apply defaults from community name."""
+        widget = WidgetConfig()
+        result = widget.resolve("HED")
+        assert result["title"] == "HED"
+        assert result["placeholder"] == "Ask a question..."
+        assert result["initial_message"] is None
+        assert result["suggested_questions"] == []
+
+    def test_resolve_with_values(self) -> None:
+        """resolve() should use provided values over defaults."""
+        widget = WidgetConfig(
+            title="Custom Title",
+            placeholder="Custom placeholder",
+        )
+        result = widget.resolve("HED")
+        assert result["title"] == "Custom Title"
+        assert result["placeholder"] == "Custom placeholder"
+
 
 class TestCommunityConfigWidget:
     """Tests for CommunityConfig.widget field."""

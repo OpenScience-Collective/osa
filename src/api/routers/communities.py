@@ -6,9 +6,12 @@ from typing import Any
 from fastapi import APIRouter
 
 from src.assistants import registry
+from src.core.config.community import WidgetConfig
 
 router = APIRouter(tags=["Communities"])
 logger = logging.getLogger(__name__)
+
+_DEFAULT_WIDGET = WidgetConfig()
 
 
 @router.get("/communities")
@@ -27,21 +30,14 @@ def list_communities() -> list[dict[str, Any]]:
             continue
 
         try:
-            widget = config.widget
-            widget_data: dict[str, Any] = {
-                "title": (widget.title if widget else None) or config.name,
-                "initial_message": widget.initial_message if widget else None,
-                "placeholder": (widget.placeholder if widget else None) or "Ask a question...",
-                "suggested_questions": widget.suggested_questions if widget else [],
-            }
-
+            widget = config.widget or _DEFAULT_WIDGET
             communities.append(
                 {
                     "id": config.id,
                     "name": config.name,
                     "description": config.description,
                     "status": config.status,
-                    "widget": widget_data,
+                    "widget": widget.resolve(config.name),
                 }
             )
         except Exception:
