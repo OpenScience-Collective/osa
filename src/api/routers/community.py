@@ -366,7 +366,7 @@ def _is_authorized_origin(origin: str | None, community_id: str) -> bool:
     (vs CLI, unauthorized web page, or API client).
 
     Checks against:
-    1. Platform default origins (demo.osc.earth, *.osc.earth, and legacy pages.dev)
+    1. Platform default origins (demo.osc.earth, *.demo.osc.earth, and legacy pages.dev)
     2. Community-specific CORS origins from config
 
     Args:
@@ -387,7 +387,6 @@ def _is_authorized_origin(origin: str | None, community_id: str) -> bool:
     ]
     platform_wildcard_origins = [
         "https://*.demo.osc.earth",
-        "https://*.osc.earth",
         "https://*.osa-demo.pages.dev",
     ]
 

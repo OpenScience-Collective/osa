@@ -158,6 +158,27 @@ class TestCorsHeaders:
             response.headers.get("access-control-allow-origin") == "https://develop.demo.osc.earth"
         )
 
+    def test_cors_allowed_for_demo_osc_earth(self, client: TestClient) -> None:
+        """Should return CORS headers for demo.osc.earth (production domain)."""
+        response = client.get(
+            "/health",
+            headers={"Origin": "https://demo.osc.earth"},
+        )
+        assert response.status_code == 200
+        assert response.headers.get("access-control-allow-origin") == "https://demo.osc.earth"
+
+    def test_cors_backward_compat_pages_dev(self, client: TestClient) -> None:
+        """Should return CORS headers for legacy osa-demo.pages.dev wildcard."""
+        response = client.get(
+            "/health",
+            headers={"Origin": "https://develop.osa-demo.pages.dev"},
+        )
+        assert response.status_code == 200
+        assert (
+            response.headers.get("access-control-allow-origin")
+            == "https://develop.osa-demo.pages.dev"
+        )
+
     def test_cors_denied_for_unknown_origin(self, client: TestClient) -> None:
         """Should not return CORS headers for unconfigured origins."""
         response = client.get(

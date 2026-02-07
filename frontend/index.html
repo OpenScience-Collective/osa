@@ -158,12 +158,17 @@
     // Community configurations fetched from the API
     let COMMUNITIES = {};
 
-    // Determine API endpoint (same logic as the widget)
+    // Determine API endpoint (matches widget environment detection)
     const hostname = window.location.hostname;
     const isProduction = hostname === 'demo.osc.earth' || hostname === 'osa-demo.pages.dev';
-    const API_BASE = isProduction
-      ? 'https://osa-worker.shirazi-10f.workers.dev'
-      : 'https://osa-worker-dev.shirazi-10f.workers.dev';
+    const isDev = !isProduction && (
+                  hostname.endsWith('.demo.osc.earth') ||
+                  hostname.endsWith('.osa-demo.pages.dev') ||
+                  hostname.includes('localhost') ||
+                  hostname.includes('127.0.0.1'));
+    const API_BASE = isDev
+      ? 'https://osa-worker-dev.shirazi-10f.workers.dev'
+      : 'https://osa-worker.shirazi-10f.workers.dev';
 
     // Fetch community configs from the backend
     async function loadCommunities() {
