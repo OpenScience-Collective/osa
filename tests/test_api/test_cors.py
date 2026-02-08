@@ -33,6 +33,17 @@ class TestWildcardOriginToRegex:
         assert not pattern.match("https://example.com")
         assert not pattern.match("https://.example.com")
 
+    def test_hyphen_prefix_wildcard(self) -> None:
+        """Should match single-level subdomains with hyphen-prefix pattern (*-demo)."""
+        regex = _wildcard_origin_to_regex("https://*-demo.osc.earth")
+        pattern = re.compile(regex)
+        assert pattern.match("https://develop-demo.osc.earth")
+        assert pattern.match("https://feature-123-demo.osc.earth")
+        assert not pattern.match("https://-demo.osc.earth")  # bare hyphen
+        assert not pattern.match("https://demo.osc.earth")  # no prefix
+        assert not pattern.match("http://develop-demo.osc.earth")  # wrong scheme
+        assert not pattern.match("https://evil.foo-demo.osc.earth")  # multi-level
+
     def test_pages_dev_wildcard(self) -> None:
         """Should match subdomains of osa-demo.pages.dev."""
         regex = _wildcard_origin_to_regex("https://*.osa-demo.pages.dev")
