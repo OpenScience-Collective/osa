@@ -12,7 +12,6 @@
 │   ├── testing.md        # Testing guidelines
 │   └── git.md            # Git workflow
 ├── .serena/              # Serena MCP data
-├── docs/                 # Additional documentation
 ├── scripts/              # Utility scripts
 │   └── bump_version.py   # Version management
 ├── src/                  # Main source code

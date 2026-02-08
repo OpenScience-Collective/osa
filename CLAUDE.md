@@ -161,7 +161,7 @@ src/
 - **.context/tool-system-guide.md** - How tools work and are registered
 
 ### Architecture & Planning
-- **docs/architecture.md** - High-level system diagrams (for papers/docs)
+- **[Architecture](https://docs.osc.earth/osa/architecture/)** - High-level system diagrams
 - **.context/plan.md** - Implementation roadmap and current tasks
 - **.context/research.md** - Technical notes, target project resources
 
@@ -281,7 +281,7 @@ ssh -o "RequestTTY=no" -J hallu hedtools \
 ## References
 
 - **API structure**: `.context/api-structure.md` (read first for API work)
-- **Architecture**: `docs/architecture.md` (high-level diagrams)
+- **Architecture**: [docs.osc.earth/osa/architecture](https://docs.osc.earth/osa/architecture/) (high-level diagrams)
 - **Plan**: `.context/plan.md` (current roadmap)
 - **Research notes**: `.context/research.md` (technical deep-dives)
 - **HED tools analysis**: `.context/hed_tools_analysis.md`
