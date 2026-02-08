@@ -154,17 +154,19 @@ uv run osa validate src/assistants/my-tool/config.yaml
 4. Start the server - the `/{community-id}/ask` endpoint is auto-created.
 
 **Documentation:**
-- [Community Onboarding Guide](docs/community-onboarding.md) - Step-by-step onboarding process
-- [Configuration Reference](docs/config-reference.md) - Complete reference for all config fields
-- [Troubleshooting Guide](docs/troubleshooting.md) - Common issues and solutions
+- [Adding a Community](https://docs.osc.earth/osa/registry/quick-start/) - Step-by-step onboarding process
+- [Schema Reference](https://docs.osc.earth/osa/registry/schema-reference/) - Complete reference for all config fields
+- [Troubleshooting](https://docs.osc.earth/osa/troubleshooting/) - Common issues and solutions
 
 ## Documentation
 
+Full documentation is available at **[docs.osc.earth/osa](https://docs.osc.earth/osa/)**.
+
 ### For Community Onboarding
 
-- **[Community Onboarding Guide](docs/community-onboarding.md)** - Complete walkthrough for adding your community to OSA (target: <15 minutes)
-- **[Configuration Reference](docs/config-reference.md)** - Comprehensive reference for all `config.yaml` fields
-- **[Troubleshooting Guide](docs/troubleshooting.md)** - Solutions for common configuration and deployment issues
+- **[Adding a Community](https://docs.osc.earth/osa/registry/quick-start/)** - Complete walkthrough for adding your community to OSA
+- **[Schema Reference](https://docs.osc.earth/osa/registry/schema-reference/)** - Comprehensive reference for all `config.yaml` fields
+- **[Troubleshooting](https://docs.osc.earth/osa/troubleshooting/)** - Solutions for common configuration and deployment issues
 
 ### For Deployment
 
