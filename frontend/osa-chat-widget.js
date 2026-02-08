@@ -2690,16 +2690,6 @@
     return typeof id === 'string' && /^[a-zA-Z0-9_-]+$/.test(id);
   }
 
-  // Start when DOM is ready, deferred to allow setConfig calls before init
-  function scheduleInit() {
-    setTimeout(init, 0);
-  }
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', scheduleInit);
-  } else {
-    scheduleInit();
-  }
-
   // Expose configuration for customization
   window.OSAChatWidget = {
     setConfig: function(options) {
@@ -2717,6 +2707,34 @@
     },
     getConfig: function() {
       return { ...CONFIG };
+    },
+    // Manually initialize the widget (use with data-no-auto-init on the script tag)
+    init: function() {
+      if (!initialized) {
+        initialized = true;
+        init();
+      }
     }
   };
+
+  // Auto-init unless the script tag has data-no-auto-init attribute
+  let initialized = false;
+  const currentScript = document.currentScript;
+  const noAutoInit = currentScript && currentScript.hasAttribute('data-no-auto-init');
+
+  if (!noAutoInit) {
+    function scheduleInit() {
+      setTimeout(function() {
+        if (!initialized) {
+          initialized = true;
+          init();
+        }
+      }, 0);
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', scheduleInit);
+    } else {
+      scheduleInit();
+    }
+  }
 })();

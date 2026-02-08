@@ -163,8 +163,8 @@
 <body>
   <div id="page-content"></div>
 
-  <!-- Load the OSA Chat Widget -->
-  <script src="osa-chat-widget.js"></script>
+  <!-- Load the OSA Chat Widget (no-auto-init: we init after loading community config) -->
+  <script src="osa-chat-widget.js" data-no-auto-init></script>
 
   <script>
     // Community configurations fetched from the API
@@ -417,8 +417,9 @@
       `;
       document.getElementById('page-content').innerHTML = html;
 
-      // Configure widget for this community
+      // Configure and initialize widget for this community
       OSAChatWidget.setConfig(community.widget);
+      OSAChatWidget.init();
     }
 
     // Load communities from API and then route
