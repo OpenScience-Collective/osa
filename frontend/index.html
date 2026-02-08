@@ -3,6 +3,18 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script>
+    // Redirect *.osa-demo.pages.dev to custom domains
+    (function() {
+      var h = location.hostname;
+      if (h === 'osa-demo.pages.dev') {
+        location.replace('https://demo.osc.earth' + location.pathname);
+      } else if (h.endsWith('.osa-demo.pages.dev')) {
+        var branch = h.replace('.osa-demo.pages.dev', '');
+        location.replace('https://' + branch + '-demo.osc.earth' + location.pathname);
+      }
+    })();
+  </script>
   <title>OSA Chat Widget Demo</title>
   <style>
     body {
