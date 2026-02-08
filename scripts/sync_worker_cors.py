@@ -78,7 +78,8 @@ def update_worker_cors(origins):
             domains.add(base)
 
     subdomain_checks = "\n  ".join(
-        f"if (origin.endsWith('.{domain}')) return true;" for domain in sorted(domains)
+        f"if (origin.startsWith('https://') && origin.endsWith('.{domain}')) return true;"
+        for domain in sorted(domains)
     )
 
     # Build the new function

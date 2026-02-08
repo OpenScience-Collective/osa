@@ -37,9 +37,9 @@ jobs:
           FQDN="${BRANCH}-demo.osc.earth"
           PROJECT="osa-demo"
 
-          # Skip main (production domain, not a preview)
-          if [ "$BRANCH" = "main" ]; then
-            echo "Skipping main branch"
+          # Skip protected branches
+          if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "develop" ]; then
+            echo "Skipping protected branch: ${BRANCH}"
             exit 0
           fi
 
