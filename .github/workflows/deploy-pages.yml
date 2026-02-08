@@ -69,8 +69,8 @@ jobs:
           TARGET="${BRANCH}.osa-demo.pages.dev"
           PROJECT="osa-demo"
 
-          if [ -z "$CF_ZONE_ID" ]; then
-            echo "::warning::CLOUDFLARE_ZONE_ID not set, skipping DNS/domain setup"
+          if [ -z "$CF_ZONE_ID" ] || [ -z "$CF_API_TOKEN" ] || [ -z "$CF_ACCOUNT_ID" ]; then
+            echo "::warning::Cloudflare secrets not fully configured, skipping DNS/domain setup"
             exit 0
           fi
 
@@ -78,9 +78,12 @@ jobs:
           EXISTING=$(curl -sf -X GET \
             "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${FQDN}&type=CNAME" \
             -H "Authorization: Bearer ${CF_API_TOKEN}" \
-            -H "Content-Type: application/json")
+            -H "Content-Type: application/json") || {
+            echo "::warning::Failed to query DNS records for ${FQDN}"
+            exit 0
+          }
 
-          COUNT=$(echo "$EXISTING" | jq '.result | length')
+          COUNT=$(echo "$EXISTING" | jq '.result | length // 0')
 
           if [ "$COUNT" = "0" ]; then
             echo "Creating CNAME: ${FQDN} -> ${TARGET}"
@@ -104,9 +107,12 @@ jobs:
           DOMAINS=$(curl -sf -X GET \
             "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/pages/projects/${PROJECT}/domains" \
             -H "Authorization: Bearer ${CF_API_TOKEN}" \
-            -H "Content-Type: application/json")
+            -H "Content-Type: application/json") || {
+            echo "::warning::Failed to query Pages domains"
+            exit 0
+          }
 
-          DOMAIN_EXISTS=$(echo "$DOMAINS" | jq --arg fqdn "$FQDN" '[.result[] | select(.name == $fqdn)] | length')
+          DOMAIN_EXISTS=$(echo "$DOMAINS" | jq --arg fqdn "$FQDN" '[.result[] | select(.name == $fqdn)] | length // 0')
 
           if [ "$DOMAIN_EXISTS" = "0" ]; then
             echo "Registering Pages custom domain: ${FQDN}"
@@ -147,7 +153,6 @@ jobs:
             );
 
             const sha = '${{ github.sha }}'.substring(0, 7);
-            const pagesDevUrl = `https://${branch}.osa-demo.pages.dev`;
             const body = [
               '<!-- cloudflare-pages-preview -->',
               '## Preview Deployment',
@@ -155,7 +160,6 @@ jobs:
               '| Name | Link |',
               '|------|------|',
               `| **Preview URL** | ${previewUrl} |`,
-              `| **Pages.dev URL** | ${pagesDevUrl} |`,
               '| **Branch** | `${{ steps.branch.outputs.original }}` |',
               `| **Commit** | \`${sha}\` |`,
               '',

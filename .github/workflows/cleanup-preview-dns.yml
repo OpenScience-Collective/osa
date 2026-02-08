@@ -27,8 +27,8 @@ jobs:
           CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CF_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
         run: |
-          if [ -z "$CF_ZONE_ID" ]; then
-            echo "::warning::CLOUDFLARE_ZONE_ID not set, skipping"
+          if [ -z "$CF_ZONE_ID" ] || [ -z "$CF_API_TOKEN" ] || [ -z "$CF_ACCOUNT_ID" ]; then
+            echo "::warning::Cloudflare secrets not fully configured, skipping"
             exit 0
           fi
 
@@ -48,29 +48,42 @@ jobs:
             exit 0
           fi
 
-          # Remove Pages custom domain first
+          # Remove Pages custom domain first (404 is expected if already removed)
           echo "Removing Pages custom domain: ${FQDN}"
-          curl -sf -X DELETE \
+          HTTP_CODE=$(curl -s -o /tmp/pages_resp.json -w "%{http_code}" -X DELETE \
             "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/pages/projects/${PROJECT}/domains/${FQDN}" \
             -H "Authorization: Bearer ${CF_API_TOKEN}" \
-            -H "Content-Type: application/json" || echo "Pages domain not found or already removed"
+            -H "Content-Type: application/json")
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "Pages custom domain removed."
+          elif [ "$HTTP_CODE" = "404" ]; then
+            echo "Pages domain not found (already removed)."
+          else
+            echo "::warning::Failed to remove Pages domain ${FQDN} (HTTP ${HTTP_CODE})"
+          fi
 
           # Then remove DNS record
           echo "Looking for DNS record: ${FQDN}"
           RECORDS=$(curl -sf -X GET \
             "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${FQDN}&type=CNAME" \
             -H "Authorization: Bearer ${CF_API_TOKEN}" \
-            -H "Content-Type: application/json")
+            -H "Content-Type: application/json") || {
+            echo "::warning::Failed to query DNS records for ${FQDN}"
+            exit 0
+          }
 
           RECORD_ID=$(echo "$RECORDS" | jq -r '.result[0].id // empty')
 
           if [ -n "$RECORD_ID" ]; then
             echo "Deleting DNS record: ${FQDN} (${RECORD_ID})"
-            curl -sf -X DELETE \
+            if curl -sf -X DELETE \
               "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" \
               -H "Authorization: Bearer ${CF_API_TOKEN}" \
-              -H "Content-Type: application/json"
-            echo "Deleted."
+              -H "Content-Type: application/json"; then
+              echo "Deleted."
+            else
+              echo "::warning::Failed to delete DNS record ${RECORD_ID} for ${FQDN}"
+            fi
           else
             echo "No DNS record found for ${FQDN}"
           fi
@@ -83,8 +96,8 @@ jobs:
           CF_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ -z "$CF_ZONE_ID" ]; then
-            echo "::warning::CLOUDFLARE_ZONE_ID not set, skipping"
+          if [ -z "$CF_ZONE_ID" ] || [ -z "$CF_API_TOKEN" ] || [ -z "$CF_ACCOUNT_ID" ]; then
+            echo "::warning::Cloudflare secrets not fully configured, skipping"
             exit 0
           fi
 
@@ -94,7 +107,17 @@ jobs:
           RECORDS=$(curl -sf -X GET \
             "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?type=CNAME&per_page=100" \
             -H "Authorization: Bearer ${CF_API_TOKEN}" \
-            -H "Content-Type: application/json")
+            -H "Content-Type: application/json") || {
+            echo "::error::Failed to fetch DNS records from Cloudflare"
+            exit 1
+          }
+
+          # Pre-fetch all branch names to avoid per-record API calls
+          # If this fails, abort to avoid accidentally deleting active records
+          BRANCHES=$(gh api "repos/${{ github.repository }}/branches" --paginate -q '.[].name') || {
+            echo "::error::Failed to list branches from GitHub API. Aborting to avoid accidental deletions."
+            exit 1
+          }
 
           # Filter to *-demo.osc.earth records (excluding demo.osc.earth itself)
           echo "$RECORDS" | jq -r '.result[] | select(.name | endswith("-demo.osc.earth")) | "\(.id) \(.name)"' | while read -r RECORD_ID FQDN; do
@@ -107,36 +130,35 @@ jobs:
               continue
             fi
 
-            # Check if branch exists in the repo
-            if gh api "repos/${{ github.repository }}/branches/${BRANCH}" --silent 2>/dev/null; then
+            # Check if any branch sanitizes to this name
+            FOUND=false
+            while IFS= read -r REMOTE_BRANCH; do
+              SANITIZED=$(echo "$REMOTE_BRANCH" | tr '/' '-' | tr '[:upper:]' '[:lower:]' | cut -c1-28)
+              if [ "$SANITIZED" = "$BRANCH" ]; then
+                FOUND=true
+                break
+              fi
+            done <<< "$BRANCHES"
+
+            if [ "$FOUND" = "true" ]; then
               echo "Keeping: ${FQDN} (branch exists)"
             else
-              # Also check with original name (/ replaced with -)
-              # Try to find any branch that sanitizes to this name
-              FOUND=false
-              while IFS= read -r REMOTE_BRANCH; do
-                SANITIZED=$(echo "$REMOTE_BRANCH" | tr '/' '-' | tr '[:upper:]' '[:lower:]' | cut -c1-28)
-                if [ "$SANITIZED" = "$BRANCH" ]; then
-                  FOUND=true
-                  break
-                fi
-              done < <(gh api "repos/${{ github.repository }}/branches" --paginate -q '.[].name')
-
-              if [ "$FOUND" = "true" ]; then
-                echo "Keeping: ${FQDN} (branch exists)"
-              else
-                echo "Deleting orphaned: ${FQDN} (no matching branch)"
-                # Remove Pages custom domain
-                curl -sf -X DELETE \
-                  "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/pages/projects/${PROJECT}/domains/${FQDN}" \
-                  -H "Authorization: Bearer ${CF_API_TOKEN}" \
-                  -H "Content-Type: application/json" || true
-                # Remove DNS record
-                curl -sf -X DELETE \
-                  "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" \
-                  -H "Authorization: Bearer ${CF_API_TOKEN}" \
-                  -H "Content-Type: application/json"
+              echo "Deleting orphaned: ${FQDN} (no matching branch)"
+              # Remove Pages custom domain (may not exist, log but continue)
+              if ! curl -sf -X DELETE \
+                "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/pages/projects/${PROJECT}/domains/${FQDN}" \
+                -H "Authorization: Bearer ${CF_API_TOKEN}" \
+                -H "Content-Type: application/json"; then
+                echo "::warning::Failed to remove Pages domain ${FQDN} (may not exist)"
+              fi
+              # Remove DNS record
+              if curl -sf -X DELETE \
+                "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" \
+                -H "Authorization: Bearer ${CF_API_TOKEN}" \
+                -H "Content-Type: application/json"; then
                 echo "Deleted: ${FQDN}"
+              else
+                echo "::warning::Failed to delete DNS record ${RECORD_ID} for ${FQDN}"
               fi
             fi
           done
