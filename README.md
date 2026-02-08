@@ -153,53 +153,11 @@ uv run osa validate src/assistants/my-tool/config.yaml
 
 4. Start the server - the `/{community-id}/ask` endpoint is auto-created.
 
-**Documentation:**
-- [Adding a Community](https://docs.osc.earth/osa/registry/quick-start/) - Step-by-step onboarding process
-- [Schema Reference](https://docs.osc.earth/osa/registry/schema-reference/) - Complete reference for all config fields
-- [Troubleshooting](https://docs.osc.earth/osa/troubleshooting/) - Common issues and solutions
+For the full guide, see the [community registry documentation](https://docs.osc.earth/osa/registry/).
 
 ## Documentation
 
 Full documentation is available at **[docs.osc.earth/osa](https://docs.osc.earth/osa/)**.
-
-### For Community Onboarding
-
-- **[Adding a Community](https://docs.osc.earth/osa/registry/quick-start/)** - Complete walkthrough for adding your community to OSA
-- **[Schema Reference](https://docs.osc.earth/osa/registry/schema-reference/)** - Comprehensive reference for all `config.yaml` fields
-- **[Troubleshooting](https://docs.osc.earth/osa/troubleshooting/)** - Solutions for common configuration and deployment issues
-
-### For Deployment
-
-- **[Deployment Architecture](deploy/DEPLOYMENT_ARCHITECTURE.md)** - Production deployment patterns and infrastructure options
-
-## Optional: HED Tag Suggestions
-
-The HED assistant can suggest valid HED tags from natural language using the [hed-lsp](https://github.com/hed-standard/hed-lsp) CLI tool.
-
-### Installation
-
-```bash
-# Clone and build hed-lsp
-git clone https://github.com/hed-standard/hed-lsp.git
-cd hed-lsp/server
-npm install
-npm run compile
-```
-
-### Configuration
-
-Set the `HED_LSP_PATH` environment variable:
-
-```bash
-export HED_LSP_PATH=/path/to/hed-lsp
-```
-
-Or install globally:
-
-```bash
-cd hed-lsp/server
-npm link  # Makes hed-suggest available globally
-```
 
 ## Development
 
