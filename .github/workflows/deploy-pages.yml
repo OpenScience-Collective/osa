@@ -65,7 +65,8 @@ jobs:
           BRANCH="${{ steps.branch.outputs.name }}"
           SUBDOMAIN="${BRANCH}-demo"
           FQDN="${SUBDOMAIN}.osc.earth"
-          TARGET="osa-demo.pages.dev"
+          # Point CNAME to branch-specific pages.dev URL so Pages serves the correct branch
+          TARGET="${BRANCH}.osa-demo.pages.dev"
           PROJECT="osa-demo"
 
           if [ -z "$CF_ZONE_ID" ]; then
