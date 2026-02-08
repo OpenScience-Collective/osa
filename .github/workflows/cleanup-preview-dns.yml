@@ -20,10 +20,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Delete DNS record for closed PR
+      - name: Delete preview domain for closed PR
         if: github.event_name == 'pull_request'
         env:
           CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CF_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
         run: |
           if [ -z "$CF_ZONE_ID" ]; then
@@ -34,6 +35,7 @@ jobs:
           # Sanitize branch name same way as deploy workflow
           BRANCH=$(echo "${{ github.head_ref }}" | tr '/' '-' | tr '[:upper:]' '[:lower:]' | cut -c1-28)
           FQDN="${BRANCH}-demo.osc.earth"
+          PROJECT="osa-demo"
 
           # Skip main (production domain, not a preview)
           if [ "$BRANCH" = "main" ]; then
@@ -41,6 +43,14 @@ jobs:
             exit 0
           fi
 
+          # Remove Pages custom domain first
+          echo "Removing Pages custom domain: ${FQDN}"
+          curl -sf -X DELETE \
+            "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/pages/projects/${PROJECT}/domains/${FQDN}" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H "Content-Type: application/json" || echo "Pages domain not found or already removed"
+
+          # Then remove DNS record
           echo "Looking for DNS record: ${FQDN}"
           RECORDS=$(curl -sf -X GET \
             "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${FQDN}&type=CNAME" \
@@ -60,10 +70,11 @@ jobs:
             echo "No DNS record found for ${FQDN}"
           fi
 
-      - name: Delete DNS record for deleted branch
+      - name: Delete preview domain for deleted branch
         if: github.event_name == 'delete'
         env:
           CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CF_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
         run: |
           if [ -z "$CF_ZONE_ID" ]; then
@@ -73,12 +84,21 @@ jobs:
 
           BRANCH=$(echo "${{ github.event.ref }}" | tr '/' '-' | tr '[:upper:]' '[:lower:]' | cut -c1-28)
           FQDN="${BRANCH}-demo.osc.earth"
+          PROJECT="osa-demo"
 
           if [ "$BRANCH" = "main" ] || [ "$BRANCH" = "develop" ]; then
             echo "Skipping protected branch: ${BRANCH}"
             exit 0
           fi
 
+          # Remove Pages custom domain
+          echo "Removing Pages custom domain: ${FQDN}"
+          curl -sf -X DELETE \
+            "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/pages/projects/${PROJECT}/domains/${FQDN}" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H "Content-Type: application/json" || echo "Pages domain not found or already removed"
+
+          # Remove DNS record
           echo "Looking for DNS record: ${FQDN}"
           RECORDS=$(curl -sf -X GET \
             "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${FQDN}&type=CNAME" \
@@ -102,6 +122,7 @@ jobs:
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
           CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CF_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -109,6 +130,8 @@ jobs:
             echo "::warning::CLOUDFLARE_ZONE_ID not set, skipping"
             exit 0
           fi
+
+          PROJECT="osa-demo"
 
           echo "Fetching all *-demo.osc.earth CNAME records..."
           RECORDS=$(curl -sf -X GET \
@@ -145,7 +168,13 @@ jobs:
               if [ "$FOUND" = "true" ]; then
                 echo "Keeping: ${FQDN} (branch exists)"
               else
-                echo "Deleting orphaned record: ${FQDN} (no matching branch)"
+                echo "Deleting orphaned: ${FQDN} (no matching branch)"
+                # Remove Pages custom domain
+                curl -sf -X DELETE \
+                  "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/pages/projects/${PROJECT}/domains/${FQDN}" \
+                  -H "Authorization: Bearer ${CF_API_TOKEN}" \
+                  -H "Content-Type: application/json" || true
+                # Remove DNS record
                 curl -sf -X DELETE \
                   "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" \
                   -H "Authorization: Bearer ${CF_API_TOKEN}" \

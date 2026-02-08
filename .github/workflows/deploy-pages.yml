@@ -55,23 +55,25 @@ jobs:
           # - PR branches -> {branch}-demo.osc.earth (single-level subdomain)
           command: pages deploy frontend --project-name=osa-demo --branch=${{ steps.branch.outputs.name }}
 
-      - name: Ensure DNS record for preview domain
+      - name: Ensure DNS record and Pages custom domain for preview
         if: steps.branch.outputs.name != 'main'
         env:
           CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CF_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
         run: |
           BRANCH="${{ steps.branch.outputs.name }}"
           SUBDOMAIN="${BRANCH}-demo"
           FQDN="${SUBDOMAIN}.osc.earth"
           TARGET="osa-demo.pages.dev"
+          PROJECT="osa-demo"
 
           if [ -z "$CF_ZONE_ID" ]; then
-            echo "::warning::CLOUDFLARE_ZONE_ID not set, skipping DNS record creation"
+            echo "::warning::CLOUDFLARE_ZONE_ID not set, skipping DNS/domain setup"
             exit 0
           fi
 
-          # Check if CNAME record already exists
+          # Step 1: Ensure CNAME DNS record exists
           EXISTING=$(curl -sf -X GET \
             "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${FQDN}&type=CNAME" \
             -H "Authorization: Bearer ${CF_API_TOKEN}" \
@@ -94,6 +96,33 @@ jobs:
             fi
           else
             echo "DNS record already exists: ${FQDN}"
+          fi
+
+          # Step 2: Register as Pages custom domain (so Cloudflare routes to Pages)
+          # Check if already registered
+          DOMAINS=$(curl -sf -X GET \
+            "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/pages/projects/${PROJECT}/domains" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H "Content-Type: application/json")
+
+          DOMAIN_EXISTS=$(echo "$DOMAINS" | jq --arg fqdn "$FQDN" '[.result[] | select(.name == $fqdn)] | length')
+
+          if [ "$DOMAIN_EXISTS" = "0" ]; then
+            echo "Registering Pages custom domain: ${FQDN}"
+            RESULT=$(curl -sf -X POST \
+              "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/pages/projects/${PROJECT}/domains" \
+              -H "Authorization: Bearer ${CF_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              --data "{\"name\":\"${FQDN}\"}")
+            SUCCESS=$(echo "$RESULT" | jq '.success // false')
+            if [ "$SUCCESS" = "true" ]; then
+              echo "Pages custom domain registered: ${FQDN}"
+            else
+              ERRORS=$(echo "$RESULT" | jq -r '.errors // .messages // "unknown error"')
+              echo "::warning::Failed to register Pages domain (may need manual setup): ${ERRORS}"
+            fi
+          else
+            echo "Pages custom domain already registered: ${FQDN}"
           fi
 
       - name: Comment on PR with preview URL
