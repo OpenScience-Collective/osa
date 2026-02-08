@@ -171,7 +171,7 @@ function isAllowedOrigin(origin) {
   // Check exact matches
   if (allowedPatterns.includes(origin)) return true;
 
-  // Check subdomains
+  // Check subdomains (require https:// to prevent origin spoofing)
   if (origin.startsWith('https://') && origin.endsWith('.eeglab.org')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.github.io')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.hedtags.org')) return true;
