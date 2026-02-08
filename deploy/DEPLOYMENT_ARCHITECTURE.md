@@ -38,8 +38,8 @@ This document explains the deployment architecture for OSA (Open Science Assista
 | Development | `https://api.osc.earth/osa-dev` | `ghcr.io/openscience-collective/osa:dev` | 38529 |
 
 **Frontend:**
-- Production: `https://osa-demo.pages.dev`
-- Development: `https://develop.osa-demo.pages.dev`
+- Production: `https://demo.osc.earth`
+- Development: `https://develop-demo.osc.earth`
 
 ---
 

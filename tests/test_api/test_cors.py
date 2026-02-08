@@ -33,6 +33,17 @@ class TestWildcardOriginToRegex:
         assert not pattern.match("https://example.com")
         assert not pattern.match("https://.example.com")
 
+    def test_hyphen_prefix_wildcard(self) -> None:
+        """Should match single-level subdomains with hyphen-prefix pattern (*-demo)."""
+        regex = _wildcard_origin_to_regex("https://*-demo.osc.earth")
+        pattern = re.compile(regex)
+        assert pattern.match("https://develop-demo.osc.earth")
+        assert pattern.match("https://feature-123-demo.osc.earth")
+        assert not pattern.match("https://-demo.osc.earth")  # bare hyphen
+        assert not pattern.match("https://demo.osc.earth")  # no prefix
+        assert not pattern.match("http://develop-demo.osc.earth")  # wrong scheme
+        assert not pattern.match("https://evil.foo-demo.osc.earth")  # multi-level
+
     def test_pages_dev_wildcard(self) -> None:
         """Should match subdomains of osa-demo.pages.dev."""
         regex = _wildcard_origin_to_regex("https://*.osa-demo.pages.dev")
@@ -91,17 +102,19 @@ class TestCollectCorsConfig:
         assert "https://osc.earth" in exact_origins
 
     def test_includes_default_wildcard(self) -> None:
-        """Should always include *.osa-demo.pages.dev wildcard."""
+        """Should always include *-demo.osc.earth wildcard."""
         _, origin_regex = _collect_cors_config()
         assert origin_regex is not None
-        # The regex should match osa-demo.pages.dev subdomains
         pattern = re.compile(origin_regex)
+        assert pattern.match("https://develop-demo.osc.earth")
+        assert pattern.match("https://feature-branch-demo.osc.earth")
+        # Backward compat: also match legacy pages.dev
         assert pattern.match("https://develop.osa-demo.pages.dev")
-        assert pattern.match("https://feature-branch.osa-demo.pages.dev")
 
     def test_includes_main_demo_origin(self) -> None:
         """Should include main demo page without subdomain."""
         exact_origins, _ = _collect_cors_config()
+        assert "https://demo.osc.earth" in exact_origins
         assert "https://osa-demo.pages.dev" in exact_origins
 
     def test_includes_community_exact_origins(self) -> None:
@@ -147,6 +160,26 @@ class TestCorsHeaders:
 
     def test_cors_allowed_for_wildcard_origin(self, client: TestClient) -> None:
         """Should return CORS headers for wildcard-matched origins."""
+        response = client.get(
+            "/health",
+            headers={"Origin": "https://develop-demo.osc.earth"},
+        )
+        assert response.status_code == 200
+        assert (
+            response.headers.get("access-control-allow-origin") == "https://develop-demo.osc.earth"
+        )
+
+    def test_cors_allowed_for_demo_osc_earth(self, client: TestClient) -> None:
+        """Should return CORS headers for demo.osc.earth (production domain)."""
+        response = client.get(
+            "/health",
+            headers={"Origin": "https://demo.osc.earth"},
+        )
+        assert response.status_code == 200
+        assert response.headers.get("access-control-allow-origin") == "https://demo.osc.earth"
+
+    def test_cors_backward_compat_pages_dev(self, client: TestClient) -> None:
+        """Should return CORS headers for legacy osa-demo.pages.dev wildcard."""
         response = client.get(
             "/health",
             headers={"Origin": "https://develop.osa-demo.pages.dev"},

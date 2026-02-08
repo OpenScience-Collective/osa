@@ -3,6 +3,18 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script>
+    // Redirect *.osa-demo.pages.dev to custom domains
+    (function() {
+      var h = location.hostname;
+      if (h === 'osa-demo.pages.dev') {
+        location.replace('https://demo.osc.earth' + location.pathname);
+      } else if (h.endsWith('.osa-demo.pages.dev')) {
+        var branch = h.replace('.osa-demo.pages.dev', '');
+        location.replace('https://' + branch + '-demo.osc.earth' + location.pathname);
+      }
+    })();
+  </script>
   <title>OSA Chat Widget Demo</title>
   <style>
     body {
@@ -158,12 +170,17 @@
     // Community configurations fetched from the API
     let COMMUNITIES = {};
 
-    // Determine API endpoint (same logic as the widget)
+    // Determine API endpoint (matches widget environment detection)
     const hostname = window.location.hostname;
-    const isDemoPage = hostname === 'osa-demo.pages.dev';
-    const API_BASE = isDemoPage
-      ? 'https://osa-worker.shirazi-10f.workers.dev'
-      : 'https://osa-worker-dev.shirazi-10f.workers.dev';
+    const isProduction = hostname === 'demo.osc.earth' || hostname === 'osa-demo.pages.dev';
+    const isDev = !isProduction && (
+                  hostname.endsWith('-demo.osc.earth') ||
+                  hostname.endsWith('.osa-demo.pages.dev') ||
+                  hostname.includes('localhost') ||
+                  hostname.includes('127.0.0.1'));
+    const API_BASE = isDev
+      ? 'https://osa-worker-dev.shirazi-10f.workers.dev'
+      : 'https://osa-worker.shirazi-10f.workers.dev';
 
     // Fetch community configs from the backend
     async function loadCommunities() {
@@ -269,7 +286,7 @@
         <div class="info-box">
           <h2>Integration</h2>
           <p>Add an assistant to your website:</p>
-          <pre><code>&lt;script src="https://osa-demo.pages.dev/osa-chat-widget.js"&gt;&lt;/script&gt;
+          <pre><code>&lt;script src="https://demo.osc.earth/osa-chat-widget.js"&gt;&lt;/script&gt;
 &lt;script&gt;
   OSAChatWidget.setConfig({
     communityId: '${exampleId}'  // ${otherIds ? `or ${otherIds}` : ''}
@@ -355,7 +372,7 @@
 
         <div class="info-box">
           <h2>Add to Your Site</h2>
-          <pre><code>&lt;script src="https://osa-demo.pages.dev/osa-chat-widget.js"&gt;&lt;/script&gt;
+          <pre><code>&lt;script src="https://demo.osc.earth/osa-chat-widget.js"&gt;&lt;/script&gt;
 &lt;script&gt;
   OSAChatWidget.setConfig({
     communityId: '${communityId}',
