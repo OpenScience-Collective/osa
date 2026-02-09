@@ -444,11 +444,13 @@ def run_sync_now(sync_type: str = "all") -> dict[str, int]:
     # BEP sync (BIDS community only)
     if sync_type in ("beps", "all") and "bids" in communities:
         logger.info("Running BEP sync for BIDS")
-        init_db("bids")
-        bep_stats = sync_beps("bids")
-        results["beps"] = bep_stats["total"]
-    else:
-        results["beps"] = 0
+        try:
+            init_db("bids")
+            bep_stats = sync_beps("bids")
+            results["beps"] = bep_stats["total"]
+        except Exception:
+            logger.error("BEP sync failed during run_sync_now", exc_info=True)
+            results["beps"] = 0
 
     results["github"] = github_total
     results["papers"] = papers_total

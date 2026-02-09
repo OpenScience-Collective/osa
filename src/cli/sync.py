@@ -506,6 +506,7 @@ def sync_all(
 
     grand_github_total = 0
     grand_paper_total = 0
+    grand_bep_total = 0
 
     for comm_id in communities:
         console.print(f"\n[bold cyan]═══ Syncing {comm_id} ═══[/bold cyan]")
@@ -565,8 +566,9 @@ def sync_all(
                 f"[green]BEPs: {bep_stats['total']} total, "
                 f"{bep_stats['with_content']} with content[/green]"
             )
+            grand_bep_total += bep_stats["total"]
 
-    total_items = grand_github_total + grand_paper_total
+    total_items = grand_github_total + grand_paper_total + grand_bep_total
     community_word = "community" if len(communities) == 1 else "communities"
     console.print(
         f"\n[bold green]Sync complete: {total_items} total items "

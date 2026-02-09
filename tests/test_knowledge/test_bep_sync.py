@@ -51,6 +51,15 @@ class TestFormatLeads:
         leads = [{"given-names": " ", "family-names": " "}]
         assert _format_leads(leads) is None
 
+    def test_missing_keys(self):
+        leads = [{"given-names": "Viviana"}]
+        result = json.loads(_format_leads(leads))
+        assert result == ["Viviana"]
+
+    def test_empty_dict(self):
+        leads = [{}]
+        assert _format_leads(leads) is None
+
 
 class TestFetchBepsYaml:
     """Tests that fetch real data from the BIDS website repo."""

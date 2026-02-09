@@ -1,10 +1,21 @@
 """BIDS community-specific tools."""
 
 import logging
+import sqlite3
 
 from langchain_core.tools import tool
 
+from src.knowledge.db import get_db_path
+from src.knowledge.search import search_beps
+
 logger = logging.getLogger(__name__)
+
+_BEP_NOT_INITIALIZED_MSG = (
+    "BEP knowledge base not initialized for {community_id}.\n\n"
+    "To sync BEP data:\n"
+    "  osa sync beps --community {community_id}\n\n"
+    "Contact your administrator if you don't have sync permissions."
+)
 
 
 @tool
@@ -30,7 +41,7 @@ def lookup_bep(
     Example:
         >>> lookup_bep("032")
         **BEP032: Microelectrode electrophysiology**
-        Status: proposed (open PR)
+        Status: proposed
         PR: https://github.com/bids-standard/bids-specification/pull/1705
         Preview: https://bids-specification--1705.org.readthedocs.build/...
 
@@ -38,32 +49,17 @@ def lookup_bep(
         **BEP020: Eye Tracking including Gaze Position and Pupil Size**
         ...
     """
-    import sqlite3
-
-    from src.knowledge.db import get_db_path
-    from src.knowledge.search import search_beps
-
     community_id = "bids"
 
     db_path = get_db_path(community_id)
     if not db_path.exists():
-        return (
-            f"BEP knowledge base not initialized for {community_id}.\n\n"
-            f"To sync BEP data:\n"
-            f"  osa sync beps --community {community_id}\n\n"
-            f"Contact your administrator if you don't have sync permissions."
-        )
+        return _BEP_NOT_INITIALIZED_MSG.format(community_id=community_id)
 
     try:
         results = search_beps(query=query, project=community_id, limit=limit)
     except sqlite3.OperationalError:
         logger.warning("BEP table not initialized for %s", community_id, exc_info=True)
-        return (
-            f"BEP knowledge base not initialized for {community_id}.\n\n"
-            f"To sync BEP data:\n"
-            f"  osa sync beps --community {community_id}\n\n"
-            f"Contact your administrator if you don't have sync permissions."
-        )
+        return _BEP_NOT_INITIALIZED_MSG.format(community_id=community_id)
 
     if not results:
         return f"No BEPs found matching: {query}"

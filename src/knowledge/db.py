@@ -1,11 +1,11 @@
 """SQLite + FTS5 database for knowledge sources.
 
-Stores minimal metadata about GitHub discussions and papers:
-- Title
-- First message (body/abstract)
-- Status (open/closed/published)
-- URL
-- Created date
+Stores metadata and content for community knowledge:
+- GitHub issues and PRs
+- Academic papers (OpenALEX, Semantic Scholar, PubMed)
+- Code docstrings
+- Mailing list messages and FAQ summaries
+- BIDS Extension Proposals (BEPs)
 
 Design: Discovery, not knowledge. These are pointers to discussions,
 not authoritative sources for answering questions.
@@ -23,7 +23,7 @@ from src.cli.config import get_data_dir
 logger = logging.getLogger(__name__)
 
 SCHEMA_SQL = """
--- GitHub issues and PRs from HED repositories
+-- GitHub issues and PRs
 CREATE TABLE IF NOT EXISTS github_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     repo TEXT NOT NULL,
@@ -564,8 +564,8 @@ def get_last_sync(source_type: str, source_name: str, project: str = "hed") -> s
     """Get last sync time for a source.
 
     Args:
-        source_type: 'github' or 'papers'
-        source_name: Repository name or paper source name
+        source_type: 'github', 'papers', or 'beps'
+        source_name: Repository name, paper source name, or 'bids-website'
         project: Assistant/project name. Defaults to 'hed'.
 
     Returns:
@@ -585,8 +585,8 @@ def update_sync_metadata(
     """Update sync metadata for a source.
 
     Args:
-        source_type: 'github' or 'papers'
-        source_name: Repository name or paper source name
+        source_type: 'github', 'papers', or 'beps'
+        source_name: Repository name, paper source name, or 'bids-website'
         items_synced: Number of items synced in this run
         project: Assistant/project name. Defaults to 'hed'.
     """
@@ -720,9 +720,12 @@ def get_stats(project: str = "hed") -> dict[str, int]:
             stats["bep_with_content"] = conn.execute(
                 "SELECT COUNT(*) FROM bep_items WHERE content IS NOT NULL"
             ).fetchone()[0]
-        except sqlite3.OperationalError:
-            stats["bep_total"] = 0
-            stats["bep_with_content"] = 0
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e):
+                stats["bep_total"] = 0
+                stats["bep_with_content"] = 0
+            else:
+                raise
 
         return stats
 

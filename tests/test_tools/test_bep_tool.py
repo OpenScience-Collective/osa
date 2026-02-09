@@ -57,7 +57,10 @@ class TestLookupBep:
     def test_lookup_by_number(self, bep_db: Path):
         from src.assistants.bids.tools import lookup_bep
 
-        with patch("src.knowledge.db.get_db_path", return_value=bep_db):
+        with (
+            patch("src.assistants.bids.tools.get_db_path", return_value=bep_db),
+            patch("src.knowledge.db.get_db_path", return_value=bep_db),
+        ):
             result = lookup_bep.invoke({"query": "032"})
 
         assert "BEP032" in result
@@ -68,7 +71,10 @@ class TestLookupBep:
     def test_lookup_by_bep_prefix(self, bep_db: Path):
         from src.assistants.bids.tools import lookup_bep
 
-        with patch("src.knowledge.db.get_db_path", return_value=bep_db):
+        with (
+            patch("src.assistants.bids.tools.get_db_path", return_value=bep_db),
+            patch("src.knowledge.db.get_db_path", return_value=bep_db),
+        ):
             result = lookup_bep.invoke({"query": "BEP032"})
 
         assert "BEP032" in result
@@ -76,7 +82,10 @@ class TestLookupBep:
     def test_lookup_by_keyword(self, bep_db: Path):
         from src.assistants.bids.tools import lookup_bep
 
-        with patch("src.knowledge.db.get_db_path", return_value=bep_db):
+        with (
+            patch("src.assistants.bids.tools.get_db_path", return_value=bep_db),
+            patch("src.knowledge.db.get_db_path", return_value=bep_db),
+        ):
             result = lookup_bep.invoke({"query": "neuropixels"})
 
         assert "BEP032" in result
@@ -84,7 +93,10 @@ class TestLookupBep:
     def test_lookup_eye_tracking(self, bep_db: Path):
         from src.assistants.bids.tools import lookup_bep
 
-        with patch("src.knowledge.db.get_db_path", return_value=bep_db):
+        with (
+            patch("src.assistants.bids.tools.get_db_path", return_value=bep_db),
+            patch("src.knowledge.db.get_db_path", return_value=bep_db),
+        ):
             result = lookup_bep.invoke({"query": "eye tracking"})
 
         assert "BEP020" in result
@@ -92,7 +104,10 @@ class TestLookupBep:
     def test_lookup_draft_bep(self, bep_db: Path):
         from src.assistants.bids.tools import lookup_bep
 
-        with patch("src.knowledge.db.get_db_path", return_value=bep_db):
+        with (
+            patch("src.assistants.bids.tools.get_db_path", return_value=bep_db),
+            patch("src.knowledge.db.get_db_path", return_value=bep_db),
+        ):
             result = lookup_bep.invoke({"query": "004"})
 
         assert "BEP004" in result
@@ -102,7 +117,10 @@ class TestLookupBep:
     def test_lookup_no_results(self, bep_db: Path):
         from src.assistants.bids.tools import lookup_bep
 
-        with patch("src.knowledge.db.get_db_path", return_value=bep_db):
+        with (
+            patch("src.assistants.bids.tools.get_db_path", return_value=bep_db),
+            patch("src.knowledge.db.get_db_path", return_value=bep_db),
+        ):
             result = lookup_bep.invoke({"query": "nonexistent data type xyz"})
 
         assert "No BEPs found" in result
@@ -110,7 +128,10 @@ class TestLookupBep:
     def test_lookup_shows_links(self, bep_db: Path):
         from src.assistants.bids.tools import lookup_bep
 
-        with patch("src.knowledge.db.get_db_path", return_value=bep_db):
+        with (
+            patch("src.assistants.bids.tools.get_db_path", return_value=bep_db),
+            patch("src.knowledge.db.get_db_path", return_value=bep_db),
+        ):
             result = lookup_bep.invoke({"query": "032"})
 
         assert "PR:" in result
@@ -121,7 +142,65 @@ class TestLookupBep:
         from src.assistants.bids.tools import lookup_bep
 
         fake_path = tmp_path / "nonexistent" / "bids.db"
-        with patch("src.knowledge.db.get_db_path", return_value=fake_path):
+        with patch("src.assistants.bids.tools.get_db_path", return_value=fake_path):
             result = lookup_bep.invoke({"query": "032"})
 
         assert "not initialized" in result
+
+
+class TestSearchBeps:
+    """Direct tests for the search_beps function."""
+
+    def test_search_by_number(self, bep_db: Path):
+        from src.knowledge.search import search_beps
+
+        with patch("src.knowledge.db.get_db_path", return_value=bep_db):
+            results = search_beps("032", project="bids")
+
+        assert len(results) == 1
+        assert results[0].bep_number == "032"
+        assert results[0].title == "Microelectrode electrophysiology"
+        assert results[0].status == "proposed"
+
+    def test_search_by_keyword(self, bep_db: Path):
+        from src.knowledge.search import search_beps
+
+        with patch("src.knowledge.db.get_db_path", return_value=bep_db):
+            results = search_beps("neuropixels", project="bids")
+
+        assert len(results) >= 1
+        assert any(r.bep_number == "032" for r in results)
+
+    def test_search_returns_leads(self, bep_db: Path):
+        from src.knowledge.search import search_beps
+
+        with patch("src.knowledge.db.get_db_path", return_value=bep_db):
+            results = search_beps("032", project="bids")
+
+        assert results[0].leads == ["Cody Baker", "Ben Dichter"]
+
+    def test_search_no_results(self, bep_db: Path):
+        from src.knowledge.search import search_beps
+
+        with patch("src.knowledge.db.get_db_path", return_value=bep_db):
+            results = search_beps("nonexistent xyz", project="bids")
+
+        assert results == []
+
+    def test_search_bep_prefix(self, bep_db: Path):
+        from src.knowledge.search import search_beps
+
+        with patch("src.knowledge.db.get_db_path", return_value=bep_db):
+            results = search_beps("BEP020", project="bids")
+
+        assert len(results) == 1
+        assert results[0].bep_number == "020"
+
+    def test_search_snippet_truncation(self, bep_db: Path):
+        from src.knowledge.search import search_beps
+
+        with patch("src.knowledge.db.get_db_path", return_value=bep_db):
+            results = search_beps("032", project="bids")
+
+        # Content is short, should not be truncated
+        assert not results[0].snippet.endswith("...")

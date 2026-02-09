@@ -1,11 +1,12 @@
 """FTS5 search for knowledge sources.
 
-Provides full-text search over GitHub discussions and papers.
+Provides full-text search over GitHub discussions, papers, docstrings,
+mailing list FAQs, and BIDS Extension Proposals (BEPs).
 These are for DISCOVERY, not answering - the agent should link
 users to relevant discussions, not answer from them.
 """
 
-import contextlib
+import json
 import logging
 import re
 import sqlite3
@@ -643,9 +644,6 @@ def search_faq_entries(
             params[0] = safe_query
 
             for row in conn.execute(sql, params):
-                # Parse tags from JSON
-                import json
-
                 tags = json.loads(row["tags"]) if row["tags"] else []
 
                 results.append(
@@ -709,8 +707,6 @@ def search_beps(
     Returns:
         List of matching BEP results.
     """
-    import json
-
     results = []
 
     # Check if query is a BEP number
@@ -751,8 +747,14 @@ def search_beps(
 
                 leads = []
                 if row["leads"]:
-                    with contextlib.suppress(json.JSONDecodeError, TypeError):
+                    try:
                         leads = json.loads(row["leads"])
+                    except (json.JSONDecodeError, TypeError):
+                        logger.warning(
+                            "Invalid JSON in leads for BEP%s: %s",
+                            row["bep_number"],
+                            row["leads"],
+                        )
 
                 results.append(
                     BEPResult(

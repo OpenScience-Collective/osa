@@ -89,19 +89,18 @@ def _check_pr_open(client: httpx.Client, pr_number: int) -> dict | None:
         pr_number: PR number on bids-specification.
 
     Returns:
-        PR metadata dict if open, None if closed/merged or on error.
+        PR metadata dict if open, None if closed/merged.
+
+    Raises:
+        httpx.HTTPError: On network or API errors (caller should handle).
     """
     url = f"{GITHUB_API_BASE}/repos/{SPEC_REPO}/pulls/{pr_number}"
-    try:
-        response = client.get(url)
-        response.raise_for_status()
-        pr_data = response.json()
-        if pr_data.get("state") == "open":
-            return pr_data
-        return None
-    except httpx.HTTPError:
-        logger.warning("Failed to check PR #%d status", pr_number, exc_info=True)
-        return None
+    response = client.get(url)
+    response.raise_for_status()
+    pr_data = response.json()
+    if pr_data.get("state") == "open":
+        return pr_data
+    return None
 
 
 def _fetch_pr_markdown(client: httpx.Client, pr_number: int, branch: str) -> str | None:
@@ -155,7 +154,7 @@ def _fetch_pr_markdown(client: httpx.Client, pr_number: int, branch: str) -> str
             response.raise_for_status()
             contents.append(f"<!-- File: {filepath} -->\n{response.text}")
         except httpx.HTTPError:
-            logger.warning("Failed to fetch %s from branch %s", filepath, branch)
+            logger.warning("Failed to fetch %s from branch %s", filepath, branch, exc_info=True)
 
     return "\n\n---\n\n".join(contents) if contents else None
 
@@ -182,7 +181,7 @@ def sync_beps(community_id: str = "bids") -> dict[str, int]:
         logger.info("Fetching BEP metadata from bids-website...")
         try:
             beps = _fetch_beps_yaml(client)
-        except httpx.HTTPError:
+        except (httpx.HTTPError, yaml.YAMLError):
             logger.error("Failed to fetch beps.yml", exc_info=True)
             return stats
 
@@ -208,26 +207,40 @@ def sync_beps(community_id: str = "bids") -> dict[str, int]:
 
                 pr_number = _extract_pr_number(pr_url) if pr_url else None
                 content = None
-                status = "draft"  # default: Google Doc only
+                status = "draft"  # default for BEPs without an open PR
 
                 if pr_number:
-                    # Check if PR is open
-                    pr_data = _check_pr_open(client, pr_number)
-                    if pr_data:
-                        status = "proposed"
-                        branch = pr_data["head"]["ref"]
-                        logger.info(
-                            "Fetching content for BEP%s (PR #%d, branch: %s)",
-                            bep_number,
+                    try:
+                        pr_data = _check_pr_open(client, pr_number)
+                        if pr_data:
+                            status = "proposed"
+                            branch = pr_data.get("head", {}).get("ref")
+                            if not branch:
+                                logger.warning(
+                                    "PR #%d missing head ref, skipping content fetch",
+                                    pr_number,
+                                )
+                            else:
+                                logger.info(
+                                    "Fetching content for BEP%s (PR #%d, branch: %s)",
+                                    bep_number,
+                                    pr_number,
+                                    branch,
+                                )
+                                content = _fetch_pr_markdown(client, pr_number, branch)
+                                if content:
+                                    stats["with_content"] += 1
+                        else:
+                            # PR exists but is closed/merged
+                            status = "closed"
+                    except httpx.HTTPError:
+                        logger.warning(
+                            "Failed to check PR #%d for BEP%s, storing metadata only",
                             pr_number,
-                            branch,
+                            bep_number,
+                            exc_info=True,
                         )
-                        content = _fetch_pr_markdown(client, pr_number, branch)
-                        if content:
-                            stats["with_content"] += 1
-                    else:
-                        # PR exists but is closed/merged
-                        status = "closed"
+                        # Keep default status ("draft"); don't mark as "closed"
 
                 upsert_bep_item(
                     conn,
