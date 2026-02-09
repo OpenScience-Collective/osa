@@ -11,12 +11,20 @@ The agent should link users to relevant discussions, not answer from them.
 """
 
 from src.knowledge.db import get_connection, get_db_path, init_db
-from src.knowledge.search import SearchResult, search_github_items, search_papers
+from src.knowledge.search import (
+    BEPResult,
+    SearchResult,
+    search_beps,
+    search_github_items,
+    search_papers,
+)
 
 __all__ = [
+    "BEPResult",
     "get_connection",
     "get_db_path",
     "init_db",
+    "search_beps",
     "search_github_items",
     "search_papers",
     "SearchResult",

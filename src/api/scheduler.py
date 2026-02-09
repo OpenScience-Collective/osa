@@ -14,6 +14,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from src.api.config import get_settings
 from src.assistants import registry
+from src.knowledge.bep_sync import sync_beps
 from src.knowledge.db import init_db
 from src.knowledge.github_sync import sync_repos
 from src.knowledge.papers_sync import sync_all_papers, sync_citing_papers
@@ -63,6 +64,7 @@ def _get_community_paper_dois(community_id: str) -> list[str]:
 # Failure tracking for alerting
 _github_sync_failures = 0
 _papers_sync_failures = 0
+_beps_sync_failures = 0
 _budget_check_failures = 0
 MAX_CONSECUTIVE_FAILURES = 3
 
@@ -164,6 +166,36 @@ def _run_papers_sync() -> None:
             logger.critical(
                 "Papers sync has failed %d times consecutively. Manual intervention required.",
                 _papers_sync_failures,
+            )
+
+
+def _run_beps_sync() -> None:
+    """Run BEP sync job for the BIDS community."""
+    global _beps_sync_failures
+    logger.info("Starting scheduled BEP sync")
+    try:
+        # Initialize BIDS database if needed
+        init_db("bids")
+        stats = sync_beps("bids")
+        logger.info(
+            "BEP sync complete: %d total, %d with content",
+            stats["total"],
+            stats["with_content"],
+        )
+        _beps_sync_failures = 0
+    except Exception as e:
+        _beps_sync_failures += 1
+        logger.error(
+            "BEP sync failed (attempt %d/%d): %s",
+            _beps_sync_failures,
+            MAX_CONSECUTIVE_FAILURES,
+            e,
+            exc_info=True,
+        )
+        if _beps_sync_failures >= MAX_CONSECUTIVE_FAILURES:
+            logger.critical(
+                "BEP sync has failed %d times consecutively. Manual intervention required.",
+                _beps_sync_failures,
             )
 
 
@@ -299,6 +331,20 @@ def start_scheduler() -> BackgroundScheduler | None:
     except ValueError as e:
         logger.error("Invalid papers sync cron expression: %s", e)
 
+    # Add BEP sync job (weekly, for BIDS community)
+    try:
+        beps_trigger = CronTrigger.from_crontab(settings.sync_beps_cron)
+        _scheduler.add_job(
+            _run_beps_sync,
+            trigger=beps_trigger,
+            id="beps_sync",
+            name="BIDS Extension Proposals Sync",
+            replace_existing=True,
+        )
+        logger.info("BEP sync scheduled: %s", settings.sync_beps_cron)
+    except ValueError as e:
+        logger.error("Invalid BEP sync cron expression: %s", e)
+
     # Add budget check job (every 15 minutes)
     try:
         budget_trigger = CronTrigger(minute="*/15")
@@ -339,7 +385,7 @@ def run_sync_now(sync_type: str = "all") -> dict[str, int]:
     """Run sync immediately for all communities (for manual triggers or initial sync).
 
     Args:
-        sync_type: "github", "papers", or "all"
+        sync_type: "github", "papers", "beps", or "all"
 
     Returns:
         Dict mapping source to items synced across all communities
@@ -394,6 +440,15 @@ def run_sync_now(sync_type: str = "all") -> dict[str, int]:
                     community_papers += citing_count
 
                 papers_total += community_papers
+
+    # BEP sync (BIDS community only)
+    if sync_type in ("beps", "all") and "bids" in communities:
+        logger.info("Running BEP sync for BIDS")
+        init_db("bids")
+        bep_stats = sync_beps("bids")
+        results["beps"] = bep_stats["total"]
+    else:
+        results["beps"] = 0
 
     results["github"] = github_total
     results["papers"] = papers_total

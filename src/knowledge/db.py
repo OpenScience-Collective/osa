@@ -262,6 +262,47 @@ CREATE TABLE IF NOT EXISTS summarization_status (
     UNIQUE(list_name, thread_id)
 );
 
+-- BIDS Extension Proposals (BEPs) with synced spec content
+CREATE TABLE IF NOT EXISTS bep_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bep_number TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL,
+    pull_request_url TEXT,
+    pull_request_number INTEGER,
+    html_preview_url TEXT,
+    google_doc_url TEXT,
+    leads TEXT,
+    content TEXT,
+    synced_at TEXT NOT NULL
+);
+
+-- FTS5 for BEP search on title and content
+CREATE VIRTUAL TABLE IF NOT EXISTS bep_items_fts USING fts5(
+    title,
+    content,
+    content='bep_items',
+    content_rowid='id'
+);
+
+-- Triggers to keep FTS in sync with bep_items
+CREATE TRIGGER IF NOT EXISTS bep_items_ai AFTER INSERT ON bep_items BEGIN
+    INSERT INTO bep_items_fts(rowid, title, content)
+    VALUES (new.id, new.title, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS bep_items_ad AFTER DELETE ON bep_items BEGIN
+    INSERT INTO bep_items_fts(bep_items_fts, rowid, title, content)
+    VALUES('delete', old.id, old.title, old.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS bep_items_au AFTER UPDATE ON bep_items BEGIN
+    INSERT INTO bep_items_fts(bep_items_fts, rowid, title, content)
+    VALUES('delete', old.id, old.title, old.content);
+    INSERT INTO bep_items_fts(rowid, title, content)
+    VALUES (new.id, new.title, new.content);
+END;
+
 -- Indexes for efficient queries
 CREATE INDEX IF NOT EXISTS idx_github_items_repo ON github_items(repo);
 CREATE INDEX IF NOT EXISTS idx_github_items_status ON github_items(status);
@@ -277,6 +318,7 @@ CREATE INDEX IF NOT EXISTS idx_faq_list ON faq_entries(list_name);
 CREATE INDEX IF NOT EXISTS idx_faq_category ON faq_entries(category);
 CREATE INDEX IF NOT EXISTS idx_faq_quality ON faq_entries(quality_score);
 CREATE INDEX IF NOT EXISTS idx_summarization_status ON summarization_status(list_name, status);
+CREATE INDEX IF NOT EXISTS idx_bep_status ON bep_items(status);
 """
 
 
@@ -562,6 +604,65 @@ def update_sync_metadata(
         conn.commit()
 
 
+def upsert_bep_item(
+    conn: sqlite3.Connection,
+    *,
+    bep_number: str,
+    title: str,
+    status: str,
+    pull_request_url: str | None = None,
+    pull_request_number: int | None = None,
+    html_preview_url: str | None = None,
+    google_doc_url: str | None = None,
+    leads: str | None = None,
+    content: str | None = None,
+) -> None:
+    """Insert or update a BIDS Extension Proposal.
+
+    Args:
+        conn: Database connection
+        bep_number: BEP number (e.g., '032')
+        title: BEP title
+        status: 'proposed' (has open PR), 'draft' (Google Doc only), 'closed'
+        pull_request_url: URL to the specification PR
+        pull_request_number: PR number on bids-specification
+        html_preview_url: URL to rendered HTML preview
+        google_doc_url: URL to Google Doc (for draft BEPs)
+        leads: JSON-encoded list of lead names
+        content: Concatenated markdown from PR spec files
+    """
+    conn.execute(
+        """
+        INSERT INTO bep_items (bep_number, title, status, pull_request_url,
+                               pull_request_number, html_preview_url, google_doc_url,
+                               leads, content, synced_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(bep_number) DO UPDATE SET
+            title=excluded.title,
+            status=excluded.status,
+            pull_request_url=excluded.pull_request_url,
+            pull_request_number=excluded.pull_request_number,
+            html_preview_url=excluded.html_preview_url,
+            google_doc_url=excluded.google_doc_url,
+            leads=excluded.leads,
+            content=excluded.content,
+            synced_at=excluded.synced_at
+        """,
+        (
+            bep_number,
+            title,
+            status,
+            pull_request_url,
+            pull_request_number,
+            html_preview_url,
+            google_doc_url,
+            leads,
+            content,
+            _now_iso(),
+        ),
+    )
+
+
 def get_stats(project: str = "hed") -> dict[str, int]:
     """Get database statistics for a project.
 
@@ -612,6 +713,16 @@ def get_stats(project: str = "hed") -> dict[str, int]:
             "SELECT COUNT(*) FROM mailing_list_messages"
         ).fetchone()[0]
         stats["faq_total"] = conn.execute("SELECT COUNT(*) FROM faq_entries").fetchone()[0]
+
+        # BEP stats
+        try:
+            stats["bep_total"] = conn.execute("SELECT COUNT(*) FROM bep_items").fetchone()[0]
+            stats["bep_with_content"] = conn.execute(
+                "SELECT COUNT(*) FROM bep_items WHERE content IS NOT NULL"
+            ).fetchone()[0]
+        except sqlite3.OperationalError:
+            stats["bep_total"] = 0
+            stats["bep_with_content"] = 0
 
         return stats
 
