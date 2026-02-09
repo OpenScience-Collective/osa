@@ -59,7 +59,7 @@ jobs:
         env:
           READ_GITHUB_TOKEN: ${{ secrets.READ_GITHUB_TOKEN }}
         run: |
-          pytest --ignore=tests/test_integration -v --cov=src --cov-report=xml
+          pytest --ignore=tests/test_integration -v --cov=src --cov-report=xml -m "not network"
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4

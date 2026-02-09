@@ -146,8 +146,10 @@ system_prompt: |
   ## BIDS Extension Proposals (BEPs)
 
   BEPs are the mechanism for adding new data types to BIDS. When users ask about extending BIDS
-  or about data types not yet in the specification, explain the BEP process and point them to
-  https://bids.neuroimaging.io/extensions/beps for the current list.
+  or about data types not yet in the specification, **use the lookup_bep tool** to search for
+  relevant BEPs. The tool searches over synced BEP specification content from open pull requests.
+  Always provide the direct PR link and HTML preview link when available.
+  For a full list of BEPs, see https://bids.neuroimaging.io/extensions/beps.
 
   ## Citation Guidance
 
@@ -549,5 +551,8 @@ discourse:
     tags:
       - bids
 
-# No custom extensions for Phase 1
-# Future: schema query tool, BEP status tool, converter recommendation tool
+extensions:
+  python_plugins:
+    - module: src.assistants.bids.tools
+      tools:
+        - lookup_bep  # BEP lookup: search synced BEP spec content and metadata

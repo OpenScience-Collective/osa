@@ -1,11 +1,11 @@
 """SQLite + FTS5 database for knowledge sources.
 
-Stores minimal metadata about GitHub discussions and papers:
-- Title
-- First message (body/abstract)
-- Status (open/closed/published)
-- URL
-- Created date
+Stores metadata and content for community knowledge:
+- GitHub issues and PRs
+- Academic papers (OpenALEX, Semantic Scholar, PubMed)
+- Code docstrings
+- Mailing list messages and FAQ summaries
+- BIDS Extension Proposals (BEPs)
 
 Design: Discovery, not knowledge. These are pointers to discussions,
 not authoritative sources for answering questions.
@@ -23,7 +23,7 @@ from src.cli.config import get_data_dir
 logger = logging.getLogger(__name__)
 
 SCHEMA_SQL = """
--- GitHub issues and PRs from HED repositories
+-- GitHub issues and PRs
 CREATE TABLE IF NOT EXISTS github_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     repo TEXT NOT NULL,
@@ -262,6 +262,47 @@ CREATE TABLE IF NOT EXISTS summarization_status (
     UNIQUE(list_name, thread_id)
 );
 
+-- BIDS Extension Proposals (BEPs) with synced spec content
+CREATE TABLE IF NOT EXISTS bep_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bep_number TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL,
+    pull_request_url TEXT,
+    pull_request_number INTEGER,
+    html_preview_url TEXT,
+    google_doc_url TEXT,
+    leads TEXT,
+    content TEXT,
+    synced_at TEXT NOT NULL
+);
+
+-- FTS5 for BEP search on title and content
+CREATE VIRTUAL TABLE IF NOT EXISTS bep_items_fts USING fts5(
+    title,
+    content,
+    content='bep_items',
+    content_rowid='id'
+);
+
+-- Triggers to keep FTS in sync with bep_items
+CREATE TRIGGER IF NOT EXISTS bep_items_ai AFTER INSERT ON bep_items BEGIN
+    INSERT INTO bep_items_fts(rowid, title, content)
+    VALUES (new.id, new.title, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS bep_items_ad AFTER DELETE ON bep_items BEGIN
+    INSERT INTO bep_items_fts(bep_items_fts, rowid, title, content)
+    VALUES('delete', old.id, old.title, old.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS bep_items_au AFTER UPDATE ON bep_items BEGIN
+    INSERT INTO bep_items_fts(bep_items_fts, rowid, title, content)
+    VALUES('delete', old.id, old.title, old.content);
+    INSERT INTO bep_items_fts(rowid, title, content)
+    VALUES (new.id, new.title, new.content);
+END;
+
 -- Indexes for efficient queries
 CREATE INDEX IF NOT EXISTS idx_github_items_repo ON github_items(repo);
 CREATE INDEX IF NOT EXISTS idx_github_items_status ON github_items(status);
@@ -277,6 +318,7 @@ CREATE INDEX IF NOT EXISTS idx_faq_list ON faq_entries(list_name);
 CREATE INDEX IF NOT EXISTS idx_faq_category ON faq_entries(category);
 CREATE INDEX IF NOT EXISTS idx_faq_quality ON faq_entries(quality_score);
 CREATE INDEX IF NOT EXISTS idx_summarization_status ON summarization_status(list_name, status);
+CREATE INDEX IF NOT EXISTS idx_bep_status ON bep_items(status);
 """
 
 
@@ -522,8 +564,8 @@ def get_last_sync(source_type: str, source_name: str, project: str = "hed") -> s
     """Get last sync time for a source.
 
     Args:
-        source_type: 'github' or 'papers'
-        source_name: Repository name or paper source name
+        source_type: 'github', 'papers', or 'beps'
+        source_name: Repository name, paper source name, or 'bids-website'
         project: Assistant/project name. Defaults to 'hed'.
 
     Returns:
@@ -543,8 +585,8 @@ def update_sync_metadata(
     """Update sync metadata for a source.
 
     Args:
-        source_type: 'github' or 'papers'
-        source_name: Repository name or paper source name
+        source_type: 'github', 'papers', or 'beps'
+        source_name: Repository name, paper source name, or 'bids-website'
         items_synced: Number of items synced in this run
         project: Assistant/project name. Defaults to 'hed'.
     """
@@ -560,6 +602,65 @@ def update_sync_metadata(
             (source_type, source_name, _now_iso(), items_synced),
         )
         conn.commit()
+
+
+def upsert_bep_item(
+    conn: sqlite3.Connection,
+    *,
+    bep_number: str,
+    title: str,
+    status: str,
+    pull_request_url: str | None = None,
+    pull_request_number: int | None = None,
+    html_preview_url: str | None = None,
+    google_doc_url: str | None = None,
+    leads: str | None = None,
+    content: str | None = None,
+) -> None:
+    """Insert or update a BIDS Extension Proposal.
+
+    Args:
+        conn: Database connection
+        bep_number: BEP number (e.g., '032')
+        title: BEP title
+        status: 'proposed' (has open PR), 'draft' (Google Doc only), 'closed'
+        pull_request_url: URL to the specification PR
+        pull_request_number: PR number on bids-specification
+        html_preview_url: URL to rendered HTML preview
+        google_doc_url: URL to Google Doc (for draft BEPs)
+        leads: JSON-encoded list of lead names
+        content: Concatenated markdown from PR spec files
+    """
+    conn.execute(
+        """
+        INSERT INTO bep_items (bep_number, title, status, pull_request_url,
+                               pull_request_number, html_preview_url, google_doc_url,
+                               leads, content, synced_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(bep_number) DO UPDATE SET
+            title=excluded.title,
+            status=excluded.status,
+            pull_request_url=excluded.pull_request_url,
+            pull_request_number=excluded.pull_request_number,
+            html_preview_url=excluded.html_preview_url,
+            google_doc_url=excluded.google_doc_url,
+            leads=excluded.leads,
+            content=excluded.content,
+            synced_at=excluded.synced_at
+        """,
+        (
+            bep_number,
+            title,
+            status,
+            pull_request_url,
+            pull_request_number,
+            html_preview_url,
+            google_doc_url,
+            leads,
+            content,
+            _now_iso(),
+        ),
+    )
 
 
 def get_stats(project: str = "hed") -> dict[str, int]:
@@ -612,6 +713,19 @@ def get_stats(project: str = "hed") -> dict[str, int]:
             "SELECT COUNT(*) FROM mailing_list_messages"
         ).fetchone()[0]
         stats["faq_total"] = conn.execute("SELECT COUNT(*) FROM faq_entries").fetchone()[0]
+
+        # BEP stats
+        try:
+            stats["bep_total"] = conn.execute("SELECT COUNT(*) FROM bep_items").fetchone()[0]
+            stats["bep_with_content"] = conn.execute(
+                "SELECT COUNT(*) FROM bep_items WHERE content IS NOT NULL"
+            ).fetchone()[0]
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e):
+                stats["bep_total"] = 0
+                stats["bep_with_content"] = 0
+            else:
+                raise
 
         return stats
 

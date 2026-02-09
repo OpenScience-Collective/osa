@@ -136,6 +136,10 @@ class Settings(BaseSettings):
         default="0 3 * * 0",
         description="Cron schedule for papers sync (default: weekly Sunday at 3am UTC)",
     )
+    sync_beps_cron: str = Field(
+        default="0 4 * * 0",
+        description="Cron schedule for BEP sync (default: weekly Sunday at 4am UTC)",
+    )
 
     def parse_admin_keys(self) -> set[str]:
         """Parse API_KEYS into a set of valid admin keys.

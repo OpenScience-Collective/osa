@@ -59,7 +59,7 @@ jobs:
       - name: Run unit tests
         run: |
           pytest tests/ -v --cov=src --cov-report=xml --cov-report=term \
-            -m "not integration and not llm"
+            -m "not integration and not llm and not network"
 
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.12'
@@ -108,6 +108,13 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
           pytest tests/ -v -m "integration or llm" --tb=short
+
+      - name: Run network tests
+        env:
+          GITHUB_TOKEN: ${{ secrets.READ_GITHUB_TOKEN }}  # read-only PAT for API rate limits
+        run: |
+          pytest tests/ -v -m "network" --tb=short
+        continue-on-error: true
 
   all-tests:
     name: All Tests Passed

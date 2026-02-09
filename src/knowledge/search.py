@@ -1,10 +1,12 @@
 """FTS5 search for knowledge sources.
 
-Provides full-text search over GitHub discussions and papers.
+Provides full-text search over GitHub discussions, papers, docstrings,
+mailing list FAQs, and BIDS Extension Proposals (BEPs).
 These are for DISCOVERY, not answering - the agent should link
 users to relevant discussions, not answer from them.
 """
 
+import json
 import logging
 import re
 import sqlite3
@@ -642,9 +644,6 @@ def search_faq_entries(
             params[0] = safe_query
 
             for row in conn.execute(sql, params):
-                # Parse tags from JSON
-                import json
-
                 tags = json.loads(row["tags"]) if row["tags"] else []
 
                 results.append(
@@ -671,6 +670,115 @@ def search_faq_entries(
     except sqlite3.Error as e:
         # Other database errors - still raise for debugging
         logger.warning("Database error during FAQ search '%s': %s", query, e)
+        raise
+
+    return results
+
+
+@dataclass
+class BEPResult:
+    """A BEP search result from the knowledge database."""
+
+    bep_number: str
+    title: str
+    status: str
+    pull_request_url: str | None
+    html_preview_url: str | None
+    google_doc_url: str | None
+    leads: list[str]
+    snippet: str
+
+
+def search_beps(
+    query: str,
+    project: str = "bids",
+    limit: int = 5,
+) -> list[BEPResult]:
+    """Search BEPs by number or keyword.
+
+    If the query looks like a BEP number (e.g., "032", "32"), does an exact
+    match on bep_number. Otherwise, uses FTS5 on title and content.
+
+    Args:
+        query: BEP number or keyword search.
+        project: Community ID for database isolation. Defaults to 'bids'.
+        limit: Maximum number of results.
+
+    Returns:
+        List of matching BEP results.
+    """
+    results = []
+
+    # Check if query is a BEP number
+    stripped = query.strip().upper().removeprefix("BEP").strip().lstrip("0")
+    is_number = stripped.isdigit()
+
+    try:
+        with get_connection(project) as conn:
+            if is_number:
+                bep_number = stripped.zfill(3)
+                rows = conn.execute(
+                    """
+                    SELECT bep_number, title, status, pull_request_url,
+                           html_preview_url, google_doc_url, leads, content
+                    FROM bep_items WHERE bep_number = ?
+                    """,
+                    (bep_number,),
+                ).fetchall()
+            else:
+                safe_query = _sanitize_fts5_query(query)
+                rows = conn.execute(
+                    """
+                    SELECT b.bep_number, b.title, b.status, b.pull_request_url,
+                           b.html_preview_url, b.google_doc_url, b.leads, b.content
+                    FROM bep_items_fts f
+                    JOIN bep_items b ON f.rowid = b.id
+                    WHERE bep_items_fts MATCH ?
+                    ORDER BY rank LIMIT ?
+                    """,
+                    (safe_query, limit),
+                ).fetchall()
+
+            for row in rows[:limit]:
+                content = row["content"] or ""
+                snippet = content[:500].strip()
+                if len(content) > 500:
+                    snippet += "..."
+
+                leads = []
+                if row["leads"]:
+                    try:
+                        leads = json.loads(row["leads"])
+                    except (json.JSONDecodeError, TypeError):
+                        logger.warning(
+                            "Invalid JSON in leads for BEP%s: %s",
+                            row["bep_number"],
+                            row["leads"],
+                        )
+
+                results.append(
+                    BEPResult(
+                        bep_number=row["bep_number"],
+                        title=row["title"],
+                        status=row["status"],
+                        pull_request_url=row["pull_request_url"],
+                        html_preview_url=row["html_preview_url"],
+                        google_doc_url=row["google_doc_url"],
+                        leads=leads,
+                        snippet=snippet,
+                    )
+                )
+
+    except sqlite3.OperationalError as e:
+        logger.error(
+            "Database operational error during BEP search: %s",
+            e,
+            exc_info=True,
+            extra={"query": query, "project": project},
+        )
+        raise
+    except sqlite3.Error as e:
+        logger.warning("Database error during BEP search '%s': %s", query, e)
         raise
 
     return results
