@@ -466,8 +466,13 @@ def sync_beps_cmd(
         return
 
     console.print(f"[bold]Syncing BEPs for {community}...[/bold]")
-    with console.status("[green]Fetching BEP metadata and PR content...[/green]"):
-        stats = sync_beps(community)
+    try:
+        with console.status("[green]Fetching BEP metadata and PR content...[/green]"):
+            stats = sync_beps(community)
+    except Exception as e:
+        console.print(f"[red]Error syncing BEPs: {e}[/red]")
+        logger.exception("BEP sync failed for %s", community)
+        raise typer.Exit(1)
 
     console.print(
         f"[green]BEPs synced: {stats['total']} total, "
@@ -560,13 +565,17 @@ def sync_all(
         # BEPs (only for BIDS community)
         if comm_id == "bids":
             console.print("[bold]Syncing BEPs...[/bold]")
-            with console.status("[green]Fetching BEP metadata and PR content...[/green]"):
-                bep_stats = sync_beps(comm_id)
-            console.print(
-                f"[green]BEPs: {bep_stats['total']} total, "
-                f"{bep_stats['with_content']} with content[/green]"
-            )
-            grand_bep_total += bep_stats["total"]
+            try:
+                with console.status("[green]Fetching BEP metadata and PR content...[/green]"):
+                    bep_stats = sync_beps(comm_id)
+                console.print(
+                    f"[green]BEPs: {bep_stats['total']} total, "
+                    f"{bep_stats['with_content']} with content[/green]"
+                )
+                grand_bep_total += bep_stats["total"]
+            except Exception as e:
+                console.print(f"[red]BEP sync failed: {e}[/red]")
+                logger.exception("BEP sync failed for %s", comm_id)
 
     total_items = grand_github_total + grand_paper_total + grand_bep_total
     community_word = "community" if len(communities) == 1 else "communities"

@@ -57,9 +57,12 @@ def lookup_bep(
 
     try:
         results = search_beps(query=query, project=community_id, limit=limit)
-    except sqlite3.OperationalError:
-        logger.warning("BEP table not initialized for %s", community_id, exc_info=True)
-        return _BEP_NOT_INITIALIZED_MSG.format(community_id=community_id)
+    except sqlite3.OperationalError as e:
+        if "no such table" in str(e):
+            logger.warning("BEP table not initialized for %s", community_id, exc_info=True)
+            return _BEP_NOT_INITIALIZED_MSG.format(community_id=community_id)
+        logger.error("Database error during BEP lookup: %s", e, exc_info=True)
+        return "Database error during BEP lookup. Please contact your administrator."
 
     if not results:
         return f"No BEPs found matching: {query}"

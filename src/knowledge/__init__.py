@@ -1,9 +1,12 @@
-"""Knowledge sources module for discovery of HED discussions and papers.
+"""Knowledge sources module for community content discovery.
 
 This module provides:
-- SQLite + FTS5 database for storing discussion metadata
-- GitHub sync for issues/PRs from HED repositories
+- SQLite + FTS5 database for storing community knowledge
+- GitHub sync for issues/PRs
 - Paper sync from OpenALEX, Semantic Scholar, and PubMed Central
+- Code docstring sync
+- Mailing list FAQ sync
+- BIDS Extension Proposal (BEP) sync
 - Full-text search for discovery (not as knowledge sources)
 
 Design principle: These are for DISCOVERY, not authoritative answers.

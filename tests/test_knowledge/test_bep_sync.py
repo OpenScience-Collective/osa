@@ -10,6 +10,8 @@ from unittest.mock import patch
 import pytest
 
 from src.knowledge.bep_sync import (
+    BEPStatus,
+    SyncStats,
     _extract_pr_number,
     _fetch_beps_yaml,
     _format_leads,
@@ -138,3 +140,22 @@ class TestSyncBeps:
         ):
             count = conn.execute("SELECT COUNT(*) FROM bep_items").fetchone()[0]
             assert count == stats1["total"]
+
+
+class TestBEPTypes:
+    """Tests for BEPStatus and SyncStats types."""
+
+    def test_bep_status_values(self):
+        assert BEPStatus.DRAFT == "draft"
+        assert BEPStatus.PROPOSED == "proposed"
+        assert BEPStatus.CLOSED == "closed"
+
+    def test_bep_status_is_str(self):
+        """BEPStatus values can be used as plain strings."""
+        assert f"Status: {BEPStatus.PROPOSED}" == "Status: proposed"
+
+    def test_sync_stats_structure(self):
+        stats: SyncStats = {"total": 10, "with_content": 3, "skipped": 1}
+        assert stats["total"] == 10
+        assert stats["with_content"] == 3
+        assert stats["skipped"] == 1

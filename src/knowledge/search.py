@@ -18,6 +18,16 @@ from src.knowledge.db import get_connection
 logger = logging.getLogger(__name__)
 
 
+def _make_snippet(text: str | None, max_length: int = 200) -> str:
+    """Truncate text to a snippet, adding ellipsis if truncated."""
+    if not text:
+        return ""
+    snippet = text[:max_length].strip()
+    if len(text) > max_length:
+        snippet += "..."
+    return snippet
+
+
 def _normalize_title_for_dedup(title: str) -> set[str]:
     """Normalize a paper title to a set of words for deduplication.
 
@@ -102,9 +112,9 @@ class SearchResult:
     title: str
     url: str
     snippet: str
-    source: str  # 'github' or paper source name
-    item_type: str | None  # 'issue', 'pr', or None for papers
-    status: str  # 'open', 'closed', or 'published'
+    source: str  # 'github', paper source name, or language for docstrings
+    item_type: str | None  # 'issue', 'pr', symbol_type, or None for papers
+    status: str  # 'open', 'closed', 'published', or 'documented'
     created_at: str
 
 
@@ -146,14 +156,10 @@ def _extract_number(query: str) -> int | None:
 
 def _row_to_result(row: sqlite3.Row) -> SearchResult:
     """Convert a database row to a SearchResult."""
-    first_message = row["first_message"] or ""
-    snippet = first_message[:200].strip()
-    if len(first_message) > 200:
-        snippet += "..."
     return SearchResult(
         title=row["title"],
         url=row["url"],
-        snippet=snippet,
+        snippet=_make_snippet(row["first_message"]),
         source="github",
         item_type=row["item_type"],
         status=row["status"],
@@ -325,17 +331,11 @@ def search_papers(
                     continue
                 seen_titles.append(title_words)
 
-                # Create snippet from abstract (first 200 chars)
-                first_message = row["first_message"] or ""
-                snippet = first_message[:200].strip()
-                if len(first_message) > 200:
-                    snippet += "..."
-
                 results.append(
                     SearchResult(
                         title=row["title"],
                         url=row["url"],
-                        snippet=snippet,
+                        snippet=_make_snippet(row["first_message"]),
                         source=row["source"],
                         item_type=None,
                         status="published",
@@ -430,16 +430,11 @@ def list_recent_github_items(
     try:
         with get_connection(project) as conn:
             for row in conn.execute(sql, params):
-                first_message = row["first_message"] or ""
-                snippet = first_message[:200].strip()
-                if len(first_message) > 200:
-                    snippet += "..."
-
                 results.append(
                     SearchResult(
                         title=row["title"],
                         url=row["url"],
-                        snippet=snippet,
+                        snippet=_make_snippet(row["first_message"]),
                         source="github",
                         item_type=row["item_type"],
                         status=row["status"],
@@ -516,11 +511,7 @@ def search_docstrings(
             params[0] = safe_query
 
             for idx, row in enumerate(conn.execute(sql, params)):
-                # Create snippet from docstring (first 200 chars)
-                docstring = row["docstring"] or ""
-                snippet = docstring[:200].strip()
-                if len(docstring) > 200:
-                    snippet += "..."
+                snippet = _make_snippet(row["docstring"])
 
                 # Build GitHub URL to the specific line
                 file_path = row["file_path"] or ""
@@ -709,14 +700,14 @@ def search_beps(
     """
     results = []
 
-    # Check if query is a BEP number
-    stripped = query.strip().upper().removeprefix("BEP").strip().lstrip("0")
-    is_number = stripped.isdigit()
+    # Check if query is a BEP number (e.g., "032", "32", "BEP032", "bep 32")
+    normalized = re.sub(r"^bep\s*", "", query.strip(), flags=re.IGNORECASE).lstrip("0")
+    is_number = normalized.isdigit()
 
     try:
         with get_connection(project) as conn:
             if is_number:
-                bep_number = stripped.zfill(3)
+                bep_number = normalized.zfill(3)
                 rows = conn.execute(
                     """
                     SELECT bep_number, title, status, pull_request_url,
@@ -740,10 +731,7 @@ def search_beps(
                 ).fetchall()
 
             for row in rows[:limit]:
-                content = row["content"] or ""
-                snippet = content[:500].strip()
-                if len(content) > 500:
-                    snippet += "..."
+                snippet = _make_snippet(row["content"], max_length=500)
 
                 leads = []
                 if row["leads"]:

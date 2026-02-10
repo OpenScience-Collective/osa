@@ -8,6 +8,8 @@ import json
 import logging
 import os
 import re
+from enum import StrEnum
+from typing import TypedDict
 
 import httpx
 import yaml
@@ -21,6 +23,22 @@ BEPS_YAML_URL = (
 )
 SPEC_REPO = "bids-standard/bids-specification"
 GITHUB_API_BASE = "https://api.github.com"
+
+
+class BEPStatus(StrEnum):
+    """Valid statuses for a BIDS Extension Proposal."""
+
+    DRAFT = "draft"
+    PROPOSED = "proposed"
+    CLOSED = "closed"
+
+
+class SyncStats(TypedDict):
+    """Statistics from a BEP sync run."""
+
+    total: int
+    with_content: int
+    skipped: int
 
 
 def _get_github_headers() -> dict[str, str]:
@@ -75,10 +93,18 @@ def _fetch_beps_yaml(client: httpx.Client) -> list[dict]:
 
     Returns:
         List of BEP entries from the YAML file.
+
+    Raises:
+        httpx.HTTPError: On network errors.
+        yaml.YAMLError: On YAML parsing errors.
+        ValueError: If the YAML content is not a list.
     """
     response = client.get(BEPS_YAML_URL)
     response.raise_for_status()
-    return yaml.safe_load(response.text) or []
+    data = yaml.safe_load(response.text)
+    if not isinstance(data, list):
+        raise ValueError(f"Expected list from beps.yml, got {type(data).__name__}")
+    return data or []
 
 
 def _check_pr_open(client: httpx.Client, pr_number: int) -> dict | None:
@@ -89,13 +115,16 @@ def _check_pr_open(client: httpx.Client, pr_number: int) -> dict | None:
         pr_number: PR number on bids-specification.
 
     Returns:
-        PR metadata dict if open, None if closed/merged.
+        PR metadata dict if open, None if closed/merged or not found.
 
     Raises:
-        httpx.HTTPError: On network or API errors (caller should handle).
+        httpx.HTTPError: On network or API errors other than 404.
     """
     url = f"{GITHUB_API_BASE}/repos/{SPEC_REPO}/pulls/{pr_number}"
     response = client.get(url)
+    if response.status_code == 404:
+        logger.info("PR #%d not found (may have been deleted)", pr_number)
+        return None
     response.raise_for_status()
     pr_data = response.json()
     if pr_data.get("state") == "open":
@@ -103,23 +132,28 @@ def _check_pr_open(client: httpx.Client, pr_number: int) -> dict | None:
     return None
 
 
-def _fetch_pr_markdown(client: httpx.Client, pr_number: int, branch: str) -> str | None:
+def _fetch_pr_markdown(
+    client: httpx.Client, pr_number: int, branch: str, fork_repo: str
+) -> str | None:
     """Fetch markdown spec files changed in a PR.
 
     Lists files changed in the PR, filters for .md files under src/,
-    and fetches their content from the PR branch.
+    and fetches their content from the PR head branch. Handles pagination
+    and logs per-file fetch failures; HTTP errors during file listing
+    cause early termination of the listing loop.
 
     Args:
         client: HTTP client with GitHub headers.
         pr_number: PR number on bids-specification.
         branch: Branch name of the PR head.
+        fork_repo: Full repo name of the PR head (e.g., "user/bids-specification").
 
     Returns:
         Concatenated markdown content, or None if no .md files found.
     """
     # List files changed in the PR (paginated)
     files_url = f"{GITHUB_API_BASE}/repos/{SPEC_REPO}/pulls/{pr_number}/files"
-    md_files = []
+    md_files: list[str] = []
     page = 1
 
     while True:
@@ -132,12 +166,11 @@ def _fetch_pr_markdown(client: httpx.Client, pr_number: int, branch: str) -> str
 
             for f in files:
                 filename = f.get("filename", "")
-                # Only include .md files under src/ (spec content, not CI/docs metadata)
                 if filename.startswith("src/") and filename.endswith(".md"):
                     md_files.append(filename)
 
             page += 1
-        except httpx.HTTPError:
+        except (httpx.HTTPError, json.JSONDecodeError):
             logger.warning("Failed to list PR #%d files (page %d)", pr_number, page, exc_info=True)
             break
 
@@ -145,21 +178,74 @@ def _fetch_pr_markdown(client: httpx.Client, pr_number: int, branch: str) -> str
         logger.info("No .md files found in PR #%d", pr_number)
         return None
 
-    # Fetch each markdown file from the PR branch
+    # Fetch each markdown file from the PR head branch (on the fork repo)
     contents = []
+    failed_files = 0
     for filepath in md_files:
-        raw_url = f"https://raw.githubusercontent.com/{SPEC_REPO}/{branch}/{filepath}"
+        raw_url = f"https://raw.githubusercontent.com/{fork_repo}/{branch}/{filepath}"
         try:
             response = client.get(raw_url)
             response.raise_for_status()
             contents.append(f"<!-- File: {filepath} -->\n{response.text}")
         except httpx.HTTPError:
-            logger.warning("Failed to fetch %s from branch %s", filepath, branch, exc_info=True)
+            failed_files += 1
+            logger.warning(
+                "Failed to fetch %s from %s:%s", filepath, fork_repo, branch, exc_info=True
+            )
+
+    if failed_files:
+        logger.warning(
+            "PR #%d: fetched %d/%d files (%d failed)",
+            pr_number,
+            len(contents),
+            len(md_files),
+            failed_files,
+        )
 
     return "\n\n---\n\n".join(contents) if contents else None
 
 
-def sync_beps(community_id: str = "bids") -> dict[str, int]:
+def _resolve_pr_status(
+    client: httpx.Client, pr_number: int, bep_number: str
+) -> tuple[BEPStatus, str | None]:
+    """Check PR state and fetch spec content if open.
+
+    Args:
+        client: HTTP client with GitHub headers.
+        pr_number: PR number on bids-specification.
+        bep_number: BEP number (for logging).
+
+    Returns:
+        (status, content) where status is BEPStatus.PROPOSED or BEPStatus.CLOSED,
+        and content is the markdown text or None.
+
+    Raises:
+        httpx.HTTPError: On network or API errors.
+        json.JSONDecodeError: On malformed API responses.
+    """
+    pr_data = _check_pr_open(client, pr_number)
+    if not pr_data:
+        return BEPStatus.CLOSED, None
+
+    branch = pr_data.get("head", {}).get("ref")
+    fork_repo = pr_data.get("head", {}).get("repo", {}).get("full_name", SPEC_REPO)
+
+    if not branch:
+        logger.warning("PR #%d missing head ref, skipping content fetch", pr_number)
+        return BEPStatus.PROPOSED, None
+
+    logger.info(
+        "Fetching content for BEP%s (PR #%d, branch: %s, repo: %s)",
+        bep_number,
+        pr_number,
+        branch,
+        fork_repo,
+    )
+    content = _fetch_pr_markdown(client, pr_number, branch, fork_repo)
+    return BEPStatus.PROPOSED, content
+
+
+def sync_beps(community_id: str = "bids") -> SyncStats:
     """Sync BEP metadata and spec content from GitHub.
 
     For each BEP in beps.yml:
@@ -171,19 +257,26 @@ def sync_beps(community_id: str = "bids") -> dict[str, int]:
         community_id: Community database to sync into (default: 'bids').
 
     Returns:
-        Dict with sync statistics: total, with_content, skipped.
+        SyncStats with total, with_content, skipped counts.
+
+    Raises:
+        httpx.HTTPError: If beps.yml cannot be fetched.
+        yaml.YAMLError: If beps.yml cannot be parsed.
+        ValueError: If beps.yml has unexpected format.
     """
+    if not os.environ.get("GITHUB_TOKEN"):
+        logger.warning(
+            "GITHUB_TOKEN not set. BEP sync will use unauthenticated GitHub API "
+            "(60 requests/hour limit). Set GITHUB_TOKEN for reliable sync."
+        )
+
     headers = _get_github_headers()
-    stats = {"total": 0, "with_content": 0, "skipped": 0}
+    stats: SyncStats = {"total": 0, "with_content": 0, "skipped": 0}
 
     with httpx.Client(timeout=30.0, headers=headers, follow_redirects=True) as client:
-        # Fetch BEP metadata
+        # Fetch BEP metadata (let errors propagate to caller)
         logger.info("Fetching BEP metadata from bids-website...")
-        try:
-            beps = _fetch_beps_yaml(client)
-        except (httpx.HTTPError, yaml.YAMLError):
-            logger.error("Failed to fetch beps.yml", exc_info=True)
-            return stats
+        beps = _fetch_beps_yaml(client)
 
         logger.info("Found %d BEPs in beps.yml", len(beps))
 
@@ -197,7 +290,7 @@ def sync_beps(community_id: str = "bids") -> dict[str, int]:
                     stats["skipped"] += 1
                     continue
 
-                # Pad to 3 digits for consistency
+                # BEP numbers are zero-padded (e.g., "032") for consistent DB keys
                 bep_number = bep_number.zfill(3)
 
                 pr_url = bep.get("pull_request")
@@ -207,40 +300,21 @@ def sync_beps(community_id: str = "bids") -> dict[str, int]:
 
                 pr_number = _extract_pr_number(pr_url) if pr_url else None
                 content = None
-                status = "draft"  # default for BEPs without an open PR
+                # Initial default; updated to 'proposed' or 'closed' after PR check
+                status: BEPStatus = BEPStatus.DRAFT
 
                 if pr_number:
                     try:
-                        pr_data = _check_pr_open(client, pr_number)
-                        if pr_data:
-                            status = "proposed"
-                            branch = pr_data.get("head", {}).get("ref")
-                            if not branch:
-                                logger.warning(
-                                    "PR #%d missing head ref, skipping content fetch",
-                                    pr_number,
-                                )
-                            else:
-                                logger.info(
-                                    "Fetching content for BEP%s (PR #%d, branch: %s)",
-                                    bep_number,
-                                    pr_number,
-                                    branch,
-                                )
-                                content = _fetch_pr_markdown(client, pr_number, branch)
-                                if content:
-                                    stats["with_content"] += 1
-                        else:
-                            # PR exists but is closed/merged
-                            status = "closed"
-                    except httpx.HTTPError:
+                        status, content = _resolve_pr_status(client, pr_number, bep_number)
+                        if content:
+                            stats["with_content"] += 1
+                    except (httpx.HTTPError, json.JSONDecodeError):
                         logger.warning(
                             "Failed to check PR #%d for BEP%s, storing metadata only",
                             pr_number,
                             bep_number,
                             exc_info=True,
                         )
-                        # Keep default status ("draft"); don't mark as "closed"
 
                 upsert_bep_item(
                     conn,

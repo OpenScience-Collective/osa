@@ -11,6 +11,7 @@ Design: Discovery, not knowledge. These are pointers to discussions,
 not authoritative sources for answering questions.
 """
 
+import json
 import logging
 import sqlite3
 from collections.abc import Iterator
@@ -714,7 +715,7 @@ def get_stats(project: str = "hed") -> dict[str, int]:
         ).fetchone()[0]
         stats["faq_total"] = conn.execute("SELECT COUNT(*) FROM faq_entries").fetchone()[0]
 
-        # BEP stats
+        # BEP stats (table may not exist in databases created before BEP support)
         try:
             stats["bep_total"] = conn.execute("SELECT COUNT(*) FROM bep_items").fetchone()[0]
             stats["bep_with_content"] = conn.execute(
@@ -831,8 +832,6 @@ def upsert_faq_entry(
         quality_score: 0.0-1.0, from LLM scoring
         summary_model: Model used for summarization
     """
-    import json
-
     # Limit answer size
     if len(answer) > 5000:
         answer = answer[:5000]

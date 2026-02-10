@@ -3,6 +3,7 @@
 Uses APScheduler to run periodic jobs for:
 - GitHub issues/PRs sync (daily by default)
 - Academic papers sync (weekly by default)
+- BEP (BIDS Extension Proposals) sync (weekly by default)
 - Community budget checks with alert issue creation (every 15 minutes)
 """
 
@@ -174,7 +175,6 @@ def _run_beps_sync() -> None:
     global _beps_sync_failures
     logger.info("Starting scheduled BEP sync")
     try:
-        # Initialize BIDS database if needed
         init_db("bids")
         stats = sync_beps("bids")
         logger.info(
@@ -291,10 +291,10 @@ def start_scheduler() -> BackgroundScheduler | None:
         logger.warning("Scheduler already running")
         return _scheduler
 
-    # Set GITHUB_TOKEN for gh CLI if provided
+    # Set GITHUB_TOKEN for GitHub API requests (gh CLI, sync jobs, BEP fetching)
     if settings.github_token:
         os.environ["GITHUB_TOKEN"] = settings.github_token
-        logger.info("GITHUB_TOKEN set for gh CLI")
+        logger.info("GITHUB_TOKEN set for GitHub API requests")
 
     # Initialize database
     logger.info("Initializing knowledge database")
