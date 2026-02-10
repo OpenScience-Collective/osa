@@ -119,6 +119,13 @@ class Settings(BaseSettings):
         default=None,
         description="GitHub token for REST API (optional, higher rate limits for sync)",
     )
+    openalex_api_key: str | None = Field(
+        default=None,
+        description="OpenAlex API key (optional, for polite pool / higher rate limits)",
+    )
+    openalex_email: str | None = Field(
+        default=None, description="Email for OpenAlex polite pool (optional, used if no API key)"
+    )
     semantic_scholar_api_key: str | None = Field(
         default=None, description="Semantic Scholar API key (optional, for higher rate limits)"
     )

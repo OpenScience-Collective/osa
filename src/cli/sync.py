@@ -22,6 +22,7 @@ from src.knowledge.db import get_db_path, get_stats, init_db
 from src.knowledge.docstring_sync import sync_repo_docstrings
 from src.knowledge.github_sync import sync_repo, sync_repos
 from src.knowledge.papers_sync import (
+    configure_openalex,
     sync_all_papers,
     sync_citing_papers,
     sync_openalex_papers,
@@ -164,23 +165,39 @@ def _safe_init_db(community_id: str) -> bool:
 def _safe_load_config() -> tuple[str | None, str | None]:
     """Load config with error handling, returning API keys.
 
+    Checks CLI config file first, falls back to environment variables.
+
     Returns:
         Tuple of (semantic_scholar_key, pubmed_key), both may be None.
     """
+    semantic_scholar_key = None
+    pubmed_key = None
+
     try:
         config = load_config()
         semantic_scholar_key = getattr(config, "semantic_scholar_api_key", None)
         pubmed_key = getattr(config, "pubmed_api_key", None)
-        if semantic_scholar_key:
-            logger.debug("Loaded Semantic Scholar API key from config")
-        if pubmed_key:
-            logger.debug("Loaded PubMed API key from config")
-        return semantic_scholar_key, pubmed_key
     except Exception as e:
         console.print(f"[yellow]Warning: Could not load config: {e}[/yellow]")
-        console.print("[dim]Continuing without API keys (reduced rate limits).[/dim]")
         logger.warning("Config load failed: %s", e)
-        return None, None
+
+    # Fall back to environment variables if not in config
+    if not semantic_scholar_key:
+        semantic_scholar_key = os.environ.get("SEMANTIC_SCHOLAR_API_KEY")
+    if not pubmed_key:
+        pubmed_key = os.environ.get("PUBMED_API_KEY")
+
+    # Configure OpenAlex from env vars (pyalex uses global config)
+    openalex_key = os.environ.get("OPENALEX_API_KEY")
+    openalex_email = os.environ.get("OPENALEX_EMAIL")
+    configure_openalex(api_key=openalex_key, email=openalex_email)
+
+    if semantic_scholar_key:
+        logger.debug("Semantic Scholar API key loaded")
+    if pubmed_key:
+        logger.debug("PubMed API key loaded")
+
+    return semantic_scholar_key, pubmed_key
 
 
 sync_app = typer.Typer(
