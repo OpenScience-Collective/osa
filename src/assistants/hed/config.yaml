@@ -13,6 +13,7 @@ enable_page_context: true
 cors_origins:
   - https://www.hedtags.org
   - https://hedtags.org
+  - https://www.hedtools.org
 
 # Per-community OpenRouter API key (optional)
 # If specified, this community will use its own API key instead of the platform default
