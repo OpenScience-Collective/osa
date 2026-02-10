@@ -30,8 +30,10 @@ Additionally, this file includes tests for OpenRouter LLM creation, particularly
 the provider auto-selection behavior for Anthropic models.
 """
 
+import json
+
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langchain_litellm import ChatLiteLLM
 
@@ -635,3 +637,122 @@ class TestCachingLLMWrapperIntegration:
         # Assemble full response
         full_response = "".join(str(chunk.content) for chunk in chunks if hasattr(chunk, "content"))
         assert len(full_response) > 0
+
+
+class TestCachingToolMessages:
+    """Test that tool call messages are correctly serialized by _add_cache_control."""
+
+    def _make_wrapper(self):
+        from langchain_community.chat_models import FakeListChatModel
+
+        return CachingLLMWrapper(llm=FakeListChatModel(responses=["Test"]))
+
+    def test_ai_message_with_tool_calls_preserved(self):
+        """AIMessage with tool_calls should serialize with role=assistant and tool_calls array."""
+        wrapper = self._make_wrapper()
+
+        ai_msg = AIMessage(
+            content="",
+            tool_calls=[
+                {"id": "call_123", "name": "search_hed_docs", "args": {"query": "BCI"}},
+            ],
+        )
+        result = wrapper._add_cache_control([ai_msg])
+
+        assert len(result) == 1
+        assert result[0]["role"] == "assistant"
+        assert "tool_calls" in result[0]
+        assert len(result[0]["tool_calls"]) == 1
+
+        tc = result[0]["tool_calls"][0]
+        assert tc["id"] == "call_123"
+        assert tc["type"] == "function"
+        assert tc["function"]["name"] == "search_hed_docs"
+        assert json.loads(tc["function"]["arguments"]) == {"query": "BCI"}
+
+    def test_tool_message_serialized_correctly(self):
+        """ToolMessage should serialize with role=tool and tool_call_id."""
+        wrapper = self._make_wrapper()
+
+        tool_msg = ToolMessage(
+            content="Found 3 documents about BCI.",
+            tool_call_id="call_123",
+        )
+        result = wrapper._add_cache_control([tool_msg])
+
+        assert len(result) == 1
+        assert result[0]["role"] == "tool"
+        assert result[0]["tool_call_id"] == "call_123"
+        assert result[0]["content"] == "Found 3 documents about BCI."
+
+    def test_tool_message_empty_content(self):
+        """ToolMessage with empty content should serialize without error."""
+        wrapper = self._make_wrapper()
+
+        tool_msg = ToolMessage(content="", tool_call_id="call_123")
+        result = wrapper._add_cache_control([tool_msg])
+
+        assert result[0]["role"] == "tool"
+        assert result[0]["content"] == ""
+        assert result[0]["tool_call_id"] == "call_123"
+
+    def test_ai_message_without_tool_calls_unchanged(self):
+        """AIMessage without tool_calls should serialize normally (no tool_calls key)."""
+        wrapper = self._make_wrapper()
+
+        ai_msg = AIMessage(content="Here is the answer.")
+        result = wrapper._add_cache_control([ai_msg])
+
+        assert len(result) == 1
+        assert result[0]["role"] == "assistant"
+        assert result[0]["content"] == "Here is the answer."
+        assert "tool_calls" not in result[0]
+
+    def test_full_tool_call_sequence(self):
+        """Complete [System, Human, AI(tool_calls), Tool, AI] sequence serializes correctly."""
+        wrapper = self._make_wrapper()
+
+        messages = [
+            SystemMessage(content="You are a HED expert."),
+            HumanMessage(content="What is BCI in HED?"),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"id": "call_abc", "name": "search_hed_docs", "args": {"query": "BCI"}},
+                ],
+            ),
+            ToolMessage(
+                content="BCI stands for Brain-Computer Interface.", tool_call_id="call_abc"
+            ),
+            AIMessage(content="BCI stands for Brain-Computer Interface in HED."),
+        ]
+
+        result = wrapper._add_cache_control(messages)
+
+        assert len(result) == 5
+        assert result[0]["role"] == "system"
+        assert result[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+        assert result[1]["role"] == "user"
+        assert result[2]["role"] == "assistant"
+        assert "tool_calls" in result[2]
+        assert result[3]["role"] == "tool"
+        assert result[3]["tool_call_id"] == "call_abc"
+        assert result[4]["role"] == "assistant"
+        assert "tool_calls" not in result[4]
+
+    def test_ai_message_with_multiple_tool_calls(self):
+        """Multiple tool calls on a single AIMessage should all be serialized."""
+        wrapper = self._make_wrapper()
+
+        ai_msg = AIMessage(
+            content="",
+            tool_calls=[
+                {"id": "call_1", "name": "search_docs", "args": {"q": "BCI"}},
+                {"id": "call_2", "name": "fetch_page", "args": {"url": "https://example.com"}},
+            ],
+        )
+        result = wrapper._add_cache_control([ai_msg])
+
+        assert len(result[0]["tool_calls"]) == 2
+        assert result[0]["tool_calls"][0]["function"]["name"] == "search_docs"
+        assert result[0]["tool_calls"][1]["function"]["name"] == "fetch_page"

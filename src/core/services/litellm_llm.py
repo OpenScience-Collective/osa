@@ -28,6 +28,7 @@ Usage:
     ])
 """
 
+import json
 import logging
 import os
 from collections.abc import AsyncIterator, Iterator
@@ -283,7 +284,7 @@ class CachingLLMWrapper(BaseChatModel):
                        or contains messages with None content
             TypeError: If messages is not a list
         """
-        from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+        from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
         # Validate input
         if messages is None:
@@ -340,13 +341,50 @@ class CachingLLMWrapper(BaseChatModel):
                     result.append({"role": "user", "content": str(msg.content)})
 
                 elif isinstance(msg, AIMessage):
-                    if msg.content is None:
+                    if msg.content is None and not getattr(msg, "tool_calls", None):
                         logger.error("AIMessage at index %d has None content", i)
                         raise ValueError(
                             f"AIMessage at index {i} has None content. "
                             "All messages must have non-None content."
                         )
-                    result.append({"role": "assistant", "content": str(msg.content)})
+                    ai_dict: dict[str, Any] = {
+                        "role": "assistant",
+                        "content": str(msg.content) if msg.content else "",
+                    }
+                    # Preserve tool_calls in OpenAI dict format (LiteLLM translates
+                    # to Anthropic format automatically)
+                    if getattr(msg, "tool_calls", None):
+                        ai_dict["tool_calls"] = [
+                            {
+                                "id": tc.get("id", tc.get("name", "")),
+                                "type": "function",
+                                "function": {
+                                    "name": tc["name"],
+                                    "arguments": (
+                                        json.dumps(tc["args"])
+                                        if isinstance(tc["args"], dict)
+                                        else str(tc["args"])
+                                    ),
+                                },
+                            }
+                            for tc in msg.tool_calls
+                        ]
+                    result.append(ai_dict)
+
+                elif isinstance(msg, ToolMessage):
+                    if msg.content is None:
+                        logger.error("ToolMessage at index %d has None content", i)
+                        raise ValueError(
+                            f"ToolMessage at index {i} has None content. "
+                            "All tool messages must have non-None content."
+                        )
+                    result.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": msg.tool_call_id,
+                            "content": str(msg.content),
+                        }
+                    )
 
                 else:
                     # Fallback for other message types

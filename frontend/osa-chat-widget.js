@@ -722,6 +722,14 @@
       border-top: 1px solid #fecaca;
     }
 
+    .osa-warning {
+      color: #92400e;
+      font-size: 12px;
+      padding: 8px 16px;
+      background: #fffbeb;
+      border-top: 1px solid #fde68a;
+    }
+
     .osa-resize-handle {
       position: absolute;
       top: 0;
@@ -1773,6 +1781,7 @@
         </div>
         <div class="osa-turnstile-container" style="display: none;"></div>
         <div class="osa-error" style="display: none;"></div>
+        <div class="osa-warning" style="display: none;"></div>
         <div class="osa-chat-input">
           <input type="text" placeholder="${escapeHtml(CONFIG.placeholder)}" />
           <button class="osa-send-btn" aria-label="Send">
@@ -1956,6 +1965,16 @@
     }, 5000);
   }
 
+  function showWarning(container, message) {
+    const warningEl = container.querySelector('.osa-warning');
+    if (!warningEl) return;
+    warningEl.textContent = message;
+    warningEl.style.display = 'block';
+    setTimeout(() => {
+      warningEl.style.display = 'none';
+    }, 10000);
+  }
+
   // Parse SSE (Server-Sent Events) format
   // Returns parsed event object or null if line is not a data event
   function parseSSE(line) {
@@ -2042,6 +2061,11 @@
           } else if (event.event === 'tool_end') {
             // Log tool completion
             console.log('[OSA] Tool completed:', event.name);
+          } else if (event.event === 'warning') {
+            // Display warning banner (e.g., conversation getting long)
+            const warningMsg = event.message || 'Warning';
+            console.warn('[OSA] Warning:', warningMsg);
+            showWarning(container, warningMsg);
           } else if (event.event === 'done') {
             // Finalize message
             receivedDoneEvent = true;
