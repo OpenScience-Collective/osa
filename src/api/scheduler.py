@@ -115,7 +115,13 @@ def _run_papers_sync() -> None:
     """Run papers sync job for all communities."""
     global _papers_sync_failures
     settings = get_settings()
-    logger.info("Starting scheduled papers sync for all communities")
+    logger.info(
+        "Starting scheduled papers sync for all communities "
+        "(OpenAlex key: %s, S2 key: %s, PubMed key: %s)",
+        "configured" if settings.openalex_api_key else "none",
+        "configured" if settings.semantic_scholar_api_key else "none",
+        "configured" if settings.pubmed_api_key else "none",
+    )
     try:
         communities = _get_communities_with_sync()
         if not communities:

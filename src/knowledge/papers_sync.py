@@ -34,12 +34,16 @@ def configure_openalex(api_key: str | None = None, email: str | None = None) -> 
         api_key: OpenAlex API key for premium access (~2M requests).
         email: Email for polite pool access (faster than anonymous).
     """
+    # Treat empty strings as None
+    api_key = api_key.strip() if api_key else None
+    email = email.strip() if email else None
+
     if api_key:
         pyalex.config.api_key = api_key
         logger.info("OpenAlex configured with API key")
     elif email:
         pyalex.config.email = email
-        logger.info("OpenAlex configured with email (polite pool)")
+        logger.info("OpenAlex configured with email: %s (polite pool)", email)
     else:
         logger.debug("OpenAlex using anonymous access (lower rate limits)")
 
