@@ -17,6 +17,7 @@ from rich.table import Table
 
 from src.assistants import registry
 from src.cli.config import load_config
+from src.knowledge.bep_sync import sync_beps
 from src.knowledge.db import get_db_path, get_stats, init_db
 from src.knowledge.docstring_sync import sync_repo_docstrings
 from src.knowledge.github_sync import sync_repo, sync_repos
@@ -447,6 +448,39 @@ def sync_docstrings(
             console.print(f"[yellow]Failed repos ({len(failed)}): {', '.join(failed)}[/yellow]")
 
 
+@sync_app.command("beps")
+def sync_beps_cmd(
+    community: Annotated[
+        str,
+        typer.Option("--community", "-c", help="Community ID (default: bids)"),
+    ] = "bids",
+) -> None:
+    """Sync BIDS Extension Proposals from bids-website.
+
+    Fetches BEP metadata from beps.yml and spec content from open PRs
+    on bids-standard/bids-specification.
+    """
+    _require_admin()
+
+    if not _safe_init_db(community):
+        return
+
+    console.print(f"[bold]Syncing BEPs for {community}...[/bold]")
+    try:
+        with console.status("[green]Fetching BEP metadata and PR content...[/green]"):
+            stats = sync_beps(community)
+    except Exception as e:
+        console.print(f"[red]Error syncing BEPs: {e}[/red]")
+        logger.exception("BEP sync failed for %s", community)
+        raise typer.Exit(1)
+
+    console.print(
+        f"[green]BEPs synced: {stats['total']} total, "
+        f"{stats['with_content']} with spec content, "
+        f"{stats['skipped']} skipped[/green]"
+    )
+
+
 @sync_app.command("all")
 def sync_all(
     community: Annotated[
@@ -477,6 +511,7 @@ def sync_all(
 
     grand_github_total = 0
     grand_paper_total = 0
+    grand_bep_total = 0
 
     for comm_id in communities:
         console.print(f"\n[bold cyan]═══ Syncing {comm_id} ═══[/bold cyan]")
@@ -527,7 +562,22 @@ def sync_all(
         else:
             console.print("[dim]No paper queries/DOIs configured[/dim]")
 
-    total_items = grand_github_total + grand_paper_total
+        # BEPs (only for BIDS community)
+        if comm_id == "bids":
+            console.print("[bold]Syncing BEPs...[/bold]")
+            try:
+                with console.status("[green]Fetching BEP metadata and PR content...[/green]"):
+                    bep_stats = sync_beps(comm_id)
+                console.print(
+                    f"[green]BEPs: {bep_stats['total']} total, "
+                    f"{bep_stats['with_content']} with content[/green]"
+                )
+                grand_bep_total += bep_stats["total"]
+            except Exception as e:
+                console.print(f"[red]BEP sync failed: {e}[/red]")
+                logger.exception("BEP sync failed for %s", comm_id)
+
+    total_items = grand_github_total + grand_paper_total + grand_bep_total
     community_word = "community" if len(communities) == 1 else "communities"
     console.print(
         f"\n[bold green]Sync complete: {total_items} total items "

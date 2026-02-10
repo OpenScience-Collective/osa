@@ -1,10 +1,94 @@
-"""BIDS community-specific tools.
+"""BIDS community-specific tools."""
 
-Phase 1: No custom tools needed. Documentation retrieval and knowledge
-discovery tools are auto-generated from config.yaml.
+import logging
+import sqlite3
 
-Future phases may add:
-- Schema query tool (query BIDS schema for valid entities/metadata)
-- BEP status tool (query active/completed BEPs)
-- Converter recommendation tool (suggest converters for data types)
-"""
+from langchain_core.tools import tool
+
+from src.knowledge.db import get_db_path
+from src.knowledge.search import search_beps
+
+logger = logging.getLogger(__name__)
+
+_BEP_NOT_INITIALIZED_MSG = (
+    "BEP knowledge base not initialized for {community_id}.\n\n"
+    "To sync BEP data:\n"
+    "  osa sync beps --community {community_id}\n\n"
+    "Contact your administrator if you don't have sync permissions."
+)
+
+
+@tool
+def lookup_bep(
+    query: str,
+    limit: int = 3,
+) -> str:
+    """Look up BIDS Extension Proposals (BEPs) by number or keyword.
+
+    Use this when users ask about:
+    - Extending BIDS for new data types
+    - Data types not yet in the specification
+    - Specific BEP numbers or topics (e.g., "BEP032", "neuropixels", "eye tracking")
+    - Proposals currently in review
+
+    Args:
+        query: BEP number (e.g., "032", "BEP032") or keyword (e.g., "neuropixels")
+        limit: Max results to return (default: 3)
+
+    Returns:
+        Formatted BEP information with metadata, links, and content snippets.
+
+    Example:
+        >>> lookup_bep("032")
+        **BEP032: Microelectrode electrophysiology**
+        Status: proposed
+        PR: https://github.com/bids-standard/bids-specification/pull/1705
+        Preview: https://bids-specification--1705.org.readthedocs.build/...
+
+        >>> lookup_bep("eye tracking")
+        **BEP020: Eye Tracking including Gaze Position and Pupil Size**
+        ...
+    """
+    community_id = "bids"
+
+    db_path = get_db_path(community_id)
+    if not db_path.exists():
+        return _BEP_NOT_INITIALIZED_MSG.format(community_id=community_id)
+
+    try:
+        results = search_beps(query=query, project=community_id, limit=limit)
+    except sqlite3.OperationalError as e:
+        if "no such table" in str(e):
+            logger.warning("BEP table not initialized for %s", community_id, exc_info=True)
+            return _BEP_NOT_INITIALIZED_MSG.format(community_id=community_id)
+        logger.error("Database error during BEP lookup: %s", e, exc_info=True)
+        return "Database error during BEP lookup. Please contact your administrator."
+
+    if not results:
+        return f"No BEPs found matching: {query}"
+
+    lines = [f"Found {len(results)} BEP(s):\n"]
+    for result in results:
+        lines.append(f"**BEP{result.bep_number}: {result.title}**")
+        lines.append(f"Status: {result.status}")
+
+        if result.leads:
+            lines.append(f"Leads: {', '.join(result.leads)}")
+
+        if result.pull_request_url:
+            lines.append(f"PR: {result.pull_request_url}")
+        if result.html_preview_url:
+            lines.append(f"Preview: {result.html_preview_url}")
+        if result.google_doc_url:
+            lines.append(f"Google Doc: {result.google_doc_url}")
+
+        if result.snippet:
+            lines.append(f"\n{result.snippet}\n")
+        else:
+            lines.append("")
+
+    return "\n".join(lines)
+
+
+# Export for plugin discovery
+__all__ = ["lookup_bep"]

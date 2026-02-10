@@ -1,10 +1,12 @@
 """FTS5 search for knowledge sources.
 
-Provides full-text search over GitHub discussions and papers.
+Provides full-text search over GitHub discussions, papers, docstrings,
+mailing list FAQs, and BIDS Extension Proposals (BEPs).
 These are for DISCOVERY, not answering - the agent should link
 users to relevant discussions, not answer from them.
 """
 
+import json
 import logging
 import re
 import sqlite3
@@ -14,6 +16,16 @@ from dataclasses import dataclass
 from src.knowledge.db import get_connection
 
 logger = logging.getLogger(__name__)
+
+
+def _make_snippet(text: str | None, max_length: int = 200) -> str:
+    """Truncate text to a snippet, adding ellipsis if truncated."""
+    if not text:
+        return ""
+    snippet = text[:max_length].strip()
+    if len(text) > max_length:
+        snippet += "..."
+    return snippet
 
 
 def _normalize_title_for_dedup(title: str) -> set[str]:
@@ -100,9 +112,9 @@ class SearchResult:
     title: str
     url: str
     snippet: str
-    source: str  # 'github' or paper source name
-    item_type: str | None  # 'issue', 'pr', or None for papers
-    status: str  # 'open', 'closed', or 'published'
+    source: str  # 'github', paper source name, or language for docstrings
+    item_type: str | None  # 'issue', 'pr', symbol_type, or None for papers
+    status: str  # 'open', 'closed', 'published', or 'documented'
     created_at: str
 
 
@@ -144,14 +156,10 @@ def _extract_number(query: str) -> int | None:
 
 def _row_to_result(row: sqlite3.Row) -> SearchResult:
     """Convert a database row to a SearchResult."""
-    first_message = row["first_message"] or ""
-    snippet = first_message[:200].strip()
-    if len(first_message) > 200:
-        snippet += "..."
     return SearchResult(
         title=row["title"],
         url=row["url"],
-        snippet=snippet,
+        snippet=_make_snippet(row["first_message"]),
         source="github",
         item_type=row["item_type"],
         status=row["status"],
@@ -323,17 +331,11 @@ def search_papers(
                     continue
                 seen_titles.append(title_words)
 
-                # Create snippet from abstract (first 200 chars)
-                first_message = row["first_message"] or ""
-                snippet = first_message[:200].strip()
-                if len(first_message) > 200:
-                    snippet += "..."
-
                 results.append(
                     SearchResult(
                         title=row["title"],
                         url=row["url"],
-                        snippet=snippet,
+                        snippet=_make_snippet(row["first_message"]),
                         source=row["source"],
                         item_type=None,
                         status="published",
@@ -428,16 +430,11 @@ def list_recent_github_items(
     try:
         with get_connection(project) as conn:
             for row in conn.execute(sql, params):
-                first_message = row["first_message"] or ""
-                snippet = first_message[:200].strip()
-                if len(first_message) > 200:
-                    snippet += "..."
-
                 results.append(
                     SearchResult(
                         title=row["title"],
                         url=row["url"],
-                        snippet=snippet,
+                        snippet=_make_snippet(row["first_message"]),
                         source="github",
                         item_type=row["item_type"],
                         status=row["status"],
@@ -514,11 +511,7 @@ def search_docstrings(
             params[0] = safe_query
 
             for idx, row in enumerate(conn.execute(sql, params)):
-                # Create snippet from docstring (first 200 chars)
-                docstring = row["docstring"] or ""
-                snippet = docstring[:200].strip()
-                if len(docstring) > 200:
-                    snippet += "..."
+                snippet = _make_snippet(row["docstring"])
 
                 # Build GitHub URL to the specific line
                 file_path = row["file_path"] or ""
@@ -642,9 +635,6 @@ def search_faq_entries(
             params[0] = safe_query
 
             for row in conn.execute(sql, params):
-                # Parse tags from JSON
-                import json
-
                 tags = json.loads(row["tags"]) if row["tags"] else []
 
                 results.append(
@@ -671,6 +661,112 @@ def search_faq_entries(
     except sqlite3.Error as e:
         # Other database errors - still raise for debugging
         logger.warning("Database error during FAQ search '%s': %s", query, e)
+        raise
+
+    return results
+
+
+@dataclass
+class BEPResult:
+    """A BEP search result from the knowledge database."""
+
+    bep_number: str
+    title: str
+    status: str
+    pull_request_url: str | None
+    html_preview_url: str | None
+    google_doc_url: str | None
+    leads: list[str]
+    snippet: str
+
+
+def search_beps(
+    query: str,
+    project: str = "bids",
+    limit: int = 5,
+) -> list[BEPResult]:
+    """Search BEPs by number or keyword.
+
+    If the query looks like a BEP number (e.g., "032", "32"), does an exact
+    match on bep_number. Otherwise, uses FTS5 on title and content.
+
+    Args:
+        query: BEP number or keyword search.
+        project: Community ID for database isolation. Defaults to 'bids'.
+        limit: Maximum number of results.
+
+    Returns:
+        List of matching BEP results.
+    """
+    results = []
+
+    # Check if query is a BEP number (e.g., "032", "32", "BEP032", "bep 32")
+    normalized = re.sub(r"^bep\s*", "", query.strip(), flags=re.IGNORECASE).lstrip("0")
+    is_number = normalized.isdigit()
+
+    try:
+        with get_connection(project) as conn:
+            if is_number:
+                bep_number = normalized.zfill(3)
+                rows = conn.execute(
+                    """
+                    SELECT bep_number, title, status, pull_request_url,
+                           html_preview_url, google_doc_url, leads, content
+                    FROM bep_items WHERE bep_number = ?
+                    """,
+                    (bep_number,),
+                ).fetchall()
+            else:
+                safe_query = _sanitize_fts5_query(query)
+                rows = conn.execute(
+                    """
+                    SELECT b.bep_number, b.title, b.status, b.pull_request_url,
+                           b.html_preview_url, b.google_doc_url, b.leads, b.content
+                    FROM bep_items_fts f
+                    JOIN bep_items b ON f.rowid = b.id
+                    WHERE bep_items_fts MATCH ?
+                    ORDER BY rank LIMIT ?
+                    """,
+                    (safe_query, limit),
+                ).fetchall()
+
+            for row in rows[:limit]:
+                snippet = _make_snippet(row["content"], max_length=500)
+
+                leads = []
+                if row["leads"]:
+                    try:
+                        leads = json.loads(row["leads"])
+                    except (json.JSONDecodeError, TypeError):
+                        logger.warning(
+                            "Invalid JSON in leads for BEP%s: %s",
+                            row["bep_number"],
+                            row["leads"],
+                        )
+
+                results.append(
+                    BEPResult(
+                        bep_number=row["bep_number"],
+                        title=row["title"],
+                        status=row["status"],
+                        pull_request_url=row["pull_request_url"],
+                        html_preview_url=row["html_preview_url"],
+                        google_doc_url=row["google_doc_url"],
+                        leads=leads,
+                        snippet=snippet,
+                    )
+                )
+
+    except sqlite3.OperationalError as e:
+        logger.error(
+            "Database operational error during BEP search: %s",
+            e,
+            exc_info=True,
+            extra={"query": query, "project": project},
+        )
+        raise
+    except sqlite3.Error as e:
+        logger.warning("Database error during BEP search '%s': %s", query, e)
         raise
 
     return results
