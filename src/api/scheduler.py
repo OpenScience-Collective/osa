@@ -140,13 +140,20 @@ def _run_papers_sync() -> None:
                     queries=queries,
                     semantic_scholar_api_key=settings.semantic_scholar_api_key,
                     pubmed_api_key=settings.pubmed_api_key,
+                    openalex_api_key=settings.openalex_api_key,
+                    openalex_email=settings.openalex_email,
                     project=community_id,
                 )
                 community_total += sum(results.values())
 
             # Sync citing papers by DOI
             if dois:
-                citing_count = sync_citing_papers(dois, project=community_id)
+                citing_count = sync_citing_papers(
+                    dois,
+                    project=community_id,
+                    openalex_api_key=settings.openalex_api_key,
+                    openalex_email=settings.openalex_email,
+                )
                 community_total += citing_count
 
             grand_total += community_total
@@ -431,12 +438,19 @@ def run_sync_now(sync_type: str = "all") -> dict[str, int]:
                         queries=queries,
                         semantic_scholar_api_key=settings.semantic_scholar_api_key,
                         pubmed_api_key=settings.pubmed_api_key,
+                        openalex_api_key=settings.openalex_api_key,
+                        openalex_email=settings.openalex_email,
                         project=community_id,
                     )
                     community_papers += sum(papers_results.values())
 
                 if dois:
-                    citing_count = sync_citing_papers(dois, project=community_id)
+                    citing_count = sync_citing_papers(
+                        dois,
+                        project=community_id,
+                        openalex_api_key=settings.openalex_api_key,
+                        openalex_email=settings.openalex_email,
+                    )
                     community_papers += citing_count
 
                 papers_total += community_papers

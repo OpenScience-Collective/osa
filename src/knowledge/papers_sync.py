@@ -15,6 +15,7 @@ import xml.etree.ElementTree as ET
 from typing import Any
 
 import httpx
+import pyalex
 from pyalex import Works
 
 from src.knowledge.db import get_connection, update_sync_metadata, upsert_paper
@@ -24,6 +25,23 @@ logger = logging.getLogger(__name__)
 # Rate limiting settings
 SEMANTIC_SCHOLAR_DELAY = 3.0  # seconds between requests (to stay under 100/5min)
 PUBMED_DELAY = 0.4  # seconds between requests (to stay under 3/sec)
+
+
+def configure_openalex(api_key: str | None = None, email: str | None = None) -> None:
+    """Configure pyalex with API key or email for polite pool access.
+
+    Args:
+        api_key: OpenAlex API key for premium access (~2M requests).
+        email: Email for polite pool access (faster than anonymous).
+    """
+    if api_key:
+        pyalex.config.api_key = api_key
+        logger.info("OpenAlex configured with API key")
+    elif email:
+        pyalex.config.email = email
+        logger.info("OpenAlex configured with email (polite pool)")
+    else:
+        logger.debug("OpenAlex using anonymous access (lower rate limits)")
 
 
 def _reconstruct_abstract(inverted_index: dict[str, list[int]] | None) -> str:
@@ -349,6 +367,8 @@ def sync_all_papers(
     max_results: int = 100,
     semantic_scholar_api_key: str | None = None,
     pubmed_api_key: str | None = None,
+    openalex_api_key: str | None = None,
+    openalex_email: str | None = None,
     project: str = "hed",
 ) -> dict[str, int]:
     """Sync papers from all sources for given queries.
@@ -358,6 +378,8 @@ def sync_all_papers(
         max_results: Max results per query per source
         semantic_scholar_api_key: Optional Semantic Scholar API key
         pubmed_api_key: Optional PubMed/NCBI API key
+        openalex_api_key: Optional OpenAlex API key for premium access
+        openalex_email: Optional email for OpenAlex polite pool
         project: Project/community ID for database isolation
 
     Returns:
@@ -366,6 +388,9 @@ def sync_all_papers(
     if not queries:
         logger.warning("No queries provided for paper sync")
         return {"openalex": 0, "semanticscholar": 0, "pubmed": 0}
+
+    # Configure OpenAlex with API key or email if provided
+    configure_openalex(api_key=openalex_api_key, email=openalex_email)
 
     results = {
         "openalex": 0,
@@ -389,6 +414,8 @@ def sync_citing_papers(
     dois: list[str],
     max_results: int = 100,
     project: str = "hed",
+    openalex_api_key: str | None = None,
+    openalex_email: str | None = None,
 ) -> int:
     """Sync papers that cite the given DOIs using OpenALEX.
 
@@ -403,10 +430,13 @@ def sync_citing_papers(
             with a warning log.
         max_results: Maximum number of citing papers per DOI
         project: Project/community ID for database isolation
+        openalex_api_key: Optional OpenAlex API key for premium access
+        openalex_email: Optional email for OpenAlex polite pool
 
     Returns:
         Total number of citing papers synced
     """
+    configure_openalex(api_key=openalex_api_key, email=openalex_email)
     total = 0
 
     for doi in dois:
