@@ -267,6 +267,8 @@ class TestRunPapersSync:
         mock_sync_citing.assert_called_once_with(
             ["10.1234/hed.example"],
             project="hed",
+            openalex_api_key=mock_settings.return_value.openalex_api_key,
+            openalex_email=mock_settings.return_value.openalex_email,
         )
 
     @patch("src.api.scheduler.sync_citing_papers")
