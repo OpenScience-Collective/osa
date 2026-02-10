@@ -305,3 +305,25 @@ class TestTokenTrimming:
         # Verify ToolMessage is preserved
         assert isinstance(conversation[2], ToolMessage)
         assert conversation[2].tool_call_id == "call_1"
+
+    def test_over_budget_trimming_keeps_recent(self) -> None:
+        """When over budget, trimming should keep most recent messages."""
+        model = FakeListChatModel(responses=["Response"])
+        # Very small budget to force trimming
+        agent = SimpleAgent(model=model, max_conversation_tokens=50)
+
+        messages = [
+            HumanMessage(content="Old question " * 30),
+            AIMessage(content="Old answer " * 30),
+            HumanMessage(content="Recent question"),
+        ]
+
+        state = {"messages": messages}
+        result = agent._prepare_messages(state)
+
+        conversation = result[1:]  # Skip system prompt
+        # Should have trimmed old messages but kept recent
+        assert any("Recent question" in str(m.content) for m in conversation)
+        # Should have fewer messages than input (trimming occurred)
+        total_tokens = count_tokens_approximately(conversation)
+        assert total_tokens <= 100  # budget + buffer

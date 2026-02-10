@@ -46,8 +46,7 @@ class BaseAgent(ABC):
             system_prompt: Optional system prompt for the agent.
             max_conversation_tokens: Maximum tokens for conversation history.
                 This caps the accumulated messages to prevent unbounded growth.
-                Default is 6000 tokens, which combined with ~14K system prompt
-                keeps total context under 20K tokens per iteration.
+                Default is 80000 tokens. See DEFAULT_MAX_CONVERSATION_TOKENS.
         """
         self.model = model
         self.tools = list(tools) if tools else []

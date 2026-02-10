@@ -265,8 +265,9 @@ class CachingLLMWrapper(BaseChatModel):
     def _add_cache_control(self, messages: list[BaseMessage]) -> list[dict]:
         """Transform messages to add cache_control to system messages.
 
-        Applies cache_control markers only to SystemMessage instances. Other message
-        types (HumanMessage, AIMessage) are passed through unchanged.
+        Applies cache_control markers to SystemMessage instances. Transforms
+        AIMessage tool_calls and ToolMessage into OpenAI dict format for
+        LiteLLM compatibility. HumanMessage instances get role assignment only.
 
         Validation is strict with fail-fast behavior:
         - Messages must have a 'content' attribute (ValueError if missing)
@@ -341,7 +342,7 @@ class CachingLLMWrapper(BaseChatModel):
                     result.append({"role": "user", "content": str(msg.content)})
 
                 elif isinstance(msg, AIMessage):
-                    if msg.content is None and not getattr(msg, "tool_calls", None):
+                    if msg.content is None and not msg.tool_calls:
                         logger.error("AIMessage at index %d has None content", i)
                         raise ValueError(
                             f"AIMessage at index {i} has None content. "
@@ -351,9 +352,9 @@ class CachingLLMWrapper(BaseChatModel):
                         "role": "assistant",
                         "content": str(msg.content) if msg.content else "",
                     }
-                    # Preserve tool_calls in OpenAI dict format (LiteLLM translates
-                    # to Anthropic format automatically)
-                    if getattr(msg, "tool_calls", None):
+                    # Convert LangChain tool_calls to OpenAI dict format since we're
+                    # serializing to raw dicts. LiteLLM translates to Anthropic format.
+                    if msg.tool_calls:
                         ai_dict["tool_calls"] = [
                             {
                                 "id": tc.get("id", tc.get("name", "")),

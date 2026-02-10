@@ -740,6 +740,33 @@ class TestCachingToolMessages:
         assert result[4]["role"] == "assistant"
         assert "tool_calls" not in result[4]
 
+    def test_ai_message_empty_content_with_tool_calls(self):
+        """AIMessage with empty content and tool_calls should preserve tool_calls (the core bug fix).
+
+        This is the exact scenario that was broken: the LLM returns an AIMessage with
+        empty content and tool_calls, but _add_cache_control was stripping the tool_calls,
+        causing the second LLM call to lose all tool context.
+        """
+        wrapper = self._make_wrapper()
+
+        # LangChain AIMessage uses empty string (not None) for tool-calling messages
+        ai_msg = AIMessage(
+            content="",
+            tool_calls=[
+                {"id": "call_1", "name": "search_hed_docs", "args": {"query": "BCI"}},
+            ],
+        )
+        result = wrapper._add_cache_control([ai_msg])
+
+        assert len(result) == 1
+        assert result[0]["role"] == "assistant"
+        assert result[0]["content"] == ""
+        # This is the critical assertion: tool_calls must be preserved
+        assert "tool_calls" in result[0]
+        assert len(result[0]["tool_calls"]) == 1
+        assert result[0]["tool_calls"][0]["function"]["name"] == "search_hed_docs"
+        assert result[0]["tool_calls"][0]["id"] == "call_1"
+
     def test_ai_message_with_multiple_tool_calls(self):
         """Multiple tool calls on a single AIMessage should all be serialized."""
         wrapper = self._make_wrapper()
