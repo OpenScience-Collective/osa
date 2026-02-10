@@ -165,6 +165,7 @@ function isAllowedOrigin(origin) {
     'https://sccn.github.io',
     'https://www.eeglab.org',
     'https://www.hedtags.org',
+    'https://www.hedtools.org',
     'https://www.nemar.org'
   ];
 
@@ -175,6 +176,7 @@ function isAllowedOrigin(origin) {
   if (origin.startsWith('https://') && origin.endsWith('.eeglab.org')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.github.io')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.hedtags.org')) return true;
+  if (origin.startsWith('https://') && origin.endsWith('.hedtools.org')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.nemar.org')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.neuroimaging.io')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.readthedocs.io')) return true;
