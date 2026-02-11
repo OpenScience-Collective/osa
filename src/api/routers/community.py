@@ -75,6 +75,10 @@ class ChatRequest(BaseModel):
         default=None,
         description="Optional model override (OpenRouter format: creator/model-name). Requires BYOK.",
     )
+    page_context: "PageContext | None" = Field(
+        default=None,
+        description="Optional context about the page where the widget is embedded",
+    )
 
 
 class PageContext(BaseModel):
@@ -983,6 +987,7 @@ def create_community_router(community_id: str) -> APIRouter:
                     origin,
                     user_id,
                     body.model,
+                    page_context=body.page_context,
                     http_request=http_request,
                 ),
                 media_type="text/event-stream",
@@ -1000,6 +1005,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 origin=origin,
                 user_id=user_id,
                 requested_model=body.model,
+                page_context=body.page_context,
             )
             result = await awm.assistant.ainvoke(session.messages, config=awm.langfuse_config)
 
@@ -1453,6 +1459,7 @@ async def _stream_chat_response(
     origin: str | None,
     user_id: str | None,
     requested_model: str | None = None,
+    page_context: PageContext | None = None,
     http_request: Request | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream assistant response as JSON-encoded Server-Sent Events.
@@ -1476,6 +1483,7 @@ async def _stream_chat_response(
             user_id=user_id,
             requested_model=requested_model,
             preload_docs=True,
+            page_context=page_context,
         )
         graph = awm.assistant.build_graph()
 

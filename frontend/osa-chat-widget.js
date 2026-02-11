@@ -98,6 +98,7 @@
   let chatPopup = null; // Reference to pop-out window (prevents duplicates)
   let userSettings = { apiKey: null, model: null }; // User settings (BYOK and model selection)
   let communityDefaultModel = null; // Community's default model from API
+  let sessionId = null; // Server-side session ID for multi-turn conversations
 
   // Store script URL at load time for reliable pop-out
   const WIDGET_SCRIPT_URL = document.currentScript?.src || null;
@@ -1220,11 +1221,17 @@
       if (saved) {
         const parsed = JSON.parse(saved);
         // Validate structure to prevent injection attacks
-        if (Array.isArray(parsed)) {
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Array.isArray(parsed.messages)) {
+          // New format: { messages, sessionId }
+          messages = parsed.messages.filter(isValidMessage);
+          sessionId = parsed.sessionId || null;
+        } else if (Array.isArray(parsed)) {
+          // Legacy format: just messages array (backward compatible)
           messages = parsed.filter(isValidMessage);
-          if (messages.length !== parsed.length) {
-            console.warn('Some chat messages were invalid and filtered out');
-          }
+          sessionId = null;
+        }
+        if (messages.length !== (Array.isArray(parsed) ? parsed : parsed.messages || []).length) {
+          console.warn('Some chat messages were invalid and filtered out');
         }
       }
     } catch (e) {
@@ -1246,7 +1253,7 @@
     }
 
     try {
-      const data = JSON.stringify(messages);
+      const data = JSON.stringify({ messages, sessionId });
       localStorage.setItem(CONFIG.storageKey, data);
       saveErrorShown = false;
     } catch (e) {
@@ -2067,8 +2074,11 @@
             console.warn('[OSA] Warning:', warningMsg);
             showWarning(container, warningMsg);
           } else if (event.event === 'done') {
-            // Finalize message
+            // Finalize message and capture session ID
             receivedDoneEvent = true;
+            if (event.session_id) {
+              sessionId = event.session_id;
+            }
             messages[messageIndex].content = accumulatedContent;
             renderMessages(container);
             try {
@@ -2194,7 +2204,12 @@
     resetBtn.disabled = true;
 
     try {
-      const body = { question: question.trim() };
+      const body = { message: question.trim() };
+
+      // Include session ID for conversation continuity
+      if (sessionId) {
+        body.session_id = sessionId;
+      }
 
       // Add page context if enabled
       const pageContext = getPageContext();
@@ -2230,12 +2245,18 @@
         headers['X-OpenRouter-Key'] = userSettings.apiKey;
       }
 
-      const response = await fetch(`${CONFIG.apiEndpoint}/${CONFIG.communityId}/ask`, {
+      const response = await fetch(`${CONFIG.apiEndpoint}/${CONFIG.communityId}/chat`, {
         method: 'POST',
         headers: headers,
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(120000), // 2 minute timeout for connection + streaming
       });
+
+      // Extract session ID from response header (available for both streaming and non-streaming)
+      const headerSessionId = response.headers.get('X-Session-ID');
+      if (headerSessionId) {
+        sessionId = headerSessionId;
+      }
 
       if (!response.ok) {
         let errorMessage = `Request failed (${response.status})`;
@@ -2272,7 +2293,10 @@
 
         // Handle non-streaming response (fallback)
         const data = await response.json();
-        const answer = (data && typeof data.answer === 'string') ? data.answer : null;
+        if (data && data.session_id) {
+          sessionId = data.session_id;
+        }
+        const answer = (data && data.message && typeof data.message.content === 'string') ? data.message.content : null;
         if (!answer) {
           throw new Error('Invalid response from server');
         }
@@ -2287,7 +2311,10 @@
       } else {
         // Streaming not enabled, expected behavior
         const data = await response.json();
-        const answer = (data && typeof data.answer === 'string') ? data.answer : null;
+        if (data && data.session_id) {
+          sessionId = data.session_id;
+        }
+        const answer = (data && data.message && typeof data.message.content === 'string') ? data.message.content : null;
         if (!answer) {
           throw new Error('Invalid response from server');
         }
@@ -2401,6 +2428,7 @@
   function resetChat(container) {
     if (messages.length <= 1 || isLoading) return;
     messages = [{ role: 'assistant', content: CONFIG.initialMessage }];
+    sessionId = null; // Clear session to start fresh on next message
     saveHistory();
     renderMessages(container);
     renderSuggestions(container);
