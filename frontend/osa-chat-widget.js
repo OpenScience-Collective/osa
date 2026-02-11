@@ -85,6 +85,10 @@
     return model ? model.label : modelId;
   }
 
+  // Track which CONFIG keys were explicitly set by the embedder via setConfig,
+  // so fetchCommunityConfig does not overwrite them with API defaults.
+  const _userSetKeys = new Set();
+
   // State
   let isOpen = false;
   let isLoading = false;
@@ -1437,8 +1441,8 @@
     }
   }
 
-  // Fetch community default model from API
-  async function fetchCommunityDefaultModel() {
+  // Fetch community config (default model + widget display settings) from API
+  async function fetchCommunityConfig() {
     // Validate communityId before making request
     if (!isValidCommunityId(CONFIG.communityId)) {
       console.error('[OSA] Invalid communityId, cannot fetch default model');
@@ -1475,12 +1479,83 @@
           disableWidget(container, 'Community configuration is incomplete. Please contact support.');
         }
       }
+
+      // Apply widget display config from API for fields not explicitly set by the embedder.
+      // Use explicit null/undefined checks (not truthiness) so that a null initial_message
+      // from the API correctly replaces the hardcoded HED default.
+      if (data && data.widget) {
+        const w = data.widget;
+        let changed = false;
+        if (w.title != null && !_userSetKeys.has('title')) {
+          CONFIG.title = w.title;
+          changed = true;
+        }
+        if ('initial_message' in w && !_userSetKeys.has('initialMessage')) {
+          CONFIG.initialMessage = w.initial_message || '';
+          changed = true;
+        }
+        if (w.placeholder != null && !_userSetKeys.has('placeholder')) {
+          CONFIG.placeholder = w.placeholder;
+          changed = true;
+        }
+        if (w.suggested_questions != null && !_userSetKeys.has('suggestedQuestions')) {
+          CONFIG.suggestedQuestions = w.suggested_questions;
+          changed = true;
+        }
+
+        if (changed) {
+          applyWidgetConfig();
+        }
+      } else if (data) {
+        console.warn('[OSA] API response missing widget config; using local defaults');
+      }
     } catch (e) {
       console.error('[OSA] Could not fetch community config:', e.message || e);
       const container = document.querySelector('.osa-chat-widget');
       if (container && isOpen) {
         disableWidget(container, 'Network error loading configuration. Please check your connection and try again.');
       }
+    }
+  }
+
+  // Update DOM elements to reflect current CONFIG values (called after API config load)
+  function applyWidgetConfig() {
+    const container = document.querySelector('.osa-chat-widget');
+    if (!container) return;
+
+    // Update header title
+    const titleEl = container.querySelector('.osa-chat-title');
+    if (titleEl) {
+      const badge = titleEl.querySelector('.osa-experimental-badge');
+      titleEl.textContent = CONFIG.title;
+      if (badge) titleEl.appendChild(badge);
+    }
+
+    // Update tooltip
+    const tooltip = container.querySelector('.osa-chat-tooltip');
+    if (tooltip) {
+      tooltip.textContent = 'Ask me about ' + CONFIG.title.replace(' Assistant', '');
+    }
+
+    // Update input placeholder
+    const input = container.querySelector('.osa-chat-input input');
+    if (input) {
+      input.placeholder = CONFIG.placeholder;
+    }
+
+    // Update initial assistant message if chat has only the default greeting
+    if (messages.length === 1 && messages[0].role === 'assistant') {
+      messages[0].content = CONFIG.initialMessage;
+      renderMessages(container);
+    }
+
+    // Update suggested questions
+    renderSuggestions(container);
+
+    // Update loading label if currently loading
+    const loadingLabel = container.querySelector('.osa-loading-label');
+    if (loadingLabel) {
+      loadingLabel.textContent = CONFIG.title;
     }
   }
 
@@ -2617,7 +2692,7 @@
     const container = createWidget();
 
     // Fetch community default model (async, non-blocking)
-    fetchCommunityDefaultModel();
+    fetchCommunityConfig();
 
     renderMessages(container);
     renderSuggestions(container);
@@ -2746,6 +2821,10 @@
       if (opts.communityId && !isValidCommunityId(opts.communityId)) {
         console.error('[OSA] Invalid communityId:', opts.communityId);
         return;
+      }
+      // Track which keys the embedder explicitly set (before auto-derivation)
+      for (const key of Object.keys(opts)) {
+        _userSetKeys.add(key);
       }
       // Auto-derive storageKey from communityId if communityId changed but storageKey wasn't explicitly set
       if (opts.communityId && !opts.storageKey) {
