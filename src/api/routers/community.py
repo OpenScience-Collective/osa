@@ -166,9 +166,9 @@ class SessionInfo(BaseModel):
 class WidgetConfigResponse(BaseModel):
     """Widget display configuration returned to the frontend."""
 
-    title: str = Field(..., description="Widget header title")
+    title: str = Field(..., description="Widget header title", min_length=1)
     initial_message: str | None = Field(default=None, description="Greeting message on open")
-    placeholder: str = Field(default="Ask a question...", description="Input placeholder text")
+    placeholder: str = Field(..., description="Input placeholder text")
     suggested_questions: list[str] = Field(
         default_factory=list, description="Clickable suggestion buttons"
     )
@@ -1119,7 +1119,6 @@ def create_community_router(community_id: str) -> APIRouter:
         widget_cfg = (
             info.community_config.widget if info.community_config else None
         ) or WidgetConfig()
-        resolved = widget_cfg.resolve(info.name)
 
         return CommunityConfigResponse(
             id=info.id,
@@ -1127,12 +1126,7 @@ def create_community_router(community_id: str) -> APIRouter:
             description=info.description,
             default_model=default_model,
             default_model_provider=default_provider,
-            widget=WidgetConfigResponse(
-                title=resolved["title"],
-                initial_message=resolved["initial_message"],
-                placeholder=resolved["placeholder"],
-                suggested_questions=resolved["suggested_questions"],
-            ),
+            widget=WidgetConfigResponse(**widget_cfg.resolve(info.name)),
         )
 
     # -----------------------------------------------------------------------

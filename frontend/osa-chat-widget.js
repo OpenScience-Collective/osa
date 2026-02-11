@@ -1442,7 +1442,7 @@
   }
 
   // Fetch community config (default model + widget display settings) from API
-  async function fetchCommunityDefaultModel() {
+  async function fetchCommunityConfig() {
     // Validate communityId before making request
     if (!isValidCommunityId(CONFIG.communityId)) {
       console.error('[OSA] Invalid communityId, cannot fetch default model');
@@ -1480,23 +1480,25 @@
         }
       }
 
-      // Apply widget display config from API for fields not explicitly set by the embedder
+      // Apply widget display config from API for fields not explicitly set by the embedder.
+      // Use explicit null/undefined checks (not truthiness) so that a null initial_message
+      // from the API correctly replaces the hardcoded HED default.
       if (data && data.widget) {
         const w = data.widget;
         let changed = false;
-        if (w.title && !_userSetKeys.has('title')) {
+        if (w.title != null && !_userSetKeys.has('title')) {
           CONFIG.title = w.title;
           changed = true;
         }
-        if (w.initial_message && !_userSetKeys.has('initialMessage')) {
-          CONFIG.initialMessage = w.initial_message;
+        if ('initial_message' in w && !_userSetKeys.has('initialMessage')) {
+          CONFIG.initialMessage = w.initial_message || '';
           changed = true;
         }
-        if (w.placeholder && !_userSetKeys.has('placeholder')) {
+        if (w.placeholder != null && !_userSetKeys.has('placeholder')) {
           CONFIG.placeholder = w.placeholder;
           changed = true;
         }
-        if (w.suggested_questions && w.suggested_questions.length > 0 && !_userSetKeys.has('suggestedQuestions')) {
+        if (w.suggested_questions != null && !_userSetKeys.has('suggestedQuestions')) {
           CONFIG.suggestedQuestions = w.suggested_questions;
           changed = true;
         }
@@ -1504,6 +1506,8 @@
         if (changed) {
           applyWidgetConfig();
         }
+      } else if (data) {
+        console.warn('[OSA] API response missing widget config; using local defaults');
       }
     } catch (e) {
       console.error('[OSA] Could not fetch community config:', e.message || e);
@@ -2688,7 +2692,7 @@
     const container = createWidget();
 
     // Fetch community default model (async, non-blocking)
-    fetchCommunityDefaultModel();
+    fetchCommunityConfig();
 
     renderMessages(container);
     renderSuggestions(container);
@@ -2818,13 +2822,13 @@
         console.error('[OSA] Invalid communityId:', opts.communityId);
         return;
       }
+      // Track which keys the embedder explicitly set (before auto-derivation)
+      for (const key of Object.keys(opts)) {
+        _userSetKeys.add(key);
+      }
       // Auto-derive storageKey from communityId if communityId changed but storageKey wasn't explicitly set
       if (opts.communityId && !opts.storageKey) {
         opts.storageKey = `osa-chat-history-${opts.communityId}`;
-      }
-      // Track which keys the embedder explicitly set
-      for (const key of Object.keys(opts)) {
-        _userSetKeys.add(key);
       }
       Object.assign(CONFIG, opts);
     },
