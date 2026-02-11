@@ -59,7 +59,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           prompt: "/label-issue REPO: ${{ github.repository }} ISSUE_NUMBER: ${{ github.event.issue.number }}"
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           model: claude-haiku-4-5-20251001
           allowed_non_write_users: "*"
@@ -118,7 +118,7 @@ jobs:
 
             Be thorough but efficient. Focus on finding true duplicates, not just similar issues.
 
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           model: claude-haiku-4-5-20251001
           claude_args: |
