@@ -40,6 +40,44 @@ class SSRFViolationError(ValueError):
     pass
 
 
+# Shared regex for OpenRouter model identifiers (creator/model-name)
+_MODEL_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+/[a-zA-Z0-9._-]+$")
+_MODEL_ID_MAX_LENGTH = 100
+
+
+def _validate_model_id(v: str | None, field_label: str = "Model identifier") -> str | None:
+    """Validate an OpenRouter model identifier (creator/model-name).
+
+    Args:
+        v: The model string to validate, or None.
+        field_label: Label used in error messages.
+
+    Returns:
+        The stripped model string, or None.
+
+    Raises:
+        ValueError: If the format is invalid or too long.
+    """
+    if v is None:
+        return None
+
+    v = v.strip()
+    if not v:
+        return None
+
+    if not _MODEL_ID_PATTERN.match(v):
+        raise ValueError(
+            f"Invalid {field_label.lower()}: '{v}'. "
+            "Must match pattern: provider/model-name "
+            "(e.g., 'anthropic/claude-3.5-sonnet')"
+        )
+
+    if len(v) > _MODEL_ID_MAX_LENGTH:
+        raise ValueError(f"{field_label} too long (max {_MODEL_ID_MAX_LENGTH} chars): {v[:50]}...")
+
+    return v
+
+
 class DocSource(BaseModel):
     """Documentation source configuration.
 
@@ -448,30 +486,11 @@ class AgentConfig(BaseModel):
     @field_validator("model")
     @classmethod
     def validate_model(cls, v: str) -> str:
-        """Validate model identifier format.
-
-        Ensures model follows provider/model-name pattern to prevent
-        injection or confusion.
-        """
-        v = v.strip()
-        if not v:
+        """Validate model identifier format (provider/model-name)."""
+        result = _validate_model_id(v, field_label="Model identifier")
+        if not result:
             raise ValueError("Model identifier cannot be empty")
-
-        # Validate format: provider/model-name
-        # Allow alphanumeric, hyphens, underscores, and dots
-        model_pattern = re.compile(r"^[a-zA-Z0-9_-]+/[a-zA-Z0-9._-]+$")
-        if not model_pattern.match(v):
-            raise ValueError(
-                f"Invalid model identifier: '{v}'. "
-                "Must match pattern: provider/model-name "
-                "(e.g., 'anthropic/claude-3.5-sonnet')"
-            )
-
-        # Max length check
-        if len(v) > 100:
-            raise ValueError(f"Model identifier too long (max 100 chars): {v[:50]}...")
-
-        return v
+        return result
 
     @field_validator("provider")
     @classmethod
@@ -1001,33 +1020,8 @@ class CommunityConfig(BaseModel):
     @field_validator("default_model")
     @classmethod
     def validate_default_model(cls, v: str | None) -> str | None:
-        """Validate model name format.
-
-        Ensures model follows provider/model-name pattern to prevent
-        injection or confusion.
-        """
-        if v is None:
-            return None
-
-        v = v.strip()
-        if not v:
-            return None
-
-        # Validate format: provider/model-name
-        # Allow alphanumeric, hyphens, underscores, and dots
-        model_pattern = re.compile(r"^[a-zA-Z0-9_-]+/[a-zA-Z0-9._-]+$")
-        if not model_pattern.match(v):
-            raise ValueError(
-                f"Invalid model name format: '{v}'. "
-                "Must match pattern: provider/model-name "
-                "(e.g., 'anthropic/claude-3.5-sonnet')"
-            )
-
-        # Max length check
-        if len(v) > 100:
-            raise ValueError(f"Model name too long (max 100 chars): {v[:50]}...")
-
-        return v
+        """Validate model name format (provider/model-name)."""
+        return _validate_model_id(v, field_label="Model name")
 
     @model_validator(mode="after")
     def validate_expensive_model_without_byok(self) -> "CommunityConfig":

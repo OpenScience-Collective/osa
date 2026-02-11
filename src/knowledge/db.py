@@ -946,8 +946,13 @@ def is_db_populated(project: str) -> dict[str, bool]:
     with get_connection(project) as conn:
         for sync_type, table_name in table_map.items():
             try:
-                row = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()  # noqa: S608
-                result[sync_type] = row[0] > 0
-            except sqlite3.OperationalError:
-                result[sync_type] = False
+                row = conn.execute(f"SELECT 1 FROM {table_name} LIMIT 1").fetchone()  # noqa: S608
+                result[sync_type] = row is not None
+            except sqlite3.OperationalError as e:
+                # "no such table" is expected for fresh DBs; other errors are real problems
+                if "no such table" in str(e):
+                    result[sync_type] = False
+                else:
+                    logger.warning("Unexpected DB error checking %s table: %s", table_name, e)
+                    result[sync_type] = False
     return result

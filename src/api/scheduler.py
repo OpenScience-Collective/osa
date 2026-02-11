@@ -17,6 +17,8 @@ On startup, empty databases are automatically seeded with an immediate sync.
 import logging
 import os
 import threading
+from collections.abc import Callable
+from typing import Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -38,6 +40,7 @@ _scheduler: BackgroundScheduler | None = None
 
 # Per-community, per-sync-type failure tracking
 _sync_failures: dict[str, int] = {}
+_sync_failures_lock = threading.Lock()
 _budget_check_failures = 0
 MAX_CONSECUTIVE_FAILURES = 3
 
@@ -49,8 +52,9 @@ def _failure_key(sync_type: str, community_id: str) -> str:
 def _track_failure(sync_type: str, community_id: str, error: Exception) -> None:
     """Track a sync failure and log appropriately."""
     key = _failure_key(sync_type, community_id)
-    _sync_failures[key] = _sync_failures.get(key, 0) + 1
-    count = _sync_failures[key]
+    with _sync_failures_lock:
+        _sync_failures[key] = _sync_failures.get(key, 0) + 1
+        count = _sync_failures[key]
     logger.error(
         "%s sync failed for %s (attempt %d/%d): %s",
         sync_type,
@@ -72,7 +76,8 @@ def _track_failure(sync_type: str, community_id: str, error: Exception) -> None:
 def _reset_failure(sync_type: str, community_id: str) -> None:
     """Reset failure count on success."""
     key = _failure_key(sync_type, community_id)
-    _sync_failures.pop(key, None)
+    with _sync_failures_lock:
+        _sync_failures.pop(key, None)
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +220,7 @@ def _run_faq_sync_for_community(community_id: str) -> None:
     try:
         info = registry.get(community_id)
         if not info or not info.community_config:
+            logger.debug("No community config for %s", community_id)
             return
 
         config = info.community_config
@@ -347,9 +353,8 @@ def _check_community_budgets() -> None:
 # ---------------------------------------------------------------------------
 
 # Maps sync type name to (job_function, data_config_check)
-# data_config_check is a lambda that returns True if the community has the
-# necessary data configuration for this sync type
-_SYNC_TYPE_MAP: dict[str, tuple] = {
+# data_config_check returns truthy if the community has the necessary data config
+_SYNC_TYPE_MAP: dict[str, tuple[Callable[[str], None], Callable[[Any], Any]]] = {
     "github": (
         _run_github_sync_for_community,
         lambda cfg: cfg.github and cfg.github.repos,
@@ -387,8 +392,18 @@ def _check_and_seed_databases() -> None:
 
     Runs in a background thread to avoid blocking app startup.
     Only seeds sync types that the community has configured in both
-    its data config and sync schedule.
+    its data config and sync schedule. FAQ is excluded from startup
+    seeding because it requires LLM calls (expensive, slow) and depends
+    on mailman data being populated first.
     """
+    try:
+        _do_seed_databases()
+    except Exception:
+        logger.error("Startup database seeding crashed unexpectedly", exc_info=True)
+
+
+def _do_seed_databases() -> None:
+    """Inner implementation for database seeding (separated for error boundary)."""
     logger.info("Checking for empty knowledge databases that need seeding")
     seeded_any = False
 
@@ -401,6 +416,7 @@ def _check_and_seed_databases() -> None:
         sync_config = config.sync
         populated = is_db_populated(community_id)
 
+        # FAQ excluded: requires LLM calls and depends on mailman data
         for sync_type in ("github", "papers", "docstrings", "mailman", "beps"):
             schedule = getattr(sync_config, sync_type, None)
             if not schedule:
@@ -569,7 +585,7 @@ def run_sync_now(sync_type: str = "all") -> dict[str, int]:
         sync_type: "github", "papers", "docstrings", "mailman", "faq", "beps", or "all"
 
     Returns:
-        Dict mapping source to items synced across all communities
+        Dict mapping sync type to number of communities successfully synced.
     """
     settings = get_settings()
     results: dict[str, int] = {}
@@ -577,6 +593,10 @@ def run_sync_now(sync_type: str = "all") -> dict[str, int]:
     # Set GITHUB_TOKEN for gh CLI if provided
     if settings.github_token:
         os.environ["GITHUB_TOKEN"] = settings.github_token
+
+    if sync_type != "all" and sync_type not in _SYNC_TYPE_MAP:
+        logger.warning("Unknown sync_type requested: %s", sync_type)
+        return results
 
     sync_types_to_run = list(_SYNC_TYPE_MAP.keys()) if sync_type == "all" else [sync_type]
 
@@ -588,9 +608,6 @@ def run_sync_now(sync_type: str = "all") -> dict[str, int]:
         config = info.community_config
 
         for st in sync_types_to_run:
-            if st not in _SYNC_TYPE_MAP:
-                continue
-
             job_func, data_check = _SYNC_TYPE_MAP[st]
             if not data_check(config):
                 continue
