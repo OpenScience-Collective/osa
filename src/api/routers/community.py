@@ -62,25 +62,6 @@ class ChatMessage(BaseModel):
     content: str = Field(..., description="Message content")
 
 
-class ChatRequest(BaseModel):
-    """Request body for chat endpoint."""
-
-    message: str = Field(..., description="User message", min_length=1)
-    session_id: str | None = Field(
-        default=None,
-        description="Session ID for conversation continuity. If not provided, a new session is created.",
-    )
-    stream: bool = Field(default=True, description="Whether to stream the response")
-    model: str | None = Field(
-        default=None,
-        description="Optional model override (OpenRouter format: creator/model-name). Requires BYOK.",
-    )
-    page_context: "PageContext | None" = Field(
-        default=None,
-        description="Optional context about the page where the widget is embedded",
-    )
-
-
 class PageContext(BaseModel):
     """Context about the page where the widget is embedded."""
 
@@ -109,6 +90,25 @@ class PageContext(BaseModel):
         if not url.startswith(("http://", "https://")):
             raise ValueError("URL must start with http:// or https://")
         return url
+
+
+class ChatRequest(BaseModel):
+    """Request body for chat endpoint."""
+
+    message: str = Field(..., description="User message", min_length=1)
+    session_id: str | None = Field(
+        default=None,
+        description="Session ID for conversation continuity. If not provided, a new session is created.",
+    )
+    stream: bool = Field(default=True, description="Whether to stream the response")
+    model: str | None = Field(
+        default=None,
+        description="Optional model override (OpenRouter format: creator/model-name). Requires BYOK.",
+    )
+    page_context: PageContext | None = Field(
+        default=None,
+        description="Optional context about the page where the widget is embedded",
+    )
 
 
 class AskRequest(BaseModel):

@@ -1221,17 +1221,21 @@
       if (saved) {
         const parsed = JSON.parse(saved);
         // Validate structure to prevent injection attacks
+        let rawMessages;
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Array.isArray(parsed.messages)) {
           // New format: { messages, sessionId }
-          messages = parsed.messages.filter(isValidMessage);
+          rawMessages = parsed.messages;
           sessionId = parsed.sessionId || null;
         } else if (Array.isArray(parsed)) {
           // Legacy format: just messages array (backward compatible)
-          messages = parsed.filter(isValidMessage);
+          rawMessages = parsed;
           sessionId = null;
         }
-        if (messages.length !== (Array.isArray(parsed) ? parsed : parsed.messages || []).length) {
-          console.warn('Some chat messages were invalid and filtered out');
+        if (rawMessages) {
+          messages = rawMessages.filter(isValidMessage);
+          if (messages.length !== rawMessages.length) {
+            console.warn('Some chat messages were invalid and filtered out');
+          }
         }
       }
     } catch (e) {
@@ -2076,7 +2080,7 @@
           } else if (event.event === 'done') {
             // Finalize message and capture session ID
             receivedDoneEvent = true;
-            if (event.session_id) {
+            if (event.session_id && typeof event.session_id === 'string') {
               sessionId = event.session_id;
             }
             messages[messageIndex].content = accumulatedContent;
@@ -2252,12 +2256,6 @@
         signal: AbortSignal.timeout(120000), // 2 minute timeout for connection + streaming
       });
 
-      // Extract session ID from response header (available for both streaming and non-streaming)
-      const headerSessionId = response.headers.get('X-Session-ID');
-      if (headerSessionId) {
-        sessionId = headerSessionId;
-      }
-
       if (!response.ok) {
         let errorMessage = `Request failed (${response.status})`;
         try {
@@ -2280,38 +2278,27 @@
         throw new Error(errorMessage);
       }
 
+      // Extract session ID from response header (set by streaming responses)
+      const headerSessionId = response.headers.get('X-Session-ID');
+      if (headerSessionId) {
+        sessionId = headerSessionId;
+      }
+
       // Check if response is streaming (SSE)
       const contentType = response.headers.get('content-type') || '';
       if (CONFIG.streamingEnabled && contentType.includes('text/event-stream')) {
         // Handle streaming response
         assistantMessageCreated = true; // handleStreamingResponse creates assistant message
         await handleStreamingResponse(response, container);
-      } else if (CONFIG.streamingEnabled && !contentType.includes('text/event-stream')) {
-        // Streaming was expected but not received - log for debugging
-        console.warn('[OSA] Expected streaming response but got content-type:', contentType);
-        console.warn('[OSA] Falling back to non-streaming mode');
-
-        // Handle non-streaming response (fallback)
-        const data = await response.json();
-        if (data && data.session_id) {
-          sessionId = data.session_id;
-        }
-        const answer = (data && data.message && typeof data.message.content === 'string') ? data.message.content : null;
-        if (!answer) {
-          throw new Error('Invalid response from server');
-        }
-        messages.push({ role: 'assistant', content: answer });
-        try {
-          saveHistory();
-        } catch (saveError) {
-          console.error('[OSA] Failed to save history:', saveError);
-          showError(container, 'Warning: Unable to save conversation');
-        }
-        updateStatusDisplay(true);
       } else {
-        // Streaming not enabled, expected behavior
+        // Non-streaming response (either streaming not enabled, or fallback)
+        if (CONFIG.streamingEnabled) {
+          console.warn('[OSA] Expected streaming response but got content-type:', contentType);
+          console.warn('[OSA] Falling back to non-streaming mode');
+        }
+
         const data = await response.json();
-        if (data && data.session_id) {
+        if (data && typeof data.session_id === 'string') {
           sessionId = data.session_id;
         }
         const answer = (data && data.message && typeof data.message.content === 'string') ? data.message.content : null;
@@ -2429,7 +2416,11 @@
     if (messages.length <= 1 || isLoading) return;
     messages = [{ role: 'assistant', content: CONFIG.initialMessage }];
     sessionId = null; // Clear session to start fresh on next message
-    saveHistory();
+    try {
+      saveHistory();
+    } catch (saveError) {
+      console.error('[OSA] Failed to save history on reset:', saveError);
+    }
     renderMessages(container);
     renderSuggestions(container);
   }
