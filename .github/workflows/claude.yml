@@ -33,10 +33,7 @@ jobs:
 
       - name: Run Claude Code
         id: claude
-        # Pinned to SHA 01e756b (SDK 0.2.25) due to SDK crash in newer versions.
-        # See: https://github.com/anthropics/claude-code-action/issues/892
-        # TODO: Unpin when the upstream bug is fixed.
-        uses: anthropics/claude-code-action@01e756b34ef7a1447e9508f674143b07d20c2631
+        uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -59,14 +56,12 @@ jobs:
           fetch-depth: 1
 
       - name: Triage issue with Claude
-        # Pinned: see claude job comment
-        uses: anthropics/claude-code-action@01e756b34ef7a1447e9508f674143b07d20c2631
+        uses: anthropics/claude-code-action@v1
         with:
           prompt: "/label-issue REPO: ${{ github.repository }} ISSUE_NUMBER: ${{ github.event.issue.number }}"
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           allowed_non_write_users: "*"
-          show_full_output: true
 
   # Check new issues for duplicates
   deduplicate-issue:
@@ -84,8 +79,7 @@ jobs:
           fetch-depth: 1
 
       - name: Check for duplicate issues
-        # Pinned: see claude job comment
-        uses: anthropics/claude-code-action@01e756b34ef7a1447e9508f674143b07d20c2631
+        uses: anthropics/claude-code-action@v1
         with:
           prompt: |
             Analyze this new issue and check if it's a duplicate of existing issues in the repository.
