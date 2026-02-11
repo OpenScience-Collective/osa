@@ -1347,49 +1347,6 @@ async def _stream_ask_response(
                     sse_event = {"event": "content", "content": content.content}
                     yield f"data: {json.dumps(sse_event)}\n\n"
 
-            elif kind == "on_chat_model_end":
-                # Log cache token usage for observability
-                output = event.get("data", {}).get("output")
-                if output and hasattr(output, "usage_metadata"):
-                    usage = output.usage_metadata
-                    if usage:
-                        details = (
-                            usage.get("input_token_details")
-                            if isinstance(usage, dict)
-                            else getattr(usage, "input_token_details", None)
-                        )
-                        cache_read = 0
-                        cache_creation = 0
-                        if details:
-                            cache_read = (
-                                details.get("cache_read", 0)
-                                if isinstance(details, dict)
-                                else getattr(details, "cache_read", 0)
-                            )
-                            cache_creation = (
-                                details.get("cache_creation", 0)
-                                if isinstance(details, dict)
-                                else getattr(details, "cache_creation", 0)
-                            )
-                        input_tokens = (
-                            usage.get("input_tokens", 0)
-                            if isinstance(usage, dict)
-                            else getattr(usage, "input_tokens", 0)
-                        )
-                        output_tokens = (
-                            usage.get("output_tokens", 0)
-                            if isinstance(usage, dict)
-                            else getattr(usage, "output_tokens", 0)
-                        )
-                        logger.info(
-                            "LLM usage for %s: input=%d output=%d cache_read=%d cache_creation=%d",
-                            community_id,
-                            input_tokens,
-                            output_tokens,
-                            cache_read or 0,
-                            cache_creation or 0,
-                        )
-
             elif kind == "on_tool_start":
                 tool_input = event.get("data", {}).get("input", {})
                 tool_name = event.get("name", "")
@@ -1555,49 +1512,6 @@ async def _stream_chat_response(
                     full_response += chunk
                     sse_event = {"event": "content", "content": chunk}
                     yield f"data: {json.dumps(sse_event)}\n\n"
-
-            elif kind == "on_chat_model_end":
-                # Log cache token usage for observability
-                output = event.get("data", {}).get("output")
-                if output and hasattr(output, "usage_metadata"):
-                    usage = output.usage_metadata
-                    if usage:
-                        details = (
-                            usage.get("input_token_details")
-                            if isinstance(usage, dict)
-                            else getattr(usage, "input_token_details", None)
-                        )
-                        cache_read = 0
-                        cache_creation = 0
-                        if details:
-                            cache_read = (
-                                details.get("cache_read", 0)
-                                if isinstance(details, dict)
-                                else getattr(details, "cache_read", 0)
-                            )
-                            cache_creation = (
-                                details.get("cache_creation", 0)
-                                if isinstance(details, dict)
-                                else getattr(details, "cache_creation", 0)
-                            )
-                        input_tokens = (
-                            usage.get("input_tokens", 0)
-                            if isinstance(usage, dict)
-                            else getattr(usage, "input_tokens", 0)
-                        )
-                        output_tokens = (
-                            usage.get("output_tokens", 0)
-                            if isinstance(usage, dict)
-                            else getattr(usage, "output_tokens", 0)
-                        )
-                        logger.info(
-                            "LLM usage for %s: input=%d output=%d cache_read=%d cache_creation=%d",
-                            community_id,
-                            input_tokens,
-                            output_tokens,
-                            cache_read or 0,
-                            cache_creation or 0,
-                        )
 
             elif kind == "on_tool_start":
                 tool_input = event.get("data", {}).get("input", {})
