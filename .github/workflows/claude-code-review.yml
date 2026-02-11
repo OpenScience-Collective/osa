@@ -1,0 +1,53 @@
+name: Claude Code Review
+
+on:
+  # Same-repo branches: full access to secrets and write permissions
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+  # Fork PRs: runs in base repo context with secrets access
+  pull_request_target:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+jobs:
+  claude-review:
+    # Only review PRs from external contributors, skip duplicates
+    if: |
+      github.event.pull_request.user.login != 'neuromechanist' &&
+      !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: read
+      id-token: write
+      actions: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # For fork PRs via pull_request_target, check out the PR head safely
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+
+      - name: Review and fix PR
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          additional_permissions: |
+            actions: read
+          prompt: |
+            Review this pull request thoroughly. For each issue found:
+
+            1. Classify severity: critical, important, or suggestion
+            2. For critical and important issues: fix them directly by editing the code and pushing a commit
+            3. For suggestions that clearly improve code quality and are not false positives: fix them too
+            4. Skip suggestions that are stylistic preferences or false positives
+
+            Follow the project's code style (ruff formatting, type hints, no mocks in tests).
+            Do not add AI attribution to commits.
+            Keep commit messages concise (<50 chars, no emojis).
+
+            After making fixes, leave a PR comment summarizing what was found and what was fixed.
+            If you cannot push to the PR branch (e.g., fork PRs), leave detailed review comments instead.
