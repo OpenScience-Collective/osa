@@ -178,8 +178,11 @@ def _safe_load_config() -> tuple[str | None, str | None]:
         semantic_scholar_key = getattr(config, "semantic_scholar_api_key", None)
         pubmed_key = getattr(config, "pubmed_api_key", None)
     except Exception as e:
-        console.print(f"[yellow]Warning: Could not load config: {e}[/yellow]")
-        logger.warning("Config load failed: %s", e)
+        console.print(
+            f"[yellow]Warning: Could not load config ({e}). "
+            "Falling back to environment variables.[/yellow]"
+        )
+        logger.warning("Config load failed, using env vars: %s", e)
 
     # Fall back to environment variables if not in config
     if not semantic_scholar_key:

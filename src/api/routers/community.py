@@ -23,6 +23,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from pydantic import BaseModel, Field, field_validator
 
+from src.agents.base import DEFAULT_MAX_CONVERSATION_TOKENS
 from src.api.config import get_settings
 from src.api.security import AuthScope, RequireAuth, RequireScopedAuth
 from src.assistants import registry
@@ -1565,21 +1566,15 @@ async def _stream_chat_response(
                 yield f"data: {json.dumps(sse_event)}\n\n"
                 return
 
-        # Warn if conversation is getting long (approaching token budget).
-        # Threshold is 87.5% of DEFAULT_MAX_CONVERSATION_TOKENS (80K).
-        try:
-            from src.agents.base import DEFAULT_MAX_CONVERSATION_TOKENS
-
-            warning_threshold = int(DEFAULT_MAX_CONVERSATION_TOKENS * 0.875)
-            approx_tokens = count_tokens_approximately(session.messages)
-            if approx_tokens > warning_threshold:
-                sse_event = {
-                    "event": "warning",
-                    "message": "Conversation is getting long. Consider starting a new chat for best results.",
-                }
-                yield f"data: {json.dumps(sse_event)}\n\n"
-        except Exception:
-            logger.debug("Failed to check conversation length for warning", exc_info=True)
+        # Warn if conversation is approaching the token budget (87.5% of 80K).
+        warning_threshold = int(DEFAULT_MAX_CONVERSATION_TOKENS * 0.875)
+        approx_tokens = count_tokens_approximately(session.messages)
+        if approx_tokens > warning_threshold:
+            sse_event = {
+                "event": "warning",
+                "message": "Conversation is getting long. Consider starting a new chat for best results.",
+            }
+            yield f"data: {json.dumps(sse_event)}\n\n"
 
         sse_event = {"event": "done", "session_id": session.session_id}
         yield f"data: {json.dumps(sse_event)}\n\n"

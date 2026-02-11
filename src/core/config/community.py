@@ -669,7 +669,7 @@ class WidgetConfig(BaseModel):
     def resolve(self, community_name: str) -> dict[str, Any]:
         """Return widget config with defaults applied."""
         return {
-            "title": self.title or community_name,
+            "title": self.title or community_name or "Assistant",
             "initial_message": self.initial_message,
             "placeholder": self.placeholder or "Ask a question...",
             "suggested_questions": self.suggested_questions,

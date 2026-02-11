@@ -6,7 +6,13 @@ from collections.abc import Sequence
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.messages.utils import count_tokens_approximately, trim_messages
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, StateGraph
@@ -17,11 +23,11 @@ from src.agents.state import BaseAgentState
 
 logger = logging.getLogger(__name__)
 
-# Token budget for conversation history (excludes system prompt)
-# Claude Haiku 4.5 has 200K context; 80K conversation + ~14K system prompt = ~94K total.
-# A generous budget avoids aggressive trimming that breaks tool call sequences
-# (AIMessage + ToolMessage pairs) and enables Anthropic prompt caching by keeping
-# the message prefix identical across calls.
+# Token budget for conversation history (excludes system prompt).
+# 80K conversation + ~14K system prompt = ~94K total, well under the 200K context limit.
+# A generous budget avoids trimming in most sessions, which preserves Anthropic prompt
+# caching (identical prefix = cache hit) and tool call sequences (AIMessage + ToolMessage
+# pairs must stay together).
 DEFAULT_MAX_CONVERSATION_TOKENS = 80000
 
 
@@ -58,7 +64,10 @@ class BaseAgent(ABC):
             try:
                 self.model_with_tools = model.bind_tools(self.tools)
             except NotImplementedError:
-                # Model doesn't support tool binding (e.g., FakeListChatModel)
+                logger.warning(
+                    "Model %s does not support tool binding; running without tools",
+                    type(model).__name__,
+                )
                 self.model_with_tools = model
         else:
             self.model_with_tools = model
@@ -154,6 +163,12 @@ class BaseAgent(ABC):
                     token_counter=count_tokens_approximately,
                     include_system=False,
                 )
+
+                # Strip orphaned ToolMessages at the start of trimmed results.
+                # After trimming, the first message could be a ToolMessage without
+                # its preceding AIMessage, which LLM providers reject.
+                while trimmed and isinstance(trimmed[0], ToolMessage):
+                    trimmed = trimmed[1:]
 
                 post_trim_tokens = count_tokens_approximately(trimmed)
                 logger.debug(

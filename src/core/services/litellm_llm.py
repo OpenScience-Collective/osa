@@ -146,7 +146,7 @@ class CachingLLMWrapper(BaseChatModel):
     invocations, including tool calls, preventing the 10x cost increase that
     would occur if caching were bypassed.
 
-    Minimum cacheable prompt: 1024 tokens for Claude Sonnet/Opus, 4096 for Haiku 4.5
+    Minimum cacheable prompt: 1024 tokens for Claude Sonnet/Opus, 2048 for Haiku 4.5
     Cache TTL: 5 minutes (refreshed on each hit)
     """
 
@@ -355,21 +355,28 @@ class CachingLLMWrapper(BaseChatModel):
                     # Convert LangChain tool_calls to OpenAI dict format since we're
                     # serializing to raw dicts. LiteLLM translates to Anthropic format.
                     if msg.tool_calls:
-                        ai_dict["tool_calls"] = [
-                            {
-                                "id": tc.get("id", tc.get("name", "")),
-                                "type": "function",
-                                "function": {
-                                    "name": tc["name"],
-                                    "arguments": (
-                                        json.dumps(tc["args"])
-                                        if isinstance(tc["args"], dict)
-                                        else str(tc["args"])
-                                    ),
-                                },
-                            }
-                            for tc in msg.tool_calls
-                        ]
+                        ai_dict["tool_calls"] = []
+                        for j, tc in enumerate(msg.tool_calls):
+                            if "name" not in tc or "args" not in tc:
+                                raise ValueError(
+                                    f"Malformed tool_call at index {j} in AIMessage "
+                                    f"at index {i}: missing 'name' or 'args'. "
+                                    f"Got keys: {list(tc.keys())}"
+                                )
+                            ai_dict["tool_calls"].append(
+                                {
+                                    "id": tc.get("id", tc.get("name", "")),
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc["name"],
+                                        "arguments": (
+                                            json.dumps(tc["args"])
+                                            if isinstance(tc["args"], dict)
+                                            else str(tc["args"])
+                                        ),
+                                    },
+                                }
+                            )
                     result.append(ai_dict)
 
                 elif isinstance(msg, ToolMessage):
@@ -378,6 +385,12 @@ class CachingLLMWrapper(BaseChatModel):
                         raise ValueError(
                             f"ToolMessage at index {i} has None content. "
                             "All tool messages must have non-None content."
+                        )
+                    if not msg.tool_call_id:
+                        logger.error("ToolMessage at index %d has no tool_call_id", i)
+                        raise ValueError(
+                            f"ToolMessage at index {i} has no tool_call_id. "
+                            "ToolMessages must reference a tool call."
                         )
                     result.append(
                         {
@@ -439,31 +452,43 @@ class CachingLLMWrapper(BaseChatModel):
         tool-call iterations. Without this, only the system prompt is cached and
         the growing conversation is re-processed at full price every iteration.
 
-        Anthropic allows up to 4 cache breakpoints. This uses breakpoint 2.
+        Anthropic allows up to 4 cache_control markers per request. The system
+        prompt already uses one; this adds a second on the trailing message.
         """
         if len(messages) < 2:
             return
 
-        last = messages[-1]
+        # Walk backward to find a message with string content to mark.
+        # Skip assistant messages that have only tool_calls (no text to attach to).
+        for idx in range(len(messages) - 1, 0, -1):
+            msg = messages[idx]
 
-        # Skip if already has cache_control (e.g., system message with multipart content)
-        if isinstance(last.get("content"), list):
-            for block in last["content"]:
-                if isinstance(block, dict) and "cache_control" in block:
+            # Skip if already has cache_control
+            if isinstance(msg.get("content"), list):
+                has_cache = any(
+                    isinstance(block, dict) and "cache_control" in block for block in msg["content"]
+                )
+                if has_cache:
                     return
 
-        role = last.get("role")
-        content = last.get("content")
+            content = msg.get("content")
+            role = msg.get("role")
 
-        if isinstance(content, str) and content:
-            # Convert string content to multipart format with cache_control
-            last["content"] = [
-                {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
-            ]
-        elif role == "assistant" and not content and last.get("tool_calls") and len(messages) >= 3:
-            # Assistant with only tool_calls, no text content to mark.
-            # Put the breakpoint on the previous message instead.
-            self._add_trailing_cache_control(messages[:-1])
+            if isinstance(content, str) and content:
+                # Convert string content to multipart format with cache_control
+                msg["content"] = [
+                    {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+                ]
+                return
+
+            # Assistant with only tool_calls, no text -- keep searching backward
+            if role == "assistant" and not content and msg.get("tool_calls"):
+                continue
+
+            # Any other message type without string content -- stop searching
+            break
+
+        logger.debug("No suitable message found for trailing cache breakpoint")
 
     def _generate(self, messages: list[BaseMessage], **kwargs) -> Any:
         """Generate response with cache_control on system messages."""
