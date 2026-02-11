@@ -2072,6 +2072,11 @@
           } else if (event.event === 'tool_end') {
             // Log tool completion
             console.log('[OSA] Tool completed:', event.name);
+          } else if (event.event === 'session') {
+            // Capture session ID early (sent at stream start)
+            if (event.session_id && typeof event.session_id === 'string') {
+              sessionId = event.session_id;
+            }
           } else if (event.event === 'warning') {
             // Display warning banner (e.g., conversation getting long)
             const warningMsg = event.message || 'Warning';
