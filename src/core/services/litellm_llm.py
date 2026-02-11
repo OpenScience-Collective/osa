@@ -425,7 +425,45 @@ class CachingLLMWrapper(BaseChatModel):
             len(messages),
             sum(1 for msg in messages if isinstance(msg, SystemMessage)),
         )
+
+        # Add trailing cache breakpoint for conversation prefix caching
+        self._add_trailing_cache_control(result)
+
         return result
+
+    def _add_trailing_cache_control(self, messages: list[dict]) -> None:
+        """Add cache_control to the last message for conversation prefix caching.
+
+        Creates a second cache breakpoint at the end of the conversation so the
+        entire prefix (system + conversation history) is cached between agentic
+        tool-call iterations. Without this, only the system prompt is cached and
+        the growing conversation is re-processed at full price every iteration.
+
+        Anthropic allows up to 4 cache breakpoints. This uses breakpoint 2.
+        """
+        if len(messages) < 2:
+            return
+
+        last = messages[-1]
+
+        # Skip if already has cache_control (e.g., system message with multipart content)
+        if isinstance(last.get("content"), list):
+            for block in last["content"]:
+                if isinstance(block, dict) and "cache_control" in block:
+                    return
+
+        role = last.get("role")
+        content = last.get("content")
+
+        if isinstance(content, str) and content:
+            # Convert string content to multipart format with cache_control
+            last["content"] = [
+                {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+            ]
+        elif role == "assistant" and not content and last.get("tool_calls") and len(messages) >= 3:
+            # Assistant with only tool_calls, no text content to mark.
+            # Put the breakpoint on the previous message instead.
+            self._add_trailing_cache_control(messages[:-1])
 
     def _generate(self, messages: list[BaseMessage], **kwargs) -> Any:
         """Generate response with cache_control on system messages."""

@@ -314,9 +314,12 @@ class TestCachingLLMWrapperMessageTransformation:
         assert result[0]["content"][0]["text"] == "You are a helpful assistant."
         assert result[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
 
-        # Check human message unchanged
+        # Check human message has trailing cache_control (conversation prefix caching)
         assert result[1]["role"] == "user"
-        assert result[1]["content"] == "Hello"
+        assert isinstance(result[1]["content"], list)
+        assert result[1]["content"][0]["type"] == "text"
+        assert result[1]["content"][0]["text"] == "Hello"
+        assert result[1]["content"][0]["cache_control"] == {"type": "ephemeral"}
 
     def test_add_cache_control_preserves_other_messages(self):
         """Verify non-system messages unchanged."""
@@ -335,10 +338,12 @@ class TestCachingLLMWrapperMessageTransformation:
         assert result[0]["role"] == "user"
         assert result[0]["content"] == "User query"
         assert result[1]["role"] == "assistant"
-        assert result[1]["content"] == "Assistant response"
-        # No cache_control on non-system messages
+        # Last message gets trailing cache_control for conversation prefix caching
+        assert isinstance(result[1]["content"], list)
+        assert result[1]["content"][0]["text"] == "Assistant response"
+        assert result[1]["content"][0]["cache_control"] == {"type": "ephemeral"}
+        # First message (not last) should not have cache_control
         assert "cache_control" not in str(result[0])
-        assert "cache_control" not in str(result[1])
 
     def test_add_cache_control_handles_empty_list(self):
         """Verify empty message list handled gracefully."""
@@ -739,6 +744,10 @@ class TestCachingToolMessages:
         assert result[3]["tool_call_id"] == "call_abc"
         assert result[4]["role"] == "assistant"
         assert "tool_calls" not in result[4]
+        # Last message gets trailing cache_control for conversation prefix caching
+        assert isinstance(result[4]["content"], list)
+        assert result[4]["content"][0]["text"] == "BCI stands for Brain-Computer Interface in HED."
+        assert result[4]["content"][0]["cache_control"] == {"type": "ephemeral"}
 
     def test_ai_message_empty_content_with_tool_calls(self):
         """AIMessage with empty content and tool_calls should preserve tool_calls (the core bug fix).
@@ -783,3 +792,118 @@ class TestCachingToolMessages:
         assert len(result[0]["tool_calls"]) == 2
         assert result[0]["tool_calls"][0]["function"]["name"] == "search_docs"
         assert result[0]["tool_calls"][1]["function"]["name"] == "fetch_page"
+
+
+class TestTrailingCacheControl:
+    """Tests for conversation prefix caching via trailing cache_control breakpoint."""
+
+    def _make_wrapper(self):
+        from langchain_community.chat_models import FakeListChatModel
+
+        return CachingLLMWrapper(llm=FakeListChatModel(responses=["Test"]))
+
+    def test_trailing_cache_on_tool_message(self):
+        """ToolMessage as last message should get cache_control (common agentic loop case)."""
+        wrapper = self._make_wrapper()
+
+        messages = [
+            SystemMessage(content="You are a HED expert."),
+            HumanMessage(content="What is BCI?"),
+            AIMessage(
+                content="",
+                tool_calls=[{"id": "c1", "name": "search", "args": {"q": "BCI"}}],
+            ),
+            ToolMessage(content="BCI is Brain-Computer Interface.", tool_call_id="c1"),
+        ]
+        result = wrapper._add_cache_control(messages)
+
+        # System message: breakpoint 1
+        assert result[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+        # Tool message (last): breakpoint 2
+        assert isinstance(result[3]["content"], list)
+        assert result[3]["content"][0]["text"] == "BCI is Brain-Computer Interface."
+        assert result[3]["content"][0]["cache_control"] == {"type": "ephemeral"}
+        # Middle messages: no cache_control
+        assert isinstance(result[1]["content"], str) or "cache_control" not in str(result[1])
+
+    def test_trailing_cache_on_human_message(self):
+        """HumanMessage as last message should get cache_control."""
+        wrapper = self._make_wrapper()
+
+        messages = [
+            SystemMessage(content="System prompt."),
+            HumanMessage(content="What is HED?"),
+        ]
+        result = wrapper._add_cache_control(messages)
+
+        assert isinstance(result[1]["content"], list)
+        assert result[1]["content"][0]["text"] == "What is HED?"
+        assert result[1]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_trailing_cache_skips_single_message(self):
+        """Single message should not get trailing cache_control."""
+        wrapper = self._make_wrapper()
+
+        result = wrapper._add_cache_control([HumanMessage(content="Hello")])
+
+        assert result[0]["content"] == "Hello"
+
+    def test_trailing_cache_skips_system_only(self):
+        """System message already has cache_control; trailing should not double-add."""
+        wrapper = self._make_wrapper()
+
+        messages = [
+            SystemMessage(content="System prompt."),
+        ]
+        result = wrapper._add_cache_control(messages)
+
+        # Only 1 message, so trailing is skipped
+        assert len(result) == 1
+        assert result[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_trailing_cache_skips_ai_tool_calls_only(self):
+        """AIMessage with only tool_calls (no text) should put breakpoint on previous message."""
+        wrapper = self._make_wrapper()
+
+        messages = [
+            SystemMessage(content="System prompt."),
+            HumanMessage(content="What is BCI?"),
+            AIMessage(
+                content="",
+                tool_calls=[{"id": "c1", "name": "search", "args": {"q": "BCI"}}],
+            ),
+        ]
+        result = wrapper._add_cache_control(messages)
+
+        # AI message has empty content + tool_calls, so breakpoint goes to HumanMessage
+        assert isinstance(result[1]["content"], list)
+        assert result[1]["content"][0]["text"] == "What is BCI?"
+        assert result[1]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_trailing_cache_ai_with_text_content(self):
+        """AIMessage with text content (final answer) should get cache_control."""
+        wrapper = self._make_wrapper()
+
+        messages = [
+            SystemMessage(content="System prompt."),
+            HumanMessage(content="What is BCI?"),
+            AIMessage(content="BCI stands for Brain-Computer Interface."),
+        ]
+        result = wrapper._add_cache_control(messages)
+
+        assert isinstance(result[2]["content"], list)
+        assert result[2]["content"][0]["text"] == "BCI stands for Brain-Computer Interface."
+        assert result[2]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_trailing_cache_tool_message_empty_content(self):
+        """ToolMessage with empty content should not get cache_control (nothing to cache)."""
+        wrapper = self._make_wrapper()
+
+        messages = [
+            SystemMessage(content="System prompt."),
+            ToolMessage(content="", tool_call_id="c1"),
+        ]
+        result = wrapper._add_cache_control(messages)
+
+        # Empty string content: trailing cache_control skipped
+        assert result[1]["content"] == ""
