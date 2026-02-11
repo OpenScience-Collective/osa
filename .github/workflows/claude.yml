@@ -49,6 +49,10 @@ jobs:
       contents: read
       issues: write
       id-token: write
+    env:
+      # Force all models to Haiku 4.5 for cost efficiency
+      ANTHROPIC_DEFAULT_SONNET_MODEL: claude-haiku-4-5-20251001
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-haiku-4-5-20251001
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -61,7 +65,6 @@ jobs:
           prompt: "/label-issue REPO: ${{ github.repository }} ISSUE_NUMBER: ${{ github.event.issue.number }}"
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          model: claude-haiku-4-5-20251001
           allowed_non_write_users: "*"
 
   # Check new issues for duplicates
@@ -73,6 +76,10 @@ jobs:
       contents: read
       issues: write
       id-token: write
+    env:
+      # Force all models to Haiku 4.5 for cost efficiency
+      ANTHROPIC_DEFAULT_SONNET_MODEL: claude-haiku-4-5-20251001
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-haiku-4-5-20251001
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -120,6 +127,5 @@ jobs:
 
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          model: claude-haiku-4-5-20251001
           claude_args: |
             --allowedTools "mcp__github__get_issue,mcp__github__search_issues,mcp__github__list_issues,mcp__github__create_issue_comment,mcp__github__update_issue,mcp__github__get_issue_comments"
