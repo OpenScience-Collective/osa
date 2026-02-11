@@ -51,8 +51,8 @@ jobs:
       id-token: write
     env:
       # Force all models to Haiku 4.5 for cost efficiency
-      ANTHROPIC_DEFAULT_SONNET_MODEL: claude-haiku-4-5-20251001
-      ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-haiku-4-5-20251001
+      ANTHROPIC_DEFAULT_SONNET_MODEL: claude-haiku-4-5-latest
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-haiku-4-5-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -78,8 +78,8 @@ jobs:
       id-token: write
     env:
       # Force all models to Haiku 4.5 for cost efficiency
-      ANTHROPIC_DEFAULT_SONNET_MODEL: claude-haiku-4-5-20251001
-      ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-haiku-4-5-20251001
+      ANTHROPIC_DEFAULT_SONNET_MODEL: claude-haiku-4-5-latest
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-haiku-4-5-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
