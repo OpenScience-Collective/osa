@@ -239,6 +239,8 @@ class TestRunPapersSync:
         """Should iterate over all communities and sync their papers."""
         mock_settings.return_value.semantic_scholar_api_key = "test-key"
         mock_settings.return_value.pubmed_api_key = "test-key"
+        mock_settings.return_value.openalex_api_key = "test-openalex-key"
+        mock_settings.return_value.openalex_email = "test@example.com"
         mock_sync_all.return_value = {"source1": 5, "source2": 3}
         mock_sync_citing.return_value = 2
 
@@ -247,6 +249,33 @@ class TestRunPapersSync:
         # Should sync papers for both HED and BIDS
         assert mock_sync_all.call_count == 2
         assert mock_sync_citing.call_count == 1  # Only HED has DOIs
+
+    @patch("src.api.scheduler.sync_citing_papers")
+    @patch("src.api.scheduler.sync_all_papers")
+    @patch("src.api.scheduler.init_db")
+    @patch("src.api.scheduler.get_settings")
+    def test_passes_openalex_params_to_sync_all_papers(
+        self, mock_settings, _mock_init_db, mock_sync_all, mock_sync_citing, _mock_registry
+    ):
+        """Should pass OpenAlex API key and email to sync_all_papers."""
+        mock_settings.return_value.semantic_scholar_api_key = "s2-key"
+        mock_settings.return_value.pubmed_api_key = "pm-key"
+        mock_settings.return_value.openalex_api_key = "oa-key"
+        mock_settings.return_value.openalex_email = "test@example.com"
+        mock_sync_all.return_value = {"source1": 5}
+        mock_sync_citing.return_value = 2
+
+        _run_papers_sync()
+
+        # Verify HED call includes all API params
+        mock_sync_all.assert_any_call(
+            queries=["HED annotation"],
+            semantic_scholar_api_key="s2-key",
+            pubmed_api_key="pm-key",
+            openalex_api_key="oa-key",
+            openalex_email="test@example.com",
+            project="hed",
+        )
 
     @patch("src.api.scheduler.sync_citing_papers")
     @patch("src.api.scheduler.sync_all_papers")
@@ -267,6 +296,8 @@ class TestRunPapersSync:
         mock_sync_citing.assert_called_once_with(
             ["10.1234/hed.example"],
             project="hed",
+            openalex_api_key=mock_settings.return_value.openalex_api_key,
+            openalex_email=mock_settings.return_value.openalex_email,
         )
 
     @patch("src.api.scheduler.sync_citing_papers")

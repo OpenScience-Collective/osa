@@ -6,7 +6,13 @@ from collections.abc import Sequence
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.messages.utils import count_tokens_approximately, trim_messages
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, StateGraph
@@ -17,9 +23,12 @@ from src.agents.state import BaseAgentState
 
 logger = logging.getLogger(__name__)
 
-# Token budget for conversation history (excludes system prompt)
-# System prompt with preloaded docs is ~14K tokens, conversation budget is additional
-DEFAULT_MAX_CONVERSATION_TOKENS = 6000
+# Token budget for conversation history (excludes system prompt).
+# 80K conversation + ~14K system prompt = ~94K total, well under the 200K context limit.
+# A generous budget avoids trimming in most sessions, which preserves Anthropic prompt
+# caching (identical prefix = cache hit) and tool call sequences (AIMessage + ToolMessage
+# pairs must stay together).
+DEFAULT_MAX_CONVERSATION_TOKENS = 80000
 
 
 class BaseAgent(ABC):
@@ -43,8 +52,7 @@ class BaseAgent(ABC):
             system_prompt: Optional system prompt for the agent.
             max_conversation_tokens: Maximum tokens for conversation history.
                 This caps the accumulated messages to prevent unbounded growth.
-                Default is 6000 tokens, which combined with ~14K system prompt
-                keeps total context under 20K tokens per iteration.
+                Default is 80000 tokens. See DEFAULT_MAX_CONVERSATION_TOKENS.
         """
         self.model = model
         self.tools = list(tools) if tools else []
@@ -56,7 +64,10 @@ class BaseAgent(ABC):
             try:
                 self.model_with_tools = model.bind_tools(self.tools)
             except NotImplementedError:
-                # Model doesn't support tool binding (e.g., FakeListChatModel)
+                logger.warning(
+                    "Model %s does not support tool binding; running without tools",
+                    type(model).__name__,
+                )
                 self.model_with_tools = model
         else:
             self.model_with_tools = model
@@ -131,30 +142,41 @@ class BaseAgent(ABC):
         if system_prompt:
             messages.append(SystemMessage(content=system_prompt))
 
-        # Trim conversation history to fit token budget
+        # Include conversation history, trimming only when over budget.
+        # Passing all messages through when under budget enables Anthropic prompt
+        # caching (identical prefix = cache hit) and preserves tool call sequences
+        # (AIMessage + ToolMessage pairs must stay together).
         state_messages = state.get("messages", [])
         if state_messages:
-            # Count tokens before trimming for logging
             pre_trim_tokens = count_tokens_approximately(state_messages)
 
-            trimmed = trim_messages(
-                state_messages,
-                max_tokens=self.max_conversation_tokens,
-                strategy="last",  # Keep most recent messages
-                token_counter=count_tokens_approximately,
-                start_on="human",  # Ensure we start on a user message
-                include_system=False,  # System prompt handled separately
-            )
+            if pre_trim_tokens <= self.max_conversation_tokens:
+                # Under budget: pass all messages through unchanged
+                messages.extend(state_messages)
+            else:
+                # Over budget: trim keeping most recent messages.
+                # Note: start_on is omitted to avoid splitting tool call sequences.
+                trimmed = trim_messages(
+                    state_messages,
+                    max_tokens=self.max_conversation_tokens,
+                    strategy="last",
+                    token_counter=count_tokens_approximately,
+                    include_system=False,
+                )
 
-            post_trim_tokens = count_tokens_approximately(trimmed)
-            if pre_trim_tokens > post_trim_tokens:
+                # Strip orphaned ToolMessages at the start of trimmed results.
+                # After trimming, the first message could be a ToolMessage without
+                # its preceding AIMessage, which LLM providers reject.
+                while trimmed and isinstance(trimmed[0], ToolMessage):
+                    trimmed = trimmed[1:]
+
+                post_trim_tokens = count_tokens_approximately(trimmed)
                 logger.debug(
                     "Trimmed conversation from %d to %d tokens",
                     pre_trim_tokens,
                     post_trim_tokens,
                 )
-
-            messages.extend(trimmed)
+                messages.extend(trimmed)
 
         return messages
 

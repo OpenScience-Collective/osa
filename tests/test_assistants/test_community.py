@@ -193,5 +193,5 @@ class TestSystemPromptTemplate:
     def test_template_includes_guidelines(self) -> None:
         """Template should include important guidelines."""
         assert "Discovery, Not Authority" in COMMUNITY_SYSTEM_PROMPT_TEMPLATE
-        assert "Be Precise" in COMMUNITY_SYSTEM_PROMPT_TEMPLATE
+        assert "Be Helpful" in COMMUNITY_SYSTEM_PROMPT_TEMPLATE
         assert "Cite Sources" in COMMUNITY_SYSTEM_PROMPT_TEMPLATE

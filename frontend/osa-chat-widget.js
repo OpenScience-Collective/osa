@@ -85,6 +85,10 @@
     return model ? model.label : modelId;
   }
 
+  // Track which CONFIG keys were explicitly set by the embedder via setConfig,
+  // so fetchCommunityConfig does not overwrite them with API defaults.
+  const _userSetKeys = new Set();
+
   // State
   let isOpen = false;
   let isLoading = false;
@@ -98,6 +102,7 @@
   let chatPopup = null; // Reference to pop-out window (prevents duplicates)
   let userSettings = { apiKey: null, model: null }; // User settings (BYOK and model selection)
   let communityDefaultModel = null; // Community's default model from API
+  let sessionId = null; // Server-side session ID for multi-turn conversations
 
   // Store script URL at load time for reliable pop-out
   const WIDGET_SCRIPT_URL = document.currentScript?.src || null;
@@ -722,6 +727,14 @@
       border-top: 1px solid #fecaca;
     }
 
+    .osa-warning {
+      color: #92400e;
+      font-size: 12px;
+      padding: 8px 16px;
+      background: #fffbeb;
+      border-top: 1px solid #fde68a;
+    }
+
     .osa-resize-handle {
       position: absolute;
       top: 0;
@@ -1212,9 +1225,19 @@
       if (saved) {
         const parsed = JSON.parse(saved);
         // Validate structure to prevent injection attacks
-        if (Array.isArray(parsed)) {
-          messages = parsed.filter(isValidMessage);
-          if (messages.length !== parsed.length) {
+        let rawMessages;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Array.isArray(parsed.messages)) {
+          // New format: { messages, sessionId }
+          rawMessages = parsed.messages;
+          sessionId = parsed.sessionId || null;
+        } else if (Array.isArray(parsed)) {
+          // Legacy format: just messages array (backward compatible)
+          rawMessages = parsed;
+          sessionId = null;
+        }
+        if (rawMessages) {
+          messages = rawMessages.filter(isValidMessage);
+          if (messages.length !== rawMessages.length) {
             console.warn('Some chat messages were invalid and filtered out');
           }
         }
@@ -1238,7 +1261,7 @@
     }
 
     try {
-      const data = JSON.stringify(messages);
+      const data = JSON.stringify({ messages, sessionId });
       localStorage.setItem(CONFIG.storageKey, data);
       saveErrorShown = false;
     } catch (e) {
@@ -1418,8 +1441,8 @@
     }
   }
 
-  // Fetch community default model from API
-  async function fetchCommunityDefaultModel() {
+  // Fetch community config (default model + widget display settings) from API
+  async function fetchCommunityConfig() {
     // Validate communityId before making request
     if (!isValidCommunityId(CONFIG.communityId)) {
       console.error('[OSA] Invalid communityId, cannot fetch default model');
@@ -1456,12 +1479,83 @@
           disableWidget(container, 'Community configuration is incomplete. Please contact support.');
         }
       }
+
+      // Apply widget display config from API for fields not explicitly set by the embedder.
+      // Use explicit null/undefined checks (not truthiness) so that a null initial_message
+      // from the API correctly replaces the hardcoded HED default.
+      if (data && data.widget) {
+        const w = data.widget;
+        let changed = false;
+        if (w.title != null && !_userSetKeys.has('title')) {
+          CONFIG.title = w.title;
+          changed = true;
+        }
+        if ('initial_message' in w && !_userSetKeys.has('initialMessage')) {
+          CONFIG.initialMessage = w.initial_message || '';
+          changed = true;
+        }
+        if (w.placeholder != null && !_userSetKeys.has('placeholder')) {
+          CONFIG.placeholder = w.placeholder;
+          changed = true;
+        }
+        if (w.suggested_questions != null && !_userSetKeys.has('suggestedQuestions')) {
+          CONFIG.suggestedQuestions = w.suggested_questions;
+          changed = true;
+        }
+
+        if (changed) {
+          applyWidgetConfig();
+        }
+      } else if (data) {
+        console.warn('[OSA] API response missing widget config; using local defaults');
+      }
     } catch (e) {
       console.error('[OSA] Could not fetch community config:', e.message || e);
       const container = document.querySelector('.osa-chat-widget');
       if (container && isOpen) {
         disableWidget(container, 'Network error loading configuration. Please check your connection and try again.');
       }
+    }
+  }
+
+  // Update DOM elements to reflect current CONFIG values (called after API config load)
+  function applyWidgetConfig() {
+    const container = document.querySelector('.osa-chat-widget');
+    if (!container) return;
+
+    // Update header title
+    const titleEl = container.querySelector('.osa-chat-title');
+    if (titleEl) {
+      const badge = titleEl.querySelector('.osa-experimental-badge');
+      titleEl.textContent = CONFIG.title;
+      if (badge) titleEl.appendChild(badge);
+    }
+
+    // Update tooltip
+    const tooltip = container.querySelector('.osa-chat-tooltip');
+    if (tooltip) {
+      tooltip.textContent = 'Ask me about ' + CONFIG.title.replace(' Assistant', '');
+    }
+
+    // Update input placeholder
+    const input = container.querySelector('.osa-chat-input input');
+    if (input) {
+      input.placeholder = CONFIG.placeholder;
+    }
+
+    // Update initial assistant message if chat has only the default greeting
+    if (messages.length === 1 && messages[0].role === 'assistant') {
+      messages[0].content = CONFIG.initialMessage;
+      renderMessages(container);
+    }
+
+    // Update suggested questions
+    renderSuggestions(container);
+
+    // Update loading label if currently loading
+    const loadingLabel = container.querySelector('.osa-loading-label');
+    if (loadingLabel) {
+      loadingLabel.textContent = CONFIG.title;
     }
   }
 
@@ -1773,6 +1867,7 @@
         </div>
         <div class="osa-turnstile-container" style="display: none;"></div>
         <div class="osa-error" style="display: none;"></div>
+        <div class="osa-warning" style="display: none;"></div>
         <div class="osa-chat-input">
           <input type="text" placeholder="${escapeHtml(CONFIG.placeholder)}" />
           <button class="osa-send-btn" aria-label="Send">
@@ -1956,6 +2051,16 @@
     }, 5000);
   }
 
+  function showWarning(container, message) {
+    const warningEl = container.querySelector('.osa-warning');
+    if (!warningEl) return;
+    warningEl.textContent = message;
+    warningEl.style.display = 'block';
+    setTimeout(() => {
+      warningEl.style.display = 'none';
+    }, 10000);
+  }
+
   // Parse SSE (Server-Sent Events) format
   // Returns parsed event object or null if line is not a data event
   function parseSSE(line) {
@@ -2042,9 +2147,22 @@
           } else if (event.event === 'tool_end') {
             // Log tool completion
             console.log('[OSA] Tool completed:', event.name);
+          } else if (event.event === 'session') {
+            // Capture session ID early (sent at stream start)
+            if (event.session_id && typeof event.session_id === 'string') {
+              sessionId = event.session_id;
+            }
+          } else if (event.event === 'warning') {
+            // Display warning banner (e.g., conversation getting long)
+            const warningMsg = event.message || 'Warning';
+            console.warn('[OSA] Warning:', warningMsg);
+            showWarning(container, warningMsg);
           } else if (event.event === 'done') {
-            // Finalize message
+            // Finalize message and capture session ID
             receivedDoneEvent = true;
+            if (event.session_id && typeof event.session_id === 'string') {
+              sessionId = event.session_id;
+            }
             messages[messageIndex].content = accumulatedContent;
             renderMessages(container);
             try {
@@ -2170,7 +2288,12 @@
     resetBtn.disabled = true;
 
     try {
-      const body = { question: question.trim() };
+      const body = { message: question.trim() };
+
+      // Include session ID for conversation continuity
+      if (sessionId) {
+        body.session_id = sessionId;
+      }
 
       // Add page context if enabled
       const pageContext = getPageContext();
@@ -2206,7 +2329,7 @@
         headers['X-OpenRouter-Key'] = userSettings.apiKey;
       }
 
-      const response = await fetch(`${CONFIG.apiEndpoint}/${CONFIG.communityId}/ask`, {
+      const response = await fetch(`${CONFIG.apiEndpoint}/${CONFIG.communityId}/chat`, {
         method: 'POST',
         headers: headers,
         body: JSON.stringify(body),
@@ -2235,35 +2358,30 @@
         throw new Error(errorMessage);
       }
 
+      // Extract session ID from response header (set by streaming responses)
+      const headerSessionId = response.headers.get('X-Session-ID');
+      if (headerSessionId) {
+        sessionId = headerSessionId;
+      }
+
       // Check if response is streaming (SSE)
       const contentType = response.headers.get('content-type') || '';
       if (CONFIG.streamingEnabled && contentType.includes('text/event-stream')) {
         // Handle streaming response
         assistantMessageCreated = true; // handleStreamingResponse creates assistant message
         await handleStreamingResponse(response, container);
-      } else if (CONFIG.streamingEnabled && !contentType.includes('text/event-stream')) {
-        // Streaming was expected but not received - log for debugging
-        console.warn('[OSA] Expected streaming response but got content-type:', contentType);
-        console.warn('[OSA] Falling back to non-streaming mode');
-
-        // Handle non-streaming response (fallback)
-        const data = await response.json();
-        const answer = (data && typeof data.answer === 'string') ? data.answer : null;
-        if (!answer) {
-          throw new Error('Invalid response from server');
-        }
-        messages.push({ role: 'assistant', content: answer });
-        try {
-          saveHistory();
-        } catch (saveError) {
-          console.error('[OSA] Failed to save history:', saveError);
-          showError(container, 'Warning: Unable to save conversation');
-        }
-        updateStatusDisplay(true);
       } else {
-        // Streaming not enabled, expected behavior
+        // Non-streaming response (either streaming not enabled, or fallback)
+        if (CONFIG.streamingEnabled) {
+          console.warn('[OSA] Expected streaming response but got content-type:', contentType);
+          console.warn('[OSA] Falling back to non-streaming mode');
+        }
+
         const data = await response.json();
-        const answer = (data && typeof data.answer === 'string') ? data.answer : null;
+        if (data && typeof data.session_id === 'string') {
+          sessionId = data.session_id;
+        }
+        const answer = (data && data.message && typeof data.message.content === 'string') ? data.message.content : null;
         if (!answer) {
           throw new Error('Invalid response from server');
         }
@@ -2377,7 +2495,12 @@
   function resetChat(container) {
     if (messages.length <= 1 || isLoading) return;
     messages = [{ role: 'assistant', content: CONFIG.initialMessage }];
-    saveHistory();
+    sessionId = null; // Clear session to start fresh on next message
+    try {
+      saveHistory();
+    } catch (saveError) {
+      console.error('[OSA] Failed to save history on reset:', saveError);
+    }
     renderMessages(container);
     renderSuggestions(container);
   }
@@ -2569,7 +2692,7 @@
     const container = createWidget();
 
     // Fetch community default model (async, non-blocking)
-    fetchCommunityDefaultModel();
+    fetchCommunityConfig();
 
     renderMessages(container);
     renderSuggestions(container);
@@ -2698,6 +2821,10 @@
       if (opts.communityId && !isValidCommunityId(opts.communityId)) {
         console.error('[OSA] Invalid communityId:', opts.communityId);
         return;
+      }
+      // Track which keys the embedder explicitly set (before auto-derivation)
+      for (const key of Object.keys(opts)) {
+        _userSetKeys.add(key);
       }
       // Auto-derive storageKey from communityId if communityId changed but storageKey wasn't explicitly set
       if (opts.communityId && !opts.storageKey) {

@@ -20,14 +20,17 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages.utils import count_tokens_approximately
 from pydantic import BaseModel, Field, field_validator
 
+from src.agents.base import DEFAULT_MAX_CONVERSATION_TOKENS
 from src.api.config import get_settings
 from src.api.security import AuthScope, RequireAuth, RequireScopedAuth
 from src.assistants import registry
 from src.assistants.community import CommunityAssistant
 from src.assistants.community import PageContext as AgentPageContext
 from src.assistants.registry import AssistantInfo
+from src.core.config.community import WidgetConfig
 from src.core.services.litellm_llm import create_openrouter_llm
 from src.metrics.cost import estimate_cost
 from src.metrics.db import (
@@ -61,21 +64,6 @@ class ChatMessage(BaseModel):
     content: str = Field(..., description="Message content")
 
 
-class ChatRequest(BaseModel):
-    """Request body for chat endpoint."""
-
-    message: str = Field(..., description="User message", min_length=1)
-    session_id: str | None = Field(
-        default=None,
-        description="Session ID for conversation continuity. If not provided, a new session is created.",
-    )
-    stream: bool = Field(default=True, description="Whether to stream the response")
-    model: str | None = Field(
-        default=None,
-        description="Optional model override (OpenRouter format: creator/model-name). Requires BYOK.",
-    )
-
-
 class PageContext(BaseModel):
     """Context about the page where the widget is embedded."""
 
@@ -104,6 +92,25 @@ class PageContext(BaseModel):
         if not url.startswith(("http://", "https://")):
             raise ValueError("URL must start with http:// or https://")
         return url
+
+
+class ChatRequest(BaseModel):
+    """Request body for chat endpoint."""
+
+    message: str = Field(..., description="User message", min_length=1)
+    session_id: str | None = Field(
+        default=None,
+        description="Session ID for conversation continuity. If not provided, a new session is created.",
+    )
+    stream: bool = Field(default=True, description="Whether to stream the response")
+    model: str | None = Field(
+        default=None,
+        description="Optional model override (OpenRouter format: creator/model-name). Requires BYOK.",
+    )
+    page_context: PageContext | None = Field(
+        default=None,
+        description="Optional context about the page where the widget is embedded",
+    )
 
 
 class AskRequest(BaseModel):
@@ -157,6 +164,17 @@ class SessionInfo(BaseModel):
     last_active: str = Field(..., description="ISO timestamp of last activity")
 
 
+class WidgetConfigResponse(BaseModel):
+    """Widget display configuration returned to the frontend."""
+
+    title: str = Field(..., description="Widget header title", min_length=1)
+    initial_message: str | None = Field(default=None, description="Greeting message on open")
+    placeholder: str = Field(..., description="Input placeholder text")
+    suggested_questions: list[str] = Field(
+        default_factory=list, description="Clickable suggestion buttons"
+    )
+
+
 class CommunityConfigResponse(BaseModel):
     """Community configuration information."""
 
@@ -166,6 +184,9 @@ class CommunityConfigResponse(BaseModel):
     default_model: str = Field(..., description="Default LLM model for this community")
     default_model_provider: str | None = Field(
         default=None, description="Default provider for model routing"
+    )
+    widget: WidgetConfigResponse = Field(
+        ..., description="Widget display configuration (title, placeholder, etc.)"
     )
 
 
@@ -982,6 +1003,7 @@ def create_community_router(community_id: str) -> APIRouter:
                     origin,
                     user_id,
                     body.model,
+                    page_context=body.page_context,
                     http_request=http_request,
                 ),
                 media_type="text/event-stream",
@@ -999,6 +1021,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 origin=origin,
                 user_id=user_id,
                 requested_model=body.model,
+                page_context=body.page_context,
             )
             result = await awm.assistant.ainvoke(session.messages, config=awm.langfuse_config)
 
@@ -1093,12 +1116,18 @@ def create_community_router(community_id: str) -> APIRouter:
                 detail="Community configuration incomplete: no default model configured",
             )
 
+        # Resolve widget config with defaults applied
+        widget_cfg = (
+            info.community_config.widget if info.community_config else None
+        ) or WidgetConfig()
+
         return CommunityConfigResponse(
             id=info.id,
             name=info.name,
             description=info.description,
             default_model=default_model,
             default_model_provider=default_provider,
+            widget=WidgetConfigResponse(**widget_cfg.resolve(info.name)),
         )
 
     # -----------------------------------------------------------------------
@@ -1452,6 +1481,7 @@ async def _stream_chat_response(
     origin: str | None,
     user_id: str | None,
     requested_model: str | None = None,
+    page_context: PageContext | None = None,
     http_request: Request | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream assistant response as JSON-encoded Server-Sent Events.
@@ -1460,12 +1490,18 @@ async def _stream_chat_response(
         data: {"event": "content", "content": "text chunk"}
         data: {"event": "tool_start", "name": "tool_name", "input": {...}}
         data: {"event": "tool_end", "name": "tool_name", "output": {...}}
+        data: {"event": "session", "session_id": "..."}  (sent first)
         data: {"event": "done", "session_id": "..."}
         data: {"event": "error", "message": "error text"}
     """
     start_time = time.monotonic()
     tools_called: list[str] = []
     awm: AssistantWithMetrics | None = None
+
+    # Send session_id immediately so the client captures it even if the
+    # stream is truncated by a proxy timeout.
+    sse_event = {"event": "session", "session_id": session.session_id}
+    yield f"data: {json.dumps(sse_event)}\n\n"
 
     try:
         awm = create_community_assistant(
@@ -1475,6 +1511,7 @@ async def _stream_chat_response(
             user_id=user_id,
             requested_model=requested_model,
             preload_docs=True,
+            page_context=page_context,
         )
         graph = awm.assistant.build_graph()
 
@@ -1528,6 +1565,16 @@ async def _stream_chat_response(
                 sse_event = {"event": "error", "message": str(e)}
                 yield f"data: {json.dumps(sse_event)}\n\n"
                 return
+
+        # Warn if conversation is approaching the token budget (87.5% of 80K).
+        warning_threshold = int(DEFAULT_MAX_CONVERSATION_TOKENS * 0.875)
+        approx_tokens = count_tokens_approximately(session.messages)
+        if approx_tokens > warning_threshold:
+            sse_event = {
+                "event": "warning",
+                "message": "Conversation is getting long. Consider starting a new chat for best results.",
+            }
+            yield f"data: {json.dumps(sse_event)}\n\n"
 
         sse_event = {"event": "done", "session_id": session.session_id}
         yield f"data: {json.dumps(sse_event)}\n\n"

@@ -6,10 +6,15 @@ Note: These are real API tests, not mocks, per project guidelines.
 from pathlib import Path
 from unittest.mock import patch
 
+import pyalex
 import pytest
 
 from src.knowledge.db import get_connection, init_db
-from src.knowledge.papers_sync import _reconstruct_abstract, sync_openalex_papers
+from src.knowledge.papers_sync import (
+    _reconstruct_abstract,
+    configure_openalex,
+    sync_openalex_papers,
+)
 
 
 @pytest.fixture
@@ -19,6 +24,53 @@ def temp_db(tmp_path: Path):
     with patch("src.knowledge.db.get_db_path", return_value=db_path):
         init_db()
         yield db_path
+
+
+class TestConfigureOpenalex:
+    """Tests for configure_openalex helper."""
+
+    def setup_method(self):
+        """Reset pyalex config before each test."""
+        pyalex.config.api_key = None
+        pyalex.config.email = None
+
+    def teardown_method(self):
+        """Reset pyalex config after each test."""
+        pyalex.config.api_key = None
+        pyalex.config.email = None
+
+    def test_sets_api_key(self):
+        """Should set pyalex.config.api_key when api_key provided."""
+        configure_openalex(api_key="test-key-123")
+        assert pyalex.config.api_key == "test-key-123"
+
+    def test_sets_email_when_no_api_key(self):
+        """Should set pyalex.config.email when only email provided."""
+        configure_openalex(email="test@example.com")
+        assert pyalex.config.email == "test@example.com"
+
+    def test_api_key_takes_precedence_over_email(self):
+        """Should use API key over email when both provided."""
+        configure_openalex(api_key="test-key", email="test@example.com")
+        assert pyalex.config.api_key == "test-key"
+
+    def test_handles_empty_strings(self):
+        """Should treat empty strings as None (no config)."""
+        configure_openalex(api_key="", email="")
+        assert pyalex.config.api_key is None
+        assert pyalex.config.email is None
+
+    def test_handles_whitespace_strings(self):
+        """Should strip whitespace and treat blank as None."""
+        configure_openalex(api_key="  ", email="  ")
+        assert pyalex.config.api_key is None
+        assert pyalex.config.email is None
+
+    def test_handles_none_values(self):
+        """Should handle None values gracefully (anonymous access)."""
+        configure_openalex(api_key=None, email=None)
+        assert pyalex.config.api_key is None
+        assert pyalex.config.email is None
 
 
 class TestAbstractReconstruction:
