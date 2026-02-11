@@ -11,7 +11,6 @@ on:
     types: [submitted]
 
 jobs:
-  # Respond to @claude mentions in issues, PRs, and comments
   claude:
     if: |
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
@@ -24,7 +23,7 @@ jobs:
       pull-requests: read
       issues: read
       id-token: write
-      actions: read
+      actions: read # Required for Claude to read CI results on PRs
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -36,96 +35,16 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+          # This is an optional setting that allows Claude to read CI results on PRs
           additional_permissions: |
             actions: read
 
-  # Auto-label new issues
-  triage-issue:
-    if: github.event_name == 'issues' && github.event.action == 'opened'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      issues: write
-      id-token: write
-    env:
-      # Force all models to Haiku 4.5 for cost efficiency
-      ANTHROPIC_DEFAULT_SONNET_MODEL: claude-haiku-4-5-20251001
-      ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-haiku-4-5-20251001
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
+          # Optional: Give a custom prompt to Claude. If this is not specified, Claude will perform the instructions specified in the comment that tagged it.
+          # prompt: 'Update the pull request description to include a summary of changes.'
 
-      - name: Triage issue with Claude
-        uses: anthropics/claude-code-action@v1
-        with:
-          prompt: "/label-issue REPO: ${{ github.repository }} ISSUE_NUMBER: ${{ github.event.issue.number }}"
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_TOKEN }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          allowed_non_write_users: "*"
+          # Optional: Add claude_args to customize behavior and configuration
+          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
+          # or https://code.claude.com/docs/en/cli-reference for available options
+          # claude_args: '--allowed-tools Bash(gh pr:*)'
 
-  # Check new issues for duplicates
-  deduplicate-issue:
-    if: github.event_name == 'issues' && github.event.action == 'opened'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      issues: write
-      id-token: write
-    env:
-      # Force all models to Haiku 4.5 for cost efficiency
-      ANTHROPIC_DEFAULT_SONNET_MODEL: claude-haiku-4-5-20251001
-      ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-haiku-4-5-20251001
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Check for duplicate issues
-        uses: anthropics/claude-code-action@v1
-        with:
-          prompt: |
-            Analyze this new issue and check if it's a duplicate of existing issues in the repository.
-
-            Issue: #${{ github.event.issue.number }}
-            Repository: ${{ github.repository }}
-
-            Your task:
-            1. Use mcp__github__get_issue to get details of the current issue (#${{ github.event.issue.number }})
-            2. Search for similar existing issues using mcp__github__search_issues with relevant keywords from the issue title and body
-            3. Compare the new issue with existing ones to identify potential duplicates
-
-            Criteria for duplicates:
-            - Same bug or error being reported
-            - Same feature request (even if worded differently)
-            - Same question being asked
-            - Issues describing the same root problem
-
-            If you find duplicates:
-            - Add a comment on the new issue linking to the original issue(s)
-            - Apply a "duplicate" label to the new issue
-            - Be polite and explain why it's a duplicate
-            - Suggest the user follow the original issue for updates
-
-            If it is NOT a duplicate:
-            - Do not add any comments
-            - Do not add any labels (the triage job handles labeling)
-
-            Use these tools:
-            - mcp__github__get_issue: Get issue details
-            - mcp__github__search_issues: Search for similar issues
-            - mcp__github__list_issues: List recent issues if needed
-            - mcp__github__create_issue_comment: Add a comment if duplicate found
-            - mcp__github__update_issue: Add labels
-
-            Be thorough but efficient. Focus on finding true duplicates, not just similar issues.
-
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_TOKEN }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          claude_args: |
-            --allowedTools "mcp__github__get_issue,mcp__github__search_issues,mcp__github__list_issues,mcp__github__create_issue_comment,mcp__github__update_issue,mcp__github__get_issue_comments"
