@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from src.api.routers.community import AskRequest, PageContext
+from src.api.routers.community import AskRequest, ChatRequest, PageContext
 
 
 class TestPageContextModel:
@@ -118,6 +118,45 @@ class TestAskRequestWithPageContext:
         with pytest.raises(ValidationError) as exc_info:
             AskRequest(
                 question="What is HED?",
+                page_context={"url": "ftp://invalid", "title": "Test"},
+            )
+        assert "URL must start with http://" in str(exc_info.value)
+
+
+class TestChatRequestWithPageContext:
+    """Tests for ChatRequest with page context."""
+
+    def test_request_without_page_context(self):
+        """Should work without page context."""
+        req = ChatRequest(message="What is HED?")
+        assert req.message == "What is HED?"
+        assert req.page_context is None
+
+    def test_request_with_page_context(self):
+        """Should accept page context."""
+        req = ChatRequest(
+            message="What is HED?",
+            page_context=PageContext(url="https://hedtags.org", title="HED Tags"),
+        )
+        assert req.message == "What is HED?"
+        assert req.page_context is not None
+        assert req.page_context.url == "https://hedtags.org"
+
+    def test_request_with_nested_dict_page_context(self):
+        """Should parse nested dict as PageContext."""
+        req = ChatRequest(
+            message="What is HED?",
+            page_context={"url": "https://hedtags.org", "title": "HED Tags"},
+        )
+        assert req.page_context is not None
+        assert req.page_context.url == "https://hedtags.org"
+        assert req.page_context.title == "HED Tags"
+
+    def test_request_with_invalid_url_in_page_context(self):
+        """Should raise error for invalid URL in page context."""
+        with pytest.raises(ValidationError) as exc_info:
+            ChatRequest(
+                message="What is HED?",
                 page_context={"url": "ftp://invalid", "title": "Test"},
             )
         assert "URL must start with http://" in str(exc_info.value)
