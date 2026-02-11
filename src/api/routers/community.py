@@ -29,6 +29,7 @@ from src.assistants import registry
 from src.assistants.community import CommunityAssistant
 from src.assistants.community import PageContext as AgentPageContext
 from src.assistants.registry import AssistantInfo
+from src.core.config.community import WidgetConfig
 from src.core.services.litellm_llm import create_openrouter_llm
 from src.metrics.cost import estimate_cost
 from src.metrics.db import (
@@ -162,6 +163,17 @@ class SessionInfo(BaseModel):
     last_active: str = Field(..., description="ISO timestamp of last activity")
 
 
+class WidgetConfigResponse(BaseModel):
+    """Widget display configuration returned to the frontend."""
+
+    title: str = Field(..., description="Widget header title")
+    initial_message: str | None = Field(default=None, description="Greeting message on open")
+    placeholder: str = Field(default="Ask a question...", description="Input placeholder text")
+    suggested_questions: list[str] = Field(
+        default_factory=list, description="Clickable suggestion buttons"
+    )
+
+
 class CommunityConfigResponse(BaseModel):
     """Community configuration information."""
 
@@ -171,6 +183,9 @@ class CommunityConfigResponse(BaseModel):
     default_model: str = Field(..., description="Default LLM model for this community")
     default_model_provider: str | None = Field(
         default=None, description="Default provider for model routing"
+    )
+    widget: WidgetConfigResponse = Field(
+        ..., description="Widget display configuration (title, placeholder, etc.)"
     )
 
 
@@ -1100,12 +1115,24 @@ def create_community_router(community_id: str) -> APIRouter:
                 detail="Community configuration incomplete: no default model configured",
             )
 
+        # Resolve widget config with defaults applied
+        widget_cfg = (
+            info.community_config.widget if info.community_config else None
+        ) or WidgetConfig()
+        resolved = widget_cfg.resolve(info.name)
+
         return CommunityConfigResponse(
             id=info.id,
             name=info.name,
             description=info.description,
             default_model=default_model,
             default_model_provider=default_provider,
+            widget=WidgetConfigResponse(
+                title=resolved["title"],
+                initial_message=resolved["initial_message"],
+                placeholder=resolved["placeholder"],
+                suggested_questions=resolved["suggested_questions"],
+            ),
         )
 
     # -----------------------------------------------------------------------

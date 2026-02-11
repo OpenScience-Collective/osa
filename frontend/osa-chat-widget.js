@@ -85,6 +85,10 @@
     return model ? model.label : modelId;
   }
 
+  // Track which CONFIG keys were explicitly set by the embedder via setConfig,
+  // so fetchCommunityConfig does not overwrite them with API defaults.
+  const _userSetKeys = new Set();
+
   // State
   let isOpen = false;
   let isLoading = false;
@@ -1437,7 +1441,7 @@
     }
   }
 
-  // Fetch community default model from API
+  // Fetch community config (default model + widget display settings) from API
   async function fetchCommunityDefaultModel() {
     // Validate communityId before making request
     if (!isValidCommunityId(CONFIG.communityId)) {
@@ -1475,12 +1479,79 @@
           disableWidget(container, 'Community configuration is incomplete. Please contact support.');
         }
       }
+
+      // Apply widget display config from API for fields not explicitly set by the embedder
+      if (data && data.widget) {
+        const w = data.widget;
+        let changed = false;
+        if (w.title && !_userSetKeys.has('title')) {
+          CONFIG.title = w.title;
+          changed = true;
+        }
+        if (w.initial_message && !_userSetKeys.has('initialMessage')) {
+          CONFIG.initialMessage = w.initial_message;
+          changed = true;
+        }
+        if (w.placeholder && !_userSetKeys.has('placeholder')) {
+          CONFIG.placeholder = w.placeholder;
+          changed = true;
+        }
+        if (w.suggested_questions && w.suggested_questions.length > 0 && !_userSetKeys.has('suggestedQuestions')) {
+          CONFIG.suggestedQuestions = w.suggested_questions;
+          changed = true;
+        }
+
+        if (changed) {
+          applyWidgetConfig();
+        }
+      }
     } catch (e) {
       console.error('[OSA] Could not fetch community config:', e.message || e);
       const container = document.querySelector('.osa-chat-widget');
       if (container && isOpen) {
         disableWidget(container, 'Network error loading configuration. Please check your connection and try again.');
       }
+    }
+  }
+
+  // Update DOM elements to reflect current CONFIG values (called after API config load)
+  function applyWidgetConfig() {
+    const container = document.querySelector('.osa-chat-widget');
+    if (!container) return;
+
+    // Update header title
+    const titleEl = container.querySelector('.osa-chat-title');
+    if (titleEl) {
+      const badge = titleEl.querySelector('.osa-experimental-badge');
+      titleEl.textContent = CONFIG.title;
+      if (badge) titleEl.appendChild(badge);
+    }
+
+    // Update tooltip
+    const tooltip = container.querySelector('.osa-chat-tooltip');
+    if (tooltip) {
+      tooltip.textContent = 'Ask me about ' + CONFIG.title.replace(' Assistant', '');
+    }
+
+    // Update input placeholder
+    const input = container.querySelector('.osa-chat-input input');
+    if (input) {
+      input.placeholder = CONFIG.placeholder;
+    }
+
+    // Update initial assistant message if chat has only the default greeting
+    if (messages.length === 1 && messages[0].role === 'assistant') {
+      messages[0].content = CONFIG.initialMessage;
+      renderMessages(container);
+    }
+
+    // Update suggested questions
+    renderSuggestions(container);
+
+    // Update loading label if currently loading
+    const loadingLabel = container.querySelector('.osa-loading-label');
+    if (loadingLabel) {
+      loadingLabel.textContent = CONFIG.title;
     }
   }
 
@@ -2750,6 +2821,10 @@
       // Auto-derive storageKey from communityId if communityId changed but storageKey wasn't explicitly set
       if (opts.communityId && !opts.storageKey) {
         opts.storageKey = `osa-chat-history-${opts.communityId}`;
+      }
+      // Track which keys the embedder explicitly set
+      for (const key of Object.keys(opts)) {
+        _userSetKeys.add(key);
       }
       Object.assign(CONFIG, opts);
     },
