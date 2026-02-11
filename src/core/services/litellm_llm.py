@@ -28,6 +28,7 @@ Usage:
     ])
 """
 
+import json
 import logging
 import os
 from collections.abc import AsyncIterator, Iterator
@@ -264,8 +265,9 @@ class CachingLLMWrapper(BaseChatModel):
     def _add_cache_control(self, messages: list[BaseMessage]) -> list[dict]:
         """Transform messages to add cache_control to system messages.
 
-        Applies cache_control markers only to SystemMessage instances. Other message
-        types (HumanMessage, AIMessage) are passed through unchanged.
+        Applies cache_control markers to SystemMessage instances. Transforms
+        AIMessage tool_calls and ToolMessage into OpenAI dict format for
+        LiteLLM compatibility. HumanMessage instances get role assignment only.
 
         Validation is strict with fail-fast behavior:
         - Messages must have a 'content' attribute (ValueError if missing)
@@ -283,7 +285,7 @@ class CachingLLMWrapper(BaseChatModel):
                        or contains messages with None content
             TypeError: If messages is not a list
         """
-        from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+        from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
         # Validate input
         if messages is None:
@@ -340,13 +342,50 @@ class CachingLLMWrapper(BaseChatModel):
                     result.append({"role": "user", "content": str(msg.content)})
 
                 elif isinstance(msg, AIMessage):
-                    if msg.content is None:
+                    if msg.content is None and not msg.tool_calls:
                         logger.error("AIMessage at index %d has None content", i)
                         raise ValueError(
                             f"AIMessage at index {i} has None content. "
                             "All messages must have non-None content."
                         )
-                    result.append({"role": "assistant", "content": str(msg.content)})
+                    ai_dict: dict[str, Any] = {
+                        "role": "assistant",
+                        "content": str(msg.content) if msg.content else "",
+                    }
+                    # Convert LangChain tool_calls to OpenAI dict format since we're
+                    # serializing to raw dicts. LiteLLM translates to Anthropic format.
+                    if msg.tool_calls:
+                        ai_dict["tool_calls"] = [
+                            {
+                                "id": tc.get("id", tc.get("name", "")),
+                                "type": "function",
+                                "function": {
+                                    "name": tc["name"],
+                                    "arguments": (
+                                        json.dumps(tc["args"])
+                                        if isinstance(tc["args"], dict)
+                                        else str(tc["args"])
+                                    ),
+                                },
+                            }
+                            for tc in msg.tool_calls
+                        ]
+                    result.append(ai_dict)
+
+                elif isinstance(msg, ToolMessage):
+                    if msg.content is None:
+                        logger.error("ToolMessage at index %d has None content", i)
+                        raise ValueError(
+                            f"ToolMessage at index {i} has None content. "
+                            "All tool messages must have non-None content."
+                        )
+                    result.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": msg.tool_call_id,
+                            "content": str(msg.content),
+                        }
+                    )
 
                 else:
                     # Fallback for other message types

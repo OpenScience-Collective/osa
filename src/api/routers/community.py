@@ -20,6 +20,7 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages.utils import count_tokens_approximately
 from pydantic import BaseModel, Field, field_validator
 
 from src.api.config import get_settings
@@ -1528,6 +1529,22 @@ async def _stream_chat_response(
                 sse_event = {"event": "error", "message": str(e)}
                 yield f"data: {json.dumps(sse_event)}\n\n"
                 return
+
+        # Warn if conversation is getting long (approaching token budget).
+        # Threshold is 87.5% of DEFAULT_MAX_CONVERSATION_TOKENS (80K).
+        try:
+            from src.agents.base import DEFAULT_MAX_CONVERSATION_TOKENS
+
+            warning_threshold = int(DEFAULT_MAX_CONVERSATION_TOKENS * 0.875)
+            approx_tokens = count_tokens_approximately(session.messages)
+            if approx_tokens > warning_threshold:
+                sse_event = {
+                    "event": "warning",
+                    "message": "Conversation is getting long. Consider starting a new chat for best results.",
+                }
+                yield f"data: {json.dumps(sse_event)}\n\n"
+        except Exception:
+            logger.debug("Failed to check conversation length for warning", exc_info=True)
 
         sse_event = {"event": "done", "session_id": session.session_id}
         yield f"data: {json.dumps(sse_event)}\n\n"

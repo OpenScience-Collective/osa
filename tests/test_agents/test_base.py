@@ -6,7 +6,7 @@ actual LLM API calls.
 
 import pytest
 from langchain_core.language_models import FakeListChatModel
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.tools import tool
 
@@ -157,8 +157,8 @@ class TestTokenTrimming:
     """Tests for conversation token trimming."""
 
     def test_default_max_conversation_tokens(self) -> None:
-        """Default max conversation tokens should be 6000."""
-        assert DEFAULT_MAX_CONVERSATION_TOKENS == 6000
+        """Default max conversation tokens should be 80000."""
+        assert DEFAULT_MAX_CONVERSATION_TOKENS == 80000
 
     def test_agent_uses_default_max_tokens(self) -> None:
         """Agent should use default max conversation tokens."""
@@ -258,3 +258,72 @@ class TestTokenTrimming:
         assert len(conversation) == 2
         assert isinstance(conversation[-1], AIMessage)
         assert "HED" in conversation[-1].content
+
+    def test_messages_under_budget_not_trimmed(self) -> None:
+        """Messages below token budget should pass through unchanged."""
+        model = FakeListChatModel(responses=["Response"])
+        agent = SimpleAgent(model=model, max_conversation_tokens=80000)
+
+        messages = [
+            HumanMessage(content="What is HED?"),
+            AIMessage(content="HED is Hierarchical Event Descriptors."),
+            HumanMessage(content="Tell me more."),
+        ]
+
+        state = {"messages": messages}
+        result = agent._prepare_messages(state)
+
+        # System prompt + all 3 messages
+        conversation = result[1:]  # Skip system prompt
+        assert len(conversation) == 3
+        assert conversation[0].content == "What is HED?"
+        assert conversation[2].content == "Tell me more."
+
+    def test_tool_call_sequence_preserved(self) -> None:
+        """AIMessage+ToolMessage pairs should not be broken by trimming."""
+        model = FakeListChatModel(responses=["Response"])
+        agent = SimpleAgent(model=model, max_conversation_tokens=80000)
+
+        messages = [
+            HumanMessage(content="Search for BCI"),
+            AIMessage(
+                content="",
+                tool_calls=[{"id": "call_1", "name": "search", "args": {"q": "BCI"}}],
+            ),
+            ToolMessage(content="Found BCI docs.", tool_call_id="call_1"),
+            AIMessage(content="BCI stands for Brain-Computer Interface."),
+        ]
+
+        state = {"messages": messages}
+        result = agent._prepare_messages(state)
+
+        conversation = result[1:]  # Skip system prompt
+        assert len(conversation) == 4
+        # Verify AIMessage with tool_calls is preserved
+        assert hasattr(conversation[1], "tool_calls")
+        assert len(conversation[1].tool_calls) == 1
+        # Verify ToolMessage is preserved
+        assert isinstance(conversation[2], ToolMessage)
+        assert conversation[2].tool_call_id == "call_1"
+
+    def test_over_budget_trimming_keeps_recent(self) -> None:
+        """When over budget, trimming should keep most recent messages."""
+        model = FakeListChatModel(responses=["Response"])
+        # Very small budget to force trimming
+        agent = SimpleAgent(model=model, max_conversation_tokens=50)
+
+        messages = [
+            HumanMessage(content="Old question " * 30),
+            AIMessage(content="Old answer " * 30),
+            HumanMessage(content="Recent question"),
+        ]
+
+        state = {"messages": messages}
+        result = agent._prepare_messages(state)
+
+        conversation = result[1:]  # Skip system prompt
+        # Should have trimmed old messages but kept recent
+        assert any("Recent question" in str(m.content) for m in conversation)
+        # Should have fewer messages than input (trimming occurred)
+        total_tokens = count_tokens_approximately(conversation)
+        assert total_tokens <= 100  # budget + buffer
