@@ -1,14 +1,22 @@
-"""Background scheduler for automated tasks.
+"""Background scheduler for automated knowledge sync.
 
-Uses APScheduler to run periodic jobs for:
-- GitHub issues/PRs sync (daily by default)
-- Academic papers sync (weekly by default)
-- BEP (BIDS Extension Proposals) sync (weekly by default)
-- Community budget checks with alert issue creation (every 15 minutes)
+Uses APScheduler to run per-community sync jobs based on each community's
+sync configuration in their config.yaml. Sync types:
+- GitHub issues/PRs sync
+- Academic papers sync
+- Code docstring extraction
+- Mailing list archive sync
+- FAQ generation from discussions (LLM-powered)
+- BIDS Extension Proposals (BEP) sync
+- Community budget checks (every 15 minutes, global)
+
+Each community controls its own schedule via the `sync:` section in config.yaml.
+On startup, empty databases are automatically seeded with an immediate sync.
 """
 
 import logging
 import os
+import threading
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -16,7 +24,7 @@ from apscheduler.triggers.cron import CronTrigger
 from src.api.config import get_settings
 from src.assistants import registry
 from src.knowledge.bep_sync import sync_beps
-from src.knowledge.db import init_db
+from src.knowledge.db import init_db, is_db_populated
 from src.knowledge.github_sync import sync_repos
 from src.knowledge.papers_sync import sync_all_papers, sync_citing_papers
 from src.metrics.alerts import create_budget_alert_issue
@@ -28,188 +36,236 @@ logger = logging.getLogger(__name__)
 # Global scheduler instance
 _scheduler: BackgroundScheduler | None = None
 
-
-def _get_communities_with_sync() -> list[str]:
-    """Get all community IDs that have sync configuration.
-
-    Returns:
-        List of community IDs with GitHub repos or citation config.
-    """
-    return [info.id for info in registry.list_all() if info.sync_config]
-
-
-def _get_community_repos(community_id: str) -> list[str]:
-    """Get GitHub repos for a community from the registry."""
-    info = registry.get(community_id)
-    if info and info.community_config and info.community_config.github:
-        return info.community_config.github.repos
-    return []
-
-
-def _get_community_paper_queries(community_id: str) -> list[str]:
-    """Get paper queries for a community from the registry."""
-    info = registry.get(community_id)
-    if info and info.community_config and info.community_config.citations:
-        return info.community_config.citations.queries
-    return []
-
-
-def _get_community_paper_dois(community_id: str) -> list[str]:
-    """Get paper DOIs for a community from the registry."""
-    info = registry.get(community_id)
-    if info and info.community_config and info.community_config.citations:
-        return info.community_config.citations.dois
-    return []
-
-
-# Failure tracking for alerting
-_github_sync_failures = 0
-_papers_sync_failures = 0
-_beps_sync_failures = 0
+# Per-community, per-sync-type failure tracking
+_sync_failures: dict[str, int] = {}
 _budget_check_failures = 0
 MAX_CONSECUTIVE_FAILURES = 3
 
 
-def _run_github_sync() -> None:
-    """Run GitHub sync job for all communities."""
-    global _github_sync_failures
-    logger.info("Starting scheduled GitHub sync for all communities")
+def _failure_key(sync_type: str, community_id: str) -> str:
+    return f"{sync_type}_{community_id}"
+
+
+def _track_failure(sync_type: str, community_id: str, error: Exception) -> None:
+    """Track a sync failure and log appropriately."""
+    key = _failure_key(sync_type, community_id)
+    _sync_failures[key] = _sync_failures.get(key, 0) + 1
+    count = _sync_failures[key]
+    logger.error(
+        "%s sync failed for %s (attempt %d/%d): %s",
+        sync_type,
+        community_id,
+        count,
+        MAX_CONSECUTIVE_FAILURES,
+        error,
+        exc_info=True,
+    )
+    if count >= MAX_CONSECUTIVE_FAILURES:
+        logger.critical(
+            "%s sync for %s has failed %d times consecutively. Manual intervention required.",
+            sync_type,
+            community_id,
+            count,
+        )
+
+
+def _reset_failure(sync_type: str, community_id: str) -> None:
+    """Reset failure count on success."""
+    key = _failure_key(sync_type, community_id)
+    _sync_failures.pop(key, None)
+
+
+# ---------------------------------------------------------------------------
+# Per-community sync job functions
+# ---------------------------------------------------------------------------
+
+
+def _run_github_sync_for_community(community_id: str) -> None:
+    """Run GitHub sync for a single community."""
+    logger.info("Starting scheduled GitHub sync for %s", community_id)
     try:
-        communities = _get_communities_with_sync()
-        if not communities:
-            logger.info("No communities with sync configuration found")
+        info = registry.get(community_id)
+        if not info or not info.community_config or not info.community_config.github:
+            logger.debug("No GitHub repos configured for %s", community_id)
             return
 
-        grand_total = 0
-        for community_id in communities:
-            repos = _get_community_repos(community_id)
-            if not repos:
-                logger.debug("No GitHub repos configured for %s", community_id)
-                continue
+        repos = info.community_config.github.repos
+        init_db(community_id)
+        results = sync_repos(repos, project=community_id, incremental=True)
+        total = sum(results.values())
+        logger.info("GitHub sync complete for %s: %d items", community_id, total)
+        _reset_failure("github", community_id)
+    except Exception as e:
+        _track_failure("github", community_id, e)
 
-            logger.info("Syncing GitHub for community: %s", community_id)
-            results = sync_repos(repos, project=community_id, incremental=True)
+
+def _run_papers_sync_for_community(community_id: str) -> None:
+    """Run papers sync for a single community."""
+    settings = get_settings()
+    logger.info("Starting scheduled papers sync for %s", community_id)
+    try:
+        info = registry.get(community_id)
+        if not info or not info.community_config or not info.community_config.citations:
+            logger.debug("No citation config for %s", community_id)
+            return
+
+        citations = info.community_config.citations
+        init_db(community_id)
+        total = 0
+
+        if citations.queries:
+            results = sync_all_papers(
+                queries=citations.queries,
+                semantic_scholar_api_key=settings.semantic_scholar_api_key,
+                pubmed_api_key=settings.pubmed_api_key,
+                openalex_api_key=settings.openalex_api_key,
+                openalex_email=settings.openalex_email,
+                project=community_id,
+            )
+            total += sum(results.values())
+
+        if citations.dois:
+            citing_count = sync_citing_papers(
+                citations.dois,
+                project=community_id,
+                openalex_api_key=settings.openalex_api_key,
+                openalex_email=settings.openalex_email,
+            )
+            total += citing_count
+
+        logger.info("Papers sync complete for %s: %d items", community_id, total)
+        _reset_failure("papers", community_id)
+    except Exception as e:
+        _track_failure("papers", community_id, e)
+
+
+def _run_docstrings_sync_for_community(community_id: str) -> None:
+    """Run docstring extraction sync for a single community."""
+    logger.info("Starting scheduled docstrings sync for %s", community_id)
+    try:
+        info = registry.get(community_id)
+        if not info or not info.community_config or not info.community_config.docstrings:
+            logger.debug("No docstrings config for %s", community_id)
+            return
+
+        from src.knowledge.docstring_sync import sync_repo_docstrings
+
+        init_db(community_id)
+        total = 0
+        for repo_config in info.community_config.docstrings.repos:
+            for language in repo_config.languages:
+                count = sync_repo_docstrings(
+                    repo_config.repo,
+                    language,
+                    project=community_id,
+                    branch=repo_config.branch,
+                )
+                total += count
+                logger.info(
+                    "Docstrings sync: %d %s symbols from %s@%s",
+                    count,
+                    language,
+                    repo_config.repo,
+                    repo_config.branch,
+                )
+
+        logger.info("Docstrings sync complete for %s: %d total symbols", community_id, total)
+        _reset_failure("docstrings", community_id)
+    except Exception as e:
+        _track_failure("docstrings", community_id, e)
+
+
+def _run_mailman_sync_for_community(community_id: str) -> None:
+    """Run mailing list archive sync for a single community."""
+    logger.info("Starting scheduled mailman sync for %s", community_id)
+    try:
+        info = registry.get(community_id)
+        if not info or not info.community_config or not info.community_config.mailman:
+            logger.debug("No mailman config for %s", community_id)
+            return
+
+        from src.knowledge.mailman_sync import sync_mailing_list
+
+        init_db(community_id)
+        grand_total = 0
+        for mailman_config in info.community_config.mailman:
+            results = sync_mailing_list(
+                list_name=mailman_config.list_name,
+                base_url=str(mailman_config.base_url),
+                project=community_id,
+                start_year=mailman_config.start_year,
+            )
             total = sum(results.values())
             grand_total += total
-            logger.info("GitHub sync complete for %s: %d items", community_id, total)
-
-        logger.info("GitHub sync complete for all communities: %d items synced", grand_total)
-        _github_sync_failures = 0  # Reset on success
-    except Exception as e:
-        _github_sync_failures += 1
-        logger.error(
-            "GitHub sync failed (attempt %d/%d): %s",
-            _github_sync_failures,
-            MAX_CONSECUTIVE_FAILURES,
-            e,
-            exc_info=True,
-        )
-        if _github_sync_failures >= MAX_CONSECUTIVE_FAILURES:
-            logger.critical(
-                "GitHub sync has failed %d times consecutively. Manual intervention required.",
-                _github_sync_failures,
+            logger.info(
+                "Mailman sync: %d messages from %s",
+                total,
+                mailman_config.list_name,
             )
 
+        logger.info("Mailman sync complete for %s: %d total messages", community_id, grand_total)
+        _reset_failure("mailman", community_id)
+    except Exception as e:
+        _track_failure("mailman", community_id, e)
 
-def _run_papers_sync() -> None:
-    """Run papers sync job for all communities."""
-    global _papers_sync_failures
-    settings = get_settings()
-    logger.info(
-        "Starting scheduled papers sync for all communities "
-        "(OpenAlex key: %s, S2 key: %s, PubMed key: %s)",
-        "configured" if settings.openalex_api_key else "none",
-        "configured" if settings.semantic_scholar_api_key else "none",
-        "configured" if settings.pubmed_api_key else "none",
-    )
+
+def _run_faq_sync_for_community(community_id: str) -> None:
+    """Run FAQ generation sync for a single community."""
+    logger.info("Starting scheduled FAQ sync for %s", community_id)
     try:
-        communities = _get_communities_with_sync()
-        if not communities:
-            logger.info("No communities with sync configuration found")
+        info = registry.get(community_id)
+        if not info or not info.community_config:
             return
 
-        grand_total = 0
-        for community_id in communities:
-            queries = _get_community_paper_queries(community_id)
-            dois = _get_community_paper_dois(community_id)
+        config = info.community_config
+        if not config.mailman or not config.faq_generation:
+            logger.debug("No FAQ generation config for %s", community_id)
+            return
 
-            if not queries and not dois:
-                logger.debug("No paper queries/DOIs configured for %s", community_id)
-                continue
+        from src.knowledge.faq_summarizer import summarize_threads
 
-            logger.info("Syncing papers for community: %s", community_id)
-            community_total = 0
+        init_db(community_id)
+        list_names = [m.list_name for m in config.mailman]
 
-            # Sync papers by query
-            if queries:
-                results = sync_all_papers(
-                    queries=queries,
-                    semantic_scholar_api_key=settings.semantic_scholar_api_key,
-                    pubmed_api_key=settings.pubmed_api_key,
-                    openalex_api_key=settings.openalex_api_key,
-                    openalex_email=settings.openalex_email,
-                    project=community_id,
-                )
-                community_total += sum(results.values())
-
-            # Sync citing papers by DOI
-            if dois:
-                citing_count = sync_citing_papers(
-                    dois,
-                    project=community_id,
-                    openalex_api_key=settings.openalex_api_key,
-                    openalex_email=settings.openalex_email,
-                )
-                community_total += citing_count
-
-            grand_total += community_total
-            logger.info("Papers sync complete for %s: %d items", community_id, community_total)
-
-        logger.info("Papers sync complete for all communities: %d items synced", grand_total)
-        _papers_sync_failures = 0  # Reset on success
-    except Exception as e:
-        _papers_sync_failures += 1
-        logger.error(
-            "Papers sync failed (attempt %d/%d): %s",
-            _papers_sync_failures,
-            MAX_CONSECUTIVE_FAILURES,
-            e,
-            exc_info=True,
-        )
-        if _papers_sync_failures >= MAX_CONSECUTIVE_FAILURES:
-            logger.critical(
-                "Papers sync has failed %d times consecutively. Manual intervention required.",
-                _papers_sync_failures,
+        for list_name in list_names:
+            result = summarize_threads(
+                list_name=list_name,
+                project=community_id,
+                quality_threshold=config.faq_generation.quality_threshold,
+            )
+            logger.info(
+                "FAQ sync for %s/%s: %d created, %d skipped",
+                community_id,
+                list_name,
+                result.get("created", 0),
+                result.get("skipped", 0),
             )
 
+        _reset_failure("faq", community_id)
+    except Exception as e:
+        _track_failure("faq", community_id, e)
 
-def _run_beps_sync() -> None:
-    """Run BEP sync job for the BIDS community."""
-    global _beps_sync_failures
-    logger.info("Starting scheduled BEP sync")
+
+def _run_beps_sync_for_community(community_id: str) -> None:
+    """Run BEP sync for a single community (typically BIDS only)."""
+    logger.info("Starting scheduled BEP sync for %s", community_id)
     try:
-        init_db("bids")
-        stats = sync_beps("bids")
+        init_db(community_id)
+        stats = sync_beps(community_id)
         logger.info(
-            "BEP sync complete: %d total, %d with content",
+            "BEP sync complete for %s: %d total, %d with content",
+            community_id,
             stats["total"],
             stats["with_content"],
         )
-        _beps_sync_failures = 0
+        _reset_failure("beps", community_id)
     except Exception as e:
-        _beps_sync_failures += 1
-        logger.error(
-            "BEP sync failed (attempt %d/%d): %s",
-            _beps_sync_failures,
-            MAX_CONSECUTIVE_FAILURES,
-            e,
-            exc_info=True,
-        )
-        if _beps_sync_failures >= MAX_CONSECUTIVE_FAILURES:
-            logger.critical(
-                "BEP sync has failed %d times consecutively. Manual intervention required.",
-                _beps_sync_failures,
-            )
+        _track_failure("beps", community_id, e)
+
+
+# ---------------------------------------------------------------------------
+# Budget check (global, not per-community scheduled)
+# ---------------------------------------------------------------------------
 
 
 def _check_community_budgets() -> None:
@@ -286,8 +342,109 @@ def _check_community_budgets() -> None:
             )
 
 
+# ---------------------------------------------------------------------------
+# Sync type to job function mapping
+# ---------------------------------------------------------------------------
+
+# Maps sync type name to (job_function, data_config_check)
+# data_config_check is a lambda that returns True if the community has the
+# necessary data configuration for this sync type
+_SYNC_TYPE_MAP: dict[str, tuple] = {
+    "github": (
+        _run_github_sync_for_community,
+        lambda cfg: cfg.github and cfg.github.repos,
+    ),
+    "papers": (
+        _run_papers_sync_for_community,
+        lambda cfg: cfg.citations and (cfg.citations.queries or cfg.citations.dois),
+    ),
+    "docstrings": (
+        _run_docstrings_sync_for_community,
+        lambda cfg: cfg.docstrings and cfg.docstrings.repos,
+    ),
+    "mailman": (
+        _run_mailman_sync_for_community,
+        lambda cfg: bool(cfg.mailman),
+    ),
+    "faq": (
+        _run_faq_sync_for_community,
+        lambda cfg: bool(cfg.mailman) and cfg.faq_generation is not None,
+    ),
+    "beps": (
+        _run_beps_sync_for_community,
+        lambda _cfg: True,  # BEP sync doesn't need special data config
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# Startup seed: populate empty databases
+# ---------------------------------------------------------------------------
+
+
+def _check_and_seed_databases() -> None:
+    """Check for empty databases and trigger immediate sync if needed.
+
+    Runs in a background thread to avoid blocking app startup.
+    Only seeds sync types that the community has configured in both
+    its data config and sync schedule.
+    """
+    logger.info("Checking for empty knowledge databases that need seeding")
+    seeded_any = False
+
+    for info in registry.list_all():
+        if not info.community_config or not info.community_config.sync:
+            continue
+
+        community_id = info.id
+        config = info.community_config
+        sync_config = config.sync
+        populated = is_db_populated(community_id)
+
+        for sync_type in ("github", "papers", "docstrings", "mailman", "beps"):
+            schedule = getattr(sync_config, sync_type, None)
+            if not schedule:
+                continue
+
+            job_func, data_check = _SYNC_TYPE_MAP[sync_type]
+            if not data_check(config):
+                continue
+
+            if not populated.get(sync_type, False):
+                logger.info(
+                    "Empty %s database for %s, triggering seed sync",
+                    sync_type,
+                    community_id,
+                )
+                try:
+                    init_db(community_id)
+                    job_func(community_id)
+                    seeded_any = True
+                except Exception:
+                    logger.error(
+                        "Seed sync failed for %s/%s",
+                        community_id,
+                        sync_type,
+                        exc_info=True,
+                    )
+
+    if seeded_any:
+        logger.info("Startup database seeding complete")
+    else:
+        logger.info("All community databases already populated, no seeding needed")
+
+
+# ---------------------------------------------------------------------------
+# Scheduler lifecycle
+# ---------------------------------------------------------------------------
+
+
 def start_scheduler() -> BackgroundScheduler | None:
-    """Start the background scheduler with configured sync jobs.
+    """Start the background scheduler with per-community sync jobs.
+
+    Reads each community's sync config from their YAML configuration
+    and registers APScheduler jobs accordingly. Also triggers immediate
+    sync for any empty databases.
 
     Returns:
         The scheduler instance, or None if sync is disabled.
@@ -309,56 +466,59 @@ def start_scheduler() -> BackgroundScheduler | None:
         os.environ["GITHUB_TOKEN"] = settings.github_token
         logger.info("GITHUB_TOKEN set for GitHub API requests")
 
-    # Initialize database
-    logger.info("Initializing knowledge database")
-    init_db()
-
     # Create scheduler
     _scheduler = BackgroundScheduler()
+    jobs_registered = 0
 
-    # Add GitHub sync job
-    try:
-        github_trigger = CronTrigger.from_crontab(settings.sync_github_cron)
-        _scheduler.add_job(
-            _run_github_sync,
-            trigger=github_trigger,
-            id="github_sync",
-            name="GitHub Issues/PRs Sync",
-            replace_existing=True,
-        )
-        logger.info("GitHub sync scheduled: %s", settings.sync_github_cron)
-    except ValueError as e:
-        logger.error("Invalid GitHub sync cron expression: %s", e)
+    # Register per-community sync jobs
+    for info in registry.list_all():
+        if not info.community_config or not info.community_config.sync:
+            continue
 
-    # Add papers sync job
-    try:
-        papers_trigger = CronTrigger.from_crontab(settings.sync_papers_cron)
-        _scheduler.add_job(
-            _run_papers_sync,
-            trigger=papers_trigger,
-            id="papers_sync",
-            name="Academic Papers Sync",
-            replace_existing=True,
-        )
-        logger.info("Papers sync scheduled: %s", settings.sync_papers_cron)
-    except ValueError as e:
-        logger.error("Invalid papers sync cron expression: %s", e)
+        community_id = info.id
+        config = info.community_config
+        sync_config = config.sync
 
-    # Add BEP sync job (weekly, for BIDS community)
-    try:
-        beps_trigger = CronTrigger.from_crontab(settings.sync_beps_cron)
-        _scheduler.add_job(
-            _run_beps_sync,
-            trigger=beps_trigger,
-            id="beps_sync",
-            name="BIDS Extension Proposals Sync",
-            replace_existing=True,
-        )
-        logger.info("BEP sync scheduled: %s", settings.sync_beps_cron)
-    except ValueError as e:
-        logger.error("Invalid BEP sync cron expression: %s", e)
+        for sync_type, (job_func, data_check) in _SYNC_TYPE_MAP.items():
+            schedule = getattr(sync_config, sync_type, None)
+            if not schedule:
+                continue
 
-    # Add budget check job (every 15 minutes)
+            if not data_check(config):
+                logger.warning(
+                    "Community %s has sync schedule for %s but no data config, skipping",
+                    community_id,
+                    sync_type,
+                )
+                continue
+
+            job_id = f"{sync_type}_{community_id}"
+            try:
+                trigger = CronTrigger.from_crontab(schedule.cron)
+                _scheduler.add_job(
+                    job_func,
+                    trigger=trigger,
+                    args=[community_id],
+                    id=job_id,
+                    name=f"{sync_type} sync for {community_id}",
+                    replace_existing=True,
+                )
+                jobs_registered += 1
+                logger.info(
+                    "Scheduled %s sync for %s: %s",
+                    sync_type,
+                    community_id,
+                    schedule.cron,
+                )
+            except ValueError as e:
+                logger.error(
+                    "Invalid cron expression for %s/%s: %s",
+                    community_id,
+                    sync_type,
+                    e,
+                )
+
+    # Budget check (global, every 15 minutes)
     try:
         budget_trigger = CronTrigger(minute="*/15")
         _scheduler.add_job(
@@ -374,7 +534,15 @@ def start_scheduler() -> BackgroundScheduler | None:
 
     # Start the scheduler
     _scheduler.start()
-    logger.info("Background scheduler started")
+    logger.info("Background scheduler started with %d sync jobs", jobs_registered)
+
+    # Seed empty databases in background thread (non-blocking)
+    seed_thread = threading.Thread(
+        target=_check_and_seed_databases,
+        name="db-seed",
+        daemon=True,
+    )
+    seed_thread.start()
 
     return _scheduler
 
@@ -395,10 +563,10 @@ def get_scheduler() -> BackgroundScheduler | None:
 
 
 def run_sync_now(sync_type: str = "all") -> dict[str, int]:
-    """Run sync immediately for all communities (for manual triggers or initial sync).
+    """Run sync immediately for all communities (for manual triggers).
 
     Args:
-        sync_type: "github", "papers", "beps", or "all"
+        sync_type: "github", "papers", "docstrings", "mailman", "faq", "beps", or "all"
 
     Returns:
         Dict mapping source to items synced across all communities
@@ -410,69 +578,33 @@ def run_sync_now(sync_type: str = "all") -> dict[str, int]:
     if settings.github_token:
         os.environ["GITHUB_TOKEN"] = settings.github_token
 
-    # Initialize database
-    init_db()
+    sync_types_to_run = list(_SYNC_TYPE_MAP.keys()) if sync_type == "all" else [sync_type]
 
-    github_total = 0
-    papers_total = 0
+    for info in registry.list_all():
+        if not info.community_config:
+            continue
 
-    communities = _get_communities_with_sync()
-    if not communities:
-        logger.info("No communities with sync configuration found")
-        results["github"] = 0
-        results["papers"] = 0
-        return results
+        community_id = info.id
+        config = info.community_config
 
-    for community_id in communities:
-        if sync_type in ("github", "all"):
-            repos = _get_community_repos(community_id)
-            if repos:
-                logger.info("Running GitHub sync for %s", community_id)
-                github_results = sync_repos(repos, project=community_id, incremental=True)
-                github_total += sum(github_results.values())
+        for st in sync_types_to_run:
+            if st not in _SYNC_TYPE_MAP:
+                continue
 
-        if sync_type in ("papers", "all"):
-            queries = _get_community_paper_queries(community_id)
-            dois = _get_community_paper_dois(community_id)
+            job_func, data_check = _SYNC_TYPE_MAP[st]
+            if not data_check(config):
+                continue
 
-            if queries or dois:
-                logger.info("Running papers sync for %s", community_id)
-                community_papers = 0
-
-                if queries:
-                    papers_results = sync_all_papers(
-                        queries=queries,
-                        semantic_scholar_api_key=settings.semantic_scholar_api_key,
-                        pubmed_api_key=settings.pubmed_api_key,
-                        openalex_api_key=settings.openalex_api_key,
-                        openalex_email=settings.openalex_email,
-                        project=community_id,
-                    )
-                    community_papers += sum(papers_results.values())
-
-                if dois:
-                    citing_count = sync_citing_papers(
-                        dois,
-                        project=community_id,
-                        openalex_api_key=settings.openalex_api_key,
-                        openalex_email=settings.openalex_email,
-                    )
-                    community_papers += citing_count
-
-                papers_total += community_papers
-
-    # BEP sync (BIDS community only)
-    if sync_type in ("beps", "all") and "bids" in communities:
-        logger.info("Running BEP sync for BIDS")
-        try:
-            init_db("bids")
-            bep_stats = sync_beps("bids")
-            results["beps"] = bep_stats["total"]
-        except Exception:
-            logger.error("BEP sync failed during run_sync_now", exc_info=True)
-            results["beps"] = 0
-
-    results["github"] = github_total
-    results["papers"] = papers_total
+            try:
+                init_db(community_id)
+                job_func(community_id)
+                results[st] = results.get(st, 0) + 1
+            except Exception:
+                logger.error(
+                    "Manual %s sync failed for %s",
+                    st,
+                    community_id,
+                    exc_info=True,
+                )
 
     return results

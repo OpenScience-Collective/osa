@@ -907,3 +907,47 @@ def update_summarization_status(
         """,
         (list_name, thread_id, status, failure_reason, token_count, cost_estimate, _now_iso()),
     )
+
+
+def is_db_populated(project: str) -> dict[str, bool]:
+    """Check which knowledge tables have data for a community.
+
+    Returns a dict mapping sync type to whether the corresponding table
+    has at least one row. Used by the scheduler to determine if a startup
+    seed sync is needed.
+
+    Args:
+        project: Community ID (e.g., 'hed', 'bids', 'eeglab').
+
+    Returns:
+        Dict like {'github': True, 'papers': False, 'docstrings': False, ...}
+    """
+    db_path = get_db_path(project)
+    if not db_path.exists():
+        return {
+            "github": False,
+            "papers": False,
+            "docstrings": False,
+            "mailman": False,
+            "faq": False,
+            "beps": False,
+        }
+
+    table_map = {
+        "github": "github_items",
+        "papers": "papers",
+        "docstrings": "docstrings",
+        "mailman": "mailing_list_messages",
+        "faq": "faq_entries",
+        "beps": "bep_items",
+    }
+
+    result = {}
+    with get_connection(project) as conn:
+        for sync_type, table_name in table_map.items():
+            try:
+                row = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()  # noqa: S608
+                result[sync_type] = row[0] > 0
+            except sqlite3.OperationalError:
+                result[sync_type] = False
+    return result

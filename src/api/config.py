@@ -134,19 +134,9 @@ class Settings(BaseSettings):
     )
 
     # Knowledge Sync Scheduling
+    # Master switch only; per-community schedules are defined in each community's config.yaml
+    # Empty databases are automatically seeded on startup when sync is enabled
     sync_enabled: bool = Field(default=True, description="Enable automated knowledge sync")
-    sync_github_cron: str = Field(
-        default="0 2 * * *",
-        description="Cron schedule for GitHub sync (default: daily at 2am UTC)",
-    )
-    sync_papers_cron: str = Field(
-        default="0 3 * * 0",
-        description="Cron schedule for papers sync (default: weekly Sunday at 3am UTC)",
-    )
-    sync_beps_cron: str = Field(
-        default="0 4 * * 0",
-        description="Cron schedule for BEP sync (default: weekly Sunday at 4am UTC)",
-    )
 
     def parse_admin_keys(self) -> set[str]:
         """Parse API_KEYS into a set of valid admin keys.

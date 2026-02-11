@@ -419,6 +419,15 @@ documentation:
     category: examples
     description: Examples of correct and incorrect HED annotations in JSON format for testing validation tools.
 
+# Sync schedule configuration
+# Each sync type runs on its own cron schedule (UTC)
+# Only types with both a schedule AND corresponding data config are scheduled
+sync:
+  github:
+    cron: "0 2 * * *"       # daily at 2am UTC
+  papers:
+    cron: "0 3 * * 0"       # weekly Sunday at 3am UTC
+
 # GitHub repositories for issue/PR sync
 github:
   repos:

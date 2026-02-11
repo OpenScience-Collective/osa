@@ -373,6 +373,20 @@ documentation:
     category: integration
     description: Real-time data streaming with Lab Streaming Layer.
 
+# Sync schedule configuration
+# Each sync type runs on its own cron schedule (UTC)
+sync:
+  github:
+    cron: "0 2 * * *"       # daily at 2am UTC
+  papers:
+    cron: "0 3 * * 0"       # weekly Sunday at 3am UTC
+  docstrings:
+    cron: "0 4 * * 1"       # weekly Monday at 4am UTC
+  mailman:
+    cron: "0 5 * * 1"       # weekly Monday at 5am UTC
+  faq:
+    cron: "0 6 1 * *"       # monthly 1st at 6am UTC
+
 # GitHub repositories for issue/PR sync
 github:
   repos:
