@@ -1284,6 +1284,7 @@ def _extract_token_usage(event_data: dict) -> tuple[int, int]:
             return 0, 0
         return usage.get("input_tokens") or 0, usage.get("output_tokens") or 0
     except Exception:
+        logger.debug("Failed to extract token usage from event data", exc_info=True)
         return 0, 0
 
 

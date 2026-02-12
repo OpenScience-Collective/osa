@@ -922,17 +922,6 @@ def is_db_populated(project: str) -> dict[str, bool]:
     Returns:
         Dict like {'github': True, 'papers': False, 'docstrings': False, ...}
     """
-    db_path = get_db_path(project)
-    if not db_path.exists():
-        return {
-            "github": False,
-            "papers": False,
-            "docstrings": False,
-            "mailman": False,
-            "faq": False,
-            "beps": False,
-        }
-
     table_map = {
         "github": "github_items",
         "papers": "papers",
@@ -941,6 +930,10 @@ def is_db_populated(project: str) -> dict[str, bool]:
         "faq": "faq_entries",
         "beps": "bep_items",
     }
+
+    db_path = get_db_path(project)
+    if not db_path.exists():
+        return dict.fromkeys(table_map, False)
 
     result = {}
     with get_connection(project) as conn:
