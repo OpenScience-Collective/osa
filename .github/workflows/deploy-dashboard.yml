@@ -26,6 +26,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Prepare SPA fallback
+        run: |
+          # Copy SPA to root so Cloudflare Pages auto-detection serves it
+          # for all unmatched paths (e.g., /osa/eeglab -> index.html)
+          cp dashboard/osa/index.html dashboard/index.html
+
       - name: Get branch name
         id: branch
         run: |
