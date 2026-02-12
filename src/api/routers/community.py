@@ -1278,6 +1278,8 @@ def _log_streaming_metrics(
     tools_called: list[str],
     start_time: float,
     status_code: int,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
 ) -> None:
     """Log metrics at the end of a streaming response.
 
@@ -1293,6 +1295,10 @@ def _log_streaming_metrics(
             # Mark as logged so middleware doesn't double-log
             http_request.state.metrics_logged = True
 
+        total_tokens = input_tokens + output_tokens
+        model = awm.model if awm else None
+        cost = estimate_cost(model, input_tokens, output_tokens) if total_tokens > 0 else None
+
         entry = RequestLogEntry(
             request_id=request_id,
             timestamp=now_iso(),
@@ -1301,12 +1307,16 @@ def _log_streaming_metrics(
             community_id=community_id,
             duration_ms=round(duration_ms, 1),
             status_code=status_code,
-            model=awm.model if awm else None,
+            model=model,
             key_source=awm.key_source if awm else None,
             tools_called=tools_called,
             stream=True,
             tool_call_count=len(tools_called),
             langfuse_trace_id=awm.langfuse_trace_id if awm else None,
+            input_tokens=input_tokens if total_tokens > 0 else None,
+            output_tokens=output_tokens if total_tokens > 0 else None,
+            total_tokens=total_tokens if total_tokens > 0 else None,
+            estimated_cost=cost,
         )
         log_request(entry)
     except Exception:
@@ -1340,6 +1350,8 @@ async def _stream_ask_response(
     start_time = time.monotonic()
     tools_called: list[str] = []
     awm: AssistantWithMetrics | None = None
+    total_input_tokens = 0
+    total_output_tokens = 0
 
     try:
         awm = create_community_assistant(
@@ -1368,6 +1380,12 @@ async def _stream_ask_response(
                 if hasattr(content, "content") and content.content:
                     sse_event = {"event": "content", "content": content.content}
                     yield f"data: {json.dumps(sse_event)}\n\n"
+
+            elif kind == "on_chat_model_end":
+                ai_msg = event.get("data", {}).get("output")
+                if ai_msg and hasattr(ai_msg, "usage_metadata") and ai_msg.usage_metadata:
+                    total_input_tokens += ai_msg.usage_metadata.get("input_tokens", 0)
+                    total_output_tokens += ai_msg.usage_metadata.get("output_tokens", 0)
 
             elif kind == "on_tool_start":
                 tool_input = event.get("data", {}).get("input", {})
@@ -1402,6 +1420,8 @@ async def _stream_ask_response(
             tools_called=tools_called,
             start_time=start_time,
             status_code=200,
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
         )
 
     except HTTPException as e:
@@ -1423,6 +1443,8 @@ async def _stream_ask_response(
             tools_called=tools_called,
             start_time=start_time,
             status_code=e.status_code,
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
         )
     except ValueError as e:
         # Input validation errors - user's fault
@@ -1441,6 +1463,8 @@ async def _stream_ask_response(
             tools_called=tools_called,
             start_time=start_time,
             status_code=400,
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
         )
     except Exception as e:
         # Unexpected errors - log with full context
@@ -1471,6 +1495,8 @@ async def _stream_ask_response(
             tools_called=tools_called,
             start_time=start_time,
             status_code=500,
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
         )
 
 
@@ -1497,6 +1523,8 @@ async def _stream_chat_response(
     start_time = time.monotonic()
     tools_called: list[str] = []
     awm: AssistantWithMetrics | None = None
+    total_input_tokens = 0
+    total_output_tokens = 0
 
     # Send session_id immediately so the client captures it even if the
     # stream is truncated by a proxy timeout.
@@ -1534,6 +1562,12 @@ async def _stream_chat_response(
                     full_response += chunk
                     sse_event = {"event": "content", "content": chunk}
                     yield f"data: {json.dumps(sse_event)}\n\n"
+
+            elif kind == "on_chat_model_end":
+                ai_msg = event.get("data", {}).get("output")
+                if ai_msg and hasattr(ai_msg, "usage_metadata") and ai_msg.usage_metadata:
+                    total_input_tokens += ai_msg.usage_metadata.get("input_tokens", 0)
+                    total_output_tokens += ai_msg.usage_metadata.get("output_tokens", 0)
 
             elif kind == "on_tool_start":
                 tool_input = event.get("data", {}).get("input", {})
@@ -1588,6 +1622,8 @@ async def _stream_chat_response(
             tools_called=tools_called,
             start_time=start_time,
             status_code=200,
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
         )
 
     except HTTPException as e:
@@ -1610,6 +1646,8 @@ async def _stream_chat_response(
             tools_called=tools_called,
             start_time=start_time,
             status_code=e.status_code,
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
         )
     except ValueError as e:
         # Session limit errors
@@ -1624,6 +1662,8 @@ async def _stream_chat_response(
             tools_called=tools_called,
             start_time=start_time,
             status_code=400,
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
         )
     except Exception as e:
         error_id = str(uuid.uuid4())
@@ -1654,4 +1694,6 @@ async def _stream_chat_response(
             tools_called=tools_called,
             start_time=start_time,
             status_code=500,
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
         )
