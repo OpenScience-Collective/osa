@@ -1289,7 +1289,7 @@ class TestModelNameValidation:
             "provider/model/extra",  # Too many slashes
         ]
         for model in invalid_models:
-            with pytest.raises(ValidationError, match="Invalid model name format"):
+            with pytest.raises(ValidationError, match="Invalid model name"):
                 CommunityConfig(
                     id="test",
                     name="Test",

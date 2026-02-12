@@ -1,407 +1,183 @@
-"""Tests for background scheduler and multi-community sync support.
+"""Tests for per-community background scheduler.
 
-These tests ensure the scheduler correctly handles multiple communities,
-iterating over all registered communities rather than being hardcoded to HED.
+Tests ensure the scheduler correctly:
+- Reads sync config from community YAML configs
+- Registers per-community jobs with correct cron triggers
+- Handles communities without sync config
+- Seeds empty databases on startup
 """
-
-from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.api.scheduler import (
-    _get_communities_with_sync,
-    _get_community_paper_dois,
-    _get_community_paper_queries,
-    _get_community_repos,
-    _run_github_sync,
-    _run_papers_sync,
-    run_sync_now,
+    _SYNC_TYPE_MAP,
+    _failure_key,
+    _reset_failure,
+    _sync_failures,
+    _track_failure,
 )
+from src.assistants import discover_assistants, registry
+from src.core.config.community import SyncConfig, SyncTypeSchedule
 
 
-@pytest.fixture
-def _mock_registry():
-    """Mock registry with multiple communities for testing."""
-    with patch("src.api.scheduler.registry") as mock_reg:
-        # Create mock community info objects
-        hed_info = MagicMock()
-        hed_info.id = "hed"
-        hed_info.sync_config = True
-        hed_info.community_config = MagicMock()
-        hed_info.community_config.github = MagicMock()
-        hed_info.community_config.github.repos = [
-            "hed-standard/hed-specification",
-            "hed-standard/hed-python",
-        ]
-        hed_info.community_config.citations = MagicMock()
-        hed_info.community_config.citations.queries = ["HED annotation"]
-        hed_info.community_config.citations.dois = ["10.1234/hed.example"]
-
-        bids_info = MagicMock()
-        bids_info.id = "bids"
-        bids_info.sync_config = True
-        bids_info.community_config = MagicMock()
-        bids_info.community_config.github = MagicMock()
-        bids_info.community_config.github.repos = ["bids-standard/bids-specification"]
-        bids_info.community_config.citations = MagicMock()
-        bids_info.community_config.citations.queries = ["BIDS imaging"]
-        bids_info.community_config.citations.dois = []
-
-        no_sync_info = MagicMock()
-        no_sync_info.id = "no-sync"
-        no_sync_info.sync_config = False
-
-        mock_reg.list_all.return_value = [hed_info, bids_info, no_sync_info]
-        mock_reg.get.side_effect = lambda id: {
-            "hed": hed_info,
-            "bids": bids_info,
-            "no-sync": no_sync_info,
-        }.get(id)
-
-        yield mock_reg
+@pytest.fixture(scope="module", autouse=True)
+def _setup_registry():
+    """Ensure registry is populated before tests."""
+    registry._assistants.clear()
+    discover_assistants()
 
 
-class TestGetCommunitiesWithSync:
-    """Tests for _get_communities_with_sync helper."""
+class TestSyncConfig:
+    """Tests for SyncConfig and SyncTypeSchedule models."""
 
-    def test_returns_only_communities_with_sync_enabled(self, _mock_registry):
-        """Should return only community IDs that have sync_config=True."""
-        communities = _get_communities_with_sync()
-        assert communities == ["hed", "bids"]
-        assert "no-sync" not in communities
+    def test_valid_cron_expression(self):
+        """Should accept valid 5-field cron expressions."""
+        schedule = SyncTypeSchedule(cron="0 2 * * *")
+        assert schedule.cron == "0 2 * * *"
 
-    def test_returns_empty_list_when_no_sync_enabled(self):
-        """Should return empty list when no communities have sync enabled."""
-        with patch("src.api.scheduler.registry") as mock_reg:
-            no_sync_info = MagicMock()
-            no_sync_info.id = "test"
-            no_sync_info.sync_config = False
-            mock_reg.list_all.return_value = [no_sync_info]
+    def test_invalid_cron_expression_too_few_fields(self):
+        """Should reject cron expressions with wrong field count."""
+        with pytest.raises(ValueError, match="5 fields"):
+            SyncTypeSchedule(cron="0 2 * *")
 
-            communities = _get_communities_with_sync()
-            assert communities == []
+    def test_invalid_cron_expression_too_many_fields(self):
+        """Should reject cron expressions with too many fields."""
+        with pytest.raises(ValueError, match="5 fields"):
+            SyncTypeSchedule(cron="0 2 * * * *")
 
-    def test_handles_empty_registry(self):
-        """Should return empty list when registry has no communities."""
-        with patch("src.api.scheduler.registry") as mock_reg:
-            mock_reg.list_all.return_value = []
-
-            communities = _get_communities_with_sync()
-            assert communities == []
-
-
-class TestGetCommunityRepos:
-    """Tests for _get_community_repos helper."""
-
-    def test_returns_repos_for_valid_community(self, _mock_registry):
-        """Should return GitHub repos for a registered community."""
-        repos = _get_community_repos("hed")
-        assert repos == ["hed-standard/hed-specification", "hed-standard/hed-python"]
-
-    def test_returns_empty_for_community_without_github(self, _mock_registry):
-        """Should return empty list for community without GitHub config."""
-        # Modify bids to have no github config
-        _mock_registry.get("bids").community_config.github = None
-
-        repos = _get_community_repos("bids")
-        assert repos == []
-
-    def test_returns_empty_for_unknown_community(self, _mock_registry):
-        """Should return empty list for unknown community ID."""
-        _mock_registry.get.return_value = None
-
-        repos = _get_community_repos("unknown")
-        assert repos == []
-
-
-class TestGetCommunityPaperQueries:
-    """Tests for _get_community_paper_queries helper."""
-
-    def test_returns_queries_for_valid_community(self, _mock_registry):
-        """Should return paper queries for a registered community."""
-        queries = _get_community_paper_queries("hed")
-        assert queries == ["HED annotation"]
-
-    def test_returns_empty_for_community_without_citations(self, _mock_registry):
-        """Should return empty list for community without citations config."""
-        _mock_registry.get("bids").community_config.citations = None
-
-        queries = _get_community_paper_queries("bids")
-        assert queries == []
-
-    def test_returns_empty_for_unknown_community(self, _mock_registry):
-        """Should return empty list for unknown community ID."""
-        _mock_registry.get.return_value = None
-
-        queries = _get_community_paper_queries("unknown")
-        assert queries == []
-
-
-class TestGetCommunityPaperDois:
-    """Tests for _get_community_paper_dois helper."""
-
-    def test_returns_dois_for_valid_community(self, _mock_registry):
-        """Should return DOIs for a registered community."""
-        dois = _get_community_paper_dois("hed")
-        assert dois == ["10.1234/hed.example"]
-
-    def test_returns_empty_for_community_without_dois(self, _mock_registry):
-        """Should return empty list for community with no DOIs configured."""
-        dois = _get_community_paper_dois("bids")
-        assert dois == []
-
-    def test_returns_empty_for_unknown_community(self, _mock_registry):
-        """Should return empty list for unknown community ID."""
-        _mock_registry.get.return_value = None
-
-        dois = _get_community_paper_dois("unknown")
-        assert dois == []
-
-
-class TestRunGithubSync:
-    """Tests for _run_github_sync scheduled job."""
-
-    @patch("src.api.scheduler.sync_repos")
-    @patch("src.api.scheduler.init_db")
-    def test_syncs_all_communities_with_repos(self, _mock_init_db, mock_sync_repos, _mock_registry):
-        """Should iterate over all communities and sync their repos."""
-        mock_sync_repos.return_value = {"repo1": 5, "repo2": 3}
-
-        _run_github_sync()
-
-        # Should sync both HED and BIDS
-        assert mock_sync_repos.call_count == 2
-        mock_sync_repos.assert_any_call(
-            ["hed-standard/hed-specification", "hed-standard/hed-python"],
-            project="hed",
-            incremental=True,
+    def test_sync_config_all_types(self):
+        """Should parse all sync types."""
+        config = SyncConfig(
+            github=SyncTypeSchedule(cron="0 2 * * *"),
+            papers=SyncTypeSchedule(cron="0 3 * * 0"),
+            docstrings=SyncTypeSchedule(cron="0 4 * * 1"),
+            mailman=SyncTypeSchedule(cron="0 5 * * 1"),
+            faq=SyncTypeSchedule(cron="0 6 1 * *"),
+            beps=SyncTypeSchedule(cron="0 4 * * 1"),
         )
-        mock_sync_repos.assert_any_call(
-            ["bids-standard/bids-specification"],
-            project="bids",
-            incremental=True,
+        assert config.github.cron == "0 2 * * *"
+        assert config.beps.cron == "0 4 * * 1"
+
+    def test_sync_config_partial(self):
+        """Should allow partial sync config (only some types)."""
+        config = SyncConfig(
+            github=SyncTypeSchedule(cron="0 2 * * *"),
         )
+        assert config.github.cron == "0 2 * * *"
+        assert config.papers is None
+        assert config.docstrings is None
 
-    @patch("src.api.scheduler.sync_repos")
-    @patch("src.api.scheduler.init_db")
-    def test_skips_communities_without_repos(self, _mock_init_db, mock_sync_repos, _mock_registry):
-        """Should skip communities that have no GitHub repos configured."""
-        # Remove repos from bids
-        _mock_registry.get("bids").community_config.github.repos = []
-        mock_sync_repos.return_value = {"repo1": 5}
-
-        _run_github_sync()
-
-        # Should only sync HED (bids has no repos)
-        assert mock_sync_repos.call_count == 1
-        mock_sync_repos.assert_called_once_with(
-            ["hed-standard/hed-specification", "hed-standard/hed-python"],
-            project="hed",
-            incremental=True,
-        )
-
-    @patch("src.api.scheduler.sync_repos")
-    @patch("src.api.scheduler.init_db")
-    def test_handles_empty_communities_list(self, _mock_init_db, mock_sync_repos):
-        """Should handle case where no communities have sync enabled."""
-        with patch("src.api.scheduler.registry") as mock_reg:
-            mock_reg.list_all.return_value = []
-
-            _run_github_sync()
-
-            # Should not call sync_repos
-            mock_sync_repos.assert_not_called()
-
-    @patch("src.api.scheduler.sync_repos")
-    @patch("src.api.scheduler.init_db")
-    def test_resets_failure_count_on_success(self, _mock_init_db, mock_sync_repos, _mock_registry):
-        """Should reset failure counter after successful sync."""
-        import src.api.scheduler as scheduler_module
-
-        scheduler_module._github_sync_failures = 2
-        mock_sync_repos.return_value = {"repo1": 5}
-
-        _run_github_sync()
-
-        assert scheduler_module._github_sync_failures == 0
+    def test_sync_config_empty(self):
+        """Should allow empty sync config."""
+        config = SyncConfig()
+        assert config.github is None
+        assert config.papers is None
 
 
-class TestRunPapersSync:
-    """Tests for _run_papers_sync scheduled job."""
+class TestCommunitySyncConfig:
+    """Tests that community YAML configs have valid sync sections."""
 
-    @patch("src.api.scheduler.sync_citing_papers")
-    @patch("src.api.scheduler.sync_all_papers")
-    @patch("src.api.scheduler.init_db")
-    @patch("src.api.scheduler.get_settings")
-    def test_syncs_all_communities_with_queries(
-        self, mock_settings, _mock_init_db, mock_sync_all, mock_sync_citing, _mock_registry
-    ):
-        """Should iterate over all communities and sync their papers."""
-        mock_settings.return_value.semantic_scholar_api_key = "test-key"
-        mock_settings.return_value.pubmed_api_key = "test-key"
-        mock_settings.return_value.openalex_api_key = "test-openalex-key"
-        mock_settings.return_value.openalex_email = "test@example.com"
-        mock_sync_all.return_value = {"source1": 5, "source2": 3}
-        mock_sync_citing.return_value = 2
+    def test_communities_with_github_have_sync_github(self):
+        """Communities with GitHub repos should have a github sync schedule."""
+        for info in registry.list_all():
+            config = info.community_config
+            if config and config.github and config.github.repos:
+                assert config.sync is not None, f"{info.id} has GitHub repos but no sync config"
+                assert config.sync.github is not None, (
+                    f"{info.id} has GitHub repos but no github sync schedule"
+                )
 
-        _run_papers_sync()
+    def test_communities_with_citations_have_sync_papers(self):
+        """Communities with citations should have a papers sync schedule."""
+        for info in registry.list_all():
+            config = info.community_config
+            if config and config.citations:
+                assert config.sync is not None, f"{info.id} has citations but no sync config"
+                assert config.sync.papers is not None, (
+                    f"{info.id} has citations but no papers sync schedule"
+                )
 
-        # Should sync papers for both HED and BIDS
-        assert mock_sync_all.call_count == 2
-        assert mock_sync_citing.call_count == 1  # Only HED has DOIs
+    def test_eeglab_has_all_sync_types(self):
+        """EEGLAB should have all sync types configured."""
+        info = registry.get("eeglab")
+        assert info is not None
+        config = info.community_config
+        assert config.sync is not None
+        assert config.sync.github is not None
+        assert config.sync.papers is not None
+        assert config.sync.docstrings is not None
+        assert config.sync.mailman is not None
+        assert config.sync.faq is not None
 
-    @patch("src.api.scheduler.sync_citing_papers")
-    @patch("src.api.scheduler.sync_all_papers")
-    @patch("src.api.scheduler.init_db")
-    @patch("src.api.scheduler.get_settings")
-    def test_passes_openalex_params_to_sync_all_papers(
-        self, mock_settings, _mock_init_db, mock_sync_all, mock_sync_citing, _mock_registry
-    ):
-        """Should pass OpenAlex API key and email to sync_all_papers."""
-        mock_settings.return_value.semantic_scholar_api_key = "s2-key"
-        mock_settings.return_value.pubmed_api_key = "pm-key"
-        mock_settings.return_value.openalex_api_key = "oa-key"
-        mock_settings.return_value.openalex_email = "test@example.com"
-        mock_sync_all.return_value = {"source1": 5}
-        mock_sync_citing.return_value = 2
+    def test_bids_has_beps_sync(self):
+        """BIDS should have BEP sync configured."""
+        info = registry.get("bids")
+        assert info is not None
+        config = info.community_config
+        assert config.sync is not None
+        assert config.sync.beps is not None
 
-        _run_papers_sync()
-
-        # Verify HED call includes all API params
-        mock_sync_all.assert_any_call(
-            queries=["HED annotation"],
-            semantic_scholar_api_key="s2-key",
-            pubmed_api_key="pm-key",
-            openalex_api_key="oa-key",
-            openalex_email="test@example.com",
-            project="hed",
-        )
-
-    @patch("src.api.scheduler.sync_citing_papers")
-    @patch("src.api.scheduler.sync_all_papers")
-    @patch("src.api.scheduler.init_db")
-    @patch("src.api.scheduler.get_settings")
-    def test_syncs_citing_papers_for_communities_with_dois(
-        self, mock_settings, _mock_init_db, mock_sync_all, mock_sync_citing, _mock_registry
-    ):
-        """Should sync citing papers only for communities with DOIs."""
-        mock_settings.return_value.semantic_scholar_api_key = "test-key"
-        mock_settings.return_value.pubmed_api_key = "test-key"
-        mock_sync_all.return_value = {"source1": 5}
-        mock_sync_citing.return_value = 2
-
-        _run_papers_sync()
-
-        # Should only sync citing papers for HED (has DOIs)
-        mock_sync_citing.assert_called_once_with(
-            ["10.1234/hed.example"],
-            project="hed",
-            openalex_api_key=mock_settings.return_value.openalex_api_key,
-            openalex_email=mock_settings.return_value.openalex_email,
-        )
-
-    @patch("src.api.scheduler.sync_citing_papers")
-    @patch("src.api.scheduler.sync_all_papers")
-    @patch("src.api.scheduler.init_db")
-    @patch("src.api.scheduler.get_settings")
-    def test_skips_communities_without_queries_or_dois(
-        self, mock_settings, _mock_init_db, mock_sync_all, mock_sync_citing, _mock_registry
-    ):
-        """Should skip communities that have neither queries nor DOIs."""
-        # Remove all paper config from bids
-        _mock_registry.get("bids").community_config.citations = None
-        mock_settings.return_value.semantic_scholar_api_key = "test-key"
-        mock_settings.return_value.pubmed_api_key = "test-key"
-        mock_sync_all.return_value = {"source1": 5}
-        mock_sync_citing.return_value = 2
-
-        _run_papers_sync()
-
-        # Should only sync HED (bids has no citations config)
-        assert mock_sync_all.call_count == 1
-        assert mock_sync_citing.call_count == 1
+    def test_sync_config_in_get_sync_config(self):
+        """get_sync_config() should include schedule information."""
+        info = registry.get("hed")
+        assert info is not None
+        sync_config = info.community_config.get_sync_config()
+        assert "schedules" in sync_config
+        assert "github" in sync_config["schedules"]
+        assert "papers" in sync_config["schedules"]
 
 
-class TestRunSyncNow:
-    """Tests for run_sync_now manual trigger."""
+class TestSyncTypeMap:
+    """Tests for the sync type to job function mapping."""
 
-    @patch("src.api.scheduler.sync_citing_papers")
-    @patch("src.api.scheduler.sync_all_papers")
-    @patch("src.api.scheduler.sync_repos")
-    @patch("src.api.scheduler.init_db")
-    @patch("src.api.scheduler.get_settings")
-    def test_syncs_all_types_for_all_communities(
-        self,
-        mock_settings,
-        _mock_init_db,
-        mock_sync_repos,
-        mock_sync_all,
-        mock_sync_citing,
-        _mock_registry,
-    ):
-        """Should sync both GitHub and papers for all communities when sync_type='all'."""
-        mock_settings.return_value.github_token = "test-token"
-        mock_settings.return_value.semantic_scholar_api_key = "test-key"
-        mock_settings.return_value.pubmed_api_key = "test-key"
-        mock_sync_repos.return_value = {"repo1": 5}
-        mock_sync_all.return_value = {"source1": 3}
-        mock_sync_citing.return_value = 2
+    def test_all_sync_types_mapped(self):
+        """All expected sync types should be in the mapping."""
+        expected = {"github", "papers", "docstrings", "mailman", "faq", "beps"}
+        assert set(_SYNC_TYPE_MAP.keys()) == expected
 
-        results = run_sync_now(sync_type="all")
+    def test_data_checks_return_bool(self):
+        """Data check functions should return truthy/falsy values."""
+        for info in registry.list_all():
+            config = info.community_config
+            if not config:
+                continue
+            for sync_type, (_, data_check) in _SYNC_TYPE_MAP.items():
+                result = data_check(config)
+                assert isinstance(result, (bool, list, type(None))), (
+                    f"data_check for {sync_type} returned unexpected type: {type(result)}"
+                )
 
-        # Should call both github and papers sync for both communities
-        assert mock_sync_repos.call_count == 2
-        assert mock_sync_all.call_count == 2
-        assert mock_sync_citing.call_count == 1  # Only HED has DOIs
-        assert "github" in results
-        assert "papers" in results
 
-    @patch("src.api.scheduler.sync_repos")
-    @patch("src.api.scheduler.init_db")
-    @patch("src.api.scheduler.get_settings")
-    def test_syncs_only_github_when_requested(
-        self, mock_settings, _mock_init_db, mock_sync_repos, _mock_registry
-    ):
-        """Should sync only GitHub when sync_type='github'."""
-        mock_settings.return_value.github_token = "test-token"
-        mock_sync_repos.return_value = {"repo1": 5}
+class TestFailureTracking:
+    """Tests for sync failure tracking."""
 
-        results = run_sync_now(sync_type="github")
+    def test_failure_key_format(self):
+        """Failure keys should be sync_type_community_id."""
+        assert _failure_key("github", "hed") == "github_hed"
+        assert _failure_key("papers", "bids") == "papers_bids"
 
-        # Should sync github for both communities
-        assert mock_sync_repos.call_count == 2
-        assert results["github"] == 10  # 5 items x 2 communities
-        assert results["papers"] == 0
+    def test_track_failure_increments(self):
+        """track_failure should increment the failure count."""
+        key = _failure_key("test_type", "test_community")
+        _sync_failures.pop(key, None)  # Clean state
 
-    @patch("src.api.scheduler.sync_citing_papers")
-    @patch("src.api.scheduler.sync_all_papers")
-    @patch("src.api.scheduler.init_db")
-    @patch("src.api.scheduler.get_settings")
-    def test_syncs_only_papers_when_requested(
-        self, mock_settings, _mock_init_db, mock_sync_all, mock_sync_citing, _mock_registry
-    ):
-        """Should sync only papers when sync_type='papers'."""
-        mock_settings.return_value.github_token = None
-        mock_settings.return_value.semantic_scholar_api_key = "test-key"
-        mock_settings.return_value.pubmed_api_key = "test-key"
-        mock_sync_all.return_value = {"source1": 3}
-        mock_sync_citing.return_value = 2
+        _track_failure("test_type", "test_community", Exception("test"))
+        assert _sync_failures[key] == 1
 
-        results = run_sync_now(sync_type="papers")
+        _track_failure("test_type", "test_community", Exception("test"))
+        assert _sync_failures[key] == 2
 
-        # Should sync papers for both communities
-        assert mock_sync_all.call_count == 2
-        assert results["github"] == 0
-        assert results["papers"] == 8  # 3+3+2 (hed: 3 query + 2 citing, bids: 3 query)
+        # Clean up
+        _sync_failures.pop(key, None)
 
-    @patch("src.api.scheduler.init_db")
-    @patch("src.api.scheduler.get_settings")
-    def test_handles_no_communities_with_sync(self, mock_settings, _mock_init_db):
-        """Should return empty results when no communities have sync enabled."""
-        mock_settings.return_value.github_token = None
-        with patch("src.api.scheduler.registry") as mock_reg:
-            mock_reg.list_all.return_value = []
+    def test_reset_failure_clears(self):
+        """reset_failure should remove the failure counter."""
+        key = _failure_key("test_type", "test_community")
+        _sync_failures[key] = 5
 
-            results = run_sync_now(sync_type="all")
+        _reset_failure("test_type", "test_community")
+        assert key not in _sync_failures
 
-            assert results == {"github": 0, "papers": 0}
+    def test_reset_failure_noop_if_not_tracked(self):
+        """reset_failure should not error if no failure was tracked."""
+        _reset_failure("nonexistent", "nonexistent")

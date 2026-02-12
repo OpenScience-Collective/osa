@@ -123,10 +123,12 @@ def _collect_cors_config() -> tuple[list[str], str | None]:
     exact_origins.append("https://demo.osc.earth")
     exact_origins.append("https://osa-demo.pages.dev")
     exact_origins.append("https://osa-dash.pages.dev")
+    exact_origins.append("https://status.osc.earth")
     wildcard_patterns: list[str] = [
         "https://*-demo.osc.earth",  # Primary: develop-demo + PR preview deploys
         "https://*.osa-demo.pages.dev",  # Backward compat: pages.dev deploys
         "https://*.osa-dash.pages.dev",  # Dashboard: preview/branch deploys
+        "https://*-status.osc.earth",  # Dashboard: develop-status + PR previews
     ]
 
     # Collect from all registered communities

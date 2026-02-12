@@ -52,10 +52,8 @@ class SchedulerStatus(BaseModel):
 
     enabled: bool
     running: bool
-    github_cron: str
-    papers_cron: str
-    next_github_sync: str | None
-    next_papers_sync: str | None
+    jobs: dict[str, str | None]
+    """Map of job_id to next_run_time (ISO) or None."""
 
 
 class HealthStatus(BaseModel):
@@ -224,18 +222,13 @@ async def get_sync_status() -> SyncStatusResponse:
 
     # Get scheduler info
     scheduler = get_scheduler()
-    next_github: str | None = None
-    next_papers: str | None = None
+    jobs: dict[str, str | None] = {}
 
     if scheduler and scheduler.running:
         try:
-            github_job = scheduler.get_job("github_sync")
-            if github_job and github_job.next_run_time:
-                next_github = github_job.next_run_time.isoformat()
-
-            papers_job = scheduler.get_job("papers_sync")
-            if papers_job and papers_job.next_run_time:
-                next_papers = papers_job.next_run_time.isoformat()
+            for job in scheduler.get_jobs():
+                next_run = job.next_run_time.isoformat() if job.next_run_time else None
+                jobs[job.id] = next_run
         except Exception as e:
             logger.warning("Failed to get next run times: %s", e)
 
@@ -254,10 +247,7 @@ async def get_sync_status() -> SyncStatusResponse:
         scheduler=SchedulerStatus(
             enabled=settings.sync_enabled,
             running=scheduler is not None and scheduler.running,
-            github_cron=settings.sync_github_cron,
-            papers_cron=settings.sync_papers_cron,
-            next_github_sync=next_github,
-            next_papers_sync=next_papers,
+            jobs=jobs,
         ),
         health=_calculate_health(metadata),
     )
@@ -278,10 +268,11 @@ async def trigger_sync(
     Returns:
         Result of the sync operation
     """
-    if request.sync_type not in ("github", "papers", "all"):
+    valid_types = ("github", "papers", "docstrings", "mailman", "faq", "beps", "all")
+    if request.sync_type not in valid_types:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid sync_type: {request.sync_type}. Must be 'github', 'papers', or 'all'",
+            detail=f"Invalid sync_type: {request.sync_type}. Must be one of {valid_types}",
         )
 
     try:

@@ -40,6 +40,44 @@ class SSRFViolationError(ValueError):
     pass
 
 
+# Shared regex for OpenRouter model identifiers (creator/model-name)
+_MODEL_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+/[a-zA-Z0-9._-]+$")
+_MODEL_ID_MAX_LENGTH = 100
+
+
+def _validate_model_id(v: str | None, field_label: str = "Model identifier") -> str | None:
+    """Validate an OpenRouter model identifier (creator/model-name).
+
+    Args:
+        v: The model string to validate, or None.
+        field_label: Label used in error messages.
+
+    Returns:
+        The stripped model string, or None.
+
+    Raises:
+        ValueError: If the format is invalid or too long.
+    """
+    if v is None:
+        return None
+
+    v = v.strip()
+    if not v:
+        return None
+
+    if not _MODEL_ID_PATTERN.match(v):
+        raise ValueError(
+            f"Invalid {field_label.lower()}: '{v}'. "
+            "Must match pattern: provider/model-name "
+            "(e.g., 'anthropic/claude-3.5-sonnet')"
+        )
+
+    if len(v) > _MODEL_ID_MAX_LENGTH:
+        raise ValueError(f"{field_label} too long (max {_MODEL_ID_MAX_LENGTH} chars): {v[:50]}...")
+
+    return v
+
+
 class DocSource(BaseModel):
     """Documentation source configuration.
 
@@ -448,30 +486,11 @@ class AgentConfig(BaseModel):
     @field_validator("model")
     @classmethod
     def validate_model(cls, v: str) -> str:
-        """Validate model identifier format.
-
-        Ensures model follows provider/model-name pattern to prevent
-        injection or confusion.
-        """
-        v = v.strip()
-        if not v:
+        """Validate model identifier format (provider/model-name)."""
+        result = _validate_model_id(v, field_label="Model identifier")
+        if not result:
             raise ValueError("Model identifier cannot be empty")
-
-        # Validate format: provider/model-name
-        # Allow alphanumeric, hyphens, underscores, and dots
-        model_pattern = re.compile(r"^[a-zA-Z0-9_-]+/[a-zA-Z0-9._-]+$")
-        if not model_pattern.match(v):
-            raise ValueError(
-                f"Invalid model identifier: '{v}'. "
-                "Must match pattern: provider/model-name "
-                "(e.g., 'anthropic/claude-3.5-sonnet')"
-            )
-
-        # Max length check
-        if len(v) > 100:
-            raise ValueError(f"Model identifier too long (max 100 chars): {v[:50]}...")
-
-        return v
+        return result
 
     @field_validator("provider")
     @classmethod
@@ -676,6 +695,60 @@ class WidgetConfig(BaseModel):
         }
 
 
+class SyncTypeSchedule(BaseModel):
+    """Schedule configuration for a single sync type.
+
+    Defines the cron expression for when this sync type should run.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    cron: str
+    """Cron expression (5-field) for scheduling (e.g., '0 2 * * *' for daily at 2am UTC)."""
+
+    @field_validator("cron")
+    @classmethod
+    def validate_cron(cls, v: str) -> str:
+        """Validate cron expression format (5-field)."""
+        v = v.strip()
+        parts = v.split()
+        if len(parts) != 5:
+            raise ValueError(
+                f"Cron expression must have exactly 5 fields (minute hour day month weekday), "
+                f"got {len(parts)}: '{v}'"
+            )
+        return v
+
+
+class SyncConfig(BaseModel):
+    """Per-community sync schedule configuration.
+
+    Each field corresponds to a sync type. Only types with both a schedule
+    here AND the corresponding data config (e.g., github.repos, citations,
+    mailman, docstrings, faq_generation) will be scheduled.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    github: SyncTypeSchedule | None = None
+    """Schedule for GitHub issues/PRs sync."""
+
+    papers: SyncTypeSchedule | None = None
+    """Schedule for academic papers sync."""
+
+    docstrings: SyncTypeSchedule | None = None
+    """Schedule for code docstring extraction sync."""
+
+    mailman: SyncTypeSchedule | None = None
+    """Schedule for mailing list archive sync."""
+
+    faq: SyncTypeSchedule | None = None
+    """Schedule for FAQ generation from discussions (uses LLM, costs money)."""
+
+    beps: SyncTypeSchedule | None = None
+    """Schedule for BIDS Extension Proposals sync (BIDS-specific)."""
+
+
 class CommunityConfig(BaseModel):
     """Configuration for a single research community assistant.
 
@@ -753,6 +826,21 @@ class CommunityConfig(BaseModel):
 
     faq_generation: FAQGenerationConfig | None = None
     """FAQ generation configuration from threaded discussions (mailman, discourse, etc.)."""
+
+    sync: SyncConfig | None = None
+    """Per-community sync schedule configuration.
+
+    Controls when each sync type runs for this community.
+    Only sync types that also have their corresponding data config
+    (e.g., github.repos for github sync) will actually be scheduled.
+
+    Example:
+        sync:
+          github:
+            cron: "0 2 * * *"       # daily at 2am UTC
+          papers:
+            cron: "0 3 * * 0"       # weekly Sunday at 3am UTC
+    """
 
     extensions: ExtensionsConfig | None = None
     """Extension points for specialized tools."""
@@ -932,33 +1020,8 @@ class CommunityConfig(BaseModel):
     @field_validator("default_model")
     @classmethod
     def validate_default_model(cls, v: str | None) -> str | None:
-        """Validate model name format.
-
-        Ensures model follows provider/model-name pattern to prevent
-        injection or confusion.
-        """
-        if v is None:
-            return None
-
-        v = v.strip()
-        if not v:
-            return None
-
-        # Validate format: provider/model-name
-        # Allow alphanumeric, hyphens, underscores, and dots
-        model_pattern = re.compile(r"^[a-zA-Z0-9_-]+/[a-zA-Z0-9._-]+$")
-        if not model_pattern.match(v):
-            raise ValueError(
-                f"Invalid model name format: '{v}'. "
-                "Must match pattern: provider/model-name "
-                "(e.g., 'anthropic/claude-3.5-sonnet')"
-            )
-
-        # Max length check
-        if len(v) > 100:
-            raise ValueError(f"Model name too long (max 100 chars): {v[:50]}...")
-
-        return v
+        """Validate model name format (provider/model-name)."""
+        return _validate_model_id(v, field_label="Model name")
 
     @model_validator(mode="after")
     def validate_expensive_model_without_byok(self) -> "CommunityConfig":
@@ -1002,13 +1065,22 @@ class CommunityConfig(BaseModel):
         """Generate sync_config dict for registry compatibility.
 
         Returns format expected by AssistantInfo.sync_config.
+        Includes both data sources and schedule configuration.
         """
-        config = {}
+        config: dict[str, Any] = {}
         if self.github:
             config["github_repos"] = self.github.repos
         if self.citations:
             config["paper_queries"] = self.citations.queries
             config["paper_dois"] = self.citations.dois
+        if self.sync:
+            schedules = {}
+            for sync_type in ("github", "papers", "docstrings", "mailman", "faq", "beps"):
+                schedule = getattr(self.sync, sync_type, None)
+                if schedule:
+                    schedules[sync_type] = schedule.cron
+            if schedules:
+                config["schedules"] = schedules
         return config
 
     def get_doc_registry(self) -> "DocRegistry":

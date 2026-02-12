@@ -2093,14 +2093,11 @@
     const UPDATE_THROTTLE_MS = 100; // Update UI every 100ms max
     const STREAM_TIMEOUT_MS = 60000; // 60 seconds with no data = timeout
     let receivedDoneEvent = false;
+    let receivedFirstContent = false;
 
-    // Create placeholder assistant message
+    // Create placeholder assistant message (not rendered yet - loading dots stay visible)
     messages.push({ role: 'assistant', content: '' });
     const messageIndex = messages.length - 1;
-
-    // Hide loading indicator immediately when streaming starts
-    isLoading = false;
-    renderMessages(container);
 
     try {
       while (true) {
@@ -2131,6 +2128,12 @@
           if (!event) continue;
 
           if (event.event === 'content' && event.content) {
+            // Hide loading dots on first content chunk
+            if (!receivedFirstContent) {
+              receivedFirstContent = true;
+              isLoading = false;
+            }
+
             // Accumulate content
             accumulatedContent += event.content;
 
