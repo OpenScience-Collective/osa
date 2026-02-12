@@ -161,6 +161,7 @@ function isAllowedOrigin(origin) {
     'https://bids.neuroimaging.io',
     'https://eeglab.org',
     'https://hedtags.org',
+    'https://hedtools.org',
     'https://nemar.org',
     'https://sccn.github.io',
     'https://www.eeglab.org',
