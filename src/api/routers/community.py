@@ -1270,6 +1270,23 @@ def create_community_router(community_id: str) -> APIRouter:
 # ---------------------------------------------------------------------------
 
 
+def _extract_token_usage(event_data: dict) -> tuple[int, int]:
+    """Extract input/output token counts from an on_chat_model_end event.
+
+    Returns (input_tokens, output_tokens), defaulting to (0, 0) when
+    usage metadata is absent or malformed. Never raises; metrics collection
+    must not disrupt user-facing streams.
+    """
+    try:
+        ai_msg = event_data.get("output")
+        usage = getattr(ai_msg, "usage_metadata", None) if ai_msg else None
+        if not usage or not isinstance(usage, dict):
+            return 0, 0
+        return usage.get("input_tokens") or 0, usage.get("output_tokens") or 0
+    except Exception:
+        return 0, 0
+
+
 def _log_streaming_metrics(
     http_request: Request | None,
     community_id: str,
@@ -1296,8 +1313,9 @@ def _log_streaming_metrics(
             http_request.state.metrics_logged = True
 
         total_tokens = input_tokens + output_tokens
+        has_tokens = total_tokens > 0
         model = awm.model if awm else None
-        cost = estimate_cost(model, input_tokens, output_tokens) if total_tokens > 0 else None
+        cost = estimate_cost(model, input_tokens, output_tokens) if has_tokens else None
 
         entry = RequestLogEntry(
             request_id=request_id,
@@ -1313,9 +1331,9 @@ def _log_streaming_metrics(
             stream=True,
             tool_call_count=len(tools_called),
             langfuse_trace_id=awm.langfuse_trace_id if awm else None,
-            input_tokens=input_tokens if total_tokens > 0 else None,
-            output_tokens=output_tokens if total_tokens > 0 else None,
-            total_tokens=total_tokens if total_tokens > 0 else None,
+            input_tokens=input_tokens if has_tokens else None,
+            output_tokens=output_tokens if has_tokens else None,
+            total_tokens=total_tokens if has_tokens else None,
             estimated_cost=cost,
         )
         log_request(entry)
@@ -1382,10 +1400,9 @@ async def _stream_ask_response(
                     yield f"data: {json.dumps(sse_event)}\n\n"
 
             elif kind == "on_chat_model_end":
-                ai_msg = event.get("data", {}).get("output")
-                if ai_msg and hasattr(ai_msg, "usage_metadata") and ai_msg.usage_metadata:
-                    total_input_tokens += ai_msg.usage_metadata.get("input_tokens", 0)
-                    total_output_tokens += ai_msg.usage_metadata.get("output_tokens", 0)
+                inp, out = _extract_token_usage(event.get("data", {}))
+                total_input_tokens += inp
+                total_output_tokens += out
 
             elif kind == "on_tool_start":
                 tool_input = event.get("data", {}).get("input", {})
@@ -1564,10 +1581,9 @@ async def _stream_chat_response(
                     yield f"data: {json.dumps(sse_event)}\n\n"
 
             elif kind == "on_chat_model_end":
-                ai_msg = event.get("data", {}).get("output")
-                if ai_msg and hasattr(ai_msg, "usage_metadata") and ai_msg.usage_metadata:
-                    total_input_tokens += ai_msg.usage_metadata.get("input_tokens", 0)
-                    total_output_tokens += ai_msg.usage_metadata.get("output_tokens", 0)
+                inp, out = _extract_token_usage(event.get("data", {}))
+                total_input_tokens += inp
+                total_output_tokens += out
 
             elif kind == "on_tool_start":
                 tool_input = event.get("data", {}).get("input", {})
