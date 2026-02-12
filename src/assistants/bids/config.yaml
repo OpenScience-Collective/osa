@@ -516,6 +516,16 @@ documentation:
     category: schema
     description: Documentation of schema rules that define BIDS validation logic.
 
+# Sync schedule configuration
+# Each sync type runs on its own cron schedule (UTC)
+sync:
+  github:
+    cron: "0 2 * * *"       # daily at 2am UTC
+  papers:
+    cron: "0 3 * * 0"       # weekly Sunday at 3am UTC
+  beps:
+    cron: "0 4 * * 1"       # weekly Monday at 4am UTC
+
 # GitHub repositories for issue/PR sync
 github:
   repos:

@@ -88,8 +88,7 @@ class TestSyncStatus:
 
         assert "enabled" in scheduler
         assert "running" in scheduler
-        assert "github_cron" in scheduler
-        assert "papers_cron" in scheduler
+        assert "jobs" in scheduler
 
     @pytest.mark.usefixtures("isolated_db")
     def test_health_status_structure(self, client: TestClient):

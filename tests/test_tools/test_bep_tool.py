@@ -301,7 +301,7 @@ class TestEdgeCases:
         conn.execute("CREATE TABLE dummy (id INTEGER)")
         conn.close()
 
-        with patch("src.assistants.bids.tools.get_db_path", return_value=db_path):
+        with patch("src.knowledge.db.get_db_path", return_value=db_path):
             result = lookup_bep.invoke({"query": "032"})
 
         assert "not initialized" in result

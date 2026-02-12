@@ -1,7 +1,7 @@
 """Integration tests for EEGLab assistant."""
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -223,7 +223,7 @@ class TestEEGLabRealQuestions:
 class TestToolImplementations:
     """Test individual tool implementations."""
 
-    def test_docstring_tool_handles_empty_db(self):
+    def test_docstring_tool_handles_empty_db(self, tmp_path: Path):
         """Test docstring tool with empty database."""
         from src.assistants.eeglab.tools import search_eeglab_docstrings
 
@@ -231,8 +231,10 @@ class TestToolImplementations:
         assert hasattr(search_eeglab_docstrings, "name")
         assert search_eeglab_docstrings.name == "search_eeglab_docstrings"
 
-        # Should return helpful error message when DB doesn't exist
-        result = search_eeglab_docstrings.invoke({"query": "pop_loadset"})
+        # Point to non-existent DB to ensure "not initialized" response
+        fake_db = tmp_path / "knowledge" / "eeglab.db"
+        with patch("src.knowledge.db.get_db_path", return_value=fake_db):
+            result = search_eeglab_docstrings.invoke({"query": "pop_loadset"})
         assert isinstance(result, str)
         assert "not initialized" in result.lower()
 
@@ -260,7 +262,7 @@ class TestToolImplementations:
         assert isinstance(result, str)
         assert "No function documentation found" in result
 
-    def test_faq_tool_handles_empty_db(self):
+    def test_faq_tool_handles_empty_db(self, tmp_path: Path):
         """Test FAQ tool with empty database."""
         from src.assistants.eeglab.tools import search_eeglab_faqs
 
@@ -268,8 +270,10 @@ class TestToolImplementations:
         assert hasattr(search_eeglab_faqs, "name")
         assert search_eeglab_faqs.name == "search_eeglab_faqs"
 
-        # Should return helpful error message when DB doesn't exist
-        result = search_eeglab_faqs.invoke({"query": "artifact removal"})
+        # Point to non-existent DB to ensure "not initialized" response
+        fake_db = tmp_path / "knowledge" / "eeglab.db"
+        with patch("src.knowledge.db.get_db_path", return_value=fake_db):
+            result = search_eeglab_faqs.invoke({"query": "artifact removal"})
         assert isinstance(result, str)
         assert "not initialized" in result.lower()
 

@@ -44,10 +44,9 @@ services:
       - PUBMED_API_KEY=${PUBMED_API_KEY:-}
 
       # Knowledge Sync Scheduling
+      # SYNC_ENABLED is the master switch; per-community schedules are in config.yaml
+      # Empty databases are automatically seeded on startup
       - SYNC_ENABLED=${SYNC_ENABLED:-true}
-      - SYNC_GITHUB_CRON=${SYNC_GITHUB_CRON:-0 2 * * *}
-      - SYNC_PAPERS_CRON=${SYNC_PAPERS_CRON:-0 3 * * 0}
-      - SYNC_BEPS_CRON=${SYNC_BEPS_CRON:-0 4 * * 0}
 
       # Observability (optional)
       - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
