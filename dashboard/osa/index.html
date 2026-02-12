@@ -297,7 +297,7 @@
         const host = window.location.hostname;
         if (host === 'osa-dash.pages.dev' || host === 'status.osc.earth')
             return 'https://api.osc.earth/osa';
-        if (host.endsWith('.osa-dash.pages.dev'))
+        if (host.endsWith('.osa-dash.pages.dev') || host === 'develop-status.osc.earth')
             return 'https://api.osc.earth/osa-dev';
         return window.location.origin;
     })();
