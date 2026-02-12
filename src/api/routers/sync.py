@@ -78,7 +78,7 @@ class SyncStatusResponse(BaseModel):
 class TriggerRequest(BaseModel):
     """Request to trigger sync."""
 
-    sync_type: str = "all"  # "github", "papers", or "all"
+    sync_type: str = "all"  # "github", "papers", "docstrings", "mailman", "faq", "beps", or "all"
 
 
 class TriggerResponse(BaseModel):
@@ -263,7 +263,7 @@ async def trigger_sync(
     Requires API key authentication.
 
     Args:
-        request: Sync type to trigger ("github", "papers", or "all")
+        request: Sync type to trigger (one of "github", "papers", "docstrings", "mailman", "faq", "beps", or "all")
 
     Returns:
         Result of the sync operation

@@ -709,14 +709,14 @@ class SyncTypeSchedule(BaseModel):
     @field_validator("cron")
     @classmethod
     def validate_cron(cls, v: str) -> str:
-        """Validate cron expression format (5-field)."""
+        """Validate cron expression format and field values."""
+        from apscheduler.triggers.cron import CronTrigger
+
         v = v.strip()
-        parts = v.split()
-        if len(parts) != 5:
-            raise ValueError(
-                f"Cron expression must have exactly 5 fields (minute hour day month weekday), "
-                f"got {len(parts)}: '{v}'"
-            )
+        try:
+            CronTrigger.from_crontab(v)
+        except ValueError as e:
+            raise ValueError(f"Invalid cron expression '{v}': {e}") from e
         return v
 
 

@@ -37,13 +37,20 @@ class TestSyncConfig:
 
     def test_invalid_cron_expression_too_few_fields(self):
         """Should reject cron expressions with wrong field count."""
-        with pytest.raises(ValueError, match="5 fields"):
+        with pytest.raises(ValueError, match="Invalid cron expression"):
             SyncTypeSchedule(cron="0 2 * *")
 
     def test_invalid_cron_expression_too_many_fields(self):
         """Should reject cron expressions with too many fields."""
-        with pytest.raises(ValueError, match="5 fields"):
+        with pytest.raises(ValueError, match="Invalid cron expression"):
             SyncTypeSchedule(cron="0 2 * * * *")
+
+    def test_invalid_cron_expression_bad_field_values(self):
+        """Should reject cron expressions with invalid field values."""
+        with pytest.raises(ValueError, match="Invalid cron expression"):
+            SyncTypeSchedule(cron="0 2 * * 8")  # weekday 8 is invalid
+        with pytest.raises(ValueError, match="Invalid cron expression"):
+            SyncTypeSchedule(cron="99 2 * * *")  # minute 99 is invalid
 
     def test_sync_config_all_types(self):
         """Should parse all sync types."""
@@ -125,6 +132,30 @@ class TestCommunitySyncConfig:
         assert "schedules" in sync_config
         assert "github" in sync_config["schedules"]
         assert "papers" in sync_config["schedules"]
+
+    def test_get_sync_config_schedules_match_cron(self):
+        """get_sync_config() schedules should contain actual cron values from config."""
+        for info in registry.list_all():
+            config = info.community_config
+            if not config or not config.sync:
+                continue
+            sync_config = config.get_sync_config()
+            if "schedules" not in sync_config:
+                continue
+            for sync_type, cron_value in sync_config["schedules"].items():
+                schedule = getattr(config.sync, sync_type, None)
+                assert schedule is not None, (
+                    f"{info.id}: schedule '{sync_type}' in get_sync_config but not in SyncConfig"
+                )
+                assert cron_value == schedule.cron, f"{info.id}: cron mismatch for {sync_type}"
+
+    def test_get_sync_config_without_sync(self):
+        """get_sync_config() should omit schedules when no sync config."""
+        from src.core.config.community import CommunityConfig
+
+        config = CommunityConfig(id="test", name="Test", description="Test community")
+        result = config.get_sync_config()
+        assert "schedules" not in result
 
 
 class TestSyncTypeMap:

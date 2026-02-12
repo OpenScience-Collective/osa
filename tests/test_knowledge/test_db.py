@@ -13,6 +13,7 @@ from src.knowledge.db import (
     get_connection,
     get_stats,
     init_db,
+    is_db_populated,
     update_sync_metadata,
     upsert_github_item,
     upsert_paper,
@@ -355,3 +356,39 @@ class TestProjectNameValidation:
 
         with pytest.raises(ValueError, match="Invalid project name"):
             get_db_path("hed bids")
+
+
+class TestIsDbPopulated:
+    """Tests for is_db_populated."""
+
+    def test_nonexistent_db(self, tmp_path: Path):
+        """Should return all False when database file does not exist."""
+        db_path = tmp_path / "knowledge" / "nonexistent.db"
+        with patch("src.knowledge.db.get_db_path", return_value=db_path):
+            result = is_db_populated("nonexistent")
+        assert all(v is False for v in result.values())
+        expected_keys = {"github", "papers", "docstrings", "mailman", "faq", "beps"}
+        assert set(result.keys()) == expected_keys
+
+    def test_empty_db(self, temp_db: Path):
+        """Should return all False for initialized but empty database."""
+        with patch("src.knowledge.db.get_db_path", return_value=temp_db):
+            result = is_db_populated("test")
+        # Tables exist but have no rows
+        assert all(v is False for v in result.values())
+
+    def test_partially_populated_db(self, temp_db: Path):
+        """Should correctly identify which tables have data."""
+        with patch("src.knowledge.db.get_db_path", return_value=temp_db):
+            # Insert a row directly via SQL
+            with get_connection() as conn:
+                conn.execute(
+                    "INSERT INTO github_items (repo, item_type, number, title, url, status, created_at, synced_at) "
+                    "VALUES ('test/test', 'issue', 1, 'Test', 'https://example.com', 'open', '2025-01-01', '2025-01-01')"
+                )
+                conn.commit()
+
+            result = is_db_populated("test")
+            assert result["github"] is True
+            assert result["papers"] is False
+            assert result["docstrings"] is False
