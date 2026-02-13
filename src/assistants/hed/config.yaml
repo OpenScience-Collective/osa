@@ -6,6 +6,13 @@ name: HED (Hierarchical Event Descriptors)
 description: Event annotation standard for neuroimaging research
 status: available
 
+# External links for dashboard and discovery
+links:
+  homepage: https://www.hedtags.org
+  documentation: https://www.hedtags.org/hed-resources
+  repository: https://github.com/hed-standard
+  demo: https://demo.osc.earth/hed
+
 # Enable page context tool for widget embedding
 enable_page_context: true
 

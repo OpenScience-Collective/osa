@@ -8,6 +8,13 @@ status: available
 default_model: anthropic/claude-haiku-4.5
 default_model_provider: anthropic
 
+# External links for dashboard and discovery
+links:
+  homepage: https://eeglab.org
+  documentation: https://sccn.github.io
+  repository: https://github.com/sccn
+  demo: https://demo.osc.earth/eeglab
+
 # Widget configuration for frontend embedding
 widget:
   title: EEGLAB Assistant
