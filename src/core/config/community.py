@@ -695,6 +695,27 @@ class WidgetConfig(BaseModel):
         }
 
 
+class LinksConfig(BaseModel):
+    """External links for a community (homepage, docs, repo, demo).
+
+    All fields are optional; only populated links are exposed via the API.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    homepage: str | None = None
+    """Primary community website URL."""
+
+    documentation: str | None = None
+    """Documentation or tutorials URL."""
+
+    repository: str | None = None
+    """Source code repository (GitHub org or repo URL)."""
+
+    demo: str | None = None
+    """Live demo page URL for the community assistant."""
+
+
 class SyncTypeSchedule(BaseModel):
     """Schedule configuration for a single sync type.
 
@@ -939,6 +960,19 @@ class CommunityConfig(BaseModel):
           suggested_questions:
             - What is HED and how is it used?
             - How do I annotate an event with HED tags?
+    """
+
+    links: LinksConfig | None = None
+    """External links for the community (homepage, docs, repo, demo).
+
+    Used by the dashboard to show quick-access links for each community.
+
+    Example:
+        links:
+          homepage: https://www.hedtags.org
+          documentation: https://www.hedtags.org/hed-resources
+          repository: https://github.com/hed-standard
+          demo: https://demo.osc.earth/?community=hed
     """
 
     @field_validator("cors_origins")

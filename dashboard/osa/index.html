@@ -9,159 +9,246 @@
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: #f8fafc;
             min-height: 100vh;
-            padding: 2rem;
-            color: #374151;
-        }
-        .container { max-width: 1200px; margin: 0 auto; }
-        .header {
-            text-align: center;
-            color: white;
-            margin-bottom: 2rem;
-        }
-        .header h1 { font-size: 2.2rem; margin-bottom: 0.5rem; }
-        .header p { font-size: 1.1rem; opacity: 0.9; }
-        .header a { color: white; text-decoration: none; opacity: 0.8; }
-        .header a:hover { opacity: 1; text-decoration: underline; }
-        .card {
-            background: white;
-            border-radius: 12px;
-            padding: 2rem;
-            margin-bottom: 1.5rem;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
-        }
-        .card h2 {
-            color: #667eea;
-            margin-bottom: 1rem;
-            font-size: 1.4rem;
-            border-bottom: 2px solid #667eea;
-            padding-bottom: 0.5rem;
-        }
-        .overview-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 1rem;
-            margin-bottom: 1rem;
-        }
-        .metric {
-            background: #f9fafb;
-            padding: 1.5rem;
-            border-radius: 8px;
-            border-left: 4px solid #667eea;
-            text-align: center;
-        }
-        .metric-value {
-            font-size: 2.2rem;
-            font-weight: 700;
-            color: #667eea;
-            margin-bottom: 0.25rem;
-        }
-        .metric-label {
-            color: #6b7280;
-            font-size: 0.85rem;
-            font-weight: 500;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
+            color: #1e293b;
         }
 
-        /* Community cards on aggregate page */
-        .community-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-            gap: 1.5rem;
-            margin-top: 1rem;
+        /* Top bar */
+        .top-bar {
+            background: white;
+            border-bottom: 1px solid #e2e8f0;
+            padding: 1.25rem 2rem;
         }
-        .community-card {
-            background: #f9fafb;
-            border-radius: 10px;
-            padding: 1.5rem;
-            border-left: 4px solid #667eea;
-            cursor: pointer;
-            transition: transform 0.15s, box-shadow 0.15s;
-            text-decoration: none;
-            color: inherit;
-            display: block;
-        }
-        .community-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-        }
-        .community-card h3 {
-            color: #667eea;
-            font-size: 1.2rem;
-            margin-bottom: 0.5rem;
-        }
-        .community-card .stats {
+        .top-bar-inner {
+            max-width: 1200px;
+            margin: 0 auto;
             display: flex;
-            gap: 1.5rem;
-            color: #6b7280;
-            font-size: 0.9rem;
+            align-items: center;
+            justify-content: space-between;
         }
-        .community-card .stats strong { color: #374151; }
+        .top-bar h1 {
+            font-size: 1.4rem;
+            font-weight: 700;
+            color: #1e3a5f;
+            letter-spacing: -0.01em;
+        }
+        .top-bar h1 span {
+            font-weight: 400;
+            color: #64748b;
+            font-size: 0.95rem;
+            margin-left: 0.75rem;
+        }
+        .top-bar-links {
+            display: flex;
+            gap: 1.25rem;
+            align-items: center;
+        }
+        .top-bar-links a {
+            color: #64748b;
+            text-decoration: none;
+            font-size: 0.85rem;
+            font-weight: 500;
+            transition: color 0.15s;
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+        }
+        .top-bar-links a:hover { color: #2563eb; }
+        .top-bar-links svg { width: 15px; height: 15px; flex-shrink: 0; }
+
+        .container { max-width: 1200px; margin: 0 auto; padding: 1.5rem 2rem 3rem; }
 
         /* Tab bar */
         .tab-bar {
             display: flex;
-            gap: 0.5rem;
+            gap: 0.35rem;
             margin-bottom: 1.5rem;
             flex-wrap: wrap;
+            background: white;
+            padding: 0.35rem;
+            border-radius: 10px;
+            border: 1px solid #e2e8f0;
+            width: fit-content;
         }
         .tab-link {
             display: inline-block;
-            padding: 0.6rem 1.2rem;
-            border: 2px solid rgba(255, 255, 255, 0.4);
-            background: rgba(255, 255, 255, 0.15);
-            color: white;
-            border-radius: 8px;
+            padding: 0.5rem 1rem;
+            color: #64748b;
+            border-radius: 7px;
             cursor: pointer;
-            font-weight: 600;
-            font-size: 0.9rem;
+            font-weight: 500;
+            font-size: 0.85rem;
             text-decoration: none;
-            transition: all 0.2s;
+            transition: all 0.15s;
+            border: none;
+            background: transparent;
         }
         .tab-link:hover {
-            background: rgba(255, 255, 255, 0.3);
-            border-color: rgba(255, 255, 255, 0.6);
+            background: #f1f5f9;
+            color: #1e3a5f;
         }
         .tab-link.active {
-            background: white;
-            color: #667eea;
-            border-color: white;
+            background: #1e3a5f;
+            color: white;
         }
 
-        /* Period toggle */
-        .period-toggle { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
-        .period-btn {
-            padding: 0.4rem 1rem;
-            border: 1px solid #d1d5db;
+        /* Cards */
+        .card {
             background: white;
-            color: #374151;
-            border-radius: 6px;
-            cursor: pointer;
+            border-radius: 10px;
+            padding: 1.75rem;
+            margin-bottom: 1.25rem;
+            border: 1px solid #e2e8f0;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+        }
+        .card h2 {
+            color: #1e3a5f;
+            margin-bottom: 1rem;
+            font-size: 1.15rem;
+            font-weight: 600;
+            padding-bottom: 0.6rem;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        /* Metrics */
+        .overview-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+        .metric {
+            background: #f8fafc;
+            padding: 1.25rem;
+            border-radius: 8px;
+            border: 1px solid #e2e8f0;
+            text-align: center;
+        }
+        .metric-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #1e3a5f;
+            margin-bottom: 0.2rem;
+        }
+        .metric-label {
+            color: #64748b;
+            font-size: 0.8rem;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        /* Community cards */
+        .community-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+        .community-card {
+            background: #f8fafc;
+            border-radius: 8px;
+            padding: 1.25rem;
+            border: 1px solid #e2e8f0;
+            transition: border-color 0.15s, box-shadow 0.15s;
+            display: flex;
+            flex-direction: column;
+            gap: 0.6rem;
+        }
+        .community-card:hover {
+            border-color: #cbd5e1;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+        }
+        .community-card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .community-card h3 {
+            font-size: 1.05rem;
+            font-weight: 600;
+            color: #1e3a5f;
+        }
+        .community-card h3 a {
+            color: inherit;
+            text-decoration: none;
+        }
+        .community-card h3 a:hover {
+            color: #2563eb;
+        }
+        .community-card .description {
+            color: #64748b;
             font-size: 0.85rem;
-            transition: all 0.2s;
+            line-height: 1.4;
         }
-        .period-btn:hover { border-color: #667eea; }
-        .period-btn.active {
-            background: #667eea;
-            color: white;
-            border-color: #667eea;
+        .community-card .stats {
+            display: flex;
+            gap: 1.25rem;
+            color: #64748b;
+            font-size: 0.85rem;
         }
+        .community-card .stats strong { color: #1e293b; }
+        .community-card-links {
+            display: flex;
+            gap: 0.6rem;
+            flex-wrap: wrap;
+            margin-top: 0.25rem;
+        }
+        .community-card-links a {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+            padding: 0.3rem 0.6rem;
+            border-radius: 5px;
+            font-size: 0.78rem;
+            font-weight: 500;
+            color: #475569;
+            background: white;
+            border: 1px solid #e2e8f0;
+            text-decoration: none;
+            transition: all 0.15s;
+        }
+        .community-card-links a:hover {
+            border-color: #2563eb;
+            color: #2563eb;
+        }
+        .community-card-links svg { width: 13px; height: 13px; flex-shrink: 0; }
 
         /* Status badges */
         .status-badge {
             display: inline-block;
-            padding: 0.3rem 0.8rem;
+            padding: 0.2rem 0.6rem;
             border-radius: 20px;
             font-weight: 600;
-            font-size: 0.8rem;
+            font-size: 0.72rem;
             text-transform: uppercase;
+            letter-spacing: 0.03em;
         }
-        .status-healthy { background: #d1fae5; color: #065f46; }
-        .status-degraded { background: #fef3c7; color: #92400e; }
+        .status-healthy { background: #dcfce7; color: #166534; }
+        .status-degraded { background: #fef9c3; color: #854d0e; }
         .status-error { background: #fee2e2; color: #991b1b; }
-        .status-unknown { background: #f3f4f6; color: #6b7280; }
+        .status-unknown { background: #f1f5f9; color: #64748b; }
+
+        /* Period toggle */
+        .period-toggle { display: flex; gap: 0.35rem; margin-bottom: 1rem; }
+        .period-btn {
+            padding: 0.4rem 0.9rem;
+            border: 1px solid #e2e8f0;
+            background: white;
+            color: #475569;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.82rem;
+            font-weight: 500;
+            transition: all 0.15s;
+        }
+        .period-btn:hover { border-color: #2563eb; color: #2563eb; }
+        .period-btn.active {
+            background: #1e3a5f;
+            color: white;
+            border-color: #1e3a5f;
+        }
 
         /* Charts */
         .chart-container { position: relative; height: 300px; margin: 1rem 0; }
@@ -171,17 +258,76 @@
             gap: 1.5rem;
             margin: 1rem 0;
         }
-        @media (max-width: 768px) { .chart-row { grid-template-columns: 1fr; } }
+        @media (max-width: 768px) {
+            .chart-row { grid-template-columns: 1fr; }
+            .top-bar-inner { flex-direction: column; gap: 0.75rem; align-items: flex-start; }
+            .top-bar-links { flex-wrap: wrap; }
+        }
 
-        /* Admin section */
+        /* Community detail header */
+        .community-header {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 0.25rem;
+            flex-wrap: wrap;
+        }
+        .community-header h2 {
+            border: none;
+            padding: 0;
+            margin: 0;
+            font-size: 1.25rem;
+        }
+        .community-detail-links {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            margin-bottom: 1rem;
+        }
+        .community-detail-links a {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+            padding: 0.35rem 0.7rem;
+            border-radius: 6px;
+            font-size: 0.82rem;
+            font-weight: 500;
+            color: #475569;
+            border: 1px solid #e2e8f0;
+            text-decoration: none;
+            transition: all 0.15s;
+        }
+        .community-detail-links a:hover {
+            border-color: #2563eb;
+            color: #2563eb;
+        }
+        .community-detail-links svg { width: 14px; height: 14px; flex-shrink: 0; }
+
+        /* Sync info */
+        .sync-info {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 1rem;
+            margin: 1rem 0;
+        }
+        .sync-item {
+            padding: 0.9rem;
+            background: #f8fafc;
+            border-radius: 8px;
+            border: 1px solid #e2e8f0;
+        }
+        .sync-item-label { font-weight: 600; color: #1e293b; margin-bottom: 0.2rem; font-size: 0.9rem; }
+        .sync-item-value { color: #64748b; font-size: 0.85rem; }
+
+        /* Admin */
         .admin-section {
             display: none;
             margin-top: 1.5rem;
             padding-top: 1.5rem;
-            border-top: 2px dashed #e5e7eb;
+            border-top: 1px dashed #e2e8f0;
         }
         .admin-section.visible { display: block; }
-        .admin-section h3 { color: #667eea; margin-bottom: 1rem; font-size: 1.1rem; }
+        .admin-section h3 { color: #1e3a5f; margin-bottom: 1rem; font-size: 1rem; }
         .admin-input-row {
             display: flex;
             gap: 0.5rem;
@@ -189,53 +335,37 @@
             margin-top: 1rem;
         }
         .admin-input {
-            padding: 0.6rem 1rem;
-            border: 2px solid #d1d5db;
-            border-radius: 8px;
-            font-size: 0.9rem;
+            padding: 0.55rem 0.9rem;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            font-size: 0.85rem;
             flex: 1;
             max-width: 400px;
         }
-        .admin-input:focus { outline: none; border-color: #667eea; }
+        .admin-input:focus { outline: none; border-color: #2563eb; }
         .admin-btn {
-            padding: 0.6rem 1.2rem;
-            background: #667eea;
+            padding: 0.55rem 1.1rem;
+            background: #1e3a5f;
             color: white;
             border: none;
-            border-radius: 8px;
+            border-radius: 6px;
             cursor: pointer;
             font-weight: 600;
-            font-size: 0.9rem;
-            transition: background 0.2s;
+            font-size: 0.85rem;
+            transition: background 0.15s;
         }
-        .admin-btn:hover { background: #5568d3; }
-        .admin-status { font-size: 0.85rem; color: #6b7280; margin-left: 0.5rem; }
+        .admin-btn:hover { background: #15304f; }
+        .admin-status { font-size: 0.82rem; color: #64748b; margin-left: 0.5rem; }
         .admin-status.success { color: #059669; }
         .admin-status.error { color: #dc2626; }
 
-        /* Sync info */
-        .sync-info {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 1rem;
-            margin: 1rem 0;
-        }
-        .sync-item {
-            padding: 1rem;
-            background: #f9fafb;
-            border-radius: 8px;
-            border-left: 3px solid #667eea;
-        }
-        .sync-item-label { font-weight: 600; color: #374151; margin-bottom: 0.25rem; }
-        .sync-item-value { color: #6b7280; font-size: 0.9rem; }
-
         /* Loading / error */
-        .loading { text-align: center; color: #6b7280; padding: 2rem; }
+        .loading { text-align: center; color: #64748b; padding: 2rem; }
         .loading::after {
             content: '';
             display: inline-block;
-            width: 1.2rem; height: 1.2rem;
-            border: 2px solid #667eea;
+            width: 1.1rem; height: 1.1rem;
+            border: 2px solid #2563eb;
             border-top-color: transparent;
             border-radius: 50%;
             animation: spin 0.8s linear infinite;
@@ -244,34 +374,57 @@
         }
         @keyframes spin { to { transform: rotate(360deg); } }
         .error-msg {
-            color: #dc2626;
-            background: #fee2e2;
+            color: #991b1b;
+            background: #fef2f2;
             padding: 1rem;
             border-radius: 8px;
+            border: 1px solid #fecaca;
             margin: 1rem 0;
         }
-        .community-header {
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-            margin-bottom: 1rem;
+
+        /* Footer */
+        .footer {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 1.5rem 2rem;
+            text-align: center;
+            color: #94a3b8;
+            font-size: 0.8rem;
+            border-top: 1px solid #e2e8f0;
         }
-        .community-header h3 { font-size: 1.2rem; color: #374151; }
+        .footer a { color: #64748b; text-decoration: none; }
+        .footer a:hover { color: #2563eb; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header" id="pageHeader">
-            <h1>Open Science Assistant</h1>
-            <p>Community Dashboard</p>
+    <div class="top-bar">
+        <div class="top-bar-inner">
+            <h1>Open Science Assistant <span>Dashboard</span></h1>
+            <div class="top-bar-links">
+                <a href="https://docs.osc.earth/osa/" target="_blank" rel="noopener">
+                    <svg viewBox="0 0 20 20" fill="currentColor"><path d="M9 4.804A7.968 7.968 0 005.5 4c-1.255 0-2.443.29-3.5.804v10A7.969 7.969 0 015.5 14c1.669 0 3.218.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.968 7.968 0 0014.5 4c-1.255 0-2.443.29-3.5.804V12a1 1 0 11-2 0V4.804z"/></svg>
+                    Docs
+                </a>
+                <a href="https://github.com/osc-em/osa" target="_blank" rel="noopener">
+                    <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+                    GitHub
+                </a>
+                <a href="https://demo.osc.earth" target="_blank" rel="noopener">
+                    <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/></svg>
+                    Demo
+                </a>
+            </div>
         </div>
-        <div id="tabBar" class="tab-bar"></div>
+    </div>
+
+    <div class="container">
+        <div id="tabBar" class="tab-bar" style="display:none;"></div>
         <div id="app" class="loading">Loading...</div>
 
-        <!-- Admin Key Input (hidden until view loads successfully) -->
+        <!-- Admin Key Input -->
         <div class="card" id="adminCard" style="display:none;">
             <h2>Admin Access</h2>
-            <p style="margin-bottom: 0.5rem; color: #6b7280;">
+            <p style="margin-bottom: 0.5rem; color: #64748b; font-size: 0.9rem;">
                 Enter admin API key to view token usage, costs, and model details.
             </p>
             <div class="admin-input-row">
@@ -283,13 +436,42 @@
         </div>
     </div>
 
+    <div class="footer">
+        <a href="https://osc.earth" target="_blank" rel="noopener">Open Science Center</a>
+        &middot;
+        <a href="https://docs.osc.earth/osa/" target="_blank" rel="noopener">Documentation</a>
+        &middot;
+        <a href="https://github.com/osc-em/osa" target="_blank" rel="noopener">Source</a>
+    </div>
+
     <script>
+    // -----------------------------------------------------------------------
+    // SVG icon helpers (inline, no external deps)
+    // -----------------------------------------------------------------------
+    const ICONS = {
+        homepage: '<svg viewBox="0 0 20 20" fill="currentColor"><path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"/></svg>',
+        documentation: '<svg viewBox="0 0 20 20" fill="currentColor"><path d="M9 4.804A7.968 7.968 0 005.5 4c-1.255 0-2.443.29-3.5.804v10A7.969 7.969 0 015.5 14c1.669 0 3.218.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.968 7.968 0 0014.5 4c-1.255 0-2.443.29-3.5.804V12a1 1 0 11-2 0V4.804z"/></svg>',
+        repository: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>',
+        demo: '<svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/></svg>',
+    };
+    const LINK_LABELS = { homepage: 'Homepage', documentation: 'Docs', repository: 'GitHub', demo: 'Try it' };
+
+    function linkHtml(links, cssClass) {
+        if (!links || Object.keys(links).length === 0) return '';
+        let html = `<div class="${cssClass}">`;
+        for (const [key, url] of Object.entries(links)) {
+            if (!url) continue;
+            const icon = ICONS[key] || '';
+            const label = LINK_LABELS[key] || key;
+            html += `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${icon} ${escapeHtml(label)}</a>`;
+        }
+        html += '</div>';
+        return html;
+    }
+
     // -----------------------------------------------------------------------
     // Configuration
     // -----------------------------------------------------------------------
-    // API base URL. Priority: ?api= query param > window.OSA_API_BASE > auto-detect.
-    // Auto-detection maps known dashboard hosts to their API backends.
-    // Falls back to same-origin for local dev (uvicorn serves both).
     const API_BASE = (function() {
         const params = new URLSearchParams(window.location.search);
         if (params.get('api')) return params.get('api').replace(/\/+$/, '');
@@ -327,18 +509,19 @@
     let adminKey = null;
     let activePeriod = 'daily';
     let overviewData = null;
+    let communityMeta = {};  // community_id -> { description, links }
     let usageChartInstance = null;
     let toolsChartInstance = null;
     let adminTokenChartInstance = null;
     let adminCostChartInstance = null;
 
     const COLORS = [
-        '#667eea', '#764ba2', '#10b981', '#f59e0b', '#ef4444',
-        '#8b5cf6', '#06b6d4', '#ec4899', '#84cc16', '#f97316'
+        '#2563eb', '#1e3a5f', '#059669', '#d97706', '#dc2626',
+        '#7c3aed', '#0891b2', '#db2777', '#65a30d', '#ea580c'
     ];
 
     // -----------------------------------------------------------------------
-    // Router - read path to decide view
+    // Router
     // -----------------------------------------------------------------------
     const BASE_PATH = '/osa';
 
@@ -354,18 +537,38 @@
         const app = document.getElementById('app');
         const route = getRoute();
 
-        // Always fetch overview first to populate tabs
+        // Fetch overview + community metadata in parallel
         let overviewStatus = null;
-        try {
-            const resp = await fetch(`${API_BASE}/metrics/public/overview`);
-            overviewStatus = resp.status;
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            overviewData = await resp.json();
+        const [overviewResult, metaResult] = await Promise.allSettled([
+            fetch(`${API_BASE}/metrics/public/overview`).then(async r => {
+                overviewStatus = r.status;
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                return r.json();
+            }),
+            fetch(`${API_BASE}/communities`).then(async r => {
+                if (!r.ok) return [];
+                return r.json();
+            }).catch(() => []),
+        ]);
+
+        if (overviewResult.status === 'fulfilled') {
+            overviewData = overviewResult.value;
+        }
+
+        // Build community metadata lookup
+        if (metaResult.status === 'fulfilled' && Array.isArray(metaResult.value)) {
+            for (const c of metaResult.value) {
+                communityMeta[c.id] = { description: c.description, links: c.links };
+            }
+        }
+
+        if (overviewData) {
+            // Sort communities alphabetically
+            if (overviewData.communities) {
+                overviewData.communities.sort((a, b) =>
+                    a.community_id.localeCompare(b.community_id));
+            }
             renderTabs(overviewData.communities, route.community);
-        } catch (err) {
-            // If overview fetch fails, tabs won't render. Aggregate view will
-            // show error; community views can still proceed.
-            console.error('Failed to load overview for tab navigation:', err);
         }
 
         if (route.view === 'community') {
@@ -388,6 +591,7 @@
     function renderTabs(communities, activeCommunity) {
         const tabBar = document.getElementById('tabBar');
         if (!communities || communities.length === 0) return;
+        tabBar.style.display = '';
 
         let html = `<a href="${BASE_PATH}/" class="tab-link${activeCommunity === null ? ' active' : ''}">All</a>`;
         for (const c of communities) {
@@ -399,9 +603,8 @@
     }
 
     // -----------------------------------------------------------------------
-    // Aggregate View (root /)
+    // Aggregate View
     // -----------------------------------------------------------------------
-
     function renderAggregateView(data) {
         const app = document.getElementById('app');
         const successRate = data.total_requests > 0
@@ -413,17 +616,26 @@
                 const cRate = c.requests > 0
                     ? ((1 - c.error_rate) * 100).toFixed(1) : '0.0';
                 const safe = escapeHtml(c.community_id);
+                const meta = communityMeta[c.community_id] || {};
+                const desc = meta.description
+                    ? `<div class="description">${escapeHtml(meta.description)}</div>`
+                    : '';
+                const links = linkHtml(meta.links, 'community-card-links');
                 return `
-                    <a href="${BASE_PATH}/${safe}" class="community-card">
-                        <h3>${safe.toUpperCase()}</h3>
+                    <div class="community-card">
+                        <div class="community-card-header">
+                            <h3><a href="${BASE_PATH}/${safe}">${safe.toUpperCase()}</a></h3>
+                        </div>
+                        ${desc}
                         <div class="stats">
                             <span><strong>${c.requests.toLocaleString()}</strong> requests</span>
                             <span><strong>${cRate}%</strong> success</span>
                         </div>
-                    </a>`;
+                        ${links}
+                    </div>`;
             }).join('');
         } else {
-            communityCards = '<p style="color:#6b7280;">No community data yet. Select a community tab above.</p>';
+            communityCards = '<p style="color:#64748b;">No community data yet.</p>';
         }
 
         app.className = '';
@@ -453,7 +665,7 @@
     }
 
     // -----------------------------------------------------------------------
-    // Community View (/{community_id})
+    // Community View
     // -----------------------------------------------------------------------
     async function loadCommunityView(communityId) {
         const app = document.getElementById('app');
@@ -491,6 +703,7 @@
     function renderCommunityView(summary, usage, sync, health, communityId) {
         const app = document.getElementById('app');
         const safeName = escapeHtml(communityId);
+        const meta = communityMeta[communityId] || {};
         const successRate = summary.total_requests > 0
             ? ((1 - summary.error_rate) * 100).toFixed(1) : '0.0';
 
@@ -502,13 +715,20 @@
             healthLabel = healthStatus.charAt(0).toUpperCase() + healthStatus.slice(1);
         }
 
+        const desc = meta.description
+            ? `<p style="color:#64748b; font-size:0.9rem; margin-bottom:0.75rem;">${escapeHtml(meta.description)}</p>`
+            : '';
+        const links = linkHtml(meta.links, 'community-detail-links');
+
         app.className = '';
         app.innerHTML = `
             <div class="card">
                 <div class="community-header">
-                    <h2 style="border:none;padding:0;margin:0;">${safeName.toUpperCase()} Community</h2>
+                    <h2>${safeName.toUpperCase()}</h2>
                     <span class="status-badge status-${healthStatus}">${healthLabel}</span>
                 </div>
+                ${desc}
+                ${links}
                 <div class="overview-grid">
                     <div class="metric">
                         <div class="metric-value">${summary.total_requests.toLocaleString()}</div>
@@ -530,11 +750,11 @@
                 </div>
                 <div class="chart-row">
                     <div>
-                        <h3 style="color:#374151;margin-bottom:0.5rem;">Requests Over Time</h3>
+                        <h3 style="color:#1e293b;margin-bottom:0.5rem;font-size:0.95rem;font-weight:600;">Requests Over Time</h3>
                         <div class="chart-container"><canvas id="usageChart"></canvas></div>
                     </div>
                     <div>
-                        <h3 style="color:#374151;margin-bottom:0.5rem;">Top Tools</h3>
+                        <h3 style="color:#1e293b;margin-bottom:0.5rem;font-size:0.95rem;font-weight:600;">Top Tools</h3>
                         <div class="chart-container"><canvas id="toolsChart"></canvas></div>
                     </div>
                 </div>
@@ -542,11 +762,11 @@
                     <h3>Admin: Token & Cost Details</h3>
                     <div class="chart-row">
                         <div>
-                            <h3 style="color:#374151;margin-bottom:0.5rem;font-size:1rem;">Token Usage by Model</h3>
+                            <h3 style="color:#1e293b;margin-bottom:0.5rem;font-size:0.9rem;font-weight:600;">Token Usage by Model</h3>
                             <div class="chart-container"><canvas id="adminTokenChart"></canvas></div>
                         </div>
                         <div>
-                            <h3 style="color:#374151;margin-bottom:0.5rem;font-size:1rem;">Key Source Breakdown</h3>
+                            <h3 style="color:#1e293b;margin-bottom:0.5rem;font-size:0.9rem;font-weight:600;">Key Source Breakdown</h3>
                             <div class="chart-container"><canvas id="adminCostChart"></canvas></div>
                         </div>
                     </div>
@@ -612,14 +832,14 @@
                     {
                         label: 'Requests',
                         data: usage.buckets.map(b => b.requests),
-                        backgroundColor: 'rgba(102, 126, 234, 0.7)',
-                        borderColor: '#667eea', borderWidth: 1,
+                        backgroundColor: 'rgba(37, 99, 235, 0.65)',
+                        borderColor: '#2563eb', borderWidth: 1,
                     },
                     {
                         label: 'Errors',
                         data: usage.buckets.map(b => b.errors),
-                        backgroundColor: 'rgba(239, 68, 68, 0.7)',
-                        borderColor: '#ef4444', borderWidth: 1,
+                        backgroundColor: 'rgba(220, 38, 38, 0.65)',
+                        borderColor: '#dc2626', borderWidth: 1,
                     }
                 ]
             },
@@ -638,7 +858,7 @@
             if (canvas) {
                 const ctx = canvas.getContext('2d');
                 ctx.font = '14px sans-serif';
-                ctx.fillStyle = '#6b7280';
+                ctx.fillStyle = '#64748b';
                 ctx.textAlign = 'center';
                 ctx.fillText('No tool usage data yet', canvas.width / 2, canvas.height / 2);
             }
@@ -768,7 +988,7 @@
                 type: 'doughnut',
                 data: {
                     labels: data.by_key_source.map(k => k.key_source || 'Unknown'),
-                    datasets: [{ data: data.by_key_source.map(k => k.requests), backgroundColor: ['#667eea', '#10b981', '#f59e0b', '#ef4444'] }]
+                    datasets: [{ data: data.by_key_source.map(k => k.requests), backgroundColor: ['#2563eb', '#059669', '#d97706', '#dc2626'] }]
                 },
                 options: {
                     responsive: true, maintainAspectRatio: false,

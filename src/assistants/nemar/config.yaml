@@ -8,6 +8,13 @@ status: available
 default_model: anthropic/claude-haiku-4.5
 default_model_provider: anthropic
 
+# External links for dashboard and discovery
+links:
+  homepage: https://nemar.org
+  documentation: https://nemar.org/resources
+  repository: https://github.com/sccn
+  demo: https://demo.osc.earth/nemar
+
 # Widget configuration for frontend embedding
 widget:
   title: NEMAR Assistant

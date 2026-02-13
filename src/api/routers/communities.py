@@ -28,6 +28,10 @@ def list_communities() -> list[dict[str, Any]]:
             continue
 
         widget = config.widget or _DEFAULT_WIDGET
+        links = None
+        if config.links:
+            links = {k: v for k, v in config.links.model_dump().items() if v is not None}
+
         communities.append(
             {
                 "id": config.id,
@@ -35,6 +39,7 @@ def list_communities() -> list[dict[str, Any]]:
                 "description": config.description,
                 "status": config.status,
                 "widget": widget.resolve(config.name),
+                "links": links,
             }
         )
 
