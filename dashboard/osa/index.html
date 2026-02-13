@@ -458,9 +458,10 @@
 
     function linkHtml(links, cssClass) {
         if (!links || Object.keys(links).length === 0) return '';
+        const entries = Object.entries(links).filter(([, url]) => url);
+        if (entries.length === 0) return '';
         let html = `<div class="${cssClass}">`;
-        for (const [key, url] of Object.entries(links)) {
-            if (!url) continue;
+        for (const [key, url] of entries) {
             const icon = ICONS[key] || '';
             const label = LINK_LABELS[key] || key;
             html += `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${icon} ${escapeHtml(label)}</a>`;
@@ -546,13 +547,15 @@
                 return r.json();
             }),
             fetch(`${API_BASE}/communities`).then(async r => {
-                if (!r.ok) return [];
+                if (!r.ok) { console.warn('Communities fetch failed:', r.status); return []; }
                 return r.json();
-            }).catch(() => []),
+            }).catch(err => { console.warn('Communities fetch error:', err.message); return []; }),
         ]);
 
         if (overviewResult.status === 'fulfilled') {
             overviewData = overviewResult.value;
+        } else {
+            console.warn('Overview metrics fetch failed:', overviewResult.reason?.message || 'unknown error');
         }
 
         // Build community metadata lookup

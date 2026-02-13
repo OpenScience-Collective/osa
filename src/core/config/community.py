@@ -703,17 +703,22 @@ class LinksConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    homepage: str | None = None
+    homepage: HttpUrl | None = None
     """Primary community website URL."""
 
-    documentation: str | None = None
+    documentation: HttpUrl | None = None
     """Documentation or tutorials URL."""
 
-    repository: str | None = None
+    repository: HttpUrl | None = None
     """Source code repository (GitHub org or repo URL)."""
 
-    demo: str | None = None
+    demo: HttpUrl | None = None
     """Live demo page URL for the community assistant."""
+
+    def resolve(self) -> dict[str, str] | None:
+        """Return only populated links as strings, or None if empty."""
+        links = {k: str(v) for k, v in self.model_dump().items() if v is not None}
+        return links or None
 
 
 class SyncTypeSchedule(BaseModel):
