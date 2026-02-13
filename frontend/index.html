@@ -16,22 +16,108 @@
     })();
   </script>
   <title>OSA Chat Widget Demo</title>
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://demo.osc.earth/">
+  <meta property="og:title" content="Open Science Assistant - Demo">
+  <meta property="og:description" content="AI-powered assistants for research communities. Try HED, BIDS, EEGLAB, and NEMAR assistants with domain expertise and documentation.">
+  <meta property="og:image" content="https://osc.earth/og-image-osa.png">
+  <meta property="og:site_name" content="OpenScience Collective">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+
+  <meta name="description" content="AI-powered assistants for research communities. Try HED, BIDS, EEGLAB, and NEMAR assistants with domain expertise and documentation.">
+
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      max-width: 800px;
-      margin: 0 auto;
-      padding: 40px 20px;
+      margin: 0;
+      padding: 0;
       background: #f9fafb;
       min-height: 100vh;
+      color: #2c4a6e;
     }
+    .top-bar {
+      background: white;
+      border-bottom: 1px solid #e5e7eb;
+      padding: 0.9rem 2rem;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .top-bar-inner {
+      max-width: 800px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .top-bar-logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      text-decoration: none;
+      color: #2c4a6e;
+      font-weight: 700;
+      font-size: 1.1rem;
+    }
+    .top-bar-logo:hover { color: #3d5a80; }
+    .top-bar-logo svg { color: #3d5a80; }
+    .page-content {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 32px 20px;
+    }
+    .site-footer {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 24px 20px;
+      text-align: center;
+      color: #6b8db5;
+      font-size: 13px;
+      border-top: 1px solid #e5e7eb;
+    }
+    .site-footer a { color: #3d5a80; text-decoration: none; }
+    .site-footer a:hover { color: #2c4a6e; text-decoration: underline; }
     h1 {
-      color: #1f2937;
+      color: #2c4a6e;
       margin-bottom: 16px;
     }
     p {
-      color: #6b7280;
+      color: #3d5a80;
       line-height: 1.6;
+    }
+
+    /* Dark mode */
+    @media (prefers-color-scheme: dark) {
+      body { background: #0d1117; color: #c8d6e8; }
+      .top-bar { background: #161b22; border-color: #30363d; }
+      .top-bar-logo { color: #c8d6e8; }
+      .top-bar-logo:hover { color: #7ba3d4; }
+      .top-bar-logo svg { color: #7ba3d4; }
+      h1 { color: #c8d6e8; }
+      h2 { color: #c8d6e8; }
+      h3 { color: #c8d6e8; }
+      p { color: #8a9bb5; }
+      .info-box { background: #161b22; border: 1px solid #30363d; box-shadow: none; }
+      .info-box h2 { color: #c8d6e8; }
+      .community-card { background: #161b22; border: 1px solid #30363d; box-shadow: none; }
+      .community-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+      .community-card h3 { color: #c8d6e8; }
+      .community-card p { color: #8a9bb5; }
+      code { background: #30363d; color: #c8d6e8; }
+      pre { background: #0d1117; border: 1px solid #30363d; }
+      ul { color: #8a9bb5; }
+      .feature-item { background: #1c2128; color: #8a9bb5; }
+      .feature-item strong { color: #c8d6e8; }
+      .badge { background: #1c3a5f; color: #7ba3d4; }
+      .links a { color: #7ba3d4; }
+      .status-active { background: #0d2818; color: #4ade80; }
+      .status-soon { background: #2d1f04; color: #fbbf24; }
+      .site-footer { border-color: #30363d; color: #6b7b92; }
+      .site-footer a { color: #7ba3d4; }
     }
     .info-box {
       background: white;
@@ -161,7 +247,18 @@
   </style>
 </head>
 <body>
-  <div id="page-content"></div>
+  <div class="top-bar">
+    <div class="top-bar-inner">
+      <a href="/" class="top-bar-logo">
+        <svg width="48" height="32" viewBox="0 0 120 80" aria-hidden="true">
+          <rect x="2" y="2" width="116" height="76" rx="3" fill="none" stroke="currentColor" stroke-width="3.5" opacity="0.5"/>
+          <text x="60" y="40" font-family="Inter, -apple-system, sans-serif" font-size="42" font-weight="700" fill="currentColor" text-anchor="middle" dominant-baseline="central" letter-spacing="-1">OSA</text>
+        </svg>
+        Open Science Assistant
+      </a>
+    </div>
+  </div>
+  <div class="page-content" id="page-content"></div>
 
   <!-- Load the OSA Chat Widget (no-auto-init: we init after loading community config) -->
   <script src="osa-chat-widget.js" data-no-auto-init></script>
@@ -346,7 +443,7 @@
           <div class="links">
             <a href="https://docs.osc.earth/osa/" target="_blank" rel="noopener">Documentation</a>
             <a href="https://github.com/OpenScience-Collective/osa" target="_blank" rel="noopener">GitHub Repository</a>
-            <a href="https://osc.earth" target="_blank" rel="noopener">Open Science Collective</a>
+            <a href="https://osc.earth" target="_blank" rel="noopener">OpenScience Collective</a>
           </div>
         </div>
       `;
@@ -413,7 +510,7 @@
           <div class="links">
             <a href="https://docs.osc.earth/osa/" target="_blank" rel="noopener">Documentation</a>
             <a href="https://github.com/OpenScience-Collective/osa" target="_blank" rel="noopener">GitHub Repository</a>
-            <a href="https://osc.earth" target="_blank" rel="noopener">Open Science Collective</a>
+            <a href="https://osc.earth" target="_blank" rel="noopener">OpenScience Collective</a>
           </div>
         </div>
       `;
@@ -427,5 +524,11 @@
     // Load communities from API and then route
     loadCommunities();
   </script>
+
+  <div class="site-footer">
+    &copy; <script>document.write(new Date().getFullYear())</script>
+    <a href="https://osc.earth" target="_blank" rel="noopener">OpenScience Collective</a>
+    &middot; Made with ❤️
+  </div>
 </body>
 </html>
