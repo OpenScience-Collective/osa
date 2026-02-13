@@ -1339,7 +1339,12 @@ def _log_streaming_metrics(
         )
         log_request(entry)
     except Exception:
-        logger.exception("Failed to log streaming metrics for %s", endpoint)
+        logger.exception(
+            "Failed to log streaming metrics for %s (community=%s, status=%d)",
+            endpoint,
+            community_id,
+            status_code,
+        )
 
 
 # ---------------------------------------------------------------------------

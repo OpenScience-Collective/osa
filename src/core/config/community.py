@@ -695,6 +695,32 @@ class WidgetConfig(BaseModel):
         }
 
 
+class LinksConfig(BaseModel):
+    """External links for a community (homepage, docs, repo, demo).
+
+    All fields are optional; only populated links are exposed via the API.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    homepage: HttpUrl | None = None
+    """Primary community website URL."""
+
+    documentation: HttpUrl | None = None
+    """Documentation or tutorials URL."""
+
+    repository: HttpUrl | None = None
+    """Source code repository (GitHub org or repo URL)."""
+
+    demo: HttpUrl | None = None
+    """Live demo page URL for the community assistant."""
+
+    def resolve(self) -> dict[str, str] | None:
+        """Return only populated links as strings, or None if empty."""
+        links = {k: str(v) for k, v in self.model_dump().items() if v is not None}
+        return links or None
+
+
 class SyncTypeSchedule(BaseModel):
     """Schedule configuration for a single sync type.
 
@@ -709,14 +735,14 @@ class SyncTypeSchedule(BaseModel):
     @field_validator("cron")
     @classmethod
     def validate_cron(cls, v: str) -> str:
-        """Validate cron expression format (5-field)."""
+        """Validate cron expression format and field values."""
+        from apscheduler.triggers.cron import CronTrigger
+
         v = v.strip()
-        parts = v.split()
-        if len(parts) != 5:
-            raise ValueError(
-                f"Cron expression must have exactly 5 fields (minute hour day month weekday), "
-                f"got {len(parts)}: '{v}'"
-            )
+        try:
+            CronTrigger.from_crontab(v)
+        except ValueError as e:
+            raise ValueError(f"Invalid cron expression '{v}': {e}") from e
         return v
 
 
@@ -939,6 +965,19 @@ class CommunityConfig(BaseModel):
           suggested_questions:
             - What is HED and how is it used?
             - How do I annotate an event with HED tags?
+    """
+
+    links: LinksConfig | None = None
+    """External links for the community (homepage, docs, repo, demo).
+
+    Used by the dashboard to show quick-access links for each community.
+
+    Example:
+        links:
+          homepage: https://www.hedtags.org
+          documentation: https://www.hedtags.org/hed-resources
+          repository: https://github.com/hed-standard
+          demo: https://demo.osc.earth/?community=hed
     """
 
     @field_validator("cors_origins")

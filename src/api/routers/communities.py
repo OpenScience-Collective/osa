@@ -35,6 +35,7 @@ def list_communities() -> list[dict[str, Any]]:
                 "description": config.description,
                 "status": config.status,
                 "widget": widget.resolve(config.name),
+                "links": config.links.resolve() if config.links else None,
             }
         )
 

@@ -85,14 +85,14 @@ def _reset_failure(sync_type: str, community_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _run_github_sync_for_community(community_id: str) -> None:
-    """Run GitHub sync for a single community."""
+def _run_github_sync_for_community(community_id: str) -> bool:
+    """Run GitHub sync for a single community. Returns True on success."""
     logger.info("Starting scheduled GitHub sync for %s", community_id)
     try:
         info = registry.get(community_id)
         if not info or not info.community_config or not info.community_config.github:
             logger.debug("No GitHub repos configured for %s", community_id)
-            return
+            return True
 
         repos = info.community_config.github.repos
         init_db(community_id)
@@ -100,19 +100,21 @@ def _run_github_sync_for_community(community_id: str) -> None:
         total = sum(results.values())
         logger.info("GitHub sync complete for %s: %d items", community_id, total)
         _reset_failure("github", community_id)
+        return True
     except Exception as e:
         _track_failure("github", community_id, e)
+        return False
 
 
-def _run_papers_sync_for_community(community_id: str) -> None:
-    """Run papers sync for a single community."""
+def _run_papers_sync_for_community(community_id: str) -> bool:
+    """Run papers sync for a single community. Returns True on success."""
     settings = get_settings()
     logger.info("Starting scheduled papers sync for %s", community_id)
     try:
         info = registry.get(community_id)
         if not info or not info.community_config or not info.community_config.citations:
             logger.debug("No citation config for %s", community_id)
-            return
+            return True
 
         citations = info.community_config.citations
         init_db(community_id)
@@ -140,18 +142,20 @@ def _run_papers_sync_for_community(community_id: str) -> None:
 
         logger.info("Papers sync complete for %s: %d items", community_id, total)
         _reset_failure("papers", community_id)
+        return True
     except Exception as e:
         _track_failure("papers", community_id, e)
+        return False
 
 
-def _run_docstrings_sync_for_community(community_id: str) -> None:
-    """Run docstring extraction sync for a single community."""
+def _run_docstrings_sync_for_community(community_id: str) -> bool:
+    """Run docstring extraction sync for a single community. Returns True on success."""
     logger.info("Starting scheduled docstrings sync for %s", community_id)
     try:
         info = registry.get(community_id)
         if not info or not info.community_config or not info.community_config.docstrings:
             logger.debug("No docstrings config for %s", community_id)
-            return
+            return True
 
         from src.knowledge.docstring_sync import sync_repo_docstrings
 
@@ -176,18 +180,20 @@ def _run_docstrings_sync_for_community(community_id: str) -> None:
 
         logger.info("Docstrings sync complete for %s: %d total symbols", community_id, total)
         _reset_failure("docstrings", community_id)
+        return True
     except Exception as e:
         _track_failure("docstrings", community_id, e)
+        return False
 
 
-def _run_mailman_sync_for_community(community_id: str) -> None:
-    """Run mailing list archive sync for a single community."""
+def _run_mailman_sync_for_community(community_id: str) -> bool:
+    """Run mailing list archive sync for a single community. Returns True on success."""
     logger.info("Starting scheduled mailman sync for %s", community_id)
     try:
         info = registry.get(community_id)
         if not info or not info.community_config or not info.community_config.mailman:
             logger.debug("No mailman config for %s", community_id)
-            return
+            return True
 
         from src.knowledge.mailman_sync import sync_mailing_list
 
@@ -210,23 +216,25 @@ def _run_mailman_sync_for_community(community_id: str) -> None:
 
         logger.info("Mailman sync complete for %s: %d total messages", community_id, grand_total)
         _reset_failure("mailman", community_id)
+        return True
     except Exception as e:
         _track_failure("mailman", community_id, e)
+        return False
 
 
-def _run_faq_sync_for_community(community_id: str) -> None:
-    """Run FAQ generation sync for a single community."""
+def _run_faq_sync_for_community(community_id: str) -> bool:
+    """Run FAQ generation sync for a single community. Returns True on success."""
     logger.info("Starting scheduled FAQ sync for %s", community_id)
     try:
         info = registry.get(community_id)
         if not info or not info.community_config:
             logger.debug("No community config for %s", community_id)
-            return
+            return True
 
         config = info.community_config
         if not config.mailman or not config.faq_generation:
             logger.debug("No FAQ generation config for %s", community_id)
-            return
+            return True
 
         from src.knowledge.faq_summarizer import summarize_threads
 
@@ -248,12 +256,14 @@ def _run_faq_sync_for_community(community_id: str) -> None:
             )
 
         _reset_failure("faq", community_id)
+        return True
     except Exception as e:
         _track_failure("faq", community_id, e)
+        return False
 
 
-def _run_beps_sync_for_community(community_id: str) -> None:
-    """Run BEP sync for a single community (typically BIDS only)."""
+def _run_beps_sync_for_community(community_id: str) -> bool:
+    """Run BEP sync for a single community (typically BIDS only). Returns True on success."""
     logger.info("Starting scheduled BEP sync for %s", community_id)
     try:
         init_db(community_id)
@@ -265,8 +275,10 @@ def _run_beps_sync_for_community(community_id: str) -> None:
             stats["with_content"],
         )
         _reset_failure("beps", community_id)
+        return True
     except Exception as e:
         _track_failure("beps", community_id, e)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -354,7 +366,7 @@ def _check_community_budgets() -> None:
 
 # Maps sync type name to (job_function, data_config_check)
 # data_config_check returns truthy if the community has the necessary data config
-_SYNC_TYPE_MAP: dict[str, tuple[Callable[[str], None], Callable[[Any], Any]]] = {
+_SYNC_TYPE_MAP: dict[str, tuple[Callable[[str], bool], Callable[[Any], Any]]] = {
     "github": (
         _run_github_sync_for_community,
         lambda cfg: cfg.github and cfg.github.repos,
@@ -612,16 +624,9 @@ def run_sync_now(sync_type: str = "all") -> dict[str, int]:
             if not data_check(config):
                 continue
 
-            try:
-                init_db(community_id)
-                job_func(community_id)
+            # job_func handles its own exceptions via _track_failure and
+            # returns False on failure, so no outer try/except needed
+            if job_func(community_id):
                 results[st] = results.get(st, 0) + 1
-            except Exception:
-                logger.error(
-                    "Manual %s sync failed for %s",
-                    st,
-                    community_id,
-                    exc_info=True,
-                )
 
     return results
