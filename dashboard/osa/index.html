@@ -15,9 +15,8 @@
 
     <!-- Twitter Card -->
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Open Science Assistant - Dashboard">
-    <meta name="twitter:description" content="Real-time status and analytics for the Open Science Assistant. Monitor uptime, response times, and usage across research communities.">
-    <meta name="twitter:image" content="https://osc.earth/og-image-osa.png">
+
+    <meta name="description" content="Real-time status and analytics for the Open Science Assistant. Monitor uptime, response times, and usage across research communities.">
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
     <style>
@@ -398,7 +397,7 @@
         }
 
         /* Footer */
-        .footer {
+        .site-footer {
             max-width: 1200px;
             margin: 0 auto;
             padding: 1.5rem 2rem;
@@ -407,15 +406,76 @@
             font-size: 0.8rem;
             border-top: 1px solid #e2e8f0;
         }
-        .footer a { color: #64748b; text-decoration: none; }
-        .footer a:hover { color: #2563eb; }
+        .site-footer a { color: #64748b; text-decoration: none; }
+        .site-footer a:hover { color: #2563eb; }
+
+        /* Logo */
+        .top-bar-logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .top-bar-logo svg { color: #3d5a80; }
+
+        /* Dark mode */
+        @media (prefers-color-scheme: dark) {
+            body { background: #0d1117; color: #c8d6e8; }
+            .top-bar { background: #161b22; border-color: #30363d; }
+            .top-bar h1 { color: #c8d6e8; }
+            .top-bar h1 span { color: #8a9bb5; }
+            .top-bar-logo svg { color: #7ba3d4; }
+            .top-bar-links a { color: #8a9bb5; }
+            .top-bar-links a:hover { color: #7ba3d4; }
+            .tab-bar { background: #161b22; border-color: #30363d; }
+            .tab-link { color: #8a9bb5; }
+            .tab-link:hover { background: #1c2128; color: #c8d6e8; }
+            .tab-link.active { background: #7ba3d4; color: #0d1117; }
+            .card { background: #161b22; border-color: #30363d; box-shadow: none; }
+            .card h2 { color: #c8d6e8; border-color: #30363d; }
+            .metric { background: #1c2128; border-color: #30363d; }
+            .metric-value { color: #c8d6e8; }
+            .metric-label { color: #8a9bb5; }
+            .community-card { background: #1c2128; border-color: #30363d; }
+            .community-card:hover { border-color: #8a9bb5; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
+            .community-card h3 { color: #c8d6e8; }
+            .community-card h3 a { color: #c8d6e8; }
+            .community-card h3 a:hover { color: #7ba3d4; }
+            .community-card .description { color: #8a9bb5; }
+            .community-card .stats { color: #8a9bb5; }
+            .community-card .stats strong { color: #c8d6e8; }
+            .community-card-links a { color: #8a9bb5; background: #0d1117; border-color: #30363d; }
+            .community-card-links a:hover { border-color: #7ba3d4; color: #7ba3d4; }
+            .status-healthy { background: #0d2818; color: #4ade80; }
+            .status-degraded { background: #2d1f04; color: #fbbf24; }
+            .status-error { background: #3b1219; color: #f87171; }
+            .status-unknown { background: #1c2128; color: #8a9bb5; }
+            .period-btn { border-color: #30363d; background: #161b22; color: #8a9bb5; }
+            .period-btn:hover { border-color: #7ba3d4; color: #7ba3d4; }
+            .period-btn.active { background: #7ba3d4; color: #0d1117; border-color: #7ba3d4; }
+            .sync-item { background: #1c2128; border-color: #30363d; }
+            .sync-item-label { color: #c8d6e8; }
+            .sync-item-value { color: #8a9bb5; }
+            .community-header h2 { color: #c8d6e8; }
+            .community-detail-links a { color: #8a9bb5; border-color: #30363d; }
+            .community-detail-links a:hover { border-color: #7ba3d4; color: #7ba3d4; }
+            .admin-section { border-color: #30363d; }
+            .admin-section h3 { color: #c8d6e8; }
+            .admin-input { background: #0d1117; border-color: #30363d; color: #c8d6e8; }
+            .admin-input:focus { border-color: #7ba3d4; }
+            .admin-btn { background: #7ba3d4; color: #0d1117; }
+            .admin-btn:hover { background: #93b8de; }
+            .loading { color: #8a9bb5; }
+            .error-msg { color: #f87171; background: #3b1219; border-color: #5c1d2a; }
+            .site-footer { color: #6b7b92; border-color: #30363d; }
+            .site-footer a { color: #7ba3d4; }
+        }
     </style>
 </head>
 <body>
     <div class="top-bar">
         <div class="top-bar-inner">
-            <div style="display:flex;align-items:center;gap:10px;">
-                <svg width="48" height="32" viewBox="0 0 120 80" aria-hidden="true" style="color:#3d5a80;">
+            <div class="top-bar-logo">
+                <svg width="48" height="32" viewBox="0 0 120 80" aria-hidden="true">
                     <rect x="2" y="2" width="116" height="76" rx="3" fill="none" stroke="currentColor" stroke-width="3.5" opacity="0.5"/>
                     <text x="60" y="40" font-family="Inter, -apple-system, sans-serif" font-size="42" font-weight="700" fill="currentColor" text-anchor="middle" dominant-baseline="central" letter-spacing="-1">OSA</text>
                 </svg>
@@ -426,7 +486,7 @@
                     <svg viewBox="0 0 20 20" fill="currentColor"><path d="M9 4.804A7.968 7.968 0 005.5 4c-1.255 0-2.443.29-3.5.804v10A7.969 7.969 0 015.5 14c1.669 0 3.218.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.968 7.968 0 0014.5 4c-1.255 0-2.443.29-3.5.804V12a1 1 0 11-2 0V4.804z"/></svg>
                     Docs
                 </a>
-                <a href="https://github.com/osc-em/osa" target="_blank" rel="noopener">
+                <a href="https://github.com/OpenScience-Collective/osa" target="_blank" rel="noopener">
                     <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
                     GitHub
                 </a>
@@ -457,14 +517,14 @@
         </div>
     </div>
 
-    <div class="footer">
+    <div class="site-footer">
         &copy; <script>document.write(new Date().getFullYear())</script>
         <a href="https://osc.earth" target="_blank" rel="noopener">OpenScience Collective</a>
         &middot; Made with ❤️
         &middot;
         <a href="https://docs.osc.earth/osa/" target="_blank" rel="noopener">Documentation</a>
         &middot;
-        <a href="https://github.com/osc-em/osa" target="_blank" rel="noopener">Source</a>
+        <a href="https://github.com/OpenScience-Collective/osa" target="_blank" rel="noopener">Source</a>
     </div>
 
     <script>
