@@ -7,6 +7,7 @@ with real output verification.
 from pathlib import Path
 from unittest.mock import patch
 
+from click import unstyle
 from typer.testing import CliRunner
 
 from src.cli.config import CLIConfig, save_config
@@ -184,9 +185,10 @@ class TestAskCommand:
         """ask --help should show assistant and output options."""
         result = runner.invoke(cli, ["ask", "--help"])
         assert result.exit_code == 0
-        assert "--assistant" in result.output
-        assert "--api-key" in result.output
-        assert "QUESTION" in result.output or "question" in result.output.lower()
+        clean = unstyle(result.output)
+        assert "--assistant" in clean
+        assert "--api-key" in clean
+        assert "QUESTION" in clean or "question" in clean.lower()
 
     def test_ask_without_api_key_shows_error(self, tmp_path: Path) -> None:
         """ask without API key should show init hint."""
@@ -216,5 +218,6 @@ class TestChatCommand:
         """chat --help should show assistant options."""
         result = runner.invoke(cli, ["chat", "--help"])
         assert result.exit_code == 0
-        assert "--assistant" in result.output
-        assert "--api-key" in result.output
+        clean = unstyle(result.output)
+        assert "--assistant" in clean
+        assert "--api-key" in clean
