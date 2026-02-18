@@ -290,7 +290,7 @@ async def get_sync_status(
                 next_run = job.next_run_time.isoformat() if job.next_run_time else None
                 jobs[job.id] = next_run
         except Exception as e:
-            logger.warning("Failed to get next run times: %s", e, exc_info=True)
+            logger.error("Failed to get next run times: %s", e, exc_info=True)
 
     # Build per-sync-type status for all known sync types
     all_sync_types = ("github", "papers", "docstrings", "mailman", "beps", "faq")
@@ -355,7 +355,7 @@ async def trigger_sync(
             items_synced=results,
         )
     except Exception as e:
-        logger.error("Sync trigger failed: %s", e)
+        logger.error("Sync trigger failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Sync failed: {e}") from e
 
 
