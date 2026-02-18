@@ -31,15 +31,13 @@ class TestVersionCommand:
 class TestHealthCommand:
     """Tests for the health command."""
 
-    def test_health_with_invalid_url_shows_error(self, tmp_path: Path) -> None:
+    def test_health_with_invalid_url_shows_error(self) -> None:
         """health command should show error for invalid URL."""
-        tmp_path / "config.json"
-
         with patch("src.cli.main.load_config") as mock_load:
-            mock_load.return_value = CLIConfig(api_url="http://invalid-host:99999")
+            mock_load.return_value = CLIConfig(api={"url": "http://invalid-host:99999"})
             result = runner.invoke(cli, ["health"])
             assert result.exit_code == 1
-            assert "Error" in result.output
+            assert "Error" in result.output or "error" in result.output.lower()
 
 
 class TestConfigCommands:
@@ -47,41 +45,53 @@ class TestConfigCommands:
 
     def test_config_show_displays_settings(self, tmp_path: Path) -> None:
         """config show should display current settings."""
-        config_path = tmp_path / "config.json"
+        config_file = tmp_path / "config.yaml"
+        creds_file = tmp_path / "credentials.yaml"
+        legacy_file = tmp_path / "config.json"
 
-        with patch("src.cli.config.get_config_path") as mock_path:
-            mock_path.return_value = config_path
-            save_config(CLIConfig(api_url="https://test.example.com"))
-
-            with patch("src.cli.main.get_config_path") as mock_main_path:
-                mock_main_path.return_value = config_path
-                result = runner.invoke(cli, ["config", "show"])
+        with (
+            patch("src.cli.config.CONFIG_FILE", config_file),
+            patch("src.cli.config.CONFIG_DIR", tmp_path),
+            patch("src.cli.config.CREDENTIALS_FILE", creds_file),
+            patch("src.cli.config.LEGACY_CONFIG_FILE", legacy_file),
+            patch("src.cli.main.CONFIG_FILE", config_file),
+            patch("src.cli.main.CREDENTIALS_FILE", creds_file),
+        ):
+            save_config(CLIConfig(api={"url": "https://test.example.com"}))
+            result = runner.invoke(cli, ["config", "show"])
 
         assert result.exit_code == 0
-        assert "api_url" in result.output
+        assert "api.url" in result.output
 
     def test_config_set_updates_api_url(self, tmp_path: Path) -> None:
         """config set should update api_url."""
-        config_path = tmp_path / "config.json"
+        config_file = tmp_path / "config.yaml"
+        creds_file = tmp_path / "credentials.yaml"
+        legacy_file = tmp_path / "config.json"
 
         with (
-            patch("src.cli.config.get_config_path") as mock_path,
-            patch("src.cli.main.load_config") as mock_load,
-            patch("src.cli.main.save_config"),
+            patch("src.cli.config.CONFIG_FILE", config_file),
+            patch("src.cli.config.CONFIG_DIR", tmp_path),
+            patch("src.cli.config.CREDENTIALS_FILE", creds_file),
+            patch("src.cli.config.LEGACY_CONFIG_FILE", legacy_file),
         ):
-            mock_path.return_value = config_path
-            mock_load.return_value = CLIConfig()
-
             result = runner.invoke(cli, ["config", "set", "--api-url", "https://new-url.com"])
 
         assert result.exit_code == 0
         assert "updated" in result.output.lower()
 
-    def test_config_set_validates_output_format(self) -> None:
+    def test_config_set_validates_output_format(self, tmp_path: Path) -> None:
         """config set should validate output format values."""
-        with patch("src.cli.main.load_config") as mock_load:
-            mock_load.return_value = CLIConfig()
+        config_file = tmp_path / "config.yaml"
+        creds_file = tmp_path / "credentials.yaml"
+        legacy_file = tmp_path / "config.json"
 
+        with (
+            patch("src.cli.config.CONFIG_FILE", config_file),
+            patch("src.cli.config.CONFIG_DIR", tmp_path),
+            patch("src.cli.config.CREDENTIALS_FILE", creds_file),
+            patch("src.cli.config.LEGACY_CONFIG_FILE", legacy_file),
+        ):
             result = runner.invoke(cli, ["config", "set", "--output", "invalid"])
 
         assert result.exit_code == 1
@@ -89,25 +99,32 @@ class TestConfigCommands:
 
     def test_config_set_accepts_valid_output_formats(self, tmp_path: Path) -> None:
         """config set should accept valid output format values."""
-        config_path = tmp_path / "config.json"
+        config_file = tmp_path / "config.yaml"
+        creds_file = tmp_path / "credentials.yaml"
+        legacy_file = tmp_path / "config.json"
 
         for format_type in ["rich", "json", "plain"]:
             with (
-                patch("src.cli.config.get_config_path") as mock_path,
-                patch("src.cli.main.load_config") as mock_load,
-                patch("src.cli.main.save_config"),
+                patch("src.cli.config.CONFIG_FILE", config_file),
+                patch("src.cli.config.CONFIG_DIR", tmp_path),
+                patch("src.cli.config.CREDENTIALS_FILE", creds_file),
+                patch("src.cli.config.LEGACY_CONFIG_FILE", legacy_file),
             ):
-                mock_path.return_value = config_path
-                mock_load.return_value = CLIConfig()
-
                 result = runner.invoke(cli, ["config", "set", "--output", format_type])
-
             assert result.exit_code == 0, f"Failed for format: {format_type}"
 
-    def test_config_set_no_options_shows_message(self) -> None:
+    def test_config_set_no_options_shows_message(self, tmp_path: Path) -> None:
         """config set with no options should show help message."""
-        with patch("src.cli.main.load_config") as mock_load:
-            mock_load.return_value = CLIConfig()
+        config_file = tmp_path / "config.yaml"
+        creds_file = tmp_path / "credentials.yaml"
+        legacy_file = tmp_path / "config.json"
+
+        with (
+            patch("src.cli.config.CONFIG_FILE", config_file),
+            patch("src.cli.config.CONFIG_DIR", tmp_path),
+            patch("src.cli.config.CREDENTIALS_FILE", creds_file),
+            patch("src.cli.config.LEGACY_CONFIG_FILE", legacy_file),
+        ):
             result = runner.invoke(cli, ["config", "set"])
 
         assert result.exit_code == 0
@@ -119,7 +136,6 @@ class TestConfigCommands:
         assert result.exit_code == 0
         assert "Config directory" in result.output
         assert "Data directory" in result.output
-        assert "Config file" in result.output
 
     def test_config_reset_requires_confirmation(self) -> None:
         """config reset should require confirmation."""
@@ -129,14 +145,16 @@ class TestConfigCommands:
 
     def test_config_reset_with_yes_flag(self, tmp_path: Path) -> None:
         """config reset with --yes should skip confirmation."""
-        config_path = tmp_path / "config.json"
+        config_file = tmp_path / "config.yaml"
+        creds_file = tmp_path / "credentials.yaml"
+        legacy_file = tmp_path / "config.json"
 
         with (
-            patch("src.cli.config.get_config_path") as mock_path,
-            patch("src.cli.main.save_config"),
+            patch("src.cli.config.CONFIG_FILE", config_file),
+            patch("src.cli.config.CONFIG_DIR", tmp_path),
+            patch("src.cli.config.CREDENTIALS_FILE", creds_file),
+            patch("src.cli.config.LEGACY_CONFIG_FILE", legacy_file),
         ):
-            mock_path.return_value = config_path
-
             result = runner.invoke(cli, ["config", "reset", "--yes"])
 
         assert result.exit_code == 0
@@ -159,50 +177,44 @@ class TestCLIHelp:
         assert "Manage CLI configuration" in result.output
 
 
-class TestAssistantSubcommands:
-    """Tests for assistant-specific subcommands (osa hed, etc.).
+class TestAskCommand:
+    """Tests for the ask command."""
 
-    Note: Assistants are discovered dynamically from the registry.
-    Currently only HED is registered. Future assistants (BIDS, EEGLAB)
-    will be added when implemented.
-    """
-
-    def test_bare_osa_shows_assistants_table(self) -> None:
-        """Running 'osa' with no command should show available assistants."""
-        result = runner.invoke(cli, [])
+    def test_ask_help_shows_options(self) -> None:
+        """ask --help should show assistant and output options."""
+        result = runner.invoke(cli, ["ask", "--help"])
         assert result.exit_code == 0
-        assert "Available Assistants" in result.output
-        # Only HED is currently registered in the modular architecture
-        assert "hed" in result.output.lower()
-
-    def test_hed_help_shows_commands(self) -> None:
-        """'osa hed --help' should show ask and chat commands."""
-        result = runner.invoke(cli, ["hed", "--help"])
-        assert result.exit_code == 0
-        assert "ask" in result.output
-        assert "chat" in result.output
-        assert "HED" in result.output
-
-    def test_unregistered_assistant_shows_error(self) -> None:
-        """Unregistered assistant should show error about unknown command."""
-        # With modular architecture, unregistered assistants aren't in the CLI
-        # Typer shows "No such command" for undefined subcommands
-        result = runner.invoke(cli, ["nonexistent", "--help"])
-        assert result.exit_code == 2  # Typer returns 2 for unknown commands
-
-    def test_hed_ask_help(self) -> None:
-        """'osa hed ask --help' should show command options."""
-        result = runner.invoke(cli, ["hed", "ask", "--help"])
-        assert result.exit_code == 0
+        assert "--assistant" in result.output
+        assert "--api-key" in result.output
         assert "QUESTION" in result.output or "question" in result.output.lower()
-        assert "--standalone" in result.output or "standalone" in result.output.lower()
-        # Check for "url" to handle ANSI escape codes in Rich output
-        assert "--url" in result.output or "url" in result.output.lower()
 
-    def test_hed_chat_help(self) -> None:
-        """'osa hed chat --help' should show command options."""
-        result = runner.invoke(cli, ["hed", "chat", "--help"])
+    def test_ask_without_api_key_shows_error(self, tmp_path: Path) -> None:
+        """ask without API key should show init hint."""
+        config_file = tmp_path / "config.yaml"
+        creds_file = tmp_path / "credentials.yaml"
+        legacy_file = tmp_path / "config.json"
+        first_run_file = tmp_path / ".first_run"
+
+        with (
+            patch("src.cli.config.CONFIG_FILE", config_file),
+            patch("src.cli.config.CONFIG_DIR", tmp_path),
+            patch("src.cli.config.CREDENTIALS_FILE", creds_file),
+            patch("src.cli.config.LEGACY_CONFIG_FILE", legacy_file),
+            patch("src.cli.config.FIRST_RUN_FILE", first_run_file),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            result = runner.invoke(cli, ["ask", "test question"])
+
+        assert result.exit_code == 1
+        assert "No API key" in result.output
+
+
+class TestChatCommand:
+    """Tests for the chat command."""
+
+    def test_chat_help_shows_options(self) -> None:
+        """chat --help should show assistant options."""
+        result = runner.invoke(cli, ["chat", "--help"])
         assert result.exit_code == 0
-        assert "--standalone" in result.output or "standalone" in result.output.lower()
-        # Check for "url" to handle ANSI escape codes in Rich output
-        assert "--url" in result.output or "url" in result.output.lower()
+        assert "--assistant" in result.output
+        assert "--api-key" in result.output

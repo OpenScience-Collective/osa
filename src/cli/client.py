@@ -1,117 +1,235 @@
 """HTTP client for communicating with the OSA API."""
 
+import json
+from collections.abc import Generator
 from typing import Any
 
 import httpx
 
-from src.cli.config import CLIConfig, get_user_id
+from src.cli.config import get_user_id
+
+DEFAULT_TIMEOUT = httpx.Timeout(
+    connect=10.0,
+    read=120.0,  # LLM responses can be slow
+    write=10.0,
+    pool=10.0,
+)
+
+
+class APIError(Exception):
+    """Error from the OSA API."""
+
+    def __init__(
+        self,
+        message: str,
+        status_code: int | None = None,
+        detail: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.detail = detail
 
 
 class OSAClient:
-    """HTTP client for the OSA API."""
+    """HTTP client for the OSA API.
 
-    def __init__(self, config: CLIConfig) -> None:
-        """Initialize the client with configuration."""
-        self.config = config
-        self.base_url = config.api_url.rstrip("/")
-        self._user_id: str | None = None
+    Thin client that forwards requests to the OSA backend.
+    BYOK (Bring Your Own Key): the user's OpenRouter API key is
+    forwarded via the X-OpenRouter-API-Key header.
+    """
+
+    def __init__(
+        self,
+        api_url: str,
+        openrouter_api_key: str | None = None,
+        user_id: str | None = None,
+        timeout: httpx.Timeout = DEFAULT_TIMEOUT,
+    ) -> None:
+        self.api_url = api_url.rstrip("/")
+        self.openrouter_api_key = openrouter_api_key
+        self._user_id = user_id
+        self.timeout = timeout
 
     @property
     def user_id(self) -> str:
-        """Get the user ID for cache optimization (lazy-loaded)."""
+        """Get user ID for cache optimization (lazy-loaded)."""
         if self._user_id is None:
             self._user_id = get_user_id()
         return self._user_id
 
     def _get_headers(self) -> dict[str, str]:
-        """Build request headers including API keys and user ID."""
-        headers: dict[str, str] = {"Content-Type": "application/json"}
-
-        # Server API key
-        if self.config.api_key:
-            headers["X-API-Key"] = self.config.api_key
-
-        # BYOK headers (match server's expected header names)
-        if self.config.openai_api_key:
-            headers["X-OpenAI-API-Key"] = self.config.openai_api_key
-        if self.config.anthropic_api_key:
-            headers["X-Anthropic-API-Key"] = self.config.anthropic_api_key
-        if self.config.openrouter_api_key:
-            headers["X-OpenRouter-API-Key"] = self.config.openrouter_api_key
-
-        # User ID for cache optimization
-        headers["X-User-ID"] = self.user_id
-
+        """Build request headers with BYOK key and user ID."""
+        headers: dict[str, str] = {
+            "Content-Type": "application/json",
+            "User-Agent": "osa-cli",
+            "X-User-ID": self.user_id,
+        }
+        if self.openrouter_api_key:
+            headers["X-OpenRouter-API-Key"] = self.openrouter_api_key
         return headers
 
-    def health_check(self) -> dict[str, Any]:
-        """Check API health status.
-
-        Returns health information including version and status.
-        Raises httpx.HTTPError on connection or HTTP errors.
-        """
-        with httpx.Client() as client:
-            response = client.get(
-                f"{self.base_url}/health",
-                headers=self._get_headers(),
-                timeout=10.0,
+    def _handle_response(self, response: httpx.Response) -> None:
+        """Handle non-200 responses by raising APIError."""
+        if response.status_code >= 400:
+            try:
+                data = response.json()
+                detail = data.get("detail", str(data))
+            except (json.JSONDecodeError, ValueError):
+                detail = response.text or f"HTTP {response.status_code}"
+            raise APIError(
+                f"API error ({response.status_code})",
+                status_code=response.status_code,
+                detail=detail,
             )
-            response.raise_for_status()
+
+    def health_check(self) -> dict[str, Any]:
+        """Check API health status."""
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get(
+                f"{self.api_url}/health",
+                headers=self._get_headers(),
+            )
+            self._handle_response(response)
             return response.json()
 
     def get_info(self) -> dict[str, Any]:
-        """Get API information from root endpoint.
-
-        Returns basic API info including name and version.
-        Raises httpx.HTTPError on connection or HTTP errors.
-        """
-        with httpx.Client() as client:
+        """Get API information from root endpoint."""
+        with httpx.Client(timeout=10.0) as client:
             response = client.get(
-                f"{self.base_url}/",
+                f"{self.api_url}/",
                 headers=self._get_headers(),
-                timeout=10.0,
             )
-            response.raise_for_status()
+            self._handle_response(response)
             return response.json()
+
+    def list_communities(self) -> list[dict[str, Any]]:
+        """Fetch available communities from the API."""
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get(
+                f"{self.api_url}/communities",
+                headers=self._get_headers(),
+            )
+            self._handle_response(response)
+            return response.json()
+
+    def ask(
+        self,
+        community: str,
+        question: str,
+    ) -> dict[str, Any]:
+        """Ask a single question (non-streaming).
+
+        Returns the full response including answer, session_id, and tool_calls.
+        """
+        with httpx.Client(timeout=self.timeout) as client:
+            response = client.post(
+                f"{self.api_url}/{community}/ask",
+                headers=self._get_headers(),
+                json={"question": question, "stream": False},
+            )
+            self._handle_response(response)
+            return response.json()
+
+    def ask_stream(
+        self,
+        community: str,
+        question: str,
+    ) -> Generator[tuple[str, dict[str, Any]], None, None]:
+        """Ask a single question with SSE streaming.
+
+        Server SSE format: data: {"event": "content", "content": "text"}\n\n
+        Yields (event_type, data_dict) tuples.
+        Event types: content, tool_start, tool_end, done, error
+        """
+        with (
+            httpx.Client(timeout=self.timeout) as client,
+            client.stream(
+                "POST",
+                f"{self.api_url}/{community}/ask",
+                headers=self._get_headers(),
+                json={"question": question, "stream": True},
+            ) as response,
+        ):
+            if response.status_code >= 400:
+                response.read()
+                self._handle_response(response)
+                return
+
+            for line in response.iter_lines():
+                if not line.startswith("data: "):
+                    continue
+                try:
+                    data = json.loads(line[6:])
+                    event_type = data.get("event", "unknown")
+                    yield (event_type, data)
+                except json.JSONDecodeError:
+                    continue
 
     def chat(
         self,
+        community: str,
         message: str,
-        assistant: str = "hed",
         session_id: str | None = None,
-        stream: bool = False,
     ) -> dict[str, Any]:
-        """Send a chat message to the assistant.
+        """Send a chat message (non-streaming).
 
-        Args:
-            message: The user's message.
-            assistant: Assistant to use (hed, bids, eeglab).
-            session_id: Optional session ID for conversation continuity.
-            stream: Whether to request streaming response.
-
-        Returns:
-            Chat response including assistant message and session ID.
-
-        Raises:
-            httpx.HTTPError on connection or HTTP errors.
+        Returns the full response including message, session_id, and tool_calls.
         """
-        payload = {
+        payload: dict[str, Any] = {
             "message": message,
-            "assistant": assistant,
-            "stream": stream,
+            "stream": False,
         }
         if session_id:
             payload["session_id"] = session_id
 
-        # Use assistant-specific endpoint (e.g., /hed/chat for HED assistant)
-        endpoint = f"/{assistant}/chat"
-
-        with httpx.Client() as client:
+        with httpx.Client(timeout=self.timeout) as client:
             response = client.post(
-                f"{self.base_url}{endpoint}",
+                f"{self.api_url}/{community}/chat",
                 headers=self._get_headers(),
                 json=payload,
-                timeout=120.0,  # Longer timeout for LLM responses
             )
-            response.raise_for_status()
+            self._handle_response(response)
             return response.json()
+
+    def chat_stream(
+        self,
+        community: str,
+        message: str,
+        session_id: str | None = None,
+    ) -> Generator[tuple[str, dict[str, Any]], None, None]:
+        """Send a chat message with SSE streaming.
+
+        Server SSE format: data: {"event": "content", "content": "text"}\n\n
+        Chat also emits: session (with session_id), done (with session_id)
+        Yields (event_type, data_dict) tuples.
+        """
+        payload: dict[str, Any] = {
+            "message": message,
+            "stream": True,
+        }
+        if session_id:
+            payload["session_id"] = session_id
+
+        with (
+            httpx.Client(timeout=self.timeout) as client,
+            client.stream(
+                "POST",
+                f"{self.api_url}/{community}/chat",
+                headers=self._get_headers(),
+                json=payload,
+            ) as response,
+        ):
+            if response.status_code >= 400:
+                response.read()
+                self._handle_response(response)
+                return
+
+            for line in response.iter_lines():
+                if not line.startswith("data: "):
+                    continue
+                try:
+                    data = json.loads(line[6:])
+                    event_type = data.get("event", "unknown")
+                    yield (event_type, data)
+                except json.JSONDecodeError:
+                    continue
