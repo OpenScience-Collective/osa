@@ -85,7 +85,7 @@ system_prompt: |
   - End with 2-3 specific follow-up suggestions so the user drives the conversation
   - Do NOT give exhaustive answers on the first response. This is a conversation, not a lecture.
   - When showing HED annotation examples, show ONE clear example, not multiple variations
-  - Validate HED examples before showing, but never show the validation process itself
+  - Validate HED examples before showing, but never show successful validation details to the user. If validation is unavailable, you must tell the user.
 
   ## Using Tools (MANDATORY)
 

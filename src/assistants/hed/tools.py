@@ -75,9 +75,8 @@ def validate_hed_string(hed_string: str, schema_version: str = "8.4.0") -> dict[
     1. Generate an example HED string based on documentation
     2. Call this tool to validate the example
     3. If valid: Present to user
-    4. If invalid: Fix based on error messages OR use known-good example from docs
-
-    This prevents the agent from confidently giving invalid examples to researchers.
+    4. If invalid: Fix based on error messages, then validate again
+    5. If tool fails (API error): Tell the user you cannot validate right now. Do NOT present unvalidated tags.
 
     Args:
         hed_string: The HED annotation string to validate (e.g., "Onset, Sensory-event")
@@ -143,16 +142,16 @@ def validate_hed_string(hed_string: str, schema_version: str = "8.4.0") -> dict[
         logger.warning("HED validation API error: %s", e)
         return {
             "valid": False,
-            "errors": f"API error: {e}. Validation unavailable. "
+            "errors": "Validation service is temporarily unavailable. "
             "Do NOT present unvalidated HED tags to users. "
             "Tell the user you cannot validate right now.",
             "schema_version": schema_version,
         }
-    except Exception as e:
+    except Exception:
         logger.exception("Unexpected error during HED validation")
         return {
             "valid": False,
-            "errors": f"Validation failed: {e}. Validation unavailable. "
+            "errors": "Validation failed due to an internal error. "
             "Do NOT present unvalidated HED tags to users. "
             "Tell the user you cannot validate right now.",
             "schema_version": schema_version,
@@ -181,7 +180,8 @@ def suggest_hed_tags(search_terms: list[str], top_n: int = 10) -> dict[str, Any]
 
     Returns:
         dict mapping each search term to a list of suggested HED tags.
-        If hed-lsp is not available, returns empty lists with error message.
+        If hed-suggest is unavailable or fails, includes an "error" key
+        with a message and empty lists for each term.
 
     Example:
         >>> result = suggest_hed_tags(["button press", "visual flash"])
@@ -239,7 +239,11 @@ def suggest_hed_tags(search_terms: list[str], top_n: int = 10) -> dict[str, Any]
                 result.returncode,
                 result.stderr[:200] if result.stderr else "(no stderr)",
             )
-            return {term: [] for term in search_terms}
+            return {
+                "error": "Tag suggestion tool failed. "
+                "You MUST use validate_hed_string to verify any tags you want to use.",
+                **{term: [] for term in search_terms},
+            }
 
         # Parse JSON from stdout
         output = json.loads(result.stdout)
@@ -247,13 +251,25 @@ def suggest_hed_tags(search_terms: list[str], top_n: int = 10) -> dict[str, Any]
 
     except subprocess.TimeoutExpired:
         logger.error("hed-suggest CLI timed out after 30 seconds")
-        return {term: [] for term in search_terms}
+        return {
+            "error": "Tag suggestion tool timed out. "
+            "You MUST use validate_hed_string to verify any tags you want to use.",
+            **{term: [] for term in search_terms},
+        }
     except json.JSONDecodeError as e:
         logger.error("hed-suggest CLI returned invalid JSON: %s", e)
-        return {term: [] for term in search_terms}
+        return {
+            "error": "Tag suggestion tool returned invalid data. "
+            "You MUST use validate_hed_string to verify any tags you want to use.",
+            **{term: [] for term in search_terms},
+        }
     except Exception:
         logger.exception("Unexpected error in suggest_hed_tags")
-        return {term: [] for term in search_terms}
+        return {
+            "error": "Tag suggestion tool encountered an error. "
+            "You MUST use validate_hed_string to verify any tags you want to use.",
+            **{term: [] for term in search_terms},
+        }
 
 
 @tool
