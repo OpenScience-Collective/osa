@@ -926,11 +926,13 @@
     function formatRelativeTime(isoStr) {
         try {
             const diffMs = new Date() - new Date(isoStr);
-            const diffHrs = Math.floor(diffMs / 3600000);
-            if (diffHrs < 1) return 'Less than 1 hour ago';
-            if (diffHrs < 24) return `${diffHrs} hour${diffHrs === 1 ? '' : 's'} ago`;
-            const diffDays = Math.floor(diffHrs / 24);
-            return `${diffDays} day${diffDays === 1 ? '' : 's'} ago`;
+            const future = diffMs < 0;
+            const absDiffHrs = Math.floor(Math.abs(diffMs) / 3600000);
+            const suffix = future ? 'from now' : 'ago';
+            if (absDiffHrs < 1) return future ? 'Less than 1 hour from now' : 'Less than 1 hour ago';
+            if (absDiffHrs < 24) return `${absDiffHrs} hour${absDiffHrs === 1 ? '' : 's'} ${suffix}`;
+            const absDiffDays = Math.floor(absDiffHrs / 24);
+            return `${absDiffDays} day${absDiffDays === 1 ? '' : 's'} ${suffix}`;
         } catch (err) { console.warn('Failed to parse timestamp:', isoStr, err); return isoStr || 'N/A'; }
     }
 

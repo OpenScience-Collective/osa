@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from src.api.config import get_settings
 from src.api.scheduler import get_scheduler, run_sync_now
 from src.api.security import RequireAdminAuth
+from src.assistants import registry
 from src.knowledge.db import get_connection, get_stats
 
 logger = logging.getLogger(__name__)
@@ -124,7 +125,7 @@ def _get_sync_metadata(project: str = "hed") -> dict[str, Any]:
                     "items_synced": row["items_synced"],
                 }
     except Exception as e:
-        logger.warning("Failed to get sync metadata for %s: %s", project, e)
+        logger.warning("Failed to get sync metadata for %s: %s", project, e, exc_info=True)
 
     return metadata
 
@@ -142,7 +143,7 @@ def _get_repo_counts(project: str = "hed") -> dict[str, int]:
             for row in rows:
                 counts[row["repo"]] = row["count"]
     except Exception as e:
-        logger.warning("Failed to get repo counts for %s: %s", project, e)
+        logger.warning("Failed to get repo counts for %s: %s", project, e, exc_info=True)
 
     return counts
 
@@ -204,10 +205,21 @@ def _calculate_health(metadata: dict[str, Any]) -> HealthStatus:
 
 
 def _get_most_recent_sync(metadata: dict[str, Any], source_type: str) -> str | None:
-    """Return the most recent last_sync_at timestamp for a given source_type."""
+    """Return the most recent last_sync_at timestamp for a given source_type.
+
+    Parses timestamps via _parse_iso_datetime for correct temporal comparison
+    rather than relying on lexicographic string ordering.
+    """
     entries = metadata.get(source_type, {})
-    timestamps = [v["last_sync"] for v in entries.values() if v.get("last_sync")]
-    return max(timestamps) if timestamps else None
+    parsed: list[tuple[datetime, str]] = []
+    for v in entries.values():
+        raw = v.get("last_sync")
+        if not raw:
+            continue
+        dt = _parse_iso_datetime(raw)
+        if dt is not None:
+            parsed.append((dt, raw))
+    return max(parsed, key=lambda x: x[0])[1] if parsed else None
 
 
 @router.get("/status", response_model=SyncStatusResponse)
@@ -228,6 +240,13 @@ async def get_sync_status(
     - Health check based on sync ages
     """
     project = community_id or "hed"
+
+    if community_id is not None and registry.get(community_id) is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Community '{community_id}' not found.",
+        )
+
     settings = get_settings()
     stats = get_stats(project)
     metadata = _get_sync_metadata(project)
@@ -242,8 +261,9 @@ async def get_sync_status(
             last_sync=repo_meta.get("last_sync"),
         )
 
-    # Build papers sources status using prefix matching
-    # Stored names are like "openalex:query", "semanticscholar:query", "citing_doi"
+    # Build papers sources status using prefix matching.
+    # Stored names are like "openalex:query", "semanticscholar:query", "pubmed:query".
+    # "citing_{doi}" entries track citation lookups; they are not included here.
     papers_sources: dict[str, RepoStatus] = {}
     for source in ["openalex", "semanticscholar", "pubmed"]:
         matching = {
@@ -266,7 +286,7 @@ async def get_sync_status(
                 next_run = job.next_run_time.isoformat() if job.next_run_time else None
                 jobs[job.id] = next_run
         except Exception as e:
-            logger.warning("Failed to get next run times: %s", e)
+            logger.warning("Failed to get next run times: %s", e, exc_info=True)
 
     # Build per-sync-type status for all known sync types
     all_sync_types = ("github", "papers", "docstrings", "mailman", "beps", "faq")
@@ -336,14 +356,27 @@ async def trigger_sync(
 
 
 @router.get("/health")
-async def health_check() -> dict[str, Any]:
+async def health_check(
+    community_id: str | None = Query(default=None),
+) -> dict[str, Any]:
     """Simple health check endpoint for monitoring.
+
+    Args:
+        community_id: Community to check. Defaults to 'hed' if not specified.
 
     Returns a simple status suitable for uptime monitors.
     Returns 200 if healthy, 503 if unhealthy.
     """
-    stats = get_stats()
-    metadata = _get_sync_metadata()
+    project = community_id or "hed"
+
+    if community_id is not None and registry.get(community_id) is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Community '{community_id}' not found.",
+        )
+
+    stats = get_stats(project)
+    metadata = _get_sync_metadata(project)
     health = _calculate_health(metadata)
 
     response = {
