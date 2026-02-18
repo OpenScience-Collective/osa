@@ -100,6 +100,77 @@ class TestSyncStatus:
         assert "github_healthy" in health
         assert "papers_healthy" in health
 
+    @pytest.mark.usefixtures("isolated_db")
+    def test_syncs_field_present(self, client: TestClient):
+        """Test that response includes the syncs field."""
+        response = client.get("/sync/status")
+        data = response.json()
+        assert "syncs" in data
+
+    @pytest.mark.usefixtures("isolated_db")
+    def test_papers_last_sync_from_prefixed_source_names(self, client: TestClient, isolated_db):
+        """papers.sources last_sync is populated when sync_metadata uses 'source:query' names.
+
+        Regression test: previously looked for exact 'openalex' key but DB stores
+        'openalex:query_name', causing last_sync to always return null.
+        """
+        import sqlite3
+
+        conn = sqlite3.connect(str(isolated_db))
+        conn.execute(
+            "INSERT INTO sync_metadata (source_type, source_name, last_sync_at, items_synced) "
+            "VALUES ('papers', 'openalex:HED annotation', '2026-01-15T03:00:00+00:00', 42)"
+        )
+        conn.execute(
+            "INSERT INTO sync_metadata (source_type, source_name, last_sync_at, items_synced) "
+            "VALUES ('papers', 'semanticscholar:HED annotation', '2026-01-14T03:00:00+00:00', 10)"
+        )
+        conn.commit()
+        conn.close()
+
+        response = client.get("/sync/status")
+        sources = response.json()["papers"]["sources"]
+
+        assert sources["openalex"]["last_sync"] == "2026-01-15T03:00:00+00:00"
+        assert sources["semanticscholar"]["last_sync"] == "2026-01-14T03:00:00+00:00"
+        assert sources["pubmed"]["last_sync"] is None
+
+    @pytest.mark.usefixtures("isolated_db")
+    def test_syncs_populated_from_sync_metadata(self, client: TestClient, isolated_db):
+        """syncs dict includes entries when sync_metadata has data."""
+        import sqlite3
+
+        conn = sqlite3.connect(str(isolated_db))
+        conn.execute(
+            "INSERT INTO sync_metadata (source_type, source_name, last_sync_at, items_synced) "
+            "VALUES ('github', 'org/repo', '2026-01-15T02:00:00+00:00', 100)"
+        )
+        conn.commit()
+        conn.close()
+
+        response = client.get("/sync/status")
+        syncs = response.json()["syncs"]
+
+        assert "github" in syncs
+        assert syncs["github"]["last_sync"] == "2026-01-15T02:00:00+00:00"
+
+    def test_unknown_community_id_returns_404(self, client: TestClient):
+        """Unknown community_id should return 404, not empty data."""
+        response = client.get("/sync/status?community_id=does-not-exist")
+        assert response.status_code == 404
+
+    @pytest.mark.usefixtures("isolated_db")
+    def test_known_community_id_returns_200(self, client: TestClient):
+        """A registered community_id should return 200."""
+        from src.assistants import registry
+
+        communities = registry.list_all()
+        if not communities:
+            pytest.skip("No communities registered")
+        community_id = communities[0].id
+        response = client.get(f"/sync/status?community_id={community_id}")
+        assert response.status_code == 200
+
 
 class TestSyncHealth:
     """Tests for GET /sync/health endpoint."""
