@@ -13,7 +13,6 @@ from typing import Any
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.table import Table
 
 # stdout for results
 console = Console()
@@ -25,8 +24,7 @@ def print_error(message: str, hint: str | None = None) -> None:
     """Print error to stderr."""
     err_console.print(f"[bold red]Error:[/] {message}")
     if hint:
-        # Use markup=False to avoid interpreting brackets in hint text
-        err_console.print(f"Hint: {hint}", style="dim")
+        err_console.print(f"Hint: {hint}", style="dim", markup=False)
 
 
 def print_success(message: str) -> None:
@@ -57,16 +55,6 @@ def print_markdown(content: str, title: str | None = None) -> None:
 def print_json_output(data: dict[str, Any]) -> None:
     """Print JSON to stdout for piped output."""
     print(json.dumps(data, indent=2))
-
-
-def print_table(title: str, rows: list[dict[str, str]], columns: list[str]) -> None:
-    """Print a Rich table to stdout."""
-    table = Table(title=title)
-    for col in columns:
-        table.add_column(col)
-    for row in rows:
-        table.add_row(*[row.get(col, "") for col in columns])
-    console.print(table)
 
 
 @contextmanager

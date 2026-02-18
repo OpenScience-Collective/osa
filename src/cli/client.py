@@ -69,7 +69,7 @@ class OSAClient:
         return headers
 
     def _handle_response(self, response: httpx.Response) -> None:
-        """Handle non-200 responses by raising APIError."""
+        """Raise APIError for HTTP 4xx/5xx responses."""
         if response.status_code >= 400:
             try:
                 data = response.json()
@@ -119,7 +119,7 @@ class OSAClient:
     ) -> dict[str, Any]:
         """Ask a single question (non-streaming).
 
-        Returns the full response including answer, session_id, and tool_calls.
+        Returns the full response including answer and tool_calls.
         """
         with httpx.Client(timeout=self.timeout) as client:
             response = client.post(
@@ -130,24 +130,23 @@ class OSAClient:
             self._handle_response(response)
             return response.json()
 
-    def ask_stream(
+    def _stream_request(
         self,
-        community: str,
-        question: str,
+        url: str,
+        payload: dict[str, Any],
     ) -> Generator[tuple[str, dict[str, Any]], None, None]:
-        """Ask a single question with SSE streaming.
+        """Send a streaming POST and yield parsed SSE events.
 
-        Server SSE format: data: {"event": "content", "content": "text"}\n\n
+        Server SSE format: data: {"event": "content", "content": "text"}\\n\\n
         Yields (event_type, data_dict) tuples.
-        Event types: content, tool_start, tool_end, done, error
         """
         with (
             httpx.Client(timeout=self.timeout) as client,
             client.stream(
                 "POST",
-                f"{self.api_url}/{community}/ask",
+                url,
                 headers=self._get_headers(),
-                json={"question": question, "stream": True},
+                json=payload,
             ) as response,
         ):
             if response.status_code >= 400:
@@ -164,6 +163,21 @@ class OSAClient:
                     yield (event_type, data)
                 except json.JSONDecodeError:
                     continue
+
+    def ask_stream(
+        self,
+        community: str,
+        question: str,
+    ) -> Generator[tuple[str, dict[str, Any]], None, None]:
+        """Ask a single question with SSE streaming.
+
+        Yields (event_type, data_dict) tuples.
+        Event types: content, tool_start, tool_end, done, error
+        """
+        return self._stream_request(
+            f"{self.api_url}/{community}/ask",
+            {"question": question, "stream": True},
+        )
 
     def chat(
         self,
@@ -199,8 +213,7 @@ class OSAClient:
     ) -> Generator[tuple[str, dict[str, Any]], None, None]:
         """Send a chat message with SSE streaming.
 
-        Server SSE format: data: {"event": "content", "content": "text"}\n\n
-        Chat also emits: session (with session_id), done (with session_id)
+        Chat emits: session (with session_id), content, tool_start, done, error
         Yields (event_type, data_dict) tuples.
         """
         payload: dict[str, Any] = {
@@ -210,26 +223,7 @@ class OSAClient:
         if session_id:
             payload["session_id"] = session_id
 
-        with (
-            httpx.Client(timeout=self.timeout) as client,
-            client.stream(
-                "POST",
-                f"{self.api_url}/{community}/chat",
-                headers=self._get_headers(),
-                json=payload,
-            ) as response,
-        ):
-            if response.status_code >= 400:
-                response.read()
-                self._handle_response(response)
-                return
-
-            for line in response.iter_lines():
-                if not line.startswith("data: "):
-                    continue
-                try:
-                    data = json.loads(line[6:])
-                    event_type = data.get("event", "unknown")
-                    yield (event_type, data)
-                except json.JSONDecodeError:
-                    continue
+        return self._stream_request(
+            f"{self.api_url}/{community}/chat",
+            payload,
+        )

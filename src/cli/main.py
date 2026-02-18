@@ -2,7 +2,7 @@
 
 This module is the entry point for the `osa` command. It imports ONLY
 lightweight dependencies (typer, rich, httpx, pydantic, yaml) so that
-`pip install open-science-assistant` stays small (~7 packages).
+`pip install open-science-assistant` stays small (~7 direct dependencies).
 
 Server-side commands (serve, sync, validate) are conditionally registered
 and require `pip install open-science-assistant[server]`.
@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Annotated
 
+import httpx
 import typer
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -196,15 +197,12 @@ def ask(
     except APIError as e:
         output.print_error(str(e), hint=e.detail)
         raise typer.Exit(code=1)
-    except Exception as e:
-        # Catch connection errors (httpx.ConnectError, TimeoutException, etc.)
-        if "connect" in type(e).__name__.lower() or "timeout" in type(e).__name__.lower():
-            output.print_error(
-                "Could not connect to API",
-                hint=f"Check that {config.api.url} is reachable, or run 'osa health'",
-            )
-            raise typer.Exit(code=1)
-        raise
+    except (httpx.ConnectError, httpx.TimeoutException):
+        output.print_error(
+            "Could not connect to API",
+            hint=f"Check that {config.api.url} is reachable, or run 'osa health'",
+        )
+        raise typer.Exit(code=1)
 
 
 def _ask_streaming(client: OSAClient, assistant: str, question: str) -> None:
@@ -319,8 +317,11 @@ def chat(
             break
         except APIError as e:
             output.print_error(str(e), hint=e.detail)
-        except Exception as e:
-            output.print_error(str(e))
+        except (httpx.ConnectError, httpx.TimeoutException) as e:
+            output.print_error(
+                f"Connection problem: {e}",
+                hint=f"Check that {config.api.url} is reachable",
+            )
 
 
 def _chat_turn_streaming(

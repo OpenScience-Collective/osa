@@ -1,6 +1,7 @@
 """Tests for CLI HTTP client.
 
-These tests use real HTTP requests against a test server.
+Tests cover client construction, header generation, and error handling.
+Connection tests use unreachable ports to verify error propagation.
 """
 
 import httpx

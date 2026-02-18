@@ -112,9 +112,20 @@ def save_credentials(creds: CredentialsConfig) -> None:
     """Save credentials to credentials.yaml with restricted permissions."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     data = {k: v for k, v in creds.model_dump().items() if v is not None}
-    CREDENTIALS_FILE.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
-    with contextlib.suppress(OSError, AttributeError):
-        os.chmod(CREDENTIALS_FILE, 0o600)
+    content = yaml.dump(data, default_flow_style=False, sort_keys=False)
+
+    # Write with restricted permissions from the start (avoid TOCTOU race)
+    try:
+        fd = os.open(CREDENTIALS_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, content.encode())
+        finally:
+            os.close(fd)
+    except OSError:
+        # Fallback for platforms that don't support os.open mode (e.g., Windows)
+        CREDENTIALS_FILE.write_text(content)
+        with contextlib.suppress(OSError):
+            os.chmod(CREDENTIALS_FILE, 0o600)
 
 
 def get_effective_config(
@@ -154,7 +165,8 @@ def _migrate_legacy_config() -> CLIConfig:
 
     # Build new config from legacy fields
     config = CLIConfig()
-    if "api_url" in data and data["api_url"]:
+    old_default_url = "http://localhost:38528"
+    if "api_url" in data and data["api_url"] and data["api_url"] != old_default_url:
         config.api.url = data["api_url"]
     if "output_format" in data:
         config.output.format = data["output_format"]
