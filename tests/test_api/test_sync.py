@@ -159,6 +159,7 @@ class TestSyncStatus:
         response = client.get("/sync/status?community_id=does-not-exist")
         assert response.status_code == 404
 
+    @pytest.mark.usefixtures("isolated_db")
     def test_known_community_id_returns_200(self, client: TestClient):
         """A registered community_id should return 200."""
         from src.assistants import registry
