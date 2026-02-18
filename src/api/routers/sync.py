@@ -10,7 +10,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from src.api.config import get_settings
@@ -66,6 +66,15 @@ class HealthStatus(BaseModel):
     papers_age_hours: float | None
 
 
+class SyncItemStatus(BaseModel):
+    """Status for a single sync type."""
+
+    last_sync: str | None
+    """ISO timestamp of the most recent successful sync, or None if never synced."""
+    next_run: str | None
+    """ISO timestamp of the next scheduled run, or None if not scheduled."""
+
+
 class SyncStatusResponse(BaseModel):
     """Complete sync status response."""
 
@@ -73,6 +82,8 @@ class SyncStatusResponse(BaseModel):
     papers: PapersStatus
     scheduler: SchedulerStatus
     health: HealthStatus
+    syncs: dict[str, SyncItemStatus] = {}
+    """Per-sync-type status: github, papers, docstrings, mailman, beps, faq."""
 
 
 class TriggerRequest(BaseModel):
@@ -89,12 +100,16 @@ class TriggerResponse(BaseModel):
     items_synced: dict[str, int]
 
 
-def _get_sync_metadata() -> dict[str, Any]:
-    """Get all sync metadata from database."""
-    metadata: dict[str, Any] = {"github": {}, "papers": {}}
+def _get_sync_metadata(project: str = "hed") -> dict[str, Any]:
+    """Get all sync metadata from the community database.
+
+    Returns a dict keyed by source_type (github, papers, beps, docstrings,
+    mailman, faq), each containing a dict of source_name -> metadata.
+    """
+    metadata: dict[str, Any] = {}
 
     try:
-        with get_connection() as conn:
+        with get_connection(project) as conn:
             rows = conn.execute(
                 "SELECT source_type, source_name, last_sync_at, items_synced FROM sync_metadata"
             ).fetchall()
@@ -102,23 +117,24 @@ def _get_sync_metadata() -> dict[str, Any]:
             for row in rows:
                 source_type = row["source_type"]
                 source_name = row["source_name"]
-                if source_type in metadata:
-                    metadata[source_type][source_name] = {
-                        "last_sync": row["last_sync_at"],
-                        "items_synced": row["items_synced"],
-                    }
+                if source_type not in metadata:
+                    metadata[source_type] = {}
+                metadata[source_type][source_name] = {
+                    "last_sync": row["last_sync_at"],
+                    "items_synced": row["items_synced"],
+                }
     except Exception as e:
-        logger.warning("Failed to get sync metadata: %s", e)
+        logger.warning("Failed to get sync metadata for %s: %s", project, e)
 
     return metadata
 
 
-def _get_repo_counts() -> dict[str, int]:
-    """Get item counts per repository."""
+def _get_repo_counts(project: str = "hed") -> dict[str, int]:
+    """Get item counts per repository for a community."""
     counts: dict[str, int] = {}
 
     try:
-        with get_connection() as conn:
+        with get_connection(project) as conn:
             rows = conn.execute(
                 "SELECT repo, COUNT(*) as count FROM github_items GROUP BY repo"
             ).fetchall()
@@ -126,7 +142,7 @@ def _get_repo_counts() -> dict[str, int]:
             for row in rows:
                 counts[row["repo"]] = row["count"]
     except Exception as e:
-        logger.warning("Failed to get repo counts: %s", e)
+        logger.warning("Failed to get repo counts for %s: %s", project, e)
 
     return counts
 
@@ -187,20 +203,35 @@ def _calculate_health(metadata: dict[str, Any]) -> HealthStatus:
     )
 
 
+def _get_most_recent_sync(metadata: dict[str, Any], source_type: str) -> str | None:
+    """Return the most recent last_sync_at timestamp for a given source_type."""
+    entries = metadata.get(source_type, {})
+    timestamps = [v["last_sync"] for v in entries.values() if v.get("last_sync")]
+    return max(timestamps) if timestamps else None
+
+
 @router.get("/status", response_model=SyncStatusResponse)
-async def get_sync_status() -> SyncStatusResponse:
-    """Get comprehensive sync status.
+async def get_sync_status(
+    community_id: str | None = Query(default=None),
+) -> SyncStatusResponse:
+    """Get comprehensive sync status for a community.
+
+    Args:
+        community_id: Community to query. Defaults to 'hed' if not specified.
 
     Returns status of all knowledge sync jobs including:
     - GitHub issues/PRs counts and last sync times per repo
     - Papers counts and last sync times per source
+    - All sync types (github, papers, docstrings, mailman, beps, faq) with
+      last_sync and next_run timestamps
     - Scheduler status and next run times
     - Health check based on sync ages
     """
+    project = community_id or "hed"
     settings = get_settings()
-    stats = get_stats()
-    metadata = _get_sync_metadata()
-    repo_counts = _get_repo_counts()
+    stats = get_stats(project)
+    metadata = _get_sync_metadata(project)
+    repo_counts = _get_repo_counts(project)
 
     # Build GitHub repos status
     github_repos: dict[str, RepoStatus] = {}
@@ -211,13 +242,18 @@ async def get_sync_status() -> SyncStatusResponse:
             last_sync=repo_meta.get("last_sync"),
         )
 
-    # Build papers sources status
+    # Build papers sources status using prefix matching
+    # Stored names are like "openalex:query", "semanticscholar:query", "citing_doi"
     papers_sources: dict[str, RepoStatus] = {}
     for source in ["openalex", "semanticscholar", "pubmed"]:
-        source_meta = metadata.get("papers", {}).get(source, {})
+        matching = {
+            k: v for k, v in metadata.get("papers", {}).items() if k.startswith(f"{source}:")
+        }
+        timestamps = [v["last_sync"] for v in matching.values() if v.get("last_sync")]
+        last_sync = max(timestamps) if timestamps else None
         papers_sources[source] = RepoStatus(
             items=stats.get(f"papers_{source}", 0),
-            last_sync=source_meta.get("last_sync"),
+            last_sync=last_sync,
         )
 
     # Get scheduler info
@@ -231,6 +267,16 @@ async def get_sync_status() -> SyncStatusResponse:
                 jobs[job.id] = next_run
         except Exception as e:
             logger.warning("Failed to get next run times: %s", e)
+
+    # Build per-sync-type status for all known sync types
+    all_sync_types = ("github", "papers", "docstrings", "mailman", "beps", "faq")
+    syncs: dict[str, SyncItemStatus] = {}
+    for sync_type in all_sync_types:
+        last_sync = _get_most_recent_sync(metadata, sync_type)
+        next_run = jobs.get(f"{sync_type}_{project}")
+        # Include if there is any data or a scheduled next run
+        if last_sync is not None or next_run is not None:
+            syncs[sync_type] = SyncItemStatus(last_sync=last_sync, next_run=next_run)
 
     return SyncStatusResponse(
         github=GitHubStatus(
@@ -250,6 +296,7 @@ async def get_sync_status() -> SyncStatusResponse:
             jobs=jobs,
         ),
         health=_calculate_health(metadata),
+        syncs=syncs,
     )
 
 
