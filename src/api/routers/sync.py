@@ -269,8 +269,12 @@ async def get_sync_status(
         matching = {
             k: v for k, v in metadata.get("papers", {}).items() if k.startswith(f"{source}:")
         }
-        timestamps = [v["last_sync"] for v in matching.values() if v.get("last_sync")]
-        last_sync = max(timestamps) if timestamps else None
+        parsed = [
+            (dt, raw)
+            for v in matching.values()
+            if (raw := v.get("last_sync")) and (dt := _parse_iso_datetime(raw))
+        ]
+        last_sync = max(parsed, key=lambda x: x[0])[1] if parsed else None
         papers_sources[source] = RepoStatus(
             items=stats.get(f"papers_{source}", 0),
             last_sync=last_sync,

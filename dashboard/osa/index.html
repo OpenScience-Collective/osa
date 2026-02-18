@@ -763,7 +763,7 @@
                 fetch(`${API_BASE}/${encodeURIComponent(communityId)}/metrics/public`),
                 fetch(`${API_BASE}/${encodeURIComponent(communityId)}/metrics/public/usage?period=${activePeriod}`),
                 fetch(`${API_BASE}/sync/status?community_id=${encodeURIComponent(communityId)}`).catch(err => { console.warn('Sync status fetch failed (non-critical):', err.message); return null; }),
-                fetch(`${API_BASE}/sync/health`).catch(err => { console.warn('Health check fetch failed (non-critical):', err.message); return null; }),
+                fetch(`${API_BASE}/sync/health?community_id=${encodeURIComponent(communityId)}`).catch(err => { console.warn('Health check fetch failed (non-critical):', err.message); return null; }),
             ]);
 
             const failedStatus = !summaryResp.ok ? summaryResp.status : (!usageResp.ok ? usageResp.status : null);

@@ -192,6 +192,23 @@ class TestSyncHealth:
         data = response.json()
         assert data["status"] == "healthy"
 
+    def test_health_unknown_community_returns_404(self, client: TestClient):
+        """Unknown community_id should return 404 from health endpoint."""
+        response = client.get("/sync/health?community_id=does-not-exist")
+        assert response.status_code == 404
+
+    @pytest.mark.usefixtures("isolated_db")
+    def test_health_known_community_returns_200(self, client: TestClient):
+        """A registered community_id should return 200 from health endpoint."""
+        from src.assistants import registry
+
+        communities = registry.list_all()
+        if not communities:
+            pytest.skip("No communities registered")
+        community_id = communities[0].id
+        response = client.get(f"/sync/health?community_id={community_id}")
+        assert response.status_code == 200
+
 
 class TestSyncTrigger:
     """Tests for POST /sync/trigger endpoint."""
