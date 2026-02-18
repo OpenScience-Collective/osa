@@ -143,20 +143,24 @@ def validate_hed_string(hed_string: str, schema_version: str = "8.4.0") -> dict[
         logger.warning("HED validation API error: %s", e)
         return {
             "valid": False,
-            "errors": f"API error: {e}. Could not validate. Use examples from documentation instead.",
+            "errors": f"API error: {e}. Validation unavailable. "
+            "Do NOT present unvalidated HED tags to users. "
+            "Tell the user you cannot validate right now.",
             "schema_version": schema_version,
         }
     except Exception as e:
         logger.exception("Unexpected error during HED validation")
         return {
             "valid": False,
-            "errors": f"Validation failed: {e}. Use examples from documentation instead.",
+            "errors": f"Validation failed: {e}. Validation unavailable. "
+            "Do NOT present unvalidated HED tags to users. "
+            "Tell the user you cannot validate right now.",
             "schema_version": schema_version,
         }
 
 
 @tool
-def suggest_hed_tags(search_terms: list[str], top_n: int = 10) -> dict[str, list[str]]:
+def suggest_hed_tags(search_terms: list[str], top_n: int = 10) -> dict[str, Any]:
     """Suggest valid HED tags for natural language search terms.
 
     Use this tool to find valid HED tags that match natural language descriptions.
@@ -208,9 +212,12 @@ def suggest_hed_tags(search_terms: list[str], top_n: int = 10) -> dict[str, list
             cli_path = dev_path
 
     if not cli_path:
-        # hed-suggest not available - this is expected in many environments
-        logger.debug("hed-suggest CLI not found; tag suggestions unavailable")
-        return {term: [] for term in search_terms}
+        logger.warning("hed-suggest CLI not found; tag suggestions unavailable")
+        return {
+            "error": "Tag suggestion tool is not available. "
+            "You MUST use validate_hed_string to verify any tags you want to use.",
+            **{term: [] for term in search_terms},
+        }
 
     try:
         # Build command
