@@ -1,52 +1,197 @@
-"""CLI configuration management using platformdirs."""
+"""CLI configuration management.
+
+Config is split into two files for security:
+- config.yaml: Non-sensitive settings (API URL, output format, etc.)
+- credentials.yaml: API keys (stored with restricted permissions)
+"""
 
 import contextlib
 import json
 import os
 import uuid
 from pathlib import Path
+from typing import Literal
 
+import yaml
 from platformdirs import user_config_dir, user_data_dir
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
+
+# Paths
+CONFIG_DIR = Path(user_config_dir("osa", appauthor=False, ensure_exists=True))
+CONFIG_FILE = CONFIG_DIR / "config.yaml"
+CREDENTIALS_FILE = CONFIG_DIR / "credentials.yaml"
+USER_ID_FILE = CONFIG_DIR / "user_id"
+FIRST_RUN_FILE = CONFIG_DIR / ".first_run"
+
+# Legacy path (for migration)
+LEGACY_CONFIG_FILE = CONFIG_DIR / "config.json"
+
+DEFAULT_API_URL = "https://api.osc.earth/osa"
+
+
+# --- Config models ---
+
+
+class APIConfig(BaseModel):
+    """API endpoint configuration."""
+
+    url: str = Field(default=DEFAULT_API_URL, description="OSA API URL")
+
+
+class OutputConfig(BaseModel):
+    """Output formatting preferences."""
+
+    format: Literal["rich", "json", "plain"] = Field(default="rich", description="Output format")
+    verbose: bool = Field(default=False, description="Verbose output")
+    streaming: bool = Field(default=True, description="Stream responses")
 
 
 class CLIConfig(BaseModel):
-    """CLI configuration stored in user config directory."""
+    """Complete CLI configuration (stored in config.yaml)."""
 
-    # Port allocation: HEDit prod=38427, HEDit dev=38428, OSA prod=38528, OSA dev=38529
-    api_url: str = Field(default="http://localhost:38528", description="OSA API URL")
-    api_key: str | None = Field(default=None, description="API key for authentication")
+    api: APIConfig = Field(default_factory=APIConfig)
+    output: OutputConfig = Field(default_factory=OutputConfig)
 
-    # BYOK settings - users can provide their own LLM API keys
+
+class CredentialsConfig(BaseModel):
+    """Credentials stored separately with restricted permissions."""
+
+    openrouter_api_key: str | None = Field(default=None, description="OpenRouter API key")
     openai_api_key: str | None = Field(default=None, description="OpenAI API key")
     anthropic_api_key: str | None = Field(default=None, description="Anthropic API key")
-    openrouter_api_key: str | None = Field(default=None, description="OpenRouter API key")
-
-    # Paper source API keys (optional, for higher rate limits)
-    semantic_scholar_api_key: str | None = Field(
-        default=None, description="Semantic Scholar API key for higher rate limits"
-    )
-    pubmed_api_key: str | None = Field(
-        default=None, description="PubMed/NCBI API key for higher rate limits"
-    )
-
-    # Output preferences
-    output_format: str = Field(default="rich", description="Output format: rich, json, plain")
-    verbose: bool = Field(default=False, description="Enable verbose output")
 
 
-def get_config_dir() -> Path:
-    """Get the OSA configuration directory."""
-    return Path(user_config_dir("osa", ensure_exists=True))
+# --- Config I/O ---
+
+
+def load_config() -> CLIConfig:
+    """Load CLI configuration from config.yaml.
+
+    Migrates from legacy config.json if needed.
+    """
+    # Migrate from legacy JSON if new YAML doesn't exist yet
+    if not CONFIG_FILE.exists() and LEGACY_CONFIG_FILE.exists():
+        return _migrate_legacy_config()
+
+    if not CONFIG_FILE.exists():
+        return CLIConfig()
+
+    try:
+        data = yaml.safe_load(CONFIG_FILE.read_text()) or {}
+        return CLIConfig(**data)
+    except (yaml.YAMLError, OSError, TypeError, ValidationError):
+        return CLIConfig()
+
+
+def save_config(config: CLIConfig) -> None:
+    """Save CLI configuration to config.yaml."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    data = config.model_dump()
+    CONFIG_FILE.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+
+
+def load_credentials() -> CredentialsConfig:
+    """Load credentials from credentials.yaml."""
+    if not CREDENTIALS_FILE.exists():
+        return CredentialsConfig()
+
+    try:
+        data = yaml.safe_load(CREDENTIALS_FILE.read_text()) or {}
+        return CredentialsConfig(**data)
+    except (yaml.YAMLError, OSError, TypeError, ValidationError):
+        return CredentialsConfig()
+
+
+def save_credentials(creds: CredentialsConfig) -> None:
+    """Save credentials to credentials.yaml with restricted permissions."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    data = {k: v for k, v in creds.model_dump().items() if v is not None}
+    content = yaml.dump(data, default_flow_style=False, sort_keys=False)
+
+    # Write with restricted permissions from the start (avoid TOCTOU race)
+    try:
+        fd = os.open(CREDENTIALS_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, content.encode())
+        finally:
+            os.close(fd)
+    except OSError:
+        # Fallback for platforms that don't support os.open mode (e.g., Windows)
+        CREDENTIALS_FILE.write_text(content)
+        with contextlib.suppress(OSError):
+            os.chmod(CREDENTIALS_FILE, 0o600)
+
+
+def get_effective_config(
+    api_key: str | None = None,
+    api_url: str | None = None,
+) -> tuple[CLIConfig, str | None]:
+    """Merge saved config with per-invocation overrides.
+
+    API key priority: CLI flag > OPENROUTER_API_KEY env > credentials.yaml
+
+    Returns:
+        Tuple of (config, effective_api_key)
+    """
+    config = load_config()
+    creds = load_credentials()
+
+    # Override API URL if provided
+    if api_url:
+        config.api.url = api_url
+
+    # Resolve API key with priority chain
+    effective_key = api_key or os.environ.get("OPENROUTER_API_KEY") or creds.openrouter_api_key
+
+    return config, effective_key
+
+
+# --- Legacy migration ---
+
+
+def _migrate_legacy_config() -> CLIConfig:
+    """Migrate from legacy config.json to new YAML format."""
+    try:
+        with LEGACY_CONFIG_FILE.open() as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return CLIConfig()
+
+    # Build new config from legacy fields
+    config = CLIConfig()
+    old_default_url = "http://localhost:38528"
+    if "api_url" in data and data["api_url"] and data["api_url"] != old_default_url:
+        config.api.url = data["api_url"]
+    if "output_format" in data:
+        config.output.format = data["output_format"]
+    if "verbose" in data:
+        config.output.verbose = data["verbose"]
+
+    # Migrate credentials
+    creds = CredentialsConfig()
+    if data.get("openrouter_api_key"):
+        creds.openrouter_api_key = data["openrouter_api_key"]
+    if data.get("openai_api_key"):
+        creds.openai_api_key = data["openai_api_key"]
+    if data.get("anthropic_api_key"):
+        creds.anthropic_api_key = data["anthropic_api_key"]
+
+    # Save in new format
+    save_config(config)
+    if creds.openrouter_api_key or creds.openai_api_key or creds.anthropic_api_key:
+        save_credentials(creds)
+
+    return config
+
+
+# --- Data directory ---
 
 
 def get_data_dir() -> Path:
     """Get the OSA data directory for storing sessions, history, knowledge database, etc.
 
     Respects DATA_DIR environment variable for Docker deployments.
-    Falls back to platform-specific user data directory.
     """
-    # Check for DATA_DIR env var (used in Docker deployments)
     data_dir = os.environ.get("DATA_DIR")
     if data_dir:
         path = Path(data_dir)
@@ -55,99 +200,47 @@ def get_data_dir() -> Path:
     return Path(user_data_dir("osa", ensure_exists=True))
 
 
-def get_config_path() -> Path:
-    """Get the path to the CLI configuration file."""
-    return get_config_dir() / "config.json"
-
-
-def load_config() -> CLIConfig:
-    """Load CLI configuration from file.
-
-    Returns default config if file doesn't exist.
-    """
-    config_path = get_config_path()
-
-    if not config_path.exists():
-        return CLIConfig()
-
-    try:
-        with config_path.open() as f:
-            data = json.load(f)
-        return CLIConfig(**data)
-    except (json.JSONDecodeError, OSError):
-        # Return defaults on any error
-        return CLIConfig()
-
-
-def save_config(config: CLIConfig) -> None:
-    """Save CLI configuration to file."""
-    config_path = get_config_path()
-
-    # Ensure parent directory exists
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with config_path.open("w") as f:
-        json.dump(config.model_dump(), f, indent=2)
-
-
-def update_config(**kwargs: str | bool | None) -> CLIConfig:
-    """Update CLI configuration with new values.
-
-    Only updates fields that are explicitly provided (not None).
-    Returns the updated configuration.
-    """
-    config = load_config()
-
-    for key, value in kwargs.items():
-        if value is not None and hasattr(config, key):
-            setattr(config, key, value)
-
-    save_config(config)
-    return config
-
-
-# User ID for cache optimization
-USER_ID_FILE = "user_id"
+# --- User ID ---
 
 
 def get_user_id() -> str:
     """Get or generate a stable user ID for cache optimization.
 
-    This ID is used by OpenRouter for sticky cache routing to reduce costs.
-    It is NOT used for telemetry and is only transmitted to the LLM provider
-    for cache routing purposes.
-
-    The ID is generated once and persists in the config directory.
+    Used by OpenRouter for sticky cache routing to reduce costs.
+    NOT used for telemetry. Generated once and persisted.
 
     Returns:
         16-character hexadecimal user ID
     """
-    config_dir = get_config_dir()
-    user_id_path = config_dir / USER_ID_FILE
-
-    if user_id_path.exists():
+    if USER_ID_FILE.exists():
         try:
-            user_id = user_id_path.read_text().strip()
-            # Validate format (16 hex chars)
+            user_id = USER_ID_FILE.read_text().strip()
             if len(user_id) == 16 and all(c in "0123456789abcdef" for c in user_id):
                 return user_id
         except (OSError, UnicodeDecodeError):
-            pass  # File corrupted, regenerate
+            pass
 
-    # Generate new user ID
     user_id = uuid.uuid4().hex[:16]
 
-    # Save to file
     with contextlib.suppress(OSError):
-        config_dir.mkdir(parents=True, exist_ok=True)
-        user_id_path.write_text(user_id)
-        # Readable by user only (Unix)
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        USER_ID_FILE.write_text(user_id)
         with contextlib.suppress(OSError, AttributeError):
-            os.chmod(user_id_path, 0o600)
+            os.chmod(USER_ID_FILE, 0o600)
 
     return user_id
 
 
-def get_user_id_path() -> Path:
-    """Get the path to the user ID file."""
-    return get_config_dir() / USER_ID_FILE
+# --- First run detection ---
+
+
+def is_first_run() -> bool:
+    """Check if this is the first time the CLI is being run."""
+    return not FIRST_RUN_FILE.exists()
+
+
+def mark_first_run_complete() -> None:
+    """Mark that the first run setup has been completed."""
+    with contextlib.suppress(OSError):
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        FIRST_RUN_FILE.touch()
