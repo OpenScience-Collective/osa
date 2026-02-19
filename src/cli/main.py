@@ -235,9 +235,7 @@ def _ask_batch(client: OSAClient, assistant: str, question: str, fmt: str) -> No
     if fmt == "json":
         output.print_json_output(response)
     else:
-        content = response.get("message", {}).get("content", "")
-        if not content:
-            content = response.get("answer", "No response")
+        content = response.get("answer", "No response")
         output.print_markdown(content, title=assistant.upper())
 
 

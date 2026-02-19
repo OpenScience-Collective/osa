@@ -32,10 +32,19 @@ class TestVersionCommand:
 class TestHealthCommand:
     """Tests for the health command."""
 
-    def test_health_with_invalid_url_shows_error(self) -> None:
+    def test_health_with_invalid_url_shows_error(self, tmp_path: Path) -> None:
         """health command should show error for invalid URL."""
-        with patch("src.cli.main.load_config") as mock_load:
-            mock_load.return_value = CLIConfig(api={"url": "http://invalid-host:99999"})
+        config_file = tmp_path / "config.yaml"
+        creds_file = tmp_path / "credentials.yaml"
+        legacy_file = tmp_path / "config.json"
+
+        with (
+            patch("src.cli.config.CONFIG_FILE", config_file),
+            patch("src.cli.config.CONFIG_DIR", tmp_path),
+            patch("src.cli.config.CREDENTIALS_FILE", creds_file),
+            patch("src.cli.config.LEGACY_CONFIG_FILE", legacy_file),
+        ):
+            save_config(CLIConfig(api={"url": "http://invalid-host:99999"}))
             result = runner.invoke(cli, ["health"])
             assert result.exit_code == 1
             assert "Error" in result.output or "error" in result.output.lower()

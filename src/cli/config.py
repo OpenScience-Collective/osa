@@ -10,10 +10,11 @@ import json
 import os
 import uuid
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from platformdirs import user_config_dir, user_data_dir
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 # Paths
 CONFIG_DIR = Path(user_config_dir("osa", appauthor=False, ensure_exists=True))
@@ -40,7 +41,7 @@ class APIConfig(BaseModel):
 class OutputConfig(BaseModel):
     """Output formatting preferences."""
 
-    format: str = Field(default="rich", description="Output format: rich, json, plain")
+    format: Literal["rich", "json", "plain"] = Field(default="rich", description="Output format")
     verbose: bool = Field(default=False, description="Verbose output")
     streaming: bool = Field(default=True, description="Stream responses")
 
@@ -78,7 +79,7 @@ def load_config() -> CLIConfig:
     try:
         data = yaml.safe_load(CONFIG_FILE.read_text()) or {}
         return CLIConfig(**data)
-    except (yaml.YAMLError, OSError, TypeError):
+    except (yaml.YAMLError, OSError, TypeError, ValidationError):
         return CLIConfig()
 
 
@@ -97,7 +98,7 @@ def load_credentials() -> CredentialsConfig:
     try:
         data = yaml.safe_load(CREDENTIALS_FILE.read_text()) or {}
         return CredentialsConfig(**data)
-    except (yaml.YAMLError, OSError, TypeError):
+    except (yaml.YAMLError, OSError, TypeError, ValidationError):
         return CredentialsConfig()
 
 
