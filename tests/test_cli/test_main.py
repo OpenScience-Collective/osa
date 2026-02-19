@@ -12,6 +12,7 @@ from typer.testing import CliRunner
 
 from src.cli.config import CLIConfig, save_config
 from src.cli.main import cli
+from tests.test_cli.test_config import patched_config_paths
 
 runner = CliRunner()
 
@@ -34,16 +35,7 @@ class TestHealthCommand:
 
     def test_health_with_invalid_url_shows_error(self, tmp_path: Path) -> None:
         """health command should show error for invalid URL."""
-        config_file = tmp_path / "config.yaml"
-        creds_file = tmp_path / "credentials.yaml"
-        legacy_file = tmp_path / "config.json"
-
-        with (
-            patch("src.cli.config.CONFIG_FILE", config_file),
-            patch("src.cli.config.CONFIG_DIR", tmp_path),
-            patch("src.cli.config.CREDENTIALS_FILE", creds_file),
-            patch("src.cli.config.LEGACY_CONFIG_FILE", legacy_file),
-        ):
+        with patched_config_paths(tmp_path):
             save_config(CLIConfig(api={"url": "http://invalid-host:99999"}))
             result = runner.invoke(cli, ["health"])
             assert result.exit_code == 1
@@ -57,13 +49,9 @@ class TestConfigCommands:
         """config show should display current settings."""
         config_file = tmp_path / "config.yaml"
         creds_file = tmp_path / "credentials.yaml"
-        legacy_file = tmp_path / "config.json"
 
         with (
-            patch("src.cli.config.CONFIG_FILE", config_file),
-            patch("src.cli.config.CONFIG_DIR", tmp_path),
-            patch("src.cli.config.CREDENTIALS_FILE", creds_file),
-            patch("src.cli.config.LEGACY_CONFIG_FILE", legacy_file),
+            patched_config_paths(tmp_path),
             patch("src.cli.main.CONFIG_FILE", config_file),
             patch("src.cli.main.CREDENTIALS_FILE", creds_file),
         ):
@@ -75,16 +63,7 @@ class TestConfigCommands:
 
     def test_config_set_updates_api_url(self, tmp_path: Path) -> None:
         """config set should update api_url."""
-        config_file = tmp_path / "config.yaml"
-        creds_file = tmp_path / "credentials.yaml"
-        legacy_file = tmp_path / "config.json"
-
-        with (
-            patch("src.cli.config.CONFIG_FILE", config_file),
-            patch("src.cli.config.CONFIG_DIR", tmp_path),
-            patch("src.cli.config.CREDENTIALS_FILE", creds_file),
-            patch("src.cli.config.LEGACY_CONFIG_FILE", legacy_file),
-        ):
+        with patched_config_paths(tmp_path):
             result = runner.invoke(cli, ["config", "set", "--api-url", "https://new-url.com"])
 
         assert result.exit_code == 0
@@ -92,16 +71,7 @@ class TestConfigCommands:
 
     def test_config_set_validates_output_format(self, tmp_path: Path) -> None:
         """config set should validate output format values."""
-        config_file = tmp_path / "config.yaml"
-        creds_file = tmp_path / "credentials.yaml"
-        legacy_file = tmp_path / "config.json"
-
-        with (
-            patch("src.cli.config.CONFIG_FILE", config_file),
-            patch("src.cli.config.CONFIG_DIR", tmp_path),
-            patch("src.cli.config.CREDENTIALS_FILE", creds_file),
-            patch("src.cli.config.LEGACY_CONFIG_FILE", legacy_file),
-        ):
+        with patched_config_paths(tmp_path):
             result = runner.invoke(cli, ["config", "set", "--output", "invalid"])
 
         assert result.exit_code == 1
@@ -109,32 +79,14 @@ class TestConfigCommands:
 
     def test_config_set_accepts_valid_output_formats(self, tmp_path: Path) -> None:
         """config set should accept valid output format values."""
-        config_file = tmp_path / "config.yaml"
-        creds_file = tmp_path / "credentials.yaml"
-        legacy_file = tmp_path / "config.json"
-
         for format_type in ["rich", "json", "plain"]:
-            with (
-                patch("src.cli.config.CONFIG_FILE", config_file),
-                patch("src.cli.config.CONFIG_DIR", tmp_path),
-                patch("src.cli.config.CREDENTIALS_FILE", creds_file),
-                patch("src.cli.config.LEGACY_CONFIG_FILE", legacy_file),
-            ):
+            with patched_config_paths(tmp_path):
                 result = runner.invoke(cli, ["config", "set", "--output", format_type])
             assert result.exit_code == 0, f"Failed for format: {format_type}"
 
     def test_config_set_no_options_shows_message(self, tmp_path: Path) -> None:
         """config set with no options should show help message."""
-        config_file = tmp_path / "config.yaml"
-        creds_file = tmp_path / "credentials.yaml"
-        legacy_file = tmp_path / "config.json"
-
-        with (
-            patch("src.cli.config.CONFIG_FILE", config_file),
-            patch("src.cli.config.CONFIG_DIR", tmp_path),
-            patch("src.cli.config.CREDENTIALS_FILE", creds_file),
-            patch("src.cli.config.LEGACY_CONFIG_FILE", legacy_file),
-        ):
+        with patched_config_paths(tmp_path):
             result = runner.invoke(cli, ["config", "set"])
 
         assert result.exit_code == 0
@@ -155,16 +107,7 @@ class TestConfigCommands:
 
     def test_config_reset_with_yes_flag(self, tmp_path: Path) -> None:
         """config reset with --yes should skip confirmation."""
-        config_file = tmp_path / "config.yaml"
-        creds_file = tmp_path / "credentials.yaml"
-        legacy_file = tmp_path / "config.json"
-
-        with (
-            patch("src.cli.config.CONFIG_FILE", config_file),
-            patch("src.cli.config.CONFIG_DIR", tmp_path),
-            patch("src.cli.config.CREDENTIALS_FILE", creds_file),
-            patch("src.cli.config.LEGACY_CONFIG_FILE", legacy_file),
-        ):
+        with patched_config_paths(tmp_path):
             result = runner.invoke(cli, ["config", "reset", "--yes"])
 
         assert result.exit_code == 0
@@ -201,17 +144,9 @@ class TestAskCommand:
 
     def test_ask_without_api_key_shows_error(self, tmp_path: Path) -> None:
         """ask without API key should show init hint."""
-        config_file = tmp_path / "config.yaml"
-        creds_file = tmp_path / "credentials.yaml"
-        legacy_file = tmp_path / "config.json"
-        first_run_file = tmp_path / ".first_run"
-
         with (
-            patch("src.cli.config.CONFIG_FILE", config_file),
-            patch("src.cli.config.CONFIG_DIR", tmp_path),
-            patch("src.cli.config.CREDENTIALS_FILE", creds_file),
-            patch("src.cli.config.LEGACY_CONFIG_FILE", legacy_file),
-            patch("src.cli.config.FIRST_RUN_FILE", first_run_file),
+            patched_config_paths(tmp_path),
+            patch("src.cli.config.FIRST_RUN_FILE", tmp_path / ".first_run"),
             patch.dict("os.environ", {}, clear=True),
         ):
             result = runner.invoke(cli, ["ask", "test question"])

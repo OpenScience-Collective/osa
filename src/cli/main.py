@@ -130,7 +130,7 @@ def init(
                 f"Could not connect: {e}",
                 hint="Check your API URL with --api-url",
             )
-        except Exception as e:
+        except (httpx.ConnectError, httpx.TimeoutException) as e:
             output.print_error(f"Connection test failed: {e}")
 
     mark_first_run_complete()
@@ -436,7 +436,7 @@ def health(
     except APIError as e:
         output.print_error(f"API error: {e}", hint=e.detail)
         raise typer.Exit(code=1)
-    except Exception as e:
+    except (httpx.ConnectError, httpx.TimeoutException) as e:
         output.print_error(
             f"Could not connect to {api_url}: {e}",
             hint="Is the server running? Check the URL with --url",
@@ -605,13 +605,20 @@ def _register_server_commands() -> None:
         output.print_info(f"Starting OSA server on {host}:{port}")
         uvicorn.run("src.api.main:app", host=host, port=port, reload=reload)
 
+    _SERVER_DEP_HINT = r"Install with: pip install 'open-science-assistant\[server]'"
+
     # sync commands
     try:
         from src.cli.sync import sync_app
 
         cli.add_typer(sync_app, name="sync")
     except ImportError:
-        pass
+
+        @cli.command(name="sync", hidden=True)
+        def sync_stub() -> None:
+            """Sync knowledge sources (requires server dependencies)."""
+            output.print_error("Server dependencies not installed.", hint=_SERVER_DEP_HINT)
+            raise typer.Exit(code=1)
 
     # validate command
     try:
@@ -619,7 +626,12 @@ def _register_server_commands() -> None:
 
         cli.command(name="validate")(validate_command)
     except ImportError:
-        pass
+
+        @cli.command(name="validate", hidden=True)
+        def validate_stub() -> None:
+            """Validate community config (requires server dependencies)."""
+            output.print_error("Server dependencies not installed.", hint=_SERVER_DEP_HINT)
+            raise typer.Exit(code=1)
 
 
 _register_server_commands()

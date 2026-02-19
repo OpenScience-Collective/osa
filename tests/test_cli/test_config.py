@@ -3,6 +3,8 @@
 These tests use real file I/O operations against temporary directories.
 """
 
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -38,6 +40,22 @@ def temp_data_dir(tmp_path: Path) -> Path:
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     return data_dir
+
+
+@contextmanager
+def patched_config_paths(config_dir: Path) -> Generator[None, None, None]:
+    """Patch all config module paths to use a temporary directory.
+
+    Patches CONFIG_FILE, CREDENTIALS_FILE, CONFIG_DIR, and LEGACY_CONFIG_FILE
+    to point to the given directory, isolating tests from the real config.
+    """
+    with (
+        patch("src.cli.config.CONFIG_FILE", config_dir / "config.yaml"),
+        patch("src.cli.config.CREDENTIALS_FILE", config_dir / "credentials.yaml"),
+        patch("src.cli.config.CONFIG_DIR", config_dir),
+        patch("src.cli.config.LEGACY_CONFIG_FILE", config_dir / "config.json"),
+    ):
+        yield
 
 
 class TestCLIConfig:
@@ -111,32 +129,20 @@ class TestLoadSaveConfig:
 
     def test_load_config_returns_defaults_when_no_file(self, temp_config_dir: Path) -> None:
         """load_config should return defaults when file doesn't exist."""
-        config_file = temp_config_dir / "config.yaml"
-        legacy_file = temp_config_dir / "config.json"
-        with (
-            patch("src.cli.config.CONFIG_FILE", config_file),
-            patch("src.cli.config.LEGACY_CONFIG_FILE", legacy_file),
-        ):
+        with patched_config_paths(temp_config_dir):
             config = load_config()
             assert config.api.url == "https://api.osc.earth/osa"
 
     def test_save_and_load_config(self, temp_config_dir: Path) -> None:
         """save_config and load_config should round-trip correctly."""
-        config_file = temp_config_dir / "config.yaml"
-        legacy_file = temp_config_dir / "config.json"
-
-        with (
-            patch("src.cli.config.CONFIG_FILE", config_file),
-            patch("src.cli.config.CONFIG_DIR", temp_config_dir),
-            patch("src.cli.config.LEGACY_CONFIG_FILE", legacy_file),
-        ):
+        with patched_config_paths(temp_config_dir):
             original = CLIConfig(
                 api={"url": "https://custom.example.com"},
                 output={"verbose": True},
             )
             save_config(original)
 
-            assert config_file.exists()
+            assert (temp_config_dir / "config.yaml").exists()
 
             loaded = load_config()
             assert loaded.api.url == "https://custom.example.com"
@@ -144,14 +150,9 @@ class TestLoadSaveConfig:
 
     def test_load_config_handles_invalid_yaml(self, temp_config_dir: Path) -> None:
         """load_config should return defaults on invalid YAML."""
-        config_file = temp_config_dir / "config.yaml"
-        config_file.write_text(": invalid: yaml: [")
-        legacy_file = temp_config_dir / "config.json"
+        (temp_config_dir / "config.yaml").write_text(": invalid: yaml: [")
 
-        with (
-            patch("src.cli.config.CONFIG_FILE", config_file),
-            patch("src.cli.config.LEGACY_CONFIG_FILE", legacy_file),
-        ):
+        with patched_config_paths(temp_config_dir):
             config = load_config()
             assert config.api.url == "https://api.osc.earth/osa"
 
@@ -161,25 +162,19 @@ class TestLoadSaveCredentials:
 
     def test_save_and_load_credentials(self, temp_config_dir: Path) -> None:
         """save_credentials and load_credentials should round-trip."""
-        creds_file = temp_config_dir / "credentials.yaml"
-
-        with (
-            patch("src.cli.config.CREDENTIALS_FILE", creds_file),
-            patch("src.cli.config.CONFIG_DIR", temp_config_dir),
-        ):
+        with patched_config_paths(temp_config_dir):
             creds = CredentialsConfig(openrouter_api_key="sk-or-test-key")
             save_credentials(creds)
 
-            assert creds_file.exists()
+            assert (temp_config_dir / "credentials.yaml").exists()
 
             loaded = load_credentials()
             assert loaded.openrouter_api_key == "sk-or-test-key"
 
     def test_load_credentials_returns_defaults_when_no_file(self, temp_config_dir: Path) -> None:
         """load_credentials should return defaults when file doesn't exist."""
-        creds_file = temp_config_dir / "nonexistent.yaml"
-
-        with patch("src.cli.config.CREDENTIALS_FILE", creds_file):
+        # Use a clean dir with no credentials file
+        with patched_config_paths(temp_config_dir):
             creds = load_credentials()
             assert creds.openrouter_api_key is None
 
@@ -189,16 +184,7 @@ class TestGetEffectiveConfig:
 
     def test_cli_flag_overrides_saved_key(self, temp_config_dir: Path) -> None:
         """CLI --api-key flag should override saved credentials."""
-        config_file = temp_config_dir / "config.yaml"
-        creds_file = temp_config_dir / "credentials.yaml"
-        legacy_file = temp_config_dir / "config.json"
-
-        with (
-            patch("src.cli.config.CONFIG_FILE", config_file),
-            patch("src.cli.config.CREDENTIALS_FILE", creds_file),
-            patch("src.cli.config.CONFIG_DIR", temp_config_dir),
-            patch("src.cli.config.LEGACY_CONFIG_FILE", legacy_file),
-        ):
+        with patched_config_paths(temp_config_dir):
             save_credentials(CredentialsConfig(openrouter_api_key="saved-key"))
 
             _, effective_key = get_effective_config(api_key="cli-key")
@@ -206,15 +192,8 @@ class TestGetEffectiveConfig:
 
     def test_env_var_overrides_saved_key(self, temp_config_dir: Path) -> None:
         """OPENROUTER_API_KEY env var should override saved credentials."""
-        config_file = temp_config_dir / "config.yaml"
-        creds_file = temp_config_dir / "credentials.yaml"
-        legacy_file = temp_config_dir / "config.json"
-
         with (
-            patch("src.cli.config.CONFIG_FILE", config_file),
-            patch("src.cli.config.CREDENTIALS_FILE", creds_file),
-            patch("src.cli.config.CONFIG_DIR", temp_config_dir),
-            patch("src.cli.config.LEGACY_CONFIG_FILE", legacy_file),
+            patched_config_paths(temp_config_dir),
             patch.dict("os.environ", {"OPENROUTER_API_KEY": "env-key"}),
         ):
             save_credentials(CredentialsConfig(openrouter_api_key="saved-key"))
@@ -224,15 +203,8 @@ class TestGetEffectiveConfig:
 
     def test_saved_key_used_as_fallback(self, temp_config_dir: Path) -> None:
         """Saved credentials should be used if no CLI flag or env var."""
-        config_file = temp_config_dir / "config.yaml"
-        creds_file = temp_config_dir / "credentials.yaml"
-        legacy_file = temp_config_dir / "config.json"
-
         with (
-            patch("src.cli.config.CONFIG_FILE", config_file),
-            patch("src.cli.config.CREDENTIALS_FILE", creds_file),
-            patch("src.cli.config.CONFIG_DIR", temp_config_dir),
-            patch("src.cli.config.LEGACY_CONFIG_FILE", legacy_file),
+            patched_config_paths(temp_config_dir),
             patch.dict("os.environ", {}, clear=True),
         ):
             save_credentials(CredentialsConfig(openrouter_api_key="saved-key"))
@@ -242,16 +214,7 @@ class TestGetEffectiveConfig:
 
     def test_api_url_override(self, temp_config_dir: Path) -> None:
         """api_url parameter should override saved config."""
-        config_file = temp_config_dir / "config.yaml"
-        creds_file = temp_config_dir / "credentials.yaml"
-        legacy_file = temp_config_dir / "config.json"
-
-        with (
-            patch("src.cli.config.CONFIG_FILE", config_file),
-            patch("src.cli.config.CREDENTIALS_FILE", creds_file),
-            patch("src.cli.config.CONFIG_DIR", temp_config_dir),
-            patch("src.cli.config.LEGACY_CONFIG_FILE", legacy_file),
-        ):
+        with patched_config_paths(temp_config_dir):
             config, _ = get_effective_config(api_url="https://custom.example.com")
             assert config.api.url == "https://custom.example.com"
 
@@ -263,11 +226,7 @@ class TestLegacyMigration:
         """Should migrate from legacy config.json to new YAML format."""
         import json
 
-        config_file = temp_config_dir / "config.yaml"
-        creds_file = temp_config_dir / "credentials.yaml"
         legacy_file = temp_config_dir / "config.json"
-
-        # Write legacy JSON config
         legacy_data = {
             "api_url": "https://legacy-api.example.com",
             "openrouter_api_key": "sk-or-legacy",
@@ -276,12 +235,7 @@ class TestLegacyMigration:
         }
         legacy_file.write_text(json.dumps(legacy_data))
 
-        with (
-            patch("src.cli.config.CONFIG_FILE", config_file),
-            patch("src.cli.config.CREDENTIALS_FILE", creds_file),
-            patch("src.cli.config.CONFIG_DIR", temp_config_dir),
-            patch("src.cli.config.LEGACY_CONFIG_FILE", legacy_file),
-        ):
+        with patched_config_paths(temp_config_dir):
             config = load_config()
 
             assert config.api.url == "https://legacy-api.example.com"

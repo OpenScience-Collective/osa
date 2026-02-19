@@ -1,12 +1,15 @@
 """HTTP client for communicating with the OSA API."""
 
 import json
+import logging
 from collections.abc import Generator
 from typing import Any
 
 import httpx
 
 from src.cli.config import get_user_id
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = httpx.Timeout(
     connect=10.0,
@@ -84,35 +87,30 @@ class OSAClient:
                 detail=detail,
             )
 
-    def health_check(self) -> dict[str, Any]:
-        """Check API health status."""
+    def _get(self, path: str) -> Any:
+        """Send a GET request and return parsed JSON.
+
+        Uses a short timeout (10s) suitable for metadata endpoints.
+        """
         with httpx.Client(timeout=10.0) as client:
             response = client.get(
-                f"{self.api_url}/health",
+                f"{self.api_url}{path}",
                 headers=self._get_headers(),
             )
             self._handle_response(response)
             return response.json()
+
+    def health_check(self) -> dict[str, Any]:
+        """Check API health status."""
+        return self._get("/health")
 
     def get_info(self) -> dict[str, Any]:
         """Get API information from root endpoint."""
-        with httpx.Client(timeout=10.0) as client:
-            response = client.get(
-                f"{self.api_url}/",
-                headers=self._get_headers(),
-            )
-            self._handle_response(response)
-            return response.json()
+        return self._get("/")
 
     def list_communities(self) -> list[dict[str, Any]]:
         """Fetch available communities from the API."""
-        with httpx.Client(timeout=10.0) as client:
-            response = client.get(
-                f"{self.api_url}/communities",
-                headers=self._get_headers(),
-            )
-            self._handle_response(response)
-            return response.json()
+        return self._get("/communities")
 
     def ask(
         self,
@@ -164,6 +162,7 @@ class OSAClient:
                     event_type = data.get("event", "unknown")
                     yield (event_type, data)
                 except json.JSONDecodeError:
+                    logger.debug("Malformed SSE data, skipping: %s", line[:200])
                     continue
 
     def ask_stream(
@@ -181,6 +180,18 @@ class OSAClient:
             {"question": question, "stream": True},
         )
 
+    @staticmethod
+    def _chat_payload(
+        message: str,
+        stream: bool,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Build a chat request payload."""
+        payload: dict[str, Any] = {"message": message, "stream": stream}
+        if session_id:
+            payload["session_id"] = session_id
+        return payload
+
     def chat(
         self,
         community: str,
@@ -191,18 +202,11 @@ class OSAClient:
 
         Returns the full response including message, session_id, and tool_calls.
         """
-        payload: dict[str, Any] = {
-            "message": message,
-            "stream": False,
-        }
-        if session_id:
-            payload["session_id"] = session_id
-
         with httpx.Client(timeout=self.timeout) as client:
             response = client.post(
                 f"{self.api_url}/{community}/chat",
                 headers=self._get_headers(),
-                json=payload,
+                json=self._chat_payload(message, stream=False, session_id=session_id),
             )
             self._handle_response(response)
             return response.json()
@@ -218,14 +222,7 @@ class OSAClient:
         Chat emits: session (with session_id), content, tool_start, done, error
         Yields (event_type, data_dict) tuples.
         """
-        payload: dict[str, Any] = {
-            "message": message,
-            "stream": True,
-        }
-        if session_id:
-            payload["session_id"] = session_id
-
         return self._stream_request(
             f"{self.api_url}/{community}/chat",
-            payload,
+            self._chat_payload(message, stream=True, session_id=session_id),
         )

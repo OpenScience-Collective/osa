@@ -167,18 +167,14 @@ def _migrate_legacy_config() -> CLIConfig:
     if "verbose" in data:
         config.output.verbose = data["verbose"]
 
-    # Migrate credentials
-    creds = CredentialsConfig()
-    if data.get("openrouter_api_key"):
-        creds.openrouter_api_key = data["openrouter_api_key"]
-    if data.get("openai_api_key"):
-        creds.openai_api_key = data["openai_api_key"]
-    if data.get("anthropic_api_key"):
-        creds.anthropic_api_key = data["anthropic_api_key"]
+    # Migrate credentials (field names match between legacy and new config)
+    cred_fields = ("openrouter_api_key", "openai_api_key", "anthropic_api_key")
+    cred_data = {k: data[k] for k in cred_fields if data.get(k)}
+    creds = CredentialsConfig(**cred_data)
 
     # Save in new format
     save_config(config)
-    if creds.openrouter_api_key or creds.openai_api_key or creds.anthropic_api_key:
+    if cred_data:
         save_credentials(creds)
 
     return config
