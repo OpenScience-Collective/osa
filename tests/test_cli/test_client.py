@@ -32,18 +32,20 @@ class TestOSAClientHeaders:
         assert headers["X-User-ID"] == "abc123"
 
     def test_headers_include_openrouter_key_when_set(self) -> None:
-        """Headers should include X-OpenRouter-API-Key when configured."""
+        """Headers should include X-OpenRouter-Key when configured."""
         client = OSAClient(
             api_url="http://localhost:8000",
             openrouter_api_key="sk-or-test",
         )
         headers = client._get_headers()
+        assert headers["X-OpenRouter-Key"] == "sk-or-test"
         assert headers["X-OpenRouter-API-Key"] == "sk-or-test"
 
     def test_headers_exclude_openrouter_key_when_not_set(self) -> None:
-        """Headers should not include X-OpenRouter-API-Key when not configured."""
+        """Headers should not include X-OpenRouter-Key when not configured."""
         client = OSAClient(api_url="http://localhost:8000")
         headers = client._get_headers()
+        assert "X-OpenRouter-Key" not in headers
         assert "X-OpenRouter-API-Key" not in headers
 
 

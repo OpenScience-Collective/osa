@@ -35,7 +35,7 @@ class OSAClient:
 
     Thin client that forwards requests to the OSA backend.
     BYOK (Bring Your Own Key): the user's OpenRouter API key is
-    forwarded via the X-OpenRouter-API-Key header.
+    forwarded via the X-OpenRouter-Key header.
     """
 
     def __init__(
@@ -65,6 +65,8 @@ class OSAClient:
             "X-User-ID": self.user_id,
         }
         if self.openrouter_api_key:
+            headers["X-OpenRouter-Key"] = self.openrouter_api_key
+            # Also send legacy header for servers that haven't updated yet
             headers["X-OpenRouter-API-Key"] = self.openrouter_api_key
         return headers
 

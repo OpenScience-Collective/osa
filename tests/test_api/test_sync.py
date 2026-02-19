@@ -231,7 +231,7 @@ class TestSyncTrigger:
         response = client.post(
             "/sync/trigger",
             json={"sync_type": "github"},
-            headers={"X-OpenRouter-API-Key": "byok-attempt"},
+            headers={"X-OpenRouter-Key": "byok-attempt"},
         )
 
         # If auth is configured, should still get 401 (BYOK doesn't bypass admin)
