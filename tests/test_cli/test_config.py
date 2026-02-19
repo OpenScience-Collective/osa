@@ -50,19 +50,16 @@ class TestCLIConfig:
         assert config.output.format == "rich"
         assert config.output.verbose is False
         assert config.output.streaming is True
-        assert config.execution.mode == "api"
 
     def test_custom_values(self) -> None:
         """CLIConfig should accept nested custom values."""
         config = CLIConfig(
             api={"url": "https://example.com"},
             output={"format": "json", "verbose": True},
-            execution={"mode": "standalone"},
         )
         assert config.api.url == "https://example.com"
         assert config.output.format == "json"
         assert config.output.verbose is True
-        assert config.execution.mode == "standalone"
 
     def test_model_dump(self) -> None:
         """CLIConfig should serialize to dict."""

@@ -469,7 +469,6 @@ def config_show() -> None:
     table.add_row("output.format", config.output.format)
     table.add_row("output.verbose", str(config.output.verbose))
     table.add_row("output.streaming", str(config.output.streaming))
-    table.add_row("execution.mode", config.execution.mode)
 
     # Credentials (masked)
     for field, value in creds.model_dump().items():
@@ -506,10 +505,6 @@ def config_set(
         bool | None,
         typer.Option("--streaming/--no-streaming", help="Enable streaming"),
     ] = None,
-    mode: Annotated[
-        str | None,
-        typer.Option("--mode", help="Execution mode: api or standalone"),
-    ] = None,
 ) -> None:
     """Update configuration settings."""
     config = load_config()
@@ -531,13 +526,6 @@ def config_set(
     if streaming is not None:
         config.output.streaming = streaming
         updated = True
-    if mode is not None:
-        if mode not in ("api", "standalone"):
-            output.print_error("Invalid mode. Use: api or standalone")
-            raise typer.Exit(code=1)
-        config.execution.mode = mode
-        updated = True
-
     if openrouter_key is not None:
         creds.openrouter_api_key = openrouter_key
         save_credentials(creds)

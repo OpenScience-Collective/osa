@@ -45,18 +45,11 @@ class OutputConfig(BaseModel):
     streaming: bool = Field(default=True, description="Stream responses")
 
 
-class ExecutionConfig(BaseModel):
-    """Execution mode configuration."""
-
-    mode: str = Field(default="api", description="Execution mode: api or standalone")
-
-
 class CLIConfig(BaseModel):
     """Complete CLI configuration (stored in config.yaml)."""
 
     api: APIConfig = Field(default_factory=APIConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
-    execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
 
 
 class CredentialsConfig(BaseModel):
