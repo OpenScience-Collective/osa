@@ -55,7 +55,7 @@ Users can pass their own API keys via HTTP headers:
 |--------|----------|
 | `X-OpenAI-API-Key` | OpenAI |
 | `X-Anthropic-API-Key` | Anthropic |
-| `X-OpenRouter-API-Key` | OpenRouter |
+| `X-OpenRouter-Key` | OpenRouter |
 
 ### Authentication Policy
 
@@ -67,7 +67,7 @@ Users can pass their own API keys via HTTP headers:
 ```bash
 curl -X POST https://api.osc.earth/osa-dev/hed/chat \
   -H "Content-Type: application/json" \
-  -H "X-OpenRouter-API-Key: sk-or-your-key" \
+  -H "X-OpenRouter-Key: sk-or-your-key" \
   -d '{"message": "What is HED?", "stream": false}'
 ```
 
@@ -76,14 +76,17 @@ No `X-API-Key` required when using BYOK headers.
 ### CLI Configuration for BYOK
 
 ```bash
-# Set your LLM API key
+# Set up your API key
+osa init --api-key "sk-or-your-key"
+
+# Or set it directly
 osa config set --openrouter-key "sk-or-your-key"
 
-# Use with remote server (BYOK)
-osa hed ask "What is HED?" --url https://api.osc.earth/osa-dev
+# Ask a question (uses saved key via BYOK)
+osa ask -a hed "What is HED?"
 
-# Use standalone mode (local server, no remote needed)
-osa hed ask "What is HED?"
+# Use against dev server
+osa ask -a hed "What is HED?" --api-url https://api.osc.earth/osa-dev
 ```
 
 ---
@@ -413,10 +416,10 @@ sudo systemctl reload apache2
 ### Installation
 
 ```bash
-# From PyPI (when published)
+# From PyPI (lightweight, ~7 dependencies)
 pip install open-science-assistant
 
-# From source
+# From source (with server dependencies)
 git clone https://github.com/OpenScience-Collective/osa.git
 cd osa
 uv sync
@@ -425,37 +428,31 @@ uv sync
 ### Commands
 
 ```bash
-# Show available assistants
-osa
+# Setup (saves API key securely)
+osa init
 
-# Ask a single question (standalone mode - starts local server)
-osa hed ask "What is HED?"
+# Ask a question
+osa ask -a hed "What is HED?"
 
 # Interactive chat session
-osa hed chat
+osa chat -a hed
 
-# Use remote server with BYOK
-osa hed ask "What is HED?" --url https://api.osc.earth/osa-dev
+# Override API URL per-command
+osa ask -a hed "What is HED?" --api-url https://api.osc.earth/osa-dev
 
 # Configuration
 osa config show                           # Show current config
 osa config set --openrouter-key "sk-..."  # Set LLM API key
-osa config set --api-key "server-key"     # Set server API key
 osa config path                           # Show config file location
 
-# Server management
-osa serve                                 # Start API server (production)
+# Server management (requires pip install 'open-science-assistant[server]')
+osa serve                                 # Start API server
 osa serve --port 38529 --reload           # Development mode
 osa health --url https://api.osc.earth/osa  # Check API health
 ```
 
-### Standalone vs Remote Mode
-
-| Mode | Description | Use Case |
-|------|-------------|----------|
-| Standalone (default) | Starts embedded server on localhost | Local development, offline use |
-| Remote (`--url`) | Connects to external API | Production, shared infrastructure |
+The CLI defaults to connecting to the production API at `https://api.osc.earth/osa`. Use `--api-url` to override.
 
 ---
 
-**Last Updated**: January 2026
+**Last Updated**: February 2026

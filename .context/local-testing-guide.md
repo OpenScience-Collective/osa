@@ -42,14 +42,17 @@ curl -X POST http://localhost:38528/COMMUNITY_ID/ask \
   -d '{"question": "What is this tool?", "api_key": "your-key"}' | jq
 ```
 
-## CLI Testing (No Server Needed)
+## CLI Testing
 
 ```bash
-# Interactive chat
-uv run osa chat --community COMMUNITY_ID --standalone
+# Interactive chat (connects to API by default)
+uv run osa chat -a COMMUNITY_ID
 
 # Single question
-uv run osa ask --community COMMUNITY_ID "What is this tool?" --standalone
+uv run osa ask -a COMMUNITY_ID "What is this tool?"
+
+# Against local server
+uv run osa ask -a COMMUNITY_ID "What is this tool?" --api-url http://localhost:38528
 ```
 
 ## Knowledge Sync
@@ -69,7 +72,7 @@ uv run osa sync papers --community COMMUNITY_ID --citations
 - [ ] Preloaded docs are in context
 - [ ] On-demand docs retrieved when relevant
 - [ ] Documentation URLs in responses are valid
-- [ ] CLI standalone mode works
+- [ ] CLI works against local server
 - [ ] Knowledge sync completes (if configured)
 - [ ] Assistant does not hallucinate PR/issue numbers
 
