@@ -421,6 +421,8 @@ class TestCommunityConfigHealthStatus:
                     assert health["api_key"] == "missing"
                     assert len(health["warnings"]) > 0
                     assert any("not sustainable" in w for w in health["warnings"])
+                    # Env var names must not leak to public endpoint
+                    assert not any(env_var in w for w in health["warnings"])
                 finally:
                     if original is not None:
                         os.environ[env_var] = original

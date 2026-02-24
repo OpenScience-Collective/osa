@@ -241,12 +241,11 @@ class TestCommunitiesHealthEndpoint:
         # The endpoint should still work even if some assistant infos are malformed
         assert isinstance(data, dict)
 
-        # Check for communities with error status and error field
-        # (indicates they failed processing due to malformed data)
+        # Check for communities with error status from malformed data
         for _community_id, health in data.items():
-            if "error" in health and "Failed to process" in health.get("error", ""):
-                # Verify the error response structure
-                assert health["status"] == "error"
+            if health.get("status") == "error" and any(
+                "Failed to process" in w for w in health.get("warnings", [])
+            ):
                 assert health["api_key"] == "unknown"
                 assert health["cors_origins"] == 0
                 assert health["documents"] == 0

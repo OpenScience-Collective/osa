@@ -113,6 +113,7 @@ def get_communities_health(_auth: RequireAuth) -> dict[str, Any]:
                     "warnings": ["Community configuration not found"],
                 }
                 continue
+            communities_health[community_id] = compute_community_health(config)
         except (AttributeError, KeyError, TypeError) as e:
             logger.error(
                 "Failed to process community health for %s: %s",
@@ -132,7 +133,6 @@ def get_communities_health(_auth: RequireAuth) -> dict[str, Any]:
             )
             communities_health[fallback_id] = {
                 "status": "error",
-                "error": f"Failed to process: {type(e).__name__}",
                 "api_key": "unknown",
                 "cors_origins": 0,
                 "documents": 0,
@@ -140,7 +140,5 @@ def get_communities_health(_auth: RequireAuth) -> dict[str, Any]:
                 "warnings": [f"Failed to process: {type(e).__name__}"],
             }
             continue
-
-        communities_health[community_id] = compute_community_health(config)
 
     return communities_health

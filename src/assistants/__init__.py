@@ -79,14 +79,12 @@ def discover_assistants() -> list[str]:
             discovered.append(config.id)
             logger.info("Discovered assistant: %s from %s", config.id, config_path)
 
-            # Log missing API key env var at debug level only.
-            # Community health (including missing keys) should be
-            # surfaced via the status endpoint, not log spam.
+            # Warn once at startup; detailed health surfaced via API endpoints.
             # See: https://github.com/OpenScience-Collective/osa/issues/220
             if config.openrouter_api_key_env_var and not os.getenv(
                 config.openrouter_api_key_env_var
             ):
-                logger.debug(
+                logger.warning(
                     "Community '%s': env var '%s' not set, will use platform key",
                     config.id,
                     config.openrouter_api_key_env_var,
