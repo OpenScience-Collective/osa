@@ -36,6 +36,11 @@ def compute_community_health(config: CommunityConfig) -> dict[str, Any]:
             )
     else:
         api_key_status = "using_platform"
+        warnings.append(
+            "No community-specific API key configured; using shared OSA platform key. "
+            "This is for demonstration only and is not sustainable. "
+            "Requires a dedicated API key and active maintainer."
+        )
 
     # Documentation sources
     doc_count = len(config.documentation) if config.documentation else 0
