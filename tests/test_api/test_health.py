@@ -11,7 +11,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.api.main import app
+from src.api.routers.health import compute_community_health
+from src.assistants import discover_assistants, registry
 from src.version import __version__
+
+discover_assistants()
 
 
 @pytest.fixture
@@ -247,3 +251,74 @@ class TestCommunitiesHealthEndpoint:
                 assert health["cors_origins"] == 0
                 assert health["documents"] == 0
                 assert health["sync_age_hours"] is None
+
+    def test_communities_health_includes_warnings(self, client: TestClient) -> None:
+        """Each community health entry should include a warnings list."""
+        response = client.get("/health/communities")
+        data = response.json()
+
+        for community_id, health in data.items():
+            assert "warnings" in health, f"{community_id} missing warnings field"
+            assert isinstance(health["warnings"], list)
+
+
+class TestComputeCommunityHealth:
+    """Tests for the compute_community_health helper function."""
+
+    def test_with_real_community_config(self) -> None:
+        """Should compute health from a real community config."""
+        assistants = registry.list_all()
+        assert len(assistants) > 0
+
+        config = assistants[0].community_config
+        assert config is not None
+
+        result = compute_community_health(config)
+        assert result["status"] in ["healthy", "degraded", "error"]
+        assert result["api_key"] in ["configured", "using_platform", "missing"]
+        assert isinstance(result["cors_origins"], int)
+        assert isinstance(result["documents"], int)
+        assert isinstance(result["warnings"], list)
+
+    def test_missing_api_key_env_var_produces_warning(self) -> None:
+        """Should warn when env var is configured but not set."""
+        # Find a community that has openrouter_api_key_env_var configured
+        for assistant in registry.list_all():
+            config = assistant.community_config
+            if config and config.openrouter_api_key_env_var:
+                env_var = config.openrouter_api_key_env_var
+                original = os.environ.pop(env_var, None)
+                try:
+                    result = compute_community_health(config)
+                    assert result["api_key"] == "missing"
+                    assert result["status"] == "error"
+                    assert any(env_var in w for w in result["warnings"])
+                    assert any("not sustainable" in w for w in result["warnings"])
+                finally:
+                    if original is not None:
+                        os.environ[env_var] = original
+                return
+
+        pytest.skip("No community with openrouter_api_key_env_var configured")
+
+    def test_set_api_key_env_var_is_healthy(self) -> None:
+        """Should be healthy when env var is set and docs exist."""
+        for assistant in registry.list_all():
+            config = assistant.community_config
+            if config and config.openrouter_api_key_env_var and config.documentation:
+                env_var = config.openrouter_api_key_env_var
+                original = os.environ.get(env_var)
+                try:
+                    os.environ[env_var] = "sk-or-v1-test"
+                    result = compute_community_health(config)
+                    assert result["api_key"] == "configured"
+                    assert result["status"] == "healthy"
+                    assert not any(env_var in w for w in result["warnings"])
+                finally:
+                    if original is not None:
+                        os.environ[env_var] = original
+                    elif env_var in os.environ:
+                        del os.environ[env_var]
+                return
+
+        pytest.skip("No community with openrouter_api_key_env_var configured")

@@ -5,7 +5,10 @@ Tests cover:
 - Dynamic endpoint registration
 - Session isolation between communities
 - Backward compatibility with HED endpoints
+- Public health status in config and metrics endpoints
 """
+
+import os
 
 import pytest
 from fastapi import FastAPI
@@ -346,3 +349,81 @@ class TestSessionEndpointBehavior:
         else:
             # Auth required
             assert response.status_code in (401, 403)
+
+
+class TestCommunityConfigHealthStatus:
+    """Tests for health status in community config and public metrics."""
+
+    @pytest.fixture
+    def client(self) -> TestClient:
+        """Create a test client with auth disabled."""
+        os.environ["REQUIRE_API_AUTH"] = "false"
+        from src.api.config import get_settings
+
+        get_settings.cache_clear()
+
+        from src.api.main import app
+
+        return TestClient(app)
+
+    def test_config_response_includes_status(self, client: TestClient) -> None:
+        """GET /{community_id}/ should include a status field."""
+        response = client.get("/hed/")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert "status" in data
+        assert data["status"] in ["healthy", "degraded", "error"]
+
+    def test_config_status_does_not_leak_details(self, client: TestClient) -> None:
+        """Public config should not expose api_key details or warnings."""
+        response = client.get("/hed/")
+        data = response.json()
+
+        assert "warnings" not in data
+        assert "api_key" not in data
+        assert "config_health" not in data
+
+    def test_public_metrics_includes_config_health(self, client: TestClient) -> None:
+        """GET /{community_id}/metrics/public should include config_health."""
+        response = client.get("/hed/metrics/public")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert "config_health" in data
+
+        health = data["config_health"]
+        assert "status" in health
+        assert health["status"] in ["healthy", "degraded", "error"]
+        assert "api_key" in health
+        assert health["api_key"] in ["configured", "using_platform", "missing"]
+        assert "documents" in health
+        assert isinstance(health["documents"], int)
+        assert "warnings" in health
+        assert isinstance(health["warnings"], list)
+
+    def test_public_metrics_config_health_has_warnings_for_missing_key(
+        self, client: TestClient
+    ) -> None:
+        """config_health should include warnings when API key env var is not set."""
+        from src.assistants import registry
+
+        # Find a community with openrouter_api_key_env_var
+        for assistant in registry.list_all():
+            config = assistant.community_config
+            if config and config.openrouter_api_key_env_var:
+                env_var = config.openrouter_api_key_env_var
+                original = os.environ.pop(env_var, None)
+                try:
+                    response = client.get(f"/{assistant.id}/metrics/public")
+                    assert response.status_code == 200
+                    health = response.json()["config_health"]
+                    assert health["api_key"] == "missing"
+                    assert len(health["warnings"]) > 0
+                    assert any("not sustainable" in w for w in health["warnings"])
+                finally:
+                    if original is not None:
+                        os.environ[env_var] = original
+                return
+
+        pytest.skip("No community with openrouter_api_key_env_var configured")

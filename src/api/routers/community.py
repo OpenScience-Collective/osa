@@ -188,6 +188,7 @@ class CommunityConfigResponse(BaseModel):
     widget: WidgetConfigResponse = Field(
         ..., description="Widget display configuration (title, placeholder, etc.)"
     )
+    status: str = Field(..., description="Health status: healthy, degraded, or error")
 
 
 # ---------------------------------------------------------------------------
@@ -1121,6 +1122,13 @@ def create_community_router(community_id: str) -> APIRouter:
             info.community_config.widget if info.community_config else None
         ) or WidgetConfig()
 
+        # Compute lightweight health status for public display
+        from src.api.routers.health import compute_community_health
+
+        health_status = "error"
+        if info.community_config:
+            health_status = compute_community_health(info.community_config)["status"]
+
         return CommunityConfigResponse(
             id=info.id,
             name=info.name,
@@ -1128,6 +1136,7 @@ def create_community_router(community_id: str) -> APIRouter:
             default_model=default_model,
             default_model_provider=default_provider,
             widget=WidgetConfigResponse(**widget_cfg.resolve(info.name)),
+            status=health_status,
         )
 
     # -----------------------------------------------------------------------
@@ -1224,18 +1233,39 @@ def create_community_router(community_id: str) -> APIRouter:
     async def community_metrics_public() -> dict[str, Any]:
         """Get public metrics summary for this community.
 
-        Returns request counts, error rate, and top tools.
+        Returns request counts, error rate, top tools, and config health.
         No tokens, costs, or model information exposed.
         """
+        from src.api.routers.health import compute_community_health
+
         try:
             with metrics_connection() as conn:
-                return get_public_community_summary(community_id, conn)
+                result = get_public_community_summary(community_id, conn)
         except sqlite3.Error:
             logger.exception("Failed to query public metrics for community %s", community_id)
             raise HTTPException(
                 status_code=503,
                 detail="Metrics database is temporarily unavailable.",
             )
+
+        # Add config health alongside usage metrics
+        if info.community_config:
+            health = compute_community_health(info.community_config)
+            result["config_health"] = {
+                "status": health["status"],
+                "api_key": health["api_key"],
+                "documents": health["documents"],
+                "warnings": health["warnings"],
+            }
+        else:
+            result["config_health"] = {
+                "status": "error",
+                "api_key": "missing",
+                "documents": 0,
+                "warnings": ["Community configuration not found"],
+            }
+
+        return result
 
     @router.get("/metrics/public/usage")
     async def community_usage_public(
