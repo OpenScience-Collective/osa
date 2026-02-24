@@ -355,16 +355,25 @@ class TestCommunityConfigHealthStatus:
     """Tests for health status in community config and public metrics."""
 
     @pytest.fixture
-    def client(self) -> TestClient:
-        """Create a test client with auth disabled."""
+    def client(self, tmp_path) -> TestClient:
+        """Create a test client with auth disabled and metrics DB initialized."""
         os.environ["REQUIRE_API_AUTH"] = "false"
         from src.api.config import get_settings
 
         get_settings.cache_clear()
 
+        # Initialize a temp metrics DB so /metrics/public doesn't 503
+        from unittest.mock import patch
+
+        from src.metrics.db import init_metrics_db
+
+        db_path = tmp_path / "metrics.db"
+        init_metrics_db(db_path)
+
         from src.api.main import app
 
-        return TestClient(app)
+        with patch("src.metrics.db.get_metrics_db_path", return_value=db_path):
+            yield TestClient(app)
 
     def test_config_response_includes_status(self, client: TestClient) -> None:
         """GET /{community_id}/ should include a status field."""
