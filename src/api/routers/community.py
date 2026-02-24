@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from src.agents.base import DEFAULT_MAX_CONVERSATION_TOKENS
 from src.api.config import get_settings
+from src.api.routers.health import compute_community_health
 from src.api.security import AuthScope, RequireAuth, RequireScopedAuth
 from src.assistants import registry
 from src.assistants.community import CommunityAssistant
@@ -188,6 +189,7 @@ class CommunityConfigResponse(BaseModel):
     widget: WidgetConfigResponse = Field(
         ..., description="Widget display configuration (title, placeholder, etc.)"
     )
+    status: str = Field(..., description="Health status: healthy, degraded, or error")
 
 
 # ---------------------------------------------------------------------------
@@ -1121,6 +1123,14 @@ def create_community_router(community_id: str) -> APIRouter:
             info.community_config.widget if info.community_config else None
         ) or WidgetConfig()
 
+        # Compute lightweight health status for public display
+        health_status = "error"
+        if info.community_config:
+            try:
+                health_status = compute_community_health(info.community_config)["status"]
+            except Exception:
+                logger.exception("Failed to compute health for community %s", info.id)
+
         return CommunityConfigResponse(
             id=info.id,
             name=info.name,
@@ -1128,6 +1138,7 @@ def create_community_router(community_id: str) -> APIRouter:
             default_model=default_model,
             default_model_provider=default_provider,
             widget=WidgetConfigResponse(**widget_cfg.resolve(info.name)),
+            status=health_status,
         )
 
     # -----------------------------------------------------------------------
@@ -1224,18 +1235,49 @@ def create_community_router(community_id: str) -> APIRouter:
     async def community_metrics_public() -> dict[str, Any]:
         """Get public metrics summary for this community.
 
-        Returns request counts, error rate, and top tools.
+        Returns request counts, error rate, top tools, and config health.
         No tokens, costs, or model information exposed.
         """
         try:
             with metrics_connection() as conn:
-                return get_public_community_summary(community_id, conn)
+                result = get_public_community_summary(community_id, conn)
         except sqlite3.Error:
             logger.exception("Failed to query public metrics for community %s", community_id)
             raise HTTPException(
                 status_code=503,
                 detail="Metrics database is temporarily unavailable.",
             )
+
+        # Add config health alongside usage metrics
+        fallback_health: dict[str, Any] = {
+            "status": "error",
+            "api_key": "missing",
+            "documents": 0,
+            "warnings": ["Community configuration not found"],
+        }
+        if info.community_config:
+            try:
+                health = compute_community_health(info.community_config)
+                # Sanitize warnings for public endpoint: strip env var names
+                public_warnings = [w for w in health["warnings"] if "Environment variable" not in w]
+                if health["api_key"] == "missing" and not public_warnings:
+                    public_warnings = [
+                        "API key not configured; using shared platform key. "
+                        "This is for demonstration only and is not sustainable."
+                    ]
+                result["config_health"] = {
+                    "status": health["status"],
+                    "api_key": health["api_key"],
+                    "documents": health["documents"],
+                    "warnings": public_warnings,
+                }
+            except Exception:
+                logger.exception("Failed to compute health for community %s", community_id)
+                result["config_health"] = fallback_health
+        else:
+            result["config_health"] = fallback_health
+
+        return result
 
     @router.get("/metrics/public/usage")
     async def community_usage_public(
