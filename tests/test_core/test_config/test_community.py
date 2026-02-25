@@ -454,6 +454,37 @@ class TestWidgetConfig:
         with pytest.raises(ValidationError):
             WidgetConfig(initial_message="x" * 1001)
 
+    def test_theme_color_valid(self) -> None:
+        """Should accept valid hex color codes."""
+        widget = WidgetConfig(theme_color="#008a79")
+        assert widget.theme_color == "#008a79"
+
+    def test_theme_color_rejects_invalid_format(self) -> None:
+        """Should reject non-hex color values."""
+        with pytest.raises(ValidationError):
+            WidgetConfig(theme_color="red")
+        with pytest.raises(ValidationError):
+            WidgetConfig(theme_color="008a79")
+        with pytest.raises(ValidationError):
+            WidgetConfig(theme_color="#abc")
+
+    def test_theme_color_defaults_to_none(self) -> None:
+        """Should default to None when not specified."""
+        widget = WidgetConfig()
+        assert widget.theme_color is None
+
+    def test_resolve_includes_theme_color_when_set(self) -> None:
+        """resolve() should include theme_color when specified."""
+        widget = WidgetConfig(theme_color="#008a79")
+        result = widget.resolve("Test")
+        assert result["theme_color"] == "#008a79"
+
+    def test_resolve_excludes_theme_color_when_none(self) -> None:
+        """resolve() should not include theme_color when None."""
+        widget = WidgetConfig()
+        result = widget.resolve("Test")
+        assert "theme_color" not in result
+
     def test_placeholder_max_length(self) -> None:
         """Should enforce placeholder max length."""
         with pytest.raises(ValidationError):
