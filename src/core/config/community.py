@@ -272,10 +272,10 @@ class DiscourseCategoryConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    slug: str
+    slug: str = Field(min_length=1, pattern=r"^[a-z0-9-]+$")
     """Category slug (e.g., 'support')."""
 
-    id: int
+    id: int = Field(ge=1)
     """Category numeric ID."""
 
 

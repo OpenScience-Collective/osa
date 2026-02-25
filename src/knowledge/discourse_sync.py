@@ -11,13 +11,19 @@ Features:
 - Stores topics in knowledge DB for FTS search
 """
 
+from __future__ import annotations
+
 import logging
 import time
+from typing import TYPE_CHECKING
 
 import httpx
 import markdownify
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
+
+if TYPE_CHECKING:
+    from src.core.config.community import DiscourseCategoryConfig
 
 from src.knowledge.db import (
     get_connection,
@@ -128,7 +134,7 @@ def _get_accepted_answer(posts: list[dict]) -> str | None:
 def sync_discourse_topics(
     base_url: str,
     project: str,
-    categories: list[dict] | None = None,
+    categories: list[DiscourseCategoryConfig] | None = None,
     incremental: bool = True,
     max_topics: int | None = None,
     request_delay: float = DEFAULT_REQUEST_DELAY,
@@ -142,7 +148,7 @@ def sync_discourse_topics(
     Args:
         base_url: Base URL of the Discourse instance (e.g., 'https://mne.discourse.group')
         project: Community ID for database isolation
-        categories: Optional list of category dicts with 'slug' and 'id' keys.
+        categories: Optional list of category configs to limit sync to.
                     If None, syncs from /latest.json (all categories).
         incremental: If True, only sync topics updated since last sync
         max_topics: Maximum number of topics to sync (for testing). None for all.
@@ -256,7 +262,7 @@ def sync_discourse_topics(
 def _collect_topic_ids(
     base_url: str,
     *,
-    categories: list[dict] | None = None,
+    categories: list[DiscourseCategoryConfig] | None = None,
     last_sync: str | None = None,
     max_topics: int | None = None,
     request_delay: float = DEFAULT_REQUEST_DELAY,
@@ -281,8 +287,8 @@ def _collect_topic_ids(
     if categories:
         # Sync specific categories
         for cat in categories:
-            slug = cat.get("slug", "")
-            cat_id = cat.get("id", "")
+            slug = cat.slug
+            cat_id = cat.id
             ids = _collect_from_listing(
                 f"{base_url}/c/{slug}/{cat_id}.json",
                 last_sync=last_sync,

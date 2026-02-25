@@ -783,7 +783,7 @@ class DiscourseTopicResult:
     reply_count: int
     like_count: int
     views: int
-    accepted_answer_snippet: str
+    accepted_answer_snippet: str | None
     created_at: str
 
 
@@ -837,8 +837,8 @@ def search_discourse_topics(
                         reply_count=row["reply_count"],
                         like_count=row["like_count"],
                         views=row["views"],
-                        accepted_answer_snippet=_make_snippet(
-                            row["accepted_answer"], max_length=200
+                        accepted_answer_snippet=(
+                            _make_snippet(row["accepted_answer"], max_length=200) or None
                         ),
                         created_at=row["created_at"] or "",
                     )

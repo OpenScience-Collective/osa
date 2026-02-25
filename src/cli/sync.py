@@ -607,15 +607,10 @@ def sync_all(
 
                 discourse_total = 0
                 for discourse_cfg in comm_info.community_config.discourse:
-                    categories = (
-                        [cat.model_dump() for cat in discourse_cfg.categories]
-                        if discourse_cfg.categories
-                        else None
-                    )
                     discourse_total += sync_discourse_topics(
                         base_url=str(discourse_cfg.url),
                         project=comm_id,
-                        categories=categories,
+                        categories=discourse_cfg.categories or None,
                         incremental=not full,
                     )
                 console.print(f"[green]Discourse: {discourse_total} topics[/green]")
@@ -926,14 +921,10 @@ def sync_discourse(
 
     total = 0
     for discourse_config in info.community_config.discourse:
-        categories = None
-        if discourse_config.categories:
-            categories = [cat.model_dump() for cat in discourse_config.categories]
-
         count = sync_discourse_topics(
             base_url=str(discourse_config.url),
             project=community,
-            categories=categories,
+            categories=discourse_config.categories or None,
             incremental=not full,
             max_topics=max_topics,
         )
