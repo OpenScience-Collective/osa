@@ -1527,8 +1527,8 @@
     const container = document.querySelector('.osa-chat-widget');
     if (!container) return;
 
-    // Apply theme color if configured
-    if (CONFIG.themeColor) {
+    // Apply theme color if configured (must be valid #RRGGBB hex)
+    if (CONFIG.themeColor && /^#[0-9a-fA-F]{6}$/.test(CONFIG.themeColor)) {
       container.style.setProperty('--osa-primary', CONFIG.themeColor);
       // Derive a darker shade for hover states
       const r = parseInt(CONFIG.themeColor.slice(1, 3), 16);
@@ -1565,17 +1565,6 @@
     if (messages.length === 1 && messages[0].role === 'assistant') {
       messages[0].content = CONFIG.initialMessage;
       renderMessages(container);
-    }
-
-    // Apply theme color if provided
-    if (CONFIG.themeColor) {
-      container.style.setProperty('--osa-primary', CONFIG.themeColor);
-      // Derive a darker shade for hover states
-      const hex = CONFIG.themeColor.replace('#', '');
-      const r = Math.max(0, parseInt(hex.substr(0, 2), 16) - 25);
-      const g = Math.max(0, parseInt(hex.substr(2, 2), 16) - 25);
-      const b = Math.max(0, parseInt(hex.substr(4, 2), 16) - 25);
-      container.style.setProperty('--osa-primary-dark', `#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`);
     }
 
     // Update suggested questions
