@@ -7,6 +7,7 @@ Config is split into two files for security:
 
 import contextlib
 import json
+import logging
 import os
 import uuid
 from pathlib import Path
@@ -15,6 +16,8 @@ from typing import Literal
 import yaml
 from platformdirs import user_config_dir, user_data_dir
 from pydantic import BaseModel, Field, ValidationError
+
+logger = logging.getLogger(__name__)
 
 # Paths
 CONFIG_DIR = Path(user_config_dir("osa", appauthor=False, ensure_exists=True))
@@ -79,7 +82,8 @@ def load_config() -> CLIConfig:
     try:
         data = yaml.safe_load(CONFIG_FILE.read_text()) or {}
         return CLIConfig(**data)
-    except (yaml.YAMLError, OSError, TypeError, ValidationError):
+    except (yaml.YAMLError, OSError, TypeError, ValidationError) as e:
+        logger.warning("Failed to load config from %s, using defaults: %s", CONFIG_FILE, e)
         return CLIConfig()
 
 
@@ -98,7 +102,12 @@ def load_credentials() -> CredentialsConfig:
     try:
         data = yaml.safe_load(CREDENTIALS_FILE.read_text()) or {}
         return CredentialsConfig(**data)
-    except (yaml.YAMLError, OSError, TypeError, ValidationError):
+    except (yaml.YAMLError, OSError, TypeError, ValidationError) as e:
+        logger.warning(
+            "Failed to load credentials from %s, no API keys available: %s",
+            CREDENTIALS_FILE,
+            e,
+        )
         return CredentialsConfig()
 
 
@@ -115,11 +124,23 @@ def save_credentials(creds: CredentialsConfig) -> None:
             os.write(fd, content.encode())
         finally:
             os.close(fd)
-    except OSError:
+    except OSError as e:
         # Fallback for platforms that don't support os.open mode (e.g., Windows)
+        logger.warning(
+            "Secure file write failed (%s), falling back to standard write for %s",
+            e,
+            CREDENTIALS_FILE,
+        )
         CREDENTIALS_FILE.write_text(content)
-        with contextlib.suppress(OSError):
+        try:
             os.chmod(CREDENTIALS_FILE, 0o600)
+        except OSError as chmod_err:
+            logger.warning(
+                "Could not restrict permissions on %s: %s. "
+                "Credentials file may be readable by other users.",
+                CREDENTIALS_FILE,
+                chmod_err,
+            )
 
 
 def get_effective_config(
@@ -154,7 +175,8 @@ def _migrate_legacy_config() -> CLIConfig:
     try:
         with LEGACY_CONFIG_FILE.open() as f:
             data = json.load(f)
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Failed to migrate legacy config from %s: %s", LEGACY_CONFIG_FILE, e)
         return CLIConfig()
 
     # Build new config from legacy fields

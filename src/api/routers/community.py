@@ -764,10 +764,11 @@ def create_community_assistant(
             if config.get("callbacks"):
                 langfuse_config = config
                 langfuse_trace_id = trace_id
-        except Exception:
+        except (AttributeError, ValueError, RuntimeError, OSError, ImportError) as e:
             logger.warning(
-                "LangFuse tracing setup failed for %s, continuing without it",
+                "LangFuse tracing setup failed for %s: %s, continuing without it",
                 community_id,
+                e,
                 exc_info=True,
             )
 
@@ -1183,8 +1184,13 @@ def create_community_router(community_id: str) -> APIRouter:
         if info.community_config:
             try:
                 health_status = compute_community_health(info.community_config)["status"]
-            except Exception:
-                logger.exception("Failed to compute health for community %s", info.id)
+            except (AttributeError, KeyError, TypeError) as e:
+                logger.error(
+                    "Failed to compute health for community %s: %s",
+                    info.id,
+                    e,
+                    exc_info=True,
+                )
 
         return CommunityConfigResponse(
             id=info.id,
@@ -1357,8 +1363,13 @@ def create_community_router(community_id: str) -> APIRouter:
                     "documents": health["documents"],
                     "warnings": public_warnings,
                 }
-            except Exception:
-                logger.exception("Failed to compute health for community %s", community_id)
+            except (AttributeError, KeyError, TypeError) as e:
+                logger.error(
+                    "Failed to compute health for community %s: %s",
+                    community_id,
+                    e,
+                    exc_info=True,
+                )
                 result["config_health"] = fallback_health
         else:
             result["config_health"] = fallback_health

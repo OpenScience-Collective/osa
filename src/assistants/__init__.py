@@ -88,6 +88,10 @@ def discover_assistants() -> list[str]:
                     "Community '%s': env var '%s' not set, will use platform key",
                     config.id,
                     config.openrouter_api_key_env_var,
+                    extra={
+                        "community_id": config.id,
+                        "env_var": config.openrouter_api_key_env_var,
+                    },
                 )
         except KeyboardInterrupt:
             # Never catch user interruption
