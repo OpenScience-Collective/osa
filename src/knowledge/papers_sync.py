@@ -389,6 +389,8 @@ def sync_all_papers(
     Returns:
         Dict mapping source to total items synced
     """
+    if isinstance(queries, str):
+        raise TypeError(f"queries must be a list of strings, not a bare string: {queries!r}")
     if not queries:
         logger.warning("No queries provided for paper sync")
         return {"openalex": 0, "semanticscholar": 0, "pubmed": 0}
@@ -440,6 +442,8 @@ def sync_citing_papers(
     Returns:
         Total number of citing papers synced
     """
+    if isinstance(dois, str):
+        raise TypeError(f"dois must be a list of strings, not a bare string: {dois!r}")
     configure_openalex(api_key=openalex_api_key, email=openalex_email)
     total = 0
 
