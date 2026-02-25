@@ -666,6 +666,13 @@ class WidgetConfig(BaseModel):
     suggested_questions: list[str] = Field(default_factory=list)
     """Clickable suggestion buttons shown below the initial message."""
 
+    theme_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    """Primary theme color as a hex code (e.g., '#008a79').
+
+    Applied to the widget button, header, and accent elements.
+    Defaults to the platform blue (#2563eb) if not specified.
+    """
+
     @field_validator("title", "initial_message", "placeholder", mode="before")
     @classmethod
     def normalize_empty_strings(cls, v: str | None) -> str | None:
@@ -687,12 +694,15 @@ class WidgetConfig(BaseModel):
 
     def resolve(self, community_name: str) -> dict[str, Any]:
         """Return widget config with defaults applied."""
-        return {
+        result = {
             "title": self.title or community_name or "Assistant",
             "initial_message": self.initial_message,
             "placeholder": self.placeholder or "Ask a question...",
             "suggested_questions": self.suggested_questions,
         }
+        if self.theme_color:
+            result["theme_color"] = self.theme_color
+        return result
 
 
 class LinksConfig(BaseModel):

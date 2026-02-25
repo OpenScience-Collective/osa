@@ -1502,6 +1502,10 @@
           CONFIG.suggestedQuestions = w.suggested_questions;
           changed = true;
         }
+        if (w.theme_color != null && !_userSetKeys.has('themeColor')) {
+          CONFIG.themeColor = w.theme_color;
+          changed = true;
+        }
 
         if (changed) {
           applyWidgetConfig();
@@ -1522,6 +1526,20 @@
   function applyWidgetConfig() {
     const container = document.querySelector('.osa-chat-widget');
     if (!container) return;
+
+    // Apply theme color if configured
+    if (CONFIG.themeColor) {
+      container.style.setProperty('--osa-primary', CONFIG.themeColor);
+      // Derive a darker shade for hover states
+      const r = parseInt(CONFIG.themeColor.slice(1, 3), 16);
+      const g = parseInt(CONFIG.themeColor.slice(3, 5), 16);
+      const b = parseInt(CONFIG.themeColor.slice(5, 7), 16);
+      const darker = '#' +
+        Math.max(0, r - 25).toString(16).padStart(2, '0') +
+        Math.max(0, g - 25).toString(16).padStart(2, '0') +
+        Math.max(0, b - 25).toString(16).padStart(2, '0');
+      container.style.setProperty('--osa-primary-dark', darker);
+    }
 
     // Update header title
     const titleEl = container.querySelector('.osa-chat-title');
@@ -1547,6 +1565,17 @@
     if (messages.length === 1 && messages[0].role === 'assistant') {
       messages[0].content = CONFIG.initialMessage;
       renderMessages(container);
+    }
+
+    // Apply theme color if provided
+    if (CONFIG.themeColor) {
+      container.style.setProperty('--osa-primary', CONFIG.themeColor);
+      // Derive a darker shade for hover states
+      const hex = CONFIG.themeColor.replace('#', '');
+      const r = Math.max(0, parseInt(hex.substr(0, 2), 16) - 25);
+      const g = Math.max(0, parseInt(hex.substr(2, 2), 16) - 25);
+      const b = Math.max(0, parseInt(hex.substr(4, 2), 16) - 25);
+      container.style.setProperty('--osa-primary-dark', `#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`);
     }
 
     // Update suggested questions
