@@ -360,6 +360,8 @@ def sync_repos(repos: list[str], project: str = "hed", incremental: bool = True)
     Returns:
         Dict mapping repo to items synced
     """
+    if isinstance(repos, str):
+        raise TypeError(f"repos must be a list of strings, not a bare string: {repos!r}")
     results = {}
     failed = []
 

@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from src.knowledge.db import get_connection, init_db
-from src.knowledge.github_sync import sync_repo, sync_repo_issues
+from src.knowledge.github_sync import sync_repo, sync_repo_issues, sync_repos
 
 
 @pytest.fixture
@@ -98,3 +98,16 @@ class TestGitHubSync:
             # Token should be picked up from environment
             count = sync_repo(repo, project="test", incremental=False)
             assert count >= 0
+
+
+class TestSyncReposTypeGuard:
+    """Test that sync_repos rejects bare strings to prevent character iteration."""
+
+    def test_rejects_bare_string(self) -> None:
+        with pytest.raises(TypeError, match="must be a list of strings"):
+            sync_repos("fieldtrip")  # type: ignore[arg-type]
+
+    def test_accepts_list(self, temp_db: Path) -> None:
+        with patch("src.knowledge.db.get_db_path", return_value=temp_db):
+            result = sync_repos(["nonexistent/repo"], project="test")
+            assert isinstance(result, dict)
