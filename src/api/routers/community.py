@@ -178,6 +178,7 @@ class WidgetConfigResponse(BaseModel):
     logo_url: str | None = Field(
         default=None, description="URL for community logo/icon in widget header"
     )
+    theme_color: str | None = Field(default=None, description="Primary theme color as hex #RRGGBB")
 
 
 class CommunityConfigResponse(BaseModel):
