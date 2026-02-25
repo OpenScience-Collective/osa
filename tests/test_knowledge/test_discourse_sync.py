@@ -173,38 +173,38 @@ class TestDiscourseSearch:
             assert results == []
 
 
-class TestHtmlToText:
-    """Tests for _html_to_text helper."""
+class TestHtmlToMarkdown:
+    """Tests for _html_to_markdown helper."""
 
     def test_simple_html(self):
         """Should convert simple HTML to plain text."""
-        from src.knowledge.discourse_sync import _html_to_text
+        from src.knowledge.discourse_sync import _html_to_markdown
 
-        result = _html_to_text("<p>Hello <strong>world</strong></p>")
+        result = _html_to_markdown("<p>Hello <strong>world</strong></p>")
         assert "Hello" in result
         assert "world" in result
 
     def test_empty_input(self):
         """Should return empty string for empty input."""
-        from src.knowledge.discourse_sync import _html_to_text
+        from src.knowledge.discourse_sync import _html_to_markdown
 
-        assert _html_to_text("") == ""
-        assert _html_to_text(None) == ""
+        assert _html_to_markdown("") == ""
+        assert _html_to_markdown(None) == ""
 
     def test_code_blocks_preserved(self):
         """Should preserve code block content."""
-        from src.knowledge.discourse_sync import _html_to_text
+        from src.knowledge.discourse_sync import _html_to_markdown
 
         html = "<p>Use this:</p><pre><code>mne.io.read_raw_edf('file.edf')</code></pre>"
-        result = _html_to_text(html)
+        result = _html_to_markdown(html)
         assert "read_raw_edf" in result
 
     def test_collapses_excessive_whitespace(self):
         """Should collapse more than 2 consecutive blank lines."""
-        from src.knowledge.discourse_sync import _html_to_text
+        from src.knowledge.discourse_sync import _html_to_markdown
 
         html = "<p>Line 1</p>\n\n\n\n\n\n<p>Line 2</p>"
-        result = _html_to_text(html)
+        result = _html_to_markdown(html)
         # Should not have more than 2 consecutive blank lines
         assert "\n\n\n\n" not in result
 

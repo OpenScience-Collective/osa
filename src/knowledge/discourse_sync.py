@@ -34,8 +34,8 @@ console = Console()
 DEFAULT_REQUEST_DELAY = 1.0
 
 
-def _html_to_text(html: str) -> str:
-    """Convert Discourse post HTML to plain markdown text."""
+def _html_to_markdown(html: str) -> str:
+    """Convert Discourse post HTML to markdown."""
     if not html:
         return ""
     md = markdownify.markdownify(html, heading_style="ATX", strip=["script", "style"])
@@ -108,19 +108,19 @@ def _get_accepted_answer(posts: list[dict]) -> str | None:
     """Extract the accepted answer from a list of posts.
 
     Discourse marks accepted answers with 'accepted_answer' field.
-    Falls back to the highest-scoring reply if no accepted answer.
+    Falls back to the most-liked reply if no accepted answer.
     """
     # Look for the accepted answer
     for post in posts:
         if post.get("accepted_answer"):
-            return _html_to_text(post.get("cooked", ""))
+            return _html_to_markdown(post.get("cooked", ""))
 
     # Fall back to the reply with the most likes (skip OP which is post_number=1)
     replies = [p for p in posts if p.get("post_number", 0) > 1]
     if replies:
         best = max(replies, key=lambda p: p.get("like_count", 0))
         if best.get("like_count", 0) > 0:
-            return _html_to_text(best.get("cooked", ""))
+            return _html_to_markdown(best.get("cooked", ""))
 
     return None
 
@@ -208,7 +208,7 @@ def sync_discourse_topics(
 
                     posts = data.get("post_stream", {}).get("posts", [])
                     first_post_html = posts[0].get("cooked", "") if posts else ""
-                    first_post = _html_to_text(first_post_html)
+                    first_post = _html_to_markdown(first_post_html)
                     accepted_answer = _get_accepted_answer(posts) if len(posts) > 1 else None
 
                     upsert_discourse_topic(

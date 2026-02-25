@@ -615,8 +615,8 @@ def get_last_sync(source_type: str, source_name: str, project: str = "hed") -> s
     """Get last sync time for a source.
 
     Args:
-        source_type: 'github', 'papers', or 'beps'
-        source_name: Repository name, paper source name, or 'bids-website'
+        source_type: 'github', 'papers', 'beps', or 'discourse'
+        source_name: Repository name, paper source name, or base URL
         project: Assistant/project name. Defaults to 'hed'.
 
     Returns:
@@ -636,8 +636,8 @@ def update_sync_metadata(
     """Update sync metadata for a source.
 
     Args:
-        source_type: 'github', 'papers', or 'beps'
-        source_name: Repository name, paper source name, or 'bids-website'
+        source_type: 'github', 'papers', 'beps', or 'discourse'
+        source_name: Repository name, paper source name, or base URL
         items_synced: Number of items synced in this run
         project: Assistant/project name. Defaults to 'hed'.
     """
