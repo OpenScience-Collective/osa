@@ -13,6 +13,8 @@ from src.knowledge.db import get_connection, init_db
 from src.knowledge.papers_sync import (
     _reconstruct_abstract,
     configure_openalex,
+    sync_all_papers,
+    sync_citing_papers,
     sync_openalex_papers,
 )
 
@@ -162,3 +164,15 @@ class TestPapersSync:
 
             # Should not exceed max_results
             assert count <= 2
+
+
+class TestPapersSyncTypeGuard:
+    """Test that sync functions reject bare strings to prevent character iteration."""
+
+    def test_sync_all_papers_rejects_bare_string(self) -> None:
+        with pytest.raises(TypeError, match="must be a list of strings"):
+            sync_all_papers(queries="MNE-Python")  # type: ignore[arg-type]
+
+    def test_sync_citing_papers_rejects_bare_string(self) -> None:
+        with pytest.raises(TypeError, match="must be a list of strings"):
+            sync_citing_papers(dois="10.3389/fnins.2013.00267")  # type: ignore[arg-type]
