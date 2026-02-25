@@ -666,6 +666,14 @@ class WidgetConfig(BaseModel):
     suggested_questions: list[str] = Field(default_factory=list)
     """Clickable suggestion buttons shown below the initial message."""
 
+    logo_url: str | None = Field(default=None, max_length=500)
+    """URL to a custom logo/icon image for the widget header avatar.
+
+    Accepts any valid image URL (PNG, SVG, etc.). When not set, the API
+    auto-detects a logo.png or logo.svg file in the community's folder.
+    Falls back to a default brain icon in the widget if no logo is found.
+    """
+
     @field_validator("title", "initial_message", "placeholder", mode="before")
     @classmethod
     def normalize_empty_strings(cls, v: str | None) -> str | None:
@@ -685,13 +693,20 @@ class WidgetConfig(BaseModel):
             raise ValueError(msg)
         return cleaned
 
-    def resolve(self, community_name: str) -> dict[str, Any]:
-        """Return widget config with defaults applied."""
+    def resolve(self, community_name: str, logo_url: str | None = None) -> dict[str, Any]:
+        """Return widget config with defaults applied.
+
+        Args:
+            community_name: Display name used as fallback for title.
+            logo_url: Override logo URL (e.g. from convention-based detection).
+                      The explicit ``self.logo_url`` field takes precedence.
+        """
         return {
             "title": self.title or community_name or "Assistant",
             "initial_message": self.initial_message,
             "placeholder": self.placeholder or "Ask a question...",
             "suggested_questions": self.suggested_questions,
+            "logo_url": self.logo_url or logo_url,
         }
 
 
