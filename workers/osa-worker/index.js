@@ -160,11 +160,13 @@ function isAllowedOrigin(origin) {
     'https://bids-specification.readthedocs.io',
     'https://bids.neuroimaging.io',
     'https://eeglab.org',
+    'https://fieldtriptoolbox.org',
     'https://hedtags.org',
     'https://hedtools.org',
     'https://nemar.org',
     'https://sccn.github.io',
     'https://www.eeglab.org',
+    'https://www.fieldtriptoolbox.org',
     'https://www.hedtags.org',
     'https://www.hedtools.org',
     'https://www.nemar.org'
@@ -175,6 +177,7 @@ function isAllowedOrigin(origin) {
 
   // Check subdomains
   if (origin.startsWith('https://') && origin.endsWith('.eeglab.org')) return true;
+  if (origin.startsWith('https://') && origin.endsWith('.fieldtriptoolbox.org')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.github.io')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.hedtags.org')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.hedtools.org')) return true;
