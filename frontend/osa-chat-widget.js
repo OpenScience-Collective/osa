@@ -257,6 +257,13 @@
       height: 20px;
     }
 
+    .osa-chat-avatar img {
+      width: 28px;
+      height: 28px;
+      object-fit: contain;
+      border-radius: 50%;
+    }
+
     .osa-chat-title-area {
       flex: 1;
       min-width: 0;
@@ -1506,6 +1513,15 @@
           CONFIG.themeColor = w.theme_color;
           changed = true;
         }
+        if (w.logo_url != null && !_userSetKeys.has('logo')) {
+          // Resolve path-only logo URLs (starting with '/') against the API endpoint
+          if (w.logo_url.startsWith('/')) {
+            CONFIG.logo = CONFIG.apiEndpoint + w.logo_url;
+          } else {
+            CONFIG.logo = w.logo_url;
+          }
+          changed = true;
+        }
 
         if (changed) {
           applyWidgetConfig();
@@ -1569,6 +1585,22 @@
 
     // Update suggested questions
     renderSuggestions(container);
+
+    // Update avatar with community logo if available
+    const avatar = container.querySelector('.osa-chat-avatar');
+    if (avatar && CONFIG.logo) {
+      const fallback = avatar.innerHTML;
+      const img = document.createElement('img');
+      img.src = CONFIG.logo;
+      img.alt = CONFIG.title;
+      img.onerror = function() {
+        console.warn('[OSA] Failed to load community logo:', CONFIG.logo);
+        avatar.innerHTML = fallback;
+        img.onerror = null;
+      };
+      avatar.innerHTML = '';
+      avatar.appendChild(img);
+    }
 
     // Update loading label if currently loading
     const loadingLabel = container.querySelector('.osa-loading-label');

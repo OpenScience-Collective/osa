@@ -15,10 +15,11 @@ import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from pydantic import BaseModel, Field, field_validator
@@ -173,6 +174,9 @@ class WidgetConfigResponse(BaseModel):
     placeholder: str = Field(..., description="Input placeholder text")
     suggested_questions: list[str] = Field(
         default_factory=list, description="Clickable suggestion buttons"
+    )
+    logo_url: str | None = Field(
+        default=None, description="URL for community logo/icon in widget header"
     )
 
 
@@ -840,6 +844,54 @@ def _set_metrics_on_request(
 
 
 # ---------------------------------------------------------------------------
+# Logo Helpers
+# ---------------------------------------------------------------------------
+
+_ASSISTANTS_DIR = Path(__file__).parent.parent.parent / "assistants"
+
+_LOGO_MEDIA_TYPES: dict[str, str] = {
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+}
+
+
+def find_logo_file(community_id: str) -> Path | None:
+    """Find a convention-based logo file in the community's folder.
+
+    Looks for files named ``logo.*`` with a supported image extension
+    (SVG, PNG, JPG, JPEG, WEBP) in ``src/assistants/{community_id}/``.
+    Returns the first match or ``None``.  Priority follows the key
+    order of ``_LOGO_MEDIA_TYPES``: SVG first, then PNG, then others.
+    """
+    community_dir = _ASSISTANTS_DIR / community_id
+    try:
+        if not community_dir.is_dir():
+            return None
+        for ext in _LOGO_MEDIA_TYPES:
+            candidate = community_dir / f"logo{ext}"
+            if candidate.is_file():
+                return candidate
+    except OSError:
+        logger.warning(
+            "Filesystem error checking logo for community %s at %s",
+            community_id,
+            community_dir,
+            exc_info=True,
+        )
+    return None
+
+
+def convention_logo_url(community_id: str, widget: WidgetConfig) -> str | None:
+    """Return convention-based logo URL if no explicit logo is configured."""
+    if not widget.logo_url and find_logo_file(community_id):
+        return f"/{community_id}/logo"
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Router Factory
 # ---------------------------------------------------------------------------
 
@@ -1123,6 +1175,9 @@ def create_community_router(community_id: str) -> APIRouter:
             info.community_config.widget if info.community_config else None
         ) or WidgetConfig()
 
+        # Convention-based logo: if no explicit logo_url, check for logo file
+        conv_logo = convention_logo_url(community_id, widget_cfg)
+
         # Compute lightweight health status for public display
         health_status = "error"
         if info.community_config:
@@ -1137,8 +1192,39 @@ def create_community_router(community_id: str) -> APIRouter:
             description=info.description,
             default_model=default_model,
             default_model_provider=default_provider,
-            widget=WidgetConfigResponse(**widget_cfg.resolve(info.name)),
+            widget=WidgetConfigResponse(**widget_cfg.resolve(info.name, logo_url=conv_logo)),
             status=health_status,
+        )
+
+    @router.get("/logo")
+    async def get_community_logo() -> FileResponse:
+        """Serve the community's logo file.
+
+        Looks for a ``logo.*`` file (SVG, PNG, JPG, WEBP) in the
+        community's assistants folder.  Returns 404 if none exists.
+        """
+        logo_path = find_logo_file(community_id)
+        if logo_path is None:
+            raise HTTPException(status_code=404, detail="No logo found for this community")
+
+        # Guard against file disappearing between detection and serving
+        try:
+            logo_path.stat()
+        except OSError:
+            logger.warning("Logo file disappeared or became unreadable: %s", logo_path)
+            raise HTTPException(status_code=404, detail="No logo found for this community")
+
+        media_type = _LOGO_MEDIA_TYPES.get(logo_path.suffix.lower(), "application/octet-stream")
+        headers: dict[str, str] = {"Cache-Control": "public, max-age=86400"}
+        # Prevent script execution in SVGs opened via direct navigation
+        if logo_path.suffix.lower() == ".svg":
+            headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'"
+
+        return FileResponse(
+            logo_path,
+            media_type=media_type,
+            filename=f"{community_id}-logo{logo_path.suffix}",
+            headers=headers,
         )
 
     # -----------------------------------------------------------------------
