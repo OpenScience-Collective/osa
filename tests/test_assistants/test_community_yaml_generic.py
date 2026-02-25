@@ -249,6 +249,20 @@ class TestCommunityYAMLConfiguration:
                 f"{community_id} missing tool: search_{community_id}_papers"
             )
 
+        # Docstring tool when docstrings config exists
+        has_docstrings = getattr(config, "docstrings", None)
+        if has_docstrings and has_docstrings.repos:
+            assert f"search_{community_id}_code_docs" in tool_names, (
+                f"{community_id} missing tool: search_{community_id}_code_docs"
+            )
+
+        # FAQ tool when faq_generation and mailman config exists
+        has_faq = getattr(config, "faq_generation", None)
+        if has_faq is not None and config.mailman:
+            assert f"search_{community_id}_faq" in tool_names, (
+                f"{community_id} missing tool: search_{community_id}_faq"
+            )
+
     def test_tools_have_descriptions(self, community_id):
         """All auto-generated tools should have descriptions."""
         from src.assistants import registry

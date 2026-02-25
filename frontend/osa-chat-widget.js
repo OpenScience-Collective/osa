@@ -1509,6 +1509,10 @@
           CONFIG.suggestedQuestions = w.suggested_questions;
           changed = true;
         }
+        if (w.theme_color != null && !_userSetKeys.has('themeColor')) {
+          CONFIG.themeColor = w.theme_color;
+          changed = true;
+        }
         if (w.logo_url != null && !_userSetKeys.has('logo')) {
           // Resolve path-only logo URLs (starting with '/') against the API endpoint
           if (w.logo_url.startsWith('/')) {
@@ -1538,6 +1542,20 @@
   function applyWidgetConfig() {
     const container = document.querySelector('.osa-chat-widget');
     if (!container) return;
+
+    // Apply theme color if configured (must be valid #RRGGBB hex)
+    if (CONFIG.themeColor && /^#[0-9a-fA-F]{6}$/.test(CONFIG.themeColor)) {
+      container.style.setProperty('--osa-primary', CONFIG.themeColor);
+      // Derive a darker shade for hover states
+      const r = parseInt(CONFIG.themeColor.slice(1, 3), 16);
+      const g = parseInt(CONFIG.themeColor.slice(3, 5), 16);
+      const b = parseInt(CONFIG.themeColor.slice(5, 7), 16);
+      const darker = '#' +
+        Math.max(0, r - 25).toString(16).padStart(2, '0') +
+        Math.max(0, g - 25).toString(16).padStart(2, '0') +
+        Math.max(0, b - 25).toString(16).padStart(2, '0');
+      container.style.setProperty('--osa-primary-dark', darker);
+    }
 
     // Update header title
     const titleEl = container.querySelector('.osa-chat-title');

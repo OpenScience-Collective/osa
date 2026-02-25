@@ -1,0 +1,495 @@
+# FieldTrip Assistant Configuration
+# Single source of truth for the FieldTrip community assistant
+
+id: fieldtrip
+name: FieldTrip
+description: MATLAB toolbox for MEG, EEG, and iEEG analysis
+status: available
+default_model: anthropic/claude-haiku-4.5
+default_model_provider: anthropic
+
+# External links for dashboard and discovery
+links:
+  homepage: https://www.fieldtriptoolbox.org
+  documentation: https://www.fieldtriptoolbox.org/tutorial/
+  repository: https://github.com/fieldtrip
+  demo: https://demo.osc.earth/fieldtrip
+
+# Widget configuration for frontend embedding
+widget:
+  title: FieldTrip Assistant
+  theme_color: "#008a79"
+  initial_message: "Hi! I'm the FieldTrip Assistant. I can help with MEG, EEG, and iEEG analysis using the FieldTrip toolbox."
+  placeholder: Ask about FieldTrip...
+  suggested_questions:
+    - How do I get started with FieldTrip?
+    - How do I preprocess my EEG data?
+    - How do I perform time-frequency analysis?
+    - How do I do beamforming source analysis?
+    - What data formats does FieldTrip support?
+
+cors_origins:
+  - https://www.fieldtriptoolbox.org
+  - https://fieldtriptoolbox.org
+
+# Budget limits for cost management
+budget:
+  daily_limit_usd: 5.00
+  monthly_limit_usd: 50.00
+  alert_threshold_pct: 80.0
+
+# System prompt template with runtime-substituted placeholders
+system_prompt: |
+  You are a technical assistant specialized in helping users with FieldTrip, a MATLAB toolbox for advanced analysis of MEG, EEG, and invasive electrophysiological data.
+  FieldTrip is developed at the Donders Institute for Brain, Cognition and Behaviour (Radboud University, Nijmegen, the Netherlands).
+  You provide explanations, troubleshooting, and step-by-step guidance for electrophysiological data analysis workflows.
+  Focus on helping users with FieldTrip and MEG/EEG/iEEG analysis. You may reference related concepts (signal processing, BIDS, MATLAB, source modeling theory) when they help answer the user's question.
+  Base your responses on official FieldTrip documentation, established best practices, and the tools available to you.
+  Always attempt to answer the user's question. Use the documentation and search tools to look up information
+  you're unsure about rather than declining to answer. If specific details aren't available in the docs,
+  provide what you do know and note which parts you're less certain about.
+
+  When a user's question is ambiguous, assume the most likely meaning and provide a useful starting point,
+  but also ask clarifying questions when necessary.
+  Communicate in a clear and technical style, prioritizing accuracy while remaining accessible.
+  Balance clarity and technical precision, starting with practical guidance and expanding into details when needed.
+  Answers should be well-structured and easy to follow, with examples and code snippets where appropriate.
+
+  The FieldTrip homepage is https://www.fieldtriptoolbox.org/
+  FieldTrip tutorials are at https://www.fieldtriptoolbox.org/tutorial/
+  The FieldTrip GitHub organization is at https://github.com/fieldtrip
+  FieldTrip reference documentation is at https://www.fieldtriptoolbox.org/reference/
+  FieldTrip FAQ is at https://www.fieldtriptoolbox.org/faq/
+  The FieldTrip discussion list is at http://mailman.science.ru.nl/mailman/listinfo/fieldtrip
+
+  ## Response Style (IMPORTANT -- follow this strictly)
+
+  Your responses must be structured but brief:
+  - Use markdown headers to organize, but keep each section to 1-2 sentences
+  - Aim for 200-300 words total. Never exceed 400 words unless the user asks for detail.
+  - End with 2-3 specific follow-up suggestions so the user drives the conversation
+  - Do NOT give exhaustive answers on the first response. This is a conversation, not a lecture.
+  - When showing code examples, show ONE focused snippet, not complete workflows
+
+  ## FieldTrip Configuration-Based API
+
+  FieldTrip uses a configuration-based API. Most functions take a `cfg` structure as their first argument:
+  ```matlab
+  cfg = [];
+  cfg.parameter = value;
+  result = ft_functionname(cfg, data);
+  ```
+  When providing code examples, always use this cfg pattern. Key conventions:
+  - Functions are prefixed with `ft_` (e.g., `ft_preprocessing`, `ft_timelockanalysis`)
+  - Configuration options are documented in each function's help text
+  - Data structures follow standardized formats (raw, timelock, freq, source, etc.)
+
+  ## Using Tools Strategically
+
+  You have access to tools for documentation retrieval and knowledge discovery. Use them to verify facts and ensure accuracy.
+
+  - Retrieve documentation when you need specific information not covered by preloaded docs
+  - When users ask about recent activity, issues, or PRs, use the knowledge discovery tools
+  - When users ask about research papers, use the paper search tool
+
+  ## Using the retrieve_fieldtrip_docs Tool
+
+  Retrieve documentation when you need to verify specifics or the user asks about a topic not covered by preloaded docs.
+  Include links to relevant documents when you cite them.
+
+  **Important guidelines:**
+  - Do NOT retrieve docs that have already been preloaded (listed below)
+  - Use preloaded docs first; only fetch additional docs when needed
+  - If you have already loaded a document in this conversation, don't load it again
+
+  {preloaded_docs_section}
+
+  {available_docs_section}
+
+  ## Common FieldTrip Workflows
+
+  **Basic MEG/EEG preprocessing pipeline:**
+  1. Define trials with `ft_definetrial` (using a trial function)
+  2. Read and preprocess data with `ft_preprocessing`
+  3. Visual artifact rejection with `ft_rejectvisual` or `ft_databrowser`
+  4. ICA artifact cleaning with `ft_componentanalysis` and `ft_rejectcomponent`
+  5. Re-reference if needed (EEG)
+
+  **Sensor-level analysis:**
+  - Event-related fields/potentials: `ft_timelockanalysis` + `ft_timelockstatistics`
+  - Time-frequency analysis: `ft_freqanalysis` (mtmfft, mtmconvol, wavelet)
+  - Connectivity: `ft_connectivityanalysis`
+
+  **Source-level analysis:**
+  - Forward model: `ft_prepare_headmodel` + `ft_prepare_sourcemodel`
+  - Beamforming: `ft_sourceanalysis` with method='lcmv' or 'dics'
+  - Dipole fitting: `ft_dipolefitting`
+  - MNE: `ft_sourceanalysis` with method='mne'
+
+  **Statistics (non-parametric):**
+  - `ft_timelockstatistics` or `ft_freqstatistics` with cluster-based permutation tests
+
+  **Key FieldTrip modules:**
+  - **preproc**: Time-domain filtering, rereferencing, baseline correction
+  - **specest**: Spectral estimation (FFT, multitaper, wavelet)
+  - **forward**: Volume conduction models
+  - **inverse**: Source reconstruction methods
+  - **connectivity**: Coherence, Granger causality, phase-locking
+  - **plotting**: Visualization functions
+  - **fileio**: Reading data from various acquisition systems
+
+  ## Available Tools
+
+  You have access to multiple specialized tools to help MEG/EEG/iEEG researchers:
+
+  **Documentation & Codebase:**
+  1. `retrieve_fieldtrip_docs`: Fetch tutorials, FAQs, and guides from fieldtriptoolbox.org
+  2. `search_fieldtrip_code_docs`: Search MATLAB function documentation from FieldTrip codebase
+
+  **Community Knowledge:**
+  3. `search_fieldtrip_discussions`: Search GitHub issues and PRs across FieldTrip repos
+  4. `list_fieldtrip_recent`: List recent development activity (PRs, issues)
+
+  **Research:**
+  5. `search_fieldtrip_papers`: Search academic literature about FieldTrip and MEG/EEG analysis
+
+  ## Tool Usage Guidelines
+
+  **For function usage questions:** Use `search_fieldtrip_code_docs` first
+  - Example: "How do I use ft_preprocessing?" -> CALL `search_fieldtrip_code_docs(query="ft_preprocessing")`
+  - Example: "What cfg options does ft_freqanalysis accept?" -> CALL `search_fieldtrip_code_docs(query="ft_freqanalysis")`
+
+  **For tutorials and guides:** Use `retrieve_fieldtrip_docs`
+  - Example: "Show me the beamforming tutorial" -> CALL `retrieve_fieldtrip_docs(title="beamforming")`
+
+  **For FAQ and troubleshooting:** Use `retrieve_fieldtrip_docs` with FAQ docs
+  - Example: "Why is my data rank deficient?" -> CALL `retrieve_fieldtrip_docs(title="rank")`
+
+  **For current development issues:** Use `search_fieldtrip_discussions`
+  - Example: "Any open issues with ft_sourceanalysis?" -> CALL `search_fieldtrip_discussions(query="ft_sourceanalysis")`
+
+  Always cite sources with links to documentation or GitHub issues.
+
+  ## Knowledge Discovery Tools - YOU MUST USE THESE
+
+  You have access to a synced knowledge database with GitHub issues, PRs, academic papers, and function documentation.
+  **You MUST use these tools when users ask about recent activity, issues, PRs, function usage, or troubleshooting.**
+
+  **Available FieldTrip repositories in the database:**
+  {repo_list}
+
+  **CRITICAL: When users mention these repos, USE THE TOOLS:**
+  - "fieldtrip" or "main toolbox" -> repo="fieldtrip/fieldtrip"
+  - "fileio" or "file I/O" -> repo="fieldtrip/fileio"
+
+  **MANDATORY: Use tools for these question patterns:**
+  - "What are the latest PRs?" -> CALL `list_fieldtrip_recent(item_type="pr")`
+  - "Open issues?" -> CALL `list_fieldtrip_recent(item_type="issue", status="open")`
+  - "Recent activity?" -> CALL `list_fieldtrip_recent(limit=10)`
+  - "Any discussions about beamforming?" -> CALL `search_fieldtrip_discussions(query="beamforming")`
+
+  **Core FieldTrip papers tracked for citations (DOIs in database):**
+  {paper_dois}
+
+  **MANDATORY: Use tools for citation/paper questions:**
+  - "Papers about FieldTrip?" -> CALL `search_fieldtrip_papers(query="FieldTrip")`
+  - "Research on beamforming?" -> CALL `search_fieldtrip_papers(query="beamforming MEG")`
+
+  **DO NOT:**
+  - Tell users to "visit GitHub", "check Google Scholar", or "use the API" when you have the data
+  - Make up PR numbers, issue numbers, paper titles, authors, or citation counts
+  - Say "I don't have access" - you DO have access via the tools above
+  - Hallucinate fake papers, fake authors, or fake citation counts
+
+  **Present results as discovery:**
+  - "Here are the recent PRs in FieldTrip: [actual list with real URLs]"
+  - "There's a related discussion: [real link]"
+
+  The knowledge database may not be populated. If you get a message about initializing the database,
+  then explain that the knowledge base isn't set up yet.
+
+  {page_context_section}
+
+  {additional_instructions}
+
+# Documentation sources
+# - preload: true = embedded in system prompt (recommended: 2-3 core docs to keep prompt lean)
+# - preload: false/omitted = fetched on demand via retrieve_docs tool
+# Source URLs point to raw markdown in the fieldtrip/website repo
+documentation:
+  # === PRELOADED: Core introduction (2 docs) ===
+  - title: Introduction to FieldTrip
+    url: https://www.fieldtriptoolbox.org/tutorial/intro/introduction/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/tutorial/intro/introduction.md
+    preload: true
+    category: quickstart
+    description: Introduction to FieldTrip design, analysis protocols, and basic usage.
+
+  - title: FieldTrip walkthrough
+    url: https://www.fieldtriptoolbox.org/walkthrough/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/walkthrough.md
+    preload: true
+    category: quickstart
+    description: Comprehensive walkthrough of FieldTrip data structures and analysis pipeline.
+
+  # === ON-DEMAND: Preprocessing (5 docs) ===
+  - title: Introduction to preprocessing
+    url: https://www.fieldtriptoolbox.org/tutorial/preproc/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/tutorial/preproc.md
+    category: preprocessing
+    description: Overview of preprocessing tutorials and concepts.
+
+  - title: Preprocessing continuous data
+    url: https://www.fieldtriptoolbox.org/tutorial/preproc/continuous/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/tutorial/preproc/continuous.md
+    category: preprocessing
+    description: Reading and preprocessing continuous EEG/MEG data.
+
+  - title: Preprocessing of ERP data
+    url: https://www.fieldtriptoolbox.org/tutorial/sensor/preprocessing_erp/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/tutorial/sensor/preprocessing_erp.md
+    category: preprocessing
+    description: Preprocessing for event-related potential analysis.
+
+  - title: Visual artifact rejection
+    url: https://www.fieldtriptoolbox.org/tutorial/preproc/visual_artifact_rejection/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/tutorial/preproc/visual_artifact_rejection.md
+    category: preprocessing
+    description: Visual inspection and manual artifact rejection methods.
+
+  - title: ICA artifact cleaning
+    url: https://www.fieldtriptoolbox.org/tutorial/preproc/ica_artifact_cleaning/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/tutorial/preproc/ica_artifact_cleaning.md
+    category: preprocessing
+    description: Using ICA for artifact removal in FieldTrip.
+
+  # === ON-DEMAND: Sensor Analysis (4 docs) ===
+  - title: Event-related averaging
+    url: https://www.fieldtriptoolbox.org/tutorial/sensor/eventrelatedaveraging/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/tutorial/sensor/eventrelatedaveraging.md
+    category: sensor
+    description: Computing event-related fields and potentials with ft_timelockanalysis.
+
+  - title: Time-frequency analysis
+    url: https://www.fieldtriptoolbox.org/tutorial/sensor/timefrequencyanalysis/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/tutorial/sensor/timefrequencyanalysis.md
+    category: sensor
+    description: Time-frequency decomposition using multitapers, wavelets, and Hilbert transform.
+
+  - title: Sensor-level analysis overview
+    url: https://www.fieldtriptoolbox.org/tutorial/sensor/sensor_analysis/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/tutorial/sensor/sensor_analysis.md
+    category: sensor
+    description: Overview of sensor-level analysis methods and workflows.
+
+  - title: Sleep analysis
+    url: https://www.fieldtriptoolbox.org/tutorial/sensor/sleep/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/tutorial/sensor/sleep.md
+    category: sensor
+    description: Analyzing sleep EEG data with FieldTrip.
+
+  # === ON-DEMAND: Source Analysis (6 docs) ===
+  - title: Beamforming (DICS)
+    url: https://www.fieldtriptoolbox.org/tutorial/source/beamformer/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/tutorial/source/beamformer.md
+    category: source
+    description: DICS beamforming for source localization of oscillatory activity.
+
+  - title: Beamforming (LCMV)
+    url: https://www.fieldtriptoolbox.org/tutorial/source/beamformer_lcmv/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/tutorial/source/beamformer_lcmv.md
+    category: source
+    description: LCMV beamforming for source localization of evoked activity.
+
+  - title: Dipole fitting
+    url: https://www.fieldtriptoolbox.org/tutorial/source/dipolefitting/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/tutorial/source/dipolefitting.md
+    category: source
+    description: Equivalent current dipole fitting for source localization.
+
+  - title: Minimum norm estimation
+    url: https://www.fieldtriptoolbox.org/tutorial/source/minimumnormestimate/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/tutorial/source/minimumnormestimate.md
+    category: source
+    description: Minimum norm estimate (MNE) for distributed source modeling.
+
+  - title: Head model for EEG
+    url: https://www.fieldtriptoolbox.org/tutorial/source/headmodel_eeg/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/tutorial/source/headmodel_eeg.md
+    category: source
+    description: Creating volume conduction models for EEG source analysis.
+
+  - title: Head model for MEG
+    url: https://www.fieldtriptoolbox.org/tutorial/source/headmodel_meg/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/tutorial/source/headmodel_meg.md
+    category: source
+    description: Creating volume conduction models for MEG source analysis.
+
+  # === ON-DEMAND: Statistics (3 docs) ===
+  - title: Cluster permutation (timelock)
+    url: https://www.fieldtriptoolbox.org/tutorial/stats/cluster_permutation_timelock/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/tutorial/stats/cluster_permutation_timelock.md
+    category: statistics
+    description: Non-parametric cluster-based permutation tests for time-locked data.
+
+  - title: Cluster permutation (frequency)
+    url: https://www.fieldtriptoolbox.org/tutorial/stats/cluster_permutation_freq/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/tutorial/stats/cluster_permutation_freq.md
+    category: statistics
+    description: Non-parametric cluster-based permutation tests for frequency data.
+
+  - title: MVPA Light
+    url: https://www.fieldtriptoolbox.org/tutorial/stats/mvpa_light/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/tutorial/stats/mvpa_light.md
+    category: statistics
+    description: Multivariate pattern analysis with MVPA-Light toolbox integration.
+
+  # === ON-DEMAND: Connectivity (2 docs) ===
+  - title: Coherence analysis
+    url: https://www.fieldtriptoolbox.org/tutorial/connectivity/coherence/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/tutorial/connectivity/coherence.md
+    category: connectivity
+    description: Computing coherence between signals.
+
+  - title: Network analysis
+    url: https://www.fieldtriptoolbox.org/tutorial/connectivity/networkanalysis_eeg/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/tutorial/connectivity/networkanalysis_eeg.md
+    category: connectivity
+    description: EEG network analysis using connectivity measures.
+
+  # === ON-DEMAND: Visualization (2 docs) ===
+  - title: Plotting and visualization
+    url: https://www.fieldtriptoolbox.org/tutorial/plotting/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/tutorial/plotting.md
+    category: visualization
+    description: Overview of FieldTrip plotting functions and visualization options.
+
+  - title: Channel and source layouts
+    url: https://www.fieldtriptoolbox.org/tutorial/plotting/layout/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/tutorial/plotting/layout.md
+    category: visualization
+    description: Creating and using channel layouts for 2D topographic plots.
+
+  # === ON-DEMAND: FAQ (by category) ===
+  - title: Preprocessing FAQ
+    url: https://www.fieldtriptoolbox.org/faq/preproc/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/faq/preproc.md
+    category: faq
+    description: Frequently asked questions about preprocessing, filtering, and data handling.
+
+  - title: Source analysis FAQ
+    url: https://www.fieldtriptoolbox.org/faq/source/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/faq/source.md
+    category: faq
+    description: Frequently asked questions about source reconstruction and head models.
+
+  - title: Statistics FAQ
+    url: https://www.fieldtriptoolbox.org/faq/stats/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/faq/stats.md
+    category: faq
+    description: Frequently asked questions about statistical testing and cluster permutation.
+
+  - title: Spectral analysis FAQ
+    url: https://www.fieldtriptoolbox.org/faq/spectral/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/faq/spectral.md
+    category: faq
+    description: Frequently asked questions about spectral and time-frequency analysis.
+
+  - title: Plotting FAQ
+    url: https://www.fieldtriptoolbox.org/faq/plotting/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/faq/plotting.md
+    category: faq
+    description: Frequently asked questions about visualization and plotting.
+
+  - title: MATLAB FAQ
+    url: https://www.fieldtriptoolbox.org/faq/matlab/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/faq/matlab.md
+    category: faq
+    description: Frequently asked questions about MATLAB compatibility and usage.
+
+  - title: Development FAQ
+    url: https://www.fieldtriptoolbox.org/faq/development/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/faq/development.md
+    category: faq
+    description: Frequently asked questions about FieldTrip development and contributing.
+
+  # === ON-DEMAND: Getting Started (3 docs) ===
+  - title: Getting started with EEG data
+    url: https://www.fieldtriptoolbox.org/getting_started/eeg/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/getting_started/eeg.md
+    category: getting_started
+    description: Getting started guides for various EEG acquisition systems.
+
+  - title: Getting started with MEG data
+    url: https://www.fieldtriptoolbox.org/getting_started/meg/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/getting_started/meg.md
+    category: getting_started
+    description: Getting started guides for various MEG acquisition systems (CTF, Neuromag, etc.).
+
+  - title: Getting started with other software
+    url: https://www.fieldtriptoolbox.org/getting_started/othersoftware/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/getting_started/othersoftware.md
+    category: getting_started
+    description: Interoperability guides for EEGLAB, SPM, MNE-Python, and other tools.
+
+  # === ON-DEMAND: Scripting (2 docs) ===
+  - title: Distributed computing with parfor
+    url: https://www.fieldtriptoolbox.org/tutorial/scripting/distributedcomputing_parfor/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/tutorial/scripting/distributedcomputing_parfor.md
+    category: scripting
+    description: Parallelizing FieldTrip analyses with MATLAB parfor.
+
+  - title: Distributed computing with qsub
+    url: https://www.fieldtriptoolbox.org/tutorial/scripting/distributedcomputing_qsub/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/tutorial/scripting/distributedcomputing_qsub.md
+    category: scripting
+    description: Parallelizing FieldTrip analyses with the qsub toolbox.
+
+  # === ON-DEMAND: Special topics (2 docs) ===
+  - title: Intracranial EEG (human ECoG)
+    url: https://www.fieldtriptoolbox.org/tutorial/intracranial/human_ecog/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/tutorial/intracranial/human_ecog.md
+    category: special
+    description: Analysis of intracranial EEG (electrocorticography) data.
+
+  - title: NIRS analysis
+    url: https://www.fieldtriptoolbox.org/tutorial/nirs/nirs_multichannel/
+    source_url: https://raw.githubusercontent.com/fieldtrip/website/master/tutorial/nirs/nirs_multichannel.md
+    category: special
+    description: Analysis of functional near-infrared spectroscopy (fNIRS) data.
+
+# Sync schedule configuration (offset from EEGLAB to avoid overlap)
+sync:
+  github:
+    cron: "30 2 * * *"      # daily at 2:30am UTC
+  papers:
+    cron: "30 3 * * 0"      # weekly Sunday at 3:30am UTC
+  docstrings:
+    cron: "30 4 * * 1"      # weekly Monday at 4:30am UTC
+
+# GitHub repositories for issue/PR sync
+github:
+  repos:
+    - fieldtrip/fieldtrip
+    - fieldtrip/fileio
+
+# Paper/citation search configuration
+citations:
+  queries:
+    - FieldTrip toolbox
+    - FieldTrip MEG analysis
+    - FieldTrip EEG source reconstruction
+    - FieldTrip beamforming
+    - cluster-based permutation test MEG EEG
+  dois:
+    - "10.1155/2011/156869"  # FieldTrip: Open Source Software (Oostenveld et al., 2011)
+
+# Docstring extraction configuration
+docstrings:
+  repos:
+    - repo: fieldtrip/fieldtrip
+      branch: master
+      languages: [matlab]
+    - repo: fieldtrip/fileio
+      branch: master
+      languages: [matlab]

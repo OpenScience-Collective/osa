@@ -666,6 +666,13 @@ class WidgetConfig(BaseModel):
     suggested_questions: list[str] = Field(default_factory=list)
     """Clickable suggestion buttons shown below the initial message."""
 
+    theme_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    """Primary theme color as a hex code (e.g., '#008a79').
+
+    Applied to the widget button, header, and accent elements.
+    Defaults to the platform blue (#2563eb) if not specified.
+    """
+
     logo_url: str | None = Field(default=None, max_length=500)
     """URL to a custom logo/icon image for the widget header avatar.
 
@@ -716,13 +723,16 @@ class WidgetConfig(BaseModel):
             logo_url: Fallback logo URL (e.g. from convention-based detection).
                       Only used when ``self.logo_url`` is not set.
         """
-        return {
+        result = {
             "title": self.title or community_name or "Assistant",
             "initial_message": self.initial_message,
             "placeholder": self.placeholder or "Ask a question...",
             "suggested_questions": self.suggested_questions,
             "logo_url": self.logo_url or logo_url,
         }
+        if self.theme_color:
+            result["theme_color"] = self.theme_color
+        return result
 
 
 class LinksConfig(BaseModel):

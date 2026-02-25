@@ -226,6 +226,9 @@ class CommunityAssistant(ToolAgent):
         has_github = config.github and config.github.repos
         has_citations = config.citations and (config.citations.queries or config.citations.dois)
 
+        has_docstrings = config.docstrings and config.docstrings.repos
+        has_faq = config.faq_generation is not None and bool(config.mailman)
+
         knowledge_tools = create_knowledge_tools(
             community_id=config.id,
             community_name=config.name,
@@ -233,6 +236,9 @@ class CommunityAssistant(ToolAgent):
             include_discussions=bool(has_github),
             include_recent=bool(has_github),
             include_papers=bool(has_citations),
+            include_docstrings=bool(has_docstrings),
+            include_faq=bool(has_faq),
+            faq_list_names=([m.list_name for m in config.mailman] if config.mailman else None),
         )
         tools.extend(knowledge_tools)
 

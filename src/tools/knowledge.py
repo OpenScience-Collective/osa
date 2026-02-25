@@ -17,6 +17,7 @@ NOT:
 """
 
 import logging
+import sqlite3
 
 from langchain_core.tools import BaseTool, StructuredTool
 
@@ -282,7 +283,20 @@ def create_search_docstrings_tool(
                 "Run 'osa sync init' and 'osa sync docstrings' to populate it."
             )
 
-        results = search_docstrings(query, project=community_id, limit=limit, language=language)
+        try:
+            results = search_docstrings(query, project=community_id, limit=limit, language=language)
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e):
+                logger.warning(
+                    "Docstrings table not initialized for %s",
+                    community_id,
+                    extra={"query": query, "community": community_id},
+                )
+                return (
+                    f"Knowledge database for {community_name} not initialized. "
+                    f"Run 'osa sync docstrings --community {community_id}' to populate it."
+                )
+            raise
 
         if not results:
             lang_str = f" ({language})" if language else ""
@@ -346,12 +360,26 @@ def create_search_faq_tool(
 
         from src.knowledge.search import search_faq_entries
 
-        results = search_faq_entries(
-            query=query,
-            project=community_id,
-            limit=limit,
-            category=category,
-        )
+        try:
+            results = search_faq_entries(
+                query=query,
+                project=community_id,
+                limit=limit,
+                category=category,
+            )
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e):
+                logger.warning(
+                    "FAQ table not initialized for %s",
+                    community_id,
+                    extra={"query": query, "community": community_id},
+                )
+                return (
+                    f"FAQ database for {community_name} not initialized. "
+                    f"Run 'osa sync mailman --community {community_id}' and "
+                    f"'osa sync faq --community {community_id}' to populate it."
+                )
+            raise
 
         if not results:
             cat_str = f" (category: {category})" if category else ""
