@@ -28,9 +28,10 @@ widget:
     - How do I perform source localization?
     - How do I do time-frequency analysis?
 
-cors_origins:
-  - https://mne.tools
-  - https://*.mne.tools
+# TODO: MNE maintainers to submit PR adding CORS origins for mne.tools
+# cors_origins:
+#   - https://mne.tools
+#   - https://*.mne.tools
 
 # Budget limits for cost management
 budget:

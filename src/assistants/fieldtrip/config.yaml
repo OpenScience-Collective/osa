@@ -28,9 +28,10 @@ widget:
     - How do I do beamforming source analysis?
     - What data formats does FieldTrip support?
 
-cors_origins:
-  - https://www.fieldtriptoolbox.org
-  - https://fieldtriptoolbox.org
+# TODO: FieldTrip maintainers to submit PR adding CORS origins for fieldtriptoolbox.org
+# cors_origins:
+#   - https://www.fieldtriptoolbox.org
+#   - https://fieldtriptoolbox.org
 
 # Budget limits for cost management
 budget:
