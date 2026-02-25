@@ -173,6 +173,91 @@ class TestDiscourseSearch:
             assert results == []
 
 
+class TestHtmlToText:
+    """Tests for _html_to_text helper."""
+
+    def test_simple_html(self):
+        """Should convert simple HTML to plain text."""
+        from src.knowledge.discourse_sync import _html_to_text
+
+        result = _html_to_text("<p>Hello <strong>world</strong></p>")
+        assert "Hello" in result
+        assert "world" in result
+
+    def test_empty_input(self):
+        """Should return empty string for empty input."""
+        from src.knowledge.discourse_sync import _html_to_text
+
+        assert _html_to_text("") == ""
+        assert _html_to_text(None) == ""
+
+    def test_code_blocks_preserved(self):
+        """Should preserve code block content."""
+        from src.knowledge.discourse_sync import _html_to_text
+
+        html = "<p>Use this:</p><pre><code>mne.io.read_raw_edf('file.edf')</code></pre>"
+        result = _html_to_text(html)
+        assert "read_raw_edf" in result
+
+    def test_collapses_excessive_whitespace(self):
+        """Should collapse more than 2 consecutive blank lines."""
+        from src.knowledge.discourse_sync import _html_to_text
+
+        html = "<p>Line 1</p>\n\n\n\n\n\n<p>Line 2</p>"
+        result = _html_to_text(html)
+        # Should not have more than 2 consecutive blank lines
+        assert "\n\n\n\n" not in result
+
+
+class TestGetAcceptedAnswer:
+    """Tests for _get_accepted_answer helper."""
+
+    def test_finds_accepted_answer(self):
+        """Should return the accepted answer post."""
+        from src.knowledge.discourse_sync import _get_accepted_answer
+
+        posts = [
+            {"post_number": 1, "cooked": "<p>Question</p>", "accepted_answer": False},
+            {"post_number": 2, "cooked": "<p>Wrong answer</p>", "like_count": 1},
+            {"post_number": 3, "cooked": "<p>Correct answer</p>", "accepted_answer": True},
+        ]
+        result = _get_accepted_answer(posts)
+        assert result is not None
+        assert "Correct answer" in result
+
+    def test_falls_back_to_most_liked(self):
+        """Should fall back to highest-liked reply when no accepted answer."""
+        from src.knowledge.discourse_sync import _get_accepted_answer
+
+        posts = [
+            {"post_number": 1, "cooked": "<p>Question</p>"},
+            {"post_number": 2, "cooked": "<p>Good answer</p>", "like_count": 5},
+            {"post_number": 3, "cooked": "<p>OK answer</p>", "like_count": 2},
+        ]
+        result = _get_accepted_answer(posts)
+        assert result is not None
+        assert "Good answer" in result
+
+    def test_returns_none_when_no_replies(self):
+        """Should return None when only OP exists."""
+        from src.knowledge.discourse_sync import _get_accepted_answer
+
+        posts = [{"post_number": 1, "cooked": "<p>Question</p>"}]
+        result = _get_accepted_answer(posts)
+        assert result is None
+
+    def test_returns_none_when_no_liked_replies(self):
+        """Should return None when replies have zero likes."""
+        from src.knowledge.discourse_sync import _get_accepted_answer
+
+        posts = [
+            {"post_number": 1, "cooked": "<p>Question</p>"},
+            {"post_number": 2, "cooked": "<p>Reply</p>", "like_count": 0},
+        ]
+        result = _get_accepted_answer(posts)
+        assert result is None
+
+
 class TestMNEConfig:
     """Tests for MNE community configuration."""
 
