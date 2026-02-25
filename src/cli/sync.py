@@ -532,6 +532,7 @@ def sync_all(
     grand_github_total = 0
     grand_paper_total = 0
     grand_bep_total = 0
+    grand_discourse_total = 0
 
     for comm_id in communities:
         console.print(f"\n[bold cyan]═══ Syncing {comm_id} ═══[/bold cyan]")
@@ -618,11 +619,12 @@ def sync_all(
                         incremental=not full,
                     )
                 console.print(f"[green]Discourse: {discourse_total} topics[/green]")
+                grand_discourse_total += discourse_total
             except Exception as e:
                 console.print(f"[red]Discourse sync failed: {e}[/red]")
                 logger.exception("Discourse sync failed for %s", comm_id)
 
-    total_items = grand_github_total + grand_paper_total + grand_bep_total
+    total_items = grand_github_total + grand_paper_total + grand_bep_total + grand_discourse_total
     community_word = "community" if len(communities) == 1 else "communities"
     console.print(
         f"\n[bold green]Sync complete: {total_items} total items "

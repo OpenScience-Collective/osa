@@ -19,7 +19,12 @@ import markdownify
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from src.knowledge.db import get_connection, update_sync_metadata, upsert_discourse_topic
+from src.knowledge.db import (
+    get_connection,
+    get_last_sync,
+    update_sync_metadata,
+    upsert_discourse_topic,
+)
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -152,8 +157,6 @@ def sync_discourse_topics(
     # Get last sync time for incremental sync
     last_sync = None
     if incremental:
-        from src.knowledge.db import get_last_sync
-
         last_sync = get_last_sync("discourse", base_url, project)
         if last_sync:
             console.print(f"Incremental sync since {last_sync}")
@@ -190,42 +193,50 @@ def sync_discourse_topics(
 
         with get_connection(project) as conn:
             for topic_id in topic_ids:
-                topic_url = f"{base_url}/t/{topic_id}.json"
-                data = _fetch_json(topic_url, delay=request_delay)
+                try:
+                    topic_url = f"{base_url}/t/{topic_id}.json"
+                    data = _fetch_json(topic_url, delay=request_delay)
 
-                if data is None:
+                    if data is None:
+                        failed += 1
+                        progress.update(task, advance=1)
+                        continue
+
+                    # Use .get() to avoid KeyError on malformed API responses
+                    resolved_id = data.get("id", topic_id)
+                    slug = data.get("slug", "")
+
+                    posts = data.get("post_stream", {}).get("posts", [])
+                    first_post_html = posts[0].get("cooked", "") if posts else ""
+                    first_post = _html_to_text(first_post_html)
+                    accepted_answer = _get_accepted_answer(posts) if len(posts) > 1 else None
+
+                    upsert_discourse_topic(
+                        conn,
+                        forum_url=base_url,
+                        topic_id=resolved_id,
+                        title=data.get("title", ""),
+                        first_post=first_post,
+                        accepted_answer=accepted_answer,
+                        category_name=data.get("category_name"),
+                        tags=data.get("tags"),
+                        reply_count=data.get("reply_count", 0),
+                        like_count=data.get("like_count", 0),
+                        views=data.get("views", 0),
+                        url=f"{base_url}/t/{slug}/{resolved_id}",
+                        created_at=data.get("created_at", ""),
+                        last_posted_at=data.get("last_posted_at"),
+                    )
+                    total_synced += 1
+                    uncommitted += 1
+
+                    # Commit every 50 topics to avoid large transactions
+                    if uncommitted >= 50:
+                        conn.commit()
+                        uncommitted = 0
+                except Exception:
+                    logger.exception("Failed to process topic %d from %s", topic_id, base_url)
                     failed += 1
-                    progress.update(task, advance=1)
-                    continue
-
-                posts = data.get("post_stream", {}).get("posts", [])
-                first_post_html = posts[0].get("cooked", "") if posts else ""
-                first_post = _html_to_text(first_post_html)
-                accepted_answer = _get_accepted_answer(posts) if len(posts) > 1 else None
-
-                upsert_discourse_topic(
-                    conn,
-                    forum_url=base_url,
-                    topic_id=data["id"],
-                    title=data.get("title", ""),
-                    first_post=first_post,
-                    accepted_answer=accepted_answer,
-                    category_name=data.get("category_name"),
-                    tags=data.get("tags"),
-                    reply_count=data.get("reply_count", 0),
-                    like_count=data.get("like_count", 0),
-                    views=data.get("views", 0),
-                    url=f"{base_url}/t/{data.get('slug', '')}/{data['id']}",
-                    created_at=data.get("created_at", ""),
-                    last_posted_at=data.get("last_posted_at"),
-                )
-                total_synced += 1
-                uncommitted += 1
-
-                # Commit every 50 topics to avoid large transactions
-                if uncommitted >= 50:
-                    conn.commit()
-                    uncommitted = 0
 
                 progress.update(task, advance=1)
 
@@ -320,6 +331,12 @@ def _collect_from_listing(
         data = _fetch_json(page_url, delay=request_delay)
 
         if data is None:
+            logger.warning(
+                "Listing fetch failed at page %d for %s; collected %d topics so far",
+                page,
+                url,
+                len(topic_ids),
+            )
             break
 
         topics = data.get("topic_list", {}).get("topics", [])

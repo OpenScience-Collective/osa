@@ -474,8 +474,7 @@ def create_search_discourse_tool(
             lines.append(f"**{i}. {r.title}**{cat_label}")
             lines.append(f"  Replies: {r.reply_count} | Likes: {r.like_count} | Views: {r.views}")
             if r.snippet:
-                snippet = r.snippet[:300] + "..." if len(r.snippet) > 300 else r.snippet
-                lines.append(f"  {snippet}")
+                lines.append(f"  {r.snippet}")
             if r.accepted_answer_snippet:
                 lines.append(f"  Accepted answer: {r.accepted_answer_snippet}")
             lines.append(f"  [View topic]({r.url})\n")
