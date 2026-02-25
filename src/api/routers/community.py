@@ -15,16 +15,18 @@ import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from pydantic import BaseModel, Field, field_validator
 
 from src.agents.base import DEFAULT_MAX_CONVERSATION_TOKENS
 from src.api.config import get_settings
+from src.api.routers.health import compute_community_health
 from src.api.security import AuthScope, RequireAuth, RequireScopedAuth
 from src.assistants import registry
 from src.assistants.community import CommunityAssistant
@@ -173,6 +175,10 @@ class WidgetConfigResponse(BaseModel):
     suggested_questions: list[str] = Field(
         default_factory=list, description="Clickable suggestion buttons"
     )
+    logo_url: str | None = Field(
+        default=None, description="URL for community logo/icon in widget header"
+    )
+    theme_color: str | None = Field(default=None, description="Primary theme color as hex #RRGGBB")
 
 
 class CommunityConfigResponse(BaseModel):
@@ -188,6 +194,7 @@ class CommunityConfigResponse(BaseModel):
     widget: WidgetConfigResponse = Field(
         ..., description="Widget display configuration (title, placeholder, etc.)"
     )
+    status: str = Field(..., description="Health status: healthy, degraded, or error")
 
 
 # ---------------------------------------------------------------------------
@@ -758,10 +765,11 @@ def create_community_assistant(
             if config.get("callbacks"):
                 langfuse_config = config
                 langfuse_trace_id = trace_id
-        except Exception:
+        except (AttributeError, ValueError, RuntimeError, OSError, ImportError) as e:
             logger.warning(
-                "LangFuse tracing setup failed for %s, continuing without it",
+                "LangFuse tracing setup failed for %s: %s, continuing without it",
                 community_id,
+                e,
                 exc_info=True,
             )
 
@@ -835,6 +843,54 @@ def _set_metrics_on_request(
         "langfuse_trace_id": awm.langfuse_trace_id,
         "stream": False,
     }
+
+
+# ---------------------------------------------------------------------------
+# Logo Helpers
+# ---------------------------------------------------------------------------
+
+_ASSISTANTS_DIR = Path(__file__).parent.parent.parent / "assistants"
+
+_LOGO_MEDIA_TYPES: dict[str, str] = {
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+}
+
+
+def find_logo_file(community_id: str) -> Path | None:
+    """Find a convention-based logo file in the community's folder.
+
+    Looks for files named ``logo.*`` with a supported image extension
+    (SVG, PNG, JPG, JPEG, WEBP) in ``src/assistants/{community_id}/``.
+    Returns the first match or ``None``.  Priority follows the key
+    order of ``_LOGO_MEDIA_TYPES``: SVG first, then PNG, then others.
+    """
+    community_dir = _ASSISTANTS_DIR / community_id
+    try:
+        if not community_dir.is_dir():
+            return None
+        for ext in _LOGO_MEDIA_TYPES:
+            candidate = community_dir / f"logo{ext}"
+            if candidate.is_file():
+                return candidate
+    except OSError:
+        logger.warning(
+            "Filesystem error checking logo for community %s at %s",
+            community_id,
+            community_dir,
+            exc_info=True,
+        )
+    return None
+
+
+def convention_logo_url(community_id: str, widget: WidgetConfig) -> str | None:
+    """Return convention-based logo URL if no explicit logo is configured."""
+    if not widget.logo_url and find_logo_file(community_id):
+        return f"/{community_id}/logo"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1121,13 +1177,61 @@ def create_community_router(community_id: str) -> APIRouter:
             info.community_config.widget if info.community_config else None
         ) or WidgetConfig()
 
+        # Convention-based logo: if no explicit logo_url, check for logo file
+        conv_logo = convention_logo_url(community_id, widget_cfg)
+
+        # Compute lightweight health status for public display
+        health_status = "error"
+        if info.community_config:
+            try:
+                health_status = compute_community_health(info.community_config)["status"]
+            except (AttributeError, KeyError, TypeError) as e:
+                logger.error(
+                    "Failed to compute health for community %s: %s",
+                    info.id,
+                    e,
+                    exc_info=True,
+                )
+
         return CommunityConfigResponse(
             id=info.id,
             name=info.name,
             description=info.description,
             default_model=default_model,
             default_model_provider=default_provider,
-            widget=WidgetConfigResponse(**widget_cfg.resolve(info.name)),
+            widget=WidgetConfigResponse(**widget_cfg.resolve(info.name, logo_url=conv_logo)),
+            status=health_status,
+        )
+
+    @router.get("/logo")
+    async def get_community_logo() -> FileResponse:
+        """Serve the community's logo file.
+
+        Looks for a ``logo.*`` file (SVG, PNG, JPG, WEBP) in the
+        community's assistants folder.  Returns 404 if none exists.
+        """
+        logo_path = find_logo_file(community_id)
+        if logo_path is None:
+            raise HTTPException(status_code=404, detail="No logo found for this community")
+
+        # Guard against file disappearing between detection and serving
+        try:
+            logo_path.stat()
+        except OSError:
+            logger.warning("Logo file disappeared or became unreadable: %s", logo_path)
+            raise HTTPException(status_code=404, detail="No logo found for this community")
+
+        media_type = _LOGO_MEDIA_TYPES.get(logo_path.suffix.lower(), "application/octet-stream")
+        headers: dict[str, str] = {"Cache-Control": "public, max-age=86400"}
+        # Prevent script execution in SVGs opened via direct navigation
+        if logo_path.suffix.lower() == ".svg":
+            headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'"
+
+        return FileResponse(
+            logo_path,
+            media_type=media_type,
+            filename=f"{community_id}-logo{logo_path.suffix}",
+            headers=headers,
         )
 
     # -----------------------------------------------------------------------
@@ -1224,18 +1328,54 @@ def create_community_router(community_id: str) -> APIRouter:
     async def community_metrics_public() -> dict[str, Any]:
         """Get public metrics summary for this community.
 
-        Returns request counts, error rate, and top tools.
+        Returns request counts, error rate, top tools, and config health.
         No tokens, costs, or model information exposed.
         """
         try:
             with metrics_connection() as conn:
-                return get_public_community_summary(community_id, conn)
+                result = get_public_community_summary(community_id, conn)
         except sqlite3.Error:
             logger.exception("Failed to query public metrics for community %s", community_id)
             raise HTTPException(
                 status_code=503,
                 detail="Metrics database is temporarily unavailable.",
             )
+
+        # Add config health alongside usage metrics
+        fallback_health: dict[str, Any] = {
+            "status": "error",
+            "api_key": "missing",
+            "documents": 0,
+            "warnings": ["Community configuration not found"],
+        }
+        if info.community_config:
+            try:
+                health = compute_community_health(info.community_config)
+                # Sanitize warnings for public endpoint: strip env var names
+                public_warnings = [w for w in health["warnings"] if "Environment variable" not in w]
+                if health["api_key"] == "missing" and not public_warnings:
+                    public_warnings = [
+                        "API key not configured; using shared platform key. "
+                        "This is for demonstration only and is not sustainable."
+                    ]
+                result["config_health"] = {
+                    "status": health["status"],
+                    "api_key": health["api_key"],
+                    "documents": health["documents"],
+                    "warnings": public_warnings,
+                }
+            except (AttributeError, KeyError, TypeError) as e:
+                logger.error(
+                    "Failed to compute health for community %s: %s",
+                    community_id,
+                    e,
+                    exc_info=True,
+                )
+                result["config_health"] = fallback_health
+        else:
+            result["config_health"] = fallback_health
+
+        return result
 
     @router.get("/metrics/public/usage")
     async def community_usage_public(

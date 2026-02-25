@@ -38,7 +38,7 @@ COPY pyproject.toml README.md ./
 
 # Install uv and dependencies
 RUN pip install uv && \
-    uv pip install --system --no-cache ".[dev]"
+    uv pip install --system --no-cache ".[server]"
 
 # Copy the rest of the application code
 COPY src/ ./src/

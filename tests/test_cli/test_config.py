@@ -3,25 +3,32 @@
 These tests use real file I/O operations against temporary directories.
 """
 
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from src.cli.config import (
+    CONFIG_DIR,
+    CONFIG_FILE,
+    CREDENTIALS_FILE,
     CLIConfig,
-    get_config_dir,
-    get_config_path,
+    CredentialsConfig,
     get_data_dir,
+    get_effective_config,
+    get_user_id,
     load_config,
+    load_credentials,
     save_config,
-    update_config,
+    save_credentials,
 )
 
 
 @pytest.fixture
 def temp_config_dir(tmp_path: Path) -> Path:
-    """Create a temporary config directory."""
+    """Create a temporary config directory and patch CONFIG_DIR and file paths."""
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     return config_dir
@@ -35,58 +42,86 @@ def temp_data_dir(tmp_path: Path) -> Path:
     return data_dir
 
 
+@contextmanager
+def patched_config_paths(config_dir: Path) -> Generator[None, None, None]:
+    """Patch all config module paths to use a temporary directory.
+
+    Patches CONFIG_FILE, CREDENTIALS_FILE, CONFIG_DIR, and LEGACY_CONFIG_FILE
+    to point to the given directory, isolating tests from the real config.
+    """
+    with (
+        patch("src.cli.config.CONFIG_FILE", config_dir / "config.yaml"),
+        patch("src.cli.config.CREDENTIALS_FILE", config_dir / "credentials.yaml"),
+        patch("src.cli.config.CONFIG_DIR", config_dir),
+        patch("src.cli.config.LEGACY_CONFIG_FILE", config_dir / "config.json"),
+    ):
+        yield
+
+
 class TestCLIConfig:
     """Tests for CLIConfig model."""
 
     def test_default_values(self) -> None:
         """CLIConfig should have sensible defaults."""
         config = CLIConfig()
-        assert config.api_url == "http://localhost:38528"
-        assert config.api_key is None
-        assert config.openai_api_key is None
-        assert config.anthropic_api_key is None
-        assert config.openrouter_api_key is None
-        assert config.output_format == "rich"
-        assert config.verbose is False
+        assert config.api.url == "https://api.osc.earth/osa"
+        assert config.output.format == "rich"
+        assert config.output.verbose is False
+        assert config.output.streaming is True
 
     def test_custom_values(self) -> None:
-        """CLIConfig should accept custom values."""
+        """CLIConfig should accept nested custom values."""
         config = CLIConfig(
-            api_url="https://example.com",
-            api_key="test-key",
-            openai_api_key="sk-test",
-            verbose=True,
+            api={"url": "https://example.com"},
+            output={"format": "json", "verbose": True},
         )
-        assert config.api_url == "https://example.com"
-        assert config.api_key == "test-key"
-        assert config.openai_api_key == "sk-test"
-        assert config.verbose is True
+        assert config.api.url == "https://example.com"
+        assert config.output.format == "json"
+        assert config.output.verbose is True
 
     def test_model_dump(self) -> None:
         """CLIConfig should serialize to dict."""
-        config = CLIConfig(api_url="https://example.com")
+        config = CLIConfig(api={"url": "https://example.com"})
         data = config.model_dump()
         assert isinstance(data, dict)
-        assert data["api_url"] == "https://example.com"
+        assert data["api"]["url"] == "https://example.com"
+
+
+class TestCredentialsConfig:
+    """Tests for CredentialsConfig model."""
+
+    def test_default_values(self) -> None:
+        """CredentialsConfig should default to no keys."""
+        creds = CredentialsConfig()
+        assert creds.openrouter_api_key is None
+        assert creds.openai_api_key is None
+        assert creds.anthropic_api_key is None
+
+    def test_custom_values(self) -> None:
+        """CredentialsConfig should accept custom values."""
+        creds = CredentialsConfig(openrouter_api_key="sk-or-test")
+        assert creds.openrouter_api_key == "sk-or-test"
 
 
 class TestConfigPaths:
-    """Tests for config path functions."""
+    """Tests for config path constants."""
 
-    def test_get_config_dir_returns_path(self) -> None:
-        """get_config_dir should return a Path object."""
-        result = get_config_dir()
-        assert isinstance(result, Path)
+    def test_config_dir_is_path(self) -> None:
+        """CONFIG_DIR should be a Path object."""
+        assert isinstance(CONFIG_DIR, Path)
+
+    def test_config_file_is_yaml(self) -> None:
+        """CONFIG_FILE should be a YAML file."""
+        assert CONFIG_FILE.name == "config.yaml"
+
+    def test_credentials_file_is_yaml(self) -> None:
+        """CREDENTIALS_FILE should be a YAML file."""
+        assert CREDENTIALS_FILE.name == "credentials.yaml"
 
     def test_get_data_dir_returns_path(self) -> None:
         """get_data_dir should return a Path object."""
         result = get_data_dir()
         assert isinstance(result, Path)
-
-    def test_get_config_path_returns_json_path(self) -> None:
-        """get_config_path should return path to config.json."""
-        result = get_config_path()
-        assert result.name == "config.json"
 
 
 class TestLoadSaveConfig:
@@ -94,109 +129,147 @@ class TestLoadSaveConfig:
 
     def test_load_config_returns_defaults_when_no_file(self, temp_config_dir: Path) -> None:
         """load_config should return defaults when file doesn't exist."""
-        with patch("src.cli.config.get_config_path") as mock_path:
-            mock_path.return_value = temp_config_dir / "config.json"
+        with patched_config_paths(temp_config_dir):
             config = load_config()
-            assert config.api_url == "http://localhost:38528"
+            assert config.api.url == "https://api.osc.earth/osa"
 
     def test_save_and_load_config(self, temp_config_dir: Path) -> None:
         """save_config and load_config should round-trip correctly."""
-        config_path = temp_config_dir / "config.json"
-
-        with patch("src.cli.config.get_config_path") as mock_path:
-            mock_path.return_value = config_path
-
-            # Save custom config
+        with patched_config_paths(temp_config_dir):
             original = CLIConfig(
-                api_url="https://custom.example.com",
-                api_key="my-secret-key",
-                verbose=True,
+                api={"url": "https://custom.example.com"},
+                output={"verbose": True},
             )
             save_config(original)
 
-            # Verify file was created
-            assert config_path.exists()
+            assert (temp_config_dir / "config.yaml").exists()
 
-            # Load and verify
             loaded = load_config()
-            assert loaded.api_url == "https://custom.example.com"
-            assert loaded.api_key == "my-secret-key"
-            assert loaded.verbose is True
+            assert loaded.api.url == "https://custom.example.com"
+            assert loaded.output.verbose is True
 
-    def test_load_config_handles_invalid_json(self, temp_config_dir: Path) -> None:
-        """load_config should return defaults on invalid JSON."""
-        config_path = temp_config_dir / "config.json"
-        config_path.write_text("not valid json")
+    def test_load_config_handles_invalid_yaml(self, temp_config_dir: Path) -> None:
+        """load_config should return defaults on invalid YAML."""
+        (temp_config_dir / "config.yaml").write_text(": invalid: yaml: [")
 
-        with patch("src.cli.config.get_config_path") as mock_path:
-            mock_path.return_value = config_path
+        with patched_config_paths(temp_config_dir):
             config = load_config()
-            # Should return defaults
-            assert config.api_url == "http://localhost:38528"
-
-    def test_save_config_creates_parent_dirs(self, tmp_path: Path) -> None:
-        """save_config should create parent directories if needed."""
-        config_path = tmp_path / "nested" / "dir" / "config.json"
-
-        with patch("src.cli.config.get_config_path") as mock_path:
-            mock_path.return_value = config_path
-            save_config(CLIConfig())
-            assert config_path.exists()
+            assert config.api.url == "https://api.osc.earth/osa"
 
 
-class TestUpdateConfig:
-    """Tests for update_config function."""
+class TestLoadSaveCredentials:
+    """Tests for credentials I/O."""
 
-    def test_update_config_updates_single_field(self, temp_config_dir: Path) -> None:
-        """update_config should update a single field."""
-        config_path = temp_config_dir / "config.json"
+    def test_save_and_load_credentials(self, temp_config_dir: Path) -> None:
+        """save_credentials and load_credentials should round-trip."""
+        with patched_config_paths(temp_config_dir):
+            creds = CredentialsConfig(openrouter_api_key="sk-or-test-key")
+            save_credentials(creds)
 
-        with patch("src.cli.config.get_config_path") as mock_path:
-            mock_path.return_value = config_path
+            assert (temp_config_dir / "credentials.yaml").exists()
 
-            # First save a base config
-            save_config(CLIConfig())
+            loaded = load_credentials()
+            assert loaded.openrouter_api_key == "sk-or-test-key"
 
-            # Update single field
-            result = update_config(api_url="https://new-url.com")
+    def test_load_credentials_returns_defaults_when_no_file(self, temp_config_dir: Path) -> None:
+        """load_credentials should return defaults when file doesn't exist."""
+        # Use a clean dir with no credentials file
+        with patched_config_paths(temp_config_dir):
+            creds = load_credentials()
+            assert creds.openrouter_api_key is None
 
-            assert result.api_url == "https://new-url.com"
-            # Other fields should remain default
-            assert result.verbose is False
 
-    def test_update_config_preserves_existing_values(self, temp_config_dir: Path) -> None:
-        """update_config should preserve fields not being updated."""
-        config_path = temp_config_dir / "config.json"
+class TestGetEffectiveConfig:
+    """Tests for get_effective_config."""
 
-        with patch("src.cli.config.get_config_path") as mock_path:
-            mock_path.return_value = config_path
+    def test_cli_flag_overrides_saved_key(self, temp_config_dir: Path) -> None:
+        """CLI --api-key flag should override saved credentials."""
+        with patched_config_paths(temp_config_dir):
+            save_credentials(CredentialsConfig(openrouter_api_key="saved-key"))
 
-            # Save config with custom values
-            save_config(
-                CLIConfig(
-                    api_url="https://original.com",
-                    api_key="original-key",
-                )
-            )
+            _, effective_key = get_effective_config(api_key="cli-key")
+            assert effective_key == "cli-key"
 
-            # Update only api_url
-            result = update_config(api_url="https://updated.com")
+    def test_env_var_overrides_saved_key(self, temp_config_dir: Path) -> None:
+        """OPENROUTER_API_KEY env var should override saved credentials."""
+        with (
+            patched_config_paths(temp_config_dir),
+            patch.dict("os.environ", {"OPENROUTER_API_KEY": "env-key"}),
+        ):
+            save_credentials(CredentialsConfig(openrouter_api_key="saved-key"))
 
-            assert result.api_url == "https://updated.com"
-            # api_key should be preserved
-            assert result.api_key == "original-key"
+            _, effective_key = get_effective_config()
+            assert effective_key == "env-key"
 
-    def test_update_config_ignores_none_values(self, temp_config_dir: Path) -> None:
-        """update_config should not update fields with None values."""
-        config_path = temp_config_dir / "config.json"
+    def test_saved_key_used_as_fallback(self, temp_config_dir: Path) -> None:
+        """Saved credentials should be used if no CLI flag or env var."""
+        with (
+            patched_config_paths(temp_config_dir),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            save_credentials(CredentialsConfig(openrouter_api_key="saved-key"))
 
-        with patch("src.cli.config.get_config_path") as mock_path:
-            mock_path.return_value = config_path
+            _, effective_key = get_effective_config()
+            assert effective_key == "saved-key"
 
-            save_config(CLIConfig(api_url="https://original.com"))
+    def test_api_url_override(self, temp_config_dir: Path) -> None:
+        """api_url parameter should override saved config."""
+        with patched_config_paths(temp_config_dir):
+            config, _ = get_effective_config(api_url="https://custom.example.com")
+            assert config.api.url == "https://custom.example.com"
 
-            # Pass None for api_url (should not change it)
-            result = update_config(api_url=None, verbose=True)
 
-            assert result.api_url == "https://original.com"
-            assert result.verbose is True
+class TestLegacyMigration:
+    """Tests for migration from legacy config.json format."""
+
+    def test_migrate_from_json(self, temp_config_dir: Path) -> None:
+        """Should migrate from legacy config.json to new YAML format."""
+        import json
+
+        legacy_file = temp_config_dir / "config.json"
+        legacy_data = {
+            "api_url": "https://legacy-api.example.com",
+            "openrouter_api_key": "sk-or-legacy",
+            "output_format": "json",
+            "verbose": True,
+        }
+        legacy_file.write_text(json.dumps(legacy_data))
+
+        with patched_config_paths(temp_config_dir):
+            config = load_config()
+
+            assert config.api.url == "https://legacy-api.example.com"
+            assert config.output.format == "json"
+            assert config.output.verbose is True
+
+            # Credentials should also be migrated
+            creds = load_credentials()
+            assert creds.openrouter_api_key == "sk-or-legacy"
+
+
+class TestUserID:
+    """Tests for user ID generation."""
+
+    def test_get_user_id_format(self, temp_config_dir: Path) -> None:
+        """get_user_id should return a 16-char hex string."""
+        user_id_file = temp_config_dir / "user_id"
+
+        with (
+            patch("src.cli.config.USER_ID_FILE", user_id_file),
+            patch("src.cli.config.CONFIG_DIR", temp_config_dir),
+        ):
+            user_id = get_user_id()
+            assert len(user_id) == 16
+            assert all(c in "0123456789abcdef" for c in user_id)
+
+    def test_get_user_id_is_stable(self, temp_config_dir: Path) -> None:
+        """get_user_id should return the same ID on subsequent calls."""
+        user_id_file = temp_config_dir / "user_id"
+
+        with (
+            patch("src.cli.config.USER_ID_FILE", user_id_file),
+            patch("src.cli.config.CONFIG_DIR", temp_config_dir),
+        ):
+            first = get_user_id()
+            second = get_user_id()
+            assert first == second

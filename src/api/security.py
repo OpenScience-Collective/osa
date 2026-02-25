@@ -14,7 +14,7 @@ api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 # Header extractors for BYOK (defined before verify_api_key which uses them)
 openai_key_header = APIKeyHeader(name="X-OpenAI-API-Key", auto_error=False)
 anthropic_key_header = APIKeyHeader(name="X-Anthropic-API-Key", auto_error=False)
-openrouter_key_header = APIKeyHeader(name="X-OpenRouter-API-Key", auto_error=False)
+openrouter_key_header = APIKeyHeader(name="X-OpenRouter-Key", auto_error=False)
 
 
 async def verify_api_key(

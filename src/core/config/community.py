@@ -267,6 +267,18 @@ class CitationConfig(BaseModel):
         return list(dict.fromkeys(normalized))
 
 
+class DiscourseCategoryConfig(BaseModel):
+    """A Discourse category to sync."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    slug: str = Field(min_length=1, pattern=r"^[a-z0-9-]+$")
+    """Category slug (e.g., 'support')."""
+
+    id: int = Field(ge=1)
+    """Category numeric ID."""
+
+
 class DiscourseConfig(BaseModel):
     """Discourse/forum search configuration."""
 
@@ -277,6 +289,9 @@ class DiscourseConfig(BaseModel):
 
     tags: list[str] = Field(default_factory=list)
     """Tags to filter forum topics by."""
+
+    categories: list[DiscourseCategoryConfig] = Field(default_factory=list)
+    """Optional categories to limit sync to. Empty means sync all."""
 
 
 class MailmanConfig(BaseModel):
@@ -666,6 +681,36 @@ class WidgetConfig(BaseModel):
     suggested_questions: list[str] = Field(default_factory=list)
     """Clickable suggestion buttons shown below the initial message."""
 
+    theme_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    """Primary theme color as a hex code (e.g., '#008a79').
+
+    Applied to the widget button, header, and accent elements.
+    Defaults to the platform blue (#2563eb) if not specified.
+    """
+
+    logo_url: str | None = Field(default=None, max_length=500)
+    """URL to a custom logo/icon image for the widget header avatar.
+
+    Must be an HTTP(S) URL or a path starting with ``/``.  When not set,
+    the API auto-detects a ``logo.*`` file (SVG, PNG, JPG, JPEG, WEBP)
+    in the community's folder.  Falls back to a default brain icon in
+    the widget if no logo is found.
+    """
+
+    @field_validator("logo_url", mode="before")
+    @classmethod
+    def validate_logo_url(cls, v: str | None) -> str | None:
+        """Ensure logo_url uses a safe scheme (http, https, or relative path)."""
+        if v is None:
+            return v
+        v = v.strip()
+        if not v:
+            return None
+        if not (v.startswith("http://") or v.startswith("https://") or v.startswith("/")):
+            msg = "logo_url must use http://, https://, or be a path starting with '/'"
+            raise ValueError(msg)
+        return v
+
     @field_validator("title", "initial_message", "placeholder", mode="before")
     @classmethod
     def normalize_empty_strings(cls, v: str | None) -> str | None:
@@ -685,14 +730,24 @@ class WidgetConfig(BaseModel):
             raise ValueError(msg)
         return cleaned
 
-    def resolve(self, community_name: str) -> dict[str, Any]:
-        """Return widget config with defaults applied."""
-        return {
+    def resolve(self, community_name: str, logo_url: str | None = None) -> dict[str, Any]:
+        """Return widget config with defaults applied.
+
+        Args:
+            community_name: Display name used as fallback for title.
+            logo_url: Fallback logo URL (e.g. from convention-based detection).
+                      Only used when ``self.logo_url`` is not set.
+        """
+        result = {
             "title": self.title or community_name or "Assistant",
             "initial_message": self.initial_message,
             "placeholder": self.placeholder or "Ask a question...",
             "suggested_questions": self.suggested_questions,
+            "logo_url": self.logo_url or logo_url,
         }
+        if self.theme_color:
+            result["theme_color"] = self.theme_color
+        return result
 
 
 class LinksConfig(BaseModel):
@@ -773,6 +828,9 @@ class SyncConfig(BaseModel):
 
     beps: SyncTypeSchedule | None = None
     """Schedule for BIDS Extension Proposals sync (BIDS-specific)."""
+
+    discourse: SyncTypeSchedule | None = None
+    """Schedule for Discourse forum topic sync."""
 
 
 class CommunityConfig(BaseModel):

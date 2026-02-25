@@ -244,6 +244,31 @@
         .status-error { background: #fee2e2; color: #991b1b; }
         .status-unknown { background: #f1f5f9; color: #64748b; }
 
+        /* Config health banners */
+        .config-banner {
+            border-radius: 8px;
+            padding: 0.7rem 1rem;
+            margin-bottom: 1rem;
+            font-size: 0.85rem;
+            line-height: 1.5;
+        }
+        .config-banner ul {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+        }
+        .config-banner li { padding: 0.1rem 0; }
+        .config-banner-warning {
+            background: #fff7ed;
+            border: 1px solid #fed7aa;
+            color: #9a3412;
+        }
+        .config-banner-error {
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+            color: #991b1b;
+        }
+
         /* Period toggle */
         .period-toggle { display: flex; gap: 0.35rem; margin-bottom: 1rem; }
         .period-btn {
@@ -801,6 +826,18 @@
             healthLabel = healthStatus.charAt(0).toUpperCase() + healthStatus.slice(1);
         }
 
+        // Config health from public metrics (API key, docs status)
+        const configHealth = summary.config_health || null;
+        let configWarningHtml = '';
+        if (configHealth && configHealth.warnings && configHealth.warnings.length > 0) {
+            const warningItems = configHealth.warnings.map(w => `<li>${escapeHtml(w)}</li>`).join('');
+            const bannerClass = configHealth.status === 'error' ? 'config-banner-error' : 'config-banner-warning';
+            configWarningHtml = `
+                <div class="config-banner ${bannerClass}">
+                    <ul>${warningItems}</ul>
+                </div>`;
+        }
+
         const desc = meta.description
             ? `<p style="color:#64748b; font-size:0.9rem; margin-bottom:0.75rem;">${escapeHtml(meta.description)}</p>`
             : '';
@@ -815,6 +852,7 @@
                 </div>
                 ${desc}
                 ${links}
+                ${configWarningHtml}
                 <div class="overview-grid">
                     <div class="metric">
                         <div class="metric-value">${summary.total_requests.toLocaleString()}</div>

@@ -4,6 +4,7 @@ from typing import Any
 
 from fastapi import APIRouter
 
+from src.api.routers.community import convention_logo_url
 from src.assistants import registry
 from src.core.config.community import WidgetConfig
 
@@ -17,7 +18,7 @@ def list_communities() -> list[dict[str, Any]]:
     """List available communities with widget configuration.
 
     Returns community metadata including widget display config
-    (title, placeholder, initial message, suggested questions).
+    (title, placeholder, initial message, suggested questions, logo).
     Only returns communities with status='available'.
     """
     communities = []
@@ -28,13 +29,15 @@ def list_communities() -> list[dict[str, Any]]:
             continue
 
         widget = config.widget or _DEFAULT_WIDGET
+        conv_logo = convention_logo_url(config.id, widget)
+
         communities.append(
             {
                 "id": config.id,
                 "name": config.name,
                 "description": config.description,
                 "status": config.status,
-                "widget": widget.resolve(config.name),
+                "widget": widget.resolve(config.name, logo_url=conv_logo),
                 "links": config.links.resolve() if config.links else None,
             }
         )

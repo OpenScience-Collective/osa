@@ -8,6 +8,7 @@ import pytest
 from src.assistants import discover_assistants
 from src.assistants.registry import registry
 from src.knowledge.db import get_connection, init_db
+from src.tools.knowledge import create_search_docstrings_tool, create_search_faq_tool
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -123,6 +124,27 @@ class TestEEGLabConfig:
         info = registry.get("eeglab")
         assert len(info.community_config.documentation) > 0
 
+    def test_config_has_docstrings(self):
+        """Test that docstrings config is present for auto-generation."""
+        info = registry.get("eeglab")
+        assert info.community_config.docstrings is not None
+        assert len(info.community_config.docstrings.repos) > 0
+
+    def test_config_has_faq_generation(self):
+        """Test that FAQ generation config is present for auto-generation."""
+        info = registry.get("eeglab")
+        assert info.community_config.faq_generation is not None
+
+    def test_config_no_extensions(self):
+        """Test that EEGLAB no longer uses custom extensions (migrated to generic)."""
+        info = registry.get("eeglab")
+        # Extensions should be None or have no python_plugins
+        if info.community_config.extensions is not None:
+            assert (
+                info.community_config.extensions.python_plugins is None
+                or len(info.community_config.extensions.python_plugins) == 0
+            )
+
 
 class TestEEGLabTools:
     """Test EEGLab tool creation and registration."""
@@ -142,16 +164,21 @@ class TestEEGLabTools:
         assert "search_eeglab_papers" in tool_names
         assert "retrieve_eeglab_docs" in tool_names
 
-    def test_assistant_loads_plugin_tools(self, mock_model):
-        """Test that plugin tools are loaded from eeglab.tools module."""
+    def test_assistant_has_docstring_tool(self, mock_model):
+        """Test that generic docstring search tool is auto-generated from config."""
         assistant = registry.create_assistant("eeglab", model=mock_model)
         tool_names = [t.name for t in assistant.tools]
 
-        # Phase 2 tool
-        assert "search_eeglab_docstrings" in tool_names
+        # Generic factory tool name
+        assert "search_eeglab_code_docs" in tool_names
 
-        # Phase 3 tool
-        assert "search_eeglab_faqs" in tool_names
+    def test_assistant_has_faq_tool(self, mock_model):
+        """Test that generic FAQ search tool is auto-generated from config."""
+        assistant = registry.create_assistant("eeglab", model=mock_model)
+        tool_names = [t.name for t in assistant.tools]
+
+        # Generic factory tool name
+        assert "search_eeglab_faq" in tool_names
 
     def test_system_prompt_includes_tools(self, mock_model):
         """Test that system prompt mentions available tools."""
@@ -177,13 +204,13 @@ class TestEEGLabTools:
             f"Missing standard tools: {required_standard - tool_names}"
         )
 
-        # Verify required plugin tools
-        required_plugins = {
-            "search_eeglab_docstrings",
-            "search_eeglab_faqs",
+        # Verify auto-generated tools from config
+        required_auto = {
+            "search_eeglab_code_docs",
+            "search_eeglab_faq",
         }
-        assert required_plugins.issubset(tool_names), (
-            f"Missing plugin tools: {required_plugins - tool_names}"
+        assert required_auto.issubset(tool_names), (
+            f"Missing auto-generated tools: {required_auto - tool_names}"
         )
 
 
@@ -202,151 +229,97 @@ class TestEEGLabRealQuestions:
     )
     def test_question_import_data(self, assistant):
         """Test: How do I import my EEG data?"""
-        # This is a smoke test - verify assistant can be invoked
-        # Real test would check tool invocation and response quality
         assert assistant is not None
         assert len(assistant.tools) > 0
 
     def test_question_remove_artifacts(self, assistant):
         """Test: What's the best way to remove artifacts?"""
-        # FAQ search should be invoked for this common question
         faq_tool = next((t for t in assistant.tools if "faq" in t.name), None)
         assert faq_tool is not None
 
     def test_question_iclabel_usage(self, assistant):
         """Test: How do I use ICLabel?"""
-        # Docstring search might be useful here
-        docstring_tool = next((t for t in assistant.tools if "docstring" in t.name), None)
+        docstring_tool = next((t for t in assistant.tools if "code_docs" in t.name), None)
         assert docstring_tool is not None
 
 
 class TestToolImplementations:
-    """Test individual tool implementations."""
+    """Test generic tool factory implementations."""
 
     def test_docstring_tool_handles_empty_db(self, tmp_path: Path):
         """Test docstring tool with empty database."""
-        from src.assistants.eeglab.tools import search_eeglab_docstrings
+        tool = create_search_docstrings_tool("eeglab", "EEGLAB")
 
-        # Tool should be a LangChain tool object
-        assert hasattr(search_eeglab_docstrings, "name")
-        assert search_eeglab_docstrings.name == "search_eeglab_docstrings"
+        assert hasattr(tool, "name")
+        assert tool.name == "search_eeglab_code_docs"
 
         # Point to non-existent DB to ensure "not initialized" response
         fake_db = tmp_path / "knowledge" / "eeglab.db"
-        with patch("src.knowledge.db.get_db_path", return_value=fake_db):
-            result = search_eeglab_docstrings.invoke({"query": "pop_loadset"})
+        with patch("src.tools.knowledge.get_db_path", return_value=fake_db):
+            result = tool.invoke({"query": "pop_loadset"})
         assert isinstance(result, str)
         assert "not initialized" in result.lower()
 
     def test_docstring_tool_with_populated_db(self, populated_test_db):  # noqa: ARG002
         """Test docstring search returns and formats results correctly."""
-        from src.assistants.eeglab.tools import search_eeglab_docstrings
+        tool = create_search_docstrings_tool("eeglab", "EEGLAB")
 
-        result = search_eeglab_docstrings.invoke({"query": "pop_loadset"})
+        result = tool.invoke({"query": "pop_loadset"})
 
-        # Verify no AttributeError (was the critical bug)
         assert isinstance(result, str)
-        assert "Found" in result
         assert "pop_loadset" in result
-        # Verify it uses correct SearchResult attributes
-        assert "Language:" in result
-        assert "matlab" in result
-        assert "View source" in result or "github.com" in result.lower()
+        assert "github.com" in result.lower() or "View source" in result
 
     def test_docstring_tool_handles_no_results(self, populated_test_db):  # noqa: ARG002
         """Test docstring search with query that returns no results."""
-        from src.assistants.eeglab.tools import search_eeglab_docstrings
+        tool = create_search_docstrings_tool("eeglab", "EEGLAB")
 
-        result = search_eeglab_docstrings.invoke({"query": "nonexistent_function_xyz"})
+        result = tool.invoke({"query": "nonexistent_function_xyz"})
 
         assert isinstance(result, str)
-        assert "No function documentation found" in result
+        assert "No code documentation found" in result
 
     def test_faq_tool_handles_empty_db(self, tmp_path: Path):
         """Test FAQ tool with empty database."""
-        from src.assistants.eeglab.tools import search_eeglab_faqs
+        tool = create_search_faq_tool("eeglab", "EEGLAB")
 
-        # Tool should be a LangChain tool object
-        assert hasattr(search_eeglab_faqs, "name")
-        assert search_eeglab_faqs.name == "search_eeglab_faqs"
+        assert hasattr(tool, "name")
+        assert tool.name == "search_eeglab_faq"
 
         # Point to non-existent DB to ensure "not initialized" response
         fake_db = tmp_path / "knowledge" / "eeglab.db"
-        with patch("src.knowledge.db.get_db_path", return_value=fake_db):
-            result = search_eeglab_faqs.invoke({"query": "artifact removal"})
+        with patch("src.tools.knowledge.get_db_path", return_value=fake_db):
+            result = tool.invoke({"query": "artifact removal"})
         assert isinstance(result, str)
         assert "not initialized" in result.lower()
 
     def test_faq_tool_with_populated_db(self, populated_test_db):  # noqa: ARG002
         """Test FAQ search returns and formats results correctly."""
-        from src.assistants.eeglab.tools import search_eeglab_faqs
+        tool = create_search_faq_tool("eeglab", "EEGLAB")
 
-        result = search_eeglab_faqs.invoke({"query": "artifacts"})
+        result = tool.invoke({"query": "artifacts"})
 
-        # Verify correct formatting
         assert isinstance(result, str)
-        assert "Found" in result
         assert "How do I remove artifacts?" in result
-        assert "Category:" in result
-        assert "Quality:" in result
-        assert "Tags:" in result
-        assert "View thread" in result
 
     def test_faq_tool_handles_no_results(self, populated_test_db):  # noqa: ARG002
         """Test FAQ search with query that returns no results."""
-        from src.assistants.eeglab.tools import search_eeglab_faqs
+        tool = create_search_faq_tool("eeglab", "EEGLAB")
 
-        result = search_eeglab_faqs.invoke({"query": "nonexistent_topic_xyz"})
+        result = tool.invoke({"query": "nonexistent_topic_xyz"})
 
         assert isinstance(result, str)
         assert "No FAQ entries found" in result
 
-    def test_plugin_tools_have_descriptions(self):
-        """Test that plugin tools have comprehensive descriptions."""
-        from src.assistants.eeglab.tools import search_eeglab_docstrings, search_eeglab_faqs
+    def test_tools_have_descriptions(self):
+        """Test that generic factory tools have comprehensive descriptions."""
+        docstring_tool = create_search_docstrings_tool("eeglab", "EEGLAB")
+        faq_tool = create_search_faq_tool("eeglab", "EEGLAB")
 
-        # Check docstring tool description
-        assert hasattr(search_eeglab_docstrings, "description")
-        assert len(search_eeglab_docstrings.description) > 50
-        assert (
-            "MATLAB" in search_eeglab_docstrings.description
-            or "Python" in search_eeglab_docstrings.description
-        )
+        assert hasattr(docstring_tool, "description")
+        assert len(docstring_tool.description) > 50
+        assert "EEGLAB" in docstring_tool.description
 
-        # Check FAQ tool description
-        assert hasattr(search_eeglab_faqs, "description")
-        assert len(search_eeglab_faqs.description) > 50
-        assert (
-            "FAQ" in search_eeglab_faqs.description or "mailing" in search_eeglab_faqs.description
-        )
-
-
-class TestPluginIntegration:
-    """Test plugin system integration."""
-
-    def test_extensions_configured_correctly(self):
-        """Test that extensions are properly configured in YAML."""
-        info = registry.get("eeglab")
-        assert info.community_config.extensions is not None
-        assert info.community_config.extensions.python_plugins is not None
-        assert len(info.community_config.extensions.python_plugins) > 0
-
-        # Check plugin module is correct
-        plugin = info.community_config.extensions.python_plugins[0]
-        assert plugin.module == "src.assistants.eeglab.tools"
-        assert "search_eeglab_docstrings" in plugin.tools
-        assert "search_eeglab_faqs" in plugin.tools
-
-    def test_plugin_tools_are_callable(self):
-        """Test that plugin tools can be invoked."""
-        from src.assistants.eeglab.tools import search_eeglab_docstrings, search_eeglab_faqs
-
-        # Test docstring tool is callable
-        assert callable(search_eeglab_docstrings.invoke)
-        result = search_eeglab_docstrings.invoke({"query": "test"})
-        assert isinstance(result, str)
-
-        # Test FAQ tool is callable
-        assert callable(search_eeglab_faqs.invoke)
-        result = search_eeglab_faqs.invoke({"query": "test"})
-        assert isinstance(result, str)
+        assert hasattr(faq_tool, "description")
+        assert len(faq_tool.description) > 50
+        assert "EEGLAB" in faq_tool.description

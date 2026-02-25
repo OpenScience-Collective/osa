@@ -14,7 +14,10 @@ from src.knowledge.db import get_connection, init_db, upsert_github_item, upsert
 from src.tools.knowledge import (
     create_knowledge_tools,
     create_list_recent_tool,
+    create_search_discourse_tool,
     create_search_discussions_tool,
+    create_search_docstrings_tool,
+    create_search_faq_tool,
     create_search_papers_tool,
 )
 
@@ -264,6 +267,120 @@ class TestCreateKnowledgeTools:
         # Check that repos appear in discussion tool description
         discussion_tool = next(t for t in tools if "discussions" in t.name)
         assert "repo1" in discussion_tool.description
+
+    def test_includes_docstrings_tool_when_enabled(self) -> None:
+        """Should include docstring search tool when include_docstrings=True."""
+        tools = create_knowledge_tools("test", "Test", include_docstrings=True)
+        tool_names = [t.name for t in tools]
+        assert "search_test_code_docs" in tool_names
+        assert len(tools) == 4
+
+    def test_includes_faq_tool_when_enabled(self) -> None:
+        """Should include FAQ search tool when include_faq=True."""
+        tools = create_knowledge_tools("test", "Test", include_faq=True)
+        tool_names = [t.name for t in tools]
+        assert "search_test_faq" in tool_names
+        assert len(tools) == 4
+
+    def test_includes_discourse_tool_when_enabled(self) -> None:
+        """Should include Discourse forum search tool when include_discourse=True."""
+        tools = create_knowledge_tools("test", "Test", include_discourse=True)
+        tool_names = [t.name for t in tools]
+        assert "search_test_forum" in tool_names
+        assert len(tools) == 4
+
+    def test_includes_all_optional_tools(self) -> None:
+        """Should include all tools when all flags enabled."""
+        tools = create_knowledge_tools(
+            "test", "Test", include_docstrings=True, include_faq=True, include_discourse=True
+        )
+        tool_names = [t.name for t in tools]
+        assert "search_test_code_docs" in tool_names
+        assert "search_test_faq" in tool_names
+        assert "search_test_forum" in tool_names
+        assert len(tools) == 6
+
+
+class TestSearchDocstringsTool:
+    """Tests for docstring search tool."""
+
+    def test_handles_missing_table(self, tmp_path: Path) -> None:
+        """Should return friendly message when docstrings table doesn't exist."""
+        import sqlite3
+
+        tool = create_search_docstrings_tool("test", "Test Community")
+
+        db_path = tmp_path / "knowledge" / "test.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE dummy (id INTEGER)")
+        conn.close()
+
+        with patch("src.tools.knowledge.get_db_path", return_value=db_path):
+            result = tool.invoke({"query": "some_function"})
+        assert "not initialized" in result.lower()
+        assert "osa sync docstrings" in result
+
+
+class TestSearchFaqTool:
+    """Tests for FAQ search tool."""
+
+    def test_handles_missing_table(self, tmp_path: Path) -> None:
+        """Should return friendly message when faq_entries table doesn't exist."""
+        import sqlite3
+
+        tool = create_search_faq_tool("test", "Test Community")
+
+        db_path = tmp_path / "knowledge" / "test.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE dummy (id INTEGER)")
+        conn.close()
+
+        with patch("src.tools.knowledge.get_db_path", return_value=db_path):
+            result = tool.invoke({"query": "artifact removal"})
+        assert "not initialized" in result.lower()
+        assert "osa sync mailman" in result
+
+
+class TestSearchDiscourseTool:
+    """Tests for Discourse forum search tool."""
+
+    def test_handles_missing_table(self, tmp_path: Path) -> None:
+        """Should return friendly message when discourse_topics table doesn't exist."""
+        import sqlite3
+
+        tool = create_search_discourse_tool("test", "Test Community")
+
+        db_path = tmp_path / "knowledge" / "test.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE dummy (id INTEGER)")
+        conn.close()
+
+        with patch("src.tools.knowledge.get_db_path", return_value=db_path):
+            result = tool.invoke({"query": "epoch rejection"})
+        assert "not initialized" in result.lower()
+        assert "osa sync discourse" in result
+
+    def test_returns_no_results_message(self, tmp_path: Path) -> None:
+        """Should return 'no results' message for non-matching query."""
+        tool = create_search_discourse_tool("test", "Test Community")
+
+        db_path = tmp_path / "knowledge" / "test.db"
+        with patch("src.knowledge.db.get_db_path", return_value=db_path):
+            init_db("test")
+            with patch("src.tools.knowledge.get_db_path", return_value=db_path):
+                result = tool.invoke({"query": "xyznonexistent123"})
+                assert "No forum topics found" in result
+
+    def test_tool_has_correct_name(self) -> None:
+        """Tool should have community-specific name."""
+        tool = create_search_discourse_tool("hed", "HED")
+        assert tool.name == "search_hed_forum"
+
+        tool = create_search_discourse_tool("mne", "MNE-Python")
+        assert tool.name == "search_mne_forum"
 
 
 class TestHEDKnowledgeToolsIntegration:

@@ -454,6 +454,37 @@ class TestWidgetConfig:
         with pytest.raises(ValidationError):
             WidgetConfig(initial_message="x" * 1001)
 
+    def test_theme_color_valid(self) -> None:
+        """Should accept valid hex color codes."""
+        widget = WidgetConfig(theme_color="#008a79")
+        assert widget.theme_color == "#008a79"
+
+    def test_theme_color_rejects_invalid_format(self) -> None:
+        """Should reject non-hex color values."""
+        with pytest.raises(ValidationError):
+            WidgetConfig(theme_color="red")
+        with pytest.raises(ValidationError):
+            WidgetConfig(theme_color="008a79")
+        with pytest.raises(ValidationError):
+            WidgetConfig(theme_color="#abc")
+
+    def test_theme_color_defaults_to_none(self) -> None:
+        """Should default to None when not specified."""
+        widget = WidgetConfig()
+        assert widget.theme_color is None
+
+    def test_resolve_includes_theme_color_when_set(self) -> None:
+        """resolve() should include theme_color when specified."""
+        widget = WidgetConfig(theme_color="#008a79")
+        result = widget.resolve("Test")
+        assert result["theme_color"] == "#008a79"
+
+    def test_resolve_excludes_theme_color_when_none(self) -> None:
+        """resolve() should not include theme_color when None."""
+        widget = WidgetConfig()
+        result = widget.resolve("Test")
+        assert "theme_color" not in result
+
     def test_placeholder_max_length(self) -> None:
         """Should enforce placeholder max length."""
         with pytest.raises(ValidationError):
@@ -498,6 +529,73 @@ class TestWidgetConfig:
         result = widget.resolve("HED")
         assert result["title"] == "Custom Title"
         assert result["placeholder"] == "Custom placeholder"
+
+
+class TestWidgetConfigLogoUrl:
+    """Tests for WidgetConfig.logo_url field and validation."""
+
+    def test_logo_url_accepts_https(self) -> None:
+        """Should accept HTTPS URLs."""
+        widget = WidgetConfig(logo_url="https://example.com/logo.png")
+        assert widget.logo_url == "https://example.com/logo.png"
+
+    def test_logo_url_accepts_http(self) -> None:
+        """Should accept HTTP URLs."""
+        widget = WidgetConfig(logo_url="http://example.com/logo.png")
+        assert widget.logo_url == "http://example.com/logo.png"
+
+    def test_logo_url_accepts_relative_path(self) -> None:
+        """Should accept paths starting with /."""
+        widget = WidgetConfig(logo_url="/hed/logo")
+        assert widget.logo_url == "/hed/logo"
+
+    def test_logo_url_rejects_javascript(self) -> None:
+        """Should reject javascript: URLs."""
+        with pytest.raises(ValidationError, match="logo_url must use"):
+            WidgetConfig(logo_url="javascript:alert(1)")
+
+    def test_logo_url_rejects_data_uri(self) -> None:
+        """Should reject data: URIs."""
+        with pytest.raises(ValidationError, match="logo_url must use"):
+            WidgetConfig(logo_url="data:text/html,<script>alert(1)</script>")
+
+    def test_logo_url_rejects_ftp(self) -> None:
+        """Should reject ftp: URLs."""
+        with pytest.raises(ValidationError, match="logo_url must use"):
+            WidgetConfig(logo_url="ftp://example.com/logo.png")
+
+    def test_logo_url_none_by_default(self) -> None:
+        """Should default to None."""
+        widget = WidgetConfig()
+        assert widget.logo_url is None
+
+    def test_logo_url_empty_string_normalized(self) -> None:
+        """Empty or whitespace-only string should become None."""
+        widget = WidgetConfig(logo_url="   ")
+        assert widget.logo_url is None
+
+    def test_logo_url_strips_whitespace(self) -> None:
+        """Should strip whitespace from logo_url."""
+        widget = WidgetConfig(logo_url="  https://example.com/logo.png  ")
+        assert widget.logo_url == "https://example.com/logo.png"
+
+    def test_resolve_with_logo_url_fallback(self) -> None:
+        """resolve() should use fallback logo_url when self.logo_url is None."""
+        widget = WidgetConfig()
+        result = widget.resolve("Test", logo_url="/test/logo")
+        assert result["logo_url"] == "/test/logo"
+
+    def test_resolve_explicit_logo_url_takes_precedence(self) -> None:
+        """resolve() should prefer explicit logo_url over fallback."""
+        widget = WidgetConfig(logo_url="https://example.com/explicit.png")
+        result = widget.resolve("Test", logo_url="/test/logo")
+        assert result["logo_url"] == "https://example.com/explicit.png"
+
+    def test_resolve_no_logo_url_returns_none(self) -> None:
+        """resolve() should return None when no logo_url is set anywhere."""
+        widget = WidgetConfig()
+        result = widget.resolve("Test")
+        assert result["logo_url"] is None
 
 
 class TestCommunityConfigWidget:

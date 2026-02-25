@@ -104,7 +104,7 @@ class TestAPIKeyAuthentication:
         """OpenRouter BYOK header should bypass server API key requirement."""
         response = client_with_auth.get(
             "/protected",
-            headers={"X-OpenRouter-API-Key": "sk-or-user-key"},
+            headers={"X-OpenRouter-Key": "sk-or-user-key"},
         )
         assert response.status_code == 200
         data = response.json()
@@ -195,7 +195,7 @@ class TestBYOKHeaders:
             "/byok",
             headers={
                 "X-API-Key": "test-secret-key",
-                "X-OpenRouter-API-Key": "sk-or-test",
+                "X-OpenRouter-Key": "sk-or-test",
             },
         )
         assert response.status_code == 200

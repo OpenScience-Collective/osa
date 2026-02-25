@@ -1,0 +1,472 @@
+# MNE-Python Assistant Configuration
+# Single source of truth for the MNE community assistant
+
+id: mne
+name: MNE-Python
+description: Open-source Python toolkit for exploring, visualizing, and analyzing human neurophysiological data (MEG, EEG, sEEG, ECoG, and NIRS)
+status: available
+default_model: anthropic/claude-haiku-4.5
+default_model_provider: anthropic
+
+# External links for dashboard and discovery
+links:
+  homepage: https://mne.tools
+  documentation: https://mne.tools/stable/
+  repository: https://github.com/mne-tools
+  demo: https://demo.osc.earth/mne
+
+# Widget configuration for frontend embedding
+widget:
+  title: MNE-Python Assistant
+  theme_color: "#1f77b4"
+  initial_message: "Hi! I'm the MNE-Python Assistant. I can help with MEG, EEG, and neurophysiological data analysis using MNE-Python and its ecosystem."
+  placeholder: Ask about MNE-Python...
+  suggested_questions:
+    - How do I read raw EEG data in MNE?
+    - How do I filter and preprocess my data?
+    - How do I run ICA for artifact removal?
+    - How do I perform source localization?
+    - How do I do time-frequency analysis?
+
+# TODO: MNE maintainers to submit PR adding CORS origins for mne.tools
+# cors_origins:
+#   - https://mne.tools
+#   - https://*.mne.tools
+
+# Budget limits for cost management
+budget:
+  daily_limit_usd: 5.00
+  monthly_limit_usd: 50.00
+  alert_threshold_pct: 80.0
+
+# System prompt template with runtime-substituted placeholders
+system_prompt: |
+  You are a technical assistant specialized in helping users with MNE-Python, an open-source Python toolkit for exploring, visualizing, and analyzing human neurophysiological data including MEG, EEG, sEEG, ECoG, and NIRS.
+  The MNE ecosystem includes MNE-Python (core library), MNE-BIDS (BIDS format support), MNE-Connectivity (spectral and effective connectivity), MNE-ICALabel (automatic ICA component labeling), and MNE-LSL (real-time data streaming).
+  You provide explanations, troubleshooting, and step-by-step guidance for neurophysiological data analysis workflows in Python.
+  Focus on helping users with MNE-Python and MEG/EEG/NIRS analysis. You may reference related concepts (signal processing, BIDS, source modeling theory, machine learning) when they help answer the user's question.
+  Base your responses on official MNE documentation, established best practices, and the tools available to you.
+  Always attempt to answer the user's question. Use the documentation and search tools to look up information
+  you're unsure about rather than declining to answer. If specific details aren't available in the docs,
+  provide what you do know and note which parts you're less certain about.
+
+  When a user's question is ambiguous, assume the most likely meaning and provide a useful starting point,
+  but also ask clarifying questions when necessary.
+  Communicate in a clear and technical style, prioritizing accuracy while remaining accessible.
+  Balance clarity and technical precision, starting with practical guidance and expanding into details when needed.
+  Answers should be well-structured and easy to follow, with examples and code snippets where appropriate.
+
+  The MNE homepage is https://mne.tools
+  MNE tutorials and documentation are at https://mne.tools/stable/
+  The MNE GitHub organization is at https://github.com/mne-tools
+  The MNE community forum is at https://mne.discourse.group/
+  MNE API reference is at https://mne.tools/stable/api/python_reference.html
+
+  ## Response Style (IMPORTANT -- follow this strictly)
+
+  Your responses must be structured but brief:
+  - Use markdown headers to organize, but keep each section to 1-2 sentences
+  - Aim for 200-300 words total. Never exceed 400 words unless the user asks for detail.
+  - End with 2-3 specific follow-up suggestions so the user drives the conversation
+  - Do NOT give exhaustive answers on the first response. This is a conversation, not a lecture.
+  - When showing code examples, show ONE focused snippet, not complete workflows
+
+  ## MNE-Python Data Pipeline
+
+  MNE-Python follows a structured data pipeline. Guide users through the appropriate stage:
+
+  **Core data structures (in analysis order):**
+  1. `Raw` - Continuous time series data (loading, filtering, preprocessing)
+  2. `Epochs` - Time-locked segments around events
+  3. `Evoked` - Averaged epoch data (ERPs/ERFs)
+  4. `SourceEstimate` - Source-level activity estimates
+
+  **Common workflow:**
+  ```python
+  import mne
+
+  # Load data
+  raw = mne.io.read_raw_fif('data_raw.fif', preload=True)
+
+  # Preprocess
+  raw.filter(l_freq=1.0, h_freq=40.0)
+
+  # Create epochs
+  events = mne.find_events(raw)
+  epochs = mne.Epochs(raw, events, tmin=-0.2, tmax=0.5)
+
+  # Average
+  evoked = epochs.average()
+  ```
+
+  ## Using Tools Strategically
+
+  You have access to tools for documentation retrieval and knowledge discovery. Use them to verify facts and ensure accuracy.
+
+  - Retrieve documentation when you need specific information not covered by preloaded docs
+  - When users ask about recent activity, issues, or PRs, use the knowledge discovery tools
+  - When users ask about research papers, use the paper search tool
+  - When users ask about function parameters or usage, use the docstring search tool
+  - When users ask about common problems, use the forum search tool
+
+  ## Using the retrieve_mne_docs Tool
+
+  Retrieve documentation when you need to verify specifics or the user asks about a topic not covered by preloaded docs.
+  Include links to relevant documents when you cite them.
+
+  **Important guidelines:**
+  - Do NOT retrieve docs that have already been preloaded (listed below)
+  - Use preloaded docs first; only fetch additional docs when needed
+  - If you have already loaded a document in this conversation, don't load it again
+
+  {preloaded_docs_section}
+
+  {available_docs_section}
+
+  ## Available Tools
+
+  You have access to multiple specialized tools to help researchers:
+
+  **Documentation & Codebase:**
+  1. `retrieve_mne_docs`: Fetch tutorials and guides from mne.tools
+  2. `search_mne_code_docs`: Search Python function/class documentation from MNE codebase
+
+  **Community Knowledge:**
+  3. `search_mne_discussions`: Search GitHub issues and PRs across MNE repos
+  4. `list_mne_recent`: List recent development activity (PRs, issues)
+  5. `search_mne_forum`: Search MNE Discourse forum topics and answers
+
+  **Research:**
+  6. `search_mne_papers`: Search academic literature about MNE and neurophysiology
+
+  ## Tool Usage Guidelines
+
+  **For function usage questions:** Use `search_mne_code_docs` first
+  - Example: "How do I use read_raw_edf?" -> CALL `search_mne_code_docs(query="read_raw_edf")`
+  - Example: "What parameters does Epochs accept?" -> CALL `search_mne_code_docs(query="Epochs")`
+
+  **For common problems and troubleshooting:** Use `search_mne_forum` to find past solutions
+  - Example: "How to fix rank deficiency in ICA?" -> CALL `search_mne_forum(query="rank deficiency ICA")`
+  - Example: "Error with forward model?" -> CALL `search_mne_forum(query="forward model error")`
+
+  **For current development issues:** Use `search_mne_discussions`
+  - Example: "Any open issues with NIRS?" -> CALL `search_mne_discussions(query="NIRS", status="open")`
+
+  **For tutorials and guides:** Use `retrieve_mne_docs`
+  - Example: "Show me the ICA tutorial" -> CALL `retrieve_mne_docs(title="ICA")`
+
+  Always cite sources with links to documentation, GitHub issues, or forum threads.
+
+  ## Knowledge Discovery Tools - YOU MUST USE THESE
+
+  You have access to a synced knowledge database with GitHub issues, PRs, academic papers, function documentation, and Discourse forum Q&A.
+  **You MUST use these tools when users ask about recent activity, issues, PRs, function usage, or troubleshooting.**
+
+  **Available MNE repositories in the database:**
+  {repo_list}
+
+  **CRITICAL: When users mention these repos (even by short name), USE THE TOOLS:**
+  - "mne" or "mne-python" -> repo="mne-tools/mne-python"
+  - "mne-bids" or "bids" -> repo="mne-tools/mne-bids"
+  - "connectivity" -> repo="mne-tools/mne-connectivity"
+  - "icalabel" -> repo="mne-tools/mne-icalabel"
+  - "lsl" or "mne-lsl" -> repo="mne-tools/mne-lsl"
+
+  **MANDATORY: Use tools for these question patterns:**
+  - "What are the latest PRs?" -> CALL `list_mne_recent(item_type="pr")`
+  - "Latest PRs in mne-bids?" -> CALL `list_mne_recent(item_type="pr", repo="mne-tools/mne-bids")`
+  - "Open issues?" -> CALL `list_mne_recent(item_type="issue", status="open")`
+  - "Any discussions about source localization?" -> CALL `search_mne_discussions(query="source localization")`
+
+  **Core MNE papers tracked for citations (DOIs in database):**
+  {paper_dois}
+
+  **MANDATORY: Use tools for citation/paper questions:**
+  - "Papers about MNE?" -> CALL `search_mne_papers(query="MNE-Python")`
+  - "Research on connectivity analysis?" -> CALL `search_mne_papers(query="connectivity MEG EEG")`
+
+  **DO NOT:**
+  - Tell users to "visit GitHub", "check Google Scholar", or "use the API" when you have the data
+  - Make up PR numbers, issue numbers, paper titles, authors, or citation counts
+  - Say "I don't have access" - you DO have access via the tools above
+  - Hallucinate fake papers, fake authors, or fake citation counts
+
+  **Present results as discovery:**
+  - "Here are the recent PRs in MNE-Python: [actual list with real URLs]"
+  - "There's a related discussion: [real link]"
+  - "Here are papers related to MNE: [actual list from database with real URLs]"
+
+  The knowledge database may not be populated. If you get a message about initializing the database,
+  then explain that the knowledge base isn't set up yet.
+
+  {page_context_section}
+
+  {additional_instructions}
+
+# Documentation sources
+# - preload: true = embedded in system prompt (recommended: 2-3 core docs to keep prompt lean)
+# - preload: false/omitted = fetched on demand via retrieve_docs tool
+# Note: MNE docs are Sphinx-generated HTML. The fetcher auto-converts HTML to markdown.
+documentation:
+  # === PRELOADED: Core overview (2 docs) ===
+  - title: The typical M/EEG workflow
+    url: https://mne.tools/stable/documentation/cookbook.html
+    source_url: https://mne.tools/stable/documentation/cookbook.html
+    preload: true
+    category: core
+    description: Overview of the standard MEG/EEG analysis workflow with MNE-Python.
+
+  - title: The MNE tools suite
+    url: https://mne.tools/stable/install/mne_tools_suite.html
+    source_url: https://mne.tools/stable/install/mne_tools_suite.html
+    preload: true
+    category: core
+    description: Overview of MNE-Python and related tools in the MNE ecosystem.
+
+  # === ON-DEMAND: Introduction (3 docs) ===
+  - title: Overview of MEG/EEG analysis with MNE-Python
+    url: https://mne.tools/stable/auto_tutorials/intro/10_overview.html
+    source_url: https://mne.tools/stable/auto_tutorials/intro/10_overview.html
+    category: intro
+    description: Getting started with MNE-Python, basic concepts and data loading.
+
+  - title: The Info data structure
+    url: https://mne.tools/stable/auto_tutorials/intro/30_info.html
+    source_url: https://mne.tools/stable/auto_tutorials/intro/30_info.html
+    category: intro
+    description: Understanding MNE's Info object for measurement metadata.
+
+  - title: Working with sensor locations
+    url: https://mne.tools/stable/auto_tutorials/intro/40_sensor_locations.html
+    source_url: https://mne.tools/stable/auto_tutorials/intro/40_sensor_locations.html
+    category: intro
+    description: Loading, plotting, and managing sensor/electrode positions.
+
+  # === ON-DEMAND: Data I/O (3 docs) ===
+  - title: Importing data from MEG devices
+    url: https://mne.tools/stable/auto_tutorials/io/10_reading_meg_data.html
+    source_url: https://mne.tools/stable/auto_tutorials/io/10_reading_meg_data.html
+    category: io
+    description: Reading data from Elekta, CTF, BTi, KIT, and other MEG systems.
+
+  - title: Importing data from EEG devices
+    url: https://mne.tools/stable/auto_tutorials/io/20_reading_eeg_data.html
+    source_url: https://mne.tools/stable/auto_tutorials/io/20_reading_eeg_data.html
+    category: io
+    description: Reading EDF, BDF, EGI, BrainVision, EEGLAB, and other EEG formats.
+
+  - title: Importing data from fNIRS devices
+    url: https://mne.tools/stable/auto_tutorials/io/30_reading_fnirs_data.html
+    source_url: https://mne.tools/stable/auto_tutorials/io/30_reading_fnirs_data.html
+    category: io
+    description: Reading functional near-infrared spectroscopy data.
+
+  # === ON-DEMAND: Raw data (2 docs) ===
+  - title: The Raw data structure
+    url: https://mne.tools/stable/auto_tutorials/raw/10_raw_overview.html
+    source_url: https://mne.tools/stable/auto_tutorials/raw/10_raw_overview.html
+    category: raw
+    description: Working with continuous data, the Raw object, and basic operations.
+
+  - title: Annotating continuous data
+    url: https://mne.tools/stable/auto_tutorials/raw/30_annotate_raw.html
+    source_url: https://mne.tools/stable/auto_tutorials/raw/30_annotate_raw.html
+    category: raw
+    description: Adding annotations to mark bad segments, events, and artifacts.
+
+  # === ON-DEMAND: Preprocessing (5 docs) ===
+  - title: Overview of artifact detection
+    url: https://mne.tools/stable/auto_tutorials/preprocessing/10_preprocessing_overview.html
+    source_url: https://mne.tools/stable/auto_tutorials/preprocessing/10_preprocessing_overview.html
+    category: preprocessing
+    description: Overview of preprocessing steps and artifact detection strategies.
+
+  - title: Filtering and resampling data
+    url: https://mne.tools/stable/auto_tutorials/preprocessing/30_filtering_resampling.html
+    source_url: https://mne.tools/stable/auto_tutorials/preprocessing/30_filtering_resampling.html
+    category: preprocessing
+    description: Applying FIR and IIR filters, downsampling, and anti-aliasing.
+
+  - title: Repairing artifacts with ICA
+    url: https://mne.tools/stable/auto_tutorials/preprocessing/40_artifact_correction_ica.html
+    source_url: https://mne.tools/stable/auto_tutorials/preprocessing/40_artifact_correction_ica.html
+    category: preprocessing
+    description: Using Independent Component Analysis to remove eye blinks, heartbeat, and other artifacts.
+
+  - title: Setting the EEG reference
+    url: https://mne.tools/stable/auto_tutorials/preprocessing/55_setting_eeg_reference.html
+    source_url: https://mne.tools/stable/auto_tutorials/preprocessing/55_setting_eeg_reference.html
+    category: preprocessing
+    description: Re-referencing EEG data to average, REST, or specific electrode references.
+
+  - title: Signal-space separation (SSS) and Maxwell filtering
+    url: https://mne.tools/stable/auto_tutorials/preprocessing/60_maxwell_filtering_sss.html
+    source_url: https://mne.tools/stable/auto_tutorials/preprocessing/60_maxwell_filtering_sss.html
+    category: preprocessing
+    description: MEG-specific noise reduction using Maxwell filtering and SSS.
+
+  # === ON-DEMAND: Epochs (3 docs) ===
+  - title: The Epochs data structure
+    url: https://mne.tools/stable/auto_tutorials/epochs/10_epochs_overview.html
+    source_url: https://mne.tools/stable/auto_tutorials/epochs/10_epochs_overview.html
+    category: epochs
+    description: Creating, manipulating, and understanding epoched data.
+
+  - title: Working with Epoch metadata
+    url: https://mne.tools/stable/auto_tutorials/epochs/30_epochs_metadata.html
+    source_url: https://mne.tools/stable/auto_tutorials/epochs/30_epochs_metadata.html
+    category: epochs
+    description: Using pandas DataFrames as metadata for advanced epoch selection.
+
+  - title: Visualizing epoched data
+    url: https://mne.tools/stable/auto_tutorials/epochs/20_visualize_epochs.html
+    source_url: https://mne.tools/stable/auto_tutorials/epochs/20_visualize_epochs.html
+    category: epochs
+    description: Plotting epochs, image plots, and drop logs.
+
+  # === ON-DEMAND: Evoked responses (2 docs) ===
+  - title: The Evoked data structure
+    url: https://mne.tools/stable/auto_tutorials/evoked/10_evoked_overview.html
+    source_url: https://mne.tools/stable/auto_tutorials/evoked/10_evoked_overview.html
+    category: evoked
+    description: Working with averaged evoked data (ERPs and ERFs).
+
+  - title: EEG analysis - Event-Related Potentials (ERPs)
+    url: https://mne.tools/stable/auto_tutorials/evoked/30_eeg_erp.html
+    source_url: https://mne.tools/stable/auto_tutorials/evoked/30_eeg_erp.html
+    category: evoked
+    description: Complete ERP analysis workflow from raw data to group statistics.
+
+  # === ON-DEMAND: Time-frequency (2 docs) ===
+  - title: The Spectrum and EpochsSpectrum classes
+    url: https://mne.tools/stable/auto_tutorials/time-freq/10_spectrum_class.html
+    source_url: https://mne.tools/stable/auto_tutorials/time-freq/10_spectrum_class.html
+    category: time_freq
+    description: Computing and visualizing power spectra with Welch and multitaper methods.
+
+  - title: Frequency and time-frequency sensor analysis
+    url: https://mne.tools/stable/auto_tutorials/time-freq/20_sensors_time_frequency.html
+    source_url: https://mne.tools/stable/auto_tutorials/time-freq/20_sensors_time_frequency.html
+    category: time_freq
+    description: Morlet wavelets, ERSP, inter-trial coherence, and induced power.
+
+  # === ON-DEMAND: Forward modeling (2 docs) ===
+  - title: Source alignment and coordinate frames
+    url: https://mne.tools/stable/auto_tutorials/forward/20_source_alignment.html
+    source_url: https://mne.tools/stable/auto_tutorials/forward/20_source_alignment.html
+    category: forward
+    description: Coregistration of MRI and MEG/EEG coordinate systems.
+
+  - title: Head model and forward computation
+    url: https://mne.tools/stable/auto_tutorials/forward/30_forward.html
+    source_url: https://mne.tools/stable/auto_tutorials/forward/30_forward.html
+    category: forward
+    description: Computing BEM surfaces, source spaces, and forward solutions.
+
+  # === ON-DEMAND: Source localization (3 docs) ===
+  - title: Source localization with MNE, dSPM, sLORETA, and eLORETA
+    url: https://mne.tools/stable/auto_tutorials/inverse/30_mne_dspm_loreta.html
+    source_url: https://mne.tools/stable/auto_tutorials/inverse/30_mne_dspm_loreta.html
+    category: inverse
+    description: Distributed source estimation using minimum-norm methods.
+
+  - title: Source reconstruction using an LCMV beamformer
+    url: https://mne.tools/stable/auto_tutorials/inverse/50_beamformer_lcmv.html
+    source_url: https://mne.tools/stable/auto_tutorials/inverse/50_beamformer_lcmv.html
+    category: inverse
+    description: Beamforming for source localization using LCMV spatial filter.
+
+  - title: Visualize source time courses (stcs)
+    url: https://mne.tools/stable/auto_tutorials/inverse/60_visualize_stc.html
+    source_url: https://mne.tools/stable/auto_tutorials/inverse/60_visualize_stc.html
+    category: inverse
+    description: Plotting source estimates on brain surfaces and volumes.
+
+  # === ON-DEMAND: Statistics (2 docs) ===
+  - title: Statistical inference
+    url: https://mne.tools/stable/auto_tutorials/stats-sensor-space/10_background_stats.html
+    source_url: https://mne.tools/stable/auto_tutorials/stats-sensor-space/10_background_stats.html
+    category: stats
+    description: Overview of parametric and non-parametric statistical tests in MNE.
+
+  - title: Non-parametric cluster permutation statistics
+    url: https://mne.tools/stable/auto_tutorials/stats-sensor-space/40_cluster_1samp_time_freq.html
+    source_url: https://mne.tools/stable/auto_tutorials/stats-sensor-space/40_cluster_1samp_time_freq.html
+    category: stats
+    description: Cluster-based permutation tests for time-frequency data.
+
+  # === ON-DEMAND: Machine learning (1 doc) ===
+  - title: Decoding (MVPA)
+    url: https://mne.tools/stable/auto_tutorials/machine-learning/50_decoding.html
+    source_url: https://mne.tools/stable/auto_tutorials/machine-learning/50_decoding.html
+    category: machine_learning
+    description: Multi-variate pattern analysis and temporal generalization.
+
+  # === ON-DEMAND: Clinical (1 doc) ===
+  - title: Working with sEEG data
+    url: https://mne.tools/stable/auto_tutorials/clinical/20_seeg.html
+    source_url: https://mne.tools/stable/auto_tutorials/clinical/20_seeg.html
+    category: clinical
+    description: Analysis of stereo-EEG recordings with depth electrodes.
+
+# Sync schedule configuration
+# Each sync type runs on its own cron schedule (UTC)
+# Staggered to avoid concurrent load with other communities
+sync:
+  github:
+    cron: "30 2 * * *"      # daily at 2:30am UTC
+  papers:
+    cron: "30 3 * * 0"      # weekly Sunday at 3:30am UTC
+  docstrings:
+    cron: "30 4 * * 1"      # weekly Monday at 4:30am UTC
+  discourse:
+    cron: "30 5 * * 1"      # weekly Monday at 5:30am UTC
+
+# GitHub repositories for issue/PR sync
+github:
+  repos:
+    - mne-tools/mne-python
+    - mne-tools/mne-bids
+    - mne-tools/mne-connectivity
+    - mne-tools/mne-icalabel
+    - mne-tools/mne-lsl
+
+# Paper/citation search configuration
+citations:
+  queries:
+    - MNE-Python
+    - MNE MEG EEG analysis
+    - MNE source localization
+    - MNE-BIDS
+    - MNE connectivity analysis
+  dois:
+    - "10.3389/fnins.2013.00267"         # MEG and EEG Data Analysis with MNE-Python (Gramfort et al., 2013)
+    - "10.1016/j.neuroimage.2013.10.027" # MNE Software for Processing MEG and EEG Data (Gramfort et al., 2014)
+    - "10.21105/joss.01896"              # MNE-BIDS (Appelhoff et al., 2019)
+    - "10.21105/joss.04484"              # MNE-ICALabel (Li et al., 2022)
+    - "10.21105/joss.08088"              # MNE-LSL (Scheltienne et al.)
+
+# Discourse forum configuration
+discourse:
+  - url: https://mne.discourse.group
+    tags: []
+
+# Docstring extraction configuration
+# MNE ecosystem uses NumPy-style docstrings; our Python AST parser handles them
+docstrings:
+  repos:
+    - repo: mne-tools/mne-python
+      branch: main
+      languages: [python]
+    - repo: mne-tools/mne-bids
+      branch: main
+      languages: [python]
+    - repo: mne-tools/mne-connectivity
+      branch: main
+      languages: [python]
+    - repo: mne-tools/mne-icalabel
+      branch: main
+      languages: [python]
+    - repo: mne-tools/mne-lsl
+      branch: main
+      languages: [python]

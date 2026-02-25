@@ -44,21 +44,22 @@ uv run pre-commit install
 ### CLI Usage
 
 ```bash
-# Show available assistants
-osa
+# Set up your API key (get one at https://openrouter.ai/keys)
+osa init
 
 # Ask the HED assistant a question
-osa hed ask "What is HED?"
+osa ask -a hed "What is HED?"
 
 # Start an interactive chat session
-osa hed chat
+osa chat -a hed
 
 # Show all commands
 osa --help
-osa hed --help
 ```
 
 ### API Server
+
+Requires server dependencies: `pip install 'open-science-assistant[server]'`
 
 ```bash
 # Start the API server
@@ -77,8 +78,8 @@ osa config show
 # Set API keys for BYOK (Bring Your Own Key)
 osa config set --openrouter-key YOUR_KEY
 
-# Connect to remote server (uses BYOK)
-osa hed ask "What is HED?" --url https://api.osc.earth/osa-dev
+# Override API URL per-command
+osa ask -a hed "What is HED?" --api-url https://api.osc.earth/osa-dev
 ```
 
 ### Deployment

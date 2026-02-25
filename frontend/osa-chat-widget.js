@@ -257,6 +257,13 @@
       height: 20px;
     }
 
+    .osa-chat-avatar img {
+      width: 28px;
+      height: 28px;
+      object-fit: contain;
+      border-radius: 50%;
+    }
+
     .osa-chat-title-area {
       flex: 1;
       min-width: 0;
@@ -1502,6 +1509,19 @@
           CONFIG.suggestedQuestions = w.suggested_questions;
           changed = true;
         }
+        if (w.theme_color != null && !_userSetKeys.has('themeColor')) {
+          CONFIG.themeColor = w.theme_color;
+          changed = true;
+        }
+        if (w.logo_url != null && !_userSetKeys.has('logo')) {
+          // Resolve path-only logo URLs (starting with '/') against the API endpoint
+          if (w.logo_url.startsWith('/')) {
+            CONFIG.logo = CONFIG.apiEndpoint + w.logo_url;
+          } else {
+            CONFIG.logo = w.logo_url;
+          }
+          changed = true;
+        }
 
         if (changed) {
           applyWidgetConfig();
@@ -1522,6 +1542,20 @@
   function applyWidgetConfig() {
     const container = document.querySelector('.osa-chat-widget');
     if (!container) return;
+
+    // Apply theme color if configured (must be valid #RRGGBB hex)
+    if (CONFIG.themeColor && /^#[0-9a-fA-F]{6}$/.test(CONFIG.themeColor)) {
+      container.style.setProperty('--osa-primary', CONFIG.themeColor);
+      // Derive a darker shade for hover states
+      const r = parseInt(CONFIG.themeColor.slice(1, 3), 16);
+      const g = parseInt(CONFIG.themeColor.slice(3, 5), 16);
+      const b = parseInt(CONFIG.themeColor.slice(5, 7), 16);
+      const darker = '#' +
+        Math.max(0, r - 25).toString(16).padStart(2, '0') +
+        Math.max(0, g - 25).toString(16).padStart(2, '0') +
+        Math.max(0, b - 25).toString(16).padStart(2, '0');
+      container.style.setProperty('--osa-primary-dark', darker);
+    }
 
     // Update header title
     const titleEl = container.querySelector('.osa-chat-title');
@@ -1551,6 +1585,22 @@
 
     // Update suggested questions
     renderSuggestions(container);
+
+    // Update avatar with community logo if available
+    const avatar = container.querySelector('.osa-chat-avatar');
+    if (avatar && CONFIG.logo) {
+      const fallback = avatar.innerHTML;
+      const img = document.createElement('img');
+      img.src = CONFIG.logo;
+      img.alt = CONFIG.title;
+      img.onerror = function() {
+        console.warn('[OSA] Failed to load community logo:', CONFIG.logo);
+        avatar.innerHTML = fallback;
+        img.onerror = null;
+      };
+      avatar.innerHTML = '';
+      avatar.appendChild(img);
+    }
 
     // Update loading label if currently loading
     const loadingLabel = container.querySelector('.osa-loading-label');

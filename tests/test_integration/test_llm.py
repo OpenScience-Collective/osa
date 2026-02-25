@@ -60,7 +60,7 @@ class TestHEDAssistantLLM:
                 "assistant": "hed",
                 "stream": False,
             },
-            headers={"X-OpenRouter-API-Key": api_key},
+            headers={"X-OpenRouter-Key": api_key},
         )
 
         assert response.status_code == 200
@@ -88,7 +88,7 @@ class TestHEDAssistantLLM:
                 "assistant": "hed",
                 "stream": False,
             },
-            headers={"X-OpenRouter-API-Key": api_key},
+            headers={"X-OpenRouter-Key": api_key},
         )
 
         assert response.status_code == 200
@@ -114,7 +114,7 @@ class TestHEDAssistantLLM:
                 "assistant": "hed",
                 "stream": False,
             },
-            headers={"X-OpenRouter-API-Key": api_key},
+            headers={"X-OpenRouter-Key": api_key},
         )
 
         assert response1.status_code == 200
@@ -129,7 +129,7 @@ class TestHEDAssistantLLM:
                 "session_id": session_id,
                 "stream": False,
             },
-            headers={"X-OpenRouter-API-Key": api_key},
+            headers={"X-OpenRouter-Key": api_key},
         )
 
         assert response2.status_code == 200
@@ -282,7 +282,7 @@ class TestPromptExamples:
                 "assistant": "hed",
                 "stream": False,
             },
-            headers={"X-OpenRouter-API-Key": api_key},
+            headers={"X-OpenRouter-Key": api_key},
         )
 
         assert response.status_code == 200

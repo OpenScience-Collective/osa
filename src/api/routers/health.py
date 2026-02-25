@@ -8,9 +8,63 @@ from fastapi import APIRouter, HTTPException
 
 from src.api.security import RequireAuth
 from src.assistants import registry
+from src.core.config.community import CommunityConfig
 
 router = APIRouter(prefix="/health", tags=["health"])
 logger = logging.getLogger(__name__)
+
+
+def compute_community_health(config: CommunityConfig) -> dict[str, Any]:
+    """Compute health status for a single community config.
+
+    Returns:
+        Dict with status, api_key, cors_origins, documents, sync_age_hours, warnings.
+    """
+    warnings: list[str] = []
+
+    # API key status
+    api_key_env_var = config.openrouter_api_key_env_var
+    if api_key_env_var:
+        if os.getenv(api_key_env_var):
+            api_key_status = "configured"
+        else:
+            api_key_status = "missing"
+            warnings.append(
+                f"Environment variable '{api_key_env_var}' not set; "
+                "using shared OSA platform key. This is for demonstration only "
+                "and is not sustainable. Requires a dedicated API key and active maintainer."
+            )
+    else:
+        api_key_status = "using_platform"
+        warnings.append(
+            "No community-specific API key configured; using shared OSA platform key. "
+            "This is for demonstration only and is not sustainable. "
+            "Requires a dedicated API key and active maintainer."
+        )
+
+    # Documentation sources
+    doc_count = len(config.documentation) if config.documentation else 0
+    if doc_count == 0:
+        warnings.append("No documentation sources configured")
+
+    # CORS origins
+    cors_count = len(config.cors_origins) if config.cors_origins else 0
+
+    # Determine overall status
+    status = "healthy"
+    if doc_count == 0 or api_key_status == "missing":
+        status = "error"
+    elif api_key_status == "using_platform":
+        status = "degraded"
+
+    return {
+        "status": status,
+        "api_key": api_key_status,
+        "cors_origins": cors_count,
+        "documents": doc_count,
+        "sync_age_hours": None,  # TODO: Add sync tracking in future iteration
+        "warnings": warnings,
+    }
 
 
 @router.get("/communities")
@@ -23,6 +77,7 @@ def get_communities_health(_auth: RequireAuth) -> dict[str, Any]:
     - cors_origins: number of CORS origins configured
     - documents: number of documentation sources
     - sync_age_hours: hours since last sync (if applicable)
+    - warnings: list of configuration issues
 
     Returns:
         Dictionary mapping community IDs to their health status.
@@ -60,8 +115,10 @@ def get_communities_health(_auth: RequireAuth) -> dict[str, Any]:
                     "cors_origins": 0,
                     "documents": 0,
                     "sync_age_hours": None,
+                    "warnings": ["Community configuration not found"],
                 }
                 continue
+            communities_health[community_id] = compute_community_health(config)
         except (AttributeError, KeyError, TypeError) as e:
             logger.error(
                 "Failed to process community health for %s: %s",
@@ -81,51 +138,12 @@ def get_communities_health(_auth: RequireAuth) -> dict[str, Any]:
             )
             communities_health[fallback_id] = {
                 "status": "error",
-                "error": f"Failed to process: {type(e).__name__}",
                 "api_key": "unknown",
                 "cors_origins": 0,
                 "documents": 0,
                 "sync_age_hours": None,
+                "warnings": [f"Failed to process: {type(e).__name__}"],
             }
             continue
-
-        # Determine API key status
-        api_key_env_var = getattr(config, "openrouter_api_key_env_var", None)
-        if api_key_env_var:
-            # Check if env var is actually set
-            api_key_status = "configured" if os.getenv(api_key_env_var) else "missing"
-        else:
-            api_key_status = "using_platform"
-
-        # Count documentation sources
-        documentation = getattr(config, "documentation", None)
-        doc_count = len(documentation) if documentation else 0
-
-        # Count CORS origins
-        cors_origins = getattr(config, "cors_origins", None)
-        cors_count = len(cors_origins) if cors_origins else 0
-
-        # Sync age is not tracked yet, set to None
-        # TODO: Add sync tracking in future iteration
-        sync_age_hours = None
-
-        # Determine overall status
-        # - error: critical issues (no docs, missing configured API key)
-        # - degraded: warnings (using platform key)
-        # - healthy: all good
-        status = "healthy"
-
-        if doc_count == 0 or api_key_status == "missing":
-            status = "error"
-        elif api_key_status == "using_platform":
-            status = "degraded"
-
-        communities_health[community_id] = {
-            "status": status,
-            "api_key": api_key_status,
-            "cors_origins": cors_count,
-            "documents": doc_count,
-            "sync_age_hours": sync_age_hours,
-        }
 
     return communities_health
