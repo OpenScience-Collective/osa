@@ -24,6 +24,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 from src.knowledge.db import get_db_path
 from src.knowledge.search import (
     list_recent_github_items,
+    search_discourse_topics,
     search_docstrings,
     search_github_items,
     search_papers,
@@ -417,6 +418,85 @@ def create_search_faq_tool(
     )
 
 
+def create_search_discourse_tool(
+    community_id: str,
+    community_name: str,
+) -> BaseTool:
+    """Create a tool for searching Discourse forum topics.
+
+    Args:
+        community_id: The community identifier (e.g., 'mne')
+        community_name: Display name (e.g., 'MNE-Python')
+
+    Returns:
+        A LangChain tool for searching Discourse forum topics
+    """
+
+    def search_discourse_impl(
+        query: str,
+        category: str | None = None,
+        limit: int = 5,
+    ) -> str:
+        """Search Discourse forum topics implementation."""
+        if not _check_db_exists(community_id):
+            return (
+                f"Knowledge database for {community_name} not initialized. "
+                "Run 'osa sync discourse' to populate it."
+            )
+
+        try:
+            results = search_discourse_topics(
+                query=query,
+                project=community_id,
+                limit=limit,
+                category_name=category,
+            )
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e):
+                logger.warning(
+                    "Discourse table not initialized for %s",
+                    community_id,
+                    extra={"query": query, "community": community_id},
+                )
+                return (
+                    f"Discourse database for {community_name} not initialized. "
+                    f"Run 'osa sync discourse --community {community_id}' to populate it."
+                )
+            raise
+
+        if not results:
+            cat_str = f" (category: {category})" if category else ""
+            return f"No forum topics found for '{query}'{cat_str}."
+
+        lines = [f"Found {len(results)} forum topics:\n"]
+        for i, r in enumerate(results, 1):
+            cat_label = f" [{r.category_name}]" if r.category_name else ""
+            lines.append(f"**{i}. {r.title}**{cat_label}")
+            lines.append(f"  Replies: {r.reply_count} | Likes: {r.like_count} | Views: {r.views}")
+            if r.snippet:
+                snippet = r.snippet[:300] + "..." if len(r.snippet) > 300 else r.snippet
+                lines.append(f"  {snippet}")
+            if r.accepted_answer_snippet:
+                lines.append(f"  Accepted answer: {r.accepted_answer_snippet}")
+            lines.append(f"  [View topic]({r.url})\n")
+
+        return "\n".join(lines)
+
+    description = (
+        f"Search {community_name} Discourse forum topics for community discussions and Q&A. "
+        "**IMPORTANT: This is for DISCOVERY, not answering.** "
+        "Use this to find forum discussions where users have asked similar questions. "
+        'Present results as: "There\'s a related discussion on the forum, see: [link]" '
+        "Do NOT use forum content to formulate authoritative answers."
+    )
+
+    return StructuredTool.from_function(
+        func=search_discourse_impl,
+        name=f"search_{community_id}_forum",
+        description=description,
+    )
+
+
 def create_knowledge_tools(
     community_id: str,
     community_name: str,
@@ -428,6 +508,7 @@ def create_knowledge_tools(
     docstrings_language: str | None = None,
     include_faq: bool = False,
     faq_list_names: list[str] | None = None,
+    include_discourse: bool = False,
 ) -> list[BaseTool]:
     """Create all knowledge discovery tools for a community.
 
@@ -445,6 +526,7 @@ def create_knowledge_tools(
         docstrings_language: Filter docstrings by language ('matlab' or 'python')
         include_faq: Include mailing list FAQ search tool (default: False)
         faq_list_names: List of mailing list names for FAQ help text
+        include_discourse: Include Discourse forum search tool (default: False)
 
     Returns:
         List of LangChain tools for the community
@@ -467,5 +549,8 @@ def create_knowledge_tools(
 
     if include_faq:
         tools.append(create_search_faq_tool(community_id, community_name, faq_list_names))
+
+    if include_discourse:
+        tools.append(create_search_discourse_tool(community_id, community_name))
 
     return tools

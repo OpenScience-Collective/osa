@@ -597,6 +597,31 @@ def sync_all(
                 console.print(f"[red]BEP sync failed: {e}[/red]")
                 logger.exception("BEP sync failed for %s", comm_id)
 
+        # Discourse forum topics
+        comm_info = registry.get(comm_id)
+        if comm_info and comm_info.community_config and comm_info.community_config.discourse:
+            console.print("[bold]Syncing Discourse topics...[/bold]")
+            try:
+                from src.knowledge.discourse_sync import sync_discourse_topics
+
+                discourse_total = 0
+                for discourse_cfg in comm_info.community_config.discourse:
+                    categories = (
+                        [cat.model_dump() for cat in discourse_cfg.categories]
+                        if discourse_cfg.categories
+                        else None
+                    )
+                    discourse_total += sync_discourse_topics(
+                        base_url=str(discourse_cfg.url),
+                        project=comm_id,
+                        categories=categories,
+                        incremental=not full,
+                    )
+                console.print(f"[green]Discourse: {discourse_total} topics[/green]")
+            except Exception as e:
+                console.print(f"[red]Discourse sync failed: {e}[/red]")
+                logger.exception("Discourse sync failed for %s", comm_id)
+
     total_items = grand_github_total + grand_paper_total + grand_bep_total
     community_word = "community" if len(communities) == 1 else "communities"
     console.print(
@@ -861,3 +886,55 @@ def sync_faq(
             table.add_row("Estimated cost", f"${result['total_cost']:.2f}")
 
             console.print(table)
+
+
+@sync_app.command("discourse")
+def sync_discourse(
+    community: Annotated[
+        str,
+        typer.Option("--community", "-c", help="Community ID to sync (e.g., mne)"),
+    ] = "mne",
+    full: Annotated[
+        bool,
+        typer.Option("--full", help="Full sync (not incremental)"),
+    ] = False,
+    max_topics: Annotated[
+        int | None,
+        typer.Option("--max", help="Maximum topics to sync (for testing)"),
+    ] = None,
+) -> None:
+    """Sync Discourse forum topics from a community's Discourse instance.
+
+    Fetches topics and their posts from the Discourse public JSON API.
+    Stores topics with first post and best answer for search.
+    """
+    _require_admin()
+    _validate_community(community)
+
+    if not _safe_init_db(community):
+        raise typer.Exit(1)
+
+    # Get discourse config from community
+    info = registry.get(community)
+    if not info or not info.community_config.discourse:
+        console.print(f"[red]Error: No Discourse forum configured for {community}[/red]")
+        raise typer.Exit(1)
+
+    from src.knowledge.discourse_sync import sync_discourse_topics
+
+    total = 0
+    for discourse_config in info.community_config.discourse:
+        categories = None
+        if discourse_config.categories:
+            categories = [cat.model_dump() for cat in discourse_config.categories]
+
+        count = sync_discourse_topics(
+            base_url=str(discourse_config.url),
+            project=community,
+            categories=categories,
+            incremental=not full,
+            max_topics=max_topics,
+        )
+        total += count
+
+    console.print(f"\n[green]Synced {total} Discourse topics for {community}[/green]")

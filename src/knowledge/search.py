@@ -770,3 +770,89 @@ def search_beps(
         raise
 
     return results
+
+
+@dataclass
+class DiscourseTopicResult:
+    """A Discourse forum topic search result."""
+
+    title: str
+    url: str
+    snippet: str
+    category_name: str
+    reply_count: int
+    like_count: int
+    views: int
+    accepted_answer_snippet: str
+    created_at: str
+
+
+def search_discourse_topics(
+    query: str,
+    project: str = "mne",
+    limit: int = 5,
+    category_name: str | None = None,
+) -> list[DiscourseTopicResult]:
+    """Search Discourse forum topics using full-text search.
+
+    Args:
+        query: Search phrase
+        project: Community ID for database isolation. Defaults to 'mne'.
+        limit: Maximum number of results
+        category_name: Filter by Discourse category name
+
+    Returns:
+        List of matching topics, ordered by relevance
+    """
+    sql = """
+        SELECT d.title, d.url, d.first_post, d.accepted_answer,
+               d.category_name, d.reply_count, d.like_count, d.views,
+               d.created_at
+        FROM discourse_topics_fts fts
+        JOIN discourse_topics d ON fts.rowid = d.id
+        WHERE discourse_topics_fts MATCH ?
+    """
+    params: list[str | int] = [query]
+
+    if category_name:
+        sql += " AND d.category_name = ?"
+        params.append(category_name)
+
+    sql += " ORDER BY rank LIMIT ?"
+    params.append(limit)
+
+    results = []
+    try:
+        with get_connection(project) as conn:
+            safe_query = _sanitize_fts5_query(query)
+            params[0] = safe_query
+
+            for row in conn.execute(sql, params):
+                results.append(
+                    DiscourseTopicResult(
+                        title=row["title"],
+                        url=row["url"],
+                        snippet=_make_snippet(row["first_post"], max_length=300),
+                        category_name=row["category_name"] or "",
+                        reply_count=row["reply_count"],
+                        like_count=row["like_count"],
+                        views=row["views"],
+                        accepted_answer_snippet=_make_snippet(
+                            row["accepted_answer"], max_length=200
+                        ),
+                        created_at=row["created_at"] or "",
+                    )
+                )
+    except sqlite3.OperationalError as e:
+        logger.error(
+            "Database operational error during Discourse search: %s",
+            e,
+            exc_info=True,
+            extra={"query": query, "project": project},
+        )
+        raise
+    except sqlite3.Error as e:
+        logger.warning("Database error during Discourse search '%s': %s", query, e)
+        raise
+
+    return results

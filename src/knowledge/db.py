@@ -304,6 +304,53 @@ CREATE TRIGGER IF NOT EXISTS bep_items_au AFTER UPDATE ON bep_items BEGIN
     VALUES (new.id, new.title, new.content);
 END;
 
+-- Discourse forum topics
+CREATE TABLE IF NOT EXISTS discourse_topics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    forum_url TEXT NOT NULL,
+    topic_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    first_post TEXT,
+    accepted_answer TEXT,
+    category_name TEXT,
+    tags TEXT,
+    reply_count INTEGER DEFAULT 0,
+    like_count INTEGER DEFAULT 0,
+    views INTEGER DEFAULT 0,
+    url TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_posted_at TEXT,
+    synced_at TEXT NOT NULL,
+    UNIQUE(forum_url, topic_id)
+);
+
+-- FTS5 for Discourse topic search
+CREATE VIRTUAL TABLE IF NOT EXISTS discourse_topics_fts USING fts5(
+    title,
+    first_post,
+    accepted_answer,
+    content='discourse_topics',
+    content_rowid='id'
+);
+
+-- Triggers to keep FTS in sync with discourse_topics
+CREATE TRIGGER IF NOT EXISTS discourse_topics_ai AFTER INSERT ON discourse_topics BEGIN
+    INSERT INTO discourse_topics_fts(rowid, title, first_post, accepted_answer)
+    VALUES (new.id, new.title, new.first_post, new.accepted_answer);
+END;
+
+CREATE TRIGGER IF NOT EXISTS discourse_topics_ad AFTER DELETE ON discourse_topics BEGIN
+    INSERT INTO discourse_topics_fts(discourse_topics_fts, rowid, title, first_post, accepted_answer)
+    VALUES('delete', old.id, old.title, old.first_post, old.accepted_answer);
+END;
+
+CREATE TRIGGER IF NOT EXISTS discourse_topics_au AFTER UPDATE ON discourse_topics BEGIN
+    INSERT INTO discourse_topics_fts(discourse_topics_fts, rowid, title, first_post, accepted_answer)
+    VALUES('delete', old.id, old.title, old.first_post, old.accepted_answer);
+    INSERT INTO discourse_topics_fts(rowid, title, first_post, accepted_answer)
+    VALUES (new.id, new.title, new.first_post, new.accepted_answer);
+END;
+
 -- Indexes for efficient queries
 CREATE INDEX IF NOT EXISTS idx_github_items_repo ON github_items(repo);
 CREATE INDEX IF NOT EXISTS idx_github_items_status ON github_items(status);
@@ -320,6 +367,9 @@ CREATE INDEX IF NOT EXISTS idx_faq_category ON faq_entries(category);
 CREATE INDEX IF NOT EXISTS idx_faq_quality ON faq_entries(quality_score);
 CREATE INDEX IF NOT EXISTS idx_summarization_status ON summarization_status(list_name, status);
 CREATE INDEX IF NOT EXISTS idx_bep_status ON bep_items(status);
+CREATE INDEX IF NOT EXISTS idx_discourse_forum ON discourse_topics(forum_url);
+CREATE INDEX IF NOT EXISTS idx_discourse_category ON discourse_topics(category_name);
+CREATE INDEX IF NOT EXISTS idx_discourse_created ON discourse_topics(created_at);
 """
 
 
@@ -728,6 +778,17 @@ def get_stats(project: str = "hed") -> dict[str, int]:
             else:
                 raise
 
+        # Discourse stats (table may not exist in older databases)
+        try:
+            stats["discourse_total"] = conn.execute(
+                "SELECT COUNT(*) FROM discourse_topics"
+            ).fetchone()[0]
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e):
+                stats["discourse_total"] = 0
+            else:
+                raise
+
         return stats
 
 
@@ -909,6 +970,85 @@ def update_summarization_status(
     )
 
 
+def upsert_discourse_topic(
+    conn: sqlite3.Connection,
+    *,
+    forum_url: str,
+    topic_id: int,
+    title: str,
+    first_post: str | None,
+    accepted_answer: str | None,
+    category_name: str | None,
+    tags: list[str] | None,
+    reply_count: int,
+    like_count: int,
+    views: int,
+    url: str,
+    created_at: str,
+    last_posted_at: str | None,
+) -> None:
+    """Insert or update a Discourse forum topic.
+
+    Args:
+        conn: Database connection
+        forum_url: Base URL of the Discourse instance
+        topic_id: Discourse topic ID
+        title: Topic title
+        first_post: Content of the first post (markdown)
+        accepted_answer: Content of the accepted answer (markdown), if any
+        category_name: Discourse category name
+        tags: List of topic tags
+        reply_count: Number of replies
+        like_count: Total likes on the topic
+        views: View count
+        url: Full URL to the topic
+        created_at: ISO 8601 creation timestamp
+        last_posted_at: ISO 8601 timestamp of last post
+    """
+    # Limit post sizes to prevent bloat
+    if first_post and len(first_post) > 5000:
+        first_post = first_post[:5000]
+    if accepted_answer and len(accepted_answer) > 5000:
+        accepted_answer = accepted_answer[:5000]
+
+    conn.execute(
+        """
+        INSERT INTO discourse_topics (forum_url, topic_id, title, first_post,
+                                      accepted_answer, category_name, tags,
+                                      reply_count, like_count, views, url,
+                                      created_at, last_posted_at, synced_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(forum_url, topic_id) DO UPDATE SET
+            title=excluded.title,
+            first_post=excluded.first_post,
+            accepted_answer=excluded.accepted_answer,
+            category_name=excluded.category_name,
+            tags=excluded.tags,
+            reply_count=excluded.reply_count,
+            like_count=excluded.like_count,
+            views=excluded.views,
+            last_posted_at=excluded.last_posted_at,
+            synced_at=excluded.synced_at
+        """,
+        (
+            forum_url,
+            topic_id,
+            title,
+            first_post,
+            accepted_answer,
+            category_name,
+            json.dumps(tags) if tags else None,
+            reply_count,
+            like_count,
+            views,
+            url,
+            created_at,
+            last_posted_at,
+            _now_iso(),
+        ),
+    )
+
+
 def is_db_populated(project: str) -> dict[str, bool]:
     """Check which knowledge tables have data for a community.
 
@@ -929,6 +1069,7 @@ def is_db_populated(project: str) -> dict[str, bool]:
         "mailman": "mailing_list_messages",
         "faq": "faq_entries",
         "beps": "bep_items",
+        "discourse": "discourse_topics",
     }
 
     db_path = get_db_path(project)

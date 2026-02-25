@@ -367,7 +367,7 @@ class TestIsDbPopulated:
         with patch("src.knowledge.db.get_db_path", return_value=db_path):
             result = is_db_populated("nonexistent")
         assert all(v is False for v in result.values())
-        expected_keys = {"github", "papers", "docstrings", "mailman", "faq", "beps"}
+        expected_keys = {"github", "papers", "docstrings", "mailman", "faq", "beps", "discourse"}
         assert set(result.keys()) == expected_keys
 
     def test_empty_db(self, temp_db: Path):
