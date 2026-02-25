@@ -15,7 +15,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from src.assistants import registry
+from src.assistants import discover_assistants, registry
 from src.cli.config import load_config
 from src.knowledge.bep_sync import sync_beps
 from src.knowledge.db import get_db_path, get_stats, init_db
@@ -208,6 +208,13 @@ sync_app = typer.Typer(
     help="Sync knowledge sources (GitHub issues/PRs, papers)",
     no_args_is_help=True,
 )
+
+
+@sync_app.callback()
+def sync_callback() -> None:
+    """Discover community configs before running any sync command."""
+    if not registry.list_all():
+        discover_assistants()
 
 
 @sync_app.command("init")
