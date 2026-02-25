@@ -162,7 +162,7 @@ class OSAClient:
                     event_type = data.get("event", "unknown")
                     yield (event_type, data)
                 except json.JSONDecodeError:
-                    logger.debug("Malformed SSE data, skipping: %s", line[:200])
+                    logger.warning("Malformed SSE data, skipping: %s", line[:200])
                     continue
 
     def ask_stream(
