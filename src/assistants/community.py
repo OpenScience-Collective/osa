@@ -228,6 +228,7 @@ class CommunityAssistant(ToolAgent):
 
         has_docstrings = config.docstrings and config.docstrings.repos
         has_faq = config.faq_generation is not None and bool(config.mailman)
+        has_discourse = bool(config.discourse)
 
         knowledge_tools = create_knowledge_tools(
             community_id=config.id,
@@ -239,6 +240,7 @@ class CommunityAssistant(ToolAgent):
             include_docstrings=bool(has_docstrings),
             include_faq=bool(has_faq),
             faq_list_names=([m.list_name for m in config.mailman] if config.mailman else None),
+            include_discourse=bool(has_discourse),
         )
         tools.extend(knowledge_tools)
 

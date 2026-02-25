@@ -267,6 +267,18 @@ class CitationConfig(BaseModel):
         return list(dict.fromkeys(normalized))
 
 
+class DiscourseCategoryConfig(BaseModel):
+    """A Discourse category to sync."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    slug: str = Field(min_length=1, pattern=r"^[a-z0-9-]+$")
+    """Category slug (e.g., 'support')."""
+
+    id: int = Field(ge=1)
+    """Category numeric ID."""
+
+
 class DiscourseConfig(BaseModel):
     """Discourse/forum search configuration."""
 
@@ -277,6 +289,9 @@ class DiscourseConfig(BaseModel):
 
     tags: list[str] = Field(default_factory=list)
     """Tags to filter forum topics by."""
+
+    categories: list[DiscourseCategoryConfig] = Field(default_factory=list)
+    """Optional categories to limit sync to. Empty means sync all."""
 
 
 class MailmanConfig(BaseModel):
@@ -813,6 +828,9 @@ class SyncConfig(BaseModel):
 
     beps: SyncTypeSchedule | None = None
     """Schedule for BIDS Extension Proposals sync (BIDS-specific)."""
+
+    discourse: SyncTypeSchedule | None = None
+    """Schedule for Discourse forum topic sync."""
 
 
 class CommunityConfig(BaseModel):

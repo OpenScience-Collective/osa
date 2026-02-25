@@ -1,6 +1,8 @@
 """Document fetching utility with caching for OSA tools."""
 
 import hashlib
+import logging
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,6 +12,67 @@ import httpx
 
 from src.tools.base import DocPage, RetrievedDoc
 from src.tools.markdown_cleaner import clean_markdown
+
+logger = logging.getLogger(__name__)
+
+# Selectors for extracting main content from HTML pages, in priority order.
+# Covers Sphinx (PyData theme, RTD theme, Furo), MkDocs, and generic HTML.
+_CONTENT_SELECTORS = [
+    "article.bd-article",  # PyData Sphinx theme
+    "div[role=main]",  # Read the Docs / classic Sphinx
+    "article[role=main]",  # Furo Sphinx theme
+    "main",  # Generic HTML5
+    "div.document",  # Older Sphinx
+    "div.md-content",  # MkDocs Material
+]
+
+
+def _is_html(content: str) -> bool:
+    """Check if content appears to be HTML."""
+    stripped = content.lstrip()
+    return stripped.startswith(("<!DOCTYPE", "<!doctype", "<html", "<HTML"))
+
+
+def _html_to_markdown(html: str) -> str:
+    """Convert HTML to markdown, extracting main content if possible.
+
+    Uses BeautifulSoup to find the main content area (skipping nav, sidebar,
+    footer), then markdownify for HTML-to-markdown conversion.
+
+    Requires beautifulsoup4 and markdownify (server optional dependencies).
+    """
+    import markdownify
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "html.parser")
+
+    # Try to find the main content area
+    content_element = None
+    for selector in _CONTENT_SELECTORS:
+        content_element = soup.select_one(selector)
+        if content_element:
+            break
+
+    # Fall back to full body if no content area found
+    if content_element is None:
+        content_element = soup.body or soup
+
+    # Remove nav, sidebar, footer elements within content
+    for tag in content_element.find_all(["nav", "footer", "aside"]):
+        tag.decompose()
+
+    md = markdownify.markdownify(
+        str(content_element),
+        heading_style="ATX",
+        strip=["script", "style"],
+    )
+
+    # Clean up Sphinx anchor links like [#](#heading "Link to this heading")
+    md = re.sub(r'\[#\]\([^)]*"Link to this [^"]*"\)', "", md)
+    # Clean up bare anchor links [#](#id)
+    md = re.sub(r"\[#\]\(#[^)]*\)", "", md)
+
+    return md
 
 
 @dataclass
@@ -179,7 +242,14 @@ class DocumentFetcher:
                 response.raise_for_status()
                 content = response.text
 
-                # Cache the raw content (before cleaning)
+                # Convert HTML to markdown before caching
+                if _is_html(content):
+                    logger.debug(
+                        "Detected HTML content, converting to markdown: %s", doc.source_url
+                    )
+                    content = _html_to_markdown(content)
+
+                # Cache the content (after HTML conversion, before markdown cleaning)
                 self._save_to_cache(doc.source_url, content)
 
                 # Clean markdown if enabled
