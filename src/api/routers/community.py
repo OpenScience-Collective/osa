@@ -849,8 +849,6 @@ def _set_metrics_on_request(
 
 _ASSISTANTS_DIR = Path(__file__).parent.parent.parent / "assistants"
 
-_LOGO_EXTENSIONS = (".svg", ".png", ".jpg", ".jpeg", ".webp")
-
 _LOGO_MEDIA_TYPES: dict[str, str] = {
     ".svg": "image/svg+xml",
     ".png": "image/png",
@@ -860,20 +858,36 @@ _LOGO_MEDIA_TYPES: dict[str, str] = {
 }
 
 
-def _find_logo_file(community_id: str) -> Path | None:
+def find_logo_file(community_id: str) -> Path | None:
     """Find a convention-based logo file in the community's folder.
 
     Looks for files named ``logo.*`` with a supported image extension
-    in ``src/assistants/{community_id}/``.  Returns the first match
-    (preferring SVG, then PNG, then others) or ``None``.
+    (SVG, PNG, JPG, JPEG, WEBP) in ``src/assistants/{community_id}/``.
+    Returns the first match or ``None``.  Priority follows the key
+    order of ``_LOGO_MEDIA_TYPES``: SVG first, then PNG, then others.
     """
     community_dir = _ASSISTANTS_DIR / community_id
-    if not community_dir.is_dir():
-        return None
-    for ext in _LOGO_EXTENSIONS:
-        candidate = community_dir / f"logo{ext}"
-        if candidate.is_file():
-            return candidate
+    try:
+        if not community_dir.is_dir():
+            return None
+        for ext in _LOGO_MEDIA_TYPES:
+            candidate = community_dir / f"logo{ext}"
+            if candidate.is_file():
+                return candidate
+    except OSError:
+        logger.warning(
+            "Filesystem error checking logo for community %s at %s",
+            community_id,
+            community_dir,
+            exc_info=True,
+        )
+    return None
+
+
+def convention_logo_url(community_id: str, widget: WidgetConfig) -> str | None:
+    """Return convention-based logo URL if no explicit logo is configured."""
+    if not widget.logo_url and find_logo_file(community_id):
+        return f"/{community_id}/logo"
     return None
 
 
@@ -1162,9 +1176,7 @@ def create_community_router(community_id: str) -> APIRouter:
         ) or WidgetConfig()
 
         # Convention-based logo: if no explicit logo_url, check for logo file
-        convention_logo = None
-        if not widget_cfg.logo_url and _find_logo_file(community_id):
-            convention_logo = f"/{community_id}/logo"
+        conv_logo = convention_logo_url(community_id, widget_cfg)
 
         # Compute lightweight health status for public display
         health_status = "error"
@@ -1180,7 +1192,7 @@ def create_community_router(community_id: str) -> APIRouter:
             description=info.description,
             default_model=default_model,
             default_model_provider=default_provider,
-            widget=WidgetConfigResponse(**widget_cfg.resolve(info.name, logo_url=convention_logo)),
+            widget=WidgetConfigResponse(**widget_cfg.resolve(info.name, logo_url=conv_logo)),
             status=health_status,
         )
 
@@ -1191,15 +1203,28 @@ def create_community_router(community_id: str) -> APIRouter:
         Looks for a ``logo.*`` file (SVG, PNG, JPG, WEBP) in the
         community's assistants folder.  Returns 404 if none exists.
         """
-        logo_path = _find_logo_file(community_id)
+        logo_path = find_logo_file(community_id)
         if logo_path is None:
             raise HTTPException(status_code=404, detail="No logo found for this community")
 
+        # Guard against file disappearing between detection and serving
+        try:
+            logo_path.stat()
+        except OSError:
+            logger.warning("Logo file disappeared or became unreadable: %s", logo_path)
+            raise HTTPException(status_code=404, detail="No logo found for this community")
+
         media_type = _LOGO_MEDIA_TYPES.get(logo_path.suffix.lower(), "application/octet-stream")
+        headers: dict[str, str] = {"Cache-Control": "public, max-age=86400"}
+        # Prevent script execution in SVGs opened via direct navigation
+        if logo_path.suffix.lower() == ".svg":
+            headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'"
+
         return FileResponse(
             logo_path,
             media_type=media_type,
-            headers={"Cache-Control": "public, max-age=86400"},
+            filename=f"{community_id}-logo{logo_path.suffix}",
+            headers=headers,
         )
 
     # -----------------------------------------------------------------------

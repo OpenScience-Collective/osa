@@ -4,7 +4,7 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from src.api.routers.community import _find_logo_file
+from src.api.routers.community import convention_logo_url
 from src.assistants import registry
 from src.core.config.community import WidgetConfig
 
@@ -29,11 +29,7 @@ def list_communities() -> list[dict[str, Any]]:
             continue
 
         widget = config.widget or _DEFAULT_WIDGET
-
-        # Convention-based logo detection
-        convention_logo = None
-        if not widget.logo_url and _find_logo_file(config.id):
-            convention_logo = f"/{config.id}/logo"
+        conv_logo = convention_logo_url(config.id, widget)
 
         communities.append(
             {
@@ -41,7 +37,7 @@ def list_communities() -> list[dict[str, Any]]:
                 "name": config.name,
                 "description": config.description,
                 "status": config.status,
-                "widget": widget.resolve(config.name, logo_url=convention_logo),
+                "widget": widget.resolve(config.name, logo_url=conv_logo),
                 "links": config.links.resolve() if config.links else None,
             }
         )

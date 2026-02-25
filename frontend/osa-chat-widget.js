@@ -1510,7 +1510,7 @@
           changed = true;
         }
         if (w.logo_url != null && !_userSetKeys.has('logo')) {
-          // Resolve relative logo URLs against the API endpoint
+          // Resolve path-only logo URLs (starting with '/') against the API endpoint
           if (w.logo_url.startsWith('/')) {
             CONFIG.logo = CONFIG.apiEndpoint + w.logo_url;
           } else {
@@ -1571,7 +1571,17 @@
     // Update avatar with community logo if available
     const avatar = container.querySelector('.osa-chat-avatar');
     if (avatar && CONFIG.logo) {
-      avatar.innerHTML = '<img src="' + escapeHtml(CONFIG.logo) + '" alt="' + escapeHtml(CONFIG.title) + '">';
+      const fallback = avatar.innerHTML;
+      const img = document.createElement('img');
+      img.src = CONFIG.logo;
+      img.alt = CONFIG.title;
+      img.onerror = function() {
+        console.warn('[OSA] Failed to load community logo:', CONFIG.logo);
+        avatar.innerHTML = fallback;
+        img.onerror = null;
+      };
+      avatar.innerHTML = '';
+      avatar.appendChild(img);
     }
 
     // Update loading label if currently loading
