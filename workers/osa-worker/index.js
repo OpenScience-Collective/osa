@@ -157,18 +157,14 @@ function isAllowedOrigin(origin) {
   // Allowed origins for OSA
   const allowedPatterns = [
     'https://osc.earth',
-    'https://*.mne.tools',
     'https://bids-specification.readthedocs.io',
     'https://bids.neuroimaging.io',
     'https://eeglab.org',
-    'https://fieldtriptoolbox.org',
     'https://hedtags.org',
     'https://hedtools.org',
-    'https://mne.tools',
     'https://nemar.org',
     'https://sccn.github.io',
     'https://www.eeglab.org',
-    'https://www.fieldtriptoolbox.org',
     'https://www.hedtags.org',
     'https://www.hedtools.org',
     'https://www.nemar.org'
@@ -179,11 +175,9 @@ function isAllowedOrigin(origin) {
 
   // Check subdomains
   if (origin.startsWith('https://') && origin.endsWith('.eeglab.org')) return true;
-  if (origin.startsWith('https://') && origin.endsWith('.fieldtriptoolbox.org')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.github.io')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.hedtags.org')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.hedtools.org')) return true;
-  if (origin.startsWith('https://') && origin.endsWith('.mne.tools')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.nemar.org')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.neuroimaging.io')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.readthedocs.io')) return true;
