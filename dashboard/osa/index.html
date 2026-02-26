@@ -947,16 +947,21 @@
         return 'N/A';
     }
 
+    const KNOWLEDGE_FIELDS = [
+        ['github_items', 'GitHub Items'],
+        ['papers', 'Papers'],
+        ['docstrings', 'Docstrings'],
+        ['discourse_topics', 'Discourse Topics'],
+        ['faq_entries', 'FAQ Entries'],
+        ['mailing_list_messages', 'Mailing List'],
+    ];
+
     function renderKnowledgeStats(sync) {
         if (!sync || !sync.knowledge) return '';
         const k = sync.knowledge;
-        const items = [];
-        if (k.github_items > 0) items.push({label: 'GitHub Items', value: k.github_items});
-        if (k.papers > 0) items.push({label: 'Papers', value: k.papers});
-        if (k.docstrings > 0) items.push({label: 'Docstrings', value: k.docstrings});
-        if (k.discourse_topics > 0) items.push({label: 'Discourse Topics', value: k.discourse_topics});
-        if (k.faq_entries > 0) items.push({label: 'FAQ Entries', value: k.faq_entries});
-        if (k.mailing_list_messages > 0) items.push({label: 'Mailing List', value: k.mailing_list_messages});
+        const items = KNOWLEDGE_FIELDS
+            .filter(([key]) => k[key] > 0)
+            .map(([key, label]) => ({label, value: k[key]}));
         if (items.length === 0) return '';
         const metrics = items.map(i =>
             `<div class="metric">
