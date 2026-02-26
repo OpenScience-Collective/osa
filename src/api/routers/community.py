@@ -1375,6 +1375,36 @@ def create_community_router(community_id: str) -> APIRouter:
         else:
             result["config_health"] = fallback_health
 
+        # Derive available tools from community config
+        if info.community_config:
+            try:
+                config = info.community_config
+                tools = []
+                if config.documentation:
+                    tools.append(f"retrieve_{config.id}_docs")
+                if config.github and config.github.repos:
+                    tools.append(f"search_{config.id}_discussions")
+                    tools.append(f"list_{config.id}_recent")
+                if config.citations and (config.citations.queries or config.citations.dois):
+                    tools.append(f"search_{config.id}_papers")
+                if config.docstrings and config.docstrings.repos:
+                    tools.append(f"search_{config.id}_code_docs")
+                if config.faq_generation and config.mailman:
+                    tools.append(f"search_{config.id}_faq")
+                if config.discourse:
+                    tools.append(f"search_{config.id}_forum")
+                result["available_tools_list"] = tools
+            except (AttributeError, TypeError) as e:
+                logger.error(
+                    "Failed to derive tools for community %s: %s",
+                    community_id,
+                    e,
+                    exc_info=True,
+                )
+                result["available_tools_list"] = []
+        else:
+            result["available_tools_list"] = []
+
         return result
 
     @router.get("/metrics/public/usage")
