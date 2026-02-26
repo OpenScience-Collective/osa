@@ -76,6 +76,17 @@ class SyncItemStatus(BaseModel):
     """ISO timestamp of the next scheduled run, or None if not scheduled."""
 
 
+class KnowledgeStats(BaseModel):
+    """Counts of items in each knowledge category."""
+
+    github_items: int = 0
+    papers: int = 0
+    docstrings: int = 0
+    discourse_topics: int = 0
+    faq_entries: int = 0
+    mailing_list_messages: int = 0
+
+
 class SyncStatusResponse(BaseModel):
     """Complete sync status response."""
 
@@ -84,13 +95,17 @@ class SyncStatusResponse(BaseModel):
     scheduler: SchedulerStatus
     health: HealthStatus
     syncs: dict[str, SyncItemStatus] = {}
-    """Per-sync-type status: github, papers, docstrings, mailman, beps, faq."""
+    """Per-sync-type status: github, papers, docstrings, mailman, beps, faq, discourse."""
+    knowledge: KnowledgeStats | None = None
+    """Counts of items in each knowledge category."""
 
 
 class TriggerRequest(BaseModel):
     """Request to trigger sync."""
 
-    sync_type: str = "all"  # "github", "papers", "docstrings", "mailman", "faq", "beps", or "all"
+    sync_type: str = (
+        "all"  # "github", "papers", "docstrings", "mailman", "faq", "beps", "discourse", or "all"
+    )
 
 
 class TriggerResponse(BaseModel):
@@ -293,7 +308,7 @@ async def get_sync_status(
             logger.error("Failed to get next run times: %s", e, exc_info=True)
 
     # Build per-sync-type status for all known sync types
-    all_sync_types = ("github", "papers", "docstrings", "mailman", "beps", "faq")
+    all_sync_types = ("github", "papers", "docstrings", "mailman", "beps", "faq", "discourse")
     syncs: dict[str, SyncItemStatus] = {}
     for sync_type in all_sync_types:
         last_sync = _get_most_recent_sync(metadata, sync_type)
@@ -321,6 +336,14 @@ async def get_sync_status(
         ),
         health=_calculate_health(metadata),
         syncs=syncs,
+        knowledge=KnowledgeStats(
+            github_items=stats.get("github_total", 0),
+            papers=stats.get("papers_total", 0),
+            docstrings=stats.get("docstrings_total", 0),
+            discourse_topics=stats.get("discourse_total", 0),
+            faq_entries=stats.get("faq_total", 0),
+            mailing_list_messages=stats.get("mailing_list_total", 0),
+        ),
     )
 
 
