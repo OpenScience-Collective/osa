@@ -357,12 +357,12 @@ async def trigger_sync(
     Requires API key authentication.
 
     Args:
-        request: Sync type to trigger (one of "github", "papers", "docstrings", "mailman", "faq", "beps", or "all")
+        request: Sync type to trigger (one of "github", "papers", "docstrings", "mailman", "faq", "beps", "discourse", or "all")
 
     Returns:
         Result of the sync operation
     """
-    valid_types = ("github", "papers", "docstrings", "mailman", "faq", "beps", "all")
+    valid_types = ("github", "papers", "docstrings", "mailman", "faq", "beps", "discourse", "all")
     if request.sync_type not in valid_types:
         raise HTTPException(
             status_code=400,
