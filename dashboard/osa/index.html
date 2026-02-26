@@ -269,6 +269,24 @@
             color: #991b1b;
         }
 
+        .section-heading {
+            color: #1e293b;
+            margin: 1rem 0 0.5rem;
+            font-size: 0.95rem;
+            font-weight: 600;
+        }
+        .tool-badge {
+            display: inline-block;
+            padding: 0.3rem 0.7rem;
+            background: #f1f5f9;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            font-size: 0.82rem;
+            font-family: monospace;
+            color: #475569;
+            margin: 0.2rem;
+        }
+
         /* Period toggle */
         .period-toggle { display: flex; gap: 0.35rem; margin-bottom: 1rem; }
         .period-btn {
@@ -493,6 +511,10 @@
             .error-msg { color: #f87171; background: #3b1219; border-color: #5c1d2a; }
             .site-footer { color: #6b7b92; border-color: #30363d; }
             .site-footer a { color: #7ba3d4; }
+            .section-heading { color: #c8d6e8; }
+            .tool-badge { background: #1c2128; border-color: #30363d; color: #8a9bb5; }
+            .config-banner-warning { background: #2d1f04; border-color: #78350f; color: #fbbf24; }
+            .config-banner-error { background: #3b1219; border-color: #5c1d2a; color: #f87171; }
         }
     </style>
 </head>
@@ -864,6 +886,8 @@
                     </div>
                 </div>
                 ${renderSyncInfo(sync)}
+                ${renderKnowledgeStats(sync)}
+                ${renderAvailableTools(summary.available_tools_list)}
             </div>
             <div class="card">
                 <h2>Activity</h2>
@@ -909,6 +933,7 @@
         mailman: 'Mailing List Sync',
         beps: 'BEPs Sync',
         faq: 'FAQ Sync',
+        discourse: 'Discourse Sync',
     };
 
     function renderSyncValue(item) {
@@ -920,6 +945,39 @@
         }
         if (item.next_run) return `Pending <span style="color:#94a3b8;font-size:0.78rem;">(next: ${formatRelativeTime(item.next_run)})</span>`;
         return 'N/A';
+    }
+
+    const KNOWLEDGE_FIELDS = [
+        ['github_items', 'GitHub Items'],
+        ['papers', 'Papers'],
+        ['docstrings', 'Docstrings'],
+        ['discourse_topics', 'Discourse Topics'],
+        ['faq_entries', 'FAQ Entries'],
+        ['mailing_list_messages', 'Mailing List'],
+    ];
+
+    function renderKnowledgeStats(sync) {
+        if (!sync || !sync.knowledge) return '';
+        const k = sync.knowledge;
+        const items = KNOWLEDGE_FIELDS
+            .filter(([key]) => k[key] > 0)
+            .map(([key, label]) => ({label, value: k[key]}));
+        if (items.length === 0) return '';
+        const metrics = items.map(i =>
+            `<div class="metric">
+                <div class="metric-value">${i.value.toLocaleString()}</div>
+                <div class="metric-label">${escapeHtml(i.label)}</div>
+            </div>`
+        ).join('');
+        return `<h3 class="section-heading">Knowledge Base</h3><div class="overview-grid">${metrics}</div>`;
+    }
+
+    function renderAvailableTools(tools) {
+        if (!tools || tools.length === 0) return '';
+        const badges = tools.map(t =>
+            `<span class="tool-badge">${escapeHtml(t)}</span>`
+        ).join('');
+        return `<h3 class="section-heading">Available Tools</h3><div style="margin:0.5rem 0;">${badges}</div>`;
     }
 
     function renderSyncInfo(sync) {
