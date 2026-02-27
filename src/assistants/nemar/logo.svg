@@ -2,7 +2,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 54 57" width="400" height="400">
   <style>
     .logo-brain {
-      fill: #2c5f8d;
+      fill: #ffffff;
       stroke: none;
     }
     .logo-electrodes {

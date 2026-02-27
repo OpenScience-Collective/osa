@@ -253,8 +253,8 @@
     }
 
     .osa-chat-avatar img {
-      width: 28px;
-      height: 28px;
+      width: 32px;
+      height: 32px;
       object-fit: contain;
       border-radius: 50%;
     }
