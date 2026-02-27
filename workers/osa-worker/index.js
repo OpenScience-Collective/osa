@@ -486,6 +486,57 @@ export default {
         return await proxyToBackendPassthrough(request, env, url.pathname, null, corsHeaders, CONFIG);
       }
 
+      // Community logo endpoint: /:communityId/logo (GET, returns image)
+      const communityLogoMatch = url.pathname.match(/^\/([^\/]+)\/logo$/);
+      if (communityLogoMatch && request.method === 'GET') {
+        const communityId = communityLogoMatch[1];
+
+        const invalid = validateCommunityId(communityId, corsHeaders);
+        if (invalid) return invalid;
+
+        const rejected = await rateLimitOrReject(request, env, corsHeaders, CONFIG);
+        if (rejected) return rejected;
+
+        // Proxy logo as raw binary (not JSON)
+        const backendUrl = env.BACKEND_URL;
+        if (!backendUrl) {
+          return new Response(JSON.stringify({ error: 'Backend not configured' }), {
+            status: 503,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const backendHeaders = {};
+        if (env.BACKEND_API_KEY) {
+          backendHeaders['X-API-Key'] = env.BACKEND_API_KEY;
+        }
+
+        try {
+          const response = await fetch(`${backendUrl}/${communityId}/logo`, {
+            method: 'GET',
+            headers: backendHeaders,
+            signal: AbortSignal.timeout(CONFIG.REQUEST_TIMEOUT),
+          });
+
+          if (!response.ok) {
+            return new Response('Not Found', { status: 404, headers: corsHeaders });
+          }
+
+          const contentType = response.headers.get('Content-Type') || 'application/octet-stream';
+          return new Response(response.body, {
+            status: 200,
+            headers: {
+              ...corsHeaders,
+              'Content-Type': contentType,
+              'Cache-Control': 'public, max-age=86400',
+            },
+          });
+        } catch (error) {
+          console.error('Logo proxy error:', error.message);
+          return new Response('Not Found', { status: 404, headers: corsHeaders });
+        }
+      }
+
       // Community endpoints: /:communityId/ask and /:communityId/chat
       const communityActionMatch = url.pathname.match(/^\/([^\/]+)\/(ask|chat)$/);
       if (communityActionMatch && request.method === 'POST') {
