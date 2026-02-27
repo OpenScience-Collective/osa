@@ -157,11 +157,13 @@ function isAllowedOrigin(origin) {
   // Allowed origins for OSA
   const allowedPatterns = [
     'https://osc.earth',
+    'https://*.mne.tools',
     'https://bids-specification.readthedocs.io',
     'https://bids.neuroimaging.io',
     'https://eeglab.org',
     'https://hedtags.org',
     'https://hedtools.org',
+    'https://mne.tools',
     'https://nemar.org',
     'https://sccn.github.io',
     'https://www.eeglab.org',
@@ -178,6 +180,7 @@ function isAllowedOrigin(origin) {
   if (origin.startsWith('https://') && origin.endsWith('.github.io')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.hedtags.org')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.hedtools.org')) return true;
+  if (origin.startsWith('https://') && origin.endsWith('.mne.tools')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.nemar.org')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.neuroimaging.io')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.readthedocs.io')) return true;
