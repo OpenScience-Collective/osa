@@ -10,10 +10,13 @@ on:
 
 jobs:
   claude-review:
-    # Only review PRs from external contributors, skip duplicates
+    # Only review PRs from external contributors, skip duplicates:
+    # - pull_request for same-repo branches (has secrets access)
+    # - pull_request_target for fork PRs only (provides secrets access that pull_request lacks for forks)
     if: |
       github.event.pull_request.user.login != 'neuromechanist' &&
-      !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork)
+      !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) &&
+      !(github.event_name == 'pull_request_target' && !github.event.pull_request.head.repo.fork)
     runs-on: ubuntu-latest
     permissions:
       contents: write
