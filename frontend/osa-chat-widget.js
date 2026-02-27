@@ -34,16 +34,11 @@
     storageKey: 'osa-chat-history-hed',
     // Turnstile: disabled for now (not set up yet)
     turnstileSiteKey: null,
-    // Customizable branding (defaults shown are for HED community)
-    title: 'HED Assistant',
-    initialMessage: 'Hi! I\'m the HED Assistant. I can help with HED (Hierarchical Event Descriptors), annotation, validation, and related tools. What would you like to know?',
-    placeholder: 'Ask about HED...',
-    suggestedQuestions: [
-      'What is HED and how is it used?',
-      'How do I annotate an event with HED tags?',
-      'What tools are available for working with HED?',
-      'Explain this HED validation error.'
-    ],
+    // Customizable branding (generic defaults; community-specific values loaded from API)
+    title: 'Open Science Assistant',
+    initialMessage: 'Hi! I\'m the Open Science Assistant. How can I help you today?',
+    placeholder: 'Ask a question...',
+    suggestedQuestions: [],
     // Per-page instructions for the assistant (set by widget embedder)
     // These are sent to the backend as part of page_context
     widgetInstructions: null,
