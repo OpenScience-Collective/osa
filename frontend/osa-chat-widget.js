@@ -48,7 +48,7 @@
     // These are sent to the backend as part of page_context
     widgetInstructions: null,
     showExperimentalBadge: true,
-    repoUrl: 'https://github.com/OpenScience-Collective/osa',
+    repoUrl: 'https://osc.earth/osa/',
     repoName: 'Open Science Assistant',
     // Page context awareness - sends current page URL/title to help the assistant
     // provide more contextually relevant answers
@@ -1930,7 +1930,7 @@
         </div>
         <div class="osa-chat-footer">
           <a href="${escapeHtml(CONFIG.repoUrl)}" target="_blank" rel="noopener noreferrer">
-            Powered by ${escapeHtml(CONFIG.repoName)}<span class="osa-version"></span>
+            Powered by ${escapeHtml(CONFIG.repoName)} (osc.earth/osa)<span class="osa-version"></span>
           </a>
         </div>
         <div class="osa-settings-overlay">
