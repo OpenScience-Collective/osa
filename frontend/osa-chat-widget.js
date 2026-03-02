@@ -747,9 +747,10 @@
     .osa-ai-disclaimer {
       padding: 4px 16px;
       font-size: 10px;
-      color: var(--osa-text-light);
+      color: #9a3412;
       text-align: center;
       border-top: 1px solid var(--osa-border);
+      background: #fff7ed;
     }
 
     .osa-footer-separator {
