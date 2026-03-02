@@ -701,9 +701,6 @@
       40% { transform: scale(1); }
     }
 
-    .osa-chat-footer {
-      display: none;
-    }
 
     .osa-turnstile-container {
       padding: 12px 16px;
@@ -754,12 +751,8 @@
       font-size: 10px;
       text-align: center;
       border-top: 1px solid var(--osa-border);
-    }
-
-    .osa-footer-separator {
-      color: var(--osa-text-light);
-      opacity: 0.5;
-      flex-shrink: 0;
+      color: var(--osa-disclaimer-color, #9a3412);
+      background: var(--osa-disclaimer-bg, #fff7ed);
     }
 
     .osa-combined-footer {
@@ -778,6 +771,13 @@
       align-items: center;
       gap: 5px;
       flex-shrink: 0;
+    }
+
+    .osa-combined-footer .osa-page-context-toggle::after {
+      content: '|';
+      color: var(--osa-text-light);
+      opacity: 0.5;
+      margin-left: 3px;
     }
 
     .osa-combined-footer input[type="checkbox"] {
@@ -1581,6 +1581,15 @@
       container.style.setProperty('--osa-primary-dark', darker);
     }
 
+    // Apply disclaimer colors if configured (must be valid CSS color: hex, named, rgb, hsl)
+    const cssColorPattern = /^(#[0-9a-fA-F]{3,8}|[a-zA-Z]+|rgba?\([^)]+\)|hsla?\([^)]+\))$/;
+    if (CONFIG.disclaimerColor && cssColorPattern.test(CONFIG.disclaimerColor.trim())) {
+      container.style.setProperty('--osa-disclaimer-color', CONFIG.disclaimerColor.trim());
+    }
+    if (CONFIG.disclaimerBackground && cssColorPattern.test(CONFIG.disclaimerBackground.trim())) {
+      container.style.setProperty('--osa-disclaimer-bg', CONFIG.disclaimerBackground.trim());
+    }
+
     // Update header title
     const titleEl = container.querySelector('.osa-chat-title');
     if (titleEl) {
@@ -1948,13 +1957,12 @@
             ${ICONS.send}
           </button>
         </div>
-        <div class="osa-ai-disclaimer" style="display: ${CONFIG.disclaimerEnabled ? 'block' : 'none'}; color: ${CONFIG.disclaimerColor}; background: ${CONFIG.disclaimerBackground};">${escapeHtml(CONFIG.disclaimerText)}</div>
+        <div class="osa-ai-disclaimer" style="display: ${CONFIG.disclaimerEnabled ? 'block' : 'none'}">${escapeHtml(CONFIG.disclaimerText || '')}</div>
         <div class="osa-combined-footer">
           <div class="osa-page-context-toggle" style="display: ${CONFIG.allowPageContext ? 'flex' : 'none'}">
             <input type="checkbox" id="osa-page-context-checkbox" ${pageContextEnabled ? 'checked' : ''} />
             <label for="osa-page-context-checkbox">${escapeHtml(CONFIG.pageContextLabel)}</label>
           </div>
-          <span class="osa-footer-separator" style="display: ${CONFIG.allowPageContext ? 'inline' : 'none'}">|</span>
           <div class="osa-footer-powered">
             Powered by <a href="${escapeHtml(CONFIG.repoUrl)}" target="_blank" rel="noopener noreferrer">OSA</a><span class="osa-version"></span>
           </div>
