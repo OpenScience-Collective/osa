@@ -1944,7 +1944,7 @@
             ${ICONS.send}
           </button>
         </div>
-        <div class="osa-ai-disclaimer">Multi-agent AI assistant; may make mistakes. Please verify responses.</div>
+        <div class="osa-ai-disclaimer">This is a multi-agent AI assistant and may make mistakes. Please verify responses.</div>
         <div class="osa-combined-footer">
           <div class="osa-page-context-toggle" style="display: ${CONFIG.allowPageContext ? 'flex' : 'none'}">
             <input type="checkbox" id="osa-page-context-checkbox" ${pageContextEnabled ? 'checked' : ''} />
