@@ -697,21 +697,7 @@
     }
 
     .osa-chat-footer {
-      padding: 8px 16px;
-      border-top: 1px solid var(--osa-border);
-      text-align: center;
-      font-size: 11px;
-      color: var(--osa-text-light);
-    }
-
-    .osa-chat-footer a {
-      color: var(--osa-text-light);
-      text-decoration: none;
-    }
-
-    .osa-chat-footer a:hover {
-      color: var(--osa-primary);
-      text-decoration: underline;
+      display: none;
     }
 
     .osa-turnstile-container {
@@ -758,16 +744,34 @@
       border-top: 2px solid rgba(0,0,0,0.2);
     }
 
-    .osa-page-context-toggle {
+    .osa-ai-disclaimer {
+      padding: 6px 16px;
+      font-size: 11px;
+      color: var(--osa-text-light);
+      text-align: center;
+      border-bottom: 1px solid var(--osa-border);
+      background: var(--osa-bg-secondary, #f8f9fa);
+    }
+
+    .osa-combined-footer {
       padding: 6px 16px;
       font-size: 11px;
       color: var(--osa-text-light);
       display: flex;
       align-items: center;
-      gap: 6px;
+      justify-content: space-between;
+      border-top: 1px solid var(--osa-border);
+      gap: 8px;
     }
 
-    .osa-page-context-toggle input[type="checkbox"] {
+    .osa-combined-footer .osa-page-context-toggle {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      flex-shrink: 0;
+    }
+
+    .osa-combined-footer input[type="checkbox"] {
       width: 11px;
       height: 11px;
       margin: 0;
@@ -775,9 +779,25 @@
       accent-color: var(--osa-primary);
     }
 
-    .osa-page-context-toggle label {
+    .osa-combined-footer label {
       cursor: pointer;
       user-select: none;
+    }
+
+    .osa-combined-footer .osa-footer-powered {
+      text-align: right;
+      white-space: nowrap;
+    }
+
+    .osa-combined-footer .osa-footer-powered a {
+      color: var(--osa-text-light);
+      text-decoration: none;
+      font-weight: 600;
+    }
+
+    .osa-combined-footer .osa-footer-powered a:hover {
+      color: var(--osa-primary);
+      text-decoration: underline;
     }
 
     /* Settings modal - contained within chat window to avoid z-index conflicts
@@ -1905,6 +1925,7 @@
             </button>
           </div>
         </div>
+        <div class="osa-ai-disclaimer">This assistant is a multi-agent AI and can make mistakes. Please verify responses.</div>
         <div class="osa-chat-messages"></div>
         <div class="osa-suggestions" style="display: none;">
           <span class="osa-suggestions-label">Try asking:</span>
@@ -1919,14 +1940,14 @@
             ${ICONS.send}
           </button>
         </div>
-        <div class="osa-page-context-toggle" style="display: ${CONFIG.allowPageContext ? 'flex' : 'none'}">
-          <input type="checkbox" id="osa-page-context-checkbox" ${pageContextEnabled ? 'checked' : ''} />
-          <label for="osa-page-context-checkbox">${escapeHtml(CONFIG.pageContextLabel)}</label>
-        </div>
-        <div class="osa-chat-footer">
-          <a href="${escapeHtml(CONFIG.repoUrl)}" target="_blank" rel="noopener noreferrer">
-            Powered by ${escapeHtml(CONFIG.repoName)} (osc.earth/osa)<span class="osa-version"></span>
-          </a>
+        <div class="osa-combined-footer">
+          <div class="osa-page-context-toggle" style="display: ${CONFIG.allowPageContext ? 'flex' : 'none'}">
+            <input type="checkbox" id="osa-page-context-checkbox" ${pageContextEnabled ? 'checked' : ''} />
+            <label for="osa-page-context-checkbox">${escapeHtml(CONFIG.pageContextLabel)}</label>
+          </div>
+          <div class="osa-footer-powered">
+            Powered by <a href="${escapeHtml(CONFIG.repoUrl)}" target="_blank" rel="noopener noreferrer">OSA</a><span class="osa-version"></span>
+          </div>
         </div>
         <div class="osa-settings-overlay">
         <div class="osa-settings-modal">
