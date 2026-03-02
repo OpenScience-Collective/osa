@@ -745,12 +745,17 @@
     }
 
     .osa-ai-disclaimer {
-      padding: 6px 16px;
-      font-size: 11px;
+      padding: 4px 16px;
+      font-size: 10px;
       color: var(--osa-text-light);
       text-align: center;
-      border-bottom: 1px solid var(--osa-border);
-      background: var(--osa-bg-secondary, #f8f9fa);
+      border-top: 1px solid var(--osa-border);
+    }
+
+    .osa-footer-separator {
+      color: var(--osa-text-light);
+      opacity: 0.5;
+      flex-shrink: 0;
     }
 
     .osa-combined-footer {
@@ -1925,7 +1930,6 @@
             </button>
           </div>
         </div>
-        <div class="osa-ai-disclaimer">This assistant is a multi-agent AI and can make mistakes. Please verify responses.</div>
         <div class="osa-chat-messages"></div>
         <div class="osa-suggestions" style="display: none;">
           <span class="osa-suggestions-label">Try asking:</span>
@@ -1940,11 +1944,13 @@
             ${ICONS.send}
           </button>
         </div>
+        <div class="osa-ai-disclaimer">Multi-agent AI assistant; may make mistakes. Please verify responses.</div>
         <div class="osa-combined-footer">
           <div class="osa-page-context-toggle" style="display: ${CONFIG.allowPageContext ? 'flex' : 'none'}">
             <input type="checkbox" id="osa-page-context-checkbox" ${pageContextEnabled ? 'checked' : ''} />
             <label for="osa-page-context-checkbox">${escapeHtml(CONFIG.pageContextLabel)}</label>
           </div>
+          <span class="osa-footer-separator" style="display: ${CONFIG.allowPageContext ? 'inline' : 'none'}">|</span>
           <div class="osa-footer-powered">
             Powered by <a href="${escapeHtml(CONFIG.repoUrl)}" target="_blank" rel="noopener noreferrer">OSA</a><span class="osa-version"></span>
           </div>
