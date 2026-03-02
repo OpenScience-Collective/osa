@@ -51,6 +51,11 @@
     pageContextDefaultEnabled: true,  // Default state of checkbox
     pageContextStorageKey: 'osa-page-context-enabled',
     pageContextLabel: 'Share page URL to help answer questions',
+    // AI disclaimer shown above the footer
+    disclaimerEnabled: true,
+    disclaimerText: 'This is a multi-agent AI assistant and may make mistakes. Please verify responses.',
+    disclaimerColor: '#9a3412',
+    disclaimerBackground: '#fff7ed',
     // Fullscreen mode (for pop-out windows)
     fullscreen: false,
     // Streaming responses - enable progressive text display for better UX
@@ -747,10 +752,8 @@
     .osa-ai-disclaimer {
       padding: 4px 16px;
       font-size: 10px;
-      color: #9a3412;
       text-align: center;
       border-top: 1px solid var(--osa-border);
-      background: #fff7ed;
     }
 
     .osa-footer-separator {
@@ -1945,7 +1948,7 @@
             ${ICONS.send}
           </button>
         </div>
-        <div class="osa-ai-disclaimer">This is a multi-agent AI assistant and may make mistakes. Please verify responses.</div>
+        <div class="osa-ai-disclaimer" style="display: ${CONFIG.disclaimerEnabled ? 'block' : 'none'}; color: ${CONFIG.disclaimerColor}; background: ${CONFIG.disclaimerBackground};">${escapeHtml(CONFIG.disclaimerText)}</div>
         <div class="osa-combined-footer">
           <div class="osa-page-context-toggle" style="display: ${CONFIG.allowPageContext ? 'flex' : 'none'}">
             <input type="checkbox" id="osa-page-context-checkbox" ${pageContextEnabled ? 'checked' : ''} />
