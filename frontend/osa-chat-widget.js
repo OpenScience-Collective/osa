@@ -51,6 +51,11 @@
     pageContextDefaultEnabled: true,  // Default state of checkbox
     pageContextStorageKey: 'osa-page-context-enabled',
     pageContextLabel: 'Share page URL to help answer questions',
+    // AI disclaimer shown above the footer
+    disclaimerEnabled: true,
+    disclaimerText: 'This is a multi-agent AI assistant and may make mistakes. Please verify responses.',
+    disclaimerColor: '#9a3412',
+    disclaimerBackground: '#fff7ed',
     // Fullscreen mode (for pop-out windows)
     fullscreen: false,
     // Streaming responses - enable progressive text display for better UX
@@ -696,23 +701,6 @@
       40% { transform: scale(1); }
     }
 
-    .osa-chat-footer {
-      padding: 8px 16px;
-      border-top: 1px solid var(--osa-border);
-      text-align: center;
-      font-size: 11px;
-      color: var(--osa-text-light);
-    }
-
-    .osa-chat-footer a {
-      color: var(--osa-text-light);
-      text-decoration: none;
-    }
-
-    .osa-chat-footer a:hover {
-      color: var(--osa-primary);
-      text-decoration: underline;
-    }
 
     .osa-turnstile-container {
       padding: 12px 16px;
@@ -758,16 +746,41 @@
       border-top: 2px solid rgba(0,0,0,0.2);
     }
 
-    .osa-page-context-toggle {
+    .osa-ai-disclaimer {
+      padding: 4px 16px;
+      font-size: 10px;
+      text-align: center;
+      border-top: 1px solid var(--osa-border);
+      color: var(--osa-disclaimer-color, #9a3412);
+      background: var(--osa-disclaimer-bg, #fff7ed);
+    }
+
+    .osa-combined-footer {
       padding: 6px 16px;
       font-size: 11px;
       color: var(--osa-text-light);
       display: flex;
       align-items: center;
-      gap: 6px;
+      justify-content: space-between;
+      border-top: 1px solid var(--osa-border);
+      gap: 8px;
     }
 
-    .osa-page-context-toggle input[type="checkbox"] {
+    .osa-combined-footer .osa-page-context-toggle {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      flex-shrink: 0;
+    }
+
+    .osa-combined-footer .osa-page-context-toggle::after {
+      content: '|';
+      color: var(--osa-text-light);
+      opacity: 0.5;
+      margin-left: 3px;
+    }
+
+    .osa-combined-footer input[type="checkbox"] {
       width: 11px;
       height: 11px;
       margin: 0;
@@ -775,9 +788,25 @@
       accent-color: var(--osa-primary);
     }
 
-    .osa-page-context-toggle label {
+    .osa-combined-footer label {
       cursor: pointer;
       user-select: none;
+    }
+
+    .osa-combined-footer .osa-footer-powered {
+      text-align: right;
+      white-space: nowrap;
+    }
+
+    .osa-combined-footer .osa-footer-powered a {
+      color: var(--osa-text-light);
+      text-decoration: none;
+      font-weight: 600;
+    }
+
+    .osa-combined-footer .osa-footer-powered a:hover {
+      color: var(--osa-primary);
+      text-decoration: underline;
     }
 
     /* Settings modal - contained within chat window to avoid z-index conflicts
@@ -1552,6 +1581,15 @@
       container.style.setProperty('--osa-primary-dark', darker);
     }
 
+    // Apply disclaimer colors if configured (must be valid CSS color: hex, named, rgb, hsl)
+    const cssColorPattern = /^(#[0-9a-fA-F]{3,8}|[a-zA-Z]+|rgba?\([^)]+\)|hsla?\([^)]+\))$/;
+    if (CONFIG.disclaimerColor && cssColorPattern.test(CONFIG.disclaimerColor.trim())) {
+      container.style.setProperty('--osa-disclaimer-color', CONFIG.disclaimerColor.trim());
+    }
+    if (CONFIG.disclaimerBackground && cssColorPattern.test(CONFIG.disclaimerBackground.trim())) {
+      container.style.setProperty('--osa-disclaimer-bg', CONFIG.disclaimerBackground.trim());
+    }
+
     // Update header title
     const titleEl = container.querySelector('.osa-chat-title');
     if (titleEl) {
@@ -1919,14 +1957,15 @@
             ${ICONS.send}
           </button>
         </div>
-        <div class="osa-page-context-toggle" style="display: ${CONFIG.allowPageContext ? 'flex' : 'none'}">
-          <input type="checkbox" id="osa-page-context-checkbox" ${pageContextEnabled ? 'checked' : ''} />
-          <label for="osa-page-context-checkbox">${escapeHtml(CONFIG.pageContextLabel)}</label>
-        </div>
-        <div class="osa-chat-footer">
-          <a href="${escapeHtml(CONFIG.repoUrl)}" target="_blank" rel="noopener noreferrer">
-            Powered by ${escapeHtml(CONFIG.repoName)} (osc.earth/osa)<span class="osa-version"></span>
-          </a>
+        <div class="osa-ai-disclaimer" style="display: ${CONFIG.disclaimerEnabled ? 'block' : 'none'}">${escapeHtml(CONFIG.disclaimerText || '')}</div>
+        <div class="osa-combined-footer">
+          <div class="osa-page-context-toggle" style="display: ${CONFIG.allowPageContext ? 'flex' : 'none'}">
+            <input type="checkbox" id="osa-page-context-checkbox" ${pageContextEnabled ? 'checked' : ''} />
+            <label for="osa-page-context-checkbox">${escapeHtml(CONFIG.pageContextLabel)}</label>
+          </div>
+          <div class="osa-footer-powered">
+            Powered by <a href="${escapeHtml(CONFIG.repoUrl)}" target="_blank" rel="noopener noreferrer">OSA</a><span class="osa-version"></span>
+          </div>
         </div>
         <div class="osa-settings-overlay">
         <div class="osa-settings-modal">
