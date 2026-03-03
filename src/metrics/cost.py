@@ -40,6 +40,11 @@ MODEL_PRICING: dict[str, tuple[float, float]] = {
 _FALLBACK_INPUT_RATE = 1.00  # USD per 1M tokens
 _FALLBACK_OUTPUT_RATE = 3.00  # USD per 1M tokens
 
+# Cost protection thresholds (USD per 1M input tokens)
+# Applied only when using platform/community keys (not BYOK)
+COST_WARN_THRESHOLD = 5.0  # Log warning for models above this
+COST_BLOCK_THRESHOLD = 15.0  # Block requests for models above this
+
 
 def estimate_cost(
     model: str | None,
