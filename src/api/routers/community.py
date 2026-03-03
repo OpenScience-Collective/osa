@@ -618,12 +618,11 @@ def _check_model_cost(model: str, key_source: str) -> None:
     if key_source == "byok":
         return
 
-    # Look up input token cost; unknown models get fallback rate
-    if model in MODEL_PRICING:
-        input_rate = MODEL_PRICING[model][0]
-    else:
-        # Unknown models are allowed with fallback pricing
+    pricing = MODEL_PRICING.get(model)
+    if pricing is None:
+        logger.info("Model %s not in pricing table; allowing without cost check", model)
         return
+    input_rate = pricing[0]
 
     if input_rate >= COST_BLOCK_THRESHOLD:
         raise HTTPException(
