@@ -141,15 +141,23 @@ class SecureJSONFormatter(SecureFormatter):
 
             return json_str
 
-        except Exception as e:
-            # Fallback to safe error message
+        except (ValueError, TypeError, KeyError) as e:
+            # Expected serialization errors - include context for debugging
+            safe_msg = str(getattr(record, "msg", "<no message>"))[:200]
+            safe_name = getattr(record, "name", "<unknown>")
             error_entry = {
                 "timestamp": datetime.now(UTC).isoformat(),
                 "level": "ERROR",
                 "logger": "logging",
-                "message": f"[LOGGING ERROR: {type(e).__name__}]",
+                "message": f"[LOGGING ERROR: {type(e).__name__}: {e}]",
+                "original_logger": safe_name,
+                "original_message": safe_msg,
             }
             return json.dumps(error_entry)
+        except Exception as e:
+            # Unexpected errors - surface to stderr and re-raise
+            print(f"CRITICAL: Unexpected error in SecureJSONFormatter: {e}", file=sys.stderr)
+            raise
 
 
 def configure_secure_logging(
