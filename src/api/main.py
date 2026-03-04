@@ -25,8 +25,13 @@ from src.api.routers.health import router as health_router
 from src.api.routers.widget_test import router as widget_test_router
 from src.api.scheduler import start_scheduler, stop_scheduler
 from src.assistants import discover_assistants, registry
+from src.core.logging import configure_secure_logging
 from src.metrics.db import init_metrics_db
 from src.metrics.middleware import MetricsMiddleware
+
+# Configure secure logging before any other logging occurs.
+# This ensures all log output uses SecureFormatter which redacts API keys.
+configure_secure_logging()
 
 logger = logging.getLogger(__name__)
 
