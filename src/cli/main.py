@@ -35,6 +35,7 @@ from src.cli.config import (
     save_config,
     save_credentials,
 )
+from src.cli.mirror import mirror_app
 from src.version import __version__
 
 if TYPE_CHECKING:
@@ -50,6 +51,9 @@ cli = typer.Typer(
     no_args_is_help=True,
     rich_markup_mode="rich",
 )
+
+# Mirror management subcommands
+cli.add_typer(mirror_app, name="mirror")
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +171,10 @@ def ask(
         bool,
         typer.Option("--no-stream", help="Disable streaming (get full response at once)"),
     ] = False,
+    mirror: Annotated[
+        str | None,
+        typer.Option("--mirror", "-m", help="Mirror ID to use for database queries"),
+    ] = None,
 ) -> None:
     """Ask a single question to a community assistant.
 
@@ -174,6 +182,7 @@ def ask(
         osa ask "What is HED?" -a hed
         osa ask "How do I organize my dataset?" -a bids
         osa ask "What is pop_newset?" -a eeglab -o json
+        osa ask "What is HED?" -a hed --mirror abc123def456
     """
     config, effective_key = get_effective_config(api_key=api_key, api_url=api_url)
 
@@ -185,6 +194,7 @@ def ask(
         api_url=config.api.url,
         openrouter_api_key=effective_key,
         user_id=get_user_id(),
+        mirror_id=mirror,
     )
 
     use_streaming = not no_stream and not output.is_piped() and output_format != "json"
@@ -262,6 +272,10 @@ def chat(
         bool,
         typer.Option("--no-stream", help="Disable streaming"),
     ] = False,
+    mirror: Annotated[
+        str | None,
+        typer.Option("--mirror", "-m", help="Mirror ID to use for database queries"),
+    ] = None,
 ) -> None:
     """Start an interactive chat session with a community assistant.
 
@@ -269,6 +283,7 @@ def chat(
         osa chat -a hed
         osa chat -a bids
         osa chat -a eeglab --no-stream
+        osa chat -a hed --mirror abc123def456
     """
     config, effective_key = get_effective_config(api_key=api_key, api_url=api_url)
 
@@ -280,6 +295,7 @@ def chat(
         api_url=config.api.url,
         openrouter_api_key=effective_key,
         user_id=get_user_id(),
+        mirror_id=mirror,
     )
 
     use_streaming = not no_stream

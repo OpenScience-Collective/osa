@@ -47,11 +47,13 @@ class OSAClient:
         openrouter_api_key: str | None = None,
         user_id: str | None = None,
         timeout: httpx.Timeout = DEFAULT_TIMEOUT,
+        mirror_id: str | None = None,
     ) -> None:
         self.api_url = api_url.rstrip("/")
         self.openrouter_api_key = openrouter_api_key
         self._user_id = user_id
         self.timeout = timeout
+        self.mirror_id = mirror_id
 
     @property
     def user_id(self) -> str:
@@ -61,7 +63,7 @@ class OSAClient:
         return self._user_id
 
     def _get_headers(self) -> dict[str, str]:
-        """Build request headers with BYOK key and user ID."""
+        """Build request headers with BYOK key, user ID, and mirror ID."""
         headers: dict[str, str] = {
             "Content-Type": "application/json",
             "User-Agent": "osa-cli",
@@ -71,6 +73,8 @@ class OSAClient:
             headers["X-OpenRouter-Key"] = self.openrouter_api_key
             # Also send legacy header for servers that haven't updated yet
             headers["X-OpenRouter-API-Key"] = self.openrouter_api_key
+        if self.mirror_id:
+            headers["X-Mirror-ID"] = self.mirror_id
         return headers
 
     def _handle_response(self, response: httpx.Response) -> None:
@@ -226,3 +230,107 @@ class OSAClient:
             f"{self.api_url}/{community}/chat",
             self._chat_payload(message, stream=True, session_id=session_id),
         )
+
+    # ------------------------------------------------------------------
+    # Mirror management
+    # ------------------------------------------------------------------
+
+    def _post(self, path: str, payload: dict[str, Any]) -> Any:
+        """Send a POST request and return parsed JSON."""
+        with httpx.Client(timeout=self.timeout) as client:
+            response = client.post(
+                f"{self.api_url}{path}",
+                headers=self._get_headers(),
+                json=payload,
+            )
+            self._handle_response(response)
+            return response.json()
+
+    def _delete(self, path: str) -> None:
+        """Send a DELETE request."""
+        with httpx.Client(timeout=10.0) as client:
+            response = client.delete(
+                f"{self.api_url}{path}",
+                headers=self._get_headers(),
+            )
+            self._handle_response(response)
+
+    def create_mirror(
+        self,
+        community_ids: list[str],
+        ttl_hours: int = 48,
+        label: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a new ephemeral database mirror."""
+        payload: dict[str, Any] = {
+            "community_ids": community_ids,
+            "ttl_hours": ttl_hours,
+        }
+        if label:
+            payload["label"] = label
+        return self._post("/mirrors", payload)
+
+    def list_mirrors(self) -> list[dict[str, Any]]:
+        """List active mirrors."""
+        return self._get("/mirrors")
+
+    def get_mirror(self, mirror_id: str) -> dict[str, Any]:
+        """Get mirror metadata."""
+        return self._get(f"/mirrors/{mirror_id}")
+
+    def delete_mirror(self, mirror_id: str) -> None:
+        """Delete a mirror."""
+        self._delete(f"/mirrors/{mirror_id}")
+
+    def refresh_mirror(
+        self,
+        mirror_id: str,
+        community_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Re-copy production databases into a mirror."""
+        payload: dict[str, Any] = {}
+        if community_ids:
+            payload["community_ids"] = community_ids
+        return self._post(f"/mirrors/{mirror_id}/refresh", payload)
+
+    def sync_mirror(
+        self,
+        mirror_id: str,
+        sync_type: str = "all",
+    ) -> dict[str, Any]:
+        """Run sync pipeline against a mirror's databases."""
+        return self._post(
+            f"/mirrors/{mirror_id}/sync",
+            {"sync_type": sync_type},
+        )
+
+    def download_mirror_db(
+        self,
+        mirror_id: str,
+        community_id: str,
+        output_path: str,
+    ) -> str:
+        """Download a community database file from a mirror.
+
+        Returns the path to the downloaded file.
+        """
+        with (
+            httpx.Client(timeout=self.timeout) as client,
+            client.stream(
+                "GET",
+                f"{self.api_url}/mirrors/{mirror_id}/download/{community_id}",
+                headers=self._get_headers(),
+            ) as response,
+        ):
+            if response.status_code >= 400:
+                response.read()
+                self._handle_response(response)
+
+            from pathlib import Path
+
+            dest = Path(output_path) / f"{community_id}.db"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with open(str(dest), "wb") as f:
+                for chunk in response.iter_bytes(chunk_size=8192):
+                    f.write(chunk)
+            return str(dest)

@@ -11,6 +11,7 @@ Design: Discovery, not knowledge. These are pointers to discussions,
 not authoritative sources for answering questions.
 """
 
+import contextvars
 import json
 import logging
 import sqlite3
@@ -22,6 +23,31 @@ from pathlib import Path
 from src.cli.config import get_data_dir
 
 logger = logging.getLogger(__name__)
+
+# ContextVar for transparent mirror routing. When set, get_db_path() returns
+# the mirror's database path instead of the production path.
+_active_mirror_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_active_mirror_id", default=None
+)
+
+
+def set_active_mirror(mirror_id: str | None) -> contextvars.Token[str | None]:
+    """Set the active mirror for the current async context.
+
+    Returns a token that can be used to reset the context variable.
+    """
+    return _active_mirror_id.set(mirror_id)
+
+
+def reset_active_mirror(token: contextvars.Token[str | None]) -> None:
+    """Reset the active mirror to its previous value."""
+    _active_mirror_id.reset(token)
+
+
+def get_active_mirror() -> str | None:
+    """Get the currently active mirror ID, or None if not in mirror mode."""
+    return _active_mirror_id.get()
+
 
 SCHEMA_SQL = """
 -- GitHub issues and PRs
@@ -377,6 +403,8 @@ def get_db_path(project: str = "hed") -> Path:
     """Get path to knowledge database for a project.
 
     Each assistant/project has its own isolated knowledge database.
+    When a mirror is active (via ContextVar), returns the mirror's
+    database path instead.
 
     Args:
         project: Assistant/project name (e.g., 'hed', 'bids', 'eeglab').
@@ -395,7 +423,27 @@ def get_db_path(project: str = "hed") -> Path:
             "Use only alphanumeric characters, hyphens, and underscores."
         )
 
+    mirror_id = _active_mirror_id.get()
+    if mirror_id:
+        _validate_mirror_id(mirror_id)
+        return get_data_dir() / "mirrors" / mirror_id / f"{project}.db"
+
     return get_data_dir() / "knowledge" / f"{project}.db"
+
+
+def _validate_mirror_id(mirror_id: str) -> None:
+    """Validate mirror ID format to prevent path traversal.
+
+    Raises:
+        ValueError: If mirror_id contains invalid characters.
+    """
+    if not mirror_id or len(mirror_id) > 64:
+        raise ValueError(f"Invalid mirror ID length: {len(mirror_id) if mirror_id else 0}")
+    if not mirror_id.replace("-", "").replace("_", "").isalnum():
+        raise ValueError(
+            f"Invalid mirror ID: {mirror_id}. "
+            "Use only alphanumeric characters, hyphens, and underscores."
+        )
 
 
 @contextmanager

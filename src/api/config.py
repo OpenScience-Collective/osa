@@ -138,6 +138,16 @@ class Settings(BaseSettings):
     # Empty databases are automatically seeded on startup when sync is enabled
     sync_enabled: bool = Field(default=True, description="Enable automated knowledge sync")
 
+    # Ephemeral Database Mirrors
+    max_mirrors: int = Field(default=50, description="Maximum total mirrors allowed on server")
+    max_mirrors_per_user: int = Field(
+        default=2, description="Maximum mirrors per BYOK user (admin key unlimited)"
+    )
+    max_mirror_ttl_hours: int = Field(
+        default=168, description="Maximum mirror TTL in hours (7 days)"
+    )
+    default_mirror_ttl_hours: int = Field(default=48, description="Default mirror TTL in hours")
+
     def parse_admin_keys(self) -> set[str]:
         """Parse API_KEYS into a set of valid admin keys.
 
