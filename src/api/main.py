@@ -19,6 +19,7 @@ from src.api.routers import (
     create_community_router,
     metrics_public_router,
     metrics_router,
+    mirrors_router,
     sync_router,
 )
 from src.api.routers.health import router as health_router
@@ -26,6 +27,8 @@ from src.api.routers.widget_test import router as widget_test_router
 from src.api.scheduler import start_scheduler, stop_scheduler
 from src.assistants import discover_assistants, registry
 from src.core.logging import configure_secure_logging
+from src.knowledge.db import reset_active_mirror, set_active_mirror
+from src.knowledge.mirror import get_mirror
 from src.metrics.db import init_metrics_db
 from src.metrics.middleware import MetricsMiddleware
 
@@ -186,6 +189,35 @@ def create_app() -> FastAPI:
     # Metrics middleware - captures request timing and logs to metrics DB
     app.add_middleware(MetricsMiddleware)
 
+    # Mirror routing middleware - sets ContextVar for transparent DB routing
+    @app.middleware("http")
+    async def mirror_routing_middleware(request: Any, call_next: Any) -> Any:
+        """Route database access to mirror when X-Mirror-ID header is present."""
+        mirror_id = request.headers.get("x-mirror-id")
+        if mirror_id:
+            info = get_mirror(mirror_id)
+            if not info:
+                from fastapi.responses import JSONResponse
+
+                return JSONResponse(
+                    status_code=404,
+                    content={"detail": f"Mirror '{mirror_id}' not found"},
+                )
+            if info.is_expired():
+                from fastapi.responses import JSONResponse
+
+                return JSONResponse(
+                    status_code=410,
+                    content={"detail": f"Mirror '{mirror_id}' has expired"},
+                )
+
+        token = set_active_mirror(mirror_id)
+        try:
+            response = await call_next(request)
+            return response
+        finally:
+            reset_active_mirror(token)
+
     # Register routes
     register_routes(app)
 
@@ -211,6 +243,9 @@ def register_routes(app: FastAPI) -> None:
 
     # Sync router (not community-specific)
     app.include_router(sync_router)
+
+    # Mirror management router
+    app.include_router(mirrors_router)
 
     # Metrics routers (admin + public)
     app.include_router(metrics_router)
