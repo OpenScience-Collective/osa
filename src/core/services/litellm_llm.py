@@ -663,6 +663,8 @@ class CachingLLMWrapper(BaseChatModel):
 # Caching is enabled by default for all models; OpenRouter/LiteLLM handle
 # unsupported models gracefully by ignoring cache_control parameters.
 CACHEABLE_MODELS = {
+    "claude-opus-4.6": "anthropic/claude-opus-4.6",
+    "claude-sonnet-4.6": "anthropic/claude-sonnet-4.6",
     "claude-opus-4.5": "anthropic/claude-opus-4.5",
     "claude-sonnet-4.5": "anthropic/claude-sonnet-4.5",
     "claude-haiku-4.5": "anthropic/claude-haiku-4.5",

@@ -50,8 +50,8 @@ class TestEstimateCost:
             input_tokens=1_000_000,
             output_tokens=1_000_000,
         )
-        # input: 0.14, output: 0.34, total: 0.48
-        assert cost == 0.48
+        # input: 0.07, output: 0.10, total: 0.17
+        assert cost == 0.17
 
     def test_expensive_model(self):
         """Verify cost for an expensive model (Claude Opus 4)."""
