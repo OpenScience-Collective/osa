@@ -49,7 +49,7 @@ class SecureFormatter(logging.Formatter):
             print(f"CRITICAL: Unexpected error in SecureFormatter: {e}", file=sys.stderr)
             raise
 
-        # Redact API keys with size limit to prevent ReDoS
+        # Redact API keys with size limit to bound processing time on large messages
         try:
             # Limit message size to prevent potential regex issues with extremely large inputs
             if len(formatted) > 100_000:  # 100KB limit
@@ -153,7 +153,8 @@ class SecureJSONFormatter(SecureFormatter):
                 "original_logger": safe_name,
                 "original_message": safe_msg,
             }
-            return json.dumps(error_entry)
+            fallback_json = json.dumps(error_entry)
+            return self.API_KEY_PATTERN.sub("sk-or-v1-***[redacted]", fallback_json)
         except Exception as e:
             # Unexpected errors - surface to stderr and re-raise
             print(f"CRITICAL: Unexpected error in SecureJSONFormatter: {e}", file=sys.stderr)

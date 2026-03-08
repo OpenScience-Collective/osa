@@ -21,11 +21,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from src.cli.config import get_data_dir
+from src.knowledge.mirror import _validate_mirror_id, is_safe_identifier
 
 logger = logging.getLogger(__name__)
 
 # ContextVar for transparent mirror routing. When set, get_db_path() returns
 # the mirror's database path instead of the production path.
+# ContextVar is safe for concurrent async tasks; each task gets its own copy,
+# so mirror routing in one request does not affect other requests.
 _active_mirror_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "_active_mirror_id", default=None
 )
@@ -34,8 +37,11 @@ _active_mirror_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 def set_active_mirror(mirror_id: str | None) -> contextvars.Token[str | None]:
     """Set the active mirror for the current async context.
 
+    Validates the mirror ID immediately to catch invalid values early.
     Returns a token that can be used to reset the context variable.
     """
+    if mirror_id is not None:
+        _validate_mirror_id(mirror_id)
     return _active_mirror_id.set(mirror_id)
 
 
@@ -47,6 +53,25 @@ def reset_active_mirror(token: contextvars.Token[str | None]) -> None:
 def get_active_mirror() -> str | None:
     """Get the currently active mirror ID, or None if not in mirror mode."""
     return _active_mirror_id.get()
+
+
+@contextmanager
+def active_mirror_context(mirror_id: str) -> Iterator[None]:
+    """Context manager for mirror routing.
+
+    Sets the active mirror for the duration of the block and resets it
+    afterward, even if an exception occurs.
+
+    Usage:
+        with active_mirror_context("abc123"):
+            # All DB operations within this block go to the mirror
+            ...
+    """
+    token = set_active_mirror(mirror_id)
+    try:
+        yield
+    finally:
+        reset_active_mirror(token)
 
 
 SCHEMA_SQL = """
@@ -417,7 +442,7 @@ def get_db_path(project: str = "hed") -> Path:
         ValueError: If project name contains invalid characters.
     """
     # Validate project name to prevent path traversal
-    if not project or not project.replace("-", "").replace("_", "").isalnum():
+    if not is_safe_identifier(project):
         raise ValueError(
             f"Invalid project name: {project}. "
             "Use only alphanumeric characters, hyphens, and underscores."
@@ -425,25 +450,10 @@ def get_db_path(project: str = "hed") -> Path:
 
     mirror_id = _active_mirror_id.get()
     if mirror_id:
-        _validate_mirror_id(mirror_id)
+        # mirror_id was already validated when set via set_active_mirror()
         return get_data_dir() / "mirrors" / mirror_id / f"{project}.db"
 
     return get_data_dir() / "knowledge" / f"{project}.db"
-
-
-def _validate_mirror_id(mirror_id: str) -> None:
-    """Validate mirror ID format to prevent path traversal.
-
-    Raises:
-        ValueError: If mirror_id contains invalid characters.
-    """
-    if not mirror_id or len(mirror_id) > 64:
-        raise ValueError(f"Invalid mirror ID length: {len(mirror_id) if mirror_id else 0}")
-    if not mirror_id.replace("-", "").replace("_", "").isalnum():
-        raise ValueError(
-            f"Invalid mirror ID: {mirror_id}. "
-            "Use only alphanumeric characters, hyphens, and underscores."
-        )
 
 
 @contextmanager

@@ -3,11 +3,14 @@
 Mirrors are short-lived copies of community knowledge databases on the
 remote server. They allow developers to iterate on data and prompts
 without affecting production, and can be downloaded locally for offline
-development with a local server.
+development with a local server. Use `osa mirror pull` to download
+databases for use with `osa serve`.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Annotated
 
 import httpx
@@ -15,6 +18,7 @@ import typer
 from rich.table import Table
 
 from src.cli import output
+from src.cli.client import APIError
 from src.cli.config import get_data_dir, get_effective_config, get_user_id
 
 mirror_app = typer.Typer(
@@ -46,6 +50,25 @@ def _get_client(
     return client, config
 
 
+@contextmanager
+def _handle_api_errors() -> Iterator[None]:
+    """Catch common API and connection errors, print them, and exit."""
+    try:
+        yield
+    except APIError as e:
+        output.print_error(str(e), hint=e.detail)
+        raise typer.Exit(code=1)
+    except (httpx.ConnectError, httpx.TimeoutException) as e:
+        output.print_error(f"Connection failed: {e}")
+        raise typer.Exit(code=1)
+
+
+def _format_size(size_bytes: int) -> str:
+    """Format a byte count as a human-readable string."""
+    size_kb = size_bytes / 1024
+    return f"{size_kb:.0f} KB" if size_kb < 1024 else f"{size_kb / 1024:.1f} MB"
+
+
 @mirror_app.command("create")
 def create(
     community: Annotated[
@@ -75,11 +98,9 @@ def create(
         osa mirror create -c hed -c bids
         osa mirror create -c hed --label "testing-new-prompt" --ttl 24
     """
-    from src.cli.client import APIError
-
     client, _ = _get_client(api_key, api_url)
 
-    try:
+    with _handle_api_errors():
         with output.streaming_status("Creating mirror..."):
             result = client.create_mirror(
                 community_ids=community,
@@ -95,12 +116,6 @@ def create(
         output.console.print(
             f'[dim]Use with: osa ask "question" -a hed --mirror {result["mirror_id"]}[/dim]'
         )
-    except APIError as e:
-        output.print_error(str(e), hint=e.detail)
-        raise typer.Exit(code=1)
-    except (httpx.ConnectError, httpx.TimeoutException) as e:
-        output.print_error(f"Connection failed: {e}")
-        raise typer.Exit(code=1)
 
 
 @mirror_app.command("list")
@@ -115,18 +130,10 @@ def list_cmd(
     ] = None,
 ) -> None:
     """List active mirrors."""
-    from src.cli.client import APIError
-
     client, _ = _get_client(api_key, api_url)
 
-    try:
+    with _handle_api_errors():
         mirrors = client.list_mirrors()
-    except APIError as e:
-        output.print_error(str(e), hint=e.detail)
-        raise typer.Exit(code=1)
-    except (httpx.ConnectError, httpx.TimeoutException) as e:
-        output.print_error(f"Connection failed: {e}")
-        raise typer.Exit(code=1)
 
     if not mirrors:
         output.print_info("No active mirrors.")
@@ -140,14 +147,12 @@ def list_cmd(
     table.add_column("Size", style="dim")
 
     for m in mirrors:
-        size_kb = m.get("size_bytes", 0) / 1024
-        size_str = f"{size_kb:.0f} KB" if size_kb < 1024 else f"{size_kb / 1024:.1f} MB"
         table.add_row(
             m["mirror_id"],
             ", ".join(m["community_ids"]),
             m.get("label") or "",
             m["expires_at"][:19],
-            size_str,
+            _format_size(m.get("size_bytes", 0)),
         )
 
     output.console.print(table)
@@ -166,18 +171,10 @@ def info(
     ] = None,
 ) -> None:
     """Show detailed information about a mirror."""
-    from src.cli.client import APIError
-
     client, _ = _get_client(api_key, api_url)
 
-    try:
+    with _handle_api_errors():
         m = client.get_mirror(mirror_id)
-    except APIError as e:
-        output.print_error(str(e), hint=e.detail)
-        raise typer.Exit(code=1)
-    except (httpx.ConnectError, httpx.TimeoutException) as e:
-        output.print_error(f"Connection failed: {e}")
-        raise typer.Exit(code=1)
 
     output.console.print(f"[bold]Mirror:[/bold] {m['mirror_id']}")
     output.console.print(f"  Communities: {', '.join(m['community_ids'])}")
@@ -187,12 +184,10 @@ def info(
         output.console.print(f"  Label: {m['label']}")
     if m.get("owner_id"):
         output.console.print(f"  Owner: {m['owner_id']}")
-    size_kb = m.get("size_bytes", 0) / 1024
-    size_str = f"{size_kb:.0f} KB" if size_kb < 1024 else f"{size_kb / 1024:.1f} MB"
-    output.console.print(f"  Size: {size_str}")
+    output.console.print(f"  Size: {_format_size(m.get('size_bytes', 0))}")
     expired = m.get("expired", False)
-    status = "[red]expired[/red]" if expired else "[green]active[/green]"
-    output.console.print(f"  Status: {status}")
+    mirror_status = "[red]expired[/red]" if expired else "[green]active[/green]"
+    output.console.print(f"  Status: {mirror_status}")
 
 
 @mirror_app.command("delete")
@@ -212,8 +207,6 @@ def delete(
     ] = None,
 ) -> None:
     """Delete a mirror and its databases."""
-    from src.cli.client import APIError
-
     if not confirm:
         confirm = typer.confirm(f"Delete mirror {mirror_id}?")
     if not confirm:
@@ -222,15 +215,9 @@ def delete(
 
     client, _ = _get_client(api_key, api_url)
 
-    try:
+    with _handle_api_errors():
         client.delete_mirror(mirror_id)
         output.print_success(f"Mirror {mirror_id} deleted.")
-    except APIError as e:
-        output.print_error(str(e), hint=e.detail)
-        raise typer.Exit(code=1)
-    except (httpx.ConnectError, httpx.TimeoutException) as e:
-        output.print_error(f"Connection failed: {e}")
-        raise typer.Exit(code=1)
 
 
 @mirror_app.command("refresh")
@@ -253,21 +240,13 @@ def refresh(
 
     Resets mirror data to match current production state.
     """
-    from src.cli.client import APIError
-
     client, _ = _get_client(api_key, api_url)
 
-    try:
+    with _handle_api_errors():
         with output.streaming_status("Refreshing mirror..."):
             result = client.refresh_mirror(mirror_id, community_ids=community)
         output.print_success(f"Mirror {mirror_id} refreshed.")
         output.print_info(f"  Communities: {', '.join(result['community_ids'])}")
-    except APIError as e:
-        output.print_error(str(e), hint=e.detail)
-        raise typer.Exit(code=1)
-    except (httpx.ConnectError, httpx.TimeoutException) as e:
-        output.print_error(f"Connection failed: {e}")
-        raise typer.Exit(code=1)
 
 
 @mirror_app.command("sync")
@@ -299,27 +278,16 @@ def sync(
         osa mirror sync abc123def456
         osa mirror sync abc123def456 --type github
     """
-    from src.cli.client import APIError
-
     client, _ = _get_client(api_key, api_url)
 
-    try:
+    with _handle_api_errors():
         with output.streaming_status(f"Syncing {sync_type} into mirror..."):
             result = client.sync_mirror(mirror_id, sync_type=sync_type)
-        if result.get("success"):
-            output.print_success(result.get("message", "Sync completed"))
-            items = result.get("items_synced", {})
-            if items:
-                for st, count in items.items():
-                    output.print_info(f"  {st}: {count} communities synced")
-        else:
-            output.print_error(result.get("message", "Sync failed"))
-    except APIError as e:
-        output.print_error(str(e), hint=e.detail)
-        raise typer.Exit(code=1)
-    except (httpx.ConnectError, httpx.TimeoutException) as e:
-        output.print_error(f"Connection failed: {e}")
-        raise typer.Exit(code=1)
+        output.print_success(result.get("message", "Sync completed"))
+        items = result.get("items_synced", {})
+        if items:
+            for st, count in items.items():
+                output.print_info(f"  {st}: {count} communities synced")
 
 
 @mirror_app.command("pull")
@@ -351,17 +319,12 @@ def pull(
         osa mirror pull abc123def456
         osa mirror pull abc123def456 -c hed -o ./data/knowledge
     """
-    from src.cli.client import APIError
-
     client, _ = _get_client(api_key, api_url)
     dest = output_dir or str(get_data_dir() / "knowledge")
 
     # Get mirror info to know which communities to download
-    try:
+    with _handle_api_errors():
         mirror_info = client.get_mirror(mirror_id)
-    except APIError as e:
-        output.print_error(str(e), hint=e.detail)
-        raise typer.Exit(code=1)
 
     communities = [community] if community else mirror_info["community_ids"]
 

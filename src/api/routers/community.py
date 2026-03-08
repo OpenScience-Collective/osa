@@ -620,9 +620,13 @@ def _check_model_cost(model: str, key_source: str) -> None:
 
     pricing = MODEL_PRICING.get(model)
     if pricing is None:
-        logger.info("Model %s not in pricing table; allowing without cost check", model)
+        logger.warning(
+            "Model %s not in pricing table; allowing without cost check. "
+            "Add this model to MODEL_PRICING in src/metrics/cost.py.",
+            model,
+        )
         return
-    input_rate = pricing[0]
+    input_rate = pricing.input_per_1m
 
     if input_rate >= COST_BLOCK_THRESHOLD:
         raise HTTPException(

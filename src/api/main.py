@@ -28,12 +28,12 @@ from src.api.scheduler import start_scheduler, stop_scheduler
 from src.assistants import discover_assistants, registry
 from src.core.logging import configure_secure_logging
 from src.knowledge.db import reset_active_mirror, set_active_mirror
-from src.knowledge.mirror import get_mirror
+from src.knowledge.mirror import CorruptMirrorError, get_mirror
 from src.metrics.db import init_metrics_db
 from src.metrics.middleware import MetricsMiddleware
 
-# Configure secure logging before any other logging occurs.
-# This ensures all log output uses SecureFormatter which redacts API keys.
+# Must run before any getLogger() calls to ensure handlers with
+# SecureFormatter are installed on the root logger first.
 configure_secure_logging()
 
 logger = logging.getLogger(__name__)
@@ -201,8 +201,19 @@ def create_app() -> FastAPI:
 
         try:
             info = get_mirror(mirror_id)
-        except Exception:
-            logger.error("Failed to read mirror metadata for %s", mirror_id, exc_info=True)
+        except ValueError:
+            # Invalid mirror ID format (path traversal attempt, etc.)
+            return JSONResponse(
+                status_code=400,
+                content={"detail": f"Invalid mirror ID format: '{mirror_id}'"},
+            )
+        except CorruptMirrorError:
+            return JSONResponse(
+                status_code=500,
+                content={"detail": f"Mirror '{mirror_id}' has corrupt metadata"},
+            )
+        except OSError:
+            logger.error("Filesystem error reading mirror %s", mirror_id, exc_info=True)
             return JSONResponse(
                 status_code=500,
                 content={"detail": f"Failed to read mirror '{mirror_id}' metadata"},

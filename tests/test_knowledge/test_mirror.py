@@ -25,6 +25,7 @@ from src.knowledge.db import (
     set_active_mirror,
 )
 from src.knowledge.mirror import (
+    CorruptMirrorError,
     MirrorInfo,
     _get_metadata_path,
     _validate_mirror_id,
@@ -116,13 +117,9 @@ class TestContextVar:
         assert get_active_mirror() is None
 
     def test_invalid_mirror_id_rejected(self):
-        """Mirror IDs with path traversal chars are rejected."""
-        token = set_active_mirror("../etc/passwd")
-        try:
-            with pytest.raises(ValueError, match="Invalid mirror ID"):
-                get_db_path("testcommunity")
-        finally:
-            reset_active_mirror(token)
+        """Mirror IDs with path traversal chars are rejected at set time."""
+        with pytest.raises(ValueError, match="Invalid mirror ID"):
+            set_active_mirror("../etc/passwd")
 
 
 class TestMirrorLifecycle:
@@ -238,8 +235,8 @@ class TestTTLAndCleanup:
         info = MirrorInfo(
             mirror_id="test",
             community_ids=["testcommunity"],
-            created_at=datetime.now(UTC).isoformat(),
-            expires_at=(datetime.now(UTC) - timedelta(hours=1)).isoformat(),
+            created_at=datetime.now(UTC),
+            expires_at=datetime.now(UTC) - timedelta(hours=1),
         )
         assert info.is_expired()
 
@@ -359,24 +356,23 @@ class TestPathTraversal:
 class TestCorruptMetadata:
     """Tests for resilience against corrupt metadata files."""
 
-    def test_corrupt_json_returns_none(self, data_dir: Path):
-        """Corrupt JSON metadata returns None instead of crashing."""
-        # Create a mirror directory with invalid JSON metadata
+    def test_corrupt_json_raises_error(self, data_dir: Path):
+        """Corrupt JSON metadata raises CorruptMirrorError."""
         mirror_dir = data_dir / "mirrors" / "corrupt123"
         mirror_dir.mkdir(parents=True)
         (mirror_dir / "_metadata.json").write_text("not valid json{{{")
 
-        result = get_mirror("corrupt123")
-        assert result is None
+        with pytest.raises(CorruptMirrorError, match="corrupt metadata"):
+            get_mirror("corrupt123")
 
-    def test_missing_keys_returns_none(self, data_dir: Path):
-        """Metadata with missing required keys returns None."""
+    def test_missing_keys_raises_error(self, data_dir: Path):
+        """Metadata with missing required keys raises CorruptMirrorError."""
         mirror_dir = data_dir / "mirrors" / "missingkeys"
         mirror_dir.mkdir(parents=True)
         (mirror_dir / "_metadata.json").write_text('{"mirror_id": "missingkeys"}')
 
-        result = get_mirror("missingkeys")
-        assert result is None
+        with pytest.raises(CorruptMirrorError, match="corrupt metadata"):
+            get_mirror("missingkeys")
 
     def test_corrupt_metadata_does_not_break_list(self, data_dir: Path):
         """One corrupt metadata file does not break list_mirrors."""

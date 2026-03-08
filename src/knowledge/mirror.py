@@ -9,7 +9,7 @@ copies of the relevant community SQLite databases.
 import json
 import logging
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -28,30 +28,48 @@ MAX_MIRRORS_TOTAL = 50
 MAX_MIRRORS_PER_USER = 2
 
 
+def is_safe_identifier(value: str) -> bool:
+    """Check if a string is a safe identifier (alphanumeric, hyphens, underscores).
+
+    Used for both mirror IDs and community IDs to prevent path traversal.
+    """
+    return bool(value) and value.replace("-", "").replace("_", "").isalnum()
+
+
 @dataclass
 class MirrorInfo:
     """Metadata for an ephemeral database mirror."""
 
     mirror_id: str
     community_ids: list[str]
-    created_at: str
-    expires_at: str
+    created_at: datetime
+    expires_at: datetime
     owner_id: str | None = None
     label: str | None = None
-    size_bytes: int = 0
+    size_bytes: int = field(default=0, repr=False)
+
+    def __post_init__(self) -> None:
+        """Validate invariants at construction time."""
+        if not is_safe_identifier(self.mirror_id):
+            raise ValueError(f"Invalid mirror ID: {self.mirror_id!r}")
+        if not self.community_ids:
+            raise ValueError("community_ids must not be empty")
 
     def is_expired(self) -> bool:
         """Check if the mirror has passed its expiration time."""
-        expires = datetime.fromisoformat(self.expires_at)
-        return datetime.now(UTC) >= expires
+        return datetime.now(UTC) >= self.expires_at
 
     def to_dict(self) -> dict:
-        """Serialize to dictionary for JSON storage."""
+        """Serialize to dictionary for JSON storage.
+
+        Note: size_bytes is excluded because it is calculated dynamically
+        at read time from the actual database files on disk.
+        """
         return {
             "mirror_id": self.mirror_id,
             "community_ids": self.community_ids,
-            "created_at": self.created_at,
-            "expires_at": self.expires_at,
+            "created_at": self.created_at.isoformat(),
+            "expires_at": self.expires_at.isoformat(),
             "owner_id": self.owner_id,
             "label": self.label,
         }
@@ -62,8 +80,8 @@ class MirrorInfo:
         return cls(
             mirror_id=data["mirror_id"],
             community_ids=data["community_ids"],
-            created_at=data["created_at"],
-            expires_at=data["expires_at"],
+            created_at=datetime.fromisoformat(data["created_at"]),
+            expires_at=datetime.fromisoformat(data["expires_at"]),
             owner_id=data.get("owner_id"),
             label=data.get("label"),
         )
@@ -82,9 +100,22 @@ def _validate_mirror_id(mirror_id: str) -> None:
     """
     if not mirror_id or len(mirror_id) > 64:
         raise ValueError(f"Invalid mirror ID length: {len(mirror_id) if mirror_id else 0}")
-    if not mirror_id.replace("-", "").replace("_", "").isalnum():
+    if not is_safe_identifier(mirror_id):
         raise ValueError(
             f"Invalid mirror ID: {mirror_id}. "
+            "Use only alphanumeric characters, hyphens, and underscores."
+        )
+
+
+def _validate_community_id(community_id: str) -> None:
+    """Validate community ID format to prevent path traversal.
+
+    Raises:
+        ValueError: If community_id contains invalid characters.
+    """
+    if not is_safe_identifier(community_id):
+        raise ValueError(
+            f"Invalid community ID: {community_id!r}. "
             "Use only alphanumeric characters, hyphens, and underscores."
         )
 
@@ -109,10 +140,25 @@ def _write_metadata(info: MirrorInfo) -> None:
     path.write_text(json.dumps(info.to_dict(), indent=2))
 
 
+class CorruptMirrorError(Exception):
+    """Raised when a mirror's metadata file exists but is corrupt or unreadable."""
+
+    def __init__(self, mirror_id: str, cause: Exception):
+        self.mirror_id = mirror_id
+        self.cause = cause
+        super().__init__(
+            f"Mirror '{mirror_id}' has corrupt metadata: {cause}. "
+            f"Delete and recreate, or inspect the metadata file."
+        )
+
+
 def _read_metadata(mirror_id: str) -> MirrorInfo | None:
     """Read mirror metadata from disk.
 
-    Returns None if the mirror does not exist or metadata is corrupt.
+    Returns None if the mirror does not exist.
+
+    Raises:
+        CorruptMirrorError: If metadata file exists but is corrupt.
     """
     path = _get_metadata_path(mirror_id)
     if not path.exists():
@@ -122,13 +168,13 @@ def _read_metadata(mirror_id: str) -> MirrorInfo | None:
         info = MirrorInfo.from_dict(data)
         info.size_bytes = _calculate_mirror_size(mirror_id)
         return info
-    except (json.JSONDecodeError, KeyError, UnicodeDecodeError) as e:
+    except (json.JSONDecodeError, KeyError, UnicodeDecodeError, ValueError) as e:
         logger.error(
-            "Corrupt metadata for mirror '%s': %s. Consider deleting the mirror directory.",
+            "Corrupt metadata for mirror '%s': %s",
             mirror_id,
             e,
         )
-        return None
+        raise CorruptMirrorError(mirror_id, e) from e
 
 
 def _calculate_mirror_size(mirror_id: str) -> int:
@@ -140,8 +186,29 @@ def _calculate_mirror_size(mirror_id: str) -> int:
 
 
 def _get_production_db_path(community_id: str) -> Path:
-    """Get the path to a production community database."""
+    """Get the path to a production community database.
+
+    Validates community_id to prevent path traversal.
+    """
+    _validate_community_id(community_id)
     return get_data_dir() / "knowledge" / f"{community_id}.db"
+
+
+def get_mirror_db_path(mirror_id: str, community_id: str) -> Path:
+    """Get the path to a community database file within a mirror.
+
+    Args:
+        mirror_id: The mirror's identifier.
+        community_id: The community whose database to locate.
+
+    Returns:
+        Path to the SQLite database file.
+
+    Raises:
+        ValueError: If mirror_id or community_id is invalid.
+    """
+    _validate_community_id(community_id)
+    return _get_mirror_dir(mirror_id) / f"{community_id}.db"
 
 
 def create_mirror(
@@ -210,8 +277,8 @@ def create_mirror(
         info = MirrorInfo(
             mirror_id=mirror_id,
             community_ids=copied_communities,
-            created_at=now.isoformat(),
-            expires_at=(now + timedelta(hours=ttl_hours)).isoformat(),
+            created_at=now,
+            expires_at=now + timedelta(hours=ttl_hours),
             owner_id=owner_id,
             label=label,
             size_bytes=_calculate_mirror_size(mirror_id),
@@ -219,7 +286,14 @@ def create_mirror(
         _write_metadata(info)
     except Exception:
         # Clean up on any failure to avoid orphaned directories
-        shutil.rmtree(str(mirror_dir), ignore_errors=True)
+        try:
+            shutil.rmtree(str(mirror_dir))
+        except OSError as cleanup_err:
+            logger.warning(
+                "Failed to clean up partial mirror directory %s: %s",
+                mirror_dir,
+                cleanup_err,
+            )
         raise
 
     logger.info(
@@ -236,12 +310,18 @@ def get_mirror(mirror_id: str) -> MirrorInfo | None:
 
     Returns None if the mirror does not exist.
     Does NOT check expiration; callers should check is_expired().
+
+    Raises:
+        CorruptMirrorError: If metadata file exists but is corrupt.
     """
     return _read_metadata(mirror_id)
 
 
 def list_mirrors() -> list[MirrorInfo]:
-    """List all mirrors (including expired ones still on disk)."""
+    """List all mirrors (including expired ones still on disk).
+
+    Skips mirrors with corrupt metadata (logged as errors).
+    """
     mirrors_dir = _get_mirrors_dir()
     if not mirrors_dir.exists():
         return []
@@ -249,7 +329,11 @@ def list_mirrors() -> list[MirrorInfo]:
     result = []
     for entry in mirrors_dir.iterdir():
         if entry.is_dir() and (entry / METADATA_FILE).exists():
-            info = _read_metadata(entry.name)
+            try:
+                info = _read_metadata(entry.name)
+            except CorruptMirrorError:
+                # Already logged in _read_metadata; skip corrupt mirrors
+                continue
             if info:
                 result.append(info)
 
@@ -261,16 +345,15 @@ def delete_mirror(mirror_id: str) -> bool:
     """Delete a mirror and all its databases.
 
     Returns True if the mirror was deleted, False if not found.
+
+    Raises:
+        OSError: If the directory exists but deletion fails (e.g. permissions).
     """
     mirror_dir = _get_mirror_dir(mirror_id)
     if not mirror_dir.exists():
         return False
 
-    try:
-        shutil.rmtree(str(mirror_dir))
-    except OSError as e:
-        logger.error("Failed to delete mirror directory %s: %s", mirror_id, e)
-        return False
+    shutil.rmtree(str(mirror_dir))
     logger.info("Deleted mirror %s", mirror_id)
     return True
 
@@ -302,6 +385,7 @@ def refresh_mirror(
     targets = community_ids or info.community_ids
     mirror_dir = _get_mirror_dir(mirror_id)
 
+    refreshed = []
     for community_id in targets:
         source_db = _get_production_db_path(community_id)
         if not source_db.exists():
@@ -309,7 +393,13 @@ def refresh_mirror(
             continue
         dest_db = mirror_dir / f"{community_id}.db"
         shutil.copy2(str(source_db), str(dest_db))
+        refreshed.append(community_id)
         logger.info("Refreshed %s in mirror %s", community_id, mirror_id)
+
+    if not refreshed:
+        raise ValueError(
+            f"No production databases found for communities: {targets}. Nothing was refreshed."
+        )
 
     # Update size in metadata
     info.size_bytes = _calculate_mirror_size(mirror_id)

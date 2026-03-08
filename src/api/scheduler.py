@@ -286,16 +286,26 @@ def _run_beps_sync_for_community(community_id: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+_mirror_cleanup_failures = 0
+
+
 def _cleanup_mirrors() -> None:
     """Remove expired ephemeral database mirrors."""
+    global _mirror_cleanup_failures
     try:
         from src.knowledge.mirror import cleanup_expired_mirrors
 
         deleted = cleanup_expired_mirrors()
         if deleted:
             logger.info("Mirror cleanup: removed %d expired mirrors", deleted)
+        _mirror_cleanup_failures = 0
     except Exception:
-        logger.error("Mirror cleanup failed", exc_info=True)
+        _mirror_cleanup_failures += 1
+        logger.error(
+            "Mirror cleanup failed (consecutive failures: %d)",
+            _mirror_cleanup_failures,
+            exc_info=True,
+        )
 
 
 def _check_community_budgets() -> None:
@@ -633,8 +643,9 @@ def run_sync_now(sync_type: str = "all") -> dict[str, int]:
         os.environ["GITHUB_TOKEN"] = settings.github_token
 
     if sync_type != "all" and sync_type not in _SYNC_TYPE_MAP:
-        logger.warning("Unknown sync_type requested: %s", sync_type)
-        return results
+        raise ValueError(
+            f"Unknown sync_type: {sync_type!r}. Valid types: {list(_SYNC_TYPE_MAP.keys())} or 'all'"
+        )
 
     sync_types_to_run = list(_SYNC_TYPE_MAP.keys()) if sync_type == "all" else [sync_type]
 

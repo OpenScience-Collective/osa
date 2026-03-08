@@ -1,12 +1,13 @@
 """API endpoints for ephemeral database mirror management.
 
 Mirrors allow developers to create short-lived copies of community knowledge
-databases for development and testing. BYOK users are rate-limited to a
-maximum number of concurrent mirrors per user; requests without an owner
-identifier are only subject to the global mirror cap.
+databases for development and testing. Authenticated users may pass an
+X-User-ID header; users with an owner identifier are subject to per-user
+mirror limits in addition to the global mirror cap.
 """
 
 import asyncio
+import contextvars
 import logging
 from typing import Annotated, Any, Literal
 
@@ -14,12 +15,14 @@ from fastapi import APIRouter, Header, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
 
 from src.api.security import RequireAuth
-from src.knowledge.db import reset_active_mirror, set_active_mirror
+from src.knowledge.db import active_mirror_context
 from src.knowledge.mirror import (
     MirrorInfo,
     create_mirror,
     delete_mirror,
     get_mirror,
+    get_mirror_db_path,
+    is_safe_identifier,
     list_mirrors,
     refresh_mirror,
 )
@@ -51,9 +54,10 @@ class CreateMirrorRequest(BaseModel):
     @classmethod
     def validate_community_ids(cls, v: list[str]) -> list[str]:
         for cid in v:
-            if not cid or not cid.replace("-", "").replace("_", "").isalnum():
+            if not is_safe_identifier(cid):
                 raise ValueError(f"Invalid community ID: {cid!r}")
-        return v
+        # Deduplicate while preserving order
+        return list(dict.fromkeys(v))
 
 
 class MirrorResponse(BaseModel):
@@ -73,8 +77,8 @@ class MirrorResponse(BaseModel):
         return cls(
             mirror_id=info.mirror_id,
             community_ids=info.community_ids,
-            created_at=info.created_at,
-            expires_at=info.expires_at,
+            created_at=info.created_at.isoformat(),
+            expires_at=info.expires_at.isoformat(),
             owner_id=info.owner_id,
             label=info.label,
             size_bytes=info.size_bytes,
@@ -105,24 +109,8 @@ class MirrorSyncRequest(BaseModel):
 class MirrorSyncResponse(BaseModel):
     """Response from a mirror sync operation."""
 
-    success: bool
     message: str
-    items_synced: dict[str, int] = {}
-
-
-# ---------------------------------------------------------------------------
-# Helper
-# ---------------------------------------------------------------------------
-
-
-def _get_user_id(x_user_id: str | None) -> str | None:
-    """Extract user ID from header for ownership tracking."""
-    return x_user_id if x_user_id else None
-
-
-# ---------------------------------------------------------------------------
-# Endpoints
-# ---------------------------------------------------------------------------
+    items_synced: dict[str, int] = Field(default_factory=dict)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=MirrorResponse)
@@ -134,9 +122,9 @@ async def create_mirror_endpoint(
     """Create a new ephemeral database mirror.
 
     Copies the specified community databases into a new mirror directory.
-    BYOK users are subject to per-user mirror limits.
+    Users with an X-User-ID header are subject to per-user mirror limits.
     """
-    user_id = _get_user_id(x_user_id)
+    user_id = x_user_id or None
 
     try:
         info = create_mirror(
@@ -188,11 +176,18 @@ async def delete_mirror_endpoint(
     _auth: RequireAuth,
 ) -> None:
     """Delete a mirror and all its databases."""
-    if not delete_mirror(mirror_id):
+    try:
+        if not delete_mirror(mirror_id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Mirror '{mirror_id}' not found",
+            )
+    except OSError as e:
+        logger.error("Failed to delete mirror %s: %s", mirror_id, e, exc_info=True)
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Mirror '{mirror_id}' not found",
-        )
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete mirror '{mirror_id}'. The mirror exists but could not be removed.",
+        ) from e
     logger.info("Mirror deleted via API: %s", mirror_id)
 
 
@@ -239,15 +234,21 @@ async def sync_mirror_endpoint(
             detail=f"Mirror '{mirror_id}' has expired",
         )
 
-    # Set the mirror context so all DB operations go to the mirror
-    token = set_active_mirror(mirror_id)
-    try:
-        from src.api.scheduler import run_sync_now
+    # Run sync in a thread with the mirror context explicitly copied.
+    # asyncio.to_thread copies ContextVars on Python 3.12+ but not 3.11,
+    # so we capture the context and run within it for compatibility.
+    from src.api.scheduler import run_sync_now
 
-        results = await asyncio.to_thread(run_sync_now, body.sync_type)
+    ctx = contextvars.copy_context()
+
+    def _run_sync_in_mirror() -> dict[str, int]:
+        with active_mirror_context(mirror_id):
+            return run_sync_now(body.sync_type)
+
+    try:
+        results = await asyncio.get_event_loop().run_in_executor(None, ctx.run, _run_sync_in_mirror)
         total = sum(results.values())
         return MirrorSyncResponse(
-            success=True,
             message=f"Sync completed: {total} items synced into mirror {mirror_id}",
             items_synced=results,
         )
@@ -259,8 +260,6 @@ async def sync_mirror_endpoint(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Sync operation failed. Check server logs for details.",
         ) from e
-    finally:
-        reset_active_mirror(token)
 
 
 @router.get("/{mirror_id}/download/{community_id}")
@@ -286,7 +285,7 @@ async def download_mirror_db(
             status_code=status.HTTP_410_GONE,
             detail=f"Mirror '{mirror_id}' has expired",
         )
-    if not community_id.replace("-", "").replace("_", "").isalnum():
+    if not is_safe_identifier(community_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid community ID format",
@@ -297,9 +296,7 @@ async def download_mirror_db(
             detail=f"Community '{community_id}' not found in mirror '{mirror_id}'",
         )
 
-    from src.knowledge.mirror import _get_mirror_dir
-
-    db_path = _get_mirror_dir(mirror_id) / f"{community_id}.db"
+    db_path = get_mirror_db_path(mirror_id, community_id)
     if not db_path.exists():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
