@@ -286,6 +286,18 @@ def _run_beps_sync_for_community(community_id: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _cleanup_mirrors() -> None:
+    """Remove expired ephemeral database mirrors."""
+    try:
+        from src.knowledge.mirror import cleanup_expired_mirrors
+
+        deleted = cleanup_expired_mirrors()
+        if deleted:
+            logger.info("Mirror cleanup: removed %d expired mirrors", deleted)
+    except Exception:
+        logger.error("Mirror cleanup failed", exc_info=True)
+
+
 def _check_community_budgets() -> None:
     """Check budget limits for all communities and create alert issues if exceeded."""
     global _budget_check_failures
@@ -559,6 +571,20 @@ def start_scheduler() -> BackgroundScheduler | None:
         logger.info("Budget check scheduled: every 15 minutes")
     except ValueError as e:
         logger.error("Failed to schedule budget check: %s", e)
+
+    # Mirror cleanup (every hour, removes expired ephemeral database mirrors)
+    try:
+        mirror_trigger = CronTrigger(minute="30")  # Every hour at :30
+        _scheduler.add_job(
+            _cleanup_mirrors,
+            trigger=mirror_trigger,
+            id="mirror_cleanup",
+            name="Expired Mirror Cleanup",
+            replace_existing=True,
+        )
+        logger.info("Mirror cleanup scheduled: hourly at :30")
+    except ValueError as e:
+        logger.error("Failed to schedule mirror cleanup: %s", e)
 
     # Start the scheduler
     _scheduler.start()
