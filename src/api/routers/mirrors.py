@@ -2,14 +2,16 @@
 
 Mirrors allow developers to create short-lived copies of community knowledge
 databases for development and testing. BYOK users are rate-limited to a
-maximum number of concurrent mirrors; admin key holders are unrestricted.
+maximum number of concurrent mirrors per user; requests without an owner
+identifier are only subject to the global mirror cap.
 """
 
+import asyncio
 import logging
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Header, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from src.api.security import RequireAuth
 from src.knowledge.db import reset_active_mirror, set_active_mirror
@@ -44,6 +46,14 @@ class CreateMirrorRequest(BaseModel):
     label: str | None = Field(
         default=None, max_length=128, description="Human-readable label for the mirror"
     )
+
+    @field_validator("community_ids")
+    @classmethod
+    def validate_community_ids(cls, v: list[str]) -> list[str]:
+        for cid in v:
+            if not cid or not cid.replace("-", "").replace("_", "").isalnum():
+                raise ValueError(f"Invalid community ID: {cid!r}")
+        return v
 
 
 class MirrorResponse(BaseModel):
@@ -80,12 +90,15 @@ class RefreshMirrorRequest(BaseModel):
     )
 
 
+SyncType = Literal["github", "papers", "docstrings", "mailman", "faq", "beps", "all"]
+
+
 class MirrorSyncRequest(BaseModel):
     """Request body for syncing data into a mirror."""
 
-    sync_type: str = Field(
+    sync_type: SyncType = Field(
         default="all",
-        description="Sync type: github, papers, docstrings, mailman, faq, beps, discourse, or all",
+        description="Sync type: github, papers, docstrings, mailman, faq, beps, or all",
     )
 
 
@@ -121,7 +134,7 @@ async def create_mirror_endpoint(
     """Create a new ephemeral database mirror.
 
     Copies the specified community databases into a new mirror directory.
-    BYOK users are limited to 2 concurrent mirrors.
+    BYOK users are subject to per-user mirror limits.
     """
     user_id = _get_user_id(x_user_id)
 
@@ -148,13 +161,8 @@ async def create_mirror_endpoint(
 async def list_mirrors_endpoint(
     _auth: RequireAuth,
 ) -> list[MirrorResponse]:
-    """List active mirrors.
-
-    Returns all non-expired mirrors. If X-User-ID is provided, filters
-    to mirrors owned by that user (unless using admin key).
-    """
+    """List all active (non-expired) mirrors."""
     mirrors = list_mirrors()
-    # Filter out expired mirrors from listing
     active = [m for m in mirrors if not m.is_expired()]
     return [MirrorResponse.from_info(m) for m in active]
 
@@ -216,8 +224,8 @@ async def sync_mirror_endpoint(
     """Run sync pipeline against a mirror's databases.
 
     Sets the mirror context so all sync operations write to the mirror's
-    databases instead of production. Supports all sync types: github,
-    papers, docstrings, mailman, faq, beps, discourse, or all.
+    databases instead of production. Supports sync types: github, papers,
+    docstrings, mailman, faq, beps, or all.
     """
     info = get_mirror(mirror_id)
     if not info:
@@ -231,30 +239,25 @@ async def sync_mirror_endpoint(
             detail=f"Mirror '{mirror_id}' has expired",
         )
 
-    valid_types = ("github", "papers", "docstrings", "mailman", "faq", "beps", "discourse", "all")
-    if body.sync_type not in valid_types:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid sync_type: {body.sync_type}. Must be one of {valid_types}",
-        )
-
     # Set the mirror context so all DB operations go to the mirror
     token = set_active_mirror(mirror_id)
     try:
         from src.api.scheduler import run_sync_now
 
-        results = run_sync_now(body.sync_type)
+        results = await asyncio.to_thread(run_sync_now, body.sync_type)
         total = sum(results.values())
         return MirrorSyncResponse(
             success=True,
             message=f"Sync completed: {total} items synced into mirror {mirror_id}",
             items_synced=results,
         )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     except Exception as e:
         logger.error("Mirror sync failed for %s: %s", mirror_id, e, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Sync failed: {e}",
+            detail="Sync operation failed. Check server logs for details.",
         ) from e
     finally:
         reset_active_mirror(token)
@@ -283,15 +286,20 @@ async def download_mirror_db(
             status_code=status.HTTP_410_GONE,
             detail=f"Mirror '{mirror_id}' has expired",
         )
+    if not community_id.replace("-", "").replace("_", "").isalnum():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid community ID format",
+        )
     if community_id not in info.community_ids:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Community '{community_id}' not found in mirror '{mirror_id}'",
         )
 
-    from src.cli.config import get_data_dir
+    from src.knowledge.mirror import _get_mirror_dir
 
-    db_path = get_data_dir() / "mirrors" / mirror_id / f"{community_id}.db"
+    db_path = _get_mirror_dir(mirror_id) / f"{community_id}.db"
     if not db_path.exists():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

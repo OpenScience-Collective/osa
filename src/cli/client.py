@@ -330,7 +330,13 @@ class OSAClient:
 
             dest = Path(output_path) / f"{community_id}.db"
             dest.parent.mkdir(parents=True, exist_ok=True)
-            with open(str(dest), "wb") as f:
-                for chunk in response.iter_bytes(chunk_size=8192):
-                    f.write(chunk)
+            tmp_dest = dest.with_suffix(".db.tmp")
+            try:
+                with open(str(tmp_dest), "wb") as f:
+                    for chunk in response.iter_bytes(chunk_size=8192):
+                        f.write(chunk)
+                tmp_dest.rename(dest)
+            except Exception:
+                tmp_dest.unlink(missing_ok=True)
+                raise
             return str(dest)

@@ -175,6 +175,9 @@ def info(
     except APIError as e:
         output.print_error(str(e), hint=e.detail)
         raise typer.Exit(code=1)
+    except (httpx.ConnectError, httpx.TimeoutException) as e:
+        output.print_error(f"Connection failed: {e}")
+        raise typer.Exit(code=1)
 
     output.console.print(f"[bold]Mirror:[/bold] {m['mirror_id']}")
     output.console.print(f"  Communities: {', '.join(m['community_ids'])}")
@@ -225,6 +228,9 @@ def delete(
     except APIError as e:
         output.print_error(str(e), hint=e.detail)
         raise typer.Exit(code=1)
+    except (httpx.ConnectError, httpx.TimeoutException) as e:
+        output.print_error(f"Connection failed: {e}")
+        raise typer.Exit(code=1)
 
 
 @mirror_app.command("refresh")
@@ -259,6 +265,9 @@ def refresh(
     except APIError as e:
         output.print_error(str(e), hint=e.detail)
         raise typer.Exit(code=1)
+    except (httpx.ConnectError, httpx.TimeoutException) as e:
+        output.print_error(f"Connection failed: {e}")
+        raise typer.Exit(code=1)
 
 
 @mirror_app.command("sync")
@@ -269,7 +278,7 @@ def sync(
         typer.Option(
             "--type",
             "-t",
-            help="Sync type: github, papers, docstrings, mailman, faq, beps, discourse, or all",
+            help="Sync type: github, papers, docstrings, mailman, faq, beps, or all",
         ),
     ] = "all",
     api_key: Annotated[
@@ -356,6 +365,7 @@ def pull(
 
     communities = [community] if community else mirror_info["community_ids"]
 
+    failures = 0
     for cid in communities:
         try:
             with output.streaming_status(f"Downloading {cid}.db..."):
@@ -363,8 +373,13 @@ def pull(
             output.print_success(f"Downloaded: {path}")
         except APIError as e:
             output.print_error(f"Failed to download {cid}: {e}", hint=e.detail)
+            failures += 1
         except (httpx.ConnectError, httpx.TimeoutException) as e:
             output.print_error(f"Connection failed downloading {cid}: {e}")
+            failures += 1
 
     output.console.print()
+    if failures:
+        output.print_error(f"{failures} download(s) failed. Local data may be incomplete.")
+        raise typer.Exit(code=1)
     output.console.print("[dim]Start local server with: osa serve[/dim]")

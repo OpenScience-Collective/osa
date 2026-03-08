@@ -3,8 +3,11 @@
 Tests cover:
 - Mirror CRUD lifecycle (create, get, list, delete)
 - ContextVar-based DB routing (get_db_path returns mirror path when set)
+- Mirror refresh (re-copy from production)
 - TTL expiration and cleanup
 - Resource limits (max mirrors, per-user limits)
+- Path traversal prevention
+- Corrupt metadata resilience
 """
 
 import json
@@ -23,6 +26,8 @@ from src.knowledge.db import (
 )
 from src.knowledge.mirror import (
     MirrorInfo,
+    _get_metadata_path,
+    _validate_mirror_id,
     cleanup_expired_mirrors,
     create_mirror,
     delete_mirror,
@@ -206,8 +211,6 @@ class TestMirrorRefresh:
         info = create_mirror(community_ids=["testcommunity"], ttl_hours=1)
 
         # Manually expire the mirror
-        from src.knowledge.mirror import _get_metadata_path
-
         meta_path = _get_metadata_path(info.mirror_id)
         meta = json.loads(meta_path.read_text())
         meta["expires_at"] = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
@@ -245,8 +248,6 @@ class TestTTLAndCleanup:
         info = create_mirror(community_ids=["testcommunity"], ttl_hours=1)
 
         # Manually expire the mirror
-        from src.knowledge.mirror import _get_metadata_path
-
         meta_path = _get_metadata_path(info.mirror_id)
         meta = json.loads(meta_path.read_text())
         meta["expires_at"] = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
@@ -304,3 +305,109 @@ class TestResourceLimits:
         for _i in range(MAX_MIRRORS_PER_USER + 1):
             info = create_mirror(community_ids=["testcommunity"])
             assert info.owner_id is None
+
+
+class TestPathTraversal:
+    """Tests for path traversal prevention in mirror IDs."""
+
+    def test_empty_mirror_id_rejected(self):
+        """Empty string mirror ID is rejected."""
+        with pytest.raises(ValueError, match="Invalid mirror ID length"):
+            _validate_mirror_id("")
+
+    def test_dots_only_rejected(self):
+        """Mirror ID of just dots is rejected."""
+        with pytest.raises(ValueError, match="Invalid mirror ID"):
+            _validate_mirror_id("..")
+
+    def test_single_dot_rejected(self):
+        """Mirror ID of a single dot is rejected."""
+        with pytest.raises(ValueError, match="Invalid mirror ID"):
+            _validate_mirror_id(".")
+
+    def test_backslash_traversal_rejected(self):
+        """Mirror ID with backslash path traversal is rejected."""
+        with pytest.raises(ValueError, match="Invalid mirror ID"):
+            _validate_mirror_id("..\\etc\\passwd")
+
+    def test_slash_traversal_rejected(self):
+        """Mirror ID with forward slash is rejected."""
+        with pytest.raises(ValueError, match="Invalid mirror ID"):
+            _validate_mirror_id("../etc/passwd")
+
+    def test_too_long_mirror_id_rejected(self):
+        """Mirror ID exceeding 64 chars is rejected."""
+        with pytest.raises(ValueError, match="Invalid mirror ID length"):
+            _validate_mirror_id("a" * 65)
+
+    def test_valid_mirror_id_accepted(self):
+        """Valid alphanumeric mirror ID passes validation."""
+        _validate_mirror_id("abc123def456")
+        _validate_mirror_id("mirror-1_test")
+
+    def test_delete_mirror_validates_id(self):
+        """delete_mirror rejects path traversal mirror IDs."""
+        with pytest.raises(ValueError, match="Invalid mirror ID"):
+            delete_mirror("../../etc")
+
+    def test_get_mirror_validates_id(self):
+        """get_mirror rejects path traversal mirror IDs."""
+        with pytest.raises(ValueError, match="Invalid mirror ID"):
+            get_mirror("../../etc")
+
+
+class TestCorruptMetadata:
+    """Tests for resilience against corrupt metadata files."""
+
+    def test_corrupt_json_returns_none(self, data_dir: Path):
+        """Corrupt JSON metadata returns None instead of crashing."""
+        # Create a mirror directory with invalid JSON metadata
+        mirror_dir = data_dir / "mirrors" / "corrupt123"
+        mirror_dir.mkdir(parents=True)
+        (mirror_dir / "_metadata.json").write_text("not valid json{{{")
+
+        result = get_mirror("corrupt123")
+        assert result is None
+
+    def test_missing_keys_returns_none(self, data_dir: Path):
+        """Metadata with missing required keys returns None."""
+        mirror_dir = data_dir / "mirrors" / "missingkeys"
+        mirror_dir.mkdir(parents=True)
+        (mirror_dir / "_metadata.json").write_text('{"mirror_id": "missingkeys"}')
+
+        result = get_mirror("missingkeys")
+        assert result is None
+
+    def test_corrupt_metadata_does_not_break_list(self, data_dir: Path):
+        """One corrupt metadata file does not break list_mirrors."""
+        # Create a valid mirror
+        info = create_mirror(community_ids=["testcommunity"], label="valid")
+
+        # Create a corrupt mirror directory
+        corrupt_dir = data_dir / "mirrors" / "corrupt456"
+        corrupt_dir.mkdir(parents=True)
+        (corrupt_dir / "_metadata.json").write_text("garbage data")
+
+        mirrors = list_mirrors()
+        ids = [m.mirror_id for m in mirrors]
+        assert info.mirror_id in ids
+
+    def test_corrupt_metadata_does_not_break_cleanup(self, data_dir: Path):
+        """Corrupt metadata does not crash cleanup_expired_mirrors."""
+        corrupt_dir = data_dir / "mirrors" / "corrupt789"
+        corrupt_dir.mkdir(parents=True)
+        (corrupt_dir / "_metadata.json").write_text("not json")
+
+        # Should not raise
+        deleted = cleanup_expired_mirrors()
+        assert deleted == 0
+
+
+class TestCreateMirrorCleanup:
+    """Tests for create_mirror error handling and cleanup."""
+
+    def test_create_mirror_partial_communities(self):
+        """Creating with mix of valid and invalid communities only copies valid ones."""
+        info = create_mirror(community_ids=["testcommunity", "nonexistent"])
+        assert info.community_ids == ["testcommunity"]
+        assert "nonexistent" not in info.community_ids

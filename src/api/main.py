@@ -193,28 +193,35 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def mirror_routing_middleware(request: Any, call_next: Any) -> Any:
         """Route database access to mirror when X-Mirror-ID header is present."""
+        from fastapi.responses import JSONResponse
+
         mirror_id = request.headers.get("x-mirror-id")
-        if mirror_id:
+        if not mirror_id:
+            return await call_next(request)
+
+        try:
             info = get_mirror(mirror_id)
-            if not info:
-                from fastapi.responses import JSONResponse
+        except Exception:
+            logger.error("Failed to read mirror metadata for %s", mirror_id, exc_info=True)
+            return JSONResponse(
+                status_code=500,
+                content={"detail": f"Failed to read mirror '{mirror_id}' metadata"},
+            )
 
-                return JSONResponse(
-                    status_code=404,
-                    content={"detail": f"Mirror '{mirror_id}' not found"},
-                )
-            if info.is_expired():
-                from fastapi.responses import JSONResponse
-
-                return JSONResponse(
-                    status_code=410,
-                    content={"detail": f"Mirror '{mirror_id}' has expired"},
-                )
+        if not info:
+            return JSONResponse(
+                status_code=404,
+                content={"detail": f"Mirror '{mirror_id}' not found"},
+            )
+        if info.is_expired():
+            return JSONResponse(
+                status_code=410,
+                content={"detail": f"Mirror '{mirror_id}' has expired"},
+            )
 
         token = set_active_mirror(mirror_id)
         try:
-            response = await call_next(request)
-            return response
+            return await call_next(request)
         finally:
             reset_active_mirror(token)
 

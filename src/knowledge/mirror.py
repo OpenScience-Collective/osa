@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 MIRRORS_DIR_NAME = "mirrors"
 METADATA_FILE = "_metadata.json"
 
-# Resource limits (can be overridden via settings)
+# Resource limits
 DEFAULT_TTL_HOURS = 48
 MAX_TTL_HOURS = 168  # 7 days
 MAX_MIRRORS_TOTAL = 50
@@ -74,8 +74,27 @@ def _get_mirrors_dir() -> Path:
     return get_data_dir() / MIRRORS_DIR_NAME
 
 
+def _validate_mirror_id(mirror_id: str) -> None:
+    """Validate mirror ID format to prevent path traversal.
+
+    Raises:
+        ValueError: If mirror_id contains invalid characters.
+    """
+    if not mirror_id or len(mirror_id) > 64:
+        raise ValueError(f"Invalid mirror ID length: {len(mirror_id) if mirror_id else 0}")
+    if not mirror_id.replace("-", "").replace("_", "").isalnum():
+        raise ValueError(
+            f"Invalid mirror ID: {mirror_id}. "
+            "Use only alphanumeric characters, hyphens, and underscores."
+        )
+
+
 def _get_mirror_dir(mirror_id: str) -> Path:
-    """Get the directory for a specific mirror."""
+    """Get the directory for a specific mirror.
+
+    Validates mirror_id format to prevent path traversal.
+    """
+    _validate_mirror_id(mirror_id)
     return _get_mirrors_dir() / mirror_id
 
 
@@ -91,14 +110,25 @@ def _write_metadata(info: MirrorInfo) -> None:
 
 
 def _read_metadata(mirror_id: str) -> MirrorInfo | None:
-    """Read mirror metadata from disk."""
+    """Read mirror metadata from disk.
+
+    Returns None if the mirror does not exist or metadata is corrupt.
+    """
     path = _get_metadata_path(mirror_id)
     if not path.exists():
         return None
-    data = json.loads(path.read_text())
-    info = MirrorInfo.from_dict(data)
-    info.size_bytes = _calculate_mirror_size(mirror_id)
-    return info
+    try:
+        data = json.loads(path.read_text())
+        info = MirrorInfo.from_dict(data)
+        info.size_bytes = _calculate_mirror_size(mirror_id)
+        return info
+    except (json.JSONDecodeError, KeyError, UnicodeDecodeError) as e:
+        logger.error(
+            "Corrupt metadata for mirror '%s': %s. Consider deleting the mirror directory.",
+            mirror_id,
+            e,
+        )
+        return None
 
 
 def _calculate_mirror_size(mirror_id: str) -> int:
@@ -158,36 +188,39 @@ def create_mirror(
     mirror_dir = _get_mirror_dir(mirror_id)
     mirror_dir.mkdir(parents=True, exist_ok=True)
 
-    copied_communities = []
-    for community_id in community_ids:
-        source_db = _get_production_db_path(community_id)
-        if not source_db.exists():
-            logger.warning("No database found for community '%s', skipping", community_id)
-            continue
-        dest_db = mirror_dir / f"{community_id}.db"
-        shutil.copy2(str(source_db), str(dest_db))
-        copied_communities.append(community_id)
-        logger.info("Copied %s to mirror %s", community_id, mirror_id)
+    try:
+        copied_communities = []
+        for community_id in community_ids:
+            source_db = _get_production_db_path(community_id)
+            if not source_db.exists():
+                logger.warning("No database found for community '%s', skipping", community_id)
+                continue
+            dest_db = mirror_dir / f"{community_id}.db"
+            shutil.copy2(str(source_db), str(dest_db))
+            copied_communities.append(community_id)
+            logger.info("Copied %s to mirror %s", community_id, mirror_id)
 
-    if not copied_communities:
-        # Clean up empty directory
-        shutil.rmtree(str(mirror_dir), ignore_errors=True)
-        raise ValueError(
-            f"No databases found for communities: {community_ids}. "
-            "Ensure the communities exist and have been synced."
+        if not copied_communities:
+            raise ValueError(
+                f"No databases found for communities: {community_ids}. "
+                "Ensure the communities exist and have been synced."
+            )
+
+        now = datetime.now(UTC)
+        info = MirrorInfo(
+            mirror_id=mirror_id,
+            community_ids=copied_communities,
+            created_at=now.isoformat(),
+            expires_at=(now + timedelta(hours=ttl_hours)).isoformat(),
+            owner_id=owner_id,
+            label=label,
+            size_bytes=_calculate_mirror_size(mirror_id),
         )
-
-    now = datetime.now(UTC)
-    info = MirrorInfo(
-        mirror_id=mirror_id,
-        community_ids=copied_communities,
-        created_at=now.isoformat(),
-        expires_at=(now + timedelta(hours=ttl_hours)).isoformat(),
-        owner_id=owner_id,
-        label=label,
-        size_bytes=_calculate_mirror_size(mirror_id),
-    )
-    _write_metadata(info)
+        _write_metadata(info)
+    except Exception:
+        # Clean up on any failure to avoid orphaned directories
+        shutil.rmtree(str(mirror_dir), ignore_errors=True)
+        raise
 
     logger.info(
         "Created mirror %s with communities %s (expires %s)",
@@ -233,7 +266,11 @@ def delete_mirror(mirror_id: str) -> bool:
     if not mirror_dir.exists():
         return False
 
-    shutil.rmtree(str(mirror_dir))
+    try:
+        shutil.rmtree(str(mirror_dir))
+    except OSError as e:
+        logger.error("Failed to delete mirror directory %s: %s", mirror_id, e)
+        return False
     logger.info("Deleted mirror %s", mirror_id)
     return True
 
