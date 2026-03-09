@@ -11,6 +11,7 @@ Design: Discovery, not knowledge. These are pointers to discussions,
 not authoritative sources for answering questions.
 """
 
+import contextvars
 import json
 import logging
 import sqlite3
@@ -20,8 +21,60 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from src.cli.config import get_data_dir
+from src.core.validation import is_safe_identifier
+from src.knowledge.mirror import _validate_mirror_id
 
 logger = logging.getLogger(__name__)
+
+# ContextVar for transparent mirror routing. When set, get_db_path() returns
+# the mirror's database path instead of the production path.
+# Safe for concurrent requests because the middleware sets and resets the
+# value around each request's lifecycle. Nested async calls within the
+# same request inherit the value.
+_active_mirror_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_active_mirror_id", default=None
+)
+
+
+def set_active_mirror(mirror_id: str | None) -> contextvars.Token[str | None]:
+    """Set the active mirror for the current async context.
+
+    Validates the mirror ID immediately to catch invalid values early.
+    Returns a token that can be used to reset the context variable.
+    """
+    if mirror_id is not None:
+        _validate_mirror_id(mirror_id)
+    return _active_mirror_id.set(mirror_id)
+
+
+def reset_active_mirror(token: contextvars.Token[str | None]) -> None:
+    """Reset the active mirror to its previous value."""
+    _active_mirror_id.reset(token)
+
+
+def get_active_mirror() -> str | None:
+    """Get the currently active mirror ID, or None if not in mirror mode."""
+    return _active_mirror_id.get()
+
+
+@contextmanager
+def active_mirror_context(mirror_id: str) -> Iterator[None]:
+    """Context manager for mirror routing.
+
+    Sets the active mirror for the duration of the block and resets it
+    afterward, even if an exception occurs.
+
+    Usage:
+        with active_mirror_context("abc123"):
+            # All DB operations within this block go to the mirror
+            ...
+    """
+    token = set_active_mirror(mirror_id)
+    try:
+        yield
+    finally:
+        reset_active_mirror(token)
+
 
 SCHEMA_SQL = """
 -- GitHub issues and PRs
@@ -377,6 +430,8 @@ def get_db_path(project: str = "hed") -> Path:
     """Get path to knowledge database for a project.
 
     Each assistant/project has its own isolated knowledge database.
+    When a mirror is active (via ContextVar), returns the mirror's
+    database path instead.
 
     Args:
         project: Assistant/project name (e.g., 'hed', 'bids', 'eeglab').
@@ -389,11 +444,16 @@ def get_db_path(project: str = "hed") -> Path:
         ValueError: If project name contains invalid characters.
     """
     # Validate project name to prevent path traversal
-    if not project or not project.replace("-", "").replace("_", "").isalnum():
+    if not is_safe_identifier(project):
         raise ValueError(
             f"Invalid project name: {project}. "
             "Use only alphanumeric characters, hyphens, and underscores."
         )
+
+    mirror_id = get_active_mirror()
+    if mirror_id:
+        # mirror_id was already validated when set via set_active_mirror()
+        return get_data_dir() / "mirrors" / mirror_id / f"{project}.db"
 
     return get_data_dir() / "knowledge" / f"{project}.db"
 

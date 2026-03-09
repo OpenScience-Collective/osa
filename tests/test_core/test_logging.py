@@ -28,7 +28,7 @@ class TestSecureFormatter:
         )
 
         formatted = formatter.format(record)
-        assert "sk-or-v1-***[redacted]" in formatted
+        assert "***[key-redacted]" in formatted
         assert "aaaa" not in formatted  # Original key should not appear
 
     def test_redacts_multiple_api_keys(self) -> None:
@@ -45,7 +45,7 @@ class TestSecureFormatter:
         )
 
         formatted = formatter.format(record)
-        assert formatted.count("sk-or-v1-***[redacted]") == 2
+        assert formatted.count("***[key-redacted]") == 2
         assert "aaaa" not in formatted
         assert "bbbb" not in formatted
 
@@ -65,7 +65,7 @@ class TestSecureFormatter:
         formatted = formatter.format(record)
         assert "Starting request with key" in formatted
         assert "for user john" in formatted
-        assert "sk-or-v1-***[redacted]" in formatted
+        assert "***[key-redacted]" in formatted
 
     def test_handles_message_without_keys(self) -> None:
         """Should not modify messages without API keys."""
@@ -98,7 +98,7 @@ class TestSecureFormatter:
         )
 
         formatted = formatter.format(record)
-        assert "sk-or-v1-***[redacted]" in formatted
+        assert "***[key-redacted]" in formatted
 
     def test_uses_standard_format_fields(self) -> None:
         """Should support standard logging format fields."""
@@ -116,7 +116,7 @@ class TestSecureFormatter:
         formatted = formatter.format(record)
         assert "WARNING" in formatted
         assert "my.logger" in formatted
-        assert "sk-or-v1-***[redacted]" in formatted
+        assert "***[key-redacted]" in formatted
 
     def test_preserves_partial_matches(self) -> None:
         """Should not redact strings that partially match key pattern."""
@@ -205,7 +205,7 @@ class TestSecureFormatter:
 
         formatted = formatter.format(record)
         # API key in exception message should be redacted
-        assert "sk-or-v1-***[redacted]" in formatted
+        assert "***[key-redacted]" in formatted
         assert "aaaa" not in formatted
 
     def test_concurrent_logging_thread_safety(self) -> None:
@@ -253,7 +253,7 @@ class TestSecureFormatter:
         assert len(errors) == 0, f"Concurrent logging errors: {errors}"
         assert len(formatted_logs) == 10
         for _, api_key, log in formatted_logs:
-            assert "sk-or-v1-***[redacted]" in log
+            assert "***[key-redacted]" in log
             # Original key should not appear
             assert api_key not in log
 
@@ -402,7 +402,7 @@ class TestSecureJSONFormatter:
         formatted = formatter.format(record)
         log_data = json.loads(formatted)
 
-        assert "sk-or-v1-***[redacted]" in log_data["message"]
+        assert "***[key-redacted]" in log_data["message"]
         assert "aaaa" not in log_data["message"]
 
     def test_configures_json_logging(self) -> None:

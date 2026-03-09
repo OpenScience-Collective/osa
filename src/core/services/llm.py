@@ -18,20 +18,29 @@ class LLMService:
 
     # Model mappings for direct OpenAI API
     OPENAI_MODELS = {
+        "gpt-5.2": "gpt-5.2",
+        "gpt-5": "gpt-5",
+        "gpt-5-mini": "gpt-5-mini",
+        "gpt-4.1": "gpt-4.1",
+        "gpt-4.1-mini": "gpt-4.1-mini",
         "gpt-4o": "gpt-4o",
         "gpt-4o-mini": "gpt-4o-mini",
-        "gpt-4-turbo": "gpt-4-turbo",
-        "gpt-4": "gpt-4",
-        "gpt-3.5-turbo": "gpt-3.5-turbo",
+        "o4-mini": "o4-mini",
+        "o3": "o3",
+        "o3-mini": "o3-mini",
     }
 
     # Model mappings for direct Anthropic API
     ANTHROPIC_MODELS = {
-        "claude-3-5-sonnet": "claude-3-5-sonnet-20241022",
-        "claude-3-5-haiku": "claude-3-5-haiku-20241022",
-        "claude-3-opus": "claude-3-opus-20240229",
-        "claude-3-sonnet": "claude-3-sonnet-20240229",
-        "claude-3-haiku": "claude-3-haiku-20240307",
+        "claude-sonnet-4.6": "claude-sonnet-4-6-20250610",
+        "claude-opus-4.6": "claude-opus-4-6-20250610",
+        "claude-sonnet-4.5": "claude-sonnet-4-5-20250514",
+        "claude-opus-4.5": "claude-opus-4-5-20250514",
+        "claude-haiku-4.5": "claude-haiku-4-5-20251001",
+        "claude-sonnet-4": "claude-sonnet-4-20250514",
+        "claude-3.7-sonnet": "claude-3-7-sonnet-20250219",
+        "claude-3.5-sonnet": "claude-3-5-sonnet-20241022",
+        "claude-3.5-haiku": "claude-3-5-haiku-20241022",
     }
 
     @property
@@ -134,7 +143,7 @@ class LLMService:
             model_name: Model name. Supports:
                 - OpenRouter format: 'creator/model' (e.g., 'openai/gpt-oss-120b', 'qwen/qwen3-235b')
                 - Direct OpenAI: 'gpt-4o', 'gpt-4o-mini', etc.
-                - Direct Anthropic: 'claude-3-5-sonnet', etc.
+                - Direct Anthropic: 'claude-3.5-sonnet', etc.
                 If not provided, uses settings.default_model.
             api_key: Optional API key override (for BYOK).
             temperature: Model temperature. If not provided, uses settings.llm_temperature.

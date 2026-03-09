@@ -403,13 +403,6 @@ documentation:
     category: advanced
     description: Guidance on generating and interpreting summaries of HED annotations in datasets to facilitate data analysis.
 
-  # === ON-DEMAND: Integration (1 doc) ===
-  - title: HED and EEGLAB
-    url: https://www.hedtags.org/hed-resources/HedAndEEGLAB.html
-    source_url: https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/HedAndEEGLAB.html
-    category: integration
-    description: Describes how to integrate HED annotations within the EEGLAB environment for EEG data analysis.
-
   # === ON-DEMAND: Reference (2 docs) ===
   - title: Documentation summary
     url: https://www.hedtags.org/hed-resources/DocumentationSummary.html
@@ -422,13 +415,6 @@ documentation:
     source_url: https://raw.githubusercontent.com/hed-standard/hed-resources/main/docs/source/HedTestDatasets.md
     category: reference
     description: A collection of datasets specifically designed for testing HED annotations and validation tools.
-
-  # === ON-DEMAND: Examples (1 doc) ===
-  - title: Test cases
-    url: https://raw.githubusercontent.com/hed-standard/hed-specification/refs/heads/main/tests/javascriptTests.json
-    source_url: https://raw.githubusercontent.com/hed-standard/hed-specification/refs/heads/main/tests/javascriptTests.json
-    category: examples
-    description: Examples of correct and incorrect HED annotations in JSON format for testing validation tools.
 
 # Sync schedule configuration
 # Each sync type runs on its own cron schedule (UTC)

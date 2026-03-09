@@ -23,15 +23,15 @@ class TestLLMServiceModelMappings:
 
     def test_openai_models_mapping(self) -> None:
         """LLMService should have OpenAI model mappings."""
+        assert "gpt-5.2" in LLMService.OPENAI_MODELS
+        assert "gpt-5-mini" in LLMService.OPENAI_MODELS
         assert "gpt-4o" in LLMService.OPENAI_MODELS
-        assert "gpt-4o-mini" in LLMService.OPENAI_MODELS
-        assert "gpt-4-turbo" in LLMService.OPENAI_MODELS
 
     def test_anthropic_models_mapping(self) -> None:
         """LLMService should have Anthropic model mappings."""
-        assert "claude-3-5-sonnet" in LLMService.ANTHROPIC_MODELS
-        assert "claude-3-5-haiku" in LLMService.ANTHROPIC_MODELS
-        assert "claude-3-opus" in LLMService.ANTHROPIC_MODELS
+        assert "claude-sonnet-4.6" in LLMService.ANTHROPIC_MODELS
+        assert "claude-haiku-4.5" in LLMService.ANTHROPIC_MODELS
+        assert "claude-3.5-sonnet" in LLMService.ANTHROPIC_MODELS
 
     def test_default_model_from_settings(self) -> None:
         """LLMService should get default model from settings."""
@@ -82,7 +82,7 @@ class TestLLMServiceGetModel:
         settings = Settings(anthropic_api_key=None)
         service = LLMService(settings=settings)
         with pytest.raises(ValueError, match="Anthropic API key required"):
-            service.get_model("claude-3-5-sonnet")
+            service.get_model("claude-3.5-sonnet")
 
     def test_get_model_with_api_key_override(self) -> None:
         """get_model should use provided API key over settings."""
@@ -104,7 +104,7 @@ class TestLLMServiceGetModel:
         """get_model should return Anthropic model when configured."""
         settings = Settings(anthropic_api_key="test-anthropic-key")
         service = LLMService(settings=settings)
-        model = service.get_model("claude-3-5-haiku")
+        model = service.get_model("claude-3.5-haiku")
         assert model is not None
 
     def test_get_model_default_openrouter(self) -> None:

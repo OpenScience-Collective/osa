@@ -34,7 +34,7 @@ from src.assistants.community import PageContext as AgentPageContext
 from src.assistants.registry import AssistantInfo
 from src.core.config.community import WidgetConfig
 from src.core.services.litellm_llm import create_openrouter_llm
-from src.metrics.cost import estimate_cost
+from src.metrics.cost import COST_BLOCK_THRESHOLD, COST_WARN_THRESHOLD, MODEL_PRICING, estimate_cost
 from src.metrics.db import (
     RequestLogEntry,
     extract_token_usage,
@@ -602,6 +602,59 @@ def _select_model(
     return (default_model, default_provider)
 
 
+def _check_model_cost(model: str, key_source: str) -> None:
+    """Check if a model's cost exceeds platform thresholds.
+
+    Only enforced when using platform or community API keys (not BYOK).
+    Logs a warning for moderately expensive models and blocks very expensive ones.
+
+    Args:
+        model: Model identifier (e.g., "openai/gpt-4o").
+        key_source: One of "byok", "community", or "platform".
+
+    Raises:
+        HTTPException(403): If model cost exceeds the block threshold.
+    """
+    if key_source == "byok":
+        return
+
+    pricing = MODEL_PRICING.get(model)
+    if pricing is None:
+        logger.error(
+            "Model %s not in pricing table; blocking on platform/community key. "
+            "Add this model to MODEL_PRICING in src/metrics/cost.py.",
+            model,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Model '{model}' is not in the approved pricing list and cannot be used "
+                "with platform or community keys. To use this model, provide your own "
+                "API key via the X-OpenRouter-Key header."
+            ),
+        )
+    input_rate = pricing.input_per_1m
+
+    if input_rate >= COST_BLOCK_THRESHOLD:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Model '{model}' costs ${input_rate:.2f}/1M input tokens, "
+                f"which exceeds the platform limit of ${COST_BLOCK_THRESHOLD:.2f}/1M. "
+                "To use expensive models, provide your own API key via the "
+                "X-OpenRouter-Key header. Get a key at: https://openrouter.ai/keys"
+            ),
+        )
+
+    if input_rate >= COST_WARN_THRESHOLD:
+        logger.warning(
+            "Model %s costs $%.2f/1M input tokens (warn threshold: $%.2f)",
+            model,
+            input_rate,
+            COST_WARN_THRESHOLD,
+        )
+
+
 def _derive_user_id(token: str) -> str:
     """Derive a stable user ID from API token for cache optimization.
 
@@ -717,6 +770,10 @@ def create_community_assistant(
     selected_model, selected_provider = _select_model(
         community_info, requested_model, has_byok=bool(byok)
     )
+
+    # Block expensive models on platform/community keys
+    _check_model_cost(selected_model, key_source)
+
     logger.debug(
         "Using model %s",
         selected_model,

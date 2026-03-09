@@ -68,15 +68,16 @@
   }
 
   // Default model options for settings dropdown
+  // Last updated: 2026-03
   const DEFAULT_MODELS = [
+    { value: 'anthropic/claude-sonnet-4.6', label: 'Claude Sonnet 4.6' },
+    { value: 'anthropic/claude-haiku-4.5', label: 'Claude Haiku 4.5' },
     { value: 'openai/gpt-5.2-chat', label: 'GPT-5.2 Chat' },
     { value: 'openai/gpt-5-mini', label: 'GPT-5 Mini' },
-    { value: 'anthropic/claude-haiku-4.5', label: 'Claude Haiku 4.5' },
-    { value: 'anthropic/claude-sonnet-4.5', label: 'Claude Sonnet 4.5' },
     { value: 'google/gemini-3-flash-preview', label: 'Gemini 3 Flash' },
     { value: 'google/gemini-3-pro-preview', label: 'Gemini 3 Pro' },
-    { value: 'moonshotai/kimi-k2-0905', label: 'Kimi K2' },
-    { value: 'qwen/qwen3-235b-a22b-2507', label: 'Qwen3 235B' }
+    { value: 'deepseek/deepseek-v3.2', label: 'DeepSeek V3.2' },
+    { value: 'qwen/qwen3.5-397b-a17b', label: 'Qwen 3.5 397B' }
   ];
 
   // Helper to get human-readable label for a model

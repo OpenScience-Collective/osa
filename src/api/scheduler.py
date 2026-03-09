@@ -286,6 +286,28 @@ def _run_beps_sync_for_community(community_id: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+_mirror_cleanup_failures = 0
+
+
+def _cleanup_mirrors() -> None:
+    """Remove expired ephemeral database mirrors."""
+    global _mirror_cleanup_failures
+    from src.knowledge.mirror import CorruptMirrorError, cleanup_expired_mirrors
+
+    try:
+        deleted = cleanup_expired_mirrors()
+        if deleted:
+            logger.info("Mirror cleanup: removed %d expired mirrors", deleted)
+        _mirror_cleanup_failures = 0
+    except (OSError, ValueError, CorruptMirrorError):
+        _mirror_cleanup_failures += 1
+        logger.error(
+            "Mirror cleanup failed (consecutive failures: %d)",
+            _mirror_cleanup_failures,
+            exc_info=True,
+        )
+
+
 def _check_community_budgets() -> None:
     """Check budget limits for all communities and create alert issues if exceeded."""
     global _budget_check_failures
@@ -560,6 +582,20 @@ def start_scheduler() -> BackgroundScheduler | None:
     except ValueError as e:
         logger.error("Failed to schedule budget check: %s", e)
 
+    # Mirror cleanup (every hour, removes expired ephemeral database mirrors)
+    try:
+        mirror_trigger = CronTrigger(minute="30")  # Every hour at :30
+        _scheduler.add_job(
+            _cleanup_mirrors,
+            trigger=mirror_trigger,
+            id="mirror_cleanup",
+            name="Expired Mirror Cleanup",
+            replace_existing=True,
+        )
+        logger.info("Mirror cleanup scheduled: hourly at :30")
+    except ValueError as e:
+        logger.error("Failed to schedule mirror cleanup: %s", e)
+
     # Start the scheduler
     _scheduler.start()
     logger.info("Background scheduler started with %d sync jobs", jobs_registered)
@@ -607,8 +643,9 @@ def run_sync_now(sync_type: str = "all") -> dict[str, int]:
         os.environ["GITHUB_TOKEN"] = settings.github_token
 
     if sync_type != "all" and sync_type not in _SYNC_TYPE_MAP:
-        logger.warning("Unknown sync_type requested: %s", sync_type)
-        return results
+        raise ValueError(
+            f"Unknown sync_type: {sync_type!r}. Valid types: {list(_SYNC_TYPE_MAP.keys())} or 'all'"
+        )
 
     sync_types_to_run = list(_SYNC_TYPE_MAP.keys()) if sync_type == "all" else [sync_type]
 
