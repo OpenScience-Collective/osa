@@ -210,6 +210,11 @@ async def delete_mirror_endpoint(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Mirror '{mirror_id}' not found",
             )
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid mirror ID format: '{mirror_id}'",
+        )
     except OSError as e:
         logger.error("Failed to delete mirror %s: %s", mirror_id, e, exc_info=True)
         raise HTTPException(

@@ -53,6 +53,9 @@ class MirrorInfo:
             raise ValueError(f"Invalid mirror ID: {self.mirror_id!r}")
         if not self.community_ids:
             raise ValueError("community_ids must not be empty")
+        for cid in self.community_ids:
+            if not is_safe_identifier(cid):
+                raise ValueError(f"Invalid community ID in community_ids: {cid!r}")
 
     def is_expired(self) -> bool:
         """Check if the mirror has passed its expiration time."""
@@ -374,6 +377,7 @@ def refresh_mirror(
 
     Raises:
         ValueError: If mirror not found or expired.
+        CorruptMirrorError: If mirror metadata is corrupt.
     """
     info = get_mirror(mirror_id)
     if not info:
