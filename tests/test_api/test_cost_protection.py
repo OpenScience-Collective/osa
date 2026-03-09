@@ -54,9 +54,12 @@ class TestCheckModelCost:
 
         _check_model_cost(expensive_models[0], "byok")
 
-    def test_unknown_model_allowed_on_platform_key(self) -> None:
-        """Unknown models (not in pricing table) should be allowed."""
-        _check_model_cost("unknown/made-up-model-xyz", "platform")
+    def test_unknown_model_blocked_on_platform_key(self) -> None:
+        """Unknown models (not in pricing table) should be blocked on platform keys."""
+        with pytest.raises(HTTPException) as exc_info:
+            _check_model_cost("unknown/made-up-model-xyz", "platform")
+        assert exc_info.value.status_code == 403
+        assert "not in the approved pricing list" in exc_info.value.detail
 
     def test_unknown_model_allowed_with_byok(self) -> None:
         """BYOK users with unknown models should also be allowed."""

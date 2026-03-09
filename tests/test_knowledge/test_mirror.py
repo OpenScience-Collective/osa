@@ -3,11 +3,14 @@
 Tests cover:
 - Mirror CRUD lifecycle (create, get, list, delete)
 - ContextVar-based DB routing (get_db_path returns mirror path when set)
+- active_mirror_context context manager (set/reset, exception safety)
+- MirrorInfo invariants (frozen dataclass, validation, serialization)
 - Mirror refresh (re-copy from production)
-- TTL expiration and cleanup
+- TTL expiration, clamping, and cleanup
 - Resource limits (max mirrors, per-user limits)
 - Path traversal prevention
 - Corrupt metadata resilience
+- run_sync_now input validation
 """
 
 import json
@@ -234,7 +237,7 @@ class TestTTLAndCleanup:
         """Mirror with past expiration is expired."""
         info = MirrorInfo(
             mirror_id="test",
-            community_ids=["testcommunity"],
+            community_ids=("testcommunity",),
             created_at=datetime.now(UTC),
             expires_at=datetime.now(UTC) - timedelta(hours=1),
         )
@@ -405,5 +408,120 @@ class TestCreateMirrorCleanup:
     def test_create_mirror_partial_communities(self):
         """Creating with mix of valid and invalid communities only copies valid ones."""
         info = create_mirror(community_ids=["testcommunity", "nonexistent"])
-        assert info.community_ids == ["testcommunity"]
+        assert info.community_ids == ("testcommunity",)
         assert "nonexistent" not in info.community_ids
+
+
+class TestActiveMirrorContext:
+    """Tests for the active_mirror_context context manager."""
+
+    def test_context_manager_sets_and_resets(self):
+        """Context manager sets mirror ID and resets it after the block."""
+        from src.knowledge.db import active_mirror_context
+
+        assert get_active_mirror() is None
+        with active_mirror_context("abc123"):
+            assert get_active_mirror() == "abc123"
+        assert get_active_mirror() is None
+
+    def test_context_manager_resets_on_exception(self):
+        """Context manager resets mirror ID even if an exception occurs."""
+        from src.knowledge.db import active_mirror_context
+
+        assert get_active_mirror() is None
+        with pytest.raises(RuntimeError), active_mirror_context("abc123"):
+            assert get_active_mirror() == "abc123"
+            raise RuntimeError("test error")
+        assert get_active_mirror() is None
+
+    def test_context_manager_validates_mirror_id(self):
+        """Context manager rejects invalid mirror IDs."""
+        from src.knowledge.db import active_mirror_context
+
+        with pytest.raises(ValueError), active_mirror_context("../invalid"):
+            pass
+
+
+class TestMirrorInfoInvariants:
+    """Tests for MirrorInfo construction validation."""
+
+    def test_empty_community_ids_rejected(self):
+        """Constructing MirrorInfo with empty community_ids raises ValueError."""
+        with pytest.raises(ValueError, match="community_ids must not be empty"):
+            MirrorInfo(
+                mirror_id="valid",
+                community_ids=(),
+                created_at=datetime.now(UTC),
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            )
+
+    def test_invalid_mirror_id_at_construction(self):
+        """Constructing MirrorInfo with path-traversal mirror_id raises ValueError."""
+        with pytest.raises(ValueError, match="Invalid mirror ID"):
+            MirrorInfo(
+                mirror_id="../etc",
+                community_ids=("test",),
+                created_at=datetime.now(UTC),
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            )
+
+    def test_frozen_dataclass_is_immutable(self):
+        """MirrorInfo fields cannot be modified after construction."""
+        info = MirrorInfo(
+            mirror_id="test",
+            community_ids=("testcommunity",),
+            created_at=datetime.now(UTC),
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+        with pytest.raises(AttributeError):
+            info.mirror_id = "changed"  # type: ignore[misc]
+        with pytest.raises(AttributeError):
+            info.size_bytes = 999  # type: ignore[misc]
+
+    def test_serialization_roundtrip(self):
+        """MirrorInfo to_dict/from_dict preserves all fields."""
+        now = datetime.now(UTC)
+        original = MirrorInfo(
+            mirror_id="test123",
+            community_ids=("hed", "bids"),
+            created_at=now,
+            expires_at=now + timedelta(hours=24),
+            owner_id="user1",
+            label="my mirror",
+        )
+        data = original.to_dict()
+        restored = MirrorInfo.from_dict(data)
+
+        assert restored.mirror_id == original.mirror_id
+        assert restored.community_ids == original.community_ids
+        assert restored.created_at == original.created_at
+        assert restored.expires_at == original.expires_at
+        assert restored.owner_id == original.owner_id
+        assert restored.label == original.label
+        # size_bytes is excluded from serialization
+        assert "size_bytes" not in data
+        assert restored.size_bytes == 0
+
+
+class TestTTLClamping:
+    """Tests for TTL clamping in create_mirror."""
+
+    def test_ttl_clamped_to_max(self):
+        """create_mirror clamps TTL to MAX_TTL_HOURS."""
+        from src.knowledge.mirror import MAX_TTL_HOURS
+
+        info = create_mirror(community_ids=["testcommunity"], ttl_hours=999)
+        actual_ttl = (info.expires_at - info.created_at).total_seconds() / 3600
+        assert actual_ttl <= MAX_TTL_HOURS
+        assert actual_ttl == pytest.approx(MAX_TTL_HOURS, abs=0.01)
+
+
+class TestRunSyncNowValidation:
+    """Tests for run_sync_now input validation."""
+
+    def test_invalid_sync_type_raises_valueerror(self):
+        """run_sync_now raises ValueError for unknown sync types."""
+        from src.api.scheduler import run_sync_now
+
+        with pytest.raises(ValueError, match="Unknown sync_type"):
+            run_sync_now("invalid_type")

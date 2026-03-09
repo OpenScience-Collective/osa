@@ -3,6 +3,9 @@
 Model pricing table with per-token costs (USD per million tokens).
 Pricing is from OpenRouter; models added incrementally so individual
 prices may have different verification dates.
+
+Also defines cost protection thresholds for blocking expensive models
+on platform/community keys (not BYOK).
 """
 
 import logging
@@ -79,6 +82,14 @@ MODEL_PRICING: dict[str, ModelRate] = {
     "meta-llama/llama-4-scout": ModelRate(0.08, 0.30),
     "meta-llama/llama-3.3-70b-instruct": ModelRate(0.10, 0.32),
 }
+
+# Validate all pricing entries at import time to catch typos
+for _model_name, _rate in MODEL_PRICING.items():
+    if _rate.input_per_1m < 0 or _rate.output_per_1m < 0:
+        raise ValueError(
+            f"Negative rate for model {_model_name}: "
+            f"input={_rate.input_per_1m}, output={_rate.output_per_1m}"
+        )
 
 # Fallback rate for models not in the pricing table
 _FALLBACK_RATE = ModelRate(input_per_1m=1.00, output_per_1m=3.00)

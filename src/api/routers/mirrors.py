@@ -15,14 +15,15 @@ from fastapi import APIRouter, Header, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
 
 from src.api.security import RequireAuth
+from src.core.validation import is_safe_identifier
 from src.knowledge.db import active_mirror_context
 from src.knowledge.mirror import (
+    CorruptMirrorError,
     MirrorInfo,
     create_mirror,
     delete_mirror,
     get_mirror,
     get_mirror_db_path,
-    is_safe_identifier,
     list_mirrors,
     refresh_mirror,
 )
@@ -93,6 +94,16 @@ class RefreshMirrorRequest(BaseModel):
         default=None, description="Specific communities to refresh, or null for all"
     )
 
+    @field_validator("community_ids")
+    @classmethod
+    def validate_community_ids(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return v
+        for cid in v:
+            if not is_safe_identifier(cid):
+                raise ValueError(f"Invalid community ID: {cid!r}")
+        return list(dict.fromkeys(v))
+
 
 SyncType = Literal["github", "papers", "docstrings", "mailman", "faq", "beps", "all"]
 
@@ -135,6 +146,12 @@ async def create_mirror_endpoint(
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except OSError as e:
+        logger.error("Failed to create mirror: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create mirror due to a server filesystem error.",
+        ) from e
 
     logger.info(
         "Mirror created: %s (communities=%s, owner=%s)",
@@ -161,7 +178,18 @@ async def get_mirror_endpoint(
     _auth: RequireAuth,
 ) -> MirrorResponse:
     """Get metadata for a specific mirror."""
-    info = get_mirror(mirror_id)
+    try:
+        info = get_mirror(mirror_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid mirror ID format: '{mirror_id}'",
+        )
+    except CorruptMirrorError:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Mirror '{mirror_id}' has corrupt metadata. Delete and recreate it.",
+        )
     if not info:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -182,6 +210,11 @@ async def delete_mirror_endpoint(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Mirror '{mirror_id}' not found",
             )
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid mirror ID format: '{mirror_id}'",
+        )
     except OSError as e:
         logger.error("Failed to delete mirror %s: %s", mirror_id, e, exc_info=True)
         raise HTTPException(
@@ -205,6 +238,11 @@ async def refresh_mirror_endpoint(
         info = refresh_mirror(mirror_id, community_ids=body.community_ids)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except CorruptMirrorError:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Mirror '{mirror_id}' has corrupt metadata. Delete and recreate it.",
+        )
 
     logger.info("Mirror refreshed via API: %s", mirror_id)
     return MirrorResponse.from_info(info)
@@ -222,7 +260,18 @@ async def sync_mirror_endpoint(
     databases instead of production. Supports sync types: github, papers,
     docstrings, mailman, faq, beps, or all.
     """
-    info = get_mirror(mirror_id)
+    try:
+        info = get_mirror(mirror_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid mirror ID format: '{mirror_id}'",
+        )
+    except CorruptMirrorError:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Mirror '{mirror_id}' has corrupt metadata. Delete and recreate it.",
+        )
     if not info:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -235,8 +284,9 @@ async def sync_mirror_endpoint(
         )
 
     # Run sync in a thread with the mirror context explicitly copied.
-    # asyncio.to_thread copies ContextVars on Python 3.12+ but not 3.11,
-    # so we capture the context and run within it for compatibility.
+    # We use run_in_executor with an explicit context copy instead of
+    # asyncio.to_thread because to_thread only copies ContextVars
+    # automatically on Python 3.12+.
     from src.api.scheduler import run_sync_now
 
     ctx = contextvars.copy_context()
@@ -246,7 +296,8 @@ async def sync_mirror_endpoint(
             return run_sync_now(body.sync_type)
 
     try:
-        results = await asyncio.get_event_loop().run_in_executor(None, ctx.run, _run_sync_in_mirror)
+        loop = asyncio.get_running_loop()
+        results = await loop.run_in_executor(None, ctx.run, _run_sync_in_mirror)
         total = sum(results.values())
         return MirrorSyncResponse(
             message=f"Sync completed: {total} items synced into mirror {mirror_id}",
@@ -254,6 +305,12 @@ async def sync_mirror_endpoint(
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+    except OSError as e:
+        logger.error("Mirror sync I/O error for %s: %s", mirror_id, e, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Sync failed due to a filesystem error: {e}",
+        ) from e
     except Exception as e:
         logger.error("Mirror sync failed for %s: %s", mirror_id, e, exc_info=True)
         raise HTTPException(
@@ -274,7 +331,18 @@ async def download_mirror_db(
     """
     from fastapi.responses import FileResponse
 
-    info = get_mirror(mirror_id)
+    try:
+        info = get_mirror(mirror_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid mirror ID format: '{mirror_id}'",
+        )
+    except CorruptMirrorError:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Mirror '{mirror_id}' has corrupt metadata. Delete and recreate it.",
+        )
     if not info:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

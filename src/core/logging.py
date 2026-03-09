@@ -1,7 +1,8 @@
 """Secure logging configuration with API key redaction.
 
-Provides a custom log formatter that automatically redacts OpenRouter API keys
-from log messages to prevent credential exposure in centralized logging systems.
+Provides a custom log formatter that automatically redacts API keys
+(OpenRouter, Anthropic, OpenAI) from log messages to prevent credential
+exposure in centralized logging systems.
 
 Supports both text and JSON-structured logging formats.
 """
@@ -17,12 +18,19 @@ from typing import Any
 class SecureFormatter(logging.Formatter):
     """Custom log formatter that redacts API keys from log messages.
 
-    Automatically detects and redacts OpenRouter API keys in the format
-    sk-or-v1-[64 hex chars] to prevent accidental credential exposure.
+    Automatically detects and redacts API keys from OpenRouter, Anthropic,
+    and OpenAI to prevent accidental credential exposure.
     """
 
-    # Pattern to match OpenRouter API keys: sk-or-v1-[64 hex chars]
-    API_KEY_PATTERN = re.compile(r"sk-or-v1-[0-9a-f]{64}", re.IGNORECASE)
+    # Patterns for API keys from various providers.
+    # IGNORECASE as defense-in-depth; real keys use lowercase hex.
+    API_KEY_PATTERN = re.compile(
+        r"sk-or-v1-[0-9a-f]{64}"  # OpenRouter: sk-or-v1-[64 hex chars]
+        r"|sk-ant-[a-zA-Z0-9_-]{80,}"  # Anthropic: sk-ant-...
+        r"|sk-proj-[a-zA-Z0-9_-]{40,}"  # OpenAI project keys: sk-proj-...
+        r"|sk-[a-zA-Z0-9]{48,}",  # Generic OpenAI keys: sk-...
+        re.IGNORECASE,
+    )
 
     def format(self, record: logging.LogRecord) -> str:
         """Format log record and redact any API keys.
@@ -55,7 +63,7 @@ class SecureFormatter(logging.Formatter):
             if len(formatted) > 100_000:  # 100KB limit
                 formatted = formatted[:100_000] + "... [truncated for safety]"
 
-            formatted = self.API_KEY_PATTERN.sub("sk-or-v1-***[redacted]", formatted)
+            formatted = self.API_KEY_PATTERN.sub("***[key-redacted]", formatted)
         except re.error as e:
             # Regex pattern is broken - this is a code bug
             print(f"CRITICAL: Redaction regex failed: {e}", file=sys.stderr)
@@ -137,7 +145,7 @@ class SecureJSONFormatter(SecureFormatter):
             json_str = json.dumps(log_entry, default=str)
 
             # Redact API keys from the JSON string
-            json_str = self.API_KEY_PATTERN.sub("sk-or-v1-***[redacted]", json_str)
+            json_str = self.API_KEY_PATTERN.sub("***[key-redacted]", json_str)
 
             return json_str
 
@@ -154,7 +162,7 @@ class SecureJSONFormatter(SecureFormatter):
                 "original_message": safe_msg,
             }
             fallback_json = json.dumps(error_entry)
-            return self.API_KEY_PATTERN.sub("sk-or-v1-***[redacted]", fallback_json)
+            return self.API_KEY_PATTERN.sub("***[key-redacted]", fallback_json)
         except Exception as e:
             # Unexpected errors - surface to stderr and re-raise
             print(f"CRITICAL: Unexpected error in SecureJSONFormatter: {e}", file=sys.stderr)

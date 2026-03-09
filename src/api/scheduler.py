@@ -292,14 +292,14 @@ _mirror_cleanup_failures = 0
 def _cleanup_mirrors() -> None:
     """Remove expired ephemeral database mirrors."""
     global _mirror_cleanup_failures
-    try:
-        from src.knowledge.mirror import cleanup_expired_mirrors
+    from src.knowledge.mirror import CorruptMirrorError, cleanup_expired_mirrors
 
+    try:
         deleted = cleanup_expired_mirrors()
         if deleted:
             logger.info("Mirror cleanup: removed %d expired mirrors", deleted)
         _mirror_cleanup_failures = 0
-    except Exception:
+    except (OSError, ValueError, CorruptMirrorError):
         _mirror_cleanup_failures += 1
         logger.error(
             "Mirror cleanup failed (consecutive failures: %d)",

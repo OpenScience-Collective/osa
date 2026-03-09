@@ -4,6 +4,8 @@ Mirrors are short-lived copies of community knowledge databases that allow
 developers to read, write, and re-sync without affecting production data.
 Each mirror gets its own directory under data/mirrors/{mirror_id}/ containing
 copies of the relevant community SQLite databases.
+
+Default TTL is 48 hours; maximum is 168 hours (7 days).
 """
 
 import json
@@ -15,6 +17,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from src.cli.config import get_data_dir
+from src.core.validation import is_safe_identifier
 
 logger = logging.getLogger(__name__)
 
@@ -28,20 +31,16 @@ MAX_MIRRORS_TOTAL = 50
 MAX_MIRRORS_PER_USER = 2
 
 
-def is_safe_identifier(value: str) -> bool:
-    """Check if a string is a safe identifier (alphanumeric, hyphens, underscores).
-
-    Used for both mirror IDs and community IDs to prevent path traversal.
-    """
-    return bool(value) and value.replace("-", "").replace("_", "").isalnum()
-
-
-@dataclass
+@dataclass(frozen=True)
 class MirrorInfo:
-    """Metadata for an ephemeral database mirror."""
+    """Metadata for an ephemeral database mirror.
+
+    Frozen dataclass: all fields are immutable after construction.
+    Default TTL is 48 hours; maximum is 168 hours (7 days).
+    """
 
     mirror_id: str
-    community_ids: list[str]
+    community_ids: tuple[str, ...]
     created_at: datetime
     expires_at: datetime
     owner_id: str | None = None
@@ -54,6 +53,9 @@ class MirrorInfo:
             raise ValueError(f"Invalid mirror ID: {self.mirror_id!r}")
         if not self.community_ids:
             raise ValueError("community_ids must not be empty")
+        for cid in self.community_ids:
+            if not is_safe_identifier(cid):
+                raise ValueError(f"Invalid community ID in community_ids: {cid!r}")
 
     def is_expired(self) -> bool:
         """Check if the mirror has passed its expiration time."""
@@ -67,7 +69,7 @@ class MirrorInfo:
         """
         return {
             "mirror_id": self.mirror_id,
-            "community_ids": self.community_ids,
+            "community_ids": list(self.community_ids),
             "created_at": self.created_at.isoformat(),
             "expires_at": self.expires_at.isoformat(),
             "owner_id": self.owner_id,
@@ -75,15 +77,16 @@ class MirrorInfo:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "MirrorInfo":
+    def from_dict(cls, data: dict, size_bytes: int = 0) -> "MirrorInfo":
         """Deserialize from dictionary."""
         return cls(
             mirror_id=data["mirror_id"],
-            community_ids=data["community_ids"],
+            community_ids=tuple(data["community_ids"]),
             created_at=datetime.fromisoformat(data["created_at"]),
             expires_at=datetime.fromisoformat(data["expires_at"]),
             owner_id=data.get("owner_id"),
             label=data.get("label"),
+            size_bytes=size_bytes,
         )
 
 
@@ -165,8 +168,7 @@ def _read_metadata(mirror_id: str) -> MirrorInfo | None:
         return None
     try:
         data = json.loads(path.read_text())
-        info = MirrorInfo.from_dict(data)
-        info.size_bytes = _calculate_mirror_size(mirror_id)
+        info = MirrorInfo.from_dict(data, size_bytes=_calculate_mirror_size(mirror_id))
         return info
     except (json.JSONDecodeError, KeyError, UnicodeDecodeError, ValueError) as e:
         logger.error(
@@ -276,7 +278,7 @@ def create_mirror(
         now = datetime.now(UTC)
         info = MirrorInfo(
             mirror_id=mirror_id,
-            community_ids=copied_communities,
+            community_ids=tuple(copied_communities),
             created_at=now,
             expires_at=now + timedelta(hours=ttl_hours),
             owner_id=owner_id,
@@ -375,6 +377,7 @@ def refresh_mirror(
 
     Raises:
         ValueError: If mirror not found or expired.
+        CorruptMirrorError: If mirror metadata is corrupt.
     """
     info = get_mirror(mirror_id)
     if not info:
@@ -401,17 +404,32 @@ def refresh_mirror(
             f"No production databases found for communities: {targets}. Nothing was refreshed."
         )
 
-    # Update size in metadata
-    info.size_bytes = _calculate_mirror_size(mirror_id)
-    return info
+    # Return a new MirrorInfo with updated size (frozen dataclass)
+    return MirrorInfo(
+        mirror_id=info.mirror_id,
+        community_ids=info.community_ids,
+        created_at=info.created_at,
+        expires_at=info.expires_at,
+        owner_id=info.owner_id,
+        label=info.label,
+        size_bytes=_calculate_mirror_size(mirror_id),
+    )
 
 
 def cleanup_expired_mirrors() -> int:
-    """Delete all expired mirrors. Returns the count of mirrors deleted."""
+    """Delete all expired mirrors. Returns the count of mirrors deleted.
+
+    Continues past individual deletion failures so one stuck mirror
+    does not block cleanup of the rest.
+    """
     deleted = 0
     for info in list_mirrors():
-        if info.is_expired() and delete_mirror(info.mirror_id):
-            deleted += 1
+        if info.is_expired():
+            try:
+                if delete_mirror(info.mirror_id):
+                    deleted += 1
+            except OSError:
+                logger.error("Failed to delete expired mirror %s", info.mirror_id, exc_info=True)
     if deleted:
         logger.info("Cleaned up %d expired mirrors", deleted)
     return deleted
