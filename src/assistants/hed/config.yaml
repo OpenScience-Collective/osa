@@ -416,13 +416,6 @@ documentation:
     category: reference
     description: A collection of datasets specifically designed for testing HED annotations and validation tools.
 
-  # === ON-DEMAND: Examples (1 doc) ===
-  - title: Test cases
-    url: https://raw.githubusercontent.com/hed-standard/hed-specification/refs/heads/main/tests/javascriptTests.json
-    source_url: https://raw.githubusercontent.com/hed-standard/hed-specification/refs/heads/main/tests/javascriptTests.json
-    category: examples
-    description: Examples of correct and incorrect HED annotations in JSON format for testing validation tools.
-
 # Sync schedule configuration
 # Each sync type runs on its own cron schedule (UTC)
 # Only types with both a schedule AND corresponding data config are scheduled
