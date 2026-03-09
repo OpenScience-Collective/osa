@@ -69,8 +69,9 @@ def create_openrouter_llm(
         provider: Specific provider to use (e.g., "Cerebras", "DeepInfra/FP8").
                  Ignored for Anthropic models, which always use "Anthropic" provider.
         user_id: User identifier for cache optimization (sticky routing)
-        enable_caching: Enable prompt caching. If None (default), enabled for all models.
-            OpenRouter/LiteLLM gracefully handles models that don't support caching.
+        enable_caching: Enable prompt caching. If None (default), caching is requested
+            for all models. Models that do not support caching will ignore the
+            cache_control markers without error.
 
     Returns:
         LLM instance configured for OpenRouter

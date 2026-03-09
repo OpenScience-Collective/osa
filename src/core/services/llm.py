@@ -143,7 +143,7 @@ class LLMService:
             model_name: Model name. Supports:
                 - OpenRouter format: 'creator/model' (e.g., 'openai/gpt-oss-120b', 'qwen/qwen3-235b')
                 - Direct OpenAI: 'gpt-4o', 'gpt-4o-mini', etc.
-                - Direct Anthropic: 'claude-3-5-sonnet', etc.
+                - Direct Anthropic: 'claude-3.5-sonnet', etc.
                 If not provided, uses settings.default_model.
             api_key: Optional API key override (for BYOK).
             temperature: Model temperature. If not provided, uses settings.llm_temperature.

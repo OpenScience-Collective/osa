@@ -21,14 +21,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from src.cli.config import get_data_dir
-from src.knowledge.mirror import _validate_mirror_id, is_safe_identifier
+from src.core.validation import is_safe_identifier
+from src.knowledge.mirror import _validate_mirror_id
 
 logger = logging.getLogger(__name__)
 
 # ContextVar for transparent mirror routing. When set, get_db_path() returns
 # the mirror's database path instead of the production path.
-# ContextVar is safe for concurrent async tasks; each task gets its own copy,
-# so mirror routing in one request does not affect other requests.
+# Safe for concurrent requests because the middleware sets and resets the
+# value around each request's lifecycle. Nested async calls within the
+# same request inherit the value.
 _active_mirror_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "_active_mirror_id", default=None
 )
@@ -448,7 +450,7 @@ def get_db_path(project: str = "hed") -> Path:
             "Use only alphanumeric characters, hyphens, and underscores."
         )
 
-    mirror_id = _active_mirror_id.get()
+    mirror_id = get_active_mirror()
     if mirror_id:
         # mirror_id was already validated when set via set_active_mirror()
         return get_data_dir() / "mirrors" / mirror_id / f"{project}.db"

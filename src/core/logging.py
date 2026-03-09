@@ -1,7 +1,8 @@
 """Secure logging configuration with API key redaction.
 
-Provides a custom log formatter that automatically redacts OpenRouter API keys
-from log messages to prevent credential exposure in centralized logging systems.
+Provides a custom log formatter that automatically redacts API keys
+(OpenRouter, Anthropic, OpenAI) from log messages to prevent credential
+exposure in centralized logging systems.
 
 Supports both text and JSON-structured logging formats.
 """
@@ -17,12 +18,19 @@ from typing import Any
 class SecureFormatter(logging.Formatter):
     """Custom log formatter that redacts API keys from log messages.
 
-    Automatically detects and redacts OpenRouter API keys in the format
-    sk-or-v1-[64 hex chars] to prevent accidental credential exposure.
+    Automatically detects and redacts API keys from OpenRouter, Anthropic,
+    and OpenAI to prevent accidental credential exposure.
     """
 
-    # Pattern to match OpenRouter API keys: sk-or-v1-[64 hex chars]
-    API_KEY_PATTERN = re.compile(r"sk-or-v1-[0-9a-f]{64}", re.IGNORECASE)
+    # Patterns for API keys from various providers.
+    # IGNORECASE as defense-in-depth; real keys use lowercase hex.
+    API_KEY_PATTERN = re.compile(
+        r"sk-or-v1-[0-9a-f]{64}"  # OpenRouter: sk-or-v1-[64 hex chars]
+        r"|sk-ant-[a-zA-Z0-9_-]{80,}"  # Anthropic: sk-ant-...
+        r"|sk-proj-[a-zA-Z0-9_-]{40,}"  # OpenAI project keys: sk-proj-...
+        r"|sk-[a-zA-Z0-9]{48,}",  # Generic OpenAI keys: sk-...
+        re.IGNORECASE,
+    )
 
     def format(self, record: logging.LogRecord) -> str:
         """Format log record and redact any API keys.

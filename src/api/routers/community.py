@@ -620,12 +620,19 @@ def _check_model_cost(model: str, key_source: str) -> None:
 
     pricing = MODEL_PRICING.get(model)
     if pricing is None:
-        logger.warning(
-            "Model %s not in pricing table; allowing without cost check. "
+        logger.error(
+            "Model %s not in pricing table; blocking on platform/community key. "
             "Add this model to MODEL_PRICING in src/metrics/cost.py.",
             model,
         )
-        return
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Model '{model}' is not in the approved pricing list and cannot be used "
+                "with platform or community keys. To use this model, provide your own "
+                "API key via the X-OpenRouter-Key header."
+            ),
+        )
     input_rate = pricing.input_per_1m
 
     if input_rate >= COST_BLOCK_THRESHOLD:
