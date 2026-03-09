@@ -63,7 +63,7 @@ class SecureFormatter(logging.Formatter):
             if len(formatted) > 100_000:  # 100KB limit
                 formatted = formatted[:100_000] + "... [truncated for safety]"
 
-            formatted = self.API_KEY_PATTERN.sub("sk-or-v1-***[redacted]", formatted)
+            formatted = self.API_KEY_PATTERN.sub("***[key-redacted]", formatted)
         except re.error as e:
             # Regex pattern is broken - this is a code bug
             print(f"CRITICAL: Redaction regex failed: {e}", file=sys.stderr)
@@ -145,7 +145,7 @@ class SecureJSONFormatter(SecureFormatter):
             json_str = json.dumps(log_entry, default=str)
 
             # Redact API keys from the JSON string
-            json_str = self.API_KEY_PATTERN.sub("sk-or-v1-***[redacted]", json_str)
+            json_str = self.API_KEY_PATTERN.sub("***[key-redacted]", json_str)
 
             return json_str
 
@@ -162,7 +162,7 @@ class SecureJSONFormatter(SecureFormatter):
                 "original_message": safe_msg,
             }
             fallback_json = json.dumps(error_entry)
-            return self.API_KEY_PATTERN.sub("sk-or-v1-***[redacted]", fallback_json)
+            return self.API_KEY_PATTERN.sub("***[key-redacted]", fallback_json)
         except Exception as e:
             # Unexpected errors - surface to stderr and re-raise
             print(f"CRITICAL: Unexpected error in SecureJSONFormatter: {e}", file=sys.stderr)

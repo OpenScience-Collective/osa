@@ -21,9 +21,6 @@ from src.core.validation import is_safe_identifier
 
 logger = logging.getLogger(__name__)
 
-# Re-export for backward compatibility
-__all__ = ["is_safe_identifier"]
-
 MIRRORS_DIR_NAME = "mirrors"
 METADATA_FILE = "_metadata.json"
 
