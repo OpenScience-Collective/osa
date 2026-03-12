@@ -23,10 +23,8 @@ widget:
   placeholder: Ask about FieldTrip...
   suggested_questions:
     - How do I get started with FieldTrip?
-    - How do I preprocess my EEG data?
-    - How do I perform time-frequency analysis?
-    - How do I do beamforming source analysis?
-    - What data formats does FieldTrip support?
+    - How do I preprocess and filter my MEG/EEG data?
+    - How do I do beamforming source localization?
 
 cors_origins:
   - https://www.fieldtriptoolbox.org
