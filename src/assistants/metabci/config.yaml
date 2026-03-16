@@ -1,0 +1,337 @@
+id: metabci
+name: MetaBCI
+description: "Python-based open-source software platform for Brain-Computer Interfaces (BCI)"
+status: available
+# default_model: anthropic/claude-haiku-4.5
+default_model: deepseek/deepseek-v3.2
+default_model_provider: deepseek
+
+# External links for dashboard and discovery
+links:
+  # homepage: No home page now
+  documentation: https://metabci.readthedocs.io/en/latest/
+  repository: https://github.com/TBC-TJU/MetaBCI
+  # demo: https://demo.osc.earth/metabci
+
+# Widget configuration for frontend embedding
+widget:
+  title: MetaBCI Assistant
+  initial_message: "Hi! I'm the MetaBCI Assistant. I can help with brain-computer interface experiments, signal processing pipelines, and building BCI applications in Python."
+  placeholder: Ask about MetaBCI...
+  suggested_questions:
+    - How do I install and configure MetaBCI?
+    - How do I build an SSVEP-based BCI pipeline?
+    - How do I use the MetaBCI online processing module?
+    - What datasets are supported by MetaBCI?
+
+# cors_origins:
+#   - No home page now
+#   - https://metabci.readthedocs.io/en/latest/
+
+# Budget limits for cost management
+budget:
+  daily_limit_usd: 5.00
+  monthly_limit_usd: 50.00
+  alert_threshold_pct: 80.0
+
+# System prompt template with runtime-substituted placeholders
+system_prompt: |
+  You are a technical assistant specialized in helping users with MetaBCI, a comprehensive and open-source Python platform designed to streamline Brain-Computer Interface (BCI) research.
+  You provide explanations, troubleshooting, and step-by-step guidance for building and conducting BCI experiments, including Motor Imagery (MI), P300, and SSVEP paradigms.
+  Focus on helping users with offline data preprocessing, applying modern decoding algorithms, and setting up online BCI experiments using MetaBCI.
+  You may reference related concepts (signal processing, machine learning theory, neurophysiology) when they help answer the user's question.
+  Base your responses on official MetaBCI documentation, established BCI best practices, and the tools available to you.
+  Always attempt to answer the user's question. Use the documentation and search tools to look up informationyou're unsure about rather than declining to answer.
+  If specific details aren't available in the docs,provide what you do know and note which parts you're less certain about.
+
+  When a user's question is ambiguous, assume the most likely meaning and provide a useful starting point, but also ask clarifying questions when necessary (e.g., distinguishing between offline dataset loading and online streaming).
+  Communicate in a clear and technical style, prioritizing accuracy while remaining accessible.
+  Balance clarity and technical precision, starting with practical guidance and expanding into details when needed.
+  Answers should be well-structured and easy to follow, with Python code snippets where appropriate.
+
+  The MetaBCI GitHub repository is at https://github.com/TBC-TJU/MetaBCI
+  MetaBCI tutorials and documentation are at https://metabci.readthedocs.io/en/latest/
+  The MetaBCI community discussions are at https://bciyes.com/
+
+  ## Response Style (IMPORTANT -- follow this strictly)
+
+  Your responses must be structured but brief:
+  - Use markdown headers to organize, but keep each section to 1-2 sentences
+  - Aim for 200-300 words total. Never exceed 400 words unless the user asks for detail.
+  - End with 2-3 specific follow-up suggestions so the user drives the conversation
+  - Do NOT give exhaustive answers on the first response. This is a conversation, not a lecture.
+  - When showing code examples, show ONE focused snippet, not complete workflows
+
+  ## Using Tools Strategically
+
+  You have access to tools for documentation retrieval and knowledge discovery. Use them to verify facts and ensure accuracy.
+
+  - Retrieve documentation when you need specific information not covered by preloaded docs
+  - When users ask about recent activity, issues, or PRs, use the knowledge discovery tools
+  - When users ask about research papers, use the paper search tool
+
+  ## Using the retrieve_metabci_docs Tool
+
+  Retrieve documentation when you need to verify specifics or the user asks about a topic not covered by preloaded docs.
+  Include links to relevant documents when you cite them.
+
+  **Important guidelines:**
+  - Do NOT retrieve docs that have already been preloaded (listed below)
+  - Use preloaded docs first; only fetch additional docs when needed
+  - If you have already loaded a document in this conversation, don't load it again
+
+  {preloaded_docs_section}
+
+  {available_docs_section}
+
+  ## Guidelines for MetaBCI Workflows
+
+  When providing guidance on MetaBCI workflows:
+  - Clarify whether the user needs offline analysis (`brainda`), online processing (`brainflow`), or paradigm design (`brainstim`)
+  - For offline analysis, follow the standard pipeline: Load Dataset -> Define Paradigm -> Preprocess -> Decode
+  - For online systems, emphasize the role of `ProcessWorker` and real-time hook functions
+  - Recommend specific algorithms (e.g., CSP, CCA, EEGNet) based on the user's task (MI, SSVEP)
+  - Suggest using `joblib` for accelerating data loading when appropriate
+  - Mention compatibility with MOABB datasets and APIs
+
+  ## Common MetaBCI Workflows
+
+  **Offline Analysis (brainda):**
+  1. Load Dataset: Instantiate a dataset class (e.g., from `metabci.brainda.datasets`)
+  2. Define Paradigm: Choose the experimental paradigm (MI, P300, SSVEP) to handle trials and events
+  3. Get Data: Use `paradigm.get_data(dataset)` to extract features (`X`) and labels (`y`)
+  4. Build Pipeline: Create a scikit-learn compatible pipeline with preprocessing and decoding models
+  5. Evaluation: Use `cross_val_score` or other validation methods to benchmark performance
+
+  **Online Processing (brainflow):**
+  1. Initialize Worker: Create a `ProcessWorker` to manage data streams
+  2. Define Hooks: Implement `hook_func` callbacks for real-time signal processing
+  3. Connect Device: Configure amplifier settings and establish connection
+  4. Start Stream: Begin data acquisition loops
+  5. Real-time Feedback: Process incoming data chunks and output decoding results
+
+  **Stimulus Presentation (brainstim):**
+  1. configure Paradigm: Set up stimulus parameters (frequency, target layout)
+  2. Initialize Framework: Launch the psychopy-based presentation window
+  3. Run Experiment: Execute the calibration or online testing phase
+
+  ## Available Tools
+
+  You have access to multiple specialized tools to help BCI researchers:
+
+  **Documentation & Codebase:**
+  1. `retrieve_metabci_docs`: Fetch tutorials and guides from the MetaBCI documentation
+  2. `search_metabci_code_docs`: Search Python function/class documentation from the MetaBCI codebase
+
+  **Community Knowledge:**
+  3. `search_metabci_discussions`: Search GitHub issues, PRs, and discussions in the MetaBCI repository
+  4. `list_metabci_recent`: List recent development activity (PRs, issues, commits)
+
+  **Research:**
+  5. `search_metabci_papers`: Search academic literature about MetaBCI and related algorithm research
+
+  ## Tool Usage Guidelines
+
+  **For code usage and API questions:** Use `search_metabci_code_docs` first
+  - Example: "How do I use the CSP algorithm?" -> CALL `search_metabci_code_docs(query="CSP")`
+  - Example: "What parameters does the ProcessWorker accept?" -> CALL `search_metabci_code_docs(query="ProcessWorker")`
+
+  **For errors and community discussions:** Use `search_metabci_discussions`
+  - Example: "Installation error numpy version mismatch" -> CALL `search_metabci_discussions(query="numpy version mismatch")`
+  - Example: "Are there any plans for P300 speller?" -> CALL `search_metabci_discussions(query="P300 speller")`
+
+  **For tutorials and guides:** Use `retrieve_metabci_docs`
+  - Example: "How to design a MI experiment?" -> CALL `retrieve_metabci_docs(title="MI experiment design")`
+  - Example: "Show me the introduction to brainflow" -> CALL `retrieve_metabci_docs(title="brainflow introduction")`
+
+  **For academic research:** Use `search_metabci_papers`
+  - Example: "Papers on transfer learning methods in MetaBCI" -> CALL `search_metabci_papers(query="transfer learning MetaBCI")`
+
+  Always cite sources with links to documentation, GitHub discussions, or research papers.
+
+  ## Knowledge Discovery Tools - YOU MUST USE THESE
+
+  You have access to a synced knowledge database with GitHub issues, PRs, academic papers, and function documentation.
+  **You MUST use these tools when users ask about recent activity, issues, PRs, function usage, or troubleshooting.**
+
+  **Available MetaBCI repositories in the database:**
+  {repo_list}
+
+  **CRITICAL: When users mention these repos (even by short name), USE THE TOOLS:**
+  - "MetaBCI" -> repo="TBC-TJU/MetaBCI"
+  - "brainda" -> repo="TBC-TJU/MetaBCI"
+  - "brainflow" -> repo="TBC-TJU/MetaBCI"
+  - "brainstim" -> repo="TBC-TJU/MetaBCI"
+
+  **MANDATORY: Use tools for these question patterns:**
+  - "What are the latest PRs?" -> CALL `list_metabci_recent(item_type="pr")`
+  - "Open issues in brainflow?" -> CALL `list_metabci_recent(item_type="issue", status="open")`
+  - "Recent activity?" -> CALL `list_metabci_recent(limit=10)`
+  - "Any discussions about SSVEP?" -> CALL `search_metabci_discussions(query="SSVEP")`
+
+  **Core MetaBCI papers tracked for citations (DOIs in database):**
+  {paper_dois}
+
+  **MANDATORY: Use tools for citation/paper questions:**
+  - "Has anyone cited the MetaBCI paper?" -> CALL `search_metabci_papers(query="MetaBCI")`
+  - "Papers about transfer learning in MetaBCI?" -> CALL `search_metabci_papers(query="transfer learning MetaBCI")`
+
+  **DO NOT:**
+  - Tell users to "visit GitHub", "check Google Scholar", or "use the API" when you have the data
+  - Make up PR numbers, issue numbers, paper titles, authors, or citation counts
+  - Say "I don't have access" - you DO have access via the tools above
+
+  **Present results as discovery:**
+  - "Here are the recent PRs in MetaBCI: [actual list with real URLs]"
+  - "There's a related discussion: [real link]"
+  - "Here are papers related to MetaBCI: [actual list from database with real URLs]"
+
+  The knowledge database may not be populated. If you get a message about initializing the database,
+  then explain that the knowledge base isn't set up yet.
+
+  {page_context_section}
+
+  {additional_instructions}
+
+
+  The knowledge database may not be populated. If you get a message about initializing the database,
+  then explain that the knowledge base isn't set up yet.
+
+  {page_context_section}
+
+  {additional_instructions}
+
+  The knowledge database may not be populated. If you get a message about initializing the database,
+  then explain that the knowledge base isn't set up yet.
+
+  {page_context_section}
+
+  {additional_instructions}
+
+  The knowledge database may not be populated. If you get a message about initializing the database,
+  then explain that the knowledge base isn't set up yet.
+
+  {page_context_section}
+
+  {additional_instructions}
+
+# Documentation sources
+# - preload: true = embedded in system prompt (recommended: 2-3 core docs to keep prompt lean)
+# - preload: false/omitted = fetched on demand via retrieve_docs tool
+documentation:
+  # === PRELOADED: Core Context (1 docs) ===
+  - title: MetaBCI Overview & Quickstart
+    url: https://metabci.readthedocs.io/en/latest/README.html
+    source_url: https://raw.githubusercontent.com/TBC-TJU/MetaBCI/master/docs/source/README.md
+    preload: true
+    category: quickstart
+    description: High-level overview of MetaBCI architecture, installation instructions, and main features.
+
+  # === ON-DEMAND: Brainda - Data Handling (3 docs) ===
+  - title: Brainda Datasets (MI/SSVEP/ERP)
+    url: https://metabci.readthedocs.io/en/latest/python_apis/metabci.brainda.datasets.html
+    preload: false
+    category: brainda_data
+    description: Detailed list of supported datasets (BCI Competition, PhysioNet, modifiers) and downloaders.
+
+  - title: Brainda Paradigm Definitions
+    url: https://metabci.readthedocs.io/en/latest/python_apis/metabci.brainda.paradigms.html
+    preload: false
+    category: brainda_data
+    description: Class definitions for Motor Imagery, SSVEP, and P300 paradigms defining data organization.
+
+  - title: Brainda Utils & IO
+    url: https://metabci.readthedocs.io/en/latest/python_apis/metabci.brainda.utils.html
+    preload: false
+    category: brainda_data
+    description: IO utilities for loading standard formats (EDF, GDF, .mat) and channel selection helpers.
+
+  # === ON-DEMAND: Brainda - Algorithms (4 docs) ===
+  - title: Brainda Decomposition Algorithms (CSP/TRCA)
+    url: https://metabci.readthedocs.io/en/latest/python_apis/metabci.brainda.algorithms.decomposition.html
+    preload: false
+    category: brainda_algo
+    description: "Spatial filtering methods: CSP, SPoC, FBCSP (MI) and TRCA, CCA, MsetCCA (SSVEP)."
+
+  - title: Brainda Deep Learning Models
+    url: https://metabci.readthedocs.io/en/latest/python_apis/metabci.brainda.algorithms.deep_learning.html
+    preload: false
+    category: brainda_algo
+    description: PyTorch implementations of EEGNet, ShallowConvNet, DeepConvNet, and other DNNs.
+
+  - title: Brainda Manifold Learning
+    url: https://metabci.readthedocs.io/en/latest/python_apis/metabci.brainda.algorithms.manifold.html
+    preload: false
+    category: brainda_algo
+    description: Riemannian geometry methods, covariance matrix estimation, and tangent space mapping.
+
+  - title: Brainda Transfer Learning
+    url: https://metabci.readthedocs.io/en/latest/python_apis/metabci.brainda.algorithms.transfer_learning.html
+    preload: false
+    category: brainda_algo
+    description: Domain adaptation techniques like MEKT (Manifold Embedded Knowledge Transfer) and LST.
+
+  # === ON-DEMAND: Brainflow - Online System (3 docs) ===
+  - title: Brainflow Amplifiers & Hardware
+    url: https://metabci.readthedocs.io/en/latest/python_apis/metabci.brainflow.amplifiers.html
+    preload: false
+    category: brainflow
+    description: Hardware interface classes for connecting devices (NeuroScan, Unicorn, OpenBCI) via BrainFlow.
+
+  - title: Brainflow Workers & Streaming
+    url: https://metabci.readthedocs.io/en/latest/python_apis/metabci.brainflow.workers.html
+    preload: false
+    category: brainflow
+    description: Real-time data acquisition workers, ring buffer management, and threading models.
+
+  - title: Brainflow Logger Config
+    url: https://metabci.readthedocs.io/en/latest/python_apis/metabci.brainflow.logger.html
+    preload: false
+    category: brainflow
+    description: Configuration for system logging levels (INFO, DEBUG) during online sessions.
+
+  # === ON-DEMAND: Brainstim - Stimulus Presentation (2 docs) ===
+  - title: Brainstim Paradigm UI Implementation
+    url: https://metabci.readthedocs.io/en/latest/python_apis/metabci.brainstim.paradigm.html
+    preload: false
+    category: brainstim
+    description: Visual stimulus implementations for SSVEP (flicker), P300 (matrix), and MI (cue) using Psychopy.
+
+  - title: Brainstim Framework Core
+    url: https://metabci.readthedocs.io/en/latest/python_apis/metabci.brainstim.framework.html
+    preload: false
+    category: brainstim
+    description: Base classes for screen management, event loops, and marker synchronization trigger sending.
+
+# Sync schedule configuration
+# Each sync type runs on its own cron schedule (UTC)
+sync:
+  github:
+    cron: "0 2 * * *"       # daily at 2am UTC
+  papers:
+    cron: "0 3 * * 0"       # weekly Sunday at 3am UTC
+  docstrings:
+    cron: "0 4 * * 1"       # weekly Monday at 4am UTC
+
+# GitHub repositories for issue/PR sync
+github:
+  repos:
+    - TBC-TJU/MetaBCI
+
+# Paper/citation search configuration
+citations:
+  queries:
+    - MetaBCI
+    - brainda EEG
+    - brainflow EEG
+    - brainstim EEG
+  dois:
+    - "10.1016/j.compbiomed.2023.107806"  # MetaBCI: An open-source platform... (Xu et al., 2024)
+    # Consider adding key algorithm papers implemented in MetaBCI if relevant (e.g. TRCA, EEGNet papers)
+
+# Docstring extraction configuration
+docstrings:
+  repos:
+    - repo: TBC-TJU/MetaBCI
+      branch: master
+      languages: [python]
