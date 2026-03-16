@@ -193,28 +193,6 @@ system_prompt: |
 
   {additional_instructions}
 
-
-  The knowledge database may not be populated. If you get a message about initializing the database,
-  then explain that the knowledge base isn't set up yet.
-
-  {page_context_section}
-
-  {additional_instructions}
-
-  The knowledge database may not be populated. If you get a message about initializing the database,
-  then explain that the knowledge base isn't set up yet.
-
-  {page_context_section}
-
-  {additional_instructions}
-
-  The knowledge database may not be populated. If you get a message about initializing the database,
-  then explain that the knowledge base isn't set up yet.
-
-  {page_context_section}
-
-  {additional_instructions}
-
 # Documentation sources
 # - preload: true = embedded in system prompt (recommended: 2-3 core docs to keep prompt lean)
 # - preload: false/omitted = fetched on demand via retrieve_docs tool
