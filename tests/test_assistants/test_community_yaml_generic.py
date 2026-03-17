@@ -96,12 +96,13 @@ class TestCommunityYAMLConfiguration:
                 )
 
     @pytest.mark.slow
+    @pytest.mark.network
     def test_documentation_urls_accessible(self, community_id):
         """All documentation source URLs should return HTTP 200.
 
-        This test makes real HTTP requests and is marked as 'slow'.
-        Slow tests are included by default in test runs.
-        To skip slow tests: pytest -m "not slow"
+        This test makes real HTTP requests and is marked as 'slow' and 'network'.
+        Network tests are excluded from CI by default.
+        To run: pytest -m "network"
         """
         from src.assistants import registry
 
@@ -141,12 +142,13 @@ class TestCommunityYAMLConfiguration:
             assert parts[1], f"{community_id}: Missing repo name in {repo}"
 
     @pytest.mark.slow
+    @pytest.mark.network
     def test_github_repos_exist(self, community_id):
         """All GitHub repos should exist and be accessible.
 
-        This test makes real GitHub API requests and is marked as 'slow'.
-        Slow tests are included by default in test runs.
-        To skip slow tests: pytest -m "not slow"
+        This test makes real GitHub API requests and is marked as 'slow' and 'network'.
+        Network tests are excluded from CI by default.
+        To run: pytest -m "network"
         """
         from src.assistants import registry
 
