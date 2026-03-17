@@ -25,7 +25,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          token: ${{ secrets.CI_ADMIN_TOKEN }}
+          # CI_ADMIN_TOKEN for push events (needs write access to commit);
+          # falls back to github.token for PRs (read-only, no secrets on forks)
+          token: ${{ secrets.CI_ADMIN_TOKEN || github.token }}
           fetch-depth: 0  # Fetch full history so git diff works
 
       - name: Set up Python

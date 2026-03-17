@@ -121,6 +121,7 @@ class TestMatches:
         assert _matches(sample_dataset, "visual", "MEG", "attention", None, 10) is False
 
 
+@pytest.mark.network
 class TestFetchAllDatasets:
     """Tests for the NEMAR API fetch function."""
 
@@ -147,6 +148,7 @@ class TestFetchAllDatasets:
         assert len(datasets) < 5000
 
 
+@pytest.mark.network
 class TestSearchNemarDatasets:
     """Tests for the search_nemar_datasets tool against the live API."""
 
@@ -210,6 +212,7 @@ class TestSearchNemarDatasets:
 class TestGetNemarDatasetDetails:
     """Tests for the get_nemar_dataset_details tool against the live API."""
 
+    @pytest.mark.network
     def test_get_known_dataset(self):
         """Test retrieving a known dataset (ds000248 - MNE sample data)."""
         result = get_nemar_dataset_details.invoke({"dataset_id": "ds000248"})
@@ -219,6 +222,7 @@ class TestGetNemarDatasetDetails:
         assert "nemar.org/dataexplorer/detail" in result
         assert "Data Characteristics" in result
 
+    @pytest.mark.network
     def test_get_dataset_has_metadata(self):
         """Test that retrieved dataset contains expected metadata sections."""
         result = get_nemar_dataset_details.invoke({"dataset_id": "ds000248"})
@@ -228,6 +232,7 @@ class TestGetNemarDatasetDetails:
         assert "Participants:" in result
         assert "HED annotations:" in result
 
+    @pytest.mark.network
     def test_get_dataset_has_links(self):
         """Test that dataset details include OpenNeuro and NEMAR links."""
         result = get_nemar_dataset_details.invoke({"dataset_id": "ds000248"})
@@ -235,11 +240,13 @@ class TestGetNemarDatasetDetails:
         assert "https://openneuro.org/datasets/ds000248" in result
         assert "https://nemar.org/dataexplorer/detail?dataset_id=ds000248" in result
 
+    @pytest.mark.network
     def test_get_nonexistent_dataset(self):
         """Test that a nonexistent dataset returns a clear message."""
         result = get_nemar_dataset_details.invoke({"dataset_id": "ds999999"})
         assert "not found" in result
 
+    @pytest.mark.network
     def test_get_dataset_with_hed(self):
         """Test retrieving a dataset known to have HED annotations."""
         # ds002578 has HED annotations
@@ -263,6 +270,7 @@ class TestGetNemarDatasetDetails:
         assert "Invalid dataset ID" in result
 
 
+@pytest.mark.network
 class TestCaching:
     """Tests for the TTL cache on _fetch_all_datasets."""
 
