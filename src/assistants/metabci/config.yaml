@@ -23,9 +23,9 @@ widget:
     - How do I use the MetaBCI online processing module?
     - What datasets are supported by MetaBCI?
 
-# cors_origins:
-#   - No home page now
-#   - https://metabci.readthedocs.io/en/latest/
+cors_origins:
+  # - No home page now
+  - https://metabci.readthedocs.io
 
 # Budget limits for cost management
 budget:
