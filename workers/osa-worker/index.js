@@ -164,6 +164,7 @@ function isAllowedOrigin(origin) {
     'https://fieldtriptoolbox.org',
     'https://hedtags.org',
     'https://hedtools.org',
+    'https://metabci.readthedocs.io',
     'https://mne.tools',
     'https://nemar.org',
     'https://sccn.github.io',
