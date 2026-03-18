@@ -9,14 +9,12 @@ on:
     types: [opened, synchronize, ready_for_review, reopened]
 
 jobs:
-  claude-review:
-    # Only review PRs from external contributors, skip duplicates:
-    # - pull_request for same-repo branches (has secrets access)
-    # - pull_request_target for fork PRs only (provides secrets access that pull_request lacks for forks)
+  # Same-repo PRs: full review with push capabilities
+  claude-review-internal:
     if: |
-      github.event.pull_request.user.login != 'neuromechanist' &&
-      !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) &&
-      !(github.event_name == 'pull_request_target' && !github.event.pull_request.head.repo.fork)
+      github.event_name == 'pull_request' &&
+      !github.event.pull_request.head.repo.fork &&
+      github.event.pull_request.user.login != 'neuromechanist'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -29,8 +27,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          # For fork PRs via pull_request_target, check out the PR head safely
-          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 1
 
       - name: Review and fix PR
@@ -53,4 +49,45 @@ jobs:
             Keep commit messages concise (<50 chars, no emojis).
 
             After making fixes, leave a PR comment summarizing what was found and what was fixed.
-            If you cannot push to the PR branch (e.g., fork PRs), leave detailed review comments instead.
+
+  # Fork PRs: review-only with comments (cannot push to fork branches)
+  claude-review-fork:
+    if: |
+      github.event_name == 'pull_request_target' &&
+      github.event.pull_request.head.repo.fork &&
+      github.event.pull_request.user.login != 'neuromechanist'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+      actions: read
+
+    steps:
+      - name: Checkout PR head (read-only)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+
+      - name: Review PR (comments only)
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          additional_permissions: |
+            actions: read
+          prompt: |
+            Review this pull request thoroughly. This is a fork PR, so you cannot push commits.
+            Leave detailed review comments directly on the PR for each issue found.
+
+            For each issue:
+            1. Classify severity: critical, important, or suggestion
+            2. Leave an inline review comment on the relevant code
+            3. Explain the issue and suggest the fix
+
+            Follow the project's code style (ruff formatting, type hints, no mocks in tests).
+            Do not suggest adding AI attribution.
+
+            After reviewing, leave a summary PR comment listing all issues found.
