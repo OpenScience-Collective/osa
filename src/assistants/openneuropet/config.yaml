@@ -1,0 +1,67 @@
+# OpenNeuroPET Assistant Configuration
+# Multiple sources of truth for the PET community assistant
+
+id: ONP
+name: OpenNeuroPET Assistant
+description: Technical support and documentation access for Open and Reproducible tools in PET imaging
+status: available
+
+# Required: Per-community OpenRouter API key for cost attribution
+# Set the environment variable on your backend server
+openrouter_api_key_env_var: "OPENROUTER_API_KEY_MY_TOOL"
+
+system_prompt: |
+  You are a technical assistant for OpenNeuroPET.
+
+documentation:
+  - title: Getting Started
+    url: https://github.com/openneuropet/openneuropet.github.io/wiki
+    source_url: https://raw.githubusercontent.com/wiki/openneuropet/openneuropet.github.io/Home.md
+    preload: true
+
+github:
+  repos:
+    - https://github.com/openneuropet/openneuropet.github.io
+    - https://github.com/openneuropet/PET2BIDS
+    - https://github.com/nipreps/petprep
+    - https://github.com/mathesong/bloodstream
+    - https://github.com/mathesong/petfit
+    - https://surfer.nmr.mgh.harvard.edu/fswiki/PetSurfer
+    - https://bids-specification.readthedocs.io/en/stable/modality-specific-files/positron-emission-tomography.html
+
+# External links for dashboard and discovery
+links:
+  homepage: https://openneuropet.github.io/
+  repository: https://github.com/openneuropet/
+
+# Budget limits for cost management
+budget:
+  daily_limit_usd: 5.00
+  monthly_limit_usd: 50.00
+  alert_threshold_pct: 80.0
+
+# Widget configuration for frontend embedding
+widget:
+  title: OpenNeuroPET Assistant
+  initial_message: "Hi! I'm the OpenNeuroPET Assistant. I can help with Open and Reproducible tools in PET imaging."
+  placeholder: Ask about our tools and codes ...
+  suggested_questions:
+    - What tools are available?
+    - Where can I get data for these tools?
+    - What is PET BIDS?
+    - How do I process my PET data?
+
+# Default model for this community
+default_model: "anthropic/claude-haiku-4.5"
+default_model_provider: "anthropic"
+
+# Per-community OpenRouter API key (optional)
+openrouter_api_key_env_var: "OPENROUTER_API_KEY_OPNNEUROPET"
+
+# Community maintainers (GitHub usernames)
+maintainers:
+  - cyril pernet
+  - martin norgaard
+  - grandville matheson
+
+
