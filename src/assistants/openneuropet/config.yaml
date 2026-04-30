@@ -8,7 +8,7 @@ status: available
 
 # Required: Per-community OpenRouter API key for cost attribution
 # Set the environment variable on your backend server
-openrouter_api_key_env_var: "OPENROUTER_API_KEY_MY_TOOL"
+openrouter_api_key_env_var: "OPENROUTER_API_KEY_OpenNeuroPET"
 
 system_prompt: |
   You are a technical assistant for OpenNeuroPET.
@@ -56,7 +56,7 @@ default_model: "anthropic/claude-haiku-4.5"
 default_model_provider: "anthropic"
 
 # Per-community OpenRouter API key (optional)
-openrouter_api_key_env_var: "OPENROUTER_API_KEY_OPNNEUROPET"
+openrouter_api_key_env_var: "OPENROUTER_API_KEY_OpenNeuroPET"
 
 # Community maintainers (GitHub usernames)
 maintainers:
