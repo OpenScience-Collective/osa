@@ -167,6 +167,7 @@ function isAllowedOrigin(origin) {
     'https://metabci.readthedocs.io',
     'https://mne.tools',
     'https://nemar.org',
+    'https://openneuropet.github.io',
     'https://sccn.github.io',
     'https://www.eeglab.org',
     'https://www.fieldtriptoolbox.org',
