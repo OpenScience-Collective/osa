@@ -46,7 +46,7 @@ budget:
 widget:
   title: OpenNeuroPET Assistant
   initial_message: "Hi! I'm the OpenNeuroPET Assistant. I can help with Open and Reproducible tools in PET imaging."
-  placeholder: Ask about our tools and codes ...
+  placeholder: Ask about our tools and codes...
   suggested_questions:
     - What tools are available?
     - Where can I get data for these tools?
