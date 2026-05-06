@@ -18,16 +18,18 @@ documentation:
     url: https://github.com/openneuropet/openneuropet.github.io/wiki
     source_url: https://raw.githubusercontent.com/wiki/openneuropet/openneuropet.github.io/Home.md
     preload: true
+  - title: PetSurfer Wiki
+    url: https://surfer.nmr.mgh.harvard.edu/fswiki/PetSurfer
+  - title: PET-BIDS Specification
+    url: https://bids-specification.readthedocs.io/en/stable/modality-specific-files/positron-emission-tomography.html
 
 github:
   repos:
-    - https://github.com/openneuropet/openneuropet.github.io
-    - https://github.com/openneuropet/PET2BIDS
-    - https://github.com/nipreps/petprep
-    - https://github.com/mathesong/bloodstream
-    - https://github.com/mathesong/petfit
-    - https://surfer.nmr.mgh.harvard.edu/fswiki/PetSurfer
-    - https://bids-specification.readthedocs.io/en/stable/modality-specific-files/positron-emission-tomography.html
+    - openneuropet/openneuropet.github.io
+    - openneuropet/PET2BIDS
+    - nipreps/petprep
+    - mathesong/bloodstream
+    - mathesong/petfit
 
 # External links for dashboard and discovery
 links:
