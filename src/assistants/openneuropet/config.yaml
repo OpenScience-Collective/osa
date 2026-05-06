@@ -1,7 +1,7 @@
 # OpenNeuroPET Assistant Configuration
 # Multiple sources of truth for the PET community assistant
 
-id: ONP
+id: openneuropet
 name: OpenNeuroPET Assistant
 description: Technical support and documentation access for Open and Reproducible tools in PET imaging
 status: available
