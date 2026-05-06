@@ -1,27 +1,29 @@
 name: Claude Code Review
 
 on:
-  # Same-repo branches: full access to secrets and write permissions
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
-  # Fork PRs: runs in base repo context with secrets access
-  pull_request_target:
-    types: [opened, synchronize, ready_for_review, reopened]
+    # Optional: Only run on specific file changes
+    # paths:
+    #   - "src/**/*.ts"
+    #   - "src/**/*.tsx"
+    #   - "src/**/*.js"
+    #   - "src/**/*.jsx"
 
 jobs:
-  # Same-repo PRs: full review with push capabilities
-  claude-review-internal:
-    if: |
-      github.event_name == 'pull_request' &&
-      !github.event.pull_request.head.repo.fork &&
-      github.event.pull_request.user.login != 'neuromechanist'
+  claude-review:
+    # Optional: Filter by PR author
+    # if: |
+    #   github.event.pull_request.user.login == 'external-contributor' ||
+    #   github.event.pull_request.user.login == 'new-developer' ||
+    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
+
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
+      pull-requests: read
       issues: read
       id-token: write
-      actions: read
 
     steps:
       - name: Checkout repository
@@ -29,66 +31,14 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Review and fix PR
+      - name: Run Claude Code Review
+        id: claude-review
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          additional_permissions: |
-            actions: read
-          prompt: |
-            Review this pull request thoroughly. For each issue found:
+          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
+          plugins: 'code-review@claude-code-plugins'
+          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
+          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
+          # or https://code.claude.com/docs/en/cli-reference for available options
 
-            1. Classify severity: critical, important, or suggestion
-            2. For critical and important issues: fix them directly by editing the code and pushing a commit
-            3. For suggestions that clearly improve code quality and are not false positives: fix them too
-            4. Skip suggestions that are stylistic preferences or false positives
-
-            Follow the project's code style (ruff formatting, type hints, no mocks in tests).
-            Do not add AI attribution to commits.
-            Keep commit messages concise (<50 chars, no emojis).
-
-            After making fixes, leave a PR comment summarizing what was found and what was fixed.
-
-  # Fork PRs: review-only with comments (cannot push to fork branches)
-  claude-review-fork:
-    if: |
-      github.event_name == 'pull_request_target' &&
-      github.event.pull_request.head.repo.fork &&
-      github.event.pull_request.user.login != 'neuromechanist'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-      issues: read
-      id-token: write
-      actions: read
-
-    steps:
-      - name: Checkout PR head
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 1
-
-      - name: Review PR (comments only)
-        uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          allowed_non_write_users: "*"
-          additional_permissions: |
-            actions: read
-          prompt: |
-            Review this pull request thoroughly. This is a fork PR, so you cannot push commits.
-            Leave detailed review comments directly on the PR for each issue found.
-
-            For each issue:
-            1. Classify severity: critical, important, or suggestion
-            2. Leave an inline review comment on the relevant code
-            3. Explain the issue and suggest the fix
-
-            Follow the project's code style (ruff formatting, type hints, no mocks in tests).
-            Do not suggest adding AI attribution.
-
-            After reviewing, leave a summary PR comment listing all issues found.
