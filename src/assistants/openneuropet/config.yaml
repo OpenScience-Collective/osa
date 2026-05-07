@@ -109,7 +109,7 @@ documentation:
     category: analysis
     description: NiPrep application for standardised and robust PET data preprocessing.
   - title: petfit documentation
-    url: https://github.com/mathesong/petfit/blob/main
+    url: https://github.com/mathesong/petfit
     source_url: https://github.com/mathesong/petfit/blob/main/README.md
     category: analysis
     description: Petfit for regional kinetic modelling (based on kinfitr).
