@@ -103,14 +103,39 @@ documentation:
     preload: true
     category: quickstart
     description: Overview of OpenNeuroPET tools, getting started guide, and pointers to community resources.
-  - title: petprep documentation
+  - title: petprep overview
     url: https://petprep.readthedocs.io/en/latest/
-    source_url: https://github.com/nipreps/petprep/tree/main/docs
+    source_url: https://raw.githubusercontent.com/nipreps/petprep/main/README.rst
     category: analysis
-    description: NiPrep application for standardised and robust PET data preprocessing.
+    description: Overview of PETPrep, a NiPreps application for standardised and robust PET data preprocessing.
+  - title: petprep installation
+    url: https://petprep.readthedocs.io/en/latest/installation.html
+    source_url: https://raw.githubusercontent.com/nipreps/petprep/main/docs/installation.rst
+    category: analysis
+    description: Instructions for installing PETPrep using Docker/Singularity containers or a bare-metal Python environment.
+  - title: petprep usage
+    url: https://petprep.readthedocs.io/en/latest/usage.html
+    source_url: https://raw.githubusercontent.com/nipreps/petprep/main/docs/usage.rst
+    category: analysis
+    description: Usage notes for running PETPrep with BIDS-formatted PET datasets, including command-line options and execution details.
+  - title: petprep workflows
+    url: https://petprep.readthedocs.io/en/latest/workflows.html
+    source_url: https://raw.githubusercontent.com/nipreps/petprep/main/docs/workflows.rst
+    category: analysis
+    description: Details on the PETPrep processing pipeline, including motion correction, PVC, and spatial normalisation workflows.
+  - title: petprep outputs
+    url: https://petprep.readthedocs.io/en/latest/outputs.html
+    source_url: https://raw.githubusercontent.com/nipreps/petprep/main/docs/outputs.rst
+    category: analysis
+    description: Description of PETPrep output derivatives, visual QA reports, and confound files produced by the pipeline.
+  - title: petprep FAQ
+    url: https://petprep.readthedocs.io/en/latest/faq.html
+    source_url: https://raw.githubusercontent.com/nipreps/petprep/main/docs/faq.rst
+    category: analysis
+    description: Frequently asked questions about PETPrep usage, data quality requirements, and preprocessing decisions.
   - title: petfit documentation
     url: https://github.com/mathesong/petfit
-    source_url: https://github.com/mathesong/petfit/blob/main/README.md
+    source_url: https://raw.githubusercontent.com/mathesong/petfit/main/README.md
     category: analysis
     description: Petfit for regional kinetic modelling (based on kinfitr).
   - title: PetSurfer Wiki
