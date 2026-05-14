@@ -12,7 +12,11 @@ repos:
     rev: v5.0.0
     hooks:
       - id: trailing-whitespace
+        # tests/fixtures/ holds verbatim production artifacts used in
+        # byte-exact equality assertions; do not rewrite them.
+        exclude: ^tests/fixtures/
       - id: end-of-file-fixer
+        exclude: ^tests/fixtures/
       - id: check-yaml
       - id: check-added-large-files
         args: ['--maxkb=1000']

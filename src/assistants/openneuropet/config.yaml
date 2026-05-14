@@ -1,0 +1,165 @@
+# OpenNeuroPET Assistant Configuration
+# Single source of truth for the OpenNeuroPET community assistant
+
+id: openneuropet
+name: OpenNeuroPET Assistant
+description: Technical support and documentation access for Open and Reproducible tools in PET imaging
+status: available
+
+default_model: anthropic/claude-haiku-4.5
+default_model_provider: anthropic
+
+# Per-community OpenRouter API key for cost attribution
+# Set this environment variable on the backend server with the community's key
+openrouter_api_key_env_var: OPENROUTER_API_KEY_OPENNEUROPET
+
+# External links for dashboard and discovery
+links:
+  homepage: https://openneuropet.github.io/
+  repository: https://github.com/openneuropet/
+
+# CORS origins for widget embedding
+cors_origins:
+  - https://openneuropet.github.io
+
+# Budget limits for cost management
+budget:
+  daily_limit_usd: 5.00
+  monthly_limit_usd: 50.00
+  alert_threshold_pct: 80.0
+
+# Widget configuration for frontend embedding
+widget:
+  title: OpenNeuroPET Assistant
+  initial_message: "Hi! I'm the OpenNeuroPET Assistant. I can help with Open and Reproducible tools in PET imaging."
+  placeholder: Ask about our tools and codes...
+  suggested_questions:
+    - What tools are available?
+    - Where can I get data for these tools?
+    - What is PET BIDS?
+    - How do I process my PET data?
+
+# Community maintainers (GitHub usernames)
+maintainers:
+  - CPernet
+  - martinnorgaard
+  - mathesong
+
+# System prompt template with runtime-substituted placeholders
+# Placeholders (in curly braces) are replaced by CommunityAssistant at runtime:
+#   {preloaded_docs_section} - Embedded documentation content
+#   {available_docs_section} - List of on-demand retrievable docs
+#   {page_context_section} - Widget context tool instructions
+#   {additional_instructions} - Runtime-specific instructions
+#   {repo_list} - GitHub repos tracked by the assistant
+system_prompt: |
+  You are a technical assistant for OpenNeuroPET, a community of open and reproducible tools for Positron Emission Tomography (PET) imaging.
+  You help users with PET data conversion to BIDS, PET preprocessing and analysis pipelines (kinetic modelling), blood data handling, and PET-specific image processing tools.
+
+  Focus on the OpenNeuroPET ecosystem: PET2BIDS (DICOM/ECAT to BIDS conversion), petprep (BIDS App for preprocessing), bloodstream (blood data analysis), petfit (kinetic modelling), and PetSurfer.
+  Reference related concepts (PET physics, kinetic modelling, BIDS, neuroimaging best practices) when they help answer the user's question.
+
+  Base your responses on official OpenNeuroPET documentation, the PET-BIDS specification, and the tools available to you.
+  Always attempt to answer the user's question. Use the documentation tools to verify facts when unsure rather than declining to answer.
+
+  Useful references:
+  - OpenNeuroPET homepage: https://openneuropet.github.io/
+  - OpenNeuroPET tool overview: https://github.com/openneuropet/openneuropet.github.io/wiki
+  - PET-BIDS specification: https://bids-specification.readthedocs.io/en/stable/modality-specific-files/positron-emission-tomography.html
+  - PetSurfer wiki: https://surfer.nmr.mgh.harvard.edu/fswiki/PetSurfer
+  - GitHub organization: https://github.com/openneuropet/
+
+  ## Response Style
+
+  Keep responses structured and brief:
+  - Use markdown headers to organize, but keep each section to 1-2 sentences
+  - Aim for 200-300 words; never exceed 400 unless the user asks for detail
+  - End with 1-2 specific follow-up suggestions so the user drives the conversation
+  - When showing code examples, show ONE focused snippet, not complete workflows
+  - Always cite sources with links to documentation or GitHub
+
+  ## Tracked Repositories
+
+  The following GitHub repositories are indexed for issue/PR discovery:
+  {repo_list}
+
+  Use the knowledge discovery tools to surface recent activity, related discussions, or PRs from these repos.
+
+  {preloaded_docs_section}
+
+  {available_docs_section}
+
+  {page_context_section}
+
+  {additional_instructions}
+
+# Documentation sources
+# - preload: true = embedded in system prompt (recommended: 2-3 core docs to keep prompt lean)
+# - preload: false/omitted = fetched on demand via retrieve_docs tool
+documentation:
+  - title: Getting Started
+    url: https://github.com/openneuropet/openneuropet.github.io/wiki
+    source_url: https://raw.githubusercontent.com/wiki/openneuropet/openneuropet.github.io/Home.md
+    preload: true
+    category: quickstart
+    description: Overview of OpenNeuroPET tools, getting started guide, and pointers to community resources.
+  - title: petprep overview
+    url: https://petprep.readthedocs.io/en/latest/
+    source_url: https://raw.githubusercontent.com/nipreps/petprep/main/README.rst
+    category: analysis
+    description: Overview of PETPrep, a NiPreps application for standardised and robust PET data preprocessing.
+  - title: petprep installation
+    url: https://petprep.readthedocs.io/en/latest/installation.html
+    source_url: https://raw.githubusercontent.com/nipreps/petprep/main/docs/installation.rst
+    category: analysis
+    description: Instructions for installing PETPrep using Docker/Singularity containers or a bare-metal Python environment.
+  - title: petprep usage
+    url: https://petprep.readthedocs.io/en/latest/usage.html
+    source_url: https://raw.githubusercontent.com/nipreps/petprep/main/docs/usage.rst
+    category: analysis
+    description: Usage notes for running PETPrep with BIDS-formatted PET datasets, including command-line options and execution details.
+  - title: petprep workflows
+    url: https://petprep.readthedocs.io/en/latest/workflows.html
+    source_url: https://raw.githubusercontent.com/nipreps/petprep/main/docs/workflows.rst
+    category: analysis
+    description: Details on the PETPrep processing pipeline, including motion correction, PVC, and spatial normalisation workflows.
+  - title: petprep outputs
+    url: https://petprep.readthedocs.io/en/latest/outputs.html
+    source_url: https://raw.githubusercontent.com/nipreps/petprep/main/docs/outputs.rst
+    category: analysis
+    description: Description of PETPrep output derivatives, visual QA reports, and confound files produced by the pipeline.
+  - title: petprep FAQ
+    url: https://petprep.readthedocs.io/en/latest/faq.html
+    source_url: https://raw.githubusercontent.com/nipreps/petprep/main/docs/faq.rst
+    category: analysis
+    description: Frequently asked questions about PETPrep usage, data quality requirements, and preprocessing decisions.
+  - title: petfit documentation
+    url: https://github.com/mathesong/petfit
+    source_url: https://raw.githubusercontent.com/mathesong/petfit/main/README.md
+    category: analysis
+    description: Petfit for regional kinetic modelling (based on kinfitr).
+  - title: PetSurfer Wiki
+    url: https://surfer.nmr.mgh.harvard.edu/fswiki/PetSurfer
+    source_url: https://surfer.nmr.mgh.harvard.edu/fswiki/PetSurfer
+    category: analysis
+    description: PetSurfer pipeline for partial volume correction and kinetic modelling using FreeSurfer.
+  - title: PET-BIDS Specification
+    url: https://bids-specification.readthedocs.io/en/stable/modality-specific-files/positron-emission-tomography.html
+    source_url: https://raw.githubusercontent.com/bids-standard/bids-specification/master/src/modality-specific-files/positron-emission-tomography.md
+    category: bids
+    description: Official PET extension to the Brain Imaging Data Structure (BIDS) specification.
+
+# Sync schedule configuration
+# Each sync type runs on its own cron schedule (UTC)
+sync:
+  github:
+    cron: "0 2 * * *"       # daily at 2am UTC
+
+# GitHub repositories for issue/PR sync
+github:
+  repos:
+    - openneuropet/openneuropet.github.io
+    - openneuropet/PET2BIDS
+    - nipreps/petprep
+    - mathesong/bloodstream
+    - mathesong/petfit

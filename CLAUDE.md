@@ -15,14 +15,21 @@ A precise, reliable AI assistant platform for researchers working with open scie
   - Has `.dev` suffix on versions (e.g., `0.5.1.dev0`)
 - `feature/*` - Feature branches, created from and merged to `develop`
 
-**Version Management (Automated):**
-- `develop` branch: Versions end with `.dev0` suffix (e.g., `0.5.1.dev0`)
+**Version Management (Fully Automated — do not manually bump in release PRs):**
+- `develop` branch: Versions end with `.devN` suffix (e.g., `0.5.1.dev0`, `0.5.1.dev1`)
 - `main` branch: Versions are stable, no suffix (e.g., `0.5.1`)
-- When `src/version.py` changes on `main`:
-  1. CI automatically strips `.dev` suffix if present
-  2. Creates git tag (e.g., `v0.5.1`)
-  3. Creates GitHub release marked as "latest"
-- Manual version bumps use `scripts/bump_version.py`
+- **On every push to `develop`** (`.github/workflows/auto-bump-dev.yml`):
+  1. Increments `.devN` (e.g., `0.5.1.dev0` -> `0.5.1.dev1`)
+  2. Skips on bot commits, `Bump version to ...` messages, `[skip ci]`, `[skip-bump]`
+- **When `src/version.py` changes on `main`**:
+  1. `ensure-stable-version.yml` strips `.dev` suffix if present
+  2. `tag-release.yml` creates git tag (e.g., `v0.5.1`)
+  3. `release.yml` creates GitHub release marked as "latest"
+- **After every stable release on main** (`.github/workflows/sync-develop.yml`):
+  1. Merges `main` back into `develop`
+  2. Bumps `develop` to `<next-patch>.dev0` (e.g., `0.5.2.dev0`)
+  3. This avoids the manual "resolve `src/version.py` conflict in release PR" dance
+- Manual version bumps use `scripts/bump_version.py` (rarely needed — the automation handles dev increments and post-release sync)
 
 1. **Pick an issue** from GitHub Issues
 2. **Create feature branch from develop**: `git checkout develop && git pull && git checkout -b feature/issue-N-short-description`
