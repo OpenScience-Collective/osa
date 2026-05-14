@@ -1,0 +1,99 @@
+EEG_CONTEXT - returns (in output 'delays') a matrix giving, for each event of specified 
+                ("target") type(s), the latency (in ms) to the Nth preceding and/or following
+                urevents (if any) of specified ("neighbor") type(s). Return the target event 
+                and urevent numbers, the neighbor urevent numbers, and the values of specified 
+                urevent field(s) for each of the neighbor urevents. Uses the EEG.urevent 
+                structure, plus EEG.EVENT.urevent pointers to it. If epoched data, also 
+                uses the EEG.epoch structure. For use in event-handling scripts and functions.
+Usage:
+            >>  [targs,urnbrs,urnbrtypes,delays,tfields,urnfields] = ...
+                         eeg_context(EEG,{targets},{neighbors},[positions],{fields},alltargs);
+Required input:
+EEG         - EEGLAB dataset structure containing EEG.event and EEG.urevent sub-structures
+
+Optional inputs:
+targets     - string or cell array of strings naming event type(s) of the specified target 
+              events {default | []: all events}
+neighbors   - string or cell array of strings naming event type(s) of the specified 
+              neighboring urevents {default | []: any neighboring events}.
+[positions] - int vector giving the relative positions of 'neighbor' type urevents to return. 
+              Ex: [-3 -2 -1 0 1 2 3] -> return the previous 3, current, and succeeding 3 
+              urevents of the specified {neighbor} types. [positions] values are arranged 
+              in ascending order before processing.  {default | []: 1 = first succeeding}
+fields      - string or cell array of strings naming one or more (ur)event field(s) to return 
+              values for neighbor urevents. {default: no field info returned}
+alltargs    - string ('all'|[]) if 'all', return information about all target urevents,
+              even those on which no epoch in the current dataset is centered. 
+              {default: [] -> only return information on epoch-centered target events} 
+Outputs:
+ targs      - size(ntargets,4) matrix giving the indices of target events in the event 
+              structure in column 1 and in the urevent structure in column 2. Column 3 gives 
+              the epoch number in which the target has latency 0 (else NaN if no such epoch).
+              The fourth column gives the index of the target type in the {targets} cell array.
+ urnbrs     - matrix of indices of "neighbor" events in the URevent structure (NaN if none).
+ urnbrtypes - int array giving the urnbrs event type indices in the {neighbor} cell array, 
+              else NaN if no such neighbor.  Ex: If nbr = {'square','rt'} (see below),
+              then urnbrtypes outputs are [1|2]; if nbr = {'rt'}, returns [1]s.
+ delays     - matrix giving, for each {targets} type event, the latency of the delay (in ms) 
+              from each target event to its neighbor urevents. Else, returns NaN when no 
+              neighbor event. Output matrix size: (ntargets,length(positions)). 
+ tfields    - real or cell array of values of the requested (ur)event field(s) for the target 
+              events. Values are the same type as the field values, else NaN if no such event.
+ urnfields  - real or cell array of values of the requested (ur)event field(s) for the neighbor 
+              urevents. Values are the same type as the field values, else NaN if no such event.
+              If > 1 field specified, a 3-D array or cell array (nevents,nnbrpos,nfields).
+Example:
+
+>> target   = 'square';                % target events are type 'square'
+>> nbr      = {'square','rt'};         % neighbor events are either 'square' or 'rt'
+
+>> [trgs,urnbrs,urnbrtypes,delays,tflds,urnflds] = ...
+                                         eeg_context(EEG,target,nbr,[-4 1],'position');
+   %
+   % Output 'delays' now contains latencies (in ms) from each 'square' target event to the 
+   % 4th preceding and 1st succeeding 'rt' OR 'square' urevent (else NaN when none such). 
+   % Outputs 'tfields' and 'urnflds' give the 'position' field values of target events and 
+   % neighbor urevents. Output 'urnbrtypes', the index of the type (1='square' or 2='rt') 
+   % of the ('urnbrs') neighbor urevents.
+   %
+>> trts      = find(trgs(:,4)==2);   % targets followed by an 'rt' (before any 'square')
+>> pos3      = find(trgfld = 3);     % targets with 'position'=3 (numeric field value).
+>> selevents = intersect_bc(trts,pos3); % target events by both criteria
+>> selepochs = trgs(selevents,3);    % epoch numbers centered on the selected target events
+
+Author: Scott Makeig, SCCN, Institute for Neural Computation, UCSD, March 27, 2004
+Copyright (C) Scott Makeig, SCCN, Institute for Neural Computation, UCSD, March 27, 2004
+
+This file is part of EEGLAB, see http://www.eeglab.org
+for the documentation and details.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice,
+this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+this list of conditions and the following disclaimer in the documentation
+and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
+THE POSSIBILITY OF SUCH DAMAGE.
+Edit History:
+1/10/05 added 4th (type) field to output trgs; added to Example;
+5/25/04 test for isnan(urevent.duration) to detect real break events -sm
+3/27/04 made no-such-event return NaNs; added {target} and {neighbor} defaults -sm
+3/28/04 added test for boundary urevents; renamed relidx as positions, lats as delays  -sm
+3/29/04 reorganized output order, adding urnbrtypes -sm
+3/29/04 changed urnbrtypes to int array -sm
+3/31/04 ruled out searching 'boundary' events -sm
+5/06/04 completed the function -sm

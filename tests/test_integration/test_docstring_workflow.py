@@ -1,5 +1,7 @@
 """Integration tests for complete docstring workflow."""
 
+from pathlib import Path
+
 import pytest
 
 from src.knowledge.db import get_db_path, get_stats, init_db
@@ -8,6 +10,13 @@ from src.tools.knowledge import (
     create_get_full_docstring_tool,
     create_search_docstrings_tool,
 )
+
+# Verbatim production docstring for eeg_context (6598 chars, pulled from the
+# live eeglab.db on osa-dev). Used by the issue #276 regression tests to
+# pin behavior against the real artifact rather than an abbreviated copy.
+EEG_CONTEXT_REAL_DOCSTRING = (
+    Path(__file__).parent.parent / "fixtures" / "eeg_context_docstring.txt"
+).read_text()
 
 EEG_CONTEXT_DOCSTRING = """EEG_CONTEXT - returns (in output 'delays') a matrix giving, for each event of specified
                 ("target") type(s), the latency (in ms) to the Nth preceding and/or following
@@ -684,4 +693,131 @@ def test_search_tool_omits_hint_when_no_truncation(clean_db):
 
     assert f"get_{clean_db}_full_docstring" not in result, (
         "Hint should be omitted when no snippet was truncated"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for issue #276 using the VERBATIM production eeg_context
+# docstring. These exist alongside the synthetic tests above because the real
+# artifact has section positions that exercise both code paths:
+#   - Usage signature with all 6 output names: position 670 (in snippet)
+#   - "Outputs:" detail section: position 2041 (past 1500-char snippet cap)
+# This means the user's question "what are the outputs?" must be answerable
+# from the SNIPPET (via the Usage signature), while "what does each output
+# do?" requires a FULL-FETCH follow-up.
+# ---------------------------------------------------------------------------
+
+EEG_CONTEXT_OUTPUT_NAMES = (
+    "targs",
+    "urnbrs",
+    "urnbrtypes",
+    "delays",
+    "tfields",
+    "urnfields",
+)
+
+
+def _insert_real_eeg_context(project: str) -> None:
+    """Insert the verbatim production eeg_context docstring."""
+    from src.knowledge.db import get_connection, upsert_docstring
+
+    with get_connection(project) as conn:
+        upsert_docstring(
+            conn,
+            repo="sccn/eeglab",
+            file_path="functions/popfunc/eeg_context.m",
+            language="matlab",
+            symbol_name="eeg_context",
+            symbol_type="function",
+            docstring=EEG_CONTEXT_REAL_DOCSTRING,
+            line_number=1,
+            branch="develop",
+        )
+        conn.commit()
+
+
+def test_real_eeg_context_snippet_names_all_outputs(clean_db):
+    """The user's "what are the outputs of eeg_context?" must be answerable
+    from the search snippet alone, against the REAL production docstring.
+
+    The Outputs: detail section sits past char 1500 in the real docstring,
+    but the Usage signature `[targs,urnbrs,urnbrtypes,delays,tfields,urnfields]`
+    is at position 670 and falls inside the snippet. This is the exact bug
+    from #276 — proving the fix works on the actual artifact, not just our
+    synthetic abbreviation.
+    """
+    _insert_real_eeg_context(clean_db)
+
+    results = search_docstrings("eeg_context", project=clean_db, limit=1)
+    assert len(results) == 1
+    snippet = results[0].snippet
+
+    # The Usage signature names all 6 outputs; verify all are present in the snippet
+    for name in EEG_CONTEXT_OUTPUT_NAMES:
+        assert name in snippet, (
+            f"Output '{name}' missing from snippet of real eeg_context docstring "
+            f"(snippet len={len(snippet)})"
+        )
+
+    # The snippet should be marked truncated (real docstring is 6598 chars > 1500)
+    assert snippet.endswith("..."), (
+        "Real eeg_context snippet should be marked truncated; "
+        "otherwise the LLM won't know to ask for full content"
+    )
+
+
+def test_real_eeg_context_search_tool_hints_full_fetch(clean_db):
+    """The search tool must instruct the LLM to follow up with the full-fetch
+    tool, since the Outputs: detail section sits past the snippet cap."""
+    _insert_real_eeg_context(clean_db)
+
+    tool = create_search_docstrings_tool(clean_db, "EEGLAB", language="matlab")
+    result = tool.invoke({"query": "eeg_context", "limit": 1})
+
+    assert f"get_{clean_db}_full_docstring" in result, (
+        "Search tool output for the real eeg_context docstring must hint at "
+        "the full-fetch tool so the LLM can answer detailed output questions"
+    )
+
+
+def test_real_eeg_context_full_fetch_exposes_outputs_section(clean_db):
+    """Detailed "what does each output do?" answers require the Outputs: section,
+    which the full-fetch tool must surface for the real eeg_context docstring."""
+    _insert_real_eeg_context(clean_db)
+
+    tool = create_get_full_docstring_tool(clean_db, "EEGLAB", language="matlab")
+    result = tool.invoke({"symbol_name": "eeg_context"})
+
+    # The Outputs: header must be present
+    assert "Outputs:" in result, "Outputs: section must appear in full-fetch output"
+
+    # Each output should appear AT LEAST TWICE in the result (once in the
+    # Usage signature, once in its own description in Outputs:). This is
+    # the signal that the detailed descriptions reached the LLM.
+    for name in EEG_CONTEXT_OUTPUT_NAMES:
+        occurrences = result.count(name)
+        assert occurrences >= 2, (
+            f"Output '{name}' should appear at least twice (Usage + Outputs: "
+            f"sections) in full-fetch output; found {occurrences}"
+        )
+
+    # Spot-check that distinctive Outputs:-section prose made it through.
+    # This text comes from the per-output descriptions, past char 1500 in
+    # the real docstring.
+    assert "size(ntargets,4) matrix" in result, (
+        "Outputs:-section detail about `targs` matrix shape is missing; "
+        "the full-fetch tool may not be returning content past char 1500"
+    )
+
+
+def test_real_eeg_context_full_fetch_returns_complete_docstring(clean_db):
+    """Full-fetch must return the entire 6598-char production docstring
+    byte-for-byte (up to the 10K storage cap, which is well above this size)."""
+    _insert_real_eeg_context(clean_db)
+
+    results = get_full_docstring("eeg_context", project=clean_db)
+    assert len(results) == 1
+    assert results[0].snippet == EEG_CONTEXT_REAL_DOCSTRING, (
+        f"Full-fetch should return the verbatim production docstring "
+        f"({len(EEG_CONTEXT_REAL_DOCSTRING)} chars); got {len(results[0].snippet)} chars"
     )
