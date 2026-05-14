@@ -1,0 +1,116 @@
+name: Auto Bump Dev
+
+# Increments the `.devN` suffix on `develop` after every push that carries
+# real code, so each commit on develop publishes under a fresh pre-release
+# version. The clean (stripped) version + tag is still owned by
+# ensure-stable-version.yml / tag-release.yml when develop eventually
+# merges into main.
+#
+# Skip conditions (avoid loops and noise):
+#   - Head commit author is the bot (github-actions[bot]) - blocks our
+#     own bump-and-push from re-triggering.
+#   - Head commit message starts with "Bump version to" - catches manual
+#     bumps from scripts/bump_version.py and the sync-develop.yml bump.
+#   - Head commit message contains "[skip-bump]" - manual escape hatch.
+#   - Head commit message contains "[skip ci]" - matches the repo-wide
+#     CI skip marker (used by sync-worker-cors.yml etc.).
+#
+# Flow:
+#   1. Read current version from src/version.py.
+#   2. If no `.devN` suffix, log and exit (develop should always carry one;
+#      missing means a release just merged and sync-develop.yml has not
+#      fired yet, or someone is mid-release).
+#   3. Otherwise bump to `.dev(N+1)` via scripts/bump_version.py.
+#   4. Push back to develop. The commit message starts with "Bump version
+#      to" so this workflow self-filters on the next push event.
+
+on:
+  push:
+    branches: [develop]
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    # Filter bot commits and explicit opt-outs at the job level so we do
+    # not spin up a runner for events we will discard.
+    if: |
+      github.actor != 'github-actions[bot]'
+      && !startsWith(github.event.head_commit.message, 'Bump version to')
+      && !contains(github.event.head_commit.message, '[skip-bump]')
+      && !contains(github.event.head_commit.message, '[skip ci]')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout develop
+        uses: actions/checkout@v4
+        with:
+          ref: develop
+          fetch-depth: 2
+          # CI_ADMIN_TOKEN is required so the bot's bump commit can be
+          # pushed back to develop without tripping branch protection or
+          # workflow-token restrictions on the default GITHUB_TOKEN.
+          token: ${{ secrets.CI_ADMIN_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Compute next dev suffix
+        id: compute
+        run: |
+          CURRENT=$(python -c "from src.version import __version__; print(__version__)")
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+
+          # Expect a `.devN` suffix (PEP 440). Anything else is
+          # unexpected on develop; log and exit cleanly without bumping
+          # rather than guessing what to do.
+          if [[ ! "$CURRENT" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\.dev([0-9]+)$ ]]; then
+            echo "::notice::No .devN suffix on $CURRENT - leaving develop branch as-is."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          BASE="${BASH_REMATCH[1]}"
+          N="${BASH_REMATCH[2]}"
+          NEXT=$((N + 1))
+          echo "next=${BASE}.dev${NEXT}" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "Will bump $CURRENT -> ${BASE}.dev${NEXT}"
+
+      - name: Configure git identity
+        if: steps.compute.outputs.skip == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump dev increment
+        if: steps.compute.outputs.skip == 'false'
+        run: |
+          # --prerelease dev on a .devN version increments N (see
+          # scripts/bump_version.py bump_version logic). --no-git so
+          # this workflow controls the commit and push.
+          uv run python scripts/bump_version.py --prerelease dev --no-git
+
+          # Verify the bump actually changed the file before committing.
+          NEW=$(python -c "from src.version import __version__; print(__version__)")
+          if [ "$NEW" != "${{ steps.compute.outputs.next }}" ]; then
+            echo "::error::Expected ${{ steps.compute.outputs.next }} but got $NEW"
+            exit 1
+          fi
+
+      - name: Commit and push bump
+        if: steps.compute.outputs.skip == 'false'
+        run: |
+          git add src/version.py
+          git commit -m "Bump version to ${{ steps.compute.outputs.next }}"
+
+          # If a parallel push raced us, abort cleanly: the racing push
+          # will retrigger this workflow from the new HEAD.
+          git push origin develop || {
+            echo "::warning::push to develop rejected (likely concurrent push); skipping"
+            exit 0
+          }

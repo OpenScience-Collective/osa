@@ -1,0 +1,107 @@
+name: Sync develop with main and bump
+
+# Fires after a stable release tag (v*) is published on main. Merges main
+# back into develop and bumps develop to `<next-patch>.dev0`, so feature
+# branches off develop never collide with the just-released version. This
+# replaces the manual "create release PR -> resolve src/version.py
+# conflict" dance.
+#
+# Trigger: Tag and Release workflow completes successfully. The tag-push
+# event also triggers release.yml + the deploy pipeline; this workflow
+# is independent and only handles the develop-side bookkeeping.
+#
+# Guards:
+#   - Only fires when the upstream Tag and Release run succeeded.
+#   - Only fires when the upstream was triggered by a push to main with
+#     a stable version (.dev / a / b / rc are filtered out by the regex
+#     check inside the run).
+#   - Validates the version on main is a clean vX.Y.Z before merging.
+
+on:
+  workflow_run:
+    workflows: ["Tag and Release"]
+    types: [completed]
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout develop
+        uses: actions/checkout@v4
+        with:
+          ref: develop
+          fetch-depth: 0
+          # CI_ADMIN_TOKEN lets this push to develop without tripping
+          # branch protection (same pattern as ensure-stable-version.yml).
+          token: ${{ secrets.CI_ADMIN_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch main and validate version
+        id: main_version
+        run: |
+          git fetch origin main
+          MAIN_VERSION=$(git show origin/main:src/version.py | python -c "import sys; exec(sys.stdin.read()); print(__version__)")
+          echo "main_version=$MAIN_VERSION" >> "$GITHUB_OUTPUT"
+
+          # Only sync on a clean stable version. Pre-releases on main
+          # are unusual; if one appears, ensure-stable-version.yml will
+          # strip it and this workflow will re-fire on that tag-release.
+          if [[ ! "$MAIN_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::warning::main version $MAIN_VERSION is not a clean release; skipping develop sync."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Merge main into develop
+        if: steps.main_version.outputs.skip == 'false'
+        run: |
+          # Regular merge (--no-ff) preserves the release commit graph,
+          # matching the project's "regular merge commits, not squash"
+          # rule for develop <-> main.
+          git merge --no-ff origin/main \
+            -m "chore: sync develop with main after v${{ steps.main_version.outputs.main_version }}"
+
+      - name: Bump develop to next-patch.dev0
+        if: steps.main_version.outputs.skip == 'false'
+        run: |
+          # patch + --prerelease dev on a clean version increments patch
+          # and resets prerelease num to 0 (see scripts/bump_version.py
+          # bump_version logic). --no-git so the workflow owns the
+          # commit and push.
+          uv run python scripts/bump_version.py patch --prerelease dev --no-git
+
+          NEW=$(python -c "from src.version import __version__; print(__version__)")
+          echo "Bumped develop to $NEW"
+
+          # Sanity-check the format before committing.
+          if [[ ! "$NEW" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.dev0$ ]]; then
+            echo "::error::Expected <patch>.dev0, got $NEW"
+            exit 1
+          fi
+
+          git add src/version.py
+          git commit -m "Bump version to $NEW"
+
+      - name: Push develop
+        if: steps.main_version.outputs.skip == 'false'
+        run: |
+          # Bot's commit message starts with "Bump version to ..." so
+          # auto-bump-dev.yml self-filters on this push.
+          git push origin develop
