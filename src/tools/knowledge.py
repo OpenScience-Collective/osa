@@ -23,6 +23,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 
 from src.knowledge.db import get_db_path
 from src.knowledge.search import (
+    get_full_docstring,
     list_recent_github_items,
     search_discourse_topics,
     search_docstrings,
@@ -304,25 +305,132 @@ def create_search_docstrings_tool(
             return f"No code documentation found for '{query}'{lang_str}."
 
         lines = [f"Code documentation in {community_name}:\n"]
+        # `_make_snippet` appends "..." iff it truncated. Only nudge the LLM
+        # toward the full-fetch tool when at least one result was actually
+        # truncated; otherwise the hint encourages a wasteful follow-up.
+        any_truncated = any(r.snippet.endswith("...") for r in results)
         for r in results:
             lines.append(f"- {r.title}")
             lines.append(f"  [View source on GitHub]({r.url})")
             if r.snippet:
-                snippet = r.snippet[:200] + "..." if len(r.snippet) > 200 else r.snippet
-                lines.append(f"  Documentation: {snippet}")
+                lines.append(f"  Documentation: {r.snippet}")
             lines.append("")
+        if any_truncated:
+            lines.append(
+                f"One or more snippets were truncated. If the user is asking about "
+                f"specific outputs, parameters, or examples, call "
+                f"get_{community_id}_full_docstring with the symbol_name to "
+                f"retrieve the stored docstring in full."
+            )
 
         return "\n".join(lines)
 
     description = (
         f"Search {community_name} code documentation (docstrings from functions, classes, scripts).{lang_help} "
         "Use this to find how specific functions work, what parameters they accept, "
-        "and see usage examples. Results include direct links to source code on GitHub."
+        "and see usage examples. Results include direct links to source code on GitHub. "
+        "If the returned snippet is truncated (marked with `...`) and you need full "
+        "details about outputs, parameters, or examples, follow up with "
+        f"get_{community_id}_full_docstring."
     )
 
     return StructuredTool.from_function(
         func=search_docstrings_impl,
         name=f"search_{community_id}_code_docs",
+        description=description,
+    )
+
+
+def create_get_full_docstring_tool(
+    community_id: str,
+    community_name: str,
+    language: str | None = None,
+) -> BaseTool:
+    """Create a tool for fetching the complete docstring of a specific symbol.
+
+    Used as a follow-up after `search_{community_id}_code_docs` when the
+    returned snippet is truncated and the user is asking about specific
+    outputs, parameters, or examples that fall past the snippet cap.
+
+    Args:
+        community_id: The community identifier (e.g., 'hed', 'eeglab')
+        community_name: Display name (e.g., 'HED', 'EEGLAB')
+        language: Optional language filter ('matlab' or 'python')
+
+    Returns:
+        A LangChain tool that returns the full docstring for a given symbol
+    """
+
+    def get_full_docstring_impl(symbol_name: str) -> str:
+        """Fetch the stored docstring for a symbol (in full, up to 10K chars)."""
+        if not _check_db_exists(community_id):
+            return (
+                f"Knowledge database for {community_name} not initialized. "
+                "Run 'osa sync init' and 'osa sync docstrings' to populate it."
+            )
+
+        try:
+            results = get_full_docstring(symbol_name, project=community_id, language=language)
+        except sqlite3.OperationalError as e:
+            # Case-insensitive match: SQLite phrasing has varied across
+            # versions/drivers (e.g. "no such table: docstrings" vs
+            # "No such table"). Lowercase before matching so a
+            # future capitalization shift can't silently break the
+            # friendly path and surface as a 500 to the user.
+            if "no such table" in str(e).lower():
+                logger.warning(
+                    "Docstrings table not initialized for %s",
+                    community_id,
+                    extra={"symbol_name": symbol_name, "community": community_id},
+                )
+                return (
+                    f"Knowledge database for {community_name} not initialized. "
+                    f"Run 'osa sync docstrings --community {community_id}' to populate it."
+                )
+            logger.error(
+                "Database operational error in get_full_docstring tool: %s",
+                e,
+                exc_info=True,
+                extra={"symbol_name": symbol_name, "community": community_id},
+            )
+            raise
+        except sqlite3.Error as e:
+            logger.warning(
+                "Database error in get_full_docstring tool: %s",
+                e,
+                extra={"symbol_name": symbol_name, "community": community_id},
+            )
+            raise
+
+        if not results:
+            return (
+                f"No docstring found for symbol '{symbol_name}' in {community_name}. "
+                f"Try search_{community_id}_code_docs first to find the correct symbol name."
+            )
+
+        lines = [f"Full docstring(s) for '{symbol_name}' in {community_name}:\n"]
+        for r in results:
+            lines.append(f"## {r.title}")
+            lines.append(f"[View source on GitHub]({r.url})\n")
+            if r.snippet:
+                lines.append(r.snippet)
+            lines.append("")
+
+        return "\n".join(lines)
+
+    description = (
+        f"Fetch the stored docstring in full (up to ~10K chars) for a specific "
+        f"symbol in {community_name}. Use this as a follow-up to "
+        f"search_{community_id}_code_docs when the snippet appears truncated "
+        "(marked with `...`) and the user is asking about specific outputs, "
+        "parameters, or examples. Takes an exact symbol_name (case-insensitive). "
+        "Returns up to 5 matches when the same symbol appears in multiple "
+        "files/repos."
+    )
+
+    return StructuredTool.from_function(
+        func=get_full_docstring_impl,
+        name=f"get_{community_id}_full_docstring",
         description=description,
     )
 
@@ -544,6 +652,9 @@ def create_knowledge_tools(
     if include_docstrings:
         tools.append(
             create_search_docstrings_tool(community_id, community_name, docstrings_language)
+        )
+        tools.append(
+            create_get_full_docstring_tool(community_id, community_name, docstrings_language)
         )
 
     if include_faq:
