@@ -3,8 +3,42 @@
 import pytest
 
 from src.knowledge.db import get_db_path, get_stats, init_db
-from src.knowledge.search import search_docstrings
-from src.tools.knowledge import create_search_docstrings_tool
+from src.knowledge.search import get_full_docstring, search_docstrings
+from src.tools.knowledge import (
+    create_get_full_docstring_tool,
+    create_search_docstrings_tool,
+)
+
+EEG_CONTEXT_DOCSTRING = """EEG_CONTEXT - returns (in output 'delays') a matrix giving, for each event of specified
+                ("target") type(s), the latency (in ms) to the Nth preceding and/or following
+                urevents (if any) of specified ("neighbor") type(s). Return the target event
+                and urevent numbers, the neighbor urevent numbers, and the values of specified
+                urevent field(s) for each of the neighbor urevents.
+Usage:
+            >>  [targs,urnbrs,urnbrtypes,delays,tfields,urnfields] = ...
+                         eeg_context(EEG,{targets},{neighbors},[positions],{fields},alltargs);
+Required input:
+EEG         - EEGLAB dataset structure containing EEG.event and EEG.urevent sub-structures
+
+Optional inputs:
+targets     - string or cell array of strings naming event type(s) of the specified target
+              events {default | []: all events}
+neighbors   - string or cell array of strings naming event type(s) of the specified
+              neighboring urevents {default | []: any neighboring events}.
+[positions] - int vector giving the relative positions of 'neighbor' type urevents to return.
+fields      - string or cell array of strings naming one or more (ur)event field(s) to return
+              values for neighbor urevents. {default: no field info returned}
+alltargs    - string ('all'|[]) if 'all', return information about all target urevents,
+              even those on which no epoch in the current dataset is centered.
+Outputs:
+ targs      - size(ntargets,4) matrix giving the indices of target events in the event
+              structure in column 1 and in the urevent structure in column 2.
+ urnbrs     - matrix of indices of "neighbor" events in the URevent structure (NaN if none).
+ urnbrtypes - int array giving the urnbrs event type indices in the {neighbor} cell array.
+ delays     - matrix giving, for each {targets} type event, the latency of the delay (in ms).
+ tfields    - real or cell array of values of the requested (ur)event field(s) for the target.
+ urnfields  - real or cell array of values of the requested (ur)event field(s) for the neighbor.
+"""
 
 
 @pytest.fixture
@@ -337,4 +371,113 @@ def test_branch_fallback_for_null(clean_db):
     assert len(results) == 1
     assert "/blob/main/" in results[0].url, (
         f"Expected fallback to /blob/main/, got: {results[0].url}"
+    )
+
+
+def _insert_eeg_context(project: str) -> None:
+    """Insert the eeg_context docstring used by the issue #276 regression tests."""
+    from src.knowledge.db import get_connection, upsert_docstring
+
+    with get_connection(project) as conn:
+        upsert_docstring(
+            conn,
+            repo="sccn/eeglab",
+            file_path="functions/popfunc/eeg_context.m",
+            language="matlab",
+            symbol_name="eeg_context",
+            symbol_type="function",
+            docstring=EEG_CONTEXT_DOCSTRING,
+            line_number=1,
+            branch="develop",
+        )
+        conn.commit()
+
+
+def test_search_snippet_includes_outputs_section(clean_db):
+    """Regression for #276: snippet must include the Outputs section.
+
+    Before the fix the snippet was capped at 200 chars, so the LLM never
+    saw output names past the first sentence. The cap is now 1500 chars,
+    which captures Usage/Parameters/Outputs for typical MATLAB docstrings.
+    """
+    _insert_eeg_context(clean_db)
+
+    results = search_docstrings("eeg_context", project=clean_db, limit=1)
+    assert len(results) == 1
+    snippet = results[0].snippet
+
+    # Outputs section must be present
+    assert "Outputs:" in snippet, (
+        f"Snippet missing Outputs section (len={len(snippet)}): {snippet[:300]}..."
+    )
+
+    # All six documented outputs must appear in the snippet
+    for output_name in ("targs", "urnbrs", "urnbrtypes", "delays", "tfields", "urnfields"):
+        assert output_name in snippet, (
+            f"Output '{output_name}' missing from snippet (len={len(snippet)})"
+        )
+
+
+def test_get_full_docstring_returns_complete_content(clean_db):
+    """get_full_docstring must return the entire stored docstring (no truncation)."""
+    _insert_eeg_context(clean_db)
+
+    results = get_full_docstring("eeg_context", project=clean_db)
+    assert len(results) == 1
+    full = results[0].snippet
+
+    # The returned snippet must equal the stored docstring byte-for-byte
+    assert full == EEG_CONTEXT_DOCSTRING, (
+        f"Expected full docstring ({len(EEG_CONTEXT_DOCSTRING)} chars), got {len(full)} chars"
+    )
+
+
+def test_get_full_docstring_is_case_insensitive(clean_db):
+    """Exact symbol lookup should ignore case to match what an LLM might pass."""
+    _insert_eeg_context(clean_db)
+
+    for query in ("eeg_context", "EEG_CONTEXT", "Eeg_Context"):
+        results = get_full_docstring(query, project=clean_db)
+        assert len(results) == 1, f"Failed for query={query!r}"
+
+
+def test_get_full_docstring_no_match(clean_db):
+    """Unknown symbols return empty list, not an error."""
+    _insert_eeg_context(clean_db)
+    assert get_full_docstring("does_not_exist", project=clean_db) == []
+
+
+def test_full_docstring_tool_returns_outputs(clean_db):
+    """End-to-end: the LLM-facing tool must surface all 6 outputs of eeg_context."""
+    _insert_eeg_context(clean_db)
+
+    tool = create_get_full_docstring_tool(clean_db, "EEGLAB", language="matlab")
+    result = tool.invoke({"symbol_name": "eeg_context"})
+
+    assert isinstance(result, str)
+    assert "View source on GitHub" in result
+    for output_name in ("targs", "urnbrs", "urnbrtypes", "delays", "tfields", "urnfields"):
+        assert output_name in result, f"Output '{output_name}' missing from tool output"
+
+
+def test_full_docstring_tool_unknown_symbol(clean_db):
+    """Tool must return a helpful message (not crash) for unknown symbols."""
+    _insert_eeg_context(clean_db)
+
+    tool = create_get_full_docstring_tool(clean_db, "EEGLAB", language="matlab")
+    result = tool.invoke({"symbol_name": "nope_not_real"})
+
+    assert isinstance(result, str)
+    assert "No docstring found" in result
+
+
+def test_search_tool_points_to_full_docstring_tool(clean_db):
+    """The search tool should hint at the follow-up tool name in its output."""
+    _insert_eeg_context(clean_db)
+
+    tool = create_search_docstrings_tool(clean_db, "EEGLAB", language="matlab")
+    result = tool.invoke({"query": "eeg_context", "limit": 1})
+
+    assert f"get_{clean_db}_full_docstring" in result, (
+        "Search tool output should mention the full-docstring follow-up tool name"
     )

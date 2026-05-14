@@ -511,7 +511,10 @@ def search_docstrings(
             params[0] = safe_query
 
             for idx, row in enumerate(conn.execute(sql, params)):
-                snippet = _make_snippet(row["docstring"])
+                # Docstrings encode their value in Outputs/Parameters/Examples
+                # sections that often start past char 1000. Use a larger cap so
+                # the LLM sees the structured sections, not just the summary.
+                snippet = _make_snippet(row["docstring"], max_length=1500)
 
                 # Build GitHub URL to the specific line
                 file_path = row["file_path"] or ""
@@ -563,6 +566,84 @@ def search_docstrings(
     except sqlite3.Error as e:
         # Other database errors - still raise for debugging
         logger.warning("Database error during docstring search '%s': %s", query, e)
+        raise
+
+    return results
+
+
+def get_full_docstring(
+    symbol_name: str,
+    project: str = "hed",
+    language: str | None = None,
+    repo: str | None = None,
+) -> list[SearchResult]:
+    """Return the complete docstring(s) for a symbol, without truncation.
+
+    Used by the LLM as a follow-up after search_docstrings when the snippet
+    is insufficient to answer the user's question (e.g. they ask about
+    specific outputs, parameters, or examples that fall past the snippet cap).
+
+    Args:
+        symbol_name: Exact symbol name to look up (case-insensitive).
+        project: Assistant/project name for database isolation. Defaults to 'hed'.
+        language: Filter by 'matlab' or 'python'.
+        repo: Filter by repository name.
+
+    Returns:
+        List of SearchResult objects with `snippet` containing the full
+        docstring (no truncation). Empty list if no exact match.
+    """
+    sql = """
+        SELECT symbol_name, docstring, file_path, repo,
+               language, symbol_type, line_number, branch
+        FROM docstrings
+        WHERE LOWER(symbol_name) = LOWER(?)
+    """
+    params: list[str] = [symbol_name]
+
+    if language:
+        sql += " AND language = ?"
+        params.append(language)
+    if repo:
+        sql += " AND repo = ?"
+        params.append(repo)
+
+    results: list[SearchResult] = []
+    try:
+        with get_connection(project) as conn:
+            for row in conn.execute(sql, params):
+                file_path = row["file_path"] or ""
+                repo_name = row["repo"]
+                line_number = row["line_number"]
+                branch = row["branch"] or "main"
+
+                github_url = f"https://github.com/{repo_name}/blob/{branch}/{file_path}"
+                if line_number:
+                    github_url += f"#L{line_number}"
+
+                title = f"{row['symbol_name']} ({row['symbol_type']}) - {file_path}"
+
+                results.append(
+                    SearchResult(
+                        title=title,
+                        url=github_url,
+                        snippet=row["docstring"] or "",
+                        source=row["language"],
+                        item_type=row["symbol_type"],
+                        status="documented",
+                        created_at="",
+                    )
+                )
+    except sqlite3.OperationalError as e:
+        logger.error(
+            "Database operational error fetching full docstring: %s",
+            e,
+            exc_info=True,
+            extra={"symbol_name": symbol_name, "project": project},
+        )
+        raise
+    except sqlite3.Error as e:
+        logger.warning("Database error fetching full docstring '%s': %s", symbol_name, e)
         raise
 
     return results

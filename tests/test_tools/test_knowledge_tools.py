@@ -269,11 +269,13 @@ class TestCreateKnowledgeTools:
         assert "repo1" in discussion_tool.description
 
     def test_includes_docstrings_tool_when_enabled(self) -> None:
-        """Should include docstring search tool when include_docstrings=True."""
+        """Should include docstring search + full-fetch tools when include_docstrings=True."""
         tools = create_knowledge_tools("test", "Test", include_docstrings=True)
         tool_names = [t.name for t in tools]
         assert "search_test_code_docs" in tool_names
-        assert len(tools) == 4
+        # Paired full-fetch tool added for issue #276
+        assert "get_test_full_docstring" in tool_names
+        assert len(tools) == 5
 
     def test_includes_faq_tool_when_enabled(self) -> None:
         """Should include FAQ search tool when include_faq=True."""
@@ -296,9 +298,10 @@ class TestCreateKnowledgeTools:
         )
         tool_names = [t.name for t in tools]
         assert "search_test_code_docs" in tool_names
+        assert "get_test_full_docstring" in tool_names
         assert "search_test_faq" in tool_names
         assert "search_test_forum" in tool_names
-        assert len(tools) == 6
+        assert len(tools) == 7
 
 
 class TestSearchDocstringsTool:
