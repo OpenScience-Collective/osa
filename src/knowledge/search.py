@@ -28,6 +28,21 @@ def _make_snippet(text: str | None, max_length: int = 200) -> str:
     return snippet
 
 
+# Docstring search results need enough room to include the structured
+# sections (Usage / Parameters / Outputs / Examples) that follow the
+# opening summary. The default `_make_snippet` cap of 200 chars truncated
+# inside the summary sentence and caused issue #276. Bumping the cap is
+# a deliberate tradeoff against token budget: 1500 chars * default
+# limit=5 = ~7.5K chars per call, well within agent context.
+DOCSTRING_SNIPPET_MAX_LENGTH = 1500
+
+# Hard cap on the number of full-docstring rows returned by
+# `get_full_docstring`. Symbols like "init" or "plot" can match many
+# rows across files/repos; without a cap a single tool call could
+# evict useful conversation history.
+FULL_DOCSTRING_DEFAULT_LIMIT = 5
+
+
 def _normalize_title_for_dedup(title: str) -> set[str]:
     """Normalize a paper title to a set of words for deduplication.
 
@@ -511,10 +526,7 @@ def search_docstrings(
             params[0] = safe_query
 
             for idx, row in enumerate(conn.execute(sql, params)):
-                # Docstrings encode their value in Outputs/Parameters/Examples
-                # sections that often start past char 1000. Use a larger cap so
-                # the LLM sees the structured sections, not just the summary.
-                snippet = _make_snippet(row["docstring"], max_length=1500)
+                snippet = _make_snippet(row["docstring"], max_length=DOCSTRING_SNIPPET_MAX_LENGTH)
 
                 # Build GitHub URL to the specific line
                 file_path = row["file_path"] or ""
@@ -576,22 +588,31 @@ def get_full_docstring(
     project: str = "hed",
     language: str | None = None,
     repo: str | None = None,
+    limit: int = FULL_DOCSTRING_DEFAULT_LIMIT,
 ) -> list[SearchResult]:
-    """Return the complete docstring(s) for a symbol, without truncation.
+    """Return the stored docstring(s) for a symbol, in full.
 
     Used by the LLM as a follow-up after search_docstrings when the snippet
     is insufficient to answer the user's question (e.g. they ask about
     specific outputs, parameters, or examples that fall past the snippet cap).
 
     Args:
-        symbol_name: Exact symbol name to look up (case-insensitive).
+        symbol_name: Symbol to look up. Matched via LOWER() on both sides,
+            so the lookup is case-insensitive. Note that this is non-sargable
+            and forces a table scan; if the docstrings table grows much
+            larger, add a functional index on LOWER(symbol_name).
         project: Assistant/project name for database isolation. Defaults to 'hed'.
         language: Filter by 'matlab' or 'python'.
         repo: Filter by repository name.
+        limit: Max rows to return. Defaults to FULL_DOCSTRING_DEFAULT_LIMIT.
+            Symbols like "init" or "plot" can match many rows across
+            files/repos; the cap prevents an unbounded payload.
 
     Returns:
-        List of SearchResult objects with `snippet` containing the full
-        docstring (no truncation). Empty list if no exact match.
+        List of SearchResult objects with `snippet` containing the stored
+        docstring. The storage layer caps each docstring at 10K chars at
+        ingest (see `upsert_docstring`), so "full" means "up to 10K chars".
+        Empty list if no matching symbol (case-insensitive equality).
     """
     sql = """
         SELECT symbol_name, docstring, file_path, repo,
@@ -599,7 +620,7 @@ def get_full_docstring(
         FROM docstrings
         WHERE LOWER(symbol_name) = LOWER(?)
     """
-    params: list[str] = [symbol_name]
+    params: list[str | int] = [symbol_name]
 
     if language:
         sql += " AND language = ?"
@@ -607,6 +628,11 @@ def get_full_docstring(
     if repo:
         sql += " AND repo = ?"
         params.append(repo)
+
+    # Deterministic order across runs so the LLM sees a stable view when
+    # multiple files/repos define the same symbol name.
+    sql += " ORDER BY repo, file_path LIMIT ?"
+    params.append(limit)
 
     results: list[SearchResult] = []
     try:
@@ -623,11 +649,28 @@ def get_full_docstring(
 
                 title = f"{row['symbol_name']} ({row['symbol_type']}) - {file_path}"
 
+                docstring = row["docstring"]
+                if not docstring:
+                    # NULL/empty stored docstring would render as a hit with
+                    # no body and mislead the LLM. Log and skip so the
+                    # caller sees the missing-data state rather than a
+                    # phantom result.
+                    logger.warning(
+                        "Empty stored docstring for symbol",
+                        extra={
+                            "symbol_name": row["symbol_name"],
+                            "file_path": file_path,
+                            "repo": repo_name,
+                            "project": project,
+                        },
+                    )
+                    continue
+
                 results.append(
                     SearchResult(
                         title=title,
                         url=github_url,
-                        snippet=row["docstring"] or "",
+                        snippet=docstring,
                         source=row["language"],
                         item_type=row["symbol_type"],
                         status="documented",

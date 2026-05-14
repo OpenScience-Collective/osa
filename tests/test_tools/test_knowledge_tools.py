@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from src.knowledge.db import get_connection, init_db, upsert_github_item, upsert_paper
 from src.tools.knowledge import (
+    create_get_full_docstring_tool,
     create_knowledge_tools,
     create_list_recent_tool,
     create_search_discourse_tool,
@@ -321,6 +322,41 @@ class TestSearchDocstringsTool:
 
         with patch("src.tools.knowledge.get_db_path", return_value=db_path):
             result = tool.invoke({"query": "some_function"})
+        assert "not initialized" in result.lower()
+        assert "osa sync docstrings" in result
+
+
+class TestGetFullDocstringTool:
+    """Tests for the full-docstring follow-up tool."""
+
+    def test_returns_error_when_db_not_exists(self, tmp_path: Path) -> None:
+        """Should return initialization message when DB doesn't exist."""
+        tool = create_get_full_docstring_tool("test", "Test Community")
+
+        db_path = tmp_path / "knowledge" / "test.db"
+        with patch("src.tools.knowledge.get_db_path", return_value=db_path):
+            result = tool.invoke({"symbol_name": "any_symbol"})
+        assert "not initialized" in result.lower()
+
+    def test_handles_missing_table(self, tmp_path: Path) -> None:
+        """Should return friendly message when docstrings table doesn't exist.
+
+        Mirrors TestSearchDocstringsTool::test_handles_missing_table so the
+        case-insensitive 'no such table' match in the tool wrapper is
+        actually exercised.
+        """
+        import sqlite3
+
+        tool = create_get_full_docstring_tool("test", "Test Community")
+
+        db_path = tmp_path / "knowledge" / "test.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE dummy (id INTEGER)")
+        conn.close()
+
+        with patch("src.tools.knowledge.get_db_path", return_value=db_path):
+            result = tool.invoke({"symbol_name": "any_symbol"})
         assert "not initialized" in result.lower()
         assert "osa sync docstrings" in result
 

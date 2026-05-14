@@ -472,12 +472,216 @@ def test_full_docstring_tool_unknown_symbol(clean_db):
 
 
 def test_search_tool_points_to_full_docstring_tool(clean_db):
-    """The search tool should hint at the follow-up tool name in its output."""
+    """The search tool should hint at the follow-up tool name when truncation occurred."""
     _insert_eeg_context(clean_db)
 
     tool = create_search_docstrings_tool(clean_db, "EEGLAB", language="matlab")
     result = tool.invoke({"query": "eeg_context", "limit": 1})
 
+    # eeg_context (~1900 chars) exceeds the 1500-char snippet cap, so the
+    # hint must be appended.
     assert f"get_{clean_db}_full_docstring" in result, (
         "Search tool output should mention the full-docstring follow-up tool name"
+    )
+
+
+def test_snippet_cap_truncates_past_boundary(clean_db):
+    """Regression for #276 reviewer feedback: pin the 1500-char snippet cap.
+
+    Constructs a docstring whose marker content sits past char 1500.
+    Asserts the snippet does NOT contain it (truncation occurred at the
+    cap) and that get_full_docstring DOES return it. Without this test
+    a future revert of DOCSTRING_SNIPPET_MAX_LENGTH could silently
+    reintroduce the original bug.
+    """
+    from src.knowledge.db import get_connection, upsert_docstring
+
+    # 1600 chars of padding so the marker is past the 1500-char cap.
+    padding = "lorem ipsum dolor sit amet, " * 60  # ~28 chars * 60 = ~1680
+    assert len(padding) > 1500
+    marker = "ZZZ_PAST_CAP_MARKER_ZZZ"
+    docstring = padding + "\nOutputs:\n  " + marker
+
+    with get_connection(clean_db) as conn:
+        upsert_docstring(
+            conn,
+            repo="sccn/eeglab",
+            file_path="functions/test_cap.m",
+            language="matlab",
+            symbol_name="cap_boundary_fn",
+            symbol_type="function",
+            docstring=docstring,
+            line_number=1,
+        )
+        conn.commit()
+
+    # Snippet truncates before the marker
+    results = search_docstrings("cap_boundary_fn", project=clean_db, limit=1)
+    assert len(results) == 1
+    snippet = results[0].snippet
+    assert len(snippet) <= 1500 + 3  # cap + "..."
+    assert snippet.endswith("..."), "Snippet should be marked as truncated"
+    assert marker not in snippet, "Snippet must not contain content past the cap"
+
+    # Full fetch returns it
+    full_results = get_full_docstring("cap_boundary_fn", project=clean_db)
+    assert len(full_results) == 1
+    assert marker in full_results[0].snippet, "Full fetch must return content past cap"
+
+
+def test_get_full_docstring_repo_filter_disambiguates(clean_db):
+    """repo filter must narrow multi-repo matches to one."""
+    from src.knowledge.db import get_connection, upsert_docstring
+
+    with get_connection(clean_db) as conn:
+        upsert_docstring(
+            conn,
+            repo="sccn/eeglab",
+            file_path="functions/plot.m",
+            language="matlab",
+            symbol_name="plot",
+            symbol_type="function",
+            docstring="EEGLAB plot helper",
+            line_number=1,
+        )
+        upsert_docstring(
+            conn,
+            repo="fieldtrip/fieldtrip",
+            file_path="utilities/plot.m",
+            language="matlab",
+            symbol_name="plot",
+            symbol_type="function",
+            docstring="FieldTrip plot helper",
+            line_number=1,
+        )
+        conn.commit()
+
+    # No filter: both rows returned (and ordered deterministically)
+    both = get_full_docstring("plot", project=clean_db)
+    assert len(both) == 2
+    repos = [r.url.split("github.com/")[1].split("/blob/")[0] for r in both]
+    assert repos == sorted(repos), "ORDER BY repo must give deterministic order"
+
+    # Filter narrows to the chosen repo
+    filtered = get_full_docstring("plot", project=clean_db, repo="sccn/eeglab")
+    assert len(filtered) == 1
+    assert "sccn/eeglab" in filtered[0].url
+
+
+def test_get_full_docstring_language_filter(clean_db):
+    """language filter must narrow to the chosen language."""
+    from src.knowledge.db import get_connection, upsert_docstring
+
+    with get_connection(clean_db) as conn:
+        upsert_docstring(
+            conn,
+            repo="org/repo",
+            file_path="lib/load.m",
+            language="matlab",
+            symbol_name="load_data",
+            symbol_type="function",
+            docstring="MATLAB load_data",
+            line_number=1,
+        )
+        upsert_docstring(
+            conn,
+            repo="org/repo",
+            file_path="lib/load.py",
+            language="python",
+            symbol_name="load_data",
+            symbol_type="function",
+            docstring="Python load_data",
+            line_number=1,
+        )
+        conn.commit()
+
+    matlab_only = get_full_docstring("load_data", project=clean_db, language="matlab")
+    assert len(matlab_only) == 1
+    assert "MATLAB load_data" in matlab_only[0].snippet
+
+    python_only = get_full_docstring("load_data", project=clean_db, language="python")
+    assert len(python_only) == 1
+    assert "Python load_data" in python_only[0].snippet
+
+
+def test_get_full_docstring_respects_limit(clean_db):
+    """Default limit must cap unbounded payloads for common symbol names."""
+    from src.knowledge.db import get_connection, upsert_docstring
+
+    with get_connection(clean_db) as conn:
+        for i in range(8):
+            upsert_docstring(
+                conn,
+                repo=f"org/repo{i}",
+                file_path=f"file_{i}.m",
+                language="matlab",
+                symbol_name="init",
+                symbol_type="function",
+                docstring=f"init implementation {i}",
+                line_number=1,
+            )
+        conn.commit()
+
+    results = get_full_docstring("init", project=clean_db)  # default limit
+    assert len(results) == 5, f"Expected default limit of 5, got {len(results)}"
+
+    custom = get_full_docstring("init", project=clean_db, limit=2)
+    assert len(custom) == 2
+
+
+def test_get_full_docstring_skips_empty_stored_docstring(clean_db):
+    """An empty stored docstring is logged and skipped, not returned as a phantom hit."""
+    from src.knowledge.db import get_connection
+
+    with get_connection(clean_db) as conn:
+        # Insert with empty docstring directly (upsert_docstring requires a str
+        # but doesn't reject empty)
+        conn.execute(
+            """
+            INSERT INTO docstrings (repo, file_path, language, symbol_name,
+                                   symbol_type, docstring, line_number, branch, synced_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            """,
+            ("org/repo", "f.m", "matlab", "empty_fn", "function", "", 1, "main"),
+        )
+        conn.commit()
+
+    results = get_full_docstring("empty_fn", project=clean_db)
+    assert results == [], "Empty-bodied rows must be skipped, not returned"
+
+
+def test_full_docstring_tool_handles_symbol_with_braces(clean_db):
+    """Regression: tool's no-match message must not crash on `{` in symbol names."""
+    _insert_eeg_context(clean_db)
+
+    tool = create_get_full_docstring_tool(clean_db, "EEGLAB", language="matlab")
+    # Earlier code used .format() on an f-string that contained the user's
+    # input verbatim; a `{` in the symbol name caused KeyError.
+    result = tool.invoke({"symbol_name": "no_{such}_symbol"})
+    assert isinstance(result, str)
+    assert "No docstring found" in result
+
+
+def test_search_tool_omits_hint_when_no_truncation(clean_db):
+    """Search results that fit within the snippet cap should not nudge full-fetch."""
+    from src.knowledge.db import get_connection, upsert_docstring
+
+    with get_connection(clean_db) as conn:
+        upsert_docstring(
+            conn,
+            repo="sccn/eeglab",
+            file_path="functions/short.m",
+            language="matlab",
+            symbol_name="short_fn",
+            symbol_type="function",
+            docstring="Tiny docstring that easily fits inside the snippet cap.",
+            line_number=1,
+        )
+        conn.commit()
+
+    tool = create_search_docstrings_tool(clean_db, "EEGLAB", language="matlab")
+    result = tool.invoke({"query": "short_fn", "limit": 1})
+
+    assert f"get_{clean_db}_full_docstring" not in result, (
+        "Hint should be omitted when no snippet was truncated"
     )
