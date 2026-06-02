@@ -133,11 +133,76 @@ documentation:
     source_url: https://raw.githubusercontent.com/nipreps/petprep/main/docs/faq.rst
     category: analysis
     description: Frequently asked questions about PETPrep usage, data quality requirements, and preprocessing decisions.
-  - title: petfit documentation
-    url: https://github.com/mathesong/petfit
-    source_url: https://raw.githubusercontent.com/mathesong/petfit/main/README.md
+  - title: petfit overview
+    url: https://petfit.readthedocs.io/en/latest/
+    source_url: https://raw.githubusercontent.com/mathesong/petfit/main/docs/index.md
     category: analysis
-    description: Petfit for regional kinetic modelling (based on kinfitr).
+    description: PETFit is a BIDS App for fitting kinetic models to PET time activity curve (TAC) data, producing parameter estimates and QC reports. Supports interactive (GUI) and automatic (CLI) modes.
+  - title: petfit installation
+    url: https://petfit.readthedocs.io/en/latest/installation.html
+    source_url: https://raw.githubusercontent.com/mathesong/petfit/main/docs/installation.md
+    category: analysis
+    description: Installing PETFit via Docker (recommended), Apptainer, or the R package.
+  - title: petfit quick start
+    url: https://petfit.readthedocs.io/en/latest/quickstart.html
+    source_url: https://raw.githubusercontent.com/mathesong/petfit/main/docs/quickstart.md
+    category: analysis
+    description: Two-step PETFit workflow - region definition (once per dataset) then kinetic modelling - run interactively or from the command line.
+  - title: petfit usage guide
+    url: https://petfit.readthedocs.io/en/latest/usage/index.html
+    source_url: https://raw.githubusercontent.com/mathesong/petfit/main/docs/usage/index.md
+    category: analysis
+    description: Overview of the region-definition and kinetic-modelling stages and the three Shiny apps (region definition, plasma input, reference tissue).
+  - title: petfit region definition
+    url: https://petfit.readthedocs.io/en/latest/usage/region-definition.html
+    source_url: https://raw.githubusercontent.com/mathesong/petfit/main/docs/usage/region-definition.md
+    category: analysis
+    description: First step of a PETFit workflow - combining individual brain regions from PET preprocessing derivatives into analysis-ready TACs via the petfit_regions.tsv file.
+  - title: petfit plasma input modelling
+    url: https://petfit.readthedocs.io/en/latest/usage/modelling-plasma.html
+    source_url: https://raw.githubusercontent.com/mathesong/petfit/main/docs/usage/modelling-plasma.md
+    category: analysis
+    description: Configuring and running invasive kinetic models that require an arterial blood input function (raw _blood.tsv or processed _inputfunction.tsv data).
+  - title: petfit reference tissue modelling
+    url: https://petfit.readthedocs.io/en/latest/usage/modelling-reference.html
+    source_url: https://raw.githubusercontent.com/mathesong/petfit/main/docs/usage/modelling-reference.md
+    category: analysis
+    description: Configuring and running non-invasive kinetic models that use a reference brain region instead of arterial blood data.
+  - title: petfit supported models
+    url: https://petfit.readthedocs.io/en/latest/models.html
+    source_url: https://raw.githubusercontent.com/mathesong/petfit/main/docs/models.md
+    category: analysis
+    description: Kinetic models available in PETFit (via kinfitr) - plasma input models (1TCM, 2TCM, Logan, etc.) and reference tissue models.
+  - title: petfit reports
+    url: https://petfit.readthedocs.io/en/latest/usage/reports.html
+    source_url: https://raw.githubusercontent.com/mathesong/petfit/main/docs/usage/reports.md
+    category: analysis
+    description: Parameterised HTML quality-control reports generated for every analysis step, with interactive plots, data summaries, and diagnostics.
+  - title: petfit outputs
+    url: https://petfit.readthedocs.io/en/latest/outputs.html
+    source_url: https://raw.githubusercontent.com/mathesong/petfit/main/docs/outputs.md
+    category: analysis
+    description: PETFit output files following BIDS derivatives conventions in derivatives/petfit/, including parameter estimates and HTML reports.
+  - title: petfit folder structure
+    url: https://petfit.readthedocs.io/en/latest/usage/folder-structure.html
+    source_url: https://raw.githubusercontent.com/mathesong/petfit/main/docs/usage/folder-structure.md
+    category: analysis
+    description: How PETFit organises its outputs in a structured hierarchy within the BIDS derivatives directory.
+  - title: petfit Docker usage
+    url: https://petfit.readthedocs.io/en/latest/containers/docker.html
+    source_url: https://raw.githubusercontent.com/mathesong/petfit/main/docs/containers/docker.md
+    category: analysis
+    description: Advanced Docker options and CLI reference for running PETFit container images.
+  - title: petfit Apptainer usage
+    url: https://petfit.readthedocs.io/en/latest/containers/apptainer.html
+    source_url: https://raw.githubusercontent.com/mathesong/petfit/main/docs/containers/apptainer.md
+    category: analysis
+    description: Running PETFit with Apptainer (formerly Singularity), the standard container runtime on HPC clusters.
+  - title: petfit R API reference
+    url: https://petfit.readthedocs.io/en/latest/api.html
+    source_url: https://raw.githubusercontent.com/mathesong/petfit/main/docs/api.md
+    category: analysis
+    description: Reference for PETFit's main R functions for launching apps and running pipelines (e.g. petfit_interactive()).
   - title: PetSurfer Wiki
     url: https://surfer.nmr.mgh.harvard.edu/fswiki/PetSurfer
     source_url: https://surfer.nmr.mgh.harvard.edu/fswiki/PetSurfer
