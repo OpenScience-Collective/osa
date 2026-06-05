@@ -50,8 +50,12 @@ concurrency:
 
 jobs:
   merge-on-command:
-    # Only comments on pull requests (issue_comment also fires on plain issues).
-    if: github.event.issue.pull_request != null
+    # Only human comments on pull requests. issue_comment also fires on plain
+    # issues (filtered out), and on the App's own confirmation comment (which
+    # mentions "LGTM / merge") -- skipping Bot authors stops that self-trigger.
+    if: >-
+      github.event.issue.pull_request != null &&
+      github.event.comment.user.type != 'Bot'
     runs-on: ubuntu-latest
     steps:
       # Cheap first gate: does the comment carry the "LGTM ... merge" command?
