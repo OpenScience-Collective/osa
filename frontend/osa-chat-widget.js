@@ -1443,7 +1443,15 @@
     }
 
     try {
-      const data = JSON.stringify({ messages, sessionId });
+      // Persist only durable feedback state: drop transient flags and the
+      // in-progress draft, and never persist a vote that has not been confirmed
+      // by the server (so a reload can't show a false "recorded" state).
+      const persistable = messages.map((m) => {
+        const { _feedbackCommitting, _feedbackJustOpened, feedbackDraft, ...rest } = m;
+        if (rest.feedback && !rest.feedbackCommitted) delete rest.feedback;
+        return rest;
+      });
+      const data = JSON.stringify({ messages: persistable, sessionId });
       localStorage.setItem(CONFIG.storageKey, data);
       saveErrorShown = false;
     } catch (e) {
@@ -1955,13 +1963,18 @@
       msg._feedbackJustOpened = true;
       renderMessages(container);
     } else {
-      commitResponseFeedback(container, msgIndex);
+      renderMessages(container); // show the selection immediately
+      commitResponseFeedback(container, msgIndex, { interactive: true });
     }
   }
 
   // Post a per-response vote (with the optional down-vote comment) exactly once.
-  // Optimistic: shows the recorded state immediately and rolls back on failure.
-  async function commitResponseFeedback(container, msgIndex) {
+  // Confirm-then-commit: the "Thanks!" / committed state is only shown AFTER the
+  // POST succeeds, so a failure never leaves a false success (in the UI or in
+  // localStorage). interactive=true (Send/Skip/up click) surfaces failures so the
+  // user can retry; interactive=false (a flush on send/reset/close) is best-effort
+  // and never writes to the UI, since the conversation may be mid-teardown.
+  async function commitResponseFeedback(container, msgIndex, { interactive = false } = {}) {
     const msg = messages[msgIndex];
     if (!msg || !msg.feedback) return;
     if (msg.feedbackCommitted || msg._feedbackCommitting) return;
@@ -1969,8 +1982,6 @@
 
     const sentiment = msg.feedback;
     const comment = (msg.feedbackDraft || '').trim();
-    msg.feedbackCommitted = true;
-    renderMessages(container);
 
     const ok = await postFeedback({
       feedback_type: 'response',
@@ -1980,36 +1991,45 @@
       session_id: sessionId || null,
       message_index: msgIndex,
     });
+    msg._feedbackCommitting = false;
 
-    if (!ok) {
-      // Roll back so the vote can be retried and the user knows it did not save.
-      delete msg.feedback;
-      delete msg.feedbackCommitted;
+    if (ok) {
+      msg.feedbackCommitted = true;
       delete msg.feedbackDraft;
-      delete msg._feedbackCommitting;
       delete msg._feedbackJustOpened;
+      // Reveal "Thanks!" (and replace any open box). Safe in every path: harmless
+      // on a hidden window, and a no-op for a reply already removed by a reset.
       renderMessages(container);
-      showError(container, 'Could not send feedback. Please try again.');
+      try {
+        saveHistory();
+      } catch (e) {
+        console.error('[OSA] Failed to persist feedback locally:', e);
+      }
       return;
     }
 
-    delete msg.feedbackDraft;
-    delete msg._feedbackCommitting;
-    delete msg._feedbackJustOpened;
-    try {
-      saveHistory();
-    } catch (e) {
-      console.error('[OSA] Failed to persist feedback locally:', e);
+    // Failed. An up-vote reverts to unvoted; a down-vote keeps its pending box
+    // (and the typed comment) so it can be retried on the next Send or flush.
+    if (sentiment === 'up') delete msg.feedback;
+    if (!interactive) {
+      // Best-effort flush during teardown: do not touch the (possibly hidden or
+      // already-reset) UI. A pending down stays pending and retries next flush.
+      console.warn('[OSA] Feedback flush did not send; will retry on next attempt.');
+      return;
     }
+    if (sentiment === 'down') msg._feedbackJustOpened = true; // refocus the box
+    renderMessages(container);
+    showError(container, 'Could not send feedback. Please try again.');
   }
 
   // Commit any pending (down) vote whose comment box is still open, so leaving
   // it open and then sending/resetting/closing never silently drops the vote.
+  // Best-effort (interactive=false): failures are not surfaced into a tearing-down UI.
   function flushPendingResponseFeedback(container) {
     messages.forEach((msg, idx) => {
       if (msg && msg.role === 'assistant' && msg.feedback
           && !msg.feedbackCommitted && !msg._feedbackCommitting) {
-        commitResponseFeedback(container, idx);
+        commitResponseFeedback(container, idx, { interactive: false });
       }
     });
   }
@@ -2419,7 +2439,7 @@
         } else {
           feedbackRow = `<div class="osa-message-feedback${fb ? ' recorded' : ''}" data-msg-index="${msgIndex}">
             ${upBtn}${downBtn}
-            <span class="osa-feedback-thanks"${fb ? '' : ' style="display:none;"'}>Thanks!</span>
+            <span class="osa-feedback-thanks"${committed ? '' : ' style="display:none;"'}>Thanks!</span>
           </div>`;
         }
       }
@@ -2491,12 +2511,12 @@
       box.querySelector('.osa-feedback-send')?.addEventListener('click', (e) => {
         e.stopPropagation();
         if (textarea && messages[msgIndex]) messages[msgIndex].feedbackDraft = textarea.value;
-        commitResponseFeedback(container, msgIndex);
+        commitResponseFeedback(container, msgIndex, { interactive: true });
       });
       box.querySelector('.osa-feedback-skip')?.addEventListener('click', (e) => {
         e.stopPropagation();
         if (messages[msgIndex]) messages[msgIndex].feedbackDraft = '';
-        commitResponseFeedback(container, msgIndex);
+        commitResponseFeedback(container, msgIndex, { interactive: true });
       });
     });
 
