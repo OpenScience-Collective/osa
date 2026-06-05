@@ -303,8 +303,9 @@ def create_search_papers_live_tool(
         f"Always try the local `search_{community_id}_papers` first. "
         "**Only call this tool after the user has explicitly confirmed they want a live "
         "literature search** (or explicitly asked to search the web / for the very latest "
-        "papers). Do NOT call it automatically as a first step. Before calling it, tell the "
-        "user you are searching the literature and it may take a minute. "
+        "papers). Do NOT call it automatically as a first step. When you call it, your "
+        "message in that turn should first tell the user you are searching the latest "
+        "literature and it may take a minute. "
         "**This is for DISCOVERY, not answering** - present results as references for "
         "further reading; do NOT use paper content to formulate answers."
     )
