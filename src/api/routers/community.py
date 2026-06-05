@@ -145,6 +145,10 @@ class ChatResponse(BaseModel):
     tool_calls: list[ToolCallInfo] = Field(
         default_factory=list, description="Tools called during response generation"
     )
+    request_id: str | None = Field(
+        default=None,
+        description="Per-request identifier the widget can attach to feedback",
+    )
 
 
 class AskResponse(BaseModel):
@@ -153,6 +157,10 @@ class AskResponse(BaseModel):
     answer: str = Field(..., description="Assistant's answer")
     tool_calls: list[ToolCallInfo] = Field(
         default_factory=list, description="Tools called during response generation"
+    )
+    request_id: str | None = Field(
+        default=None,
+        description="Per-request identifier the widget can attach to feedback",
     )
 
 
@@ -1048,7 +1056,11 @@ def create_community_router(community_id: str) -> APIRouter:
             ar = _extract_agent_result(result)
             _set_metrics_on_request(http_request, awm, ar)
 
-            return AskResponse(answer=ar.response_content, tool_calls=ar.tool_calls_info)
+            return AskResponse(
+                answer=ar.response_content,
+                tool_calls=ar.tool_calls_info,
+                request_id=getattr(http_request.state, "request_id", None),
+            )
 
         except HTTPException:
             raise
@@ -1155,6 +1167,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 session_id=session.session_id,
                 message=ChatMessage(role="assistant", content=ar.response_content),
                 tool_calls=ar.tool_calls_info,
+                request_id=getattr(http_request.state, "request_id", None),
             )
 
         except ValueError as e:
@@ -1595,7 +1608,7 @@ async def _stream_ask_response(
         data: {"event": "content", "content": "text chunk"}
         data: {"event": "tool_start", "name": "tool_name", "input": {...}}
         data: {"event": "tool_end", "name": "tool_name", "output": {...}}
-        data: {"event": "done"}
+        data: {"event": "done", "request_id": "..."}
         data: {"event": "error", "message": "error text"}
     """
     start_time = time.monotonic()
@@ -1603,6 +1616,9 @@ async def _stream_ask_response(
     awm: AssistantWithMetrics | None = None
     total_input_tokens = 0
     total_output_tokens = 0
+
+    # Per-request id (set by metrics middleware) so the widget can attach feedback.
+    request_id = getattr(http_request.state, "request_id", None) if http_request else None
 
     try:
         awm = create_community_assistant(
@@ -1658,7 +1674,7 @@ async def _stream_ask_response(
                 }
                 yield f"data: {json.dumps(sse_event)}\n\n"
 
-        sse_event = {"event": "done"}
+        sse_event = {"event": "done", "request_id": request_id}
         yield f"data: {json.dumps(sse_event)}\n\n"
 
         # Log metrics at end of streaming
@@ -1767,7 +1783,8 @@ async def _stream_chat_response(
         data: {"event": "tool_start", "name": "tool_name", "input": {...}}
         data: {"event": "tool_end", "name": "tool_name", "output": {...}}
         data: {"event": "session", "session_id": "..."}  (sent first)
-        data: {"event": "done", "session_id": "..."}
+        data: {"event": "warning", "message": "..."}  (optional, before done)
+        data: {"event": "done", "session_id": "...", "request_id": "..."}
         data: {"event": "error", "message": "error text"}
     """
     start_time = time.monotonic()
@@ -1775,6 +1792,13 @@ async def _stream_chat_response(
     awm: AssistantWithMetrics | None = None
     total_input_tokens = 0
     total_output_tokens = 0
+
+    # The metrics middleware assigns a per-request UUID; expose it only on the
+    # final `done` event (below) so the widget attaches it only to a reply that
+    # completed normally. Error paths yield an `error` event instead and never
+    # reach `done`, so a partially-streamed or fully-errored reply carries no
+    # request_id. This also joins per-response feedback back to request_log.
+    request_id = getattr(http_request.state, "request_id", None) if http_request else None
 
     # Send session_id immediately so the client captures it even if the
     # stream is truncated by a proxy timeout.
@@ -1859,7 +1883,11 @@ async def _stream_chat_response(
             }
             yield f"data: {json.dumps(sse_event)}\n\n"
 
-        sse_event = {"event": "done", "session_id": session.session_id}
+        sse_event = {
+            "event": "done",
+            "session_id": session.session_id,
+            "request_id": request_id,
+        }
         yield f"data: {json.dumps(sse_event)}\n\n"
 
         # Log metrics at end of streaming
