@@ -53,7 +53,7 @@
     pageContextLabel: 'Share page URL to help answer questions',
     // AI disclaimer shown above the footer
     disclaimerEnabled: true,
-    disclaimerText: 'This is a multi-agent AI assistant and may make mistakes. Please verify responses.',
+    disclaimerText: 'This is an AI assistant and may make mistakes.',
     disclaimerColor: '#9a3412',
     disclaimerBackground: '#fff7ed',
     // Fullscreen mode (for pop-out windows)
@@ -866,12 +866,35 @@
     }
 
     .osa-ai-disclaimer {
-      padding: 4px 16px;
+      padding: 5px 16px;
       font-size: 10px;
-      text-align: center;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
       border-top: 1px solid var(--osa-border);
       color: var(--osa-disclaimer-color, #9a3412);
       background: var(--osa-disclaimer-bg, #fff7ed);
+    }
+
+    .osa-ai-disclaimer .osa-disclaimer-text {
+      text-align: left;
+    }
+
+    .osa-ai-disclaimer .osa-feedback-link {
+      background: none;
+      border: none;
+      padding: 0;
+      font: inherit;
+      color: inherit;
+      cursor: pointer;
+      text-decoration: underline;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .osa-ai-disclaimer .osa-feedback-link:hover {
+      opacity: 0.75;
     }
 
     .osa-combined-footer {
@@ -926,26 +949,6 @@
     .osa-combined-footer .osa-footer-powered a:hover {
       color: var(--osa-primary);
       text-decoration: underline;
-    }
-
-    .osa-combined-footer .osa-footer-powered .osa-feedback-link {
-      background: none;
-      border: none;
-      padding: 0;
-      font: inherit;
-      color: var(--osa-text-light);
-      cursor: pointer;
-      text-decoration: none;
-    }
-
-    .osa-combined-footer .osa-footer-powered .osa-feedback-link:hover {
-      color: var(--osa-primary);
-      text-decoration: underline;
-    }
-
-    .osa-combined-footer .osa-footer-powered .osa-footer-sep {
-      margin: 0 4px;
-      color: var(--osa-border);
     }
 
     .osa-feedback-textarea {
@@ -2276,15 +2279,16 @@
             ${ICONS.send}
           </button>
         </div>
-        <div class="osa-ai-disclaimer" style="display: ${CONFIG.disclaimerEnabled ? 'block' : 'none'}">${escapeHtml(CONFIG.disclaimerText || '')}</div>
+        <div class="osa-ai-disclaimer" style="display: ${CONFIG.disclaimerEnabled ? 'flex' : 'none'}">
+          <span class="osa-disclaimer-text">${escapeHtml(CONFIG.disclaimerText || '')}</span>
+          <button type="button" class="osa-feedback-link">Send feedback</button>
+        </div>
         <div class="osa-combined-footer">
           <div class="osa-page-context-toggle" style="display: ${CONFIG.allowPageContext ? 'flex' : 'none'}">
             <input type="checkbox" id="osa-page-context-checkbox" ${pageContextEnabled ? 'checked' : ''} />
             <label for="osa-page-context-checkbox">${escapeHtml(CONFIG.pageContextLabel)}</label>
           </div>
           <div class="osa-footer-powered">
-            <button type="button" class="osa-feedback-link">Send feedback</button>
-            <span class="osa-footer-sep">·</span>
             Powered by <a href="${escapeHtml(CONFIG.repoUrl)}" target="_blank" rel="noopener noreferrer">OSA</a><span class="osa-version"></span>
           </div>
         </div>
