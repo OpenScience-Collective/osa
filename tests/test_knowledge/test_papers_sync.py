@@ -5,6 +5,7 @@ Mapping tests use real opencite ``Paper`` objects and a real SQLite database
 guidelines.
 """
 
+import asyncio
 from pathlib import Path
 from unittest.mock import patch
 
@@ -175,6 +176,26 @@ class TestStorePapers:
                 row = conn.execute("SELECT source, external_id FROM papers").fetchone()
             assert row["source"] == "pubmed"
             assert row["external_id"] == "555"
+
+
+async def _answer() -> int:
+    return 42
+
+
+class TestRunHelper:
+    """The _run async bridge must work with or without a running event loop."""
+
+    def test_runs_without_existing_loop(self):
+        # Sync context (CLI / scheduler thread): asyncio.run path.
+        assert ps._run(_answer()) == 42
+
+    def test_runs_inside_running_loop(self):
+        # If a loop is already running, _run offloads to a worker thread instead
+        # of raising "asyncio.run() cannot be called from a running event loop".
+        async def driver() -> int:
+            return ps._run(_answer())
+
+        assert asyncio.run(driver()) == 42
 
 
 class TestPapersSync:

@@ -15,6 +15,7 @@ See: https://github.com/neuromechanist/opencite
 import asyncio
 import logging
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
 
 from opencite import Config, Paper
 from opencite.citations import CitationExplorer
@@ -186,23 +187,62 @@ def _store_papers(
     return counts
 
 
-async def _search_papers(
+def _run(coro):
+    """Execute an async coroutine from synchronous code.
+
+    OSA's sync callers (CLI command, scheduler thread) have no running event
+    loop, so asyncio.run is used directly. If a loop is already running in the
+    calling thread, the coroutine runs in a dedicated worker thread so these
+    public sync functions stay safe to call from any context.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
+async def _search_queries(
     config: Config,
-    query: str,
+    queries: list[str],
     max_results: int,
     sources: tuple[str, ...] | None,
-) -> list[Paper]:
-    """Run an opencite multi-source search and return the deduplicated papers."""
+) -> list[tuple[str, list[Paper]]]:
+    """Search every query through one shared opencite orchestrator.
+
+    A single orchestrator (and its HTTP client pool) is opened for the whole
+    batch. A failure for an individual query is logged and yields an empty
+    result for that query rather than aborting the batch.
+    """
+    out: list[tuple[str, list[Paper]]] = []
     async with SearchOrchestrator(config) as searcher:
-        result = await searcher.search(query, max_results=max_results, sources=sources)
-        return result.papers
+        for query in queries:
+            try:
+                result = await searcher.search(query, max_results=max_results, sources=sources)
+                out.append((query, result.papers))
+            except Exception as e:
+                logger.warning("opencite search error for '%s': %s", query, e)
+                out.append((query, []))
+    return out
 
 
-async def _citing_papers(config: Config, identifier: str, max_results: int) -> list[Paper]:
-    """Return papers citing the given identifier via opencite."""
+async def _citing_for_dois(
+    config: Config,
+    dois: list[str],
+    max_results: int,
+) -> list[tuple[str, list[Paper]]]:
+    """Fetch citing papers for every DOI through one shared CitationExplorer."""
+    out: list[tuple[str, list[Paper]]] = []
     async with CitationExplorer(config) as explorer:
-        result = await explorer.citing_papers(identifier, max_results=max_results)
-        return result.papers
+        for doi in dois:
+            try:
+                result = await explorer.citing_papers(doi, max_results=max_results)
+                out.append((doi, result.papers))
+            except Exception as e:
+                logger.warning("opencite citation error for DOI %s: %s", doi, e)
+                out.append((doi, []))
+    return out
 
 
 def _sync_single_source(
@@ -215,11 +255,12 @@ def _sync_single_source(
     """Sync papers for one source (restricted opencite search) into the DB."""
     opencite_source = _OPENCITE_SOURCE_BY_OSA[osa_source]
     try:
-        papers = asyncio.run(_search_papers(config, query, max_results, (opencite_source,)))
+        searched = _run(_search_queries(config, [query], max_results, (opencite_source,)))
     except Exception as e:
-        logger.warning("opencite %s search error for '%s': %s", osa_source, query, e)
+        logger.warning("opencite %s search failed for '%s': %s", osa_source, query, e)
         return 0
 
+    _, papers = searched[0]
     counts = _store_papers(papers, project, force_source=osa_source)
     count = sum(counts.values())
     logger.info("Synced %d papers from %s for '%s'", count, osa_source, query)
@@ -298,13 +339,13 @@ def sync_all_papers(
     )
 
     results: dict[str, int] = {"openalex": 0, "semanticscholar": 0, "pubmed": 0}
-    for query in queries:
-        try:
-            papers = asyncio.run(_search_papers(config, query, max_results, DEFAULT_SOURCES))
-        except Exception as e:
-            logger.warning("opencite search error for '%s': %s", query, e)
-            continue
+    try:
+        searched = _run(_search_queries(config, queries, max_results, DEFAULT_SOURCES))
+    except Exception as e:
+        logger.warning("opencite search failed for %s: %s", project, e)
+        return results
 
+    for query, papers in searched:
         counts = _store_papers(papers, project)
         for source, n in counts.items():
             results[source] = results.get(source, 0) + n
@@ -341,16 +382,14 @@ def sync_citing_papers(
         raise TypeError(f"dois must be a list of strings, not a bare string: {dois!r}")
 
     config = _build_config(openalex_api_key=openalex_api_key, openalex_email=openalex_email)
+    try:
+        cited = _run(_citing_for_dois(config, dois, max_results))
+    except Exception as e:
+        logger.warning("opencite citation lookup failed for %s: %s", project, e)
+        return 0
+
     total = 0
-
-    for doi in dois:
-        logger.info("Syncing papers citing DOI: %s", doi)
-        try:
-            papers = asyncio.run(_citing_papers(config, doi, max_results))
-        except Exception as e:
-            logger.warning("opencite citation error for DOI %s: %s", doi, e)
-            continue
-
+    for doi, papers in cited:
         counts = _store_papers(papers, project)
         count = sum(counts.values())
         update_sync_metadata("papers", f"citing_{doi}", count, project)
