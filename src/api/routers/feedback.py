@@ -10,22 +10,15 @@ the community is carried in the request body, not the path.
 """
 
 import logging
-import sqlite3
 import uuid
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from src.api.routers.community import _is_authorized_origin
 from src.assistants import registry
-from src.metrics.db import (
-    FEEDBACK_SENTIMENTS,
-    FEEDBACK_TYPES,
-    FeedbackEntry,
-    now_iso,
-    write_feedback,
-)
+from src.metrics.db import FeedbackEntry, now_iso, write_feedback
 
 logger = logging.getLogger(__name__)
 
@@ -69,19 +62,31 @@ class FeedbackRequest(BaseModel):
             raise ValueError("page_url must start with http:// or https://")
         return url
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize(cls, data: Any) -> Any:
+        """Normalize the raw input before field validation.
+
+        Runs on the raw dict so the after-validator can be a pure guard: drop
+        any sentiment on general feedback (it is meaningless there) and collapse
+        a whitespace-only comment to None so the DB stays clean.
+        """
+        if not isinstance(data, dict):
+            return data
+        if data.get("feedback_type") == "general":
+            data = {**data, "sentiment": None}
+        comment = data.get("comment")
+        if isinstance(comment, str) and not comment.strip():
+            data = {**data, "comment": None}
+        return data
+
     @model_validator(mode="after")
     def _check_shape(self) -> "FeedbackRequest":
-        """Enforce the per-type required fields."""
+        """Enforce the per-type required fields (pure guard, no mutation)."""
         if self.feedback_type == "response" and self.sentiment is None:
             raise ValueError("response feedback requires a sentiment ('up' or 'down')")
-        if self.feedback_type == "general":
-            if not (self.comment and self.comment.strip()):
-                raise ValueError("general feedback requires a non-empty comment")
-            # Sentiment is meaningless for general feedback; drop it.
-            object.__setattr__(self, "sentiment", None)
-        # Normalize blank comments to None so the DB stays clean.
-        if self.comment is not None and not self.comment.strip():
-            object.__setattr__(self, "comment", None)
+        if self.feedback_type == "general" and not (self.comment and self.comment.strip()):
+            raise ValueError("general feedback requires a non-empty comment")
         return self
 
 
@@ -113,13 +118,6 @@ async def submit_feedback(
     if info is None:
         raise HTTPException(status_code=404, detail=f"Unknown community: {body.community_id}")
 
-    # Defensive: values are already constrained by the Literal types, but keep
-    # the DB-layer whitelist authoritative in case the model is bypassed.
-    if body.feedback_type not in FEEDBACK_TYPES:
-        raise HTTPException(status_code=422, detail="Invalid feedback_type")
-    if body.sentiment is not None and body.sentiment not in FEEDBACK_SENTIMENTS:
-        raise HTTPException(status_code=422, detail="Invalid sentiment")
-
     if not _is_authorized_origin(origin, body.community_id):
         logger.info(
             "Feedback from unrecognized origin %r for community %s (accepted)",
@@ -140,12 +138,8 @@ async def submit_feedback(
         page_url=body.page_url,
     )
 
-    try:
-        write_feedback(entry)
-    except sqlite3.Error:
-        # write_feedback swallows sqlite errors internally; this guards against
-        # anything unexpected so the widget always gets a clean response.
-        logger.exception("Unexpected error writing feedback for %s", body.community_id)
-        raise HTTPException(status_code=503, detail="Feedback store temporarily unavailable")
-
+    # write_feedback is best-effort: it logs and swallows storage errors (and
+    # escalates after repeated failures) rather than failing the user's request,
+    # so the widget always receives a clean acknowledgement.
+    write_feedback(entry)
     return FeedbackResponse(feedback_id=entry.feedback_id)

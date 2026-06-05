@@ -1783,6 +1783,7 @@ async def _stream_chat_response(
         data: {"event": "tool_start", "name": "tool_name", "input": {...}}
         data: {"event": "tool_end", "name": "tool_name", "output": {...}}
         data: {"event": "session", "session_id": "..."}  (sent first)
+        data: {"event": "warning", "message": "..."}  (optional, before done)
         data: {"event": "done", "session_id": "...", "request_id": "..."}
         data: {"event": "error", "message": "error text"}
     """
@@ -1792,11 +1793,11 @@ async def _stream_chat_response(
     total_input_tokens = 0
     total_output_tokens = 0
 
-    # The metrics middleware assigns a per-request UUID; expose it (only on the
-    # final `done` event, below) so the widget can key per-response feedback on a
-    # stable identifier that also joins back to request_log. We deliberately do
-    # NOT send it on this early `session` event: request_id should attach only to
-    # a reply that actually completed, never to one that errors before any output.
+    # The metrics middleware assigns a per-request UUID; expose it only on the
+    # final `done` event (below) so the widget attaches it only to a reply that
+    # completed normally. Error paths yield an `error` event instead and never
+    # reach `done`, so a partially-streamed or fully-errored reply carries no
+    # request_id. This also joins per-response feedback back to request_log.
     request_id = getattr(http_request.state, "request_id", None) if http_request else None
 
     # Send session_id immediately so the client captures it even if the

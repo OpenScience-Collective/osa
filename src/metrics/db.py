@@ -1,7 +1,7 @@
 """Metrics storage layer using SQLite with WAL mode.
 
-Single SQLite database at {data_dir}/metrics.db stores all request logs.
-WAL mode enables concurrent reads during writes.
+Single SQLite database at {data_dir}/metrics.db stores request logs and user
+feedback. WAL mode enables concurrent reads during writes.
 """
 
 import json
@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 from langchain_core.messages import AIMessage, BaseMessage
 
@@ -23,7 +24,8 @@ _log_request_failures: int = 0
 # Track consecutive write_feedback failures for escalation
 _write_feedback_failures: int = 0
 
-# Allowed feedback type / sentiment values (enforced at the API layer too)
+# Allowed feedback type / sentiment values. These mirror the SQLite CHECK
+# constraints below and the FeedbackEntry / FeedbackRequest invariants.
 FEEDBACK_TYPES = ("response", "general")
 FEEDBACK_SENTIMENTS = ("up", "down")
 
@@ -62,8 +64,8 @@ CREATE TABLE IF NOT EXISTS feedback_log (
     feedback_id TEXT NOT NULL,
     timestamp TEXT NOT NULL,
     community_id TEXT NOT NULL,
-    feedback_type TEXT NOT NULL,
-    sentiment TEXT,
+    feedback_type TEXT NOT NULL CHECK (feedback_type IN ('response', 'general')),
+    sentiment TEXT CHECK (sentiment IN ('up', 'down') OR sentiment IS NULL),
     request_id TEXT,
     session_id TEXT,
     message_index INTEGER,
@@ -71,6 +73,8 @@ CREATE TABLE IF NOT EXISTS feedback_log (
     page_url TEXT
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_feedback_log_feedback_id
+    ON feedback_log(feedback_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_log_community
     ON feedback_log(community_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_log_community_timestamp
@@ -125,13 +129,30 @@ class FeedbackEntry:
     feedback_id: str
     timestamp: str
     community_id: str
-    feedback_type: str
-    sentiment: str | None = None
+    feedback_type: Literal["response", "general"]
+    sentiment: Literal["up", "down"] | None = None
     request_id: str | None = None
     session_id: str | None = None
     message_index: int | None = None
     comment: str | None = None
     page_url: str | None = None
+
+    def __post_init__(self) -> None:
+        """Enforce the storage-layer invariants.
+
+        ``write_feedback`` is a public function callable outside the API router,
+        so this is the last checkpoint before a row reaches SQLite. Reject the
+        illegal shapes the satisfaction-rate query would otherwise be corrupted
+        by (a 'response' with no sentiment, or a 'general' carrying one).
+        """
+        if self.feedback_type not in FEEDBACK_TYPES:
+            raise ValueError(f"feedback_type must be one of {FEEDBACK_TYPES!r}")
+        if self.sentiment is not None and self.sentiment not in FEEDBACK_SENTIMENTS:
+            raise ValueError(f"sentiment must be one of {FEEDBACK_SENTIMENTS!r} or None")
+        if self.feedback_type == "response" and self.sentiment is None:
+            raise ValueError("response feedback requires a sentiment")
+        if self.feedback_type == "general" and self.sentiment is not None:
+            raise ValueError("general feedback must not carry a sentiment")
 
 
 def get_metrics_db_path() -> Path:
@@ -293,8 +314,12 @@ def write_feedback(entry: FeedbackEntry, db_path: Path | None = None) -> None:
         db_path: Optional path override (for testing).
     """
     global _write_feedback_failures
-    conn = get_metrics_connection(db_path)
+    conn: sqlite3.Connection | None = None
     try:
+        # Acquire the connection inside the try so a connect failure (e.g. the
+        # data dir vanished) is handled here too and the function honors its
+        # "never raises" contract.
+        conn = get_metrics_connection(db_path)
         conn.execute(
             """
             INSERT INTO feedback_log (
@@ -334,7 +359,8 @@ def write_feedback(entry: FeedbackEntry, db_path: Path | None = None) -> None:
     else:
         _write_feedback_failures = 0
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def extract_token_usage(result: dict) -> tuple[int, int, int]:

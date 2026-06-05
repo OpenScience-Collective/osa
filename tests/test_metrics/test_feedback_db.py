@@ -1,7 +1,10 @@
 """Tests for the feedback storage layer (feedback_log table + queries)."""
 
+import logging
+
 import pytest
 
+import src.metrics.db as db_module
 from src.metrics.db import (
     FeedbackEntry,
     get_metrics_connection,
@@ -10,6 +13,14 @@ from src.metrics.db import (
     write_feedback,
 )
 from src.metrics.queries import get_feedback_entries, get_feedback_summary
+
+
+@pytest.fixture
+def reset_feedback_counter():
+    """Reset the module-global failure counter around tests that exercise it."""
+    db_module._write_feedback_failures = 0
+    yield
+    db_module._write_feedback_failures = 0
 
 
 @pytest.fixture
@@ -134,6 +145,96 @@ class TestWriteFeedback:
         finally:
             conn.close()
 
+    @pytest.mark.usefixtures("reset_feedback_counter")
+    def test_failure_counter_increments_and_resets(self, tmp_path):
+        # A UNIQUE feedback_id collision makes the second write fail at INSERT.
+        # write_feedback must swallow it, bump the counter, then reset on success.
+        db_path = tmp_path / "metrics.db"
+        init_metrics_db(db_path)
+        dup = FeedbackEntry(
+            feedback_id="dup",
+            timestamp=now_iso(),
+            community_id="hed",
+            feedback_type="response",
+            sentiment="up",
+        )
+        write_feedback(dup, db_path=db_path)
+        assert db_module._write_feedback_failures == 0
+        write_feedback(dup, db_path=db_path)  # duplicate -> swallowed failure
+        assert db_module._write_feedback_failures == 1
+        write_feedback(
+            FeedbackEntry(
+                feedback_id="ok2",
+                timestamp=now_iso(),
+                community_id="hed",
+                feedback_type="response",
+                sentiment="up",
+            ),
+            db_path=db_path,
+        )
+        assert db_module._write_feedback_failures == 0
+
+    @pytest.mark.usefixtures("reset_feedback_counter")
+    def test_failure_escalates_to_critical(self, tmp_path, caplog):
+        db_path = tmp_path / "metrics.db"
+        init_metrics_db(db_path)
+        dup = FeedbackEntry(
+            feedback_id="d",
+            timestamp=now_iso(),
+            community_id="hed",
+            feedback_type="response",
+            sentiment="up",
+        )
+        write_feedback(dup, db_path=db_path)  # first succeeds
+        with caplog.at_level(logging.CRITICAL):
+            for _ in range(10):
+                write_feedback(dup, db_path=db_path)  # all collide
+        assert any(r.levelno == logging.CRITICAL for r in caplog.records)
+
+
+class TestFeedbackEntryInvariants:
+    """FeedbackEntry.__post_init__ rejects illegal shapes at the storage layer."""
+
+    def test_response_requires_sentiment(self):
+        with pytest.raises(ValueError, match="response feedback requires a sentiment"):
+            FeedbackEntry(
+                feedback_id="a",
+                timestamp=now_iso(),
+                community_id="hed",
+                feedback_type="response",
+                sentiment=None,
+            )
+
+    def test_general_must_not_carry_sentiment(self):
+        with pytest.raises(ValueError, match="general feedback must not carry a sentiment"):
+            FeedbackEntry(
+                feedback_id="b",
+                timestamp=now_iso(),
+                community_id="hed",
+                feedback_type="general",
+                sentiment="up",
+                comment="x",
+            )
+
+    def test_bad_feedback_type_rejected(self):
+        with pytest.raises(ValueError, match="feedback_type must be"):
+            FeedbackEntry(
+                feedback_id="c",
+                timestamp=now_iso(),
+                community_id="hed",
+                feedback_type="bogus",
+            )
+
+    def test_bad_sentiment_rejected(self):
+        with pytest.raises(ValueError, match="sentiment must be"):
+            FeedbackEntry(
+                feedback_id="d",
+                timestamp=now_iso(),
+                community_id="hed",
+                feedback_type="response",
+                sentiment="meh",
+            )
+
 
 class TestFeedbackSummary:
     """get_feedback_summary() aggregation."""
@@ -194,10 +295,26 @@ class TestFeedbackEntries:
         assert len(rows) == 2
         assert all(r["comment"] for r in rows)
 
-    def test_limit_clamped(self, feedback_db):
+    def test_limit_floor_clamped(self, feedback_db):
+        # limit=0 must be clamped up to 1 (without clamping, SQL LIMIT 0 would
+        # return zero rows). Asserting a non-empty result tests the clamp itself.
         conn = get_metrics_connection(feedback_db)
         try:
-            rows = get_feedback_entries(conn, community_id="hed", limit=1)
+            rows = get_feedback_entries(conn, community_id="hed", limit=0)
         finally:
             conn.close()
         assert len(rows) == 1
+
+    def test_offset_pagination(self, feedback_db):
+        # hed has 3 entries; page through them with limit=2.
+        conn = get_metrics_connection(feedback_db)
+        try:
+            page1 = get_feedback_entries(conn, community_id="hed", limit=2, offset=0)
+            page2 = get_feedback_entries(conn, community_id="hed", limit=2, offset=2)
+        finally:
+            conn.close()
+        assert len(page1) == 2
+        assert len(page2) == 1
+        stamps = {r["timestamp"] for r in page1} | {r["timestamp"] for r in page2}
+        # No overlap, full coverage of the 3 hed rows.
+        assert len(stamps) == 3

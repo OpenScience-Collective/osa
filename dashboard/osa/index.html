@@ -1258,7 +1258,7 @@
             renderAdminFeedback(await resp.json(), communityId);
         } catch (err) {
             console.error('Failed to load feedback:', err);
-            container.innerHTML = '<p class="error-msg">Failed to load feedback. Check console for details.</p>';
+            container.innerHTML = '<p class="error-msg">Failed to load feedback: unexpected server response. Try refreshing the page.</p>';
         }
     }
 

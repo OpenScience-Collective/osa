@@ -1860,8 +1860,9 @@
 
   // --- Feedback -----------------------------------------------------------
 
-  // Low-level POST to the feedback endpoint (anonymous; the worker proxies it
-  // to the backend's /feedback route). Best-effort: never throws to the caller.
+  // Low-level POST to the feedback endpoint. In production the request goes
+  // through the Cloudflare Worker proxy; in development CONFIG.apiEndpoint
+  // points directly to the backend. Best-effort: never throws to the caller.
   async function postFeedback(payload) {
     try {
       const response = await fetch(`${CONFIG.apiEndpoint}/feedback`, {
@@ -1881,28 +1882,41 @@
   }
 
   // Record a thumbs up/down on a specific assistant reply. One vote per reply
-  // (per device): once set, the choice is locked to keep counts honest.
-  function submitResponseFeedback(container, msgIndex, sentiment) {
+  // per browser session (stored in localStorage): once recorded, the choice is
+  // locked in this browser to keep counts honest. The button updates optimistically
+  // for responsiveness, but if the POST fails the vote is rolled back so the user
+  // is not misled into thinking it was saved.
+  async function submitResponseFeedback(container, msgIndex, sentiment) {
     const msg = messages[msgIndex];
     if (!msg || msg.role !== 'assistant') return;
     if (msg.feedback) return; // already voted on this reply
     if (sentiment !== 'up' && sentiment !== 'down') return;
 
+    // Optimistic update.
     msg.feedback = sentiment;
     renderMessages(container);
-    try {
-      saveHistory();
-    } catch (e) {
-      console.error('[OSA] Failed to persist feedback locally:', e);
-    }
 
-    postFeedback({
+    const ok = await postFeedback({
       feedback_type: 'response',
       sentiment,
       request_id: msg.requestId || null,
       session_id: sessionId || null,
       message_index: msgIndex,
     });
+
+    if (!ok) {
+      // Roll back so the vote can be retried and the user knows it did not save.
+      delete msg.feedback;
+      renderMessages(container);
+      showError(container, 'Could not send feedback. Please try again.');
+      return;
+    }
+
+    try {
+      saveHistory();
+    } catch (e) {
+      console.error('[OSA] Failed to persist feedback locally:', e);
+    }
   }
 
   // Open the general (free-text) feedback modal
