@@ -98,26 +98,112 @@ def _titles_are_similar(
     return similarity >= threshold
 
 
+# Common English words that add noise to keyword search without improving
+# relevance. Deliberately short and domain-agnostic so we never strip a
+# meaningful term (acronyms, function names, identifiers are all kept).
+_FTS_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "any",
+        "are",
+        "as",
+        "about",
+        "at",
+        "be",
+        "but",
+        "by",
+        "can",
+        "did",
+        "do",
+        "does",
+        "for",
+        "from",
+        "give",
+        "has",
+        "have",
+        "how",
+        "i",
+        "in",
+        "into",
+        "is",
+        "it",
+        "its",
+        "me",
+        "my",
+        "no",
+        "not",
+        "of",
+        "on",
+        "or",
+        "paper",
+        "papers",
+        "please",
+        "research",
+        "search",
+        "show",
+        "some",
+        "tell",
+        "that",
+        "the",
+        "their",
+        "them",
+        "there",
+        "these",
+        "this",
+        "to",
+        "using",
+        "want",
+        "was",
+        "we",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "why",
+        "will",
+        "with",
+        "would",
+        "you",
+        "your",
+    }
+)
+
+
 def _sanitize_fts5_query(query: str) -> str:
-    """Sanitize user input for safe FTS5 queries.
+    """Build a safe, forgiving FTS5 MATCH expression from raw user input.
 
-    IMPORTANT: This function wraps ALL input in quotes, converting queries to
-    exact phrase searches. This prevents FTS5 operator injection but also
-    disables legitimate FTS5 features (AND/OR/NOT, wildcards, NEAR, etc.).
+    Splits the query into individual terms, drops noise words and any FTS5
+    operator characters, quotes each remaining term (so reserved words like
+    AND/OR/NEAR and punctuation cannot inject operators), and ORs them
+    together. Callers order results by BM25 ``rank``, so documents matching
+    the most (and rarest) terms surface first.
 
-    For a production system with advanced search needs, consider implementing
-    proper query parsing instead of blanket phrase conversion.
+    This replaces the previous behaviour of wrapping the whole query in quotes,
+    which forced an exact consecutive-phrase match and caused multi-word
+    natural-language queries to return nothing.
 
     Args:
         query: Raw user input
 
     Returns:
-        Sanitized query safe for FTS5 MATCH (as a phrase search)
+        A MATCH expression safe from FTS5 injection. Falls back to a quoted
+        phrase of the raw input when no meaningful terms remain (e.g. a query
+        made entirely of stopwords or symbols), preserving safe behaviour
+        instead of producing an empty MATCH.
     """
-    # Escape internal double quotes by doubling them
-    escaped = query.replace('"', '""')
-    # Wrap in quotes to treat entire input as phrase search
-    return f'"{escaped}"'
+    # Tokens: words, numbers, and identifier-style names (pop_loadset, clean_rawdata).
+    # The regex strips all FTS5 operator characters (quotes, *, :, (), -, etc.).
+    tokens = re.findall(r"[A-Za-z0-9_]+", query.lower())
+    terms = [t for t in tokens if t not in _FTS_STOPWORDS]
+    if not terms:
+        # Nothing meaningful left: fall back to a safe phrase match of raw input.
+        escaped = query.replace('"', '""')
+        return f'"{escaped}"'
+    # Quote each term individually to neutralize operators, then OR them.
+    return " OR ".join(f'"{t}"' for t in terms)
 
 
 @dataclass
