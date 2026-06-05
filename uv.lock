@@ -2040,6 +2040,7 @@ dev = [
     { name = "lxml" },
     { name = "markdownify" },
     { name = "mypy" },
+    { name = "opencite" },
     { name = "pre-commit" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pyalex" },
@@ -2071,6 +2072,7 @@ server = [
     { name = "litellm" },
     { name = "lxml" },
     { name = "markdownify" },
+    { name = "opencite" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pyalex" },
     { name = "pydantic-settings" },
@@ -2112,6 +2114,8 @@ requires-dist = [
     { name = "markdownify", marker = "extra == 'dev'", specifier = ">=1.1.0" },
     { name = "markdownify", marker = "extra == 'server'", specifier = ">=1.1.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.19.0" },
+    { name = "opencite", marker = "extra == 'dev'", specifier = ">=0.5.2" },
+    { name = "opencite", marker = "extra == 'server'", specifier = ">=0.5.2" },
     { name = "platformdirs", specifier = ">=4.5.0" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.5.0" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'dev'", specifier = ">=3.3.0" },
@@ -2155,6 +2159,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/d8/b1/12fe1c196bea326261718eb037307c1c1fe1dedc2d2d4de777df822e6238/openai-2.14.0.tar.gz", hash = "sha256:419357bedde9402d23bf8f2ee372fca1985a73348debba94bddff06f19459952", size = 626938, upload-time = "2025-12-19T03:28:45.742Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/27/4b/7c1a00c2c3fbd004253937f7520f692a9650767aa73894d7a34f0d65d3f4/openai-2.14.0-py3-none-any.whl", hash = "sha256:7ea40aca4ffc4c4a776e77679021b47eec1160e341f42ae086ba949c9dcc9183", size = 1067558, upload-time = "2025-12-19T03:28:43.727Z" },
+]
+
+[[package]]
+name = "opencite"
+version = "0.5.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pyalex" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7a/18/313a129d8cee89784c409ec19049f09adf6ba515792747b9dd65dbbd9ddb/opencite-0.5.2.tar.gz", hash = "sha256:d7a63482e4d1a0372fd2d01cc246e3d10b74d50393ae153afe53029b490e7d7e", size = 142084, upload-time = "2026-05-21T19:54:15.971Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0e/b8/d00880ff96e9d3808c6b65e6347b7c4f9fdc8b72213a5dd4cd147224207e/opencite-0.5.2-py3-none-any.whl", hash = "sha256:d4ffb6b553c94df454dbc1de4eed55fdc2ea7604099fea0e3fdbc5a5ea654ce1", size = 96732, upload-time = "2026-05-21T19:54:14.574Z" },
 ]
 
 [[package]]
