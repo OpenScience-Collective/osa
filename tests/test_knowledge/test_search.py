@@ -3,6 +3,7 @@
 These tests use a temporary database populated with test data.
 """
 
+import re
 from pathlib import Path
 from unittest.mock import patch
 
@@ -354,6 +355,15 @@ class TestFTS5Sanitization:
         result = _sanitize_fts5_query("pop_runica parameters")
         assert result == '"pop_runica" OR "parameters"'
 
+    def test_sanitize_keeps_command_noun_terms(self):
+        """Words that double as content/command nouns are not stopwords.
+
+        'list' and 'use' carry meaning in EEGLAB/MATLAB queries (e.g. channel
+        lists), so they must survive instead of being silently dropped.
+        """
+        assert _sanitize_fts5_query("list channels") == '"list" OR "channels"'
+        assert _sanitize_fts5_query("use function") == '"use" OR "function"'
+
     def test_sanitize_strips_quotes_no_injection(self):
         """Double quotes in input are stripped by tokenization, not escaped in."""
         result = _sanitize_fts5_query('say "hello" world')
@@ -377,9 +387,15 @@ class TestFTS5Sanitization:
         ]
         for query in dangerous_queries:
             result = _sanitize_fts5_query(query)
-            # Every emitted term is individually quoted (operators neutralized).
-            assert result.startswith('"')
-            assert result.endswith('"')
+            # Every OR-separated term must be individually double-quoted, so no
+            # bare FTS5 operator (AND/OR/NOT/NEAR/wildcard) can reach MATCH.
+            for term in result.split(" OR "):
+                assert term.startswith('"') and term.endswith('"'), (
+                    f"unquoted term {term!r} in result for {query!r}: {result!r}"
+                )
+            # Removing every quoted term must leave only ' OR ' connectors.
+            remainder = re.sub(r'"[^"]*"', "", result).replace(" OR ", "").strip()
+            assert remainder == "", f"stray operator text in result for {query!r}: {result!r}"
 
     def test_search_handles_special_characters(self, populated_db: Path):
         """Test that search doesn't crash with special FTS5 characters."""
