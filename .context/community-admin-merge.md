@@ -20,8 +20,9 @@ When a PR is opened, synchronized, reopened, or marked ready-for-review against
 4. Confirms the PR does NOT change the `maintainers:` field itself (a covert
    admin-list change is rejected before the author is even considered).
 5. Confirms the PR author is in that list (case-insensitive).
-6. If all checks pass: approves the PR and enables a SQUASH auto-merge using a
-   dedicated GitHub App token. The merge fires only after required checks pass.
+6. If all checks pass: approves the PR and enables auto-merge using a dedicated
+   GitHub App token (squash into `develop`, merge-commit into `main`, matching
+   the branch rulesets). The merge fires only after required checks pass.
 
 If any check fails, or anything is ambiguous, the workflow no-ops (logs a notice
 and exits cleanly). The PR then follows the normal human-review path. Default
@@ -77,7 +78,7 @@ GitHub Apps -> New GitHub App.
   minting a token, the App does not need to receive events.
 - Repository permissions (set ONLY these; leave everything else "No access"):
   - Pull requests: Read and write  (needed to approve and to enable auto-merge)
-  - Contents: Read and write       (needed for the squash merge to write the commit)
+  - Contents: Read and write       (needed for the merge to write the commit)
   - Metadata: Read-only            (mandatory; GitHub sets this automatically)
 - Organization permissions: none.
 - Account permissions: none.
@@ -138,8 +139,9 @@ the repo). Make sure the App is allowed to merge:
 2. Make sure you are a listed maintainer in that directory's `config.yaml`.
 3. Do not change the `maintainers:` field in the same PR; that needs human
    review.
-4. The workflow approves the PR and enables squash auto-merge. The PR merges
-   automatically once ruff and the test suite pass. A confirmation comment is
+4. The workflow approves the PR and enables auto-merge (squash into develop,
+   merge-commit into main). The PR merges automatically once ruff and the test
+   suite pass. A confirmation comment is
    posted (and updated in place on later pushes, not duplicated).
 
 If your PR is not eligible (touches more than one community, touches files
