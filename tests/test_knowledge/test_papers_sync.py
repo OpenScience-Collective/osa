@@ -15,6 +15,7 @@ from opencite import IDSet, Paper
 import src.knowledge.papers_sync as ps
 from src.knowledge.db import get_connection, init_db
 from src.knowledge.papers_sync import (
+    _cache_papers_async,
     _paper_source_and_id,
     _paper_to_result,
     _paper_url,
@@ -250,10 +251,27 @@ class TestPaperToResult:
         assert result.source == "opencite"
 
 
-class TestLivePaperSearch:
-    """Live opencite search (real network) with best-effort caching."""
+class TestCachePapersAsync:
+    """Background caching of live-search results (real SQLite, no mocks)."""
 
-    def test_live_search_returns_recent_and_caches(self, temp_db: Path):
+    def test_caches_papers_into_db(self, temp_db: Path):
+        papers = [
+            Paper(
+                title="Cached paper", ids=IDSet(openalex_id="https://openalex.org/W5"), year=2026
+            ),
+        ]
+        with patch("src.knowledge.db.get_db_path", return_value=temp_db):
+            # Caching is async; join the returned thread before asserting.
+            _cache_papers_async(papers, "test").join(timeout=10)
+            with get_connection("test") as conn:
+                count = conn.execute("SELECT COUNT(*) AS c FROM papers").fetchone()["c"]
+        assert count == 1
+
+
+class TestLivePaperSearch:
+    """Live opencite search (real network)."""
+
+    def test_live_search_returns_recent(self, temp_db: Path):
         with patch("src.knowledge.db.get_db_path", return_value=temp_db):
             results = search_papers_live(
                 "EEGLAB EEG independent component analysis",
@@ -262,15 +280,11 @@ class TestLivePaperSearch:
                 timeout=40,
             )
 
-            # Network-dependent: accept empty on transient failure, but the
-            # shape must always be correct.
-            assert isinstance(results, list)
-            assert all(r.status == "published" for r in results)
-            if results:
-                # Results were cached into the community DB for future local search.
-                with get_connection("test") as conn:
-                    cached = conn.execute("SELECT COUNT(*) AS c FROM papers").fetchone()["c"]
-                assert cached >= 1
+        # Network-dependent: accept empty on transient failure, but the shape
+        # must always be correct and every result must be displayable.
+        assert isinstance(results, list)
+        assert all(r.status == "published" for r in results)
+        assert all(r.title for r in results)
 
 
 class TestPapersSyncTypeGuard:

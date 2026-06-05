@@ -15,6 +15,7 @@ See: https://github.com/neuromechanist/opencite
 import asyncio
 import logging
 import os
+import threading
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 
@@ -437,13 +438,38 @@ async def _search_recent(
     limit: int,
     timeout: float,
 ) -> list[Paper]:
-    """Live opencite search for the most recent papers, bounded by a timeout."""
+    """Live opencite search for the most recent papers, bounded by a timeout.
+
+    The per-request timeout (``config.timeout``, set by the caller) is the
+    primary bound and is kept just under ``timeout`` so each source finishes or
+    times out cleanly before the outer ``wait_for`` would have to cancel and
+    orphan opencite's in-flight tasks.
+    """
     async with SearchOrchestrator(config) as searcher:
         result = await asyncio.wait_for(
             searcher.search(query, max_results=limit, sources=DEFAULT_SOURCES, sort="year"),
             timeout=timeout,
         )
         return result.papers
+
+
+def _cache_papers_async(papers: list[Paper], project: str) -> threading.Thread:
+    """Cache live-search results into the DB without blocking the caller.
+
+    Caching is best-effort: it must never add latency to (or fail) the chat
+    response, so the write runs in a daemon thread and logs on error. Returns
+    the thread (useful for tests).
+    """
+
+    def _write() -> None:
+        try:
+            _store_papers(papers, project)
+        except Exception as e:
+            logger.warning("Failed to cache live search papers for %s: %s", project, e)
+
+    thread = threading.Thread(target=_write, name=f"cache-papers-{project}", daemon=True)
+    thread.start()
+    return thread
 
 
 def search_papers_live(
@@ -465,13 +491,17 @@ def search_papers_live(
         project: Community/project ID (for caching into the right DB).
         limit: Maximum number of papers to return.
         cache: When True (default), best-effort upsert the results into the
-            community knowledge DB so future local searches find them.
+            community knowledge DB (in a background thread, never blocking the
+            response) so future local searches find them.
         timeout: Hard cap (seconds) on the opencite call to keep chat snappy.
 
     Returns:
         List of SearchResult, newest first. Empty on timeout/error.
     """
     config = _config_from_env()
+    # Bound each source request just under the overall cap so opencite's
+    # per-source tasks finish cleanly before wait_for would cancel them.
+    config.timeout = max(1.0, timeout - 2.0)
     try:
         papers = _run(_search_recent(config, query, limit, timeout))
     except TimeoutError:
@@ -482,9 +512,6 @@ def search_papers_live(
         return []
 
     if cache and papers:
-        try:
-            _store_papers(papers, project)
-        except Exception as e:
-            logger.warning("Failed to cache live search papers for %s: %s", project, e)
+        _cache_papers_async(papers, project)
 
     return [_paper_to_result(p) for p in papers[:limit]]
