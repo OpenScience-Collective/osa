@@ -574,6 +574,7 @@
     .osa-message-feedback {
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
       gap: 4px;
       margin-top: 6px;
     }
@@ -627,6 +628,63 @@
       font-size: 12px;
       color: var(--osa-text-light);
       margin-left: 4px;
+    }
+
+    .osa-feedback-comment {
+      flex-basis: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 4px;
+    }
+
+    .osa-feedback-comment-input {
+      width: 100%;
+      box-sizing: border-box;
+      resize: vertical;
+      min-height: 44px;
+      padding: 6px 8px;
+      font: inherit;
+      font-size: 13px;
+      color: var(--osa-text);
+      background: var(--osa-bg);
+      border: 1px solid var(--osa-border);
+      border-radius: 6px;
+    }
+
+    .osa-feedback-comment-input:focus {
+      outline: none;
+      border-color: var(--osa-primary);
+    }
+
+    .osa-feedback-comment-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+
+    .osa-feedback-comment-actions button {
+      font: inherit;
+      font-size: 12px;
+      padding: 4px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      border: 1px solid var(--osa-border);
+    }
+
+    .osa-feedback-skip {
+      background: transparent;
+      color: var(--osa-text-light);
+    }
+
+    .osa-feedback-send {
+      background: var(--osa-primary);
+      color: #fff;
+      border-color: var(--osa-primary);
+    }
+
+    .osa-feedback-send:hover {
+      background: var(--osa-primary-dark);
     }
 
     .osa-suggestions {
@@ -1385,7 +1443,15 @@
     }
 
     try {
-      const data = JSON.stringify({ messages, sessionId });
+      // Persist only durable feedback state: drop transient flags and the
+      // in-progress draft, and never persist a vote that has not been confirmed
+      // by the server (so a reload can't show a false "recorded" state).
+      const persistable = messages.map((m) => {
+        const { _feedbackCommitting, _feedbackJustOpened, feedbackDraft, ...rest } = m;
+        if (rest.feedback && !rest.feedbackCommitted) delete rest.feedback;
+        return rest;
+      });
+      const data = JSON.stringify({ messages: persistable, sessionId });
       localStorage.setItem(CONFIG.storageKey, data);
       saveErrorShown = false;
     } catch (e) {
@@ -1881,42 +1947,91 @@
     }
   }
 
-  // Record a thumbs up/down on a specific assistant reply. One vote per reply
-  // per browser session (stored in localStorage): once recorded, the choice is
-  // locked in this browser to keep counts honest. The button updates optimistically
-  // for responsiveness, but if the POST fails the vote is rolled back so the user
-  // is not misled into thinking it was saved.
-  async function submitResponseFeedback(container, msgIndex, sentiment) {
+  // Select a thumbs up/down on a specific assistant reply. One vote per reply
+  // per browser session (stored in localStorage). Thumbs-up commits immediately;
+  // thumbs-down reveals an optional "what went wrong?" box and commits when the
+  // user sends/skips (or when the vote is flushed on send/reset/close).
+  function submitResponseFeedback(container, msgIndex, sentiment) {
     const msg = messages[msgIndex];
     if (!msg || msg.role !== 'assistant') return;
     if (msg.feedback) return; // already voted on this reply
     if (sentiment !== 'up' && sentiment !== 'down') return;
 
-    // Optimistic update.
     msg.feedback = sentiment;
-    renderMessages(container);
+    if (sentiment === 'down') {
+      // Defer the post; reveal the optional comment box first.
+      msg._feedbackJustOpened = true;
+      renderMessages(container);
+    } else {
+      renderMessages(container); // show the selection immediately
+      commitResponseFeedback(container, msgIndex, { interactive: true });
+    }
+  }
+
+  // Post a per-response vote (with the optional down-vote comment) exactly once.
+  // Confirm-then-commit: the "Thanks!" / committed state is only shown AFTER the
+  // POST succeeds, so a failure never leaves a false success (in the UI or in
+  // localStorage). interactive=true (Send/Skip/up click) surfaces failures so the
+  // user can retry; interactive=false (a flush on send/reset/close) is best-effort
+  // and never writes to the UI, since the conversation may be mid-teardown.
+  async function commitResponseFeedback(container, msgIndex, { interactive = false } = {}) {
+    const msg = messages[msgIndex];
+    if (!msg || !msg.feedback) return;
+    if (msg.feedbackCommitted || msg._feedbackCommitting) return;
+    msg._feedbackCommitting = true;
+
+    const sentiment = msg.feedback;
+    const comment = (msg.feedbackDraft || '').trim();
 
     const ok = await postFeedback({
       feedback_type: 'response',
       sentiment,
+      comment: comment || null,
       request_id: msg.requestId || null,
       session_id: sessionId || null,
       message_index: msgIndex,
     });
+    msg._feedbackCommitting = false;
 
-    if (!ok) {
-      // Roll back so the vote can be retried and the user knows it did not save.
-      delete msg.feedback;
+    if (ok) {
+      msg.feedbackCommitted = true;
+      delete msg.feedbackDraft;
+      delete msg._feedbackJustOpened;
+      // Reveal "Thanks!" (and replace any open box). Safe in every path: harmless
+      // on a hidden window, and a no-op for a reply already removed by a reset.
       renderMessages(container);
-      showError(container, 'Could not send feedback. Please try again.');
+      try {
+        saveHistory();
+      } catch (e) {
+        console.error('[OSA] Failed to persist feedback locally:', e);
+      }
       return;
     }
 
-    try {
-      saveHistory();
-    } catch (e) {
-      console.error('[OSA] Failed to persist feedback locally:', e);
+    // Failed. An up-vote reverts to unvoted; a down-vote keeps its pending box
+    // (and the typed comment) so it can be retried on the next Send or flush.
+    if (sentiment === 'up') delete msg.feedback;
+    if (!interactive) {
+      // Best-effort flush during teardown: do not touch the (possibly hidden or
+      // already-reset) UI. A pending down stays pending and retries next flush.
+      console.warn('[OSA] Feedback flush did not send; will retry on next attempt.');
+      return;
     }
+    if (sentiment === 'down') msg._feedbackJustOpened = true; // refocus the box
+    renderMessages(container);
+    showError(container, 'Could not send feedback. Please try again.');
+  }
+
+  // Commit any pending (down) vote whose comment box is still open, so leaving
+  // it open and then sending/resetting/closing never silently drops the vote.
+  // Best-effort (interactive=false): failures are not surfaced into a tearing-down UI.
+  function flushPendingResponseFeedback(container) {
+    messages.forEach((msg, idx) => {
+      if (msg && msg.role === 'assistant' && msg.feedback
+          && !msg.feedbackCommitted && !msg._feedbackCommitting) {
+        commitResponseFeedback(container, idx, { interactive: false });
+      }
+    });
   }
 
   // Open the general (free-text) feedback modal
@@ -2300,17 +2415,34 @@
         : '';
 
       // Per-response feedback (thumbs up/down) for assistant replies, but not
-      // the canned opening greeting (index 0). Records sentiment only; free-text
-      // feedback lives in the "Send feedback" link in the footer.
+      // the canned opening greeting (index 0). Up is a one-click count; down
+      // reveals an optional "what went wrong?" box before it is committed.
       const showFeedback = msg.role === 'assistant' && msgIndex > 0;
       const fb = msg.feedback;
-      const feedbackRow = showFeedback
-        ? `<div class="osa-message-feedback${fb ? ' recorded' : ''}" data-msg-index="${msgIndex}">
-            <button class="osa-feedback-btn osa-feedback-up${fb === 'up' ? ' selected' : ''}" data-feedback="up" aria-pressed="${fb === 'up'}" title="Helpful">${ICONS.thumbUp}</button>
-            <button class="osa-feedback-btn osa-feedback-down${fb === 'down' ? ' selected' : ''}" data-feedback="down" aria-pressed="${fb === 'down'}" title="Not helpful">${ICONS.thumbDown}</button>
-            <span class="osa-feedback-thanks"${fb ? '' : ' style="display:none;"'}>Thanks!</span>
-          </div>`
-        : '';
+      const committed = !!msg.feedbackCommitted;
+      const pendingDown = fb === 'down' && !committed;
+      let feedbackRow = '';
+      if (showFeedback) {
+        const upBtn = `<button class="osa-feedback-btn osa-feedback-up${fb === 'up' ? ' selected' : ''}" data-feedback="up" aria-pressed="${fb === 'up'}" title="Helpful">${ICONS.thumbUp}</button>`;
+        const downBtn = `<button class="osa-feedback-btn osa-feedback-down${fb === 'down' ? ' selected' : ''}" data-feedback="down" aria-pressed="${fb === 'down'}" title="Not helpful">${ICONS.thumbDown}</button>`;
+        if (pendingDown) {
+          feedbackRow = `<div class="osa-message-feedback recorded" data-msg-index="${msgIndex}">
+            ${upBtn}${downBtn}
+            <div class="osa-feedback-comment">
+              <textarea class="osa-feedback-comment-input" rows="2" maxlength="5000" placeholder="What went wrong? (optional)">${escapeHtml(msg.feedbackDraft || '')}</textarea>
+              <div class="osa-feedback-comment-actions">
+                <button type="button" class="osa-feedback-skip">Skip</button>
+                <button type="button" class="osa-feedback-send">Send</button>
+              </div>
+            </div>
+          </div>`;
+        } else {
+          feedbackRow = `<div class="osa-message-feedback${fb ? ' recorded' : ''}" data-msg-index="${msgIndex}">
+            ${upBtn}${downBtn}
+            <span class="osa-feedback-thanks"${committed ? '' : ' style="display:none;"'}>Thanks!</span>
+          </div>`;
+        }
+      }
 
       msgEl.innerHTML = `
         <div class="osa-message-header">
@@ -2358,6 +2490,33 @@
         const msgIndex = parseInt(row.getAttribute('data-msg-index'), 10);
         const sentiment = btn.getAttribute('data-feedback');
         submitResponseFeedback(container, msgIndex, sentiment);
+      });
+    });
+
+    // Optional comment box for a pending thumbs-down
+    messagesEl.querySelectorAll('.osa-message-feedback .osa-feedback-comment').forEach(box => {
+      const row = box.closest('.osa-message-feedback');
+      const msgIndex = parseInt(row.getAttribute('data-msg-index'), 10);
+      const textarea = box.querySelector('.osa-feedback-comment-input');
+      if (textarea) {
+        textarea.addEventListener('input', () => {
+          if (messages[msgIndex]) messages[msgIndex].feedbackDraft = textarea.value;
+        });
+        // Focus once, right after the box first appears (not on every re-render).
+        if (messages[msgIndex] && messages[msgIndex]._feedbackJustOpened) {
+          messages[msgIndex]._feedbackJustOpened = false;
+          textarea.focus();
+        }
+      }
+      box.querySelector('.osa-feedback-send')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (textarea && messages[msgIndex]) messages[msgIndex].feedbackDraft = textarea.value;
+        commitResponseFeedback(container, msgIndex, { interactive: true });
+      });
+      box.querySelector('.osa-feedback-skip')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (messages[msgIndex]) messages[msgIndex].feedbackDraft = '';
+        commitResponseFeedback(container, msgIndex, { interactive: true });
       });
     });
 
@@ -2630,6 +2789,9 @@
   async function sendMessage(container, question) {
     if (isLoading || !question.trim()) return;
 
+    // Commit any open thumbs-down comment box before the conversation moves on.
+    flushPendingResponseFeedback(container);
+
     isLoading = true;
 
     // Track message indices to avoid corruption on error
@@ -2859,6 +3021,8 @@
   // Reset chat
   function resetChat(container) {
     if (messages.length <= 1 || isLoading) return;
+    // Commit any open thumbs-down comment before the history is cleared.
+    flushPendingResponseFeedback(container);
     messages = [{ role: 'assistant', content: CONFIG.initialMessage }];
     sessionId = null; // Clear session to start fresh on next message
     try {
@@ -2886,6 +3050,8 @@
       // Hide tooltip when chat opens
       if (tooltip) tooltip.classList.remove('visible');
     } else {
+      // Commit any open thumbs-down comment box on close.
+      flushPendingResponseFeedback(container);
       chatWindow.classList.remove('open');
       container.classList.remove('chat-open');
       button.innerHTML = ICONS.chat;
