@@ -33,6 +33,7 @@ openrouter_api_key_env_var: "OPENROUTER_API_KEY_HED"
 maintainers:
   - VisLab
   - yarikoptic
+  - neuromechanist
 
 # Budget limits for cost management
 budget:
