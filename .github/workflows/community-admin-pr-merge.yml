@@ -2,8 +2,8 @@ name: Community Admin PR Auto-Merge
 
 # Lets a community maintainer auto-merge a PR that ONLY touches their own
 # community's directory (src/assistants/<id>/**). When eligible, this workflow
-# approves the PR and enables squash auto-merge so the normal required status
-# checks (ruff + tests) still gate the actual merge.
+# approves the PR and enables auto-merge (squash into develop, merge-commit into
+# main) so the normal required status checks (ruff + tests) still gate the merge.
 #
 # -----------------------------------------------------------------------------
 # Trigger choice: pull_request_target (NOT pull_request)
@@ -330,19 +330,28 @@ jobs:
             -f event=APPROVE \
             -f body="Auto-approved by community-admin auto-merge: changes are scoped to the **$COMMUNITY** community directory and the author is a listed maintainer. Required status checks still gate the merge."
 
-      # Enable squash auto-merge with the App token. Using --auto means the
-      # merge only happens once all required checks (ruff + tests) pass, so we
-      # never bypass CI. If the PR is already mergeable, GitHub merges
-      # immediately; otherwise it waits.
-      - name: Enable squash auto-merge
+      # Enable auto-merge with the App token. --auto means the merge happens only
+      # once all required checks (ruff + tests) pass, so we never bypass CI. The
+      # merge method is chosen by target branch to satisfy the branch rulesets:
+      # develop allows squash (feature-branch convention); main is merge-commit
+      # only (the develop->main release convention). Using --squash on a main PR
+      # would be rejected by the protect-main ruleset.
+      - name: Enable auto-merge
         if: steps.eval.outputs.eligible == 'true'
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
-          gh pr merge "$PR_NUMBER" --repo "$REPO" --auto --squash
+          if [ "$BASE_REF" = "main" ]; then
+            METHOD="--merge"
+          else
+            METHOD="--squash"
+          fi
+          echo "Merging PR #$PR_NUMBER into $BASE_REF with $METHOD"
+          gh pr merge "$PR_NUMBER" --repo "$REPO" --auto "$METHOD"
 
       # Post (find-or-update) a confirmation comment so we do not spam a new
       # comment on every synchronize event. Uses the App token's identity.
@@ -358,7 +367,7 @@ jobs:
             const body = `${marker}\n` +
               `Auto-merge enabled for the **${community}** community.\n\n` +
               `This PR only touches \`src/assistants/${community}/\` and was opened by a ` +
-              `listed maintainer, so it has been approved and queued for **squash** auto-merge. ` +
+              `listed maintainer, so it has been approved and queued for auto-merge. ` +
               `It will merge automatically once all required checks (ruff + tests) pass.`;
 
             const { data: comments } = await github.rest.issues.listComments({
