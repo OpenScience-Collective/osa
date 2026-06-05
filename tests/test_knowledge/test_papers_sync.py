@@ -268,16 +268,33 @@ class TestCachePapersAsync:
         assert count == 1
 
 
+class TestSourceConstants:
+    """Enforce the live-vs-batch source contract (deterministic, no network)."""
+
+    def test_live_sources_is_openalex_only(self):
+        assert ps.LIVE_SOURCES == ("openalex",)
+
+    def test_default_sources_covers_all_three(self):
+        assert set(ps.DEFAULT_SOURCES) == {"openalex", "s2", "pubmed"}
+
+    def test_live_sources_is_strict_subset_of_default(self):
+        # Live search must never query more sources than batch sync.
+        assert set(ps.LIVE_SOURCES) < set(ps.DEFAULT_SOURCES)
+
+
 class TestLivePaperSearch:
     """Live opencite search (real network)."""
 
     def test_live_search_returns_recent(self, temp_db: Path):
         with patch("src.knowledge.db.get_db_path", return_value=temp_db):
+            # Pass `sources` explicitly to exercise the parameter threading, and
+            # use the production default timeout.
             results = search_papers_live(
                 "EEGLAB EEG independent component analysis",
                 project="test",
                 limit=3,
-                timeout=40,
+                timeout=15,
+                sources=("openalex",),
             )
 
         # Network-dependent: accept empty on transient failure, but the shape

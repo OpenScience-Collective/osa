@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from opencite import Config, Paper
 from opencite.citations import CitationExplorer
+from opencite.exceptions import APIKeyError, ConfigurationError, OpenCiteError
 from opencite.search import SearchOrchestrator
 
 from src.knowledge.db import get_connection, update_sync_metadata, upsert_paper
@@ -28,11 +29,18 @@ from src.knowledge.search import SearchResult
 
 logger = logging.getLogger(__name__)
 
-# Scholarly sources synced by default. opencite also supports arxiv, biorxiv,
-# medrxiv, osf, zenodo, figshare, crossref and core; those broader sources are
-# reserved for the opt-in live-search feature (issue #308) so batch sync stays
-# focused on peer-reviewed literature and matches prior coverage.
+# Scholarly sources synced by default (batch sync, where latency does not
+# matter). opencite also supports arxiv, biorxiv, medrxiv, osf, zenodo,
+# figshare, crossref and core; those cover preprints / grey literature and are
+# deliberately omitted so the default batch sync stays focused on peer-reviewed
+# work.
 DEFAULT_SOURCES: tuple[str, ...] = ("openalex", "s2", "pubmed")
+
+# Interactive live search uses OpenAlex only: it is fast, free, comprehensive,
+# and supports server-side recency sorting (by publication date), so the chat
+# stays responsive. The slower, rate-limited sources (Semantic Scholar at
+# ~1 req/s, PubMed) are deliberately left to batch sync.
+LIVE_SOURCES: tuple[str, ...] = ("openalex",)
 
 # opencite source name -> OSA `papers.source` label. Kept stable so dedup and
 # the existing rows in the database (openalex / semanticscholar / pubmed) line
@@ -437,6 +445,7 @@ async def _search_recent(
     query: str,
     limit: int,
     timeout: float,
+    sources: tuple[str, ...],
 ) -> list[Paper]:
     """Live opencite search for the most recent papers, bounded by a timeout.
 
@@ -447,7 +456,7 @@ async def _search_recent(
     """
     async with SearchOrchestrator(config) as searcher:
         result = await asyncio.wait_for(
-            searcher.search(query, max_results=limit, sources=DEFAULT_SOURCES, sort="year"),
+            searcher.search(query, max_results=limit, sources=sources, sort="year"),
             timeout=timeout,
         )
         return result.papers
@@ -464,8 +473,11 @@ def _cache_papers_async(papers: list[Paper], project: str) -> threading.Thread:
     def _write() -> None:
         try:
             _store_papers(papers, project)
-        except Exception as e:
-            logger.warning("Failed to cache live search papers for %s: %s", project, e)
+        except Exception:
+            # A failed cache write means these papers stay missing from local
+            # search until the next batch sync - a real degraded state, so log
+            # loudly (with traceback) even though the daemon thread must not crash.
+            logger.error("Failed to cache live search papers for %s", project, exc_info=True)
 
     thread = threading.Thread(target=_write, name=f"cache-papers-{project}", daemon=True)
     thread.start()
@@ -477,7 +489,8 @@ def search_papers_live(
     project: str = "hed",
     limit: int = 5,
     cache: bool = True,
-    timeout: float = 20.0,
+    timeout: float = 15.0,
+    sources: tuple[str, ...] = LIVE_SOURCES,
 ) -> list[SearchResult]:
     """Search the live literature via opencite for the most recent papers.
 
@@ -494,22 +507,32 @@ def search_papers_live(
             community knowledge DB (in a background thread, never blocking the
             response) so future local searches find them.
         timeout: Hard cap (seconds) on the opencite call to keep chat snappy.
+        sources: opencite sources to query. Defaults to OpenAlex only for speed.
 
     Returns:
-        List of SearchResult, newest first. Empty on timeout/error.
+        List of SearchResult, newest first. Empty on timeout or a transient /
+        misconfiguration error (logged); programming errors propagate.
     """
     config = _config_from_env()
     # Bound each source request just under the overall cap so opencite's
     # per-source tasks finish cleanly before wait_for would cancel them.
     config.timeout = max(1.0, timeout - 2.0)
     try:
-        papers = _run(_search_recent(config, query, limit, timeout))
+        papers = _run(_search_recent(config, query, limit, timeout, sources))
     except TimeoutError:
         logger.warning("opencite live search timed out for '%s' after %.0fs", query, timeout)
         return []
-    except Exception as e:
+    except (APIKeyError, ConfigurationError) as e:
+        # Permanent misconfiguration (bad/absent key) - surface loudly; it will
+        # not fix itself and otherwise looks identical to "no results".
+        logger.error("opencite live search misconfigured for '%s': %s", query, e)
+        return []
+    except OpenCiteError as e:
+        # Transient API/network/rate-limit failure - a warning + empty is fine.
         logger.warning("opencite live search failed for '%s': %s", query, e)
         return []
+    # Any other exception is a programming error: let it propagate rather than
+    # masquerade as an empty result set.
 
     if cache and papers:
         _cache_papers_async(papers, project)
