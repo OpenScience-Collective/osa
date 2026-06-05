@@ -1,206 +1,174 @@
-name: Community Admin PR Auto-Merge
+name: Community Maintainer Merge Command
 
-# Lets a community maintainer auto-merge a PR that ONLY touches their own
-# community's directory (src/assistants/<id>/**). When eligible, this workflow
-# approves the PR and enables auto-merge (squash into develop, merge-commit into
-# main) so the normal required status checks (ruff + tests) still gate the merge.
+# A community maintainer merges a PR INTO develop that touches ONLY their own
+# community's directory (src/assistants/<id>/**) by posting a comment that
+# contains BOTH "LGTM" and "merge" (e.g. "LGTM, please merge"). Nothing merges on
+# open -- the comment is the deliberate, explicit signal. (Chosen over GitHub
+# "Approve", which reviewers give during review without intending to ship now.)
+#
+# Scope is develop only. Releases (develop -> main) are done by an OSA admin, so
+# main never diverges from the integrated develop branch.
 #
 # -----------------------------------------------------------------------------
-# Trigger choice: pull_request_target (NOT pull_request)
+# Trigger + security model
 # -----------------------------------------------------------------------------
-# We need to approve + merge, which requires a privileged token. On a plain
-# `pull_request` event from a fork, secrets are NOT available, so we could not
-# mint the GitHub App token. `pull_request_target` runs in the context of the
-# BASE repo and therefore HAS access to secrets even for fork PRs.
-#
-# The well-known danger of pull_request_target is that it can be tricked into
-# executing attacker-controlled PR-head code with secrets in scope. We avoid
-# that entirely:
-#   - We NEVER check out the PR head. The only checkout is the BASE branch
-#     (the trusted, already-reviewed code), and we never run anything from the
-#     PR. The PR diff is read via the GitHub API only.
+# issue_comment runs in the BASE-repo context and HAS access to secrets (so we
+# can mint the GitHub App token), even for comments on fork PRs. It is therefore
+# as privileged as pull_request_target, and we treat it the same way:
+#   - We NEVER check out or run PR-head code. Everything is read via the API.
 #   - Authorization (the maintainers list) is read from the BASE branch version
-#     of config.yaml, never from the PR head, so a PR cannot grant itself power.
-#   - If the PR's diff touches the `maintainers:` field of any config.yaml, the
-#     PR is ineligible and goes to human review.
-# Given these constraints, pull_request_target is the correct and safe choice.
+#     of config.yaml at the PR's base sha, never from the PR head, so a PR cannot
+#     grant itself power.
+#   - The PR must touch ONLY src/assistants/<one community>/** (rename old paths
+#     checked too) and must NOT edit the maintainers field; the community id is
+#     whitelisted before it is used.
+#   - The COMMENTER must be a maintainer of that community.
+#   - The merge is pinned to the exact head commit the comment was made on
+#     (--match-head-commit), so a push AFTER the comment requires a fresh
+#     "LGTM ... merge". (protect-dev keeps stale approvals, so we pin ourselves.)
+#   - --auto means the merge waits for required checks; we never bypass CI.
 #
-# -----------------------------------------------------------------------------
-# Token model
-# -----------------------------------------------------------------------------
-# GITHUB_TOKEN cannot approve a PR (GitHub prohibits a workflow's own token from
-# submitting a review on the PR that triggered it) and, more importantly, we
-# deliberately keep its permissions minimal (read-only) so this workflow has no
-# standing write power. All write actions (approve +
-# merge) are performed with a SHORT-LIVED installation token minted from a
-# dedicated GitHub App via actions/create-github-app-token. The App is the only
-# identity allowed to merge here, and it is independent from the CI_ADMIN_TOKEN
-# PAT used by the version-automation workflows. Required secrets:
-#   - COMMUNITY_MERGE_APP_ID
-#   - COMMUNITY_MERGE_APP_PRIVATE_KEY
-# See .context/community-admin-merge.md for the one-time App setup.
+# Token model: all writes (approve, merge, comment) use a SHORT-LIVED GitHub App
+# installation token (secrets COMMUNITY_MERGE_APP_ID / COMMUNITY_MERGE_APP_PRIVATE_KEY),
+# minted only when a command is authorized. GITHUB_TOKEN stays read-only.
+# See .context/community-admin-merge.md for the one-time App setup + usage.
 
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
-    branches: [develop, main]
+  issue_comment:
+    types: [created]
 
-# Minimal standing permissions. contents:read for the base checkout; the
-# eligibility step reads the PR's file list with github.token, which needs
-# pull-requests:read. Every WRITE (approve, merge, comment) happens through the
-# GitHub App installation token minted below, NOT through GITHUB_TOKEN.
+# Minimal standing permissions; the eligibility step reads PR data with
+# github.token (needs pull-requests:read). Every WRITE happens through the App
+# installation token minted below, NOT through GITHUB_TOKEN.
 permissions:
   contents: read
   pull-requests: read
 
-# One in-flight evaluation per PR; cancel stale runs on rapid synchronize.
 concurrency:
-  group: community-admin-merge-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: community-maintainer-merge-${{ github.event.issue.number }}
+  cancel-in-progress: false
 
 jobs:
-  evaluate-and-merge:
-    # Skip drafts outright; they are not ready and ready_for_review will fire
-    # the real evaluation when the author marks the PR ready.
-    if: github.event.pull_request.draft == false
+  merge-on-command:
+    # Only comments on pull requests (issue_comment also fires on plain issues).
+    if: github.event.issue.pull_request != null
     runs-on: ubuntu-latest
     steps:
-      # Checkout the BASE branch ONLY. This is trusted, already-merged code.
-      # We never check out github.event.pull_request.head; the PR diff is read
-      # via the API in later steps. We only ever `git show` BASE_SHA:config.yaml,
-      # and `ref: base.sha` guarantees that commit is present locally.
-      - name: Checkout base branch (trusted)
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          persist-credentials: false
+      # Cheap first gate: does the comment carry the "LGTM ... merge" command?
+      # Case-insensitive, both keywords required. Skips the rest (and the Python
+      # setup) for ordinary comments. COMMENT_BODY via env (never interpolated).
+      - name: Detect command
+        id: cmd
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          body="$(printf '%s' "$COMMENT_BODY" | tr '[:upper:]' '[:lower:]')"
+          # Guard the most explicit negations so "LGTM, but do not merge yet"
+          # does not fire. (Bounded anyway: maintainer-only, CI-gated, cancellable.)
+          negated=false
+          case "$body" in
+            *"do not merge"*|*"don't merge"*|*"dont merge"*) negated=true ;;
+          esac
+          if [[ "$body" == *lgtm* && "$body" == *merge* && "$negated" == false ]]; then
+            echo "command=true" >> "$GITHUB_OUTPUT"
+            echo "Detected LGTM/merge command."
+          else
+            echo "command=false" >> "$GITHUB_OUTPUT"
+            echo "No actionable LGTM/merge command (keywords absent or negated); nothing to do."
+          fi
 
       - name: Set up Python
+        if: steps.cmd.outputs.command == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
       - name: Install dependencies
-        run: pip install pyyaml
+        if: steps.cmd.outputs.command == 'true'
+        # Pinned: this step parses YAML in a privileged context (App token is
+        # minted only in a later step, but pin anyway for supply-chain hygiene).
+        run: pip install "pyyaml==6.0.2"
 
       # ----------------------------------------------------------------------
-      # Eligibility evaluation. This step writes ONE output: `eligible`
-      # (true/false) plus `community` and `reason` for logging/comments. It
-      # performs NO writes and uses only the read-only github.token to list the
-      # PR's changed files. Default posture is NOT eligible: any ambiguity,
-      # parse failure, or unexpected condition results in eligible=false.
+      # Eligibility. Writes outputs: eligible (true/false), community, head_sha,
+      # method, commenter. Performs NO writes; uses only the read-only
+      # github.token. Default posture is NOT eligible.
       # ----------------------------------------------------------------------
       - name: Evaluate eligibility
         id: eval
-        # All PR-controlled values are passed via env (never interpolated into
-        # the script body) so a crafted login/sha/ref cannot inject shell.
+        if: steps.cmd.outputs.command == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
           REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          COMMENTER_LOGIN: ${{ github.event.comment.user.login }}
         run: |
           set -euo pipefail
 
-          # Helper: emit outputs and exit "not eligible" cleanly (no-op, exit 0).
           not_eligible() {
-            echo "::notice::Not eligible for auto-merge: $1"
-            {
-              echo "eligible=false"
-              echo "community="
-              echo "reason=$1"
-            } >> "$GITHUB_OUTPUT"
+            echo "::notice::Not merging: $1"
+            { echo "eligible=false"; echo "community="; } >> "$GITHUB_OUTPUT"
             exit 0
           }
 
-          # 1. Get the PR's changed files from the GitHub API (metadata only; we
-          #    never merge or execute PR-head code). We use the paginated
-          #    /pulls/{n}/files endpoint, NOT `gh pr diff --name-only`, for two
-          #    reasons that are load-bearing for security:
-          #      - It emits BOTH `.filename` (new path) and `.previous_filename`
-          #        (a rename's OLD path). Checking both prevents a rename that
-          #        moves a file FROM outside the community dir INTO it (the old
-          #        path would be out of scope) from slipping the scope check.
-          #      - `--paginate` returns ALL files; `gh pr diff` truncates large
-          #        PRs at 300 files, which could hide out-of-scope files past the
-          #        cutoff.
+          # 1. Fetch the PR (data only; we never run its code).
+          PR_JSON="$(gh api "/repos/$REPO/pulls/$PR_NUMBER")"
+          BASE_REF="$(jq -r '.base.ref'  <<<"$PR_JSON")"
+          BASE_SHA="$(jq -r '.base.sha'  <<<"$PR_JSON")"
+          HEAD_SHA="$(jq -r '.head.sha'  <<<"$PR_JSON")"
+          STATE="$(jq -r '.state'        <<<"$PR_JSON")"
+          IS_DRAFT="$(jq -r '.draft'     <<<"$PR_JSON")"
+
+          [ "$STATE" = "open" ] || not_eligible "PR is not open ($STATE)"
+          [ "$IS_DRAFT" = "false" ] || not_eligible "PR is a draft"
+          # Community maintainers may merge into develop ONLY. Releases to main
+          # (develop -> main) are done by an OSA admin, so a community PR targeting
+          # main is never merged here (a main PR can also be stale vs develop).
+          [ "$BASE_REF" = "develop" ] || \
+            not_eligible "base branch '$BASE_REF' is not develop (community PRs target develop; an OSA admin merges develop to main)"
+
+          # 2. Changed files via the paginated /files API (both new and rename-old
+          #    paths). Every path must be under ONE src/assistants/<id>/ tree.
           mapfile -t CHANGED < <(
             gh api --paginate "/repos/$REPO/pulls/$PR_NUMBER/files" \
               -q '.[] | (.filename, (.previous_filename // empty))' | sort -u
           )
+          [ "${#CHANGED[@]}" -gt 0 ] || not_eligible "PR changes zero files"
+          echo "Changed files:"; printf '  %s\n' "${CHANGED[@]}"
 
-          if [ "${#CHANGED[@]}" -eq 0 ]; then
-            not_eligible "PR changes zero files"
-          fi
-
-          echo "Changed files:"
-          printf '  %s\n' "${CHANGED[@]}"
-
-          # 2. Every changed path must match ^src/assistants/<id>/... and all
-          #    paths must resolve to the SAME single community id. A PR spanning
-          #    multiple communities, or touching anything outside a community
-          #    dir, is not eligible.
           COMMUNITY=""
           for f in "${CHANGED[@]}"; do
-            # Defense in depth: git reports normalized repo-relative paths, but
-            # reject anything containing a `..` segment or a leading slash just
-            # in case, so a path can never escape the community subtree.
             if [[ "$f" == *"/../"* || "$f" == "../"* || "$f" == *"/.." || "$f" == /* ]]; then
               not_eligible "path contains a parent-directory or absolute segment: $f"
             fi
-
-            # Strict regex: literal prefix, one path segment (no slash, no `..`)
-            # as the id, then a slash and at least one more character (a real
-            # file under the dir, including files at the community root).
             if [[ "$f" =~ ^src/assistants/([^/]+)/.+$ ]]; then
               id="${BASH_REMATCH[1]}"
             else
               not_eligible "path outside a single community dir: $f"
             fi
-
             if [ -z "$COMMUNITY" ]; then
               COMMUNITY="$id"
             elif [ "$COMMUNITY" != "$id" ]; then
               not_eligible "PR spans multiple communities ($COMMUNITY, $id)"
             fi
           done
-
-          if [ -z "$COMMUNITY" ]; then
-            not_eligible "could not determine a single community id"
-          fi
-
-          # Defense in depth: the path regex allows any non-slash characters in
-          # the id. Constrain it to a safe identifier (lowercase letters, digits,
-          # hyphen, underscore) before it is interpolated into git refs / paths,
-          # so a crafted path can never carry shell or ref metacharacters here.
+          [ -n "$COMMUNITY" ] || not_eligible "could not determine a single community id"
           if ! [[ "$COMMUNITY" =~ ^[a-z0-9_-]+$ ]]; then
             not_eligible "community id has unexpected characters: $COMMUNITY"
           fi
           echo "Target community: $COMMUNITY"
-
           CONFIG_PATH="src/assistants/$COMMUNITY/config.yaml"
 
-          # 3. The BASE branch must actually define this community with a
-          #    config.yaml. If the base has no such config (e.g. a brand-new
-          #    community introduced by this very PR), there is no trusted
-          #    maintainers list to authorize against -> human review.
-          if ! git cat-file -e "$BASE_SHA:$CONFIG_PATH" 2>/dev/null; then
+          # 3. Read the maintainers list ONLY from the BASE config (base sha), via
+          #    the API. Never the PR head. Missing/unparseable -> not eligible.
+          if ! gh api -H "Accept: application/vnd.github.raw+json" \
+                "/repos/$REPO/contents/$CONFIG_PATH?ref=$BASE_SHA" \
+                > /tmp/base_config.yaml 2>/dev/null; then
             not_eligible "no $CONFIG_PATH on base branch (new community needs human review)"
           fi
-
-          # 4. SECURITY: read the maintainers list ONLY from the BASE branch
-          #    version of config.yaml. Never from the PR head. A parse failure
-          #    (malformed YAML, missing/empty maintainers) means not eligible.
-          git show "$BASE_SHA:$CONFIG_PATH" > /tmp/base_config.yaml || \
-            not_eligible "could not read base config.yaml"
-
-          # Extract a normalized (lowercased, sorted, newline-joined) maintainers
-          # list. Exit code 2 from the helper = parse/shape failure.
-          python - "$COMMUNITY" <<'PY' > /tmp/base_maintainers.txt || PARSE_RC=$?
+          python - <<'PY' > /tmp/base_maintainers.txt || PARSE_RC=$?
           import sys, yaml
-          community = sys.argv[1]
           try:
               with open("/tmp/base_config.yaml") as fh:
                   data = yaml.safe_load(fh)
@@ -220,36 +188,23 @@ jobs:
                   sys.stderr.write("maintainers entry is not a non-empty string\n")
                   sys.exit(2)
               names.append(m.strip().lower())
-          # Normalized, de-duplicated, sorted for stable comparison.
           for n in sorted(set(names)):
               print(n)
           PY
           PARSE_RC=${PARSE_RC:-0}
-          if [ "$PARSE_RC" -ne 0 ]; then
-            not_eligible "base config.yaml maintainers could not be parsed"
-          fi
+          [ "$PARSE_RC" -eq 0 ] || not_eligible "base config.yaml maintainers could not be parsed"
 
-          # 5. SECURITY: if config.yaml is among the changed files, ensure the
-          #    PR does NOT modify the maintainers field. Changing who holds
-          #    admin power must go through human review. Compare the normalized
-          #    maintainers list of base vs head of config.yaml.
+          # 4. SECURITY: if config.yaml is changed, the maintainers field must be
+          #    unchanged (changing who holds power needs human review). Compare
+          #    the normalized base vs head maintainers list.
           if printf '%s\n' "${CHANGED[@]}" | grep -qxF "$CONFIG_PATH"; then
-            echo "config.yaml is modified; verifying maintainers field is unchanged"
-
-            # Fetch the HEAD version of config.yaml via the API (raw contents at
-            # the PR head sha, from $HEAD_SHA in env). We parse it ONLY to compare
-            # the maintainers field; we never execute it. A failure to fetch/parse
-            # the head config => not eligible (conservative default). This also
-            # catches a config.yaml that the PR deleted or renamed away (the fetch
-            # 404s), so admin-list removal cannot ride through.
-            if ! gh api \
-                  -H "Accept: application/vnd.github.raw+json" \
+            echo "config.yaml changed; verifying the maintainers field is unchanged"
+            if ! gh api -H "Accept: application/vnd.github.raw+json" \
                   "/repos/$REPO/contents/$CONFIG_PATH?ref=$HEAD_SHA" \
                   > /tmp/head_config.yaml 2>/dev/null; then
-              not_eligible "could not read head config.yaml for maintainers diff"
+              not_eligible "could not read head config.yaml (delete/rename needs human review)"
             fi
-
-            python - "$COMMUNITY" <<'PY' > /tmp/head_maintainers.txt || HEAD_RC=$?
+            python - <<'PY' > /tmp/head_maintainers.txt || HEAD_RC=$?
           import sys, yaml
           try:
               with open("/tmp/head_config.yaml") as fh:
@@ -274,37 +229,30 @@ jobs:
               print(n)
           PY
             HEAD_RC=${HEAD_RC:-0}
-            if [ "$HEAD_RC" -ne 0 ]; then
-              not_eligible "head config.yaml maintainers could not be parsed"
-            fi
-
+            [ "$HEAD_RC" -eq 0 ] || not_eligible "head config.yaml maintainers could not be parsed"
             if ! diff -q /tmp/base_maintainers.txt /tmp/head_maintainers.txt >/dev/null; then
               not_eligible "PR modifies the maintainers field (needs human review)"
             fi
             echo "maintainers field unchanged; OK to proceed"
           fi
 
-          # 6. Verify the PR author is in the BASE-branch maintainers list.
-          #    GitHub usernames are case-insensitive, so compare lowercased.
-          #    AUTHOR_LOGIN comes from env (never interpolated into the script).
-          AUTHOR="$(printf '%s' "$AUTHOR_LOGIN" | tr '[:upper:]' '[:lower:]')"
-          echo "PR author (normalized): $AUTHOR"
-          if ! grep -qxF "$AUTHOR" /tmp/base_maintainers.txt; then
-            not_eligible "author '$AUTHOR' is not a maintainer of '$COMMUNITY'"
+          # 5. The COMMENTER must be a maintainer of this community (base list).
+          #    GitHub usernames are case-insensitive; compare lowercased.
+          COMMENTER="$(printf '%s' "$COMMENTER_LOGIN" | tr '[:upper:]' '[:lower:]')"
+          echo "Commenter (normalized): $COMMENTER"
+          if ! grep -qxF "$COMMENTER" /tmp/base_maintainers.txt; then
+            not_eligible "commenter '$COMMENTER' is not a maintainer of '$COMMUNITY'"
           fi
 
-          # All checks passed.
-          echo "::notice::PR #$PR_NUMBER is eligible for auto-merge (community=$COMMUNITY, author=$AUTHOR)"
+          echo "::notice::Merging PR #$PR_NUMBER ($COMMUNITY) into develop on @$COMMENTER command; head $HEAD_SHA"
           {
             echo "eligible=true"
             echo "community=$COMMUNITY"
-            echo "reason=author is a maintainer; changes scoped to $COMMUNITY"
+            echo "head_sha=$HEAD_SHA"
+            echo "commenter=$COMMENTER"
           } >> "$GITHUB_OUTPUT"
 
-      # ----------------------------------------------------------------------
-      # Mint the GitHub App installation token. Only reached when eligible.
-      # Short-lived; scoped to this repo by the App installation.
-      # ----------------------------------------------------------------------
+      # Mint the GitHub App installation token. Only reached when authorized.
       - name: Mint GitHub App token
         if: steps.eval.outputs.eligible == 'true'
         id: app_token
@@ -313,83 +261,71 @@ jobs:
           app-id: ${{ secrets.COMMUNITY_MERGE_APP_ID }}
           private-key: ${{ secrets.COMMUNITY_MERGE_APP_PRIVATE_KEY }}
 
-      # Approve the PR using the App token. A clear, attributable review body.
+      # Record an approval (audit trail) attributing the merge to the commenter.
       - name: Approve PR
         if: steps.eval.outputs.eligible == 'true'
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
           REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ github.event.issue.number }}
           COMMUNITY: ${{ steps.eval.outputs.community }}
+          COMMENTER: ${{ steps.eval.outputs.commenter }}
         run: |
           set -euo pipefail
-          gh api \
-            --method POST \
-            -H "Accept: application/vnd.github+json" \
+          gh api --method POST -H "Accept: application/vnd.github+json" \
             "/repos/$REPO/pulls/$PR_NUMBER/reviews" \
             -f event=APPROVE \
-            -f body="Auto-approved by community-admin auto-merge: changes are scoped to the **$COMMUNITY** community directory and the author is a listed maintainer. Required status checks still gate the merge."
+            -f body="Merge approved on @$COMMENTER's LGTM/merge command. Changes are scoped to the **$COMMUNITY** community directory; required status checks still gate the merge."
 
-      # Enable auto-merge with the App token. --auto means the merge happens only
-      # once all required checks (ruff + tests) pass, so we never bypass CI. The
-      # merge method is chosen by target branch to satisfy the branch rulesets:
-      # develop allows squash (feature-branch convention); main is merge-commit
-      # only (the develop->main release convention). Using --squash on a main PR
-      # would be rejected by the protect-main ruleset.
-      - name: Enable auto-merge
+      # Enable squash auto-merge into develop, PINNED to the head the command was
+      # made on. --auto waits for required checks; --match-head-commit means a
+      # push after the command cancels this and requires a fresh "LGTM ... merge".
+      - name: Merge on command (pinned to the commented head)
         if: steps.eval.outputs.eligible == 'true'
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
           REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          HEAD_SHA: ${{ steps.eval.outputs.head_sha }}
         run: |
           set -euo pipefail
-          if [ "$BASE_REF" = "main" ]; then
-            METHOD="--merge"
-          else
-            METHOD="--squash"
-          fi
-          echo "Merging PR #$PR_NUMBER into $BASE_REF with $METHOD"
-          gh pr merge "$PR_NUMBER" --repo "$REPO" --auto "$METHOD"
+          echo "Squash-merging PR #$PR_NUMBER into develop, pinned to $HEAD_SHA"
+          gh pr merge "$PR_NUMBER" --repo "$REPO" --auto --squash --match-head-commit "$HEAD_SHA"
 
-      # Post (find-or-update) a confirmation comment so we do not spam a new
-      # comment on every synchronize event. Uses the App token's identity.
-      - name: Comment confirmation
+      # Find-or-update a single confirmation comment (no spam on repeat commands).
+      - name: Comment result
         if: steps.eval.outputs.eligible == 'true'
         continue-on-error: true
         uses: actions/github-script@v7
+        env:
+          COMMUNITY: ${{ steps.eval.outputs.community }}
+          COMMENTER: ${{ steps.eval.outputs.commenter }}
         with:
           github-token: ${{ steps.app_token.outputs.token }}
           script: |
             const community = process.env.COMMUNITY;
-            const marker = '<!-- community-admin-merge -->';
+            const commenter = process.env.COMMENTER;
+            const marker = '<!-- community-maintainer-merge -->';
             const body = `${marker}\n` +
-              `Auto-merge enabled for the **${community}** community.\n\n` +
-              `This PR only touches \`src/assistants/${community}/\` and was opened by a ` +
-              `listed maintainer, so it has been approved and queued for auto-merge. ` +
-              `It will merge automatically once all required checks (ruff + tests) pass.`;
-
+              `Queued for merge on @${commenter}'s **LGTM / merge** command.\n\n` +
+              `This PR only touches \`src/assistants/${community}/\`, so it has been ` +
+              `approved and will merge automatically once all required checks pass. ` +
+              `The merge is pinned to the current commit; pushing new commits cancels ` +
+              `it and needs a fresh \`LGTM ... merge\` comment.`;
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
+              issue_number: context.payload.issue.number,
             });
             const existing = comments.find(c => c.body && c.body.includes(marker));
             if (existing) {
               await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body,
+                owner: context.repo.owner, repo: context.repo.repo,
+                comment_id: existing.id, body,
               });
             } else {
               await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.payload.pull_request.number,
-                body,
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: context.payload.issue.number, body,
               });
             }
-        env:
-          COMMUNITY: ${{ steps.eval.outputs.community }}
