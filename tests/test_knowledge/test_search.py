@@ -3,6 +3,7 @@
 These tests use a temporary database populated with test data.
 """
 
+import re
 from pathlib import Path
 from unittest.mock import patch
 
@@ -171,6 +172,28 @@ class TestSearchPapers:
             assert all(r.source == "openalex" for r in openalex_results)
             assert all(r.source == "semanticscholar" for r in s2_results)
 
+    def test_multiword_query_matches_non_adjacent_terms(self, populated_db: Path):
+        """Regression (issue #305): natural-language queries must match papers
+        even when the terms are not adjacent in the document.
+
+        Previously the whole query was phrase-wrapped, so multi-word questions
+        returned zero papers despite a populated database. "annotation" and
+        "neuroimaging" both appear in a paper but never consecutively in this
+        order, so the old phrase match returned nothing.
+        """
+        with patch("src.knowledge.db.get_db_path", return_value=populated_db):
+            results = search_papers("annotation HED neuroimaging")
+
+            assert len(results) >= 1
+            assert any("HED Annotation" in r.title for r in results)
+
+    def test_question_phrasing_finds_papers(self, populated_db: Path):
+        """A full question (with stopwords) still surfaces relevant papers."""
+        with patch("src.knowledge.db.get_db_path", return_value=populated_db):
+            results = search_papers("what papers are about HED annotation?")
+
+            assert len(results) >= 1
+
 
 class TestSearchAll:
     """Tests for combined search."""
@@ -317,18 +340,43 @@ class TestNumberLookup:
 class TestFTS5Sanitization:
     """Tests for FTS5 query sanitization to prevent injection."""
 
-    def test_sanitize_basic_query(self):
-        """Test that basic queries are wrapped in quotes."""
+    def test_sanitize_splits_into_or_terms(self):
+        """Basic queries become an OR of individually quoted terms."""
         result = _sanitize_fts5_query("validation error")
-        assert result == '"validation error"'
+        assert result == '"validation" OR "error"'
 
-    def test_sanitize_escapes_quotes(self):
-        """Test that double quotes in user input are escaped."""
+    def test_sanitize_drops_stopwords(self):
+        """Noise words are removed; meaningful terms (incl. acronyms) kept."""
+        result = _sanitize_fts5_query("what papers are about ICA")
+        assert result == '"ica"'
+
+    def test_sanitize_keeps_identifier_tokens(self):
+        """Function/identifier names stay intact (underscores preserved)."""
+        result = _sanitize_fts5_query("pop_runica parameters")
+        assert result == '"pop_runica" OR "parameters"'
+
+    def test_sanitize_keeps_command_noun_terms(self):
+        """Words that double as content/command nouns are not stopwords.
+
+        'list' and 'use' carry meaning in EEGLAB/MATLAB queries (e.g. channel
+        lists), so they must survive instead of being silently dropped.
+        """
+        assert _sanitize_fts5_query("list channels") == '"list" OR "channels"'
+        assert _sanitize_fts5_query("use function") == '"use" OR "function"'
+
+    def test_sanitize_strips_quotes_no_injection(self):
+        """Double quotes in input are stripped by tokenization, not escaped in."""
         result = _sanitize_fts5_query('say "hello" world')
-        assert result == '"say ""hello"" world"'
+        assert result == '"say" OR "hello" OR "world"'
+        assert '""' not in result
+
+    def test_sanitize_stopword_only_query_falls_back(self):
+        """A query of only stopwords falls back to a safe quoted phrase."""
+        result = _sanitize_fts5_query("what are the")
+        assert result == '"what are the"'
 
     def test_sanitize_fts5_operators(self):
-        """Test that FTS5 operators are treated as literal text."""
+        """FTS5 operators are quoted as literal terms, never executed."""
         # These would be dangerous without sanitization
         dangerous_queries = [
             "test AND DROP TABLE",
@@ -339,9 +387,15 @@ class TestFTS5Sanitization:
         ]
         for query in dangerous_queries:
             result = _sanitize_fts5_query(query)
-            # Should be wrapped in quotes, treating operators as literals
-            assert result.startswith('"')
-            assert result.endswith('"')
+            # Every OR-separated term must be individually double-quoted, so no
+            # bare FTS5 operator (AND/OR/NOT/NEAR/wildcard) can reach MATCH.
+            for term in result.split(" OR "):
+                assert term.startswith('"') and term.endswith('"'), (
+                    f"unquoted term {term!r} in result for {query!r}: {result!r}"
+                )
+            # Removing every quoted term must leave only ' OR ' connectors.
+            remainder = re.sub(r'"[^"]*"', "", result).replace(" OR ", "").strip()
+            assert remainder == "", f"stray operator text in result for {query!r}: {result!r}"
 
     def test_search_handles_special_characters(self, populated_db: Path):
         """Test that search doesn't crash with special FTS5 characters."""
