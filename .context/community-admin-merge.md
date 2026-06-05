@@ -17,8 +17,9 @@ When a PR is opened, synchronized, reopened, or marked ready-for-review against
    (one community, nothing outside it).
 3. Reads the `maintainers:` list from the BASE branch copy of
    `src/assistants/<id>/config.yaml`.
-4. Confirms the PR author is in that list (case-insensitive).
-5. Confirms the PR does NOT change the `maintainers:` field itself.
+4. Confirms the PR does NOT change the `maintainers:` field itself (a covert
+   admin-list change is rejected before the author is even considered).
+5. Confirms the PR author is in that list (case-insensitive).
 6. If all checks pass: approves the PR and enables a SQUASH auto-merge using a
    dedicated GitHub App token. The merge fires only after required checks pass.
 
@@ -60,8 +61,10 @@ App.
 ## One-time setup (human)
 
 These steps are done once by a repo admin. Until they are complete, the workflow
-runs but no-ops on the token-mint step (it will fail to mint without the
-secrets), so finish all steps before relying on it.
+evaluates every PR but skips the write steps (mint, approve, merge) for
+ineligible PRs. If an *eligible* PR is opened before the secrets exist, the
+token-mint step fails with an error (the PR is not merged). Finish all steps
+before relying on it.
 
 ### 1. Create the GitHub App
 

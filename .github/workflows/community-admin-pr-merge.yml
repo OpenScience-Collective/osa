@@ -28,9 +28,10 @@ name: Community Admin PR Auto-Merge
 # -----------------------------------------------------------------------------
 # Token model
 # -----------------------------------------------------------------------------
-# GITHUB_TOKEN cannot approve a PR (a token cannot approve its own context) and,
-# more importantly, we deliberately keep its permissions minimal (contents:read)
-# so this workflow has no standing write power. All write actions (approve +
+# GITHUB_TOKEN cannot approve a PR (GitHub prohibits a workflow's own token from
+# submitting a review on the PR that triggered it) and, more importantly, we
+# deliberately keep its permissions minimal (read-only) so this workflow has no
+# standing write power. All write actions (approve +
 # merge) are performed with a SHORT-LIVED installation token minted from a
 # dedicated GitHub App via actions/create-github-app-token. The App is the only
 # identity allowed to merge here, and it is independent from the CI_ADMIN_TOKEN
@@ -44,11 +45,13 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
     branches: [develop, main]
 
-# Minimal standing permissions. The checkout only needs read. Every write
-# (approve, merge, comment) happens through the GitHub App installation token
-# minted below, NOT through GITHUB_TOKEN.
+# Minimal standing permissions. contents:read for the base checkout; the
+# eligibility step reads the PR's file list with github.token, which needs
+# pull-requests:read. Every WRITE (approve, merge, comment) happens through the
+# GitHub App installation token minted below, NOT through GITHUB_TOKEN.
 permissions:
   contents: read
+  pull-requests: read
 
 # One in-flight evaluation per PR; cancel stale runs on rapid synchronize.
 concurrency:
@@ -64,13 +67,12 @@ jobs:
     steps:
       # Checkout the BASE branch ONLY. This is trusted, already-merged code.
       # We never check out github.event.pull_request.head; the PR diff is read
-      # via the API in later steps. fetch-depth: 0 so we can `git show` the
-      # base and merge-base of config.yaml for the maintainers comparison.
+      # via the API in later steps. We only ever `git show` BASE_SHA:config.yaml,
+      # and `ref: base.sha` guarantees that commit is present locally.
       - name: Checkout base branch (trusted)
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.base.sha }}
-          fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Python
@@ -90,10 +92,14 @@ jobs:
       # ----------------------------------------------------------------------
       - name: Evaluate eligibility
         id: eval
+        # All PR-controlled values are passed via env (never interpolated into
+        # the script body) so a crafted login/sha/ref cannot inject shell.
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -109,11 +115,21 @@ jobs:
             exit 0
           }
 
-          # 1. Get the PR's changed files from the GitHub API. We do NOT diff
-          #    locally against PR-head code. --name-only across all statuses
-          #    (added/modified/removed/renamed). For a rename, gh lists the new
-          #    path; that still must fall under the community dir to be eligible.
-          mapfile -t CHANGED < <(gh pr diff "$PR_NUMBER" --repo "$REPO" --name-only)
+          # 1. Get the PR's changed files from the GitHub API (metadata only; we
+          #    never merge or execute PR-head code). We use the paginated
+          #    /pulls/{n}/files endpoint, NOT `gh pr diff --name-only`, for two
+          #    reasons that are load-bearing for security:
+          #      - It emits BOTH `.filename` (new path) and `.previous_filename`
+          #        (a rename's OLD path). Checking both prevents a rename that
+          #        moves a file FROM outside the community dir INTO it (the old
+          #        path would be out of scope) from slipping the scope check.
+          #      - `--paginate` returns ALL files; `gh pr diff` truncates large
+          #        PRs at 300 files, which could hide out-of-scope files past the
+          #        cutoff.
+          mapfile -t CHANGED < <(
+            gh api --paginate "/repos/$REPO/pulls/$PR_NUMBER/files" \
+              -q '.[] | (.filename, (.previous_filename // empty))' | sort -u
+          )
 
           if [ "${#CHANGED[@]}" -eq 0 ]; then
             not_eligible "PR changes zero files"
@@ -221,10 +237,11 @@ jobs:
             echo "config.yaml is modified; verifying maintainers field is unchanged"
 
             # Fetch the HEAD version of config.yaml via the API (raw contents at
-            # the PR head sha). We parse it ONLY to compare the maintainers
-            # field; we never execute it. A failure to fetch/parse the head
-            # config => not eligible (conservative default).
-            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+            # the PR head sha, from $HEAD_SHA in env). We parse it ONLY to compare
+            # the maintainers field; we never execute it. A failure to fetch/parse
+            # the head config => not eligible (conservative default). This also
+            # catches a config.yaml that the PR deleted or renamed away (the fetch
+            # 404s), so admin-list removal cannot ride through.
             if ! gh api \
                   -H "Accept: application/vnd.github.raw+json" \
                   "/repos/$REPO/contents/$CONFIG_PATH?ref=$HEAD_SHA" \
@@ -269,7 +286,8 @@ jobs:
 
           # 6. Verify the PR author is in the BASE-branch maintainers list.
           #    GitHub usernames are case-insensitive, so compare lowercased.
-          AUTHOR="$(printf '%s' "${{ github.event.pull_request.user.login }}" | tr '[:upper:]' '[:lower:]')"
+          #    AUTHOR_LOGIN comes from env (never interpolated into the script).
+          AUTHOR="$(printf '%s' "$AUTHOR_LOGIN" | tr '[:upper:]' '[:lower:]')"
           echo "PR author (normalized): $AUTHOR"
           if ! grep -qxF "$AUTHOR" /tmp/base_maintainers.txt; then
             not_eligible "author '$AUTHOR' is not a maintainer of '$COMMUNITY'"
