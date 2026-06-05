@@ -2114,8 +2114,8 @@ requires-dist = [
     { name = "markdownify", marker = "extra == 'dev'", specifier = ">=1.1.0" },
     { name = "markdownify", marker = "extra == 'server'", specifier = ">=1.1.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.19.0" },
-    { name = "opencite", marker = "extra == 'dev'", specifier = ">=0.5.2" },
-    { name = "opencite", marker = "extra == 'server'", specifier = ">=0.5.2" },
+    { name = "opencite", marker = "extra == 'dev'", specifier = ">=0.5.3" },
+    { name = "opencite", marker = "extra == 'server'", specifier = ">=0.5.3" },
     { name = "platformdirs", specifier = ">=4.5.0" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.5.0" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'dev'", specifier = ">=3.3.0" },
@@ -2163,15 +2163,15 @@ wheels = [
 
 [[package]]
 name = "opencite"
-version = "0.5.2"
+version = "0.5.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "pyalex" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7a/18/313a129d8cee89784c409ec19049f09adf6ba515792747b9dd65dbbd9ddb/opencite-0.5.2.tar.gz", hash = "sha256:d7a63482e4d1a0372fd2d01cc246e3d10b74d50393ae153afe53029b490e7d7e", size = 142084, upload-time = "2026-05-21T19:54:15.971Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/fd/47/2cef932d68ca50361afb888ac18592fcfdb8ea0f4d18df9f0af61b0765b9/opencite-0.5.3.tar.gz", hash = "sha256:c1e19d8253615644870be95a4d7bbb09540a33b1e241c43d451348aa3ef48df5", size = 157917, upload-time = "2026-06-05T18:59:56.706Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0e/b8/d00880ff96e9d3808c6b65e6347b7c4f9fdc8b72213a5dd4cd147224207e/opencite-0.5.2-py3-none-any.whl", hash = "sha256:d4ffb6b553c94df454dbc1de4eed55fdc2ea7604099fea0e3fdbc5a5ea654ce1", size = 96732, upload-time = "2026-05-21T19:54:14.574Z" },
+    { url = "https://files.pythonhosted.org/packages/9f/f1/7925aa055263bc62e3b4cded285e7992c167a85716df12cf456372701c2d/opencite-0.5.3-py3-none-any.whl", hash = "sha256:e8607ebff6eeda30b86362c3031307773c99925df9c429353c802b04f50c66ec", size = 97003, upload-time = "2026-06-05T18:59:55.284Z" },
 ]
 
 [[package]]
