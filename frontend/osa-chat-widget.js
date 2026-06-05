@@ -574,6 +574,7 @@
     .osa-message-feedback {
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
       gap: 4px;
       margin-top: 6px;
     }
@@ -627,6 +628,63 @@
       font-size: 12px;
       color: var(--osa-text-light);
       margin-left: 4px;
+    }
+
+    .osa-feedback-comment {
+      flex-basis: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 4px;
+    }
+
+    .osa-feedback-comment-input {
+      width: 100%;
+      box-sizing: border-box;
+      resize: vertical;
+      min-height: 44px;
+      padding: 6px 8px;
+      font: inherit;
+      font-size: 13px;
+      color: var(--osa-text);
+      background: var(--osa-bg);
+      border: 1px solid var(--osa-border);
+      border-radius: 6px;
+    }
+
+    .osa-feedback-comment-input:focus {
+      outline: none;
+      border-color: var(--osa-primary);
+    }
+
+    .osa-feedback-comment-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+
+    .osa-feedback-comment-actions button {
+      font: inherit;
+      font-size: 12px;
+      padding: 4px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      border: 1px solid var(--osa-border);
+    }
+
+    .osa-feedback-skip {
+      background: transparent;
+      color: var(--osa-text-light);
+    }
+
+    .osa-feedback-send {
+      background: var(--osa-primary);
+      color: #fff;
+      border-color: var(--osa-primary);
+    }
+
+    .osa-feedback-send:hover {
+      background: var(--osa-primary-dark);
     }
 
     .osa-suggestions {
@@ -1881,24 +1939,43 @@
     }
   }
 
-  // Record a thumbs up/down on a specific assistant reply. One vote per reply
-  // per browser session (stored in localStorage): once recorded, the choice is
-  // locked in this browser to keep counts honest. The button updates optimistically
-  // for responsiveness, but if the POST fails the vote is rolled back so the user
-  // is not misled into thinking it was saved.
-  async function submitResponseFeedback(container, msgIndex, sentiment) {
+  // Select a thumbs up/down on a specific assistant reply. One vote per reply
+  // per browser session (stored in localStorage). Thumbs-up commits immediately;
+  // thumbs-down reveals an optional "what went wrong?" box and commits when the
+  // user sends/skips (or when the vote is flushed on send/reset/close).
+  function submitResponseFeedback(container, msgIndex, sentiment) {
     const msg = messages[msgIndex];
     if (!msg || msg.role !== 'assistant') return;
     if (msg.feedback) return; // already voted on this reply
     if (sentiment !== 'up' && sentiment !== 'down') return;
 
-    // Optimistic update.
     msg.feedback = sentiment;
+    if (sentiment === 'down') {
+      // Defer the post; reveal the optional comment box first.
+      msg._feedbackJustOpened = true;
+      renderMessages(container);
+    } else {
+      commitResponseFeedback(container, msgIndex);
+    }
+  }
+
+  // Post a per-response vote (with the optional down-vote comment) exactly once.
+  // Optimistic: shows the recorded state immediately and rolls back on failure.
+  async function commitResponseFeedback(container, msgIndex) {
+    const msg = messages[msgIndex];
+    if (!msg || !msg.feedback) return;
+    if (msg.feedbackCommitted || msg._feedbackCommitting) return;
+    msg._feedbackCommitting = true;
+
+    const sentiment = msg.feedback;
+    const comment = (msg.feedbackDraft || '').trim();
+    msg.feedbackCommitted = true;
     renderMessages(container);
 
     const ok = await postFeedback({
       feedback_type: 'response',
       sentiment,
+      comment: comment || null,
       request_id: msg.requestId || null,
       session_id: sessionId || null,
       message_index: msgIndex,
@@ -1907,16 +1984,34 @@
     if (!ok) {
       // Roll back so the vote can be retried and the user knows it did not save.
       delete msg.feedback;
+      delete msg.feedbackCommitted;
+      delete msg.feedbackDraft;
+      delete msg._feedbackCommitting;
+      delete msg._feedbackJustOpened;
       renderMessages(container);
       showError(container, 'Could not send feedback. Please try again.');
       return;
     }
 
+    delete msg.feedbackDraft;
+    delete msg._feedbackCommitting;
+    delete msg._feedbackJustOpened;
     try {
       saveHistory();
     } catch (e) {
       console.error('[OSA] Failed to persist feedback locally:', e);
     }
+  }
+
+  // Commit any pending (down) vote whose comment box is still open, so leaving
+  // it open and then sending/resetting/closing never silently drops the vote.
+  function flushPendingResponseFeedback(container) {
+    messages.forEach((msg, idx) => {
+      if (msg && msg.role === 'assistant' && msg.feedback
+          && !msg.feedbackCommitted && !msg._feedbackCommitting) {
+        commitResponseFeedback(container, idx);
+      }
+    });
   }
 
   // Open the general (free-text) feedback modal
@@ -2300,17 +2395,34 @@
         : '';
 
       // Per-response feedback (thumbs up/down) for assistant replies, but not
-      // the canned opening greeting (index 0). Records sentiment only; free-text
-      // feedback lives in the "Send feedback" link in the footer.
+      // the canned opening greeting (index 0). Up is a one-click count; down
+      // reveals an optional "what went wrong?" box before it is committed.
       const showFeedback = msg.role === 'assistant' && msgIndex > 0;
       const fb = msg.feedback;
-      const feedbackRow = showFeedback
-        ? `<div class="osa-message-feedback${fb ? ' recorded' : ''}" data-msg-index="${msgIndex}">
-            <button class="osa-feedback-btn osa-feedback-up${fb === 'up' ? ' selected' : ''}" data-feedback="up" aria-pressed="${fb === 'up'}" title="Helpful">${ICONS.thumbUp}</button>
-            <button class="osa-feedback-btn osa-feedback-down${fb === 'down' ? ' selected' : ''}" data-feedback="down" aria-pressed="${fb === 'down'}" title="Not helpful">${ICONS.thumbDown}</button>
+      const committed = !!msg.feedbackCommitted;
+      const pendingDown = fb === 'down' && !committed;
+      let feedbackRow = '';
+      if (showFeedback) {
+        const upBtn = `<button class="osa-feedback-btn osa-feedback-up${fb === 'up' ? ' selected' : ''}" data-feedback="up" aria-pressed="${fb === 'up'}" title="Helpful">${ICONS.thumbUp}</button>`;
+        const downBtn = `<button class="osa-feedback-btn osa-feedback-down${fb === 'down' ? ' selected' : ''}" data-feedback="down" aria-pressed="${fb === 'down'}" title="Not helpful">${ICONS.thumbDown}</button>`;
+        if (pendingDown) {
+          feedbackRow = `<div class="osa-message-feedback recorded" data-msg-index="${msgIndex}">
+            ${upBtn}${downBtn}
+            <div class="osa-feedback-comment">
+              <textarea class="osa-feedback-comment-input" rows="2" maxlength="5000" placeholder="What went wrong? (optional)">${escapeHtml(msg.feedbackDraft || '')}</textarea>
+              <div class="osa-feedback-comment-actions">
+                <button type="button" class="osa-feedback-skip">Skip</button>
+                <button type="button" class="osa-feedback-send">Send</button>
+              </div>
+            </div>
+          </div>`;
+        } else {
+          feedbackRow = `<div class="osa-message-feedback${fb ? ' recorded' : ''}" data-msg-index="${msgIndex}">
+            ${upBtn}${downBtn}
             <span class="osa-feedback-thanks"${fb ? '' : ' style="display:none;"'}>Thanks!</span>
-          </div>`
-        : '';
+          </div>`;
+        }
+      }
 
       msgEl.innerHTML = `
         <div class="osa-message-header">
@@ -2358,6 +2470,33 @@
         const msgIndex = parseInt(row.getAttribute('data-msg-index'), 10);
         const sentiment = btn.getAttribute('data-feedback');
         submitResponseFeedback(container, msgIndex, sentiment);
+      });
+    });
+
+    // Optional comment box for a pending thumbs-down
+    messagesEl.querySelectorAll('.osa-message-feedback .osa-feedback-comment').forEach(box => {
+      const row = box.closest('.osa-message-feedback');
+      const msgIndex = parseInt(row.getAttribute('data-msg-index'), 10);
+      const textarea = box.querySelector('.osa-feedback-comment-input');
+      if (textarea) {
+        textarea.addEventListener('input', () => {
+          if (messages[msgIndex]) messages[msgIndex].feedbackDraft = textarea.value;
+        });
+        // Focus once, right after the box first appears (not on every re-render).
+        if (messages[msgIndex] && messages[msgIndex]._feedbackJustOpened) {
+          messages[msgIndex]._feedbackJustOpened = false;
+          textarea.focus();
+        }
+      }
+      box.querySelector('.osa-feedback-send')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (textarea && messages[msgIndex]) messages[msgIndex].feedbackDraft = textarea.value;
+        commitResponseFeedback(container, msgIndex);
+      });
+      box.querySelector('.osa-feedback-skip')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (messages[msgIndex]) messages[msgIndex].feedbackDraft = '';
+        commitResponseFeedback(container, msgIndex);
       });
     });
 
@@ -2630,6 +2769,9 @@
   async function sendMessage(container, question) {
     if (isLoading || !question.trim()) return;
 
+    // Commit any open thumbs-down comment box before the conversation moves on.
+    flushPendingResponseFeedback(container);
+
     isLoading = true;
 
     // Track message indices to avoid corruption on error
@@ -2859,6 +3001,8 @@
   // Reset chat
   function resetChat(container) {
     if (messages.length <= 1 || isLoading) return;
+    // Commit any open thumbs-down comment before the history is cleared.
+    flushPendingResponseFeedback(container);
     messages = [{ role: 'assistant', content: CONFIG.initialMessage }];
     sessionId = null; // Clear session to start fresh on next message
     try {
@@ -2886,6 +3030,8 @@
       // Hide tooltip when chat opens
       if (tooltip) tooltip.classList.remove('visible');
     } else {
+      // Commit any open thumbs-down comment box on close.
+      flushPendingResponseFeedback(container);
       chatWindow.classList.remove('open');
       container.classList.remove('chat-open');
       button.innerHTML = ICONS.chat;
