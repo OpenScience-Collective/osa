@@ -28,11 +28,16 @@ from src.knowledge.search import SearchResult
 
 logger = logging.getLogger(__name__)
 
-# Scholarly sources synced by default. opencite also supports arxiv, biorxiv,
-# medrxiv, osf, zenodo, figshare, crossref and core; those broader sources are
-# reserved for the opt-in live-search feature (issue #308) so batch sync stays
-# focused on peer-reviewed literature and matches prior coverage.
+# Scholarly sources synced by default (batch sync, where latency does not
+# matter). opencite also supports arxiv, biorxiv, medrxiv, osf, zenodo,
+# figshare, crossref and core.
 DEFAULT_SOURCES: tuple[str, ...] = ("openalex", "s2", "pubmed")
+
+# Interactive live search uses OpenAlex only: it is fast, free, comprehensive,
+# and supports recency sorting, so the chat stays responsive. The slower,
+# rate-limited sources (Semantic Scholar at ~1 req/s, PubMed) are deliberately
+# left to batch sync.
+LIVE_SOURCES: tuple[str, ...] = ("openalex",)
 
 # opencite source name -> OSA `papers.source` label. Kept stable so dedup and
 # the existing rows in the database (openalex / semanticscholar / pubmed) line
@@ -437,6 +442,7 @@ async def _search_recent(
     query: str,
     limit: int,
     timeout: float,
+    sources: tuple[str, ...],
 ) -> list[Paper]:
     """Live opencite search for the most recent papers, bounded by a timeout.
 
@@ -447,7 +453,7 @@ async def _search_recent(
     """
     async with SearchOrchestrator(config) as searcher:
         result = await asyncio.wait_for(
-            searcher.search(query, max_results=limit, sources=DEFAULT_SOURCES, sort="year"),
+            searcher.search(query, max_results=limit, sources=sources, sort="year"),
             timeout=timeout,
         )
         return result.papers
@@ -477,7 +483,8 @@ def search_papers_live(
     project: str = "hed",
     limit: int = 5,
     cache: bool = True,
-    timeout: float = 20.0,
+    timeout: float = 15.0,
+    sources: tuple[str, ...] = LIVE_SOURCES,
 ) -> list[SearchResult]:
     """Search the live literature via opencite for the most recent papers.
 
@@ -494,6 +501,7 @@ def search_papers_live(
             community knowledge DB (in a background thread, never blocking the
             response) so future local searches find them.
         timeout: Hard cap (seconds) on the opencite call to keep chat snappy.
+        sources: opencite sources to query. Defaults to OpenAlex only for speed.
 
     Returns:
         List of SearchResult, newest first. Empty on timeout/error.
@@ -503,7 +511,7 @@ def search_papers_live(
     # per-source tasks finish cleanly before wait_for would cancel them.
     config.timeout = max(1.0, timeout - 2.0)
     try:
-        papers = _run(_search_recent(config, query, limit, timeout))
+        papers = _run(_search_recent(config, query, limit, timeout, sources))
     except TimeoutError:
         logger.warning("opencite live search timed out for '%s' after %.0fs", query, timeout)
         return []

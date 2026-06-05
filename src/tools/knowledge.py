@@ -298,11 +298,13 @@ def create_search_papers_live_tool(
         return "\n".join(lines)
 
     description = (
-        f"Search the LIVE literature for the most recent papers about {community_name}. "
-        "**Use this only when the user explicitly asks for recent / latest / new papers, "
-        "or when the local paper search returns nothing relevant.** "
-        "It queries external sources on demand (slower than the local search) and returns "
-        "the newest results first. "
+        f"Live, on-demand search of the latest external literature about {community_name}, "
+        "newest first. This is SLOW (it queries the web and can take up to a minute). "
+        f"Always try the local `search_{community_id}_papers` first. "
+        "**Only call this tool after the user has explicitly confirmed they want a live "
+        "literature search** (or explicitly asked to search the web / for the very latest "
+        "papers). Do NOT call it automatically as a first step. Before calling it, tell the "
+        "user you are searching the literature and it may take a minute. "
         "**This is for DISCOVERY, not answering** - present results as references for "
         "further reading; do NOT use paper content to formulate answers."
     )
