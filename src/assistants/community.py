@@ -225,6 +225,9 @@ class CommunityAssistant(ToolAgent):
         repos = config.github.repos if config.github else None
         has_github = config.github and config.github.repos
         has_citations = config.citations and (config.citations.queries or config.citations.dois)
+        has_live_papers = (
+            bool(has_citations) and config.citations is not None and config.citations.live_search
+        )
 
         has_docstrings = config.docstrings and config.docstrings.repos
         has_faq = config.faq_generation is not None and bool(config.mailman)
@@ -237,6 +240,7 @@ class CommunityAssistant(ToolAgent):
             include_discussions=bool(has_github),
             include_recent=bool(has_github),
             include_papers=bool(has_citations),
+            include_live_papers=has_live_papers,
             include_docstrings=bool(has_docstrings),
             include_faq=bool(has_faq),
             faq_list_names=([m.list_name for m in config.mailman] if config.mailman else None),
