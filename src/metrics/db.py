@@ -20,6 +20,13 @@ logger = logging.getLogger(__name__)
 # Track consecutive log_request failures for escalation
 _log_request_failures: int = 0
 
+# Track consecutive write_feedback failures for escalation
+_write_feedback_failures: int = 0
+
+# Allowed feedback type / sentiment values (enforced at the API layer too)
+FEEDBACK_TYPES = ("response", "general")
+FEEDBACK_SENTIMENTS = ("up", "down")
+
 METRICS_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS request_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,6 +56,25 @@ CREATE INDEX IF NOT EXISTS idx_request_log_timestamp
     ON request_log(timestamp);
 CREATE INDEX IF NOT EXISTS idx_request_log_community_timestamp
     ON request_log(community_id, timestamp);
+
+CREATE TABLE IF NOT EXISTS feedback_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    feedback_id TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    community_id TEXT NOT NULL,
+    feedback_type TEXT NOT NULL,
+    sentiment TEXT,
+    request_id TEXT,
+    session_id TEXT,
+    message_index INTEGER,
+    comment TEXT,
+    page_url TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_feedback_log_community
+    ON feedback_log(community_id);
+CREATE INDEX IF NOT EXISTS idx_feedback_log_community_timestamp
+    ON feedback_log(community_id, timestamp);
 """
 
 # Columns added after initial schema; ALTER TABLE for existing databases
@@ -81,6 +107,31 @@ class RequestLogEntry:
     tool_call_count: int = 0
     error_message: str | None = None
     langfuse_trace_id: str | None = None
+
+
+@dataclass
+class FeedbackEntry:
+    """A single user-feedback entry for the metrics database.
+
+    Two flavors share one table:
+
+    * ``feedback_type="response"`` -- a thumbs up/down on a specific assistant
+      reply. ``sentiment`` is required; ``request_id`` (and/or ``message_index``)
+      links it back to the answer it rates.
+    * ``feedback_type="general"`` -- free-text feedback not tied to a single
+      reply. ``sentiment`` is typically ``None`` and ``comment`` carries the text.
+    """
+
+    feedback_id: str
+    timestamp: str
+    community_id: str
+    feedback_type: str
+    sentiment: str | None = None
+    request_id: str | None = None
+    session_id: str | None = None
+    message_index: int | None = None
+    comment: str | None = None
+    page_url: str | None = None
 
 
 def get_metrics_db_path() -> Path:
@@ -226,6 +277,62 @@ def log_request(entry: RequestLogEntry, db_path: Path | None = None) -> None:
     else:
         # Reset counter on success
         _log_request_failures = 0
+    finally:
+        conn.close()
+
+
+def write_feedback(entry: FeedbackEntry, db_path: Path | None = None) -> None:
+    """Insert a feedback entry into the database.
+
+    Mirrors :func:`log_request`: best-effort, never raises to the caller, and
+    escalates to a CRITICAL log after repeated failures so a broken disk or DB
+    surfaces in monitoring instead of silently dropping feedback.
+
+    Args:
+        entry: The feedback entry to insert.
+        db_path: Optional path override (for testing).
+    """
+    global _write_feedback_failures
+    conn = get_metrics_connection(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO feedback_log (
+                feedback_id, timestamp, community_id, feedback_type, sentiment,
+                request_id, session_id, message_index, comment, page_url
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                entry.feedback_id,
+                entry.timestamp,
+                entry.community_id,
+                entry.feedback_type,
+                entry.sentiment,
+                entry.request_id,
+                entry.session_id,
+                entry.message_index,
+                entry.comment,
+                entry.page_url,
+            ),
+        )
+        conn.commit()
+    except sqlite3.Error:
+        _write_feedback_failures += 1
+        logger.exception(
+            "Failed to write feedback %s (community=%s, type=%s) [failure #%d]",
+            entry.feedback_id,
+            entry.community_id,
+            entry.feedback_type,
+            _write_feedback_failures,
+        )
+        if _write_feedback_failures >= 10:
+            logger.critical(
+                "Feedback DB write has failed %d times. "
+                "Possible disk/database issue requiring investigation.",
+                _write_feedback_failures,
+            )
+    else:
+        _write_feedback_failures = 0
     finally:
         conn.close()
 

@@ -118,7 +118,9 @@
     copy: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>',
     check: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>',
     popout: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>',
-    settings: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="2"></circle><circle cx="12" cy="12" r="2"></circle><circle cx="12" cy="19" r="2"></circle></svg>'
+    settings: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="2"></circle><circle cx="12" cy="12" r="2"></circle><circle cx="12" cy="19" r="2"></circle></svg>',
+    thumbUp: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/></svg>',
+    thumbDown: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 14V2"/><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z"/></svg>'
   };
 
   // CSS Styles
@@ -569,6 +571,64 @@
       gap: 8px;
     }
 
+    .osa-message-feedback {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      margin-top: 6px;
+    }
+
+    .osa-feedback-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 26px;
+      height: 26px;
+      padding: 0;
+      border: none;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--osa-text-light);
+      cursor: pointer;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+
+    .osa-feedback-btn svg {
+      width: 15px;
+      height: 15px;
+    }
+
+    .osa-feedback-btn:hover {
+      background: var(--osa-assistant-bg);
+      color: var(--osa-text);
+    }
+
+    .osa-feedback-up.selected {
+      color: #16a34a;
+    }
+
+    .osa-feedback-down.selected {
+      color: #dc2626;
+    }
+
+    .osa-message-feedback.recorded .osa-feedback-btn {
+      cursor: default;
+    }
+
+    .osa-message-feedback.recorded .osa-feedback-btn:not(.selected) {
+      opacity: 0.3;
+    }
+
+    .osa-message-feedback.recorded .osa-feedback-btn:hover {
+      background: transparent;
+    }
+
+    .osa-feedback-thanks {
+      font-size: 12px;
+      color: var(--osa-text-light);
+      margin-left: 4px;
+    }
+
     .osa-suggestions {
       padding: 12px 16px;
       border-top: 1px solid var(--osa-border);
@@ -808,6 +868,38 @@
     .osa-combined-footer .osa-footer-powered a:hover {
       color: var(--osa-primary);
       text-decoration: underline;
+    }
+
+    .osa-combined-footer .osa-footer-powered .osa-feedback-link {
+      background: none;
+      border: none;
+      padding: 0;
+      font: inherit;
+      color: var(--osa-text-light);
+      cursor: pointer;
+      text-decoration: none;
+    }
+
+    .osa-combined-footer .osa-footer-powered .osa-feedback-link:hover {
+      color: var(--osa-primary);
+      text-decoration: underline;
+    }
+
+    .osa-combined-footer .osa-footer-powered .osa-footer-sep {
+      margin: 0 4px;
+      color: var(--osa-border);
+    }
+
+    .osa-feedback-textarea {
+      resize: vertical;
+      min-height: 80px;
+      font-family: inherit;
+    }
+
+    .osa-feedback-modal-thanks {
+      padding: 16px 20px;
+      color: #16a34a;
+      font-weight: 600;
     }
 
     /* Settings modal - contained within chat window to avoid z-index conflicts
@@ -1766,6 +1858,103 @@
     closeSettings(container);
   }
 
+  // --- Feedback -----------------------------------------------------------
+
+  // Low-level POST to the feedback endpoint (anonymous; the worker proxies it
+  // to the backend's /feedback route). Best-effort: never throws to the caller.
+  async function postFeedback(payload) {
+    try {
+      const response = await fetch(`${CONFIG.apiEndpoint}/feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ community_id: CONFIG.communityId, ...payload }),
+      });
+      if (!response.ok) {
+        console.warn('[OSA] Feedback submission returned', response.status);
+        return false;
+      }
+      return true;
+    } catch (e) {
+      console.error('[OSA] Failed to submit feedback:', e);
+      return false;
+    }
+  }
+
+  // Record a thumbs up/down on a specific assistant reply. One vote per reply
+  // (per device): once set, the choice is locked to keep counts honest.
+  function submitResponseFeedback(container, msgIndex, sentiment) {
+    const msg = messages[msgIndex];
+    if (!msg || msg.role !== 'assistant') return;
+    if (msg.feedback) return; // already voted on this reply
+    if (sentiment !== 'up' && sentiment !== 'down') return;
+
+    msg.feedback = sentiment;
+    renderMessages(container);
+    try {
+      saveHistory();
+    } catch (e) {
+      console.error('[OSA] Failed to persist feedback locally:', e);
+    }
+
+    postFeedback({
+      feedback_type: 'response',
+      sentiment,
+      request_id: msg.requestId || null,
+      session_id: sessionId || null,
+      message_index: msgIndex,
+    });
+  }
+
+  // Open the general (free-text) feedback modal
+  function openFeedback(container) {
+    const overlay = container.querySelector('.osa-feedback-overlay');
+    if (!overlay) return;
+    const textarea = container.querySelector('#osa-feedback-text');
+    const thanks = container.querySelector('.osa-feedback-modal-thanks');
+    const form = container.querySelector('.osa-feedback-modal-form');
+    if (textarea) textarea.value = '';
+    if (thanks) thanks.style.display = 'none';
+    if (form) form.style.display = 'block';
+    overlay.classList.add('open');
+    if (textarea) textarea.focus();
+  }
+
+  function closeFeedback(container) {
+    const overlay = container.querySelector('.osa-feedback-overlay');
+    if (overlay) overlay.classList.remove('open');
+  }
+
+  // Send free-text general feedback (not tied to a single reply)
+  async function submitGeneralFeedback(container) {
+    const textarea = container.querySelector('#osa-feedback-text');
+    const comment = textarea ? textarea.value.trim() : '';
+    if (!comment) {
+      showError(container, 'Please enter some feedback first.');
+      return;
+    }
+    if (comment.length > 5000) {
+      showError(container, 'Feedback is too long (5000 character max).');
+      return;
+    }
+
+    const ok = await postFeedback({
+      feedback_type: 'general',
+      comment,
+      session_id: sessionId || null,
+      page_url: (typeof window !== 'undefined' && window.location) ? window.location.href : null,
+    });
+
+    if (ok) {
+      const thanks = container.querySelector('.osa-feedback-modal-thanks');
+      const form = container.querySelector('.osa-feedback-modal-form');
+      if (form) form.style.display = 'none';
+      if (thanks) thanks.style.display = 'block';
+      setTimeout(() => closeFeedback(container), 1500);
+    } else {
+      showError(container, 'Could not send feedback. Please try again later.');
+    }
+  }
+
   // Check backend health status
   async function checkBackendStatus() {
     const statusDot = document.querySelector('.osa-status-dot');
@@ -1965,6 +2154,8 @@
             <label for="osa-page-context-checkbox">${escapeHtml(CONFIG.pageContextLabel)}</label>
           </div>
           <div class="osa-footer-powered">
+            <button type="button" class="osa-feedback-link">Send feedback</button>
+            <span class="osa-footer-sep">·</span>
             Powered by <a href="${escapeHtml(CONFIG.repoUrl)}" target="_blank" rel="noopener noreferrer">OSA</a><span class="osa-version"></span>
           </div>
         </div>
@@ -2028,6 +2219,44 @@
           </div>
         </div>
       </div>
+        <div class="osa-settings-overlay osa-feedback-overlay">
+        <div class="osa-settings-modal osa-feedback-modal">
+          <div class="osa-settings-header">
+            <h3 class="osa-settings-title">Send feedback</h3>
+            <button class="osa-settings-close-btn osa-feedback-close-btn" aria-label="Close feedback">
+              ${ICONS.close}
+            </button>
+          </div>
+          <div class="osa-settings-body osa-feedback-modal-form">
+            <div class="osa-settings-field">
+              <label class="osa-settings-label" for="osa-feedback-text">
+                Tell us what's working or what could be better
+              </label>
+              <textarea
+                id="osa-feedback-text"
+                class="osa-settings-input osa-feedback-textarea"
+                rows="4"
+                maxlength="5000"
+                placeholder="Your feedback helps the maintainers improve this assistant..."
+              ></textarea>
+              <span class="osa-settings-hint">
+                Shared with the ${escapeHtml(CONFIG.title.replace(' Assistant', ''))} community maintainers. Please do not include personal information.
+              </span>
+            </div>
+          </div>
+          <div class="osa-feedback-modal-thanks" style="display: none;">
+            Thanks for your feedback!
+          </div>
+          <div class="osa-settings-footer">
+            <button class="osa-settings-btn osa-settings-btn-cancel osa-feedback-cancel-btn">
+              Cancel
+            </button>
+            <button class="osa-settings-btn osa-settings-btn-save osa-feedback-send-btn">
+              Send
+            </button>
+          </div>
+        </div>
+      </div>
       </div>
     `;
     document.body.appendChild(container);
@@ -2056,12 +2285,26 @@
         ? `<button class="osa-message-copy-btn" data-msg-index="${msgIndex}" title="Copy as markdown">${ICONS.copy}</button>`
         : '';
 
+      // Per-response feedback (thumbs up/down) for assistant replies, but not
+      // the canned opening greeting (index 0). Records sentiment only; free-text
+      // feedback lives in the "Send feedback" link in the footer.
+      const showFeedback = msg.role === 'assistant' && msgIndex > 0;
+      const fb = msg.feedback;
+      const feedbackRow = showFeedback
+        ? `<div class="osa-message-feedback${fb ? ' recorded' : ''}" data-msg-index="${msgIndex}">
+            <button class="osa-feedback-btn osa-feedback-up${fb === 'up' ? ' selected' : ''}" data-feedback="up" aria-pressed="${fb === 'up'}" title="Helpful">${ICONS.thumbUp}</button>
+            <button class="osa-feedback-btn osa-feedback-down${fb === 'down' ? ' selected' : ''}" data-feedback="down" aria-pressed="${fb === 'down'}" title="Not helpful">${ICONS.thumbDown}</button>
+            <span class="osa-feedback-thanks"${fb ? '' : ' style="display:none;"'}>Thanks!</span>
+          </div>`
+        : '';
+
       msgEl.innerHTML = `
         <div class="osa-message-header">
           <span class="osa-message-label">${escapeHtml(label)}</span>
           ${copyBtn}
         </div>
         <div class="osa-message-content">${content}</div>
+        ${feedbackRow}
       `;
       messagesEl.appendChild(msgEl);
     });
@@ -2090,6 +2333,17 @@
         if (messages[msgIndex] && messages[msgIndex].content) {
           copyToClipboard(messages[msgIndex].content, btn);
         }
+      });
+    });
+
+    // Per-response thumbs up/down buttons
+    messagesEl.querySelectorAll('.osa-message-feedback .osa-feedback-btn[data-feedback]').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const row = btn.closest('.osa-message-feedback');
+        const msgIndex = parseInt(row.getAttribute('data-msg-index'), 10);
+        const sentiment = btn.getAttribute('data-feedback');
+        submitResponseFeedback(container, msgIndex, sentiment);
       });
     });
 
@@ -2236,7 +2490,9 @@
             // Log tool completion
             console.log('[OSA] Tool completed:', event.name);
           } else if (event.event === 'session') {
-            // Capture session ID early (sent at stream start)
+            // Capture session ID early (sent at stream start). request_id is
+            // intentionally NOT sent here; it arrives on the 'done' event so it
+            // only attaches to a reply that completed successfully.
             if (event.session_id && typeof event.session_id === 'string') {
               sessionId = event.session_id;
             }
@@ -2250,6 +2506,9 @@
             receivedDoneEvent = true;
             if (event.session_id && typeof event.session_id === 'string') {
               sessionId = event.session_id;
+            }
+            if (event.request_id && typeof event.request_id === 'string') {
+              messages[messageIndex].requestId = event.request_id;
             }
             messages[messageIndex].content = accumulatedContent;
             renderMessages(container);
@@ -2473,7 +2732,11 @@
         if (!answer) {
           throw new Error('Invalid response from server');
         }
-        messages.push({ role: 'assistant', content: answer });
+        const assistantMsg = { role: 'assistant', content: answer };
+        if (data && typeof data.request_id === 'string') {
+          assistantMsg.requestId = data.request_id;
+        }
+        messages.push(assistantMsg);
         try {
           saveHistory();
         } catch (saveError) {
@@ -2849,6 +3112,23 @@
     settingsOverlay?.addEventListener('click', (e) => {
       if (e.target === settingsOverlay) {
         closeSettings(container);
+      }
+    });
+
+    // Feedback link + modal event listeners
+    const feedbackLink = container.querySelector('.osa-feedback-link');
+    const feedbackOverlay = container.querySelector('.osa-feedback-overlay');
+    const feedbackCloseBtn = container.querySelector('.osa-feedback-close-btn');
+    const feedbackCancelBtn = container.querySelector('.osa-feedback-cancel-btn');
+    const feedbackSendBtn = container.querySelector('.osa-feedback-send-btn');
+
+    feedbackLink?.addEventListener('click', () => openFeedback(container));
+    feedbackCloseBtn?.addEventListener('click', () => closeFeedback(container));
+    feedbackCancelBtn?.addEventListener('click', () => closeFeedback(container));
+    feedbackSendBtn?.addEventListener('click', () => submitGeneralFeedback(container));
+    feedbackOverlay?.addEventListener('click', (e) => {
+      if (e.target === feedbackOverlay) {
+        closeFeedback(container);
       }
     });
 
