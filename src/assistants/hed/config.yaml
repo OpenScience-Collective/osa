@@ -466,3 +466,4 @@ extensions:
 # Community maintainers listed above may open scoped PRs (touching only
 # this directory) that auto-approve and auto-merge via the community-admin
 # merge workflow.
+# (verifying the LGTM/merge comment command)
