@@ -162,6 +162,7 @@ src/
 - **.context/yaml_registry.md** - YAML-based community config (internal notes)
 - **.context/community_onboarding_review.md** - Onboarding gap analysis
 - **.context/local-testing-guide.md** - Quick local testing reference
+- **.context/community-admin-merge.md** - Maintainer auto-merge for community-scoped PRs (setup + trust model)
 - **Existing configs to reference**: `src/assistants/hed/config.yaml`, `src/assistants/eeglab/config.yaml`
 
 ### Tool System
