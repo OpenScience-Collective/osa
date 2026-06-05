@@ -122,7 +122,10 @@ class TestLookupBep:
             patch("src.assistants.bids.tools.get_db_path", return_value=bep_db),
             patch("src.knowledge.db.get_db_path", return_value=bep_db),
         ):
-            result = lookup_bep.invoke({"query": "nonexistent data type xyz"})
+            # Keyword search is OR-based and rank-ordered, so the query must
+            # contain no real terms present in any BEP to return zero results
+            # (e.g. "data" would match many BEP descriptions).
+            result = lookup_bep.invoke({"query": "qwertyuiop zxcvbnmlkj"})
 
         assert "No BEPs found" in result
 
