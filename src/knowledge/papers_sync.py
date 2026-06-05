@@ -14,6 +14,8 @@ See: https://github.com/neuromechanist/opencite
 
 import asyncio
 import logging
+import os
+import threading
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 
@@ -22,6 +24,7 @@ from opencite.citations import CitationExplorer
 from opencite.search import SearchOrchestrator
 
 from src.knowledge.db import get_connection, update_sync_metadata, upsert_paper
+from src.knowledge.search import SearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -397,3 +400,118 @@ def sync_citing_papers(
         total += count
 
     return total
+
+
+def _config_from_env() -> Config:
+    """Build an opencite Config from the server's configured API-key env vars.
+
+    Reads the same variables OSA settings use. Missing keys fall back to
+    anonymous access (fine for a single on-demand query). Specific env vars
+    are read by name rather than via Config.from_env() to avoid the ambient
+    ``.env`` parsing path.
+    """
+    return _build_config(
+        openalex_api_key=os.environ.get("OPENALEX_API_KEY"),
+        openalex_email=os.environ.get("OPENALEX_EMAIL"),
+        semantic_scholar_api_key=os.environ.get("SEMANTIC_SCHOLAR_API_KEY"),
+        pubmed_api_key=os.environ.get("PUBMED_API_KEY"),
+    )
+
+
+def _paper_to_result(paper: Paper) -> SearchResult:
+    """Convert an opencite Paper to the shared SearchResult shape."""
+    source, _ = _paper_source_and_id(paper)
+    return SearchResult(
+        title=paper.title,
+        url=_paper_url(paper),
+        snippet=paper.abstract or "",
+        source=source or "opencite",
+        item_type=None,
+        status="published",
+        created_at=str(paper.year) if paper.year else "",
+    )
+
+
+async def _search_recent(
+    config: Config,
+    query: str,
+    limit: int,
+    timeout: float,
+) -> list[Paper]:
+    """Live opencite search for the most recent papers, bounded by a timeout.
+
+    The per-request timeout (``config.timeout``, set by the caller) is the
+    primary bound and is kept just under ``timeout`` so each source finishes or
+    times out cleanly before the outer ``wait_for`` would have to cancel and
+    orphan opencite's in-flight tasks.
+    """
+    async with SearchOrchestrator(config) as searcher:
+        result = await asyncio.wait_for(
+            searcher.search(query, max_results=limit, sources=DEFAULT_SOURCES, sort="year"),
+            timeout=timeout,
+        )
+        return result.papers
+
+
+def _cache_papers_async(papers: list[Paper], project: str) -> threading.Thread:
+    """Cache live-search results into the DB without blocking the caller.
+
+    Caching is best-effort: it must never add latency to (or fail) the chat
+    response, so the write runs in a daemon thread and logs on error. Returns
+    the thread (useful for tests).
+    """
+
+    def _write() -> None:
+        try:
+            _store_papers(papers, project)
+        except Exception as e:
+            logger.warning("Failed to cache live search papers for %s: %s", project, e)
+
+    thread = threading.Thread(target=_write, name=f"cache-papers-{project}", daemon=True)
+    thread.start()
+    return thread
+
+
+def search_papers_live(
+    query: str,
+    project: str = "hed",
+    limit: int = 5,
+    cache: bool = True,
+    timeout: float = 20.0,
+) -> list[SearchResult]:
+    """Search the live literature via opencite for the most recent papers.
+
+    Unlike :func:`src.knowledge.search.search_papers` (local FTS over already
+    synced rows), this hits opencite's multi-source APIs for fresh results,
+    newest first. This is for on-demand discovery of papers the batch sync has
+    not picked up yet.
+
+    Args:
+        query: Topic to search for.
+        project: Community/project ID (for caching into the right DB).
+        limit: Maximum number of papers to return.
+        cache: When True (default), best-effort upsert the results into the
+            community knowledge DB (in a background thread, never blocking the
+            response) so future local searches find them.
+        timeout: Hard cap (seconds) on the opencite call to keep chat snappy.
+
+    Returns:
+        List of SearchResult, newest first. Empty on timeout/error.
+    """
+    config = _config_from_env()
+    # Bound each source request just under the overall cap so opencite's
+    # per-source tasks finish cleanly before wait_for would cancel them.
+    config.timeout = max(1.0, timeout - 2.0)
+    try:
+        papers = _run(_search_recent(config, query, limit, timeout))
+    except TimeoutError:
+        logger.warning("opencite live search timed out for '%s' after %.0fs", query, timeout)
+        return []
+    except Exception as e:
+        logger.warning("opencite live search failed for '%s': %s", query, e)
+        return []
+
+    if cache and papers:
+        _cache_papers_async(papers, project)
+
+    return [_paper_to_result(p) for p in papers[:limit]]

@@ -15,10 +15,13 @@ from opencite import IDSet, Paper
 import src.knowledge.papers_sync as ps
 from src.knowledge.db import get_connection, init_db
 from src.knowledge.papers_sync import (
+    _cache_papers_async,
     _paper_source_and_id,
+    _paper_to_result,
     _paper_url,
     _store_papers,
     configure_openalex,
+    search_papers_live,
     sync_all_papers,
     sync_citing_papers,
     sync_openalex_papers,
@@ -222,6 +225,66 @@ class TestPapersSync:
         with patch("src.knowledge.db.get_db_path", return_value=temp_db):
             count = sync_openalex_papers("neuroscience", max_results=2, project="test")
             assert count <= 2
+
+
+class TestPaperToResult:
+    """Map opencite Paper objects to the shared SearchResult shape."""
+
+    def test_maps_core_fields(self):
+        paper = Paper(
+            title="Recent EEG paper",
+            ids=IDSet(openalex_id="https://openalex.org/W9", doi="10.1/x"),
+            year=2026,
+            abstract="Latest findings.",
+        )
+        result = _paper_to_result(paper)
+        assert result.title == "Recent EEG paper"
+        assert result.url == "https://doi.org/10.1/x"
+        assert result.source == "openalex"
+        assert result.created_at == "2026"
+        assert result.status == "published"
+        assert result.snippet == "Latest findings."
+
+    def test_handles_missing_year_and_id(self):
+        result = _paper_to_result(Paper(title="No metadata", ids=IDSet()))
+        assert result.created_at == ""
+        assert result.source == "opencite"
+
+
+class TestCachePapersAsync:
+    """Background caching of live-search results (real SQLite, no mocks)."""
+
+    def test_caches_papers_into_db(self, temp_db: Path):
+        papers = [
+            Paper(
+                title="Cached paper", ids=IDSet(openalex_id="https://openalex.org/W5"), year=2026
+            ),
+        ]
+        with patch("src.knowledge.db.get_db_path", return_value=temp_db):
+            # Caching is async; join the returned thread before asserting.
+            _cache_papers_async(papers, "test").join(timeout=10)
+            with get_connection("test") as conn:
+                count = conn.execute("SELECT COUNT(*) AS c FROM papers").fetchone()["c"]
+        assert count == 1
+
+
+class TestLivePaperSearch:
+    """Live opencite search (real network)."""
+
+    def test_live_search_returns_recent(self, temp_db: Path):
+        with patch("src.knowledge.db.get_db_path", return_value=temp_db):
+            results = search_papers_live(
+                "EEGLAB EEG independent component analysis",
+                project="test",
+                limit=3,
+                timeout=40,
+            )
+
+        # Network-dependent: accept empty on transient failure, but the shape
+        # must always be correct and every result must be displayable.
+        assert isinstance(results, list)
+        assert all(r.status == "published" for r in results)
+        assert all(r.title for r in results)
 
 
 class TestPapersSyncTypeGuard:

@@ -22,6 +22,7 @@ import sqlite3
 from langchain_core.tools import BaseTool, StructuredTool
 
 from src.knowledge.db import get_db_path
+from src.knowledge.papers_sync import search_papers_live
 from src.knowledge.search import (
     get_full_docstring,
     list_recent_github_items,
@@ -252,6 +253,63 @@ def create_search_papers_tool(
     return StructuredTool.from_function(
         func=search_papers_impl,
         name=f"search_{community_id}_papers",
+        description=description,
+    )
+
+
+def create_search_papers_live_tool(
+    community_id: str,
+    community_name: str,
+) -> BaseTool:
+    """Create a tool for live (on-demand) academic paper search via opencite.
+
+    Unlike the local paper search (pre-synced rows), this fetches fresh results
+    from the live literature, newest first, and caches them for next time.
+
+    Args:
+        community_id: The community identifier (e.g., 'hed', 'eeglab')
+        community_name: Display name (e.g., 'HED', 'EEGLAB')
+
+    Returns:
+        A LangChain tool for live paper search
+    """
+
+    def search_papers_live_impl(query: str, limit: int = 5) -> str:
+        """Live academic paper search implementation."""
+        results = search_papers_live(query, project=community_id, limit=limit)
+
+        if not results:
+            return (
+                f"No recent papers found online for '{query}' "
+                "(the live search may have timed out; try the local paper search)."
+            )
+
+        lines = ["Most recent papers (live search):\n"]
+        for r in results:
+            year = f" ({r.created_at})" if r.created_at else ""
+            source_label = f"[{r.source}]" if r.source else ""
+            lines.append(f"- {r.title}{year} {source_label}")
+            lines.append(f"  [View Paper]({r.url})")
+            if r.snippet:
+                snippet = r.snippet[:200] + "..." if len(r.snippet) > 200 else r.snippet
+                lines.append(f"  Abstract: {snippet}")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    description = (
+        f"Search the LIVE literature for the most recent papers about {community_name}. "
+        "**Use this only when the user explicitly asks for recent / latest / new papers, "
+        "or when the local paper search returns nothing relevant.** "
+        "It queries external sources on demand (slower than the local search) and returns "
+        "the newest results first. "
+        "**This is for DISCOVERY, not answering** - present results as references for "
+        "further reading; do NOT use paper content to formulate answers."
+    )
+
+    return StructuredTool.from_function(
+        func=search_papers_live_impl,
+        name=f"search_{community_id}_papers_live",
         description=description,
     )
 
@@ -611,6 +669,7 @@ def create_knowledge_tools(
     include_discussions: bool = True,
     include_recent: bool = True,
     include_papers: bool = True,
+    include_live_papers: bool = False,
     include_docstrings: bool = False,
     docstrings_language: str | None = None,
     include_faq: bool = False,
@@ -629,6 +688,7 @@ def create_knowledge_tools(
         include_discussions: Include discussion search tool (default: True)
         include_recent: Include recent activity tool (default: True)
         include_papers: Include paper search tool (default: True)
+        include_live_papers: Include on-demand live paper search tool (default: False)
         include_docstrings: Include code docstring search tool (default: False)
         docstrings_language: Filter docstrings by language ('matlab' or 'python')
         include_faq: Include mailing list FAQ search tool (default: False)
@@ -648,6 +708,9 @@ def create_knowledge_tools(
 
     if include_papers:
         tools.append(create_search_papers_tool(community_id, community_name))
+
+    if include_live_papers:
+        tools.append(create_search_papers_live_tool(community_id, community_name))
 
     if include_docstrings:
         tools.append(
