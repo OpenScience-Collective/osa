@@ -64,12 +64,18 @@ jobs:
         run: |
           set -euo pipefail
           body="$(printf '%s' "$COMMENT_BODY" | tr '[:upper:]' '[:lower:]')"
-          if [[ "$body" == *lgtm* && "$body" == *merge* ]]; then
+          # Guard the most explicit negations so "LGTM, but do not merge yet"
+          # does not fire. (Bounded anyway: maintainer-only, CI-gated, cancellable.)
+          negated=false
+          case "$body" in
+            *"do not merge"*|*"don't merge"*|*"dont merge"*) negated=true ;;
+          esac
+          if [[ "$body" == *lgtm* && "$body" == *merge* && "$negated" == false ]]; then
             echo "command=true" >> "$GITHUB_OUTPUT"
             echo "Detected LGTM/merge command."
           else
             echo "command=false" >> "$GITHUB_OUTPUT"
-            echo "No LGTM/merge command in this comment; nothing to do."
+            echo "No actionable LGTM/merge command (keywords absent or negated); nothing to do."
           fi
 
       - name: Set up Python
@@ -80,7 +86,9 @@ jobs:
 
       - name: Install dependencies
         if: steps.cmd.outputs.command == 'true'
-        run: pip install pyyaml
+        # Pinned: this step parses YAML in a privileged context (App token is
+        # minted only in a later step, but pin anyway for supply-chain hygiene).
+        run: pip install "pyyaml==6.0.2"
 
       # ----------------------------------------------------------------------
       # Eligibility. Writes outputs: eligible (true/false), community, head_sha,
