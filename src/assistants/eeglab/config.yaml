@@ -35,6 +35,7 @@ cors_origins:
 # Used for scoped admin access and budget alert @mentions
 maintainers:
   - arnodelorme
+  - neuromechanist
 
 # Budget limits for cost management
 budget:

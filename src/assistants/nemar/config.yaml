@@ -33,6 +33,7 @@ cors_origins:
 # Community maintainers (GitHub usernames)
 maintainers:
   - arnodelorme
+  - neuromechanist
 
 # Budget limits for cost management
 budget:
