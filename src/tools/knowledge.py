@@ -280,8 +280,8 @@ def create_search_papers_live_tool(
 
         if not results:
             return (
-                f"No recent papers found online for '{query}' "
-                "(the live search may have timed out; try the local paper search)."
+                f"No recent papers found online for '{query}'. "
+                "Try rephrasing, or use the local paper search."
             )
 
         lines = ["Most recent papers (live search):\n"]
@@ -299,13 +299,14 @@ def create_search_papers_live_tool(
 
     description = (
         f"Live, on-demand search of the latest external literature about {community_name}, "
-        "newest first. This is SLOW (it queries the web and can take up to a minute). "
+        "newest first. It is slower than the local search (queries the web on demand; "
+        "up to ~15 seconds). "
         f"Always try the local `search_{community_id}_papers` first. "
         "**Only call this tool after the user has explicitly confirmed they want a live "
         "literature search** (or explicitly asked to search the web / for the very latest "
         "papers). Do NOT call it automatically as a first step. When you call it, your "
         "message in that turn should first tell the user you are searching the latest "
-        "literature and it may take a minute. "
+        "literature and it may take a few seconds. "
         "**This is for DISCOVERY, not answering** - present results as references for "
         "further reading; do NOT use paper content to formulate answers."
     )

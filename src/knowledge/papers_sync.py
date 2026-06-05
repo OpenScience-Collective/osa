@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from opencite import Config, Paper
 from opencite.citations import CitationExplorer
+from opencite.exceptions import APIKeyError, ConfigurationError, OpenCiteError
 from opencite.search import SearchOrchestrator
 
 from src.knowledge.db import get_connection, update_sync_metadata, upsert_paper
@@ -30,13 +31,15 @@ logger = logging.getLogger(__name__)
 
 # Scholarly sources synced by default (batch sync, where latency does not
 # matter). opencite also supports arxiv, biorxiv, medrxiv, osf, zenodo,
-# figshare, crossref and core.
+# figshare, crossref and core; those cover preprints / grey literature and are
+# deliberately omitted so the default batch sync stays focused on peer-reviewed
+# work.
 DEFAULT_SOURCES: tuple[str, ...] = ("openalex", "s2", "pubmed")
 
 # Interactive live search uses OpenAlex only: it is fast, free, comprehensive,
-# and supports recency sorting, so the chat stays responsive. The slower,
-# rate-limited sources (Semantic Scholar at ~1 req/s, PubMed) are deliberately
-# left to batch sync.
+# and supports server-side recency sorting (by publication date), so the chat
+# stays responsive. The slower, rate-limited sources (Semantic Scholar at
+# ~1 req/s, PubMed) are deliberately left to batch sync.
 LIVE_SOURCES: tuple[str, ...] = ("openalex",)
 
 # opencite source name -> OSA `papers.source` label. Kept stable so dedup and
@@ -470,8 +473,11 @@ def _cache_papers_async(papers: list[Paper], project: str) -> threading.Thread:
     def _write() -> None:
         try:
             _store_papers(papers, project)
-        except Exception as e:
-            logger.warning("Failed to cache live search papers for %s: %s", project, e)
+        except Exception:
+            # A failed cache write means these papers stay missing from local
+            # search until the next batch sync - a real degraded state, so log
+            # loudly (with traceback) even though the daemon thread must not crash.
+            logger.error("Failed to cache live search papers for %s", project, exc_info=True)
 
     thread = threading.Thread(target=_write, name=f"cache-papers-{project}", daemon=True)
     thread.start()
@@ -504,7 +510,8 @@ def search_papers_live(
         sources: opencite sources to query. Defaults to OpenAlex only for speed.
 
     Returns:
-        List of SearchResult, newest first. Empty on timeout/error.
+        List of SearchResult, newest first. Empty on timeout or a transient /
+        misconfiguration error (logged); programming errors propagate.
     """
     config = _config_from_env()
     # Bound each source request just under the overall cap so opencite's
@@ -515,9 +522,17 @@ def search_papers_live(
     except TimeoutError:
         logger.warning("opencite live search timed out for '%s' after %.0fs", query, timeout)
         return []
-    except Exception as e:
+    except (APIKeyError, ConfigurationError) as e:
+        # Permanent misconfiguration (bad/absent key) - surface loudly; it will
+        # not fix itself and otherwise looks identical to "no results".
+        logger.error("opencite live search misconfigured for '%s': %s", query, e)
+        return []
+    except OpenCiteError as e:
+        # Transient API/network/rate-limit failure - a warning + empty is fine.
         logger.warning("opencite live search failed for '%s': %s", query, e)
         return []
+    # Any other exception is a programming error: let it propagate rather than
+    # masquerade as an empty result set.
 
     if cache and papers:
         _cache_papers_async(papers, project)

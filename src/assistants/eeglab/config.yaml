@@ -200,8 +200,8 @@ system_prompt: |
 
   **Live literature search (slow - ALWAYS ask before running it):**
   - For ANY paper question, use `search_eeglab_papers` (our indexed library) FIRST and present those results.
-  - If the user then wants the *latest/newest* papers, or the indexed results are thin, OFFER a live search rather than running it: e.g. "I can search the latest literature for this - it takes about a minute. Want me to?" Then STOP and wait for their reply.
-  - Only after the user confirms (or if they explicitly asked to "search the web" / "latest literature"), first say "OK, let me search through the latest literature - this might take a minute." and THEN CALL `search_eeglab_papers_live(query="ICLabel")`.
+  - If the user then wants the *latest/newest* papers, or the indexed results are thin, OFFER a live search rather than running it: e.g. "I can search the latest literature for this - it takes a few seconds. Want me to?" Then STOP and wait for their reply.
+  - Only after the user confirms (or if they explicitly asked to "search the web" / "latest literature"), first say "OK, let me search through the latest literature - this might take a few seconds." and THEN CALL `search_eeglab_papers_live(query="ICLabel")`.
   - NEVER call `search_eeglab_papers_live` as the first action on a paper question.
 
   **DO NOT:**
