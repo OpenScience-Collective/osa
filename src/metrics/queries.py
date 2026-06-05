@@ -593,6 +593,122 @@ def get_quality_summary(community_id: str, conn: sqlite3.Connection) -> dict[str
     }
 
 
+# ---------------------------------------------------------------------------
+# Feedback queries
+# ---------------------------------------------------------------------------
+
+
+def get_feedback_summary(
+    conn: sqlite3.Connection,
+    community_id: str | None = None,
+) -> dict[str, Any]:
+    """Get aggregate feedback counts.
+
+    Args:
+        conn: SQLite connection (with row_factory=sqlite3.Row).
+        community_id: Filter to a single community, or None for all communities.
+
+    Returns:
+        Dict with thumbs_up, thumbs_down, response_total, general_total,
+        comment_total, and a satisfaction_rate (up / (up + down)).
+    """
+    where = ""
+    params: tuple = ()
+    if community_id:
+        where = "WHERE community_id = ?"
+        params = (community_id,)
+
+    row = conn.execute(
+        f"""
+        SELECT
+            COUNT(CASE WHEN sentiment = 'up' THEN 1 END) as thumbs_up,
+            COUNT(CASE WHEN sentiment = 'down' THEN 1 END) as thumbs_down,
+            COUNT(CASE WHEN feedback_type = 'response' THEN 1 END) as response_total,
+            COUNT(CASE WHEN feedback_type = 'general' THEN 1 END) as general_total,
+            COUNT(CASE WHEN comment IS NOT NULL AND TRIM(comment) != '' THEN 1 END)
+                as comment_total
+        FROM feedback_log
+        {where}
+        """,
+        params,
+    ).fetchone()
+
+    up = row["thumbs_up"]
+    down = row["thumbs_down"]
+    rated = up + down
+
+    return {
+        "community_id": community_id,
+        "thumbs_up": up,
+        "thumbs_down": down,
+        "response_total": row["response_total"],
+        "general_total": row["general_total"],
+        "comment_total": row["comment_total"],
+        "satisfaction_rate": round(up / rated, 4) if rated > 0 else None,
+    }
+
+
+def get_feedback_entries(
+    conn: sqlite3.Connection,
+    community_id: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    with_comment_only: bool = False,
+) -> list[dict[str, Any]]:
+    """Get individual feedback rows, most recent first.
+
+    Args:
+        conn: SQLite connection.
+        community_id: Filter to a single community, or None for all communities.
+        limit: Maximum number of rows to return (clamped 1..500).
+        offset: Number of rows to skip (for pagination).
+        with_comment_only: If True, return only rows that carry a free-text comment.
+
+    Returns:
+        List of dicts with timestamp, community_id, feedback_type, sentiment,
+        comment, request_id, session_id, message_index, page_url.
+    """
+    limit = max(1, min(int(limit), 500))
+    offset = max(0, int(offset))
+
+    clauses: list[str] = []
+    params: list[Any] = []
+    if community_id:
+        clauses.append("community_id = ?")
+        params.append(community_id)
+    if with_comment_only:
+        clauses.append("comment IS NOT NULL AND TRIM(comment) != ''")
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+    rows = conn.execute(
+        f"""
+        SELECT
+            timestamp, community_id, feedback_type, sentiment,
+            comment, request_id, session_id, message_index, page_url
+        FROM feedback_log
+        {where}
+        ORDER BY timestamp DESC, id DESC
+        LIMIT ? OFFSET ?
+        """,
+        (*params, limit, offset),
+    ).fetchall()
+
+    return [
+        {
+            "timestamp": r["timestamp"],
+            "community_id": r["community_id"],
+            "feedback_type": r["feedback_type"],
+            "sentiment": r["sentiment"],
+            "comment": r["comment"],
+            "request_id": r["request_id"],
+            "session_id": r["session_id"],
+            "message_index": r["message_index"],
+            "page_url": r["page_url"],
+        }
+        for r in rows
+    ]
+
+
 def _percentile(sorted_values: list[float], pct: float) -> float | None:
     """Compute percentile from a sorted list of values.
 

@@ -17,6 +17,7 @@ from src.api.config import get_settings
 from src.api.routers import (
     communities_router,
     create_community_router,
+    feedback_router,
     metrics_public_router,
     metrics_router,
     mirrors_router,
@@ -272,6 +273,9 @@ def register_routes(app: FastAPI) -> None:
     # Communities metadata endpoint (public, for widget config)
     app.include_router(communities_router)
 
+    # Feedback endpoint (public; anonymous widget users submit thumbs/comments)
+    app.include_router(feedback_router)
+
     # Health check router
     app.include_router(health_router)
 
@@ -323,7 +327,9 @@ def register_routes(app: FastAPI) -> None:
         endpoints["POST /sync/trigger"] = "Trigger sync (requires API key)"
         endpoints["GET /metrics/overview"] = "Metrics overview (requires admin key)"
         endpoints["GET /metrics/tokens"] = "Token breakdown (requires admin key)"
+        endpoints["GET /metrics/feedback"] = "User feedback (requires admin key)"
         endpoints["GET /metrics/public/overview"] = "Public metrics overview"
+        endpoints["POST /feedback"] = "Submit user feedback (thumbs up/down or comment)"
         endpoints["GET /health"] = "Health check"
 
         return {

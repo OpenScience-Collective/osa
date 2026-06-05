@@ -14,6 +14,8 @@ from src.api.security import RequireScopedAuth
 from src.metrics.db import metrics_connection
 from src.metrics.queries import (
     get_community_summary,
+    get_feedback_entries,
+    get_feedback_summary,
     get_overview,
     get_quality_summary,
     get_token_breakdown,
@@ -65,6 +67,47 @@ async def token_breakdown(
             return get_token_breakdown(conn, community_id=effective_community)
     except sqlite3.Error:
         logger.exception("Failed to query metrics database for token breakdown")
+        raise HTTPException(
+            status_code=503,
+            detail="Metrics database is temporarily unavailable.",
+        )
+
+
+@router.get("/feedback")
+async def feedback(
+    auth: RequireScopedAuth,
+    community_id: str | None = Query(default=None, description="Filter by community"),
+    limit: int = Query(default=100, ge=1, le=500, description="Max comment rows to return"),
+    offset: int = Query(default=0, ge=0, description="Rows to skip (pagination)"),
+    comments_only: bool = Query(
+        default=False, description="Return only entries that carry a free-text comment"
+    ),
+) -> dict[str, Any]:
+    """Get user feedback (thumbs up/down counts and free-text comments).
+
+    Global admin keys can filter by any community (or see all). Per-community
+    keys are automatically scoped to their own community.
+    """
+    # Community-scoped keys always filter to their own community
+    effective_community = community_id
+    if auth.role == "community":
+        effective_community = auth.community_id
+
+    try:
+        with metrics_connection() as conn:
+            return {
+                "community_id": effective_community,
+                "summary": get_feedback_summary(conn, community_id=effective_community),
+                "entries": get_feedback_entries(
+                    conn,
+                    community_id=effective_community,
+                    limit=limit,
+                    offset=offset,
+                    with_comment_only=comments_only,
+                ),
+            }
+    except sqlite3.Error:
+        logger.exception("Failed to query metrics database for feedback")
         raise HTTPException(
             status_code=503,
             detail="Metrics database is temporarily unavailable.",
