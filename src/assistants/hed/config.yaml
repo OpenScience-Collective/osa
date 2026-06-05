@@ -462,3 +462,7 @@ extensions:
         - validate_hed_string
         - suggest_hed_tags
         - get_hed_schema_versions
+
+# Community maintainers listed above may open scoped PRs (touching only
+# this directory) that auto-approve and auto-merge via the community-admin
+# merge workflow.
