@@ -20,6 +20,12 @@ enable_page_context: true
 cors_origins:
   - https://bids.neuroimaging.io
   - https://bids-specification.readthedocs.io
+  # Temporary: ReadTheDocs PR preview builds, so reviewers can try the widget
+  # before merge. Remove once these PRs are merged:
+  #   bids-standard/bids-specification#2442  (spec site)
+  #   bids-standard/bids-website#847         (website)
+  - https://bids-specification--2442.org.readthedocs.build
+  - https://bids-website--847.org.readthedocs.build
 
 # Per-community OpenRouter API key (optional)
 openrouter_api_key_env_var: "OPENROUTER_API_KEY_BIDS"
