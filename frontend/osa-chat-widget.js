@@ -1938,6 +1938,7 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ community_id: CONFIG.communityId, ...payload }),
+        signal: AbortSignal.timeout(10000),
       });
       if (!response.ok) {
         console.warn('[OSA] Feedback submission returned', response.status);
@@ -2069,12 +2070,25 @@
       return;
     }
 
-    const ok = await postFeedback({
-      feedback_type: 'general',
-      comment,
-      session_id: sessionId || null,
-      page_url: (typeof window !== 'undefined' && window.location) ? window.location.href : null,
-    });
+    // Guard against a double-click submitting the comment twice while the POST
+    // is in flight (each would store a separate row).
+    const sendBtn = container.querySelector('.osa-feedback-send-btn');
+    if (sendBtn) {
+      if (sendBtn.disabled) return;
+      sendBtn.disabled = true;
+    }
+
+    let ok = false;
+    try {
+      ok = await postFeedback({
+        feedback_type: 'general',
+        comment,
+        session_id: sessionId || null,
+        page_url: (typeof window !== 'undefined' && window.location) ? window.location.href : null,
+      });
+    } finally {
+      if (sendBtn) sendBtn.disabled = false;
+    }
 
     if (ok) {
       const thanks = container.querySelector('.osa-feedback-modal-thanks');
