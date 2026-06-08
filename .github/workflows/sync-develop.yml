@@ -30,14 +30,26 @@ jobs:
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout develop
+      # Check out main, not develop: under the workflow_run trigger the
+      # checkout action's wildcard fetch (+refs/heads/*) intermittently
+      # advertises only `main`, so `ref: develop` fails with "a branch or tag
+      # with the name 'develop' could not be found" (broke every release through
+      # v0.8.4). main is always advertised; we fetch develop by explicit name
+      # in the next step, which requests the ref directly and is reliable.
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
-          ref: develop
+          ref: main
           fetch-depth: 0
           # CI_ADMIN_TOKEN lets this push to develop without tripping
           # branch protection (same pattern as ensure-stable-version.yml).
           token: ${{ secrets.CI_ADMIN_TOKEN }}
+
+      - name: Check out develop by explicit ref
+        run: |
+          git fetch origin +refs/heads/develop:refs/remotes/origin/develop
+          git checkout -B develop refs/remotes/origin/develop
+          git log --oneline -1
 
       - name: Set up Python
         uses: actions/setup-python@v5
