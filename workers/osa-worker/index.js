@@ -158,7 +158,9 @@ function isAllowedOrigin(origin) {
   const allowedPatterns = [
     'https://osc.earth',
     'https://*.mne.tools',
+    'https://bids-specification--2442.org.readthedocs.build',
     'https://bids-specification.readthedocs.io',
+    'https://bids-website--847.org.readthedocs.build',
     'https://bids.neuroimaging.io',
     'https://eeglab.org',
     'https://fieldtriptoolbox.org',
@@ -188,6 +190,7 @@ function isAllowedOrigin(origin) {
   if (origin.startsWith('https://') && origin.endsWith('.mne.tools')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.nemar.org')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.neuroimaging.io')) return true;
+  if (origin.startsWith('https://') && origin.endsWith('.readthedocs.build')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.readthedocs.io')) return true;
 
   // Allow demo.osc.earth and single-level subdomains (develop-demo, PR previews)
