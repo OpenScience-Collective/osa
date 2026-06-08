@@ -414,6 +414,7 @@ github:
 
 # Paper/citation search configuration
 citations:
+  live_search: true  # prompt already instructs the agent to ask before running it
   queries:
     - EEGLAB tutorial
     - EEGLAB plugin
