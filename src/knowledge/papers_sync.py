@@ -16,8 +16,9 @@ import asyncio
 import logging
 import os
 import threading
-from collections.abc import Iterable
+from collections.abc import Coroutine, Iterable
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any, TypeVar
 
 from opencite import Config, Paper
 from opencite.citations import CitationExplorer
@@ -198,7 +199,10 @@ def _store_papers(
     return counts
 
 
-def _run(coro):
+_T = TypeVar("_T")
+
+
+def _run(coro: Coroutine[Any, Any, _T]) -> _T:
     """Execute an async coroutine from synchronous code.
 
     OSA's sync callers (CLI command, scheduler thread) have no running event
@@ -232,8 +236,14 @@ async def _search_queries(
             try:
                 result = await searcher.search(query, max_results=max_results, sources=sources)
                 out.append((query, result.papers))
-            except Exception as e:
+            except (OpenCiteError, TimeoutError) as e:
                 logger.warning("opencite search error for '%s': %s", query, e)
+                out.append((query, []))
+            except Exception:
+                # Unexpected (likely a bug, not an API failure): keep the batch
+                # going but log loudly with a traceback so it is not mistaken
+                # for a routine "no results" outcome.
+                logger.exception("unexpected error searching '%s'", query)
                 out.append((query, []))
     return out
 
@@ -250,8 +260,11 @@ async def _citing_for_dois(
             try:
                 result = await explorer.citing_papers(doi, max_results=max_results)
                 out.append((doi, result.papers))
-            except Exception as e:
+            except (OpenCiteError, TimeoutError) as e:
                 logger.warning("opencite citation error for DOI %s: %s", doi, e)
+                out.append((doi, []))
+            except Exception:
+                logger.exception("unexpected error fetching citations for DOI %s", doi)
                 out.append((doi, []))
     return out
 
@@ -357,10 +370,15 @@ def sync_all_papers(
         return results
 
     for query, papers in searched:
-        counts = _store_papers(papers, project)
-        for source, n in counts.items():
-            results[source] = results.get(source, 0) + n
-        update_sync_metadata("papers", f"opencite:{query}", sum(counts.values()), project)
+        try:
+            counts = _store_papers(papers, project)
+            for source, n in counts.items():
+                results[source] = results.get(source, 0) + n
+            update_sync_metadata("papers", f"opencite:{query}", sum(counts.values()), project)
+        except Exception:
+            # Isolate per-query: a DB failure on one query must not abort the
+            # whole batch or leave sync metadata inconsistent for the others.
+            logger.exception("failed to store papers for '%s' (%s)", query, project)
 
     total = sum(results.values())
     logger.info("Total papers synced for %s: %d", project, total)
@@ -401,11 +419,15 @@ def sync_citing_papers(
 
     total = 0
     for doi, papers in cited:
-        counts = _store_papers(papers, project)
-        count = sum(counts.values())
-        update_sync_metadata("papers", f"citing_{doi}", count, project)
-        logger.info("Synced %d papers citing %s", count, doi)
-        total += count
+        try:
+            counts = _store_papers(papers, project)
+            count = sum(counts.values())
+            update_sync_metadata("papers", f"citing_{doi}", count, project)
+            logger.info("Synced %d papers citing %s", count, doi)
+            total += count
+        except Exception:
+            # Isolate per-DOI so one DB failure does not abort the batch.
+            logger.exception("failed to store citing papers for %s (%s)", doi, project)
 
     return total
 

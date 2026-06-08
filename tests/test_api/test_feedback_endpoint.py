@@ -116,6 +116,15 @@ class TestSubmitFeedback:
         )
         assert resp.status_code == 422
 
+    def test_general_whitespace_comment_rejected(self, client):
+        # _normalize collapses a whitespace-only comment to None, and _check_shape
+        # then rejects general feedback that carries no real comment.
+        resp = client.post(
+            "/feedback",
+            json={"community_id": "hed", "feedback_type": "general", "comment": "   "},
+        )
+        assert resp.status_code == 422
+
     def test_oversized_comment_rejected(self, client):
         resp = client.post(
             "/feedback",

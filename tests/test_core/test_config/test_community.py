@@ -150,6 +150,11 @@ class TestCitationConfig:
         assert config.queries == []
         assert config.dois == []
 
+    def test_live_search_off_by_default(self) -> None:
+        """Live search is opt-in: a community must enable it explicitly."""
+        assert CitationConfig().live_search is False
+        assert CitationConfig(live_search=True).live_search is True
+
     def test_validates_doi_format(self) -> None:
         """Should validate DOI format."""
         with pytest.raises(ValidationError, match="Invalid DOI format"):

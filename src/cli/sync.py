@@ -190,7 +190,7 @@ def _safe_load_config() -> tuple[str | None, str | None]:
     if not pubmed_key:
         pubmed_key = os.environ.get("PUBMED_API_KEY")
 
-    # Configure OpenAlex from env vars (pyalex uses global config)
+    # Configure OpenAlex credentials from env vars (merged into the opencite Config)
     openalex_key = os.environ.get("OPENALEX_API_KEY")
     openalex_email = os.environ.get("OPENALEX_EMAIL")
     configure_openalex(api_key=openalex_key, email=openalex_email)

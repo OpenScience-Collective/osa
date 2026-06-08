@@ -125,18 +125,23 @@ async def submit_feedback(
             body.community_id,
         )
 
-    entry = FeedbackEntry(
-        feedback_id=str(uuid.uuid4()),
-        timestamp=now_iso(),
-        community_id=body.community_id,
-        feedback_type=body.feedback_type,
-        sentiment=body.sentiment,
-        request_id=body.request_id,
-        session_id=body.session_id,
-        message_index=body.message_index,
-        comment=body.comment,
-        page_url=body.page_url,
-    )
+    try:
+        entry = FeedbackEntry(
+            feedback_id=str(uuid.uuid4()),
+            timestamp=now_iso(),
+            community_id=body.community_id,
+            feedback_type=body.feedback_type,
+            sentiment=body.sentiment,
+            request_id=body.request_id,
+            session_id=body.session_id,
+            message_index=body.message_index,
+            comment=body.comment,
+            page_url=body.page_url,
+        )
+    except ValueError as e:
+        # FeedbackRequest already validates these invariants; this guards against
+        # the two validators drifting apart so a bad shape returns 422, not 500.
+        raise HTTPException(status_code=422, detail=str(e)) from e
 
     # write_feedback is best-effort: it logs and swallows storage errors (and
     # escalates after repeated failures) rather than failing the user's request,

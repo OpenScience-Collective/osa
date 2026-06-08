@@ -56,7 +56,6 @@ server = [
     "langchain-litellm>=0.2.0",
     # External APIs
     "pygithub>=2.8.0",
-    "pyalex>=0.19",
     # Database
     "psycopg[binary]>=3.3.0",
     # Utilities
