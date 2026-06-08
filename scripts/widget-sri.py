@@ -46,7 +46,7 @@ def main() -> None:
 
     hash_value = sri(content)
     print(f"\nSRI hash ({label}):")
-    print(f"  integrity=\"{hash_value}\"")
+    print(f'  integrity="{hash_value}"')
 
     if tag:
         print(f"\nVersioned embed snippet for {tag}:")
