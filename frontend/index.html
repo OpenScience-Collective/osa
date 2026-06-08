@@ -391,6 +391,17 @@
   });
 &lt;/script&gt;</code></pre>
           <p>The widget auto-configures the API endpoint based on the <code>communityId</code>.</p>
+          <hr style="margin: 16px 0; border: none; border-top: 1px solid #e5e7eb;">
+          <p><strong>Security-sensitive environments</strong> (supply-chain policies, SRI required): pin to a specific release using a versioned jsDelivr URL. The <code>integrity</code> hash for each release is published in the <a href="https://github.com/OpenScience-Collective/osa/releases" target="_blank" rel="noopener noreferrer">GitHub releases</a>.</p>
+          <pre><code>&lt;!-- Replace vX.Y.Z and the integrity hash from the GitHub release notes --&gt;
+&lt;script src="https://cdn.jsdelivr.net/gh/OpenScience-Collective/osa@vX.Y.Z/frontend/osa-chat-widget.js"
+        integrity="sha384-..."
+        crossorigin="anonymous"
+        defer&gt;&lt;/script&gt;
+&lt;script&gt;
+  OSAChatWidget.setConfig({ communityId: 'hed' });
+&lt;/script&gt;</code></pre>
+          <p style="font-size: 13px; color: #6b7280;">Note: you must update the version tag manually when upgrading.</p>
         </div>
 
         <div class="info-box">
@@ -479,6 +490,17 @@
     // widgetInstructions: 'Focus on topics relevant to this page.'
   });
 &lt;/script&gt;</code></pre>
+          <hr style="margin: 16px 0; border: none; border-top: 1px solid #e5e7eb;">
+          <p><strong>Security-sensitive environments</strong> (supply-chain policies, SRI required): use a versioned URL pinned to a specific release. The <code>integrity</code> hash for each release is published in the <a href="https://github.com/OpenScience-Collective/osa/releases" target="_blank" rel="noopener noreferrer">GitHub releases</a>.</p>
+          <pre><code>&lt;!-- Replace vX.Y.Z and the integrity hash from the GitHub release notes --&gt;
+&lt;script src="https://cdn.jsdelivr.net/gh/OpenScience-Collective/osa@vX.Y.Z/frontend/osa-chat-widget.js"
+        integrity="sha384-..."
+        crossorigin="anonymous"
+        defer&gt;&lt;/script&gt;
+&lt;script&gt;
+  OSAChatWidget.setConfig({ communityId: '${communityId}' });
+&lt;/script&gt;</code></pre>
+          <p style="font-size: 13px; color: #6b7280;">Note: you must update the version tag manually when upgrading.</p>
         </div>
 
         <div class="info-box">

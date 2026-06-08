@@ -58,6 +58,45 @@ jobs:
           EOF
 
           echo "Generated release notes for v${{ steps.version.outputs.version }}"
+      - name: Append widget SRI hash to release notes
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          HASH=$(python3 -c "
+          import hashlib, base64
+          with open('frontend/osa-chat-widget.js', 'rb') as f:
+              content = f.read()
+          print('sha384-' + base64.b64encode(hashlib.sha384(content).digest()).decode())
+          ")
+          export OSA_VERSION="$VERSION"
+          export OSA_SRI="$HASH"
+          python3 - <<'PYEOF'
+          import os
+          import pathlib
+
+          version = os.environ["OSA_VERSION"]
+          sri = os.environ["OSA_SRI"]
+          section = [
+              "",
+              "## Widget Embedding",
+              "",
+              "**Standard** (always latest):",
+              "```html",
+              '<script src="https://demo.osc.earth/osa-chat-widget.js"></script>',
+              "```",
+              "",
+              "**Versioned + SRI** (for supply-chain-secure environments):",
+              "```html",
+              f'<script src="https://cdn.jsdelivr.net/gh/OpenScience-Collective/osa@v{version}/frontend/osa-chat-widget.js"',
+              f'        integrity="{sri}"',
+              '        crossorigin="anonymous"',
+              "        defer></script>",
+              "```",
+              "> Pin to this exact release. Update the tag when upgrading.",
+              "",
+          ]
+          path = pathlib.Path("/tmp/release_notes.md")
+          path.write_text(path.read_text() + "\n".join(section))
+          PYEOF
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

@@ -35,6 +35,7 @@ cors_origins:
 # Used for scoped admin access and budget alert @mentions
 maintainers:
   - arnodelorme
+  - neuromechanist
 
 # Budget limits for cost management
 budget:
@@ -145,7 +146,8 @@ system_prompt: |
   5. `search_eeglab_faq`: Search mailing list Q&A (archives since 2004)
 
   **Research:**
-  6. `search_eeglab_papers`: Search academic literature about EEGLAB and EEG analysis
+  6. `search_eeglab_papers`: Search our already-indexed academic literature about EEGLAB and EEG analysis (instant - use this first)
+  7. `search_eeglab_papers_live`: SLOW live search of the latest external literature; only after the user confirms they want it (see the Papers flow below)
 
   ## Tool Usage Guidelines
 
@@ -191,10 +193,16 @@ system_prompt: |
   **Core EEGLAB papers tracked for citations (DOIs in database):**
   {paper_dois}
 
-  **MANDATORY: Use tools for citation/paper questions:**
+  **MANDATORY: paper/citation questions use the LOCAL index first:**
   - "Has anyone cited the EEGLAB paper?" -> CALL `search_eeglab_papers(query="EEGLAB")`
   - "Papers about ICA in EEGLAB?" -> CALL `search_eeglab_papers(query="ICA EEGLAB")`
   - "Research on ICLabel?" -> CALL `search_eeglab_papers(query="ICLabel")`
+
+  **Live literature search (slow - ALWAYS ask before running it):**
+  - For ANY paper question, use `search_eeglab_papers` (our indexed library) FIRST and present those results.
+  - If the user then wants the *latest/newest* papers, or the indexed results are thin, OFFER a live search rather than running it: e.g. "I can search the latest literature for this - it takes a few seconds. Want me to?" Then STOP and wait for their reply.
+  - Only after the user confirms (or if they explicitly asked to "search the web" / "latest literature"), first say "OK, let me search through the latest literature - this might take a few seconds." and THEN CALL `search_eeglab_papers_live(query="ICLabel")`.
+  - NEVER call `search_eeglab_papers_live` as the first action on a paper question.
 
   **DO NOT:**
   - Tell users to "visit GitHub", "check Google Scholar", or "use the API" when you have the data
@@ -406,6 +414,7 @@ github:
 
 # Paper/citation search configuration
 citations:
+  live_search: true  # prompt already instructs the agent to ask before running it
   queries:
     - EEGLAB tutorial
     - EEGLAB plugin

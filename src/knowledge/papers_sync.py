@@ -1,177 +1,301 @@
-"""Paper sync from OpenALEX, Semantic Scholar, and PubMed Central.
+"""Paper sync backed by opencite.
 
-Syncs papers for community-configured search queries.
-Only stores title, abstract snippet, URL, and publication date.
+Fetches papers through the `opencite` multi-source search/citation client and
+writes them into the local knowledge database. opencite aggregates and
+deduplicates across OpenAlex, Semantic Scholar, PubMed (and more), replacing
+the previous hand-rolled per-source fetchers and inverted-index handling.
 
-Rate limits:
-- OpenALEX: No key required, generous limits
-- Semantic Scholar: ~100 requests/5 min (free), higher with API key
-- PubMed: ~3 requests/sec without key, 10/sec with key
+Public sync functions keep their original signatures so the CLI
+(`src/cli/sync.py`) and the scheduler (`src/api/scheduler.py`) call them
+unchanged; only the fetch layer is swapped.
+
+See: https://github.com/neuromechanist/opencite
 """
 
+import asyncio
 import logging
-import time
-import xml.etree.ElementTree as ET
-from typing import Any
+import os
+import threading
+from collections.abc import Coroutine, Iterable
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, TypeVar
 
-import httpx
-import pyalex
-from pyalex import Works
+from opencite import Config, Paper
+from opencite.citations import CitationExplorer
+from opencite.exceptions import APIKeyError, ConfigurationError, OpenCiteError
+from opencite.search import SearchOrchestrator
 
 from src.knowledge.db import get_connection, update_sync_metadata, upsert_paper
+from src.knowledge.search import SearchResult
 
 logger = logging.getLogger(__name__)
 
-# Rate limiting settings
-SEMANTIC_SCHOLAR_DELAY = 3.0  # seconds between requests (to stay under 100/5min)
-PUBMED_DELAY = 0.4  # seconds between requests (to stay under 3/sec)
+# Scholarly sources synced by default (batch sync, where latency does not
+# matter). opencite also supports arxiv, biorxiv, medrxiv, osf, zenodo,
+# figshare, crossref and core; those cover preprints / grey literature and are
+# deliberately omitted so the default batch sync stays focused on peer-reviewed
+# work.
+DEFAULT_SOURCES: tuple[str, ...] = ("openalex", "s2", "pubmed")
+
+# Interactive live search uses OpenAlex only: it is fast, free, comprehensive,
+# and supports server-side recency sorting (by publication date), so the chat
+# stays responsive. The slower, rate-limited sources (Semantic Scholar at
+# ~1 req/s, PubMed) are deliberately left to batch sync.
+LIVE_SOURCES: tuple[str, ...] = ("openalex",)
+
+# opencite source name -> OSA `papers.source` label. Kept stable so dedup and
+# the existing rows in the database (openalex / semanticscholar / pubmed) line
+# up with newly synced papers.
+_OSA_SOURCE_BY_OPENCITE: dict[str, str] = {
+    "openalex": "openalex",
+    "s2": "semanticscholar",
+    "pubmed": "pubmed",
+}
+# OSA source label -> opencite source name (used to restrict per-source syncs).
+_OPENCITE_SOURCE_BY_OSA: dict[str, str] = {v: k for k, v in _OSA_SOURCE_BY_OPENCITE.items()}
+
+# OpenAlex credentials set via configure_openalex(); merged into the per-sync
+# Config as a fallback when explicit call arguments are not supplied. This
+# preserves the CLI's "configure once, sync many" pattern.
+_OPENALEX_API_KEY: str | None = None
+_OPENALEX_EMAIL: str | None = None
 
 
 def configure_openalex(api_key: str | None = None, email: str | None = None) -> None:
-    """Configure pyalex with API key or email for polite pool access.
+    """Store OpenAlex credentials for subsequent opencite-backed syncs.
+
+    OpenAlex works anonymously; an API key grants premium limits and a contact
+    email enables the faster polite pool. Values are merged into the opencite
+    Config built for each sync (explicit per-call arguments still win).
 
     Args:
-        api_key: OpenAlex API key for premium access (~2M requests).
-        email: Email for polite pool access (faster than anonymous).
+        api_key: OpenAlex API key for premium access.
+        email: Contact email for OpenAlex polite pool access.
     """
-    # Treat empty strings as None
-    api_key = api_key.strip() if api_key else None
-    email = email.strip() if email else None
+    global _OPENALEX_API_KEY, _OPENALEX_EMAIL
+    _OPENALEX_API_KEY = api_key.strip() if api_key and api_key.strip() else None
+    _OPENALEX_EMAIL = email.strip() if email and email.strip() else None
 
-    if api_key:
-        pyalex.config.api_key = api_key
+    if _OPENALEX_API_KEY:
         logger.info("OpenAlex configured with API key")
-    elif email:
-        pyalex.config.email = email
-        logger.info("OpenAlex configured with email: %s (polite pool)", email)
+    elif _OPENALEX_EMAIL:
+        logger.info("OpenAlex configured with email: %s (polite pool)", _OPENALEX_EMAIL)
     else:
         logger.debug("OpenAlex using anonymous access (lower rate limits)")
 
 
-def _reconstruct_abstract(inverted_index: dict[str, list[int]] | None) -> str:
-    """Reconstruct abstract from OpenALEX inverted index format.
+def _build_config(
+    *,
+    openalex_api_key: str | None = None,
+    openalex_email: str | None = None,
+    semantic_scholar_api_key: str | None = None,
+    pubmed_api_key: str | None = None,
+) -> Config:
+    """Build an opencite Config from explicit args and configure_openalex().
 
-    OpenALEX stores abstracts as inverted indexes: {"word": [positions]}
-    This function reconstructs the original text.
+    Credentials come from OSA settings (passed explicitly) with a fallback to
+    values set via configure_openalex(). We construct Config directly rather
+    than Config.from_env() so paper sync never depends on ambient ``.env``
+    files in the working directory, which are environment-specific and have
+    tripped opencite's dotenv loader.
+    """
+    return Config(
+        openalex_api_key=openalex_api_key or _OPENALEX_API_KEY or "",
+        contact_email=openalex_email or _OPENALEX_EMAIL or "",
+        semantic_scholar_api_key=semantic_scholar_api_key or "",
+        pubmed_api_key=pubmed_api_key or "",
+    )
+
+
+def _native_id(paper: Paper, osa_source: str) -> str:
+    """Return the identifier matching a specific OSA source label, or ''."""
+    ids = paper.ids
+    if osa_source == "openalex":
+        return ids.openalex_id.removeprefix("https://openalex.org/") if ids.openalex_id else ""
+    if osa_source == "semanticscholar":
+        return ids.s2_id or ""
+    if osa_source == "pubmed":
+        return ids.pmid or ""
+    return ""
+
+
+def _paper_source_and_id(paper: Paper) -> tuple[str | None, str | None]:
+    """Pick a stable (source, external_id) for the papers table.
+
+    Prefers identifiers in the order OpenAlex > Semantic Scholar > PubMed > DOI
+    > arXiv so a paper maps to the same row across syncs and aligns with rows
+    already stored from the previous per-source fetchers. Returns (None, None)
+    when no usable identifier is present (such papers are skipped).
+    """
+    ids = paper.ids
+    openalex = ids.openalex_id.removeprefix("https://openalex.org/") if ids.openalex_id else ""
+    if openalex:
+        return "openalex", openalex
+    if ids.s2_id:
+        return "semanticscholar", ids.s2_id
+    if ids.pmid:
+        return "pubmed", ids.pmid
+    if ids.doi:
+        return "doi", ids.doi.lower()
+    if ids.arxiv_id:
+        return "arxiv", ids.arxiv_id
+    return None, None
+
+
+def _paper_url(paper: Paper) -> str:
+    """Best link for a paper, preferring a stable DOI landing page."""
+    if paper.doi:
+        return f"https://doi.org/{paper.doi}"
+    if paper.url:
+        return paper.url
+    if paper.best_pdf_url:
+        return paper.best_pdf_url
+    return ""
+
+
+def _store_papers(
+    papers: Iterable[Paper],
+    project: str,
+    *,
+    force_source: str | None = None,
+) -> dict[str, int]:
+    """Upsert opencite papers into the knowledge DB, returning counts by source.
 
     Args:
-        inverted_index: Dict mapping words to their positions
-
-    Returns:
-        Reconstructed abstract text
+        papers: opencite Paper objects to store.
+        project: Community/project ID for database isolation.
+        force_source: When set (a single-source sync), record this OSA source
+            label using its native identifier; falls back to the priority
+            mapping if that identifier is missing.
     """
-    if not inverted_index:
-        return ""
-
-    # Find max position to size the array
-    max_pos = 0
-    for positions in inverted_index.values():
-        if positions:
-            max_pos = max(max_pos, max(positions))
-
-    # Build word array
-    words = [""] * (max_pos + 1)
-    for word, positions in inverted_index.items():
-        for pos in positions:
-            words[pos] = word
-
-    return " ".join(words)
-
-
-def _get_paper_url(doi: str | None, fallback_id: str) -> str:
-    """Get paper URL, preferring DOI when available.
-
-    Args:
-        doi: The DOI (may be full URL or bare DOI)
-        fallback_id: Fallback URL/ID if no DOI
-
-    Returns:
-        URL string
-    """
-    if not doi:
-        return fallback_id
-    return doi if doi.startswith("http") else f"https://doi.org/{doi}"
-
-
-def _get_openalex_external_id(openalex_id: str) -> str:
-    """Extract external ID from OpenALEX URL.
-
-    Args:
-        openalex_id: Full OpenALEX URL or bare ID
-
-    Returns:
-        Bare external ID (e.g., "W12345")
-    """
-    return openalex_id.removeprefix("https://openalex.org/")
-
-
-def sync_openalex_papers(query: str, max_results: int = 100, project: str = "hed") -> int:
-    """Sync papers from OpenALEX matching query.
-
-    Args:
-        query: Search query
-        max_results: Maximum number of papers to sync
-        project: Assistant/project name for database isolation. Defaults to 'hed'.
-
-    Returns:
-        Number of papers synced
-    """
-    logger.info("Syncing OpenALEX papers for query: %s", query)
-
-    try:
-        # Build query and fetch results
-        # pyalex returns a lazy query object, need to call .get() to fetch results
-        works_query = (
-            Works()
-            .search(query)
-            .select(
-                [
-                    "id",
-                    "title",
-                    "abstract_inverted_index",
-                    "publication_date",
-                    "doi",
-                    "primary_location",
-                ]
-            )
-        )
-        # Fetch up to max_results using pagination
-        works = list(works_query.get(per_page=min(max_results, 200)))
-    except Exception as e:
-        logger.warning("OpenALEX error for '%s': %s", query, e)
-        return 0
-
-    count = 0
+    counts: dict[str, int] = {}
     with get_connection(project) as conn:
-        for work in works:
-            if count >= max_results:
-                break
-
-            # Skip if no title
-            title = work.get("title")
-            if not title:
+        for paper in papers:
+            if not paper.title:
                 continue
 
-            abstract = _reconstruct_abstract(work.get("abstract_inverted_index"))
-            url = _get_paper_url(work.get("doi"), work.get("id", ""))
-            external_id = _get_openalex_external_id(work.get("id", ""))
+            if force_source:
+                external_id = _native_id(paper, force_source)
+                source: str | None = force_source if external_id else None
+                if not source:
+                    source, external_id = _paper_source_and_id(paper)
+            else:
+                source, external_id = _paper_source_and_id(paper)
+
+            if not source or not external_id:
+                continue
 
             upsert_paper(
                 conn,
-                source="openalex",
+                source=source,
                 external_id=external_id,
-                title=title,
-                first_message=abstract,
-                url=url,
-                created_at=work.get("publication_date"),
+                title=paper.title,
+                first_message=paper.abstract or None,
+                url=_paper_url(paper),
+                created_at=paper.publication_date or (str(paper.year) if paper.year else None),
             )
-            count += 1
-
+            counts[source] = counts.get(source, 0) + 1
         conn.commit()
+    return counts
 
-    logger.info("Synced %d papers from OpenALEX for '%s'", count, query)
-    update_sync_metadata("papers", f"openalex:{query}", count, project)
+
+_T = TypeVar("_T")
+
+
+def _run(coro: Coroutine[Any, Any, _T]) -> _T:
+    """Execute an async coroutine from synchronous code.
+
+    OSA's sync callers (CLI command, scheduler thread) have no running event
+    loop, so asyncio.run is used directly. If a loop is already running in the
+    calling thread, the coroutine runs in a dedicated worker thread so these
+    public sync functions stay safe to call from any context.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
+async def _search_queries(
+    config: Config,
+    queries: list[str],
+    max_results: int,
+    sources: tuple[str, ...] | None,
+) -> list[tuple[str, list[Paper]]]:
+    """Search every query through one shared opencite orchestrator.
+
+    A single orchestrator (and its HTTP client pool) is opened for the whole
+    batch. A failure for an individual query is logged and yields an empty
+    result for that query rather than aborting the batch.
+    """
+    out: list[tuple[str, list[Paper]]] = []
+    async with SearchOrchestrator(config) as searcher:
+        for query in queries:
+            try:
+                result = await searcher.search(query, max_results=max_results, sources=sources)
+                out.append((query, result.papers))
+            except (OpenCiteError, TimeoutError) as e:
+                logger.warning("opencite search error for '%s': %s", query, e)
+                out.append((query, []))
+            except Exception:
+                # Unexpected (likely a bug, not an API failure): keep the batch
+                # going but log loudly with a traceback so it is not mistaken
+                # for a routine "no results" outcome.
+                logger.exception("unexpected error searching '%s'", query)
+                out.append((query, []))
+    return out
+
+
+async def _citing_for_dois(
+    config: Config,
+    dois: list[str],
+    max_results: int,
+) -> list[tuple[str, list[Paper]]]:
+    """Fetch citing papers for every DOI through one shared CitationExplorer."""
+    out: list[tuple[str, list[Paper]]] = []
+    async with CitationExplorer(config) as explorer:
+        for doi in dois:
+            try:
+                result = await explorer.citing_papers(doi, max_results=max_results)
+                out.append((doi, result.papers))
+            except (OpenCiteError, TimeoutError) as e:
+                logger.warning("opencite citation error for DOI %s: %s", doi, e)
+                out.append((doi, []))
+            except Exception:
+                logger.exception("unexpected error fetching citations for DOI %s", doi)
+                out.append((doi, []))
+    return out
+
+
+def _sync_single_source(
+    query: str,
+    max_results: int,
+    project: str,
+    osa_source: str,
+    config: Config,
+) -> int:
+    """Sync papers for one source (restricted opencite search) into the DB."""
+    opencite_source = _OPENCITE_SOURCE_BY_OSA[osa_source]
+    try:
+        searched = _run(_search_queries(config, [query], max_results, (opencite_source,)))
+    except Exception as e:
+        logger.warning("opencite %s search failed for '%s': %s", osa_source, query, e)
+        return 0
+
+    _, papers = searched[0]
+    counts = _store_papers(papers, project, force_source=osa_source)
+    count = sum(counts.values())
+    logger.info("Synced %d papers from %s for '%s'", count, osa_source, query)
+    update_sync_metadata("papers", f"{osa_source}:{query}", count, project)
     return count
+
+
+def sync_openalex_papers(query: str, max_results: int = 100, project: str = "hed") -> int:
+    """Sync papers from OpenAlex matching query (via opencite)."""
+    logger.info("Syncing OpenAlex papers for query: %s", query)
+    return _sync_single_source(query, max_results, project, "openalex", _build_config())
 
 
 def sync_semanticscholar_papers(
@@ -180,79 +304,10 @@ def sync_semanticscholar_papers(
     api_key: str | None = None,
     project: str = "hed",
 ) -> int:
-    """Sync papers from Semantic Scholar matching query.
-
-    Args:
-        query: Search query
-        max_results: Maximum number of papers to sync
-        api_key: Optional API key for higher rate limits
-        project: Assistant/project name for database isolation. Defaults to 'hed'.
-
-    Returns:
-        Number of papers synced
-    """
+    """Sync papers from Semantic Scholar matching query (via opencite)."""
     logger.info("Syncing Semantic Scholar papers for query: %s", query)
-
-    url = "https://api.semanticscholar.org/graph/v1/paper/search"
-    params: dict[str, Any] = {
-        "query": query,
-        "limit": min(max_results, 100),  # API limit per request
-        "fields": "paperId,title,abstract,year,url,openAccessPdf",
-    }
-
-    headers = {}
-    if api_key:
-        headers["x-api-key"] = api_key
-
-    try:
-        response = httpx.get(url, params=params, headers=headers, timeout=30.0)
-        response.raise_for_status()
-        data = response.json()
-    except httpx.HTTPStatusError as e:
-        logger.warning("Semantic Scholar HTTP error for '%s': %s", query, e)
-        return 0
-    except httpx.RequestError as e:
-        logger.warning("Semantic Scholar request error for '%s': %s", query, e)
-        return 0
-
-    count = 0
-    with get_connection(project) as conn:
-        for paper in data.get("data", []):
-            if count >= max_results:
-                break
-
-            # Skip if no title
-            title = paper.get("title")
-            if not title:
-                continue
-
-            paper_id = paper.get("paperId", "")
-            paper_url = paper.get("url") or f"https://www.semanticscholar.org/paper/{paper_id}"
-
-            # Prefer open access PDF URL if available
-            open_access = paper.get("openAccessPdf")
-            if open_access and open_access.get("url"):
-                paper_url = open_access["url"]
-
-            upsert_paper(
-                conn,
-                source="semanticscholar",
-                external_id=paper_id,
-                title=title,
-                first_message=paper.get("abstract"),
-                url=paper_url,
-                created_at=str(paper.get("year")) if paper.get("year") else None,
-            )
-            count += 1
-
-        conn.commit()
-
-    logger.info("Synced %d papers from Semantic Scholar for '%s'", count, query)
-    update_sync_metadata("papers", f"semanticscholar:{query}", count, project)
-
-    # Rate limiting
-    time.sleep(SEMANTIC_SCHOLAR_DELAY)
-    return count
+    config = _build_config(semantic_scholar_api_key=api_key)
+    return _sync_single_source(query, max_results, project, "semanticscholar", config)
 
 
 def sync_pubmed_papers(
@@ -261,109 +316,10 @@ def sync_pubmed_papers(
     api_key: str | None = None,
     project: str = "hed",
 ) -> int:
-    """Sync papers from PubMed matching query.
-
-    Uses NCBI E-utilities API (esearch + efetch).
-
-    Args:
-        query: Search query
-        max_results: Maximum number of papers to sync
-        api_key: Optional NCBI API key for higher rate limits
-        project: Assistant/project name for database isolation. Defaults to 'hed'.
-
-    Returns:
-        Number of papers synced
-    """
+    """Sync papers from PubMed matching query (via opencite)."""
     logger.info("Syncing PubMed papers for query: %s", query)
-
-    base_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
-
-    # Step 1: Search for paper IDs
-    search_params: dict[str, Any] = {
-        "db": "pubmed",
-        "term": query,
-        "retmax": max_results,
-        "retmode": "json",
-    }
-    if api_key:
-        search_params["api_key"] = api_key
-
-    try:
-        search_response = httpx.get(f"{base_url}/esearch.fcgi", params=search_params, timeout=30.0)
-        search_response.raise_for_status()
-        search_data = search_response.json()
-    except (httpx.HTTPStatusError, httpx.RequestError) as e:
-        logger.warning("PubMed search error for '%s': %s", query, e)
-        return 0
-
-    id_list = search_data.get("esearchresult", {}).get("idlist", [])
-    if not id_list:
-        logger.info("No PubMed results for '%s'", query)
-        return 0
-
-    # Rate limiting between requests
-    time.sleep(PUBMED_DELAY)
-
-    # Step 2: Fetch paper details
-    fetch_params: dict[str, Any] = {
-        "db": "pubmed",
-        "id": ",".join(id_list),
-        "retmode": "xml",
-    }
-    if api_key:
-        fetch_params["api_key"] = api_key
-
-    try:
-        fetch_response = httpx.get(f"{base_url}/efetch.fcgi", params=fetch_params, timeout=60.0)
-        fetch_response.raise_for_status()
-    except (httpx.HTTPStatusError, httpx.RequestError) as e:
-        logger.warning("PubMed fetch error for '%s': %s", query, e)
-        return 0
-
-    # Parse XML response
-    try:
-        root = ET.fromstring(fetch_response.text)
-    except ET.ParseError as e:
-        logger.warning("PubMed XML parse error for '%s': %s", query, e)
-        return 0
-
-    count = 0
-    with get_connection(project) as conn:
-        for article in root.findall(".//PubmedArticle"):
-            pmid_elem = article.find(".//PMID")
-            title_elem = article.find(".//ArticleTitle")
-            abstract_elem = article.find(".//AbstractText")
-            year_elem = article.find(".//PubDate/Year")
-
-            if pmid_elem is None or title_elem is None:
-                continue
-
-            pmid = pmid_elem.text or ""
-            title = title_elem.text or ""
-            abstract = abstract_elem.text if abstract_elem is not None else None
-            year = year_elem.text if year_elem is not None else None
-
-            url = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
-
-            upsert_paper(
-                conn,
-                source="pubmed",
-                external_id=pmid,
-                title=title,
-                first_message=abstract,
-                url=url,
-                created_at=year,
-            )
-            count += 1
-
-        conn.commit()
-
-    logger.info("Synced %d papers from PubMed for '%s'", count, query)
-    update_sync_metadata("papers", f"pubmed:{query}", count, project)
-
-    # Rate limiting
-    time.sleep(PUBMED_DELAY)
-    return count
+    config = _build_config(pubmed_api_key=api_key)
+    return _sync_single_source(query, max_results, project, "pubmed", config)
 
 
 def sync_all_papers(
@@ -375,19 +331,23 @@ def sync_all_papers(
     openalex_email: str | None = None,
     project: str = "hed",
 ) -> dict[str, int]:
-    """Sync papers from all sources for given queries.
+    """Sync papers from all default sources for given queries via opencite.
+
+    A single deduplicated opencite search runs per query across
+    ``DEFAULT_SOURCES``, replacing the previous three sequential per-source
+    fetches.
 
     Args:
-        queries: List of search queries (required - no default queries)
-        max_results: Max results per query per source
-        semantic_scholar_api_key: Optional Semantic Scholar API key
-        pubmed_api_key: Optional PubMed/NCBI API key
-        openalex_api_key: Optional OpenAlex API key for premium access
-        openalex_email: Optional email for OpenAlex polite pool
-        project: Project/community ID for database isolation
+        queries: List of search queries (required - no default queries).
+        max_results: Max deduplicated results per query.
+        semantic_scholar_api_key: Optional Semantic Scholar API key.
+        pubmed_api_key: Optional PubMed/NCBI API key.
+        openalex_api_key: Optional OpenAlex API key for premium access.
+        openalex_email: Optional email for OpenAlex polite pool.
+        project: Project/community ID for database isolation.
 
     Returns:
-        Dict mapping source to total items synced
+        Dict mapping OSA source label to total papers synced.
     """
     if isinstance(queries, str):
         raise TypeError(f"queries must be a list of strings, not a bare string: {queries!r}")
@@ -395,21 +355,30 @@ def sync_all_papers(
         logger.warning("No queries provided for paper sync")
         return {"openalex": 0, "semanticscholar": 0, "pubmed": 0}
 
-    # Configure OpenAlex with API key or email if provided
-    configure_openalex(api_key=openalex_api_key, email=openalex_email)
+    config = _build_config(
+        openalex_api_key=openalex_api_key,
+        openalex_email=openalex_email,
+        semantic_scholar_api_key=semantic_scholar_api_key,
+        pubmed_api_key=pubmed_api_key,
+    )
 
-    results = {
-        "openalex": 0,
-        "semanticscholar": 0,
-        "pubmed": 0,
-    }
+    results: dict[str, int] = {"openalex": 0, "semanticscholar": 0, "pubmed": 0}
+    try:
+        searched = _run(_search_queries(config, queries, max_results, DEFAULT_SOURCES))
+    except Exception as e:
+        logger.warning("opencite search failed for %s: %s", project, e)
+        return results
 
-    for query in queries:
-        results["openalex"] += sync_openalex_papers(query, max_results, project=project)
-        results["semanticscholar"] += sync_semanticscholar_papers(
-            query, max_results, semantic_scholar_api_key, project=project
-        )
-        results["pubmed"] += sync_pubmed_papers(query, max_results, pubmed_api_key, project=project)
+    for query, papers in searched:
+        try:
+            counts = _store_papers(papers, project)
+            for source, n in counts.items():
+                results[source] = results.get(source, 0) + n
+            update_sync_metadata("papers", f"opencite:{query}", sum(counts.values()), project)
+        except Exception:
+            # Isolate per-query: a DB failure on one query must not abort the
+            # whole batch or leave sync metadata inconsistent for the others.
+            logger.exception("failed to store papers for '%s' (%s)", query, project)
 
     total = sum(results.values())
     logger.info("Total papers synced for %s: %d", project, total)
@@ -423,94 +392,171 @@ def sync_citing_papers(
     openalex_api_key: str | None = None,
     openalex_email: str | None = None,
 ) -> int:
-    """Sync papers that cite the given DOIs using OpenALEX.
-
-    OpenALEX supports finding papers that cite a specific work via
-    the `cites` filter. This is useful for tracking citations to
-    foundational papers in a field.
+    """Sync papers that cite the given DOIs using opencite's citation graph.
 
     Args:
-        dois: List of DOIs to find citations for. Should be in bare format
-            (e.g., "10.1016/j.neuroimage.2021.118809") without the
-            https://doi.org/ prefix. Invalid or unfound DOIs are skipped
-            with a warning log.
-        max_results: Maximum number of citing papers per DOI
-        project: Project/community ID for database isolation
-        openalex_api_key: Optional OpenAlex API key for premium access
-        openalex_email: Optional email for OpenAlex polite pool
+        dois: List of DOIs to find citations for. Bare format preferred
+            (e.g. "10.1016/j.neuroimage.2021.118809"); opencite auto-detects
+            and resolves the identifier. Unresolved DOIs are skipped with a
+            warning.
+        max_results: Maximum number of citing papers per DOI.
+        project: Project/community ID for database isolation.
+        openalex_api_key: Optional OpenAlex API key for premium access.
+        openalex_email: Optional email for OpenAlex polite pool.
 
     Returns:
-        Total number of citing papers synced
+        Total number of citing papers synced.
     """
     if isinstance(dois, str):
         raise TypeError(f"dois must be a list of strings, not a bare string: {dois!r}")
-    configure_openalex(api_key=openalex_api_key, email=openalex_email)
+
+    config = _build_config(openalex_api_key=openalex_api_key, openalex_email=openalex_email)
+    try:
+        cited = _run(_citing_for_dois(config, dois, max_results))
+    except Exception as e:
+        logger.warning("opencite citation lookup failed for %s: %s", project, e)
+        return 0
+
     total = 0
-
-    for doi in dois:
-        logger.info("Syncing papers citing DOI: %s", doi)
-
+    for doi, papers in cited:
         try:
-            # First, look up the OpenALEX work ID for this DOI
-            work_lookup = Works()[f"https://doi.org/{doi}"]
-            openalex_id = work_lookup.get("id")
-
-            if not openalex_id:
-                logger.warning("Could not find OpenALEX ID for DOI %s", doi)
-                continue
-
-            logger.debug("Found OpenALEX ID %s for DOI %s", openalex_id, doi)
-
-            # Now find papers that cite this work using the OpenALEX ID
-            works_query = (
-                Works()
-                .filter(cites=openalex_id)
-                .select(
-                    [
-                        "id",
-                        "title",
-                        "abstract_inverted_index",
-                        "publication_date",
-                        "doi",
-                        "primary_location",
-                    ]
-                )
-            )
-            works = list(works_query.get(per_page=min(max_results, 200)))
-        except Exception as e:
-            logger.warning("OpenALEX citation error for DOI %s: %s", doi, e)
-            continue
-
-        count = 0
-        with get_connection(project) as conn:
-            for work in works:
-                if count >= max_results:
-                    break
-
-                title = work.get("title")
-                if not title:
-                    continue
-
-                abstract = _reconstruct_abstract(work.get("abstract_inverted_index"))
-                url = _get_paper_url(work.get("doi"), work.get("id", ""))
-                external_id = _get_openalex_external_id(work.get("id", ""))
-
-                upsert_paper(
-                    conn,
-                    source="openalex",
-                    external_id=external_id,
-                    title=title,
-                    first_message=abstract,
-                    url=url,
-                    created_at=work.get("publication_date"),
-                )
-                count += 1
-
-            conn.commit()
-
-        # Update sync metadata with citing_ prefix to distinguish from query-based syncs
-        update_sync_metadata("papers", f"citing_{doi}", count, project)
-        logger.info("Synced %d papers citing %s", count, doi)
-        total += count
+            counts = _store_papers(papers, project)
+            count = sum(counts.values())
+            update_sync_metadata("papers", f"citing_{doi}", count, project)
+            logger.info("Synced %d papers citing %s", count, doi)
+            total += count
+        except Exception:
+            # Isolate per-DOI so one DB failure does not abort the batch.
+            logger.exception("failed to store citing papers for %s (%s)", doi, project)
 
     return total
+
+
+def _config_from_env() -> Config:
+    """Build an opencite Config from the server's configured API-key env vars.
+
+    Reads the same variables OSA settings use. Missing keys fall back to
+    anonymous access (fine for a single on-demand query). Specific env vars
+    are read by name rather than via Config.from_env() to avoid the ambient
+    ``.env`` parsing path.
+    """
+    return _build_config(
+        openalex_api_key=os.environ.get("OPENALEX_API_KEY"),
+        openalex_email=os.environ.get("OPENALEX_EMAIL"),
+        semantic_scholar_api_key=os.environ.get("SEMANTIC_SCHOLAR_API_KEY"),
+        pubmed_api_key=os.environ.get("PUBMED_API_KEY"),
+    )
+
+
+def _paper_to_result(paper: Paper) -> SearchResult:
+    """Convert an opencite Paper to the shared SearchResult shape."""
+    source, _ = _paper_source_and_id(paper)
+    return SearchResult(
+        title=paper.title,
+        url=_paper_url(paper),
+        snippet=paper.abstract or "",
+        source=source or "opencite",
+        item_type=None,
+        status="published",
+        created_at=str(paper.year) if paper.year else "",
+    )
+
+
+async def _search_recent(
+    config: Config,
+    query: str,
+    limit: int,
+    timeout: float,
+    sources: tuple[str, ...],
+) -> list[Paper]:
+    """Live opencite search for the most recent papers, bounded by a timeout.
+
+    The per-request timeout (``config.timeout``, set by the caller) is the
+    primary bound and is kept just under ``timeout`` so each source finishes or
+    times out cleanly before the outer ``wait_for`` would have to cancel and
+    orphan opencite's in-flight tasks.
+    """
+    async with SearchOrchestrator(config) as searcher:
+        result = await asyncio.wait_for(
+            searcher.search(query, max_results=limit, sources=sources, sort="year"),
+            timeout=timeout,
+        )
+        return result.papers
+
+
+def _cache_papers_async(papers: list[Paper], project: str) -> threading.Thread:
+    """Cache live-search results into the DB without blocking the caller.
+
+    Caching is best-effort: it must never add latency to (or fail) the chat
+    response, so the write runs in a daemon thread and logs on error. Returns
+    the thread (useful for tests).
+    """
+
+    def _write() -> None:
+        try:
+            _store_papers(papers, project)
+        except Exception:
+            # A failed cache write means these papers stay missing from local
+            # search until the next batch sync - a real degraded state, so log
+            # loudly (with traceback) even though the daemon thread must not crash.
+            logger.error("Failed to cache live search papers for %s", project, exc_info=True)
+
+    thread = threading.Thread(target=_write, name=f"cache-papers-{project}", daemon=True)
+    thread.start()
+    return thread
+
+
+def search_papers_live(
+    query: str,
+    project: str = "hed",
+    limit: int = 5,
+    cache: bool = True,
+    timeout: float = 15.0,
+    sources: tuple[str, ...] = LIVE_SOURCES,
+) -> list[SearchResult]:
+    """Search the live literature via opencite for the most recent papers.
+
+    Unlike :func:`src.knowledge.search.search_papers` (local FTS over already
+    synced rows), this hits opencite's multi-source APIs for fresh results,
+    newest first. This is for on-demand discovery of papers the batch sync has
+    not picked up yet.
+
+    Args:
+        query: Topic to search for.
+        project: Community/project ID (for caching into the right DB).
+        limit: Maximum number of papers to return.
+        cache: When True (default), best-effort upsert the results into the
+            community knowledge DB (in a background thread, never blocking the
+            response) so future local searches find them.
+        timeout: Hard cap (seconds) on the opencite call to keep chat snappy.
+        sources: opencite sources to query. Defaults to OpenAlex only for speed.
+
+    Returns:
+        List of SearchResult, newest first. Empty on timeout or a transient /
+        misconfiguration error (logged); programming errors propagate.
+    """
+    config = _config_from_env()
+    # Bound each source request just under the overall cap so opencite's
+    # per-source tasks finish cleanly before wait_for would cancel them.
+    config.timeout = max(1.0, timeout - 2.0)
+    try:
+        papers = _run(_search_recent(config, query, limit, timeout, sources))
+    except TimeoutError:
+        logger.warning("opencite live search timed out for '%s' after %.0fs", query, timeout)
+        return []
+    except (APIKeyError, ConfigurationError) as e:
+        # Permanent misconfiguration (bad/absent key) - surface loudly; it will
+        # not fix itself and otherwise looks identical to "no results".
+        logger.error("opencite live search misconfigured for '%s': %s", query, e)
+        return []
+    except OpenCiteError as e:
+        # Transient API/network/rate-limit failure - a warning + empty is fine.
+        logger.warning("opencite live search failed for '%s': %s", query, e)
+        return []
+    # Any other exception is a programming error: let it propagate rather than
+    # masquerade as an empty result set.
+
+    if cache and papers:
+        _cache_papers_async(papers, project)
+
+    return [_paper_to_result(p) for p in papers[:limit]]

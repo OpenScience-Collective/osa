@@ -236,6 +236,13 @@ class CitationConfig(BaseModel):
     dois: list[str] = Field(default_factory=list)
     """Core paper DOIs to track citations for (format: '10.xxxx/yyyy')."""
 
+    live_search: bool = Field(default=False)
+    """Expose an on-demand live paper search tool (opencite) for recent literature.
+
+    Off by default: the tool adds external-API latency to a turn and queries
+    OpenAlex anonymously. Communities opt in explicitly, and their prompt should
+    tell the agent to ask the user before running it."""
+
     @field_validator("queries")
     @classmethod
     def validate_queries(cls, v: list[str]) -> list[str]:

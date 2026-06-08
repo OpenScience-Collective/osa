@@ -56,7 +56,6 @@ server = [
     "langchain-litellm>=0.2.0",
     # External APIs
     "pygithub>=2.8.0",
-    "pyalex>=0.19",
     # Database
     "psycopg[binary]>=3.3.0",
     # Utilities
@@ -66,6 +65,7 @@ server = [
     "markdownify>=1.1.0",
     # Scheduling
     "apscheduler>=3.10.0,<4.0.0",
+    "opencite>=0.5.3",
 ]
 
 observability = [

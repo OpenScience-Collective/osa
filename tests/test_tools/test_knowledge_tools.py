@@ -278,6 +278,18 @@ class TestCreateKnowledgeTools:
         assert "get_test_full_docstring" in tool_names
         assert len(tools) == 5
 
+    def test_excludes_live_papers_by_default(self) -> None:
+        """Live paper search is opt-in and absent unless requested."""
+        tools = create_knowledge_tools("test", "Test")
+        assert "search_test_papers_live" not in [t.name for t in tools]
+
+    def test_includes_live_papers_tool_when_enabled(self) -> None:
+        """Should include the live paper search tool when include_live_papers=True."""
+        tools = create_knowledge_tools("test", "Test", include_live_papers=True)
+        tool_names = [t.name for t in tools]
+        assert "search_test_papers_live" in tool_names
+        assert len(tools) == 4
+
     def test_includes_faq_tool_when_enabled(self) -> None:
         """Should include FAQ search tool when include_faq=True."""
         tools = create_knowledge_tools("test", "Test", include_faq=True)

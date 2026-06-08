@@ -416,6 +416,50 @@
         .admin-status.success { color: #059669; }
         .admin-status.error { color: #dc2626; }
 
+        /* Feedback panel */
+        .feedback-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.75rem;
+            font-size: 0.82rem;
+            color: #64748b;
+        }
+        .feedback-toolbar label { display: inline-flex; align-items: center; gap: 0.4rem; cursor: pointer; }
+        .feedback-table-wrap {
+            max-height: 320px;
+            overflow-y: auto;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+        }
+        .feedback-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.82rem;
+        }
+        .feedback-table th, .feedback-table td {
+            text-align: left;
+            padding: 0.5rem 0.7rem;
+            border-bottom: 1px solid #e2e8f0;
+            vertical-align: top;
+        }
+        .feedback-table th {
+            position: sticky;
+            top: 0;
+            background: #f8fafc;
+            color: #475569;
+            font-weight: 600;
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+        .feedback-table tr:last-child td { border-bottom: none; }
+        .feedback-table td a { color: #2563eb; text-decoration: none; }
+        .feedback-table td a:hover { text-decoration: underline; }
+        .feedback-sentiment-up { color: #059669; font-weight: 600; }
+        .feedback-sentiment-down { color: #dc2626; font-weight: 600; }
+        .feedback-empty { color: #64748b; padding: 1rem; font-size: 0.85rem; }
+
         /* Loading / error */
         .loading { text-align: center; color: #64748b; padding: 2rem; }
         .loading::after {
@@ -508,6 +552,14 @@
             .admin-btn { background: #7ba3d4; color: #0d1117; }
             .admin-btn:hover { background: #93b8de; }
             .loading { color: #8a9bb5; }
+            .feedback-toolbar { color: #8a9bb5; }
+            .feedback-table-wrap { border-color: #30363d; }
+            .feedback-table th, .feedback-table td { border-color: #30363d; }
+            .feedback-table th { background: #1c2128; color: #8a9bb5; }
+            .feedback-table td a { color: #7ba3d4; }
+            .feedback-sentiment-up { color: #4ade80; }
+            .feedback-sentiment-down { color: #f87171; }
+            .feedback-empty { color: #8a9bb5; }
             .error-msg { color: #f87171; background: #3b1219; border-color: #5c1d2a; }
             .site-footer { color: #6b7b92; border-color: #30363d; }
             .site-footer a { color: #7ba3d4; }
@@ -918,6 +970,8 @@
                             <div class="chart-container"><canvas id="adminCostChart"></canvas></div>
                         </div>
                     </div>
+                    <h3 style="color:#1e3a5f;margin:1.5rem 0 1rem;font-size:1rem;">Admin: Feedback</h3>
+                    <div id="adminFeedback"><div class="loading">Loading feedback...</div></div>
                 </div>
             </div>
         `;
@@ -1167,11 +1221,159 @@
             }
             section.classList.add('visible');
             renderAdminCharts(await resp.json());
+            // Feedback loads independently so a failure here never breaks the charts above.
+            loadAdminFeedback(communityId);
         } catch (err) {
             console.error('Failed to load admin data:', err);
             section.classList.add('visible');
             section.innerHTML = '<p class="error-msg">Failed to load admin data. Check console for details.</p>';
         }
+    }
+
+    let feedbackCommentsOnly = false;
+
+    async function loadAdminFeedback(communityId) {
+        if (!adminKey) return;
+        const container = document.getElementById('adminFeedback');
+        if (!container) return;
+        container.innerHTML = '<div class="loading">Loading feedback...</div>';
+
+        const params = new URLSearchParams({ community_id: communityId });
+        if (feedbackCommentsOnly) params.set('comments_only', 'true');
+
+        try {
+            const resp = await fetch(
+                `${API_BASE}/metrics/feedback?${params.toString()}`,
+                { headers: { 'X-API-Key': adminKey } }
+            );
+            if (!resp.ok) {
+                if (resp.status === 401 || resp.status === 403) {
+                    container.innerHTML = '<p class="error-msg">Feedback access denied. Key may be expired or invalid.</p>';
+                } else {
+                    console.error('Feedback fetch failed with status', resp.status);
+                    container.innerHTML = `<p class="error-msg">Failed to load feedback (HTTP ${resp.status})</p>`;
+                }
+                return;
+            }
+            renderAdminFeedback(await resp.json(), communityId);
+        } catch (err) {
+            console.error('Failed to load feedback:', err);
+            container.innerHTML = '<p class="error-msg">Failed to load feedback: unexpected server response. Try refreshing the page.</p>';
+        }
+    }
+
+    function toggleFeedbackCommentsOnly(checked, communityId) {
+        feedbackCommentsOnly = checked;
+        loadAdminFeedback(decodeURIComponent(communityId));
+    }
+
+    function formatFeedbackTime(isoStr) {
+        if (!isoStr) return '—';
+        try {
+            const d = new Date(isoStr);
+            if (isNaN(d.getTime())) return isoStr;
+            return d.toLocaleString(undefined, {
+                year: 'numeric', month: 'short', day: 'numeric',
+                hour: '2-digit', minute: '2-digit',
+            });
+        } catch (err) { console.warn('Failed to parse feedback timestamp:', isoStr, err); return isoStr; }
+    }
+
+    function renderAdminFeedback(data, communityId) {
+        const container = document.getElementById('adminFeedback');
+        if (!container) return;
+
+        const summary = data.summary || {};
+        const up = summary.thumbs_up || 0;
+        const down = summary.thumbs_down || 0;
+        const satRate = (summary.satisfaction_rate === null || summary.satisfaction_rate === undefined)
+            ? '—' : `${(summary.satisfaction_rate * 100).toFixed(0)}%`;
+        const responseTotal = summary.response_total || 0;
+        const generalTotal = summary.general_total || 0;
+        const commentTotal = summary.comment_total || 0;
+
+        const summaryHtml = `
+            <div class="overview-grid">
+                <div class="metric">
+                    <div class="metric-value feedback-sentiment-up">${up.toLocaleString()}</div>
+                    <div class="metric-label">Thumbs Up</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-value feedback-sentiment-down">${down.toLocaleString()}</div>
+                    <div class="metric-label">Thumbs Down</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-value">${satRate}</div>
+                    <div class="metric-label">Satisfaction Rate</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-value">${responseTotal.toLocaleString()}</div>
+                    <div class="metric-label">Responses Rated</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-value">${generalTotal.toLocaleString()}</div>
+                    <div class="metric-label">General Feedback</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-value">${commentTotal.toLocaleString()}</div>
+                    <div class="metric-label">Comments</div>
+                </div>
+            </div>`;
+
+        const safeCommunity = encodeURIComponent(communityId);
+        const toolbarHtml = `
+            <div class="feedback-toolbar">
+                <label>
+                    <input type="checkbox" ${feedbackCommentsOnly ? 'checked' : ''}
+                           onchange="toggleFeedbackCommentsOnly(this.checked,'${safeCommunity}')">
+                    Comments only
+                </label>
+            </div>`;
+
+        const entries = Array.isArray(data.entries) ? data.entries : [];
+        let tableHtml;
+        if (entries.length === 0) {
+            tableHtml = '<div class="feedback-empty">No feedback yet.</div>';
+        } else {
+            const rows = entries.map(e => {
+                const time = escapeHtml(formatFeedbackTime(e.timestamp));
+                const type = escapeHtml(e.feedback_type || '—');
+                let sentiment = '';
+                if (e.sentiment === 'up') sentiment = '<span class="feedback-sentiment-up" title="Thumbs up">▲ up</span>';
+                else if (e.sentiment === 'down') sentiment = '<span class="feedback-sentiment-down" title="Thumbs down">▼ down</span>';
+                const comment = e.comment ? escapeHtml(e.comment) : '—';
+                // Defense in depth: only render a clickable link for http(s) URLs
+                // (the backend already enforces this on write).
+                const isHttpUrl = typeof e.page_url === 'string' && /^https?:\/\//i.test(e.page_url);
+                const page = isHttpUrl
+                    ? `<a href="${escapeHtml(e.page_url)}" target="_blank" rel="noopener">link</a>`
+                    : '';
+                return `<tr>
+                    <td>${time}</td>
+                    <td>${type}</td>
+                    <td>${sentiment}</td>
+                    <td>${comment}</td>
+                    <td>${page}</td>
+                </tr>`;
+            }).join('');
+            tableHtml = `
+                <div class="feedback-table-wrap">
+                    <table class="feedback-table">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Type</th>
+                                <th>Sentiment</th>
+                                <th>Comment</th>
+                                <th>Page</th>
+                            </tr>
+                        </thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                </div>`;
+        }
+
+        container.innerHTML = summaryHtml + toolbarHtml + tableHtml;
     }
 
     function renderAdminCharts(data) {

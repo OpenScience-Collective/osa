@@ -22,6 +22,7 @@ import sqlite3
 from langchain_core.tools import BaseTool, StructuredTool
 
 from src.knowledge.db import get_db_path
+from src.knowledge.papers_sync import search_papers_live
 from src.knowledge.search import (
     get_full_docstring,
     list_recent_github_items,
@@ -252,6 +253,67 @@ def create_search_papers_tool(
     return StructuredTool.from_function(
         func=search_papers_impl,
         name=f"search_{community_id}_papers",
+        description=description,
+    )
+
+
+def create_search_papers_live_tool(
+    community_id: str,
+    community_name: str,
+) -> BaseTool:
+    """Create a tool for live (on-demand) academic paper search via opencite.
+
+    Unlike the local paper search (pre-synced rows), this fetches fresh results
+    from the live literature, newest first, and caches them for next time.
+
+    Args:
+        community_id: The community identifier (e.g., 'hed', 'eeglab')
+        community_name: Display name (e.g., 'HED', 'EEGLAB')
+
+    Returns:
+        A LangChain tool for live paper search
+    """
+
+    def search_papers_live_impl(query: str, limit: int = 5) -> str:
+        """Live academic paper search implementation."""
+        results = search_papers_live(query, project=community_id, limit=limit)
+
+        if not results:
+            return (
+                f"No recent papers found online for '{query}'. "
+                "Try rephrasing, or use the local paper search."
+            )
+
+        lines = ["Most recent papers (live search):\n"]
+        for r in results:
+            year = f" ({r.created_at})" if r.created_at else ""
+            source_label = f"[{r.source}]" if r.source else ""
+            lines.append(f"- {r.title}{year} {source_label}")
+            lines.append(f"  [View Paper]({r.url})")
+            if r.snippet:
+                snippet = r.snippet[:200] + "..." if len(r.snippet) > 200 else r.snippet
+                lines.append(f"  Abstract: {snippet}")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    description = (
+        f"Live, on-demand search of the latest external literature about {community_name}, "
+        "newest first. It is slower than the local search (queries the web on demand; "
+        "up to ~15 seconds). "
+        f"Always try the local `search_{community_id}_papers` first. "
+        "**Only call this tool after the user has explicitly confirmed they want a live "
+        "literature search** (or explicitly asked to search the web / for the very latest "
+        "papers). Do NOT call it automatically as a first step. When you call it, your "
+        "message in that turn should first tell the user you are searching the latest "
+        "literature and it may take a few seconds. "
+        "**This is for DISCOVERY, not answering** - present results as references for "
+        "further reading; do NOT use paper content to formulate answers."
+    )
+
+    return StructuredTool.from_function(
+        func=search_papers_live_impl,
+        name=f"search_{community_id}_papers_live",
         description=description,
     )
 
@@ -611,6 +673,7 @@ def create_knowledge_tools(
     include_discussions: bool = True,
     include_recent: bool = True,
     include_papers: bool = True,
+    include_live_papers: bool = False,
     include_docstrings: bool = False,
     docstrings_language: str | None = None,
     include_faq: bool = False,
@@ -629,6 +692,7 @@ def create_knowledge_tools(
         include_discussions: Include discussion search tool (default: True)
         include_recent: Include recent activity tool (default: True)
         include_papers: Include paper search tool (default: True)
+        include_live_papers: Include on-demand live paper search tool (default: False)
         include_docstrings: Include code docstring search tool (default: False)
         docstrings_language: Filter docstrings by language ('matlab' or 'python')
         include_faq: Include mailing list FAQ search tool (default: False)
@@ -648,6 +712,9 @@ def create_knowledge_tools(
 
     if include_papers:
         tools.append(create_search_papers_tool(community_id, community_name))
+
+    if include_live_papers:
+        tools.append(create_search_papers_live_tool(community_id, community_name))
 
     if include_docstrings:
         tools.append(
