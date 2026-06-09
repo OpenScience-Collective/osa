@@ -34,7 +34,7 @@ from src.assistants.community import PageContext as AgentPageContext
 from src.assistants.registry import AssistantInfo
 from src.core.config.community import WidgetConfig
 from src.core.services.litellm_llm import create_openrouter_llm
-from src.knowledge.search import FAQResult, list_faq_entries
+from src.knowledge.search import FAQResult, get_citation_stats, list_faq_entries
 from src.metrics.cost import COST_BLOCK_THRESHOLD, COST_WARN_THRESHOLD, MODEL_PRICING, estimate_cost
 from src.metrics.db import (
     RequestLogEntry,
@@ -227,6 +227,23 @@ class FAQFeedResponse(BaseModel):
     limit: int = Field(..., description="Page size used for this response")
     offset: int = Field(..., description="Offset used for this response")
     entries: list[FAQEntryResponse] = Field(default_factory=list, description="FAQ entries")
+
+
+class CitationsFeedResponse(BaseModel):
+    """Public citation dashboard data for a community's canonical papers."""
+
+    community_id: str = Field(..., description="Community identifier")
+    total: int = Field(..., description="Total citing papers with a recorded canonical link")
+    per_year: dict[str, int] = Field(
+        default_factory=dict, description="Citing-paper count per year across all papers"
+    )
+    by_paper: dict[str, dict[str, int]] = Field(
+        default_factory=dict,
+        description="Stacked breakdown: canonical DOI -> year -> citing-paper count",
+    )
+    canonical_dois: list[str] = Field(
+        default_factory=list, description="Canonical DOIs tracked for this community"
+    )
 
 
 # Matches bare email addresses so they can be stripped from the public feed.
@@ -1619,6 +1636,50 @@ def create_community_router(community_id: str) -> APIRouter:
             limit=limit,
             offset=offset,
             entries=[_faq_result_to_response(e) for e in entries],
+        )
+
+    @router.get("/citations", response_model=CitationsFeedResponse)
+    async def community_citations(response: Response) -> CitationsFeedResponse:
+        """Public, read-only citation dashboard for this community.
+
+        Returns per-year counts of papers citing the community's canonical
+        works, plus a stacked breakdown keyed by the cited DOI (the shape
+        behind a citations-per-year chart). Disabled by default; a community
+        opts in via ``public_feeds.citations: true`` in its config.
+        """
+        config = info.community_config
+        if config is None or config.public_feeds is None or not config.public_feeds.citations:
+            raise HTTPException(
+                status_code=404,
+                detail="Public citations feed is not enabled for this community.",
+            )
+
+        try:
+            stats = get_citation_stats(project=community_id)
+        except sqlite3.Error:
+            logger.exception("Failed to query citations for community %s", community_id)
+            raise HTTPException(
+                status_code=503,
+                detail="Knowledge database is temporarily unavailable.",
+            )
+        except Exception:
+            logger.exception(
+                "Unexpected error serving citations feed for community %s", community_id
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="An unexpected error occurred while building the citations feed.",
+            )
+
+        canonical_dois = list(config.citations.dois) if config.citations else []
+
+        response.headers["Cache-Control"] = "public, max-age=3600"
+        return CitationsFeedResponse(
+            community_id=community_id,
+            total=stats.total,
+            per_year=stats.per_year,
+            by_paper=stats.by_paper,
+            canonical_dois=canonical_dois,
         )
 
     return router
