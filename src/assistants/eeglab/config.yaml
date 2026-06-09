@@ -427,6 +427,12 @@ citations:
     - "10.1016/j.neuroimage.2019.05.026"  # ICLabel: automated EEG IC classification (Pion-Tonachini et al., 2019)
     - "10.3389/fninf.2015.00016"  # PREP: standardized preprocessing (Bigdely-Shamlo et al., 2015)
 
+# Expose generated FAQ entries and citation stats as public, read-only JSON feeds
+# (GET /eeglab/faq and GET /eeglab/citations). Off by default platform-wide.
+public_feeds:
+  faq: true
+  citations: true
+
 # Mailing list configuration for FAQ generation
 mailman:
   - list_name: eeglablist
