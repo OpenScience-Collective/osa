@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.messages.utils import count_tokens_approximately
@@ -34,7 +34,7 @@ from src.assistants.community import PageContext as AgentPageContext
 from src.assistants.registry import AssistantInfo
 from src.core.config.community import WidgetConfig
 from src.core.services.litellm_llm import create_openrouter_llm
-from src.knowledge.search import FAQResult, list_faq_entries, search_faq_entries
+from src.knowledge.search import FAQResult, list_faq_entries
 from src.metrics.cost import COST_BLOCK_THRESHOLD, COST_WARN_THRESHOLD, MODEL_PRICING, estimate_cost
 from src.metrics.db import (
     RequestLogEntry,
@@ -249,7 +249,7 @@ def _faq_result_to_response(entry: FAQResult) -> FAQEntryResponse:
     return FAQEntryResponse(
         question=_redact_emails(entry.question),
         answer=_redact_emails(entry.answer),
-        tags=entry.tags,
+        tags=[_redact_emails(tag) for tag in entry.tags],
         category=entry.category,
         quality_score=entry.quality_score,
         message_count=entry.message_count,
@@ -1557,6 +1557,7 @@ def create_community_router(community_id: str) -> APIRouter:
 
     @router.get("/faq", response_model=FAQFeedResponse)
     async def community_faq(
+        response: Response,
         q: str | None = Query(
             default=None,
             description="Optional full-text search phrase. If omitted, browses all entries.",
@@ -1578,7 +1579,8 @@ def create_community_router(community_id: str) -> APIRouter:
         Returns synthesized question/answer entries generated from the
         community's mailing-list and forum archives. Disabled by default;
         a community opts in via ``public_feeds.faq: true`` in its config.
-        Email addresses are redacted from the output.
+        Email addresses are redacted from the output. ``total`` is the full
+        match count before pagination, in both browse and search modes.
         """
         config = info.community_config
         if config is None or config.public_feeds is None or not config.public_feeds.faq:
@@ -1588,30 +1590,29 @@ def create_community_router(community_id: str) -> APIRouter:
             )
 
         try:
-            if q:
-                entries = search_faq_entries(
-                    query=q,
-                    project=community_id,
-                    limit=limit,
-                    category=category,
-                    min_quality=min_quality,
-                )
-                total = len(entries)
-            else:
-                entries, total = list_faq_entries(
-                    project=community_id,
-                    limit=limit,
-                    offset=offset,
-                    category=category,
-                    min_quality=min_quality,
-                )
+            entries, total = list_faq_entries(
+                project=community_id,
+                limit=limit,
+                offset=offset,
+                query=q,
+                category=category,
+                min_quality=min_quality,
+            )
         except sqlite3.Error:
             logger.exception("Failed to query FAQ feed for community %s", community_id)
             raise HTTPException(
                 status_code=503,
                 detail="Knowledge database is temporarily unavailable.",
             )
+        except Exception:
+            logger.exception("Unexpected error serving FAQ feed for community %s", community_id)
+            raise HTTPException(
+                status_code=500,
+                detail="An unexpected error occurred while building the FAQ feed.",
+            )
 
+        # Public, read-only data; cacheable like the other /…/public endpoints.
+        response.headers["Cache-Control"] = "public, max-age=3600"
         return FAQFeedResponse(
             community_id=community_id,
             total=total,

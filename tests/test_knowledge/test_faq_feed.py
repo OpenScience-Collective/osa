@@ -129,3 +129,85 @@ class TestListFAQEntries:
 
         assert total == 0
         assert entries == []
+
+    def test_list_name_filter(self, tmp_path: Path):
+        """list_name filter restricts results to a single mailing list."""
+        db_path = tmp_path / "knowledge" / "lists.db"
+        with patch("src.knowledge.db.get_db_path", return_value=db_path):
+            init_db()
+            with get_connection() as conn:
+                for list_name, thread_id in [
+                    ("list-a", "a1"),
+                    ("list-a", "a2"),
+                    ("list-b", "b1"),
+                ]:
+                    upsert_faq_entry(
+                        conn,
+                        list_name=list_name,
+                        thread_id=thread_id,
+                        thread_url=f"https://example.org/{thread_id}",
+                        question=f"Question {thread_id}?",
+                        answer="An answer.",
+                        tags=["t"],
+                        category="how-to",
+                        message_count=2,
+                        participant_count=2,
+                        first_message_date="2020-01-01",
+                        quality_score=0.8,
+                        summary_model="test-model",
+                    )
+                conn.commit()
+
+            entries, total = list_faq_entries(project="eeglab", list_name="list-a")
+
+        assert total == 2
+        assert len(entries) == 2
+        assert {e.question for e in entries} == {"Question a1?", "Question a2?"}
+
+
+class TestListFAQEntriesSearch:
+    """Search mode of list_faq_entries (query set, via FTS5)."""
+
+    def test_query_matches_entries(self, faq_db: Path):
+        with patch("src.knowledge.db.get_db_path", return_value=faq_db):
+            entries, total = list_faq_entries(project="eeglab", query="ICA")
+
+        assert total >= 1
+        assert any("ICA" in e.question for e in entries)
+
+    def test_query_no_match_returns_empty(self, faq_db: Path):
+        with patch("src.knowledge.db.get_db_path", return_value=faq_db):
+            entries, total = list_faq_entries(project="eeglab", query="zzzznomatchterm")
+
+        assert total == 0
+        assert entries == []
+
+    def test_query_total_is_full_count_not_page_size(self, tmp_path: Path):
+        """total reflects all FTS matches, independent of the page limit."""
+        db_path = tmp_path / "knowledge" / "search.db"
+        with patch("src.knowledge.db.get_db_path", return_value=db_path):
+            init_db()
+            with get_connection() as conn:
+                for i in range(3):
+                    upsert_faq_entry(
+                        conn,
+                        list_name="eeglablist",
+                        thread_id=f"c{i}",
+                        thread_url=f"https://example.org/c{i}",
+                        question=f"How do I handle channels in case {i}?",
+                        answer="Inspect the channel locations.",
+                        tags=["channels"],
+                        category="how-to",
+                        message_count=2,
+                        participant_count=2,
+                        first_message_date="2020-01-01",
+                        quality_score=0.8,
+                        summary_model="test-model",
+                    )
+                conn.commit()
+
+            page, total = list_faq_entries(project="eeglab", query="channels", limit=1)
+
+        assert len(page) == 1
+        assert total == 3
+        assert total > len(page)
