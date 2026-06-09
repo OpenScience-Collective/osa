@@ -158,6 +158,7 @@ def _store_papers(
     project: str,
     *,
     force_source: str | None = None,
+    cites_doi: str | None = None,
 ) -> dict[str, int]:
     """Upsert opencite papers into the knowledge DB, returning counts by source.
 
@@ -167,6 +168,8 @@ def _store_papers(
         force_source: When set (a single-source sync), record this OSA source
             label using its native identifier; falls back to the priority
             mapping if that identifier is missing.
+        cites_doi: Canonical DOI these papers cite, recorded on each row when
+            storing the results of a citation sync. ``None`` for keyword search.
     """
     counts: dict[str, int] = {}
     with get_connection(project) as conn:
@@ -193,6 +196,7 @@ def _store_papers(
                 first_message=paper.abstract or None,
                 url=_paper_url(paper),
                 created_at=paper.publication_date or (str(paper.year) if paper.year else None),
+                cites_doi=cites_doi,
             )
             counts[source] = counts.get(source, 0) + 1
         conn.commit()
@@ -420,7 +424,7 @@ def sync_citing_papers(
     total = 0
     for doi, papers in cited:
         try:
-            counts = _store_papers(papers, project)
+            counts = _store_papers(papers, project, cites_doi=doi)
             count = sum(counts.values())
             update_sync_metadata("papers", f"citing_{doi}", count, project)
             logger.info("Synced %d papers citing %s", count, doi)

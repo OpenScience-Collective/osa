@@ -376,6 +376,77 @@ def search_github_items(
     return results
 
 
+@dataclass
+class CitationStats:
+    """Aggregated citation counts for a community's canonical papers."""
+
+    total: int
+    """Total citing papers with a recorded canonical link and a valid year."""
+
+    per_year: dict[str, int]
+    """Citing-paper count per publication year, summed across canonical DOIs."""
+
+    by_paper: dict[str, dict[str, int]]
+    """Per canonical DOI: a mapping of publication year to citing-paper count."""
+
+
+def get_citation_stats(project: str = "eeglab") -> CitationStats:
+    """Aggregate citation counts for the public citations dashboard.
+
+    Counts papers that cite a community's canonical DOIs (``papers.cites_doi``
+    is set), grouped by the citing paper's publication year. The year is the
+    leading four digits of ``created_at`` (ISO date or bare year); rows whose
+    ``created_at`` is missing or not a four-digit year are skipped so a bad
+    date never lands in a bogus year bucket.
+
+    Args:
+        project: Community ID for database isolation. Defaults to 'eeglab'.
+
+    Returns:
+        CitationStats with the overall ``total``, ``per_year`` totals, and the
+        stacked ``by_paper`` breakdown (canonical DOI -> year -> count). Years
+        are sorted ascending in every mapping.
+    """
+    sql = """
+        SELECT cites_doi, substr(created_at, 1, 4) AS yr, COUNT(*) AS cnt
+        FROM papers
+        WHERE cites_doi IS NOT NULL
+          AND created_at IS NOT NULL
+          AND substr(created_at, 1, 4) GLOB '[0-9][0-9][0-9][0-9]'
+        GROUP BY cites_doi, yr
+    """
+
+    per_year: dict[str, int] = {}
+    by_paper: dict[str, dict[str, int]] = {}
+    total = 0
+    try:
+        with get_connection(project) as conn:
+            for row in conn.execute(sql):
+                doi = row["cites_doi"]
+                year = row["yr"]
+                count = row["cnt"]
+                per_year[year] = per_year.get(year, 0) + count
+                by_paper.setdefault(doi, {})[year] = count
+                total += count
+    except sqlite3.OperationalError as e:
+        logger.error(
+            "Database operational error computing citation stats: %s",
+            e,
+            exc_info=True,
+            extra={"project": project},
+        )
+        raise
+    except sqlite3.Error as e:
+        logger.warning("Database error computing citation stats (project=%s): %s", project, e)
+        raise
+
+    return CitationStats(
+        total=total,
+        per_year=dict(sorted(per_year.items())),
+        by_paper={doi: dict(sorted(years.items())) for doi, years in by_paper.items()},
+    )
+
+
 def search_papers(
     query: str,
     project: str = "hed",

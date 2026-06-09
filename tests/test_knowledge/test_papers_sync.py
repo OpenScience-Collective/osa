@@ -165,6 +165,21 @@ class TestStorePapers:
                 count = conn.execute("SELECT COUNT(*) AS c FROM papers").fetchone()["c"]
             assert count == 1
 
+    def test_stores_cites_doi_on_each_row(self, temp_db: Path):
+        # A citation sync threads the canonical DOI through to each stored row.
+        papers = [
+            Paper(title="Citing A", ids=IDSet(openalex_id="https://openalex.org/W1"), year=2023),
+            Paper(title="Citing B", ids=IDSet(openalex_id="https://openalex.org/W2"), year=2024),
+        ]
+        with patch("src.knowledge.db.get_db_path", return_value=temp_db):
+            _store_papers(papers, "test", cites_doi="10.1/canonical")
+            with get_connection("test") as conn:
+                links = {
+                    r["external_id"]: r["cites_doi"]
+                    for r in conn.execute("SELECT external_id, cites_doi FROM papers")
+                }
+        assert links == {"W1": "10.1/canonical", "W2": "10.1/canonical"}
+
     def test_force_source_uses_native_id(self, temp_db: Path):
         # A PubMed-restricted sync should label the row 'pubmed' using the PMID,
         # even though the paper also carries an OpenAlex id.
