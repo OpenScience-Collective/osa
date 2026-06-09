@@ -2,7 +2,9 @@
 
 Uses a real registered community, a temporary SQLite knowledge database with
 citing papers, and the config gate toggled per test. No business logic is
-mocked; only the database path and the opt-in flag are controlled.
+mocked except in TestCitationsFeedErrors, where get_citation_stats is patched
+at the router call boundary to inject DB/unexpected errors and verify the
+503/500 responses.
 """
 
 import sqlite3
@@ -92,6 +94,22 @@ def citations_flag_false() -> Iterator[None]:
 
 
 @pytest.fixture
+def citations_enabled_no_config() -> Iterator[None]:
+    """Feed enabled but the community has no citations config block."""
+    info = registry.get(COMMUNITY_ID)
+    assert info is not None and info.community_config is not None
+    orig_feeds = info.community_config.public_feeds
+    orig_citations = info.community_config.citations
+    info.community_config.public_feeds = PublicFeedsConfig(citations=True)
+    info.community_config.citations = None
+    try:
+        yield
+    finally:
+        info.community_config.public_feeds = orig_feeds
+        info.community_config.citations = orig_citations
+
+
+@pytest.fixture
 def client() -> TestClient:
     app = FastAPI()
     app.include_router(create_community_router(COMMUNITY_ID))
@@ -153,6 +171,20 @@ class TestCitationsFeedContent:
         assert resp.headers["Cache-Control"] == "public, max-age=3600"
 
 
+class TestCitationsFeedNoConfig:
+    """Feed enabled for a community without a citations config block."""
+
+    @pytest.mark.usefixtures("citations_enabled_no_config")
+    def test_canonical_dois_empty_when_no_citations_config(self, client, citations_db):
+        with patch("src.knowledge.db.get_db_path", return_value=citations_db):
+            resp = client.get(f"/{COMMUNITY_ID}/citations")
+        body = resp.json()
+        assert resp.status_code == 200
+        assert body["canonical_dois"] == []
+        # Stats still come from the DB regardless of config presence.
+        assert body["total"] == 4
+
+
 @pytest.mark.usefixtures("citations_enabled")
 class TestCitationsFeedErrors:
     def test_db_error_returns_503(self, client):
@@ -162,3 +194,11 @@ class TestCitationsFeedErrors:
         ):
             resp = client.get(f"/{COMMUNITY_ID}/citations")
         assert resp.status_code == 503
+
+    def test_unexpected_error_returns_500(self, client):
+        with patch(
+            "src.api.routers.community.get_citation_stats",
+            side_effect=RuntimeError("boom"),
+        ):
+            resp = client.get(f"/{COMMUNITY_ID}/citations")
+        assert resp.status_code == 500

@@ -518,18 +518,21 @@ def _migrate_db(conn: sqlite3.Connection) -> None:
     try:
         cursor = conn.execute("PRAGMA table_info(papers)")
         columns = [row[1] for row in cursor.fetchall()]
-
-        if columns:  # papers table exists
-            if "cites_doi" not in columns:
-                logger.info("Migrating papers table: adding cites_doi column")
-                conn.execute("ALTER TABLE papers ADD COLUMN cites_doi TEXT")
-                logger.info("Migration complete: cites_doi column added to papers")
-            # Ensure the index exists for both new and migrated databases.
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_papers_cites_doi ON papers(cites_doi)")
-            conn.commit()
     except sqlite3.OperationalError as e:
-        # Table doesn't exist yet - this is fine, schema will create it
+        # Only the PRAGMA is guarded here: a missing papers table is fine since
+        # SCHEMA_SQL creates it. DDL errors below (locked DB, I/O fault) must
+        # propagate rather than be swallowed and leave the table un-indexed.
         logger.debug("Papers table not found during migration (will be created): %s", e)
+        columns = []
+
+    if columns:  # papers table exists; migrate it in place
+        if "cites_doi" not in columns:
+            logger.info("Migrating papers table: adding cites_doi column")
+            conn.execute("ALTER TABLE papers ADD COLUMN cites_doi TEXT")
+            logger.info("Migration complete: cites_doi column added to papers")
+        # Ensure the index exists for both new and migrated databases.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_papers_cites_doi ON papers(cites_doi)")
+        conn.commit()
 
 
 def init_db(project: str = "hed") -> None:
@@ -627,6 +630,9 @@ def upsert_paper(
             recorded link is kept (COALESCE), so a later keyword sync passing
             ``None`` never erases an existing citation link, and a re-sync
             backfills the link onto rows stored before this column existed.
+            A single column holds one link: a paper citing two tracked DOIs is
+            attributed to whichever was synced first (it is still counted once
+            in the per-year total, only its by-paper bucket is approximate).
     """
     # Limit first_message size
     if first_message and len(first_message) > 2000:
