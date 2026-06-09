@@ -637,6 +637,23 @@ class FAQGenerationConfig(BaseModel):
         return self
 
 
+class PublicFeedsConfig(BaseModel):
+    """Opt-in flags for exposing community data as public, read-only JSON feeds.
+
+    Both feeds are off by default. Enabling a feed publishes already-synced
+    data (FAQ entries, citation counts) at unauthenticated endpoints so
+    communities can build their own frontends on top of it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    faq: bool = False
+    """Expose generated FAQ entries at GET /{community_id}/faq."""
+
+    citations: bool = False
+    """Expose canonical-paper citation counts at GET /{community_id}/citations."""
+
+
 class BudgetConfig(BaseModel):
     """Budget limits and alert thresholds for a community.
 
@@ -917,6 +934,9 @@ class CommunityConfig(BaseModel):
 
     faq_generation: FAQGenerationConfig | None = None
     """FAQ generation configuration from threaded discussions (mailman, discourse, etc.)."""
+
+    public_feeds: PublicFeedsConfig | None = None
+    """Opt-in flags for exposing FAQ/citation data as public JSON feeds."""
 
     sync: SyncConfig | None = None
     """Per-community sync schedule configuration.

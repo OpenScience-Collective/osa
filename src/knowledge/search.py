@@ -792,6 +792,28 @@ class FAQResult:
     first_message_date: str
 
 
+def _parse_faq_tags(raw: str | None, *, thread_url: str, project: str) -> list[str]:
+    """Decode a FAQ entry's JSON ``tags`` column, tolerating malformed data.
+
+    The column is written by the summarizer as a JSON array. A corrupt value
+    should degrade to an empty tag list (and a warning) rather than raise a
+    ``JSONDecodeError`` that escapes the sqlite handlers and surfaces as an
+    unlogged 500 at the API layer.
+    """
+    if not raw:
+        return []
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        logger.warning(
+            "Invalid JSON in FAQ tags (thread_url=%s, project=%s): %r",
+            thread_url,
+            project,
+            raw,
+        )
+        return []
+
+
 def search_faq_entries(
     query: str,
     project: str = "eeglab",
@@ -845,7 +867,7 @@ def search_faq_entries(
             params[0] = safe_query
 
             for row in conn.execute(sql, params):
-                tags = json.loads(row["tags"]) if row["tags"] else []
+                tags = _parse_faq_tags(row["tags"], thread_url=row["thread_url"], project=project)
 
                 results.append(
                     FAQResult(
@@ -874,6 +896,111 @@ def search_faq_entries(
         raise
 
     return results
+
+
+def list_faq_entries(
+    project: str = "eeglab",
+    limit: int = 50,
+    offset: int = 0,
+    query: str | None = None,
+    list_name: str | None = None,
+    category: str | None = None,
+    min_quality: float = 0.0,
+) -> tuple[list[FAQResult], int]:
+    """List FAQ entries for the public feed, with pagination metadata.
+
+    Serves both browse mode (no ``query``) and search mode (``query`` set, via
+    FTS5). Unlike :func:`search_faq_entries`, this always returns the full
+    matching ``total`` count computed before LIMIT/OFFSET, so callers can
+    paginate correctly in either mode.
+
+    Args:
+        project: Community ID for database isolation. Defaults to 'eeglab'.
+        limit: Maximum number of entries to return.
+        offset: Number of entries to skip (for pagination).
+        query: Optional full-text search phrase. When omitted, all entries
+            matching the filters are browsed, ordered by quality then recency.
+        list_name: Filter by mailing list name.
+        category: Filter by category (e.g., 'troubleshooting', 'how-to').
+        min_quality: Minimum quality score (0.0-1.0).
+
+    Returns:
+        Tuple of (entries, total_count) where total_count is the number of
+        entries matching the query and filters before limit/offset are applied.
+    """
+    use_fts = bool(query and query.strip())
+
+    leading_params: list[str | int | float] = []
+    if use_fts:
+        from_clause = "faq_entries_fts fts JOIN faq_entries f ON fts.rowid = f.id"
+        where_clause = "faq_entries_fts MATCH ?"
+        order_clause = "f.quality_score DESC, rank"
+        # Sanitize to prevent FTS5 injection (query is guaranteed non-None here).
+        leading_params.append(_sanitize_fts5_query(query))  # type: ignore[arg-type]
+    else:
+        from_clause = "faq_entries f"
+        where_clause = "1=1"
+        order_clause = "f.quality_score DESC, f.first_message_date DESC"
+
+    filters = ""
+    filter_params: list[str | int | float] = []
+    if list_name:
+        filters += " AND f.list_name = ?"
+        filter_params.append(list_name)
+    if category:
+        filters += " AND f.category = ?"
+        filter_params.append(category)
+    if min_quality > 0:
+        filters += " AND f.quality_score >= ?"
+        filter_params.append(min_quality)
+
+    base_params = [*leading_params, *filter_params]
+    count_sql = f"SELECT COUNT(*) FROM {from_clause} WHERE {where_clause}{filters}"
+    rows_sql = (
+        "SELECT f.question, f.answer, f.thread_url, f.tags, f.category, "
+        "f.quality_score, f.message_count, f.first_message_date "
+        f"FROM {from_clause} WHERE {where_clause}{filters} "
+        f"ORDER BY {order_clause} LIMIT ? OFFSET ?"
+    )
+
+    results: list[FAQResult] = []
+    try:
+        with get_connection(project) as conn:
+            total = conn.execute(count_sql, base_params).fetchone()[0]
+
+            for row in conn.execute(rows_sql, [*base_params, limit, offset]):
+                tags = _parse_faq_tags(row["tags"], thread_url=row["thread_url"], project=project)
+                results.append(
+                    FAQResult(
+                        question=row["question"],
+                        answer=row["answer"],
+                        thread_url=row["thread_url"],
+                        tags=tags,
+                        category=row["category"],
+                        quality_score=row["quality_score"],
+                        message_count=row["message_count"],
+                        first_message_date=row["first_message_date"] or "",
+                    )
+                )
+    except sqlite3.OperationalError as e:
+        logger.error(
+            "Database operational error listing FAQ entries: %s",
+            e,
+            exc_info=True,
+            extra={"project": project},
+        )
+        raise
+    except sqlite3.Error as e:
+        logger.warning(
+            "Database error listing FAQ entries (project=%s, limit=%d, offset=%d): %s",
+            project,
+            limit,
+            offset,
+            e,
+        )
+        raise
+
+    return results, total
 
 
 @dataclass
