@@ -34,6 +34,7 @@ from src.assistants.community import PageContext as AgentPageContext
 from src.assistants.registry import AssistantInfo
 from src.core.config.community import WidgetConfig
 from src.core.services.litellm_llm import create_openrouter_llm
+from src.knowledge.search import FAQResult, list_faq_entries, search_faq_entries
 from src.metrics.cost import COST_BLOCK_THRESHOLD, COST_WARN_THRESHOLD, MODEL_PRICING, estimate_cost
 from src.metrics.db import (
     RequestLogEntry,
@@ -203,6 +204,58 @@ class CommunityConfigResponse(BaseModel):
         ..., description="Widget display configuration (title, placeholder, etc.)"
     )
     status: str = Field(..., description="Health status: healthy, degraded, or error")
+
+
+class FAQEntryResponse(BaseModel):
+    """A single FAQ entry exposed via the public feed."""
+
+    question: str = Field(..., description="Synthesized question")
+    answer: str = Field(..., description="Synthesized answer")
+    tags: list[str] = Field(default_factory=list, description="Keyword tags")
+    category: str = Field(..., description="Entry category (how-to, troubleshooting, etc.)")
+    quality_score: float = Field(..., description="LLM quality score (0.0-1.0)")
+    message_count: int = Field(..., description="Number of source messages in the thread")
+    first_message_date: str = Field(..., description="Date of the first message in the thread")
+    thread_url: str = Field(..., description="URL of the source discussion thread")
+
+
+class FAQFeedResponse(BaseModel):
+    """Paginated public FAQ feed for a community."""
+
+    community_id: str = Field(..., description="Community identifier")
+    total: int = Field(..., description="Total entries matching the filters")
+    limit: int = Field(..., description="Page size used for this response")
+    offset: int = Field(..., description="Offset used for this response")
+    entries: list[FAQEntryResponse] = Field(default_factory=list, description="FAQ entries")
+
+
+# Matches bare email addresses so they can be stripped from the public feed.
+_EMAIL_PATTERN = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+
+def _redact_emails(text: str) -> str:
+    """Replace any email address in ``text`` with a redaction marker.
+
+    The FAQ feed is derived from public mailing-list content. The summarizer
+    strips most personal data, but a handful of entries still embed addresses
+    (mostly vendor support lines). A public JSON feed should not emit raw
+    addresses, so they are redacted at serialization time.
+    """
+    return _EMAIL_PATTERN.sub("[email redacted]", text)
+
+
+def _faq_result_to_response(entry: FAQResult) -> FAQEntryResponse:
+    """Convert a knowledge-layer FAQResult into a public response model."""
+    return FAQEntryResponse(
+        question=_redact_emails(entry.question),
+        answer=_redact_emails(entry.answer),
+        tags=entry.tags,
+        category=entry.category,
+        quality_score=entry.quality_score,
+        message_count=entry.message_count,
+        first_message_date=entry.first_message_date,
+        thread_url=entry.thread_url,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1501,6 +1554,71 @@ def create_community_router(community_id: str) -> APIRouter:
                 status_code=503,
                 detail="Metrics database is temporarily unavailable.",
             )
+
+    @router.get("/faq", response_model=FAQFeedResponse)
+    async def community_faq(
+        q: str | None = Query(
+            default=None,
+            description="Optional full-text search phrase. If omitted, browses all entries.",
+            max_length=200,
+        ),
+        category: str | None = Query(
+            default=None,
+            description="Filter by category (how-to, troubleshooting, reference, etc.)",
+            max_length=50,
+        ),
+        min_quality: float = Query(
+            default=0.0, ge=0.0, le=1.0, description="Minimum quality score"
+        ),
+        limit: int = Query(default=50, ge=1, le=200, description="Page size"),
+        offset: int = Query(default=0, ge=0, description="Pagination offset"),
+    ) -> FAQFeedResponse:
+        """Public, read-only FAQ feed for this community.
+
+        Returns synthesized question/answer entries generated from the
+        community's mailing-list and forum archives. Disabled by default;
+        a community opts in via ``public_feeds.faq: true`` in its config.
+        Email addresses are redacted from the output.
+        """
+        config = info.community_config
+        if config is None or config.public_feeds is None or not config.public_feeds.faq:
+            raise HTTPException(
+                status_code=404,
+                detail="Public FAQ feed is not enabled for this community.",
+            )
+
+        try:
+            if q:
+                entries = search_faq_entries(
+                    query=q,
+                    project=community_id,
+                    limit=limit,
+                    category=category,
+                    min_quality=min_quality,
+                )
+                total = len(entries)
+            else:
+                entries, total = list_faq_entries(
+                    project=community_id,
+                    limit=limit,
+                    offset=offset,
+                    category=category,
+                    min_quality=min_quality,
+                )
+        except sqlite3.Error:
+            logger.exception("Failed to query FAQ feed for community %s", community_id)
+            raise HTTPException(
+                status_code=503,
+                detail="Knowledge database is temporarily unavailable.",
+            )
+
+        return FAQFeedResponse(
+            community_id=community_id,
+            total=total,
+            limit=limit,
+            offset=offset,
+            entries=[_faq_result_to_response(e) for e in entries],
+        )
 
     return router
 

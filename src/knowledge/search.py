@@ -876,6 +876,90 @@ def search_faq_entries(
     return results
 
 
+def list_faq_entries(
+    project: str = "eeglab",
+    limit: int = 50,
+    offset: int = 0,
+    list_name: str | None = None,
+    category: str | None = None,
+    min_quality: float = 0.0,
+) -> tuple[list[FAQResult], int]:
+    """List FAQ entries without a search query (browse mode).
+
+    Unlike :func:`search_faq_entries`, this does not require an FTS phrase and
+    is used to serve the public FAQ feed. Entries are ordered by quality score
+    then most recent thread.
+
+    Args:
+        project: Community ID for database isolation. Defaults to 'eeglab'.
+        limit: Maximum number of entries to return.
+        offset: Number of entries to skip (for pagination).
+        list_name: Filter by mailing list name.
+        category: Filter by category (e.g., 'troubleshooting', 'how-to').
+        min_quality: Minimum quality score (0.0-1.0).
+
+    Returns:
+        Tuple of (entries, total_count) where total_count is the number of
+        entries matching the filters before limit/offset are applied.
+    """
+    filters = ""
+    params: list[str | int | float] = []
+
+    if list_name:
+        filters += " AND list_name = ?"
+        params.append(list_name)
+
+    if category:
+        filters += " AND category = ?"
+        params.append(category)
+
+    if min_quality > 0:
+        filters += " AND quality_score >= ?"
+        params.append(min_quality)
+
+    count_sql = f"SELECT COUNT(*) FROM faq_entries WHERE 1=1{filters}"
+    rows_sql = (
+        "SELECT question, answer, thread_url, tags, category, "
+        "quality_score, message_count, first_message_date "
+        f"FROM faq_entries WHERE 1=1{filters} "
+        "ORDER BY quality_score DESC, first_message_date DESC "
+        "LIMIT ? OFFSET ?"
+    )
+
+    results: list[FAQResult] = []
+    try:
+        with get_connection(project) as conn:
+            total = conn.execute(count_sql, params).fetchone()[0]
+
+            for row in conn.execute(rows_sql, [*params, limit, offset]):
+                tags = json.loads(row["tags"]) if row["tags"] else []
+                results.append(
+                    FAQResult(
+                        question=row["question"],
+                        answer=row["answer"],
+                        thread_url=row["thread_url"],
+                        tags=tags,
+                        category=row["category"],
+                        quality_score=row["quality_score"],
+                        message_count=row["message_count"],
+                        first_message_date=row["first_message_date"] or "",
+                    )
+                )
+    except sqlite3.OperationalError as e:
+        logger.error(
+            "Database operational error listing FAQ entries: %s",
+            e,
+            exc_info=True,
+            extra={"project": project},
+        )
+        raise
+    except sqlite3.Error as e:
+        logger.warning("Database error listing FAQ entries: %s", e)
+        raise
+
+    return results, total
+
+
 @dataclass
 class BEPResult:
     """A BEP search result from the knowledge database."""
