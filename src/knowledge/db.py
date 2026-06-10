@@ -174,6 +174,18 @@ CREATE TABLE IF NOT EXISTS sync_metadata (
     UNIQUE(source_type, source_name)
 );
 
+-- True per-year citation counts per canonical DOI, fetched from OpenAlex
+-- group_by (complete, uncapped). This is the source of truth for the public
+-- citations dashboard; the papers table only stores a recent sample of the
+-- citing papers themselves for the search tool.
+CREATE TABLE IF NOT EXISTS citation_counts (
+    cites_doi TEXT NOT NULL,
+    year INTEGER NOT NULL,
+    count INTEGER NOT NULL,
+    synced_at TEXT NOT NULL,
+    PRIMARY KEY (cites_doi, year)
+);
+
 -- Docstrings extracted from source code
 CREATE TABLE IF NOT EXISTS docstrings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -750,6 +762,35 @@ def update_sync_metadata(
             (source_type, source_name, _now_iso(), items_synced),
         )
         conn.commit()
+
+
+def replace_citation_counts(cites_doi: str, counts: dict[int, int], project: str = "hed") -> None:
+    """Replace the stored per-year citation counts for one canonical DOI.
+
+    The counts are an exact, complete histogram from OpenAlex, so the row set
+    is replaced wholesale (delete + insert) inside one transaction: this keeps
+    the table an accurate mirror and drops any year that no longer appears.
+
+    Args:
+        cites_doi: Canonical DOI whose citations these counts describe.
+        counts: Mapping of publication year to citing-paper count.
+        project: Assistant/project name. Defaults to 'hed'.
+    """
+    now = _now_iso()
+    with get_connection(project) as conn:
+        try:
+            conn.execute("DELETE FROM citation_counts WHERE cites_doi = ?", (cites_doi,))
+            if counts:
+                conn.executemany(
+                    "INSERT INTO citation_counts (cites_doi, year, count, synced_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    [(cites_doi, year, count, now) for year, count in counts.items()],
+                )
+            conn.commit()
+        except Exception:
+            # Keep the delete+insert atomic: never leave a DOI half-replaced.
+            conn.rollback()
+            raise
 
 
 def upsert_bep_item(
