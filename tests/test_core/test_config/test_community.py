@@ -189,6 +189,24 @@ class TestCitationConfig:
         assert "10.1234/example" in config.dois
         assert "10.5678/other" in config.dois
 
+    def test_paper_labels_default_empty(self) -> None:
+        """paper_labels defaults to an empty dict."""
+        assert CitationConfig().paper_labels == {}
+
+    def test_paper_labels_keys_normalized(self) -> None:
+        """DOI keys in paper_labels are normalized like dois so they match."""
+        config = CitationConfig(
+            dois=["10.1234/example"],
+            paper_labels={
+                "https://doi.org/10.1234/example": "Example (Author 2020)",
+                "10.5678/other": "Other (Author 2021)",
+            },
+        )
+        assert config.paper_labels["10.1234/example"] == "Example (Author 2020)"
+        assert config.paper_labels["10.5678/other"] == "Other (Author 2021)"
+        for key in config.paper_labels:
+            assert not key.startswith("http")
+
     def test_deduplicates_queries(self) -> None:
         """Should deduplicate queries."""
         config = CitationConfig(queries=["query 1", "query 1", "query 2"])
