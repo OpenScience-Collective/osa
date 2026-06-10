@@ -393,11 +393,11 @@ class CitationStats:
 def get_citation_stats(project: str = "eeglab") -> CitationStats:
     """Aggregate citation counts for the public citations dashboard.
 
-    Counts papers that cite a community's canonical DOIs (``papers.cites_doi``
-    is set), grouped by the citing paper's publication year. The year is the
-    leading four digits of ``created_at`` (ISO date or bare year); rows whose
-    ``created_at`` is missing or not a four-digit year are skipped so a bad
-    date never lands in a bogus year bucket.
+    Reads the ``citation_counts`` table, which holds the exact, complete
+    per-year histogram per canonical DOI fetched from OpenAlex ``group_by``
+    (not the capped sample of citing papers in the ``papers`` table). A
+    community that has not yet had its citations synced (table absent) yields
+    empty stats rather than an error.
 
     Args:
         project: Community ID for database isolation. Defaults to 'eeglab'.
@@ -407,14 +407,7 @@ def get_citation_stats(project: str = "eeglab") -> CitationStats:
         stacked ``by_paper`` breakdown (canonical DOI -> year -> count). Years
         are sorted ascending in every mapping.
     """
-    sql = """
-        SELECT cites_doi, substr(created_at, 1, 4) AS yr, COUNT(*) AS cnt
-        FROM papers
-        WHERE cites_doi IS NOT NULL
-          AND created_at IS NOT NULL
-          AND substr(created_at, 1, 4) GLOB '[0-9][0-9][0-9][0-9]'
-        GROUP BY cites_doi, yr
-    """
+    sql = "SELECT cites_doi, year, count FROM citation_counts"
 
     per_year: dict[str, int] = {}
     by_paper: dict[str, dict[str, int]] = {}
@@ -423,12 +416,17 @@ def get_citation_stats(project: str = "eeglab") -> CitationStats:
         with get_connection(project) as conn:
             for row in conn.execute(sql):
                 doi = row["cites_doi"]
-                year = row["yr"]
-                count = row["cnt"]
+                year = str(row["year"])
+                count = row["count"]
                 per_year[year] = per_year.get(year, 0) + count
                 by_paper.setdefault(doi, {})[year] = count
                 total += count
     except sqlite3.OperationalError as e:
+        # The table is created on the first citation sync; before then, treat
+        # the feed as empty instead of failing the request.
+        if "no such table" in str(e).lower():
+            logger.info("citation_counts not yet present for project %s", project)
+            return CitationStats(total=0, per_year={}, by_paper={})
         logger.error(
             "Database operational error computing citation stats: %s",
             e,

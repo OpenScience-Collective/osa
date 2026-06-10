@@ -364,16 +364,18 @@ def sync_papers(
                 total += count
                 console.print(f"  [dim]{src}: {count} papers[/dim]")
 
-    # Sync citing papers if DOIs are configured
+    # Sync citing papers if DOIs are configured. Counts are fetched complete
+    # (uncapped) from OpenAlex; only the stored sample of recent citing papers
+    # uses the default cap, independent of the query --limit above.
     if include_citations:
         dois = _get_community_paper_dois(community)
         if dois:
-            console.print(f"\n[dim]Syncing papers citing {len(dois)} DOI(s)...[/dim]")
-            with console.status("[green]Syncing citing papers...[/green]"):
-                citing_count = sync_citing_papers(dois, limit, project=community)
+            console.print(f"\n[dim]Syncing citations for {len(dois)} DOI(s)...[/dim]")
+            with console.status("[green]Syncing citations...[/green]"):
+                citing_count = sync_citing_papers(dois, project=community)
             results_by_source["citing"] = citing_count
             total += citing_count
-            console.print(f"[dim]Citing papers: {citing_count}[/dim]")
+            console.print(f"[dim]Recent citing papers stored: {citing_count}[/dim]")
 
     console.print(f"\n[green]Total papers synced for {community}: {total}[/green]")
 
