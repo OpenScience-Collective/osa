@@ -189,6 +189,42 @@ class TestCitationConfig:
         assert "10.1234/example" in config.dois
         assert "10.5678/other" in config.dois
 
+    def test_paper_labels_default_empty(self) -> None:
+        """paper_labels defaults to an empty dict."""
+        assert CitationConfig().paper_labels == {}
+
+    def test_paper_labels_keys_normalized(self) -> None:
+        """DOI keys in paper_labels are normalized like dois so they match."""
+        config = CitationConfig(
+            dois=["10.1234/example"],
+            paper_labels={
+                "https://doi.org/10.1234/example": "Example (Author 2020)",
+                "doi.org/10.9012/paper": "Paper (Author 2019)",
+                "10.5678/other": "Other (Author 2021)",
+            },
+        )
+        assert config.paper_labels["10.1234/example"] == "Example (Author 2020)"
+        assert config.paper_labels["10.9012/paper"] == "Paper (Author 2019)"
+        assert config.paper_labels["10.5678/other"] == "Other (Author 2021)"
+        for key in config.paper_labels:
+            assert not key.startswith("http")
+            assert not key.startswith("doi.org")
+
+    def test_paper_labels_rejects_invalid_doi_key(self) -> None:
+        """A malformed DOI key fails loudly rather than silently dropping the label."""
+        with pytest.raises(ValidationError, match="Invalid DOI key in paper_labels"):
+            CitationConfig(paper_labels={"not-a-doi": "Label"})
+
+    def test_paper_labels_dedup_last_wins(self) -> None:
+        """Two keys that normalize to the same DOI collapse to one (last wins)."""
+        config = CitationConfig(
+            paper_labels={
+                "https://doi.org/10.1234/x": "Label A",
+                "10.1234/x": "Label B",
+            }
+        )
+        assert config.paper_labels == {"10.1234/x": "Label B"}
+
     def test_deduplicates_queries(self) -> None:
         """Should deduplicate queries."""
         config = CitationConfig(queries=["query 1", "query 1", "query 2"])

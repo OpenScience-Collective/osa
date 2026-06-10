@@ -243,6 +243,37 @@ class CitationConfig(BaseModel):
     OpenAlex anonymously. Communities opt in explicitly, and their prompt should
     tell the agent to ask the user before running it."""
 
+    paper_labels: dict[str, str] = Field(default_factory=dict)
+    """Optional human-readable labels for canonical DOIs (DOI -> short label).
+
+    Used to label the stacked series in the public citations dashboard
+    (e.g. '10.1038/s41597-019-0104-8' -> 'EEG-BIDS (Pernet 2019)'). Keys are
+    normalized like ``dois`` so they match the stored ``cites_doi`` values.
+    DOIs without a label fall back to the bare DOI in consumers."""
+
+    @field_validator("paper_labels")
+    @classmethod
+    def validate_paper_labels(cls, v: dict[str, str]) -> dict[str, str]:
+        """Normalize and validate DOI keys so labels line up with stored DOIs.
+
+        Applies the same prefix-stripping and format check as ``dois`` so a
+        mistyped key fails loudly at config load instead of silently producing
+        a label that never matches a citation bucket. If two keys normalize to
+        the same DOI, the last one wins (mirrors ``dois`` dedup behavior).
+        """
+        doi_pattern = re.compile(r"^10\.\d{4,}/[^\s]+$")
+        normalized: dict[str, str] = {}
+        for doi, label in v.items():
+            clean_doi = re.sub(r"^(https?://)?(dx\.)?doi\.org/", "", doi.strip())
+            if not clean_doi:
+                continue
+            if not doi_pattern.match(clean_doi):
+                raise ValueError(
+                    f"Invalid DOI key in paper_labels (expected '10.xxxx/yyyy'): {doi}"
+                )
+            normalized[clean_doi] = label
+        return normalized
+
     @field_validator("queries")
     @classmethod
     def validate_queries(cls, v: list[str]) -> list[str]:

@@ -574,6 +574,27 @@ citations:
     - "10.1038/s41597-025-05543-2"         # MRS-BIDS (Bouchard et al., 2025)
     # Related ecosystem
     - "10.1371/journal.pcbi.1005209"       # BIDS Apps (Gorgolewski et al., 2017)
+  # Short labels for the public citations dashboard (stacked series legend)
+  paper_labels:
+    "10.1038/sdata.2016.44": "BIDS (Gorgolewski 2016)"
+    "10.1038/s41597-019-0104-8": "EEG-BIDS (Pernet 2019)"
+    "10.1038/s41597-019-0105-7": "iEEG-BIDS (Holdgraf 2019)"
+    "10.1038/sdata.2018.110": "MEG-BIDS (Niso 2018)"
+    "10.1038/s41597-022-01164-1": "PET-BIDS (Norgaard 2021)"
+    "10.1177/0271678X20905433": "PET guidelines (Knudsen 2020)"
+    "10.1093/gigascience/giaa104": "Genetics-BIDS (Moreau 2020)"
+    "10.3389/fnins.2022.871228": "Microscopy-BIDS (Bourget 2022)"
+    "10.1038/s41597-022-01571-4": "qMRI-BIDS (Karakuzu 2022)"
+    "10.1038/s41597-022-01615-9": "ASL-BIDS (Clement 2022)"
+    "10.1038/s41597-024-04136-9": "NIRS-BIDS (Luke 2025)"
+    "10.1038/s41597-024-03559-8": "Motion-BIDS (Jeung 2024)"
+    "10.1038/s41597-025-05543-2": "MRS-BIDS (Bouchard 2025)"
+    "10.1371/journal.pcbi.1005209": "BIDS Apps (Gorgolewski 2017)"
+
+# Expose the citation dashboard as a public, read-only JSON feed
+# (GET /bids/citations). FAQ feed stays off: BIDS has no FAQ pipeline configured.
+public_feeds:
+  citations: true
 
 # Discourse forums
 discourse:

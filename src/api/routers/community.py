@@ -244,6 +244,10 @@ class CitationsFeedResponse(BaseModel):
     canonical_dois: list[str] = Field(
         default_factory=list, description="Canonical DOIs tracked for this community"
     )
+    labels: dict[str, str] = Field(
+        default_factory=dict,
+        description="Human-readable labels per canonical DOI (DOI -> label), when configured",
+    )
 
 
 # Matches bare email addresses so they can be stripped from the public feed.
@@ -1672,6 +1676,7 @@ def create_community_router(community_id: str) -> APIRouter:
             )
 
         canonical_dois = list(config.citations.dois) if config.citations else []
+        labels = dict(config.citations.paper_labels) if config.citations else {}
 
         response.headers["Cache-Control"] = "public, max-age=3600"
         return CitationsFeedResponse(
@@ -1680,6 +1685,7 @@ def create_community_router(community_id: str) -> APIRouter:
             per_year=stats.per_year,
             by_paper=stats.by_paper,
             canonical_dois=canonical_dois,
+            labels=labels,
         )
 
     return router

@@ -170,6 +170,16 @@ class TestCitationsFeedContent:
             resp = client.get(f"/{COMMUNITY_ID}/citations")
         assert resp.headers["Cache-Control"] == "public, max-age=3600"
 
+    def test_labels_from_config(self, client, citations_db):
+        with patch("src.knowledge.db.get_db_path", return_value=citations_db):
+            resp = client.get(f"/{COMMUNITY_ID}/citations")
+        labels = resp.json()["labels"]
+        # eeglab config defines human-readable labels for its canonical DOIs.
+        assert labels.get(DOI_A) == "EEGLAB (Delorme 2004)"
+        assert labels.get(DOI_B) == "ICLabel (Pion-Tonachini 2019)"
+        # Mixed-case DOI suffix survives the config -> endpoint round-trip.
+        assert labels.get("10.1162/IMAG.a.136") == "LSL (Kothe 2025)"
+
 
 class TestCitationsFeedNoConfig:
     """Feed enabled for a community without a citations config block."""
@@ -181,6 +191,7 @@ class TestCitationsFeedNoConfig:
         body = resp.json()
         assert resp.status_code == 200
         assert body["canonical_dois"] == []
+        assert body["labels"] == {}
         # Stats still come from the DB regardless of config presence.
         assert body["total"] == 4
 
