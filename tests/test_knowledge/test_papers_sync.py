@@ -413,6 +413,118 @@ class TestSyncCitingPapers:
         assert stored == 0
         assert stats.total == 0
 
+    def test_drops_prepublication_citations(self, tmp_path: Path, monkeypatch) -> None:
+        # The work was published in 2016; a citing bucket dated 2013 is
+        # impossible (bad OpenAlex date) and must be dropped from the histogram.
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "/works/doi:" in str(request.url):
+                return httpx.Response(
+                    200, json={"id": "https://openalex.org/W1", "publication_year": 2016}
+                )
+            if request.url.params.get("group_by"):
+                return httpx.Response(
+                    200,
+                    json={
+                        "group_by": [
+                            {"key": "2013", "count": 2},  # before publication
+                            {"key": "2016", "count": 5},
+                            {"key": "2020", "count": 9},
+                        ]
+                    },
+                )
+            return httpx.Response(200, json={"meta": {"next_cursor": None}, "results": []})
+
+        def factory(**_kwargs):
+            return OpenAlexCitationClient(
+                client=httpx.Client(transport=httpx.MockTransport(handler))
+            )
+
+        monkeypatch.setattr(ps, "OpenAlexCitationClient", factory)
+
+        db_path = tmp_path / "knowledge" / "test.db"
+        with patch("src.knowledge.db.get_db_path", return_value=db_path):
+            init_db("test")
+            sync_citing_papers(["10.1/canon"], project="test")
+            stats = get_citation_stats("test")
+
+        assert stats.by_paper == {"10.1/canon": {"2016": 5, "2020": 9}}
+        assert "2013" not in stats.per_year
+
+    def test_over_aggressive_floor_preserves_existing(self, tmp_path: Path, monkeypatch) -> None:
+        # If OpenAlex reports a bogus future year for the canonical work, every
+        # current bucket is floored out; the empty-counts guard must then keep
+        # the existing histogram rather than wiping it.
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "/works/doi:" in str(request.url):
+                return httpx.Response(
+                    200, json={"id": "https://openalex.org/W1", "publication_year": 2099}
+                )
+            if request.url.params.get("group_by"):
+                return httpx.Response(200, json={"group_by": [{"key": "2024", "count": 10}]})
+            return httpx.Response(200, json={"meta": {"next_cursor": None}, "results": []})
+
+        def factory(**_kwargs):
+            return OpenAlexCitationClient(
+                client=httpx.Client(transport=httpx.MockTransport(handler))
+            )
+
+        monkeypatch.setattr(ps, "OpenAlexCitationClient", factory)
+
+        db_path = tmp_path / "knowledge" / "test.db"
+        with patch("src.knowledge.db.get_db_path", return_value=db_path):
+            init_db("test")
+            replace_citation_counts("10.1/canon", {2024: 50}, project="test")
+            sync_citing_papers(["10.1/canon"], project="test")
+            stats = get_citation_stats("test")
+
+        # Existing data preserved, not wiped to empty by the over-high floor.
+        assert stats.by_paper == {"10.1/canon": {"2024": 50}}
+
+    def test_floor_is_earliest_version_year(self, tmp_path: Path, monkeypatch) -> None:
+        # Primary published 2025, preprint 2024 -> floor is 2024 (the preprint).
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if "/works/doi:10.1234/published" in url:
+                return httpx.Response(
+                    200, json={"id": "https://openalex.org/W1", "publication_year": 2025}
+                )
+            if "/works/doi:10.1101/preprint" in url:
+                return httpx.Response(
+                    200, json={"id": "https://openalex.org/W2", "publication_year": 2024}
+                )
+            if request.url.params.get("group_by"):
+                return httpx.Response(
+                    200,
+                    json={
+                        "group_by": [
+                            {"key": "2023", "count": 3},  # before the preprint
+                            {"key": "2024", "count": 7},
+                            {"key": "2025", "count": 11},
+                        ]
+                    },
+                )
+            return httpx.Response(200, json={"meta": {"next_cursor": None}, "results": []})
+
+        def factory(**_kwargs):
+            return OpenAlexCitationClient(
+                client=httpx.Client(transport=httpx.MockTransport(handler))
+            )
+
+        monkeypatch.setattr(ps, "OpenAlexCitationClient", factory)
+
+        db_path = tmp_path / "knowledge" / "test.db"
+        with patch("src.knowledge.db.get_db_path", return_value=db_path):
+            init_db("test")
+            sync_citing_papers(
+                ["10.1234/published"],
+                project="test",
+                aliases={"10.1234/published": ["10.1101/preprint"]},
+            )
+            stats = get_citation_stats("test")
+
+        # 2023 (before the 2024 preprint) dropped; 2024+ kept.
+        assert stats.by_paper == {"10.1234/published": {"2024": 7, "2025": 11}}
+
     def test_version_aliases_merge_into_primary(self, tmp_path: Path, monkeypatch) -> None:
         # Primary + preprint resolve to W1/W2; counts are queried as a group and
         # attributed to the primary DOI.
