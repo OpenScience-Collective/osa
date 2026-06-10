@@ -137,6 +137,7 @@ def _run_papers_sync_for_community(community_id: str) -> bool:
                 project=community_id,
                 openalex_api_key=settings.openalex_api_key,
                 openalex_email=settings.openalex_email,
+                aliases=citations.aliases,
             )
             total += citing_count
 

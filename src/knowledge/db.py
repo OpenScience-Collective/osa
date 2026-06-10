@@ -132,6 +132,9 @@ CREATE TABLE IF NOT EXISTS papers (
     url TEXT NOT NULL,
     created_at TEXT,
     synced_at TEXT NOT NULL,
+    -- Canonical DOI this paper cites, when discovered via citation sync.
+    -- NULL for papers found through keyword search rather than a citation link.
+    cites_doi TEXT,
     UNIQUE(source, external_id)
 );
 
@@ -169,6 +172,18 @@ CREATE TABLE IF NOT EXISTS sync_metadata (
     last_sync_at TEXT NOT NULL,
     items_synced INTEGER DEFAULT 0,
     UNIQUE(source_type, source_name)
+);
+
+-- True per-year citation counts per canonical DOI, fetched from OpenAlex
+-- group_by (complete, uncapped). This is the source of truth for the public
+-- citations dashboard; the papers table only stores a recent sample of the
+-- citing papers themselves for the search tool.
+CREATE TABLE IF NOT EXISTS citation_counts (
+    cites_doi TEXT NOT NULL,
+    year INTEGER NOT NULL,
+    count INTEGER NOT NULL,
+    synced_at TEXT NOT NULL,
+    PRIMARY KEY (cites_doi, year)
 );
 
 -- Docstrings extracted from source code
@@ -409,6 +424,8 @@ CREATE INDEX IF NOT EXISTS idx_github_items_repo ON github_items(repo);
 CREATE INDEX IF NOT EXISTS idx_github_items_status ON github_items(status);
 CREATE INDEX IF NOT EXISTS idx_github_items_type ON github_items(item_type);
 CREATE INDEX IF NOT EXISTS idx_papers_source ON papers(source);
+-- idx_papers_cites_doi is created in _migrate_db, after the cites_doi column
+-- is ensured, so init_db stays safe on databases predating that column.
 CREATE INDEX IF NOT EXISTS idx_docstrings_repo ON docstrings(repo);
 CREATE INDEX IF NOT EXISTS idx_docstrings_language ON docstrings(language);
 CREATE INDEX IF NOT EXISTS idx_messages_list ON mailing_list_messages(list_name);
@@ -507,6 +524,28 @@ def _migrate_db(conn: sqlite3.Connection) -> None:
         # Table doesn't exist yet - this is fine, schema will create it
         logger.debug("Docstrings table not found during migration (will be created): %s", e)
 
+    # Migration: Add cites_doi column to papers table (added 2026-06-09).
+    # The index lives here (not in SCHEMA_SQL) so executescript never references
+    # cites_doi on a database created before the column existed.
+    try:
+        cursor = conn.execute("PRAGMA table_info(papers)")
+        columns = [row[1] for row in cursor.fetchall()]
+    except sqlite3.OperationalError as e:
+        # Only the PRAGMA is guarded here: a missing papers table is fine since
+        # SCHEMA_SQL creates it. DDL errors below (locked DB, I/O fault) must
+        # propagate rather than be swallowed and leave the table un-indexed.
+        logger.debug("Papers table not found during migration (will be created): %s", e)
+        columns = []
+
+    if columns:  # papers table exists; migrate it in place
+        if "cites_doi" not in columns:
+            logger.info("Migrating papers table: adding cites_doi column")
+            conn.execute("ALTER TABLE papers ADD COLUMN cites_doi TEXT")
+            logger.info("Migration complete: cites_doi column added to papers")
+        # Ensure the index exists for both new and migrated databases.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_papers_cites_doi ON papers(cites_doi)")
+        conn.commit()
+
 
 def init_db(project: str = "hed") -> None:
     """Initialize database schema for a project.
@@ -586,6 +625,7 @@ def upsert_paper(
     first_message: str | None,
     url: str,
     created_at: str | None,
+    cites_doi: str | None = None,
 ) -> None:
     """Insert or update a paper.
 
@@ -597,6 +637,14 @@ def upsert_paper(
         first_message: Abstract (limited to ~2000 chars)
         url: URL to the paper (DOI or source URL)
         created_at: Publication date (ISO 8601 or year string)
+        cites_doi: Canonical DOI this paper cites, when known from a citation
+            sync. ``None`` for keyword-search results. On conflict the first
+            recorded link is kept (COALESCE), so a later keyword sync passing
+            ``None`` never erases an existing citation link, and a re-sync
+            backfills the link onto rows stored before this column existed.
+            A single column holds one link: a paper citing two tracked DOIs is
+            attributed to whichever was synced first (it is still counted once
+            in the per-year total, only its by-paper bucket is approximate).
     """
     # Limit first_message size
     if first_message and len(first_message) > 2000:
@@ -605,14 +653,15 @@ def upsert_paper(
     conn.execute(
         """
         INSERT INTO papers (source, external_id, title, first_message,
-                            status, url, created_at, synced_at)
-        VALUES (?, ?, ?, ?, 'published', ?, ?, ?)
+                            status, url, created_at, synced_at, cites_doi)
+        VALUES (?, ?, ?, ?, 'published', ?, ?, ?, ?)
         ON CONFLICT(source, external_id) DO UPDATE SET
             title=excluded.title,
             first_message=excluded.first_message,
-            synced_at=excluded.synced_at
+            synced_at=excluded.synced_at,
+            cites_doi=COALESCE(papers.cites_doi, excluded.cites_doi)
         """,
-        (source, external_id, title, first_message, url, created_at, _now_iso()),
+        (source, external_id, title, first_message, url, created_at, _now_iso(), cites_doi),
     )
 
 
@@ -713,6 +762,35 @@ def update_sync_metadata(
             (source_type, source_name, _now_iso(), items_synced),
         )
         conn.commit()
+
+
+def replace_citation_counts(cites_doi: str, counts: dict[int, int], project: str = "hed") -> None:
+    """Replace the stored per-year citation counts for one canonical DOI.
+
+    The counts are an exact, complete histogram from OpenAlex, so the row set
+    is replaced wholesale (delete + insert) inside one transaction: this keeps
+    the table an accurate mirror and drops any year that no longer appears.
+
+    Args:
+        cites_doi: Canonical DOI whose citations these counts describe.
+        counts: Mapping of publication year to citing-paper count.
+        project: Assistant/project name. Defaults to 'hed'.
+    """
+    now = _now_iso()
+    with get_connection(project) as conn:
+        try:
+            conn.execute("DELETE FROM citation_counts WHERE cites_doi = ?", (cites_doi,))
+            if counts:
+                conn.executemany(
+                    "INSERT INTO citation_counts (cites_doi, year, count, synced_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    [(cites_doi, year, count, now) for year, count in counts.items()],
+                )
+            conn.commit()
+        except Exception:
+            # Keep the delete+insert atomic: never leave a DOI half-replaced.
+            conn.rollback()
+            raise
 
 
 def upsert_bep_item(

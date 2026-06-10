@@ -243,6 +243,76 @@ class CitationConfig(BaseModel):
     OpenAlex anonymously. Communities opt in explicitly, and their prompt should
     tell the agent to ask the user before running it."""
 
+    paper_labels: dict[str, str] = Field(default_factory=dict)
+    """Optional human-readable labels for canonical DOIs (DOI -> short label).
+
+    Used to label the stacked series in the public citations dashboard
+    (e.g. '10.1038/s41597-019-0104-8' -> 'EEG-BIDS (Pernet 2019)'). Keys are
+    normalized like ``dois`` so they match the stored ``cites_doi`` values.
+    DOIs without a label fall back to the bare DOI in consumers."""
+
+    @field_validator("paper_labels")
+    @classmethod
+    def validate_paper_labels(cls, v: dict[str, str]) -> dict[str, str]:
+        """Normalize and validate DOI keys so labels line up with stored DOIs.
+
+        Applies the same prefix-stripping and format check as ``dois`` so a
+        mistyped key fails loudly at config load instead of silently producing
+        a label that never matches a citation bucket. If two keys normalize to
+        the same DOI, the last one wins (mirrors ``dois`` dedup behavior).
+        """
+        doi_pattern = re.compile(r"^10\.\d{4,}/[^\s]+$")
+        normalized: dict[str, str] = {}
+        for doi, label in v.items():
+            clean_doi = re.sub(r"^(https?://)?(dx\.)?doi\.org/", "", doi.strip())
+            if not clean_doi:
+                continue
+            if not doi_pattern.match(clean_doi):
+                raise ValueError(
+                    f"Invalid DOI key in paper_labels (expected '10.xxxx/yyyy'): {doi}"
+                )
+            normalized[clean_doi] = label
+        return normalized
+
+    aliases: dict[str, list[str]] = Field(default_factory=dict)
+    """Version DOIs to merge into a canonical paper's citation count.
+
+    Maps a primary DOI (from ``dois``) to other DOIs for the *same paper*
+    (typically a preprint and the published version). OpenAlex splits citations
+    across version records, so the citation sync queries them together and
+    deduplicates, attributing the merged per-year counts to the primary DOI.
+    Example: '10.1162/IMAG.a.136' -> ['10.1101/2024.02.13.580071']. Keys and
+    values are normalized like ``dois``."""
+
+    @field_validator("aliases")
+    @classmethod
+    def validate_aliases(cls, v: dict[str, list[str]]) -> dict[str, list[str]]:
+        """Normalize and validate primary + alias DOIs (same rules as ``dois``)."""
+        doi_pattern = re.compile(r"^10\.\d{4,}/[^\s]+$")
+
+        def _clean(doi: str) -> str:
+            cleaned = re.sub(r"^(https?://)?(dx\.)?doi\.org/", "", doi.strip())
+            if cleaned and not doi_pattern.match(cleaned):
+                raise ValueError(f"Invalid DOI in aliases (expected '10.xxxx/yyyy'): {doi}")
+            return cleaned
+
+        normalized: dict[str, list[str]] = {}
+        for primary, versions in v.items():
+            clean_primary = _clean(primary)
+            if not clean_primary:
+                continue
+            clean_versions: list[str] = []
+            for d in versions:
+                clean = _clean(d)
+                if not clean:
+                    # An empty version entry (e.g. `- ""`) is an authoring slip
+                    # that would silently drop a version from the merge.
+                    raise ValueError(f"Empty alias version DOI for primary '{primary}'")
+                if clean not in clean_versions:
+                    clean_versions.append(clean)
+            normalized[clean_primary] = clean_versions
+        return normalized
+
     @field_validator("queries")
     @classmethod
     def validate_queries(cls, v: list[str]) -> list[str]:
@@ -272,6 +342,18 @@ class CitationConfig(BaseModel):
 
         # Deduplicate
         return list(dict.fromkeys(normalized))
+
+    @model_validator(mode="after")
+    def validate_alias_primaries_in_dois(self) -> "CitationConfig":
+        """Every alias primary DOI must be a tracked DOI, else the merge is a no-op.
+
+        Runs after field validators, so both ``dois`` and ``aliases`` keys are
+        already normalized and directly comparable.
+        """
+        unknown = set(self.aliases) - set(self.dois)
+        if unknown:
+            raise ValueError(f"aliases primary DOIs not present in dois: {sorted(unknown)}")
+        return self
 
 
 class DiscourseCategoryConfig(BaseModel):
@@ -637,6 +719,23 @@ class FAQGenerationConfig(BaseModel):
         return self
 
 
+class PublicFeedsConfig(BaseModel):
+    """Opt-in flags for exposing community data as public, read-only JSON feeds.
+
+    Both feeds are off by default. Enabling a feed publishes already-synced
+    data (FAQ entries, citation counts) at unauthenticated endpoints so
+    communities can build their own frontends on top of it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    faq: bool = False
+    """Expose generated FAQ entries at GET /{community_id}/faq."""
+
+    citations: bool = False
+    """Expose canonical-paper citation counts at GET /{community_id}/citations."""
+
+
 class BudgetConfig(BaseModel):
     """Budget limits and alert thresholds for a community.
 
@@ -917,6 +1016,9 @@ class CommunityConfig(BaseModel):
 
     faq_generation: FAQGenerationConfig | None = None
     """FAQ generation configuration from threaded discussions (mailman, discourse, etc.)."""
+
+    public_feeds: PublicFeedsConfig | None = None
+    """Opt-in flags for exposing FAQ/citation data as public JSON feeds."""
 
     sync: SyncConfig | None = None
     """Per-community sync schedule configuration.

@@ -697,6 +697,7 @@
     let toolsChartInstance = null;
     let adminTokenChartInstance = null;
     let adminCostChartInstance = null;
+    let citationsChartInstance = null;
 
     const COLORS = [
         '#2563eb', '#1e3a5f', '#059669', '#d97706', '#dc2626',
@@ -858,11 +859,12 @@
         document.title = `${safeName.toUpperCase()} - OSA Dashboard`;
 
         try {
-            const [summaryResp, usageResp, syncResp, healthResp] = await Promise.all([
+            const [summaryResp, usageResp, syncResp, healthResp, citationsResp] = await Promise.all([
                 fetch(`${API_BASE}/${encodeURIComponent(communityId)}/metrics/public`),
                 fetch(`${API_BASE}/${encodeURIComponent(communityId)}/metrics/public/usage?period=${activePeriod}`),
                 fetch(`${API_BASE}/sync/status?community_id=${encodeURIComponent(communityId)}`).catch(err => { console.warn('Sync status fetch failed (non-critical):', err.message); return null; }),
                 fetch(`${API_BASE}/sync/health?community_id=${encodeURIComponent(communityId)}`).catch(err => { console.warn('Health check fetch failed (non-critical):', err.message); return null; }),
+                fetch(`${API_BASE}/${encodeURIComponent(communityId)}/citations`).catch(err => { console.warn('Citations fetch failed (non-critical):', err.message); return null; }),
             ]);
 
             const failedStatus = !summaryResp.ok ? summaryResp.status : (!usageResp.ok ? usageResp.status : null);
@@ -872,8 +874,10 @@
             const usage = await usageResp.json();
             const sync = syncResp && syncResp.ok ? await syncResp.json() : null;
             const health = healthResp && healthResp.ok ? await healthResp.json() : null;
+            // Citations feed is opt-in per community; a 404 just means it is off.
+            const citations = citationsResp && citationsResp.ok ? await citationsResp.json() : null;
 
-            renderCommunityView(summary, usage, sync, health, communityId);
+            renderCommunityView(summary, usage, sync, health, citations, communityId);
             document.getElementById('adminCard').style.display = '';
 
             if (adminKey) loadAdminData(communityId);
@@ -885,7 +889,7 @@
         }
     }
 
-    function renderCommunityView(summary, usage, sync, health, communityId) {
+    function renderCommunityView(summary, usage, sync, health, citations, communityId) {
         const app = document.getElementById('app');
         const safeName = escapeHtml(communityId);
         const meta = communityMeta[communityId] || {};
@@ -916,6 +920,19 @@
             ? `<p style="color:#64748b; font-size:0.9rem; margin-bottom:0.75rem;">${escapeHtml(meta.description)}</p>`
             : '';
         const links = linkHtml(meta.links, 'community-detail-links');
+
+        // Publication citations card: shown only when the community exposes the
+        // citations feed and at least one canonical paper has citations.
+        const hasCitations = citations && citations.by_paper
+            && Object.keys(citations.by_paper).length > 0;
+        const citationsCardHtml = hasCitations ? `
+            <div class="card">
+                <h2>Publication Citations</h2>
+                <p style="color:#64748b; font-size:0.9rem; margin-bottom:0.75rem;">
+                    ${Number(citations.total || 0).toLocaleString()} papers citing this community's canonical works, by year.
+                </p>
+                <div class="chart-container" style="height:360px;"><canvas id="citationsChart"></canvas></div>
+            </div>` : '';
 
         app.className = '';
         app.innerHTML = `
@@ -974,10 +991,12 @@
                     <div id="adminFeedback"><div class="loading">Loading feedback...</div></div>
                 </div>
             </div>
+            ${citationsCardHtml}
         `;
 
         renderUsageChart(usage);
         renderToolsChart(summary.top_tools);
+        renderCitationsChart(citations);
     }
 
     const SYNC_LABELS = {
@@ -1150,6 +1169,68 @@
                 indexAxis: 'y',
                 plugins: { legend: { display: false } },
                 scales: { x: { beginAtZero: true, ticks: { stepSize: 1 } } }
+            }
+        });
+    }
+
+    // Modern qualitative palette (Tableau 10 + companion tones) for charts that
+    // stack many series, e.g. the citations chart's 14+ canonical papers. The
+    // ten saturated hues come first so smaller charts stay high-contrast.
+    const CITATION_PALETTE = [
+        '#4e79a7', '#f28e2b', '#e15759', '#76b7b2', '#59a14f',
+        '#edc948', '#b07aa1', '#ff9da7', '#9c755f', '#bab0ac',
+        '#a0cbe8', '#ffbe7d', '#8cd17d', '#f1ce63', '#86bcb6',
+        '#ff9d9a', '#d37295', '#fabfd2', '#d4a6c8', '#d7b5a6',
+    ];
+
+    // Distinct color per series. Use the curated palette first; beyond it,
+    // walk the HSL wheel by the golden angle so overflow colors stay distinct
+    // and balanced rather than clustering.
+    function seriesColor(idx) {
+        if (idx < CITATION_PALETTE.length) return CITATION_PALETTE[idx];
+        const hue = Math.round((idx * 137.508) % 360);
+        return `hsl(${hue}, 55%, 55%)`;
+    }
+
+    function renderCitationsChart(citations) {
+        if (citationsChartInstance) { citationsChartInstance.destroy(); citationsChartInstance = null; }
+        const canvas = document.getElementById('citationsChart');
+        if (!canvas || !citations || !citations.by_paper
+            || Object.keys(citations.by_paper).length === 0) return;
+
+        const byPaper = citations.by_paper;
+        const labels = citations.labels || {};
+        // Stacking order follows the configured canonical_dois; any DOI with
+        // citations but no config entry is appended so nothing is dropped.
+        const configured = (citations.canonical_dois || []).filter(d => byPaper[d]);
+        const extras = Object.keys(byPaper).filter(d => !configured.includes(d));
+        const dois = configured.concat(extras);
+
+        // Union of all years present, sorted ascending for the x-axis.
+        const yearsSet = new Set();
+        dois.forEach(d => Object.keys(byPaper[d]).forEach(y => yearsSet.add(y)));
+        const years = Array.from(yearsSet).sort((a, b) => Number(a) - Number(b));
+
+        const datasets = dois.map((doi, idx) => ({
+            label: labels[doi] || doi,
+            data: years.map(y => byPaper[doi][y] || 0),
+            backgroundColor: seriesColor(idx),
+            borderWidth: 0,
+        }));
+
+        citationsChartInstance = new Chart(canvas, {
+            type: 'bar',
+            data: { labels: years, datasets },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: {
+                    legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } },
+                    tooltip: { mode: 'index' },
+                },
+                scales: {
+                    x: { stacked: true },
+                    y: { stacked: true, beginAtZero: true, ticks: { precision: 0 } },
+                },
             }
         });
     }

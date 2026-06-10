@@ -21,11 +21,16 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, TypeVar
 
 from opencite import Config, Paper
-from opencite.citations import CitationExplorer
 from opencite.exceptions import APIKeyError, ConfigurationError, OpenCiteError
 from opencite.search import SearchOrchestrator
 
-from src.knowledge.db import get_connection, update_sync_metadata, upsert_paper
+from src.knowledge.db import (
+    get_connection,
+    replace_citation_counts,
+    update_sync_metadata,
+    upsert_paper,
+)
+from src.knowledge.openalex_citations import CitingPaper, OpenAlexCitationClient
 from src.knowledge.search import SearchResult
 
 logger = logging.getLogger(__name__)
@@ -158,6 +163,7 @@ def _store_papers(
     project: str,
     *,
     force_source: str | None = None,
+    cites_doi: str | None = None,
 ) -> dict[str, int]:
     """Upsert opencite papers into the knowledge DB, returning counts by source.
 
@@ -167,6 +173,8 @@ def _store_papers(
         force_source: When set (a single-source sync), record this OSA source
             label using its native identifier; falls back to the priority
             mapping if that identifier is missing.
+        cites_doi: Canonical DOI these papers cite, recorded on each row when
+            storing the results of a citation sync. ``None`` for keyword search.
     """
     counts: dict[str, int] = {}
     with get_connection(project) as conn:
@@ -193,6 +201,7 @@ def _store_papers(
                 first_message=paper.abstract or None,
                 url=_paper_url(paper),
                 created_at=paper.publication_date or (str(paper.year) if paper.year else None),
+                cites_doi=cites_doi,
             )
             counts[source] = counts.get(source, 0) + 1
         conn.commit()
@@ -245,27 +254,6 @@ async def _search_queries(
                 # for a routine "no results" outcome.
                 logger.exception("unexpected error searching '%s'", query)
                 out.append((query, []))
-    return out
-
-
-async def _citing_for_dois(
-    config: Config,
-    dois: list[str],
-    max_results: int,
-) -> list[tuple[str, list[Paper]]]:
-    """Fetch citing papers for every DOI through one shared CitationExplorer."""
-    out: list[tuple[str, list[Paper]]] = []
-    async with CitationExplorer(config) as explorer:
-        for doi in dois:
-            try:
-                result = await explorer.citing_papers(doi, max_results=max_results)
-                out.append((doi, result.papers))
-            except (OpenCiteError, TimeoutError) as e:
-                logger.warning("opencite citation error for DOI %s: %s", doi, e)
-                out.append((doi, []))
-            except Exception:
-                logger.exception("unexpected error fetching citations for DOI %s", doi)
-                out.append((doi, []))
     return out
 
 
@@ -385,51 +373,129 @@ def sync_all_papers(
     return results
 
 
+def _store_citing_papers(papers: Iterable[CitingPaper], project: str, *, cites_doi: str) -> int:
+    """Upsert OpenAlex citing-paper records into the papers table.
+
+    Returns the number of rows stored. Each row is labelled with ``cites_doi``
+    so it links back to the canonical paper it cites.
+    """
+    stored = 0
+    with get_connection(project) as conn:
+        for paper in papers:
+            if not paper.openalex_id or not paper.title:
+                continue
+            upsert_paper(
+                conn,
+                source="openalex",
+                external_id=paper.openalex_id,
+                title=paper.title,
+                first_message=None,
+                url=paper.url,
+                created_at=paper.publication_date,
+                cites_doi=cites_doi,
+            )
+            stored += 1
+        conn.commit()
+    return stored
+
+
 def sync_citing_papers(
     dois: list[str],
-    max_results: int = 100,
+    max_results: int = 2000,
     project: str = "hed",
     openalex_api_key: str | None = None,
     openalex_email: str | None = None,
+    aliases: dict[str, list[str]] | None = None,
 ) -> int:
-    """Sync papers that cite the given DOIs using opencite's citation graph.
+    """Sync citation data for the given canonical DOIs from OpenAlex.
+
+    For each DOI this records two things, queried directly from OpenAlex
+    (opencite caps citing-paper fetches at one page and exposes no aggregation,
+    which truncates recent citations):
+
+    1. The *complete, uncapped* per-year citation histogram, via
+       ``group_by=publication_year``, stored in ``citation_counts``. This is
+       the source of truth for the public citations dashboard.
+    2. The latest ``max_results`` citing papers (publication date descending),
+       upserted into the ``papers`` table for the search corpus.
+
+    When a DOI has version ``aliases`` (e.g. a preprint plus the published
+    version), every version is resolved and queried together: OpenAlex splits
+    citations across version records, so OR-joining and deduplicating them
+    recovers the true count, attributed to the primary DOI.
 
     Args:
-        dois: List of DOIs to find citations for. Bare format preferred
-            (e.g. "10.1016/j.neuroimage.2021.118809"); opencite auto-detects
-            and resolves the identifier. Unresolved DOIs are skipped with a
-            warning.
-        max_results: Maximum number of citing papers per DOI.
+        dois: Canonical (primary) DOIs to track citations for. Unresolvable
+            DOIs are skipped with a warning.
+        max_results: Maximum number of recent citing papers stored per DOI.
+            Does not limit the per-year counts, which are always complete.
         project: Project/community ID for database isolation.
-        openalex_api_key: Optional OpenAlex API key for premium access.
-        openalex_email: Optional email for OpenAlex polite pool.
+        openalex_api_key: Optional OpenAlex API key for premium throughput.
+        openalex_email: Optional email for the OpenAlex polite pool.
+        aliases: Optional map of primary DOI -> additional version DOIs whose
+            citations merge into the primary.
 
     Returns:
-        Total number of citing papers synced.
+        Total citing papers stored across all DOIs (counts are uncapped).
     """
     if isinstance(dois, str):
         raise TypeError(f"dois must be a list of strings, not a bare string: {dois!r}")
 
-    config = _build_config(openalex_api_key=openalex_api_key, openalex_email=openalex_email)
-    try:
-        cited = _run(_citing_for_dois(config, dois, max_results))
-    except Exception as e:
-        logger.warning("opencite citation lookup failed for %s: %s", project, e)
-        return 0
+    email = openalex_email or _OPENALEX_EMAIL or ""
+    api_key = openalex_api_key or _OPENALEX_API_KEY or ""
+    aliases = aliases or {}
 
-    total = 0
-    for doi, papers in cited:
-        try:
-            counts = _store_papers(papers, project)
-            count = sum(counts.values())
-            update_sync_metadata("papers", f"citing_{doi}", count, project)
-            logger.info("Synced %d papers citing %s", count, doi)
-            total += count
-        except Exception:
-            # Isolate per-DOI so one DB failure does not abort the batch.
-            logger.exception("failed to store citing papers for %s (%s)", doi, project)
+    total_stored = 0
+    with OpenAlexCitationClient(email=email, api_key=api_key) as client:
+        for doi in dois:
+            try:
+                # Resolve the primary DOI plus any version aliases to a group of
+                # OpenAlex work ids; citations across the group are merged.
+                group_dois = [doi, *aliases.get(doi, [])]
+                work_ids = [wid for d in group_dois if (wid := client.resolve_work_id(d))]
+                if not work_ids:
+                    logger.warning("Skipping citations: cannot resolve DOI %s", doi)
+                    continue
 
-    return total
+                # 1. Complete per-year counts (source of truth for the chart).
+                counts = client.counts_by_year(work_ids)
+                if not counts:
+                    # A canonical paper with zero citations is implausible; an
+                    # empty histogram almost always means a transient OpenAlex
+                    # gap. Do not wipe existing counts on a likely-bad read.
+                    logger.warning(
+                        "Empty citation histogram for %s (works %s); keeping existing "
+                        "counts and skipping this DOI",
+                        doi,
+                        work_ids,
+                    )
+                    continue
+                replace_citation_counts(doi, counts, project)
+                total_citations = sum(counts.values())
+
+                # 2. Latest citing papers for the search corpus.
+                papers = client.recent_citing_papers(work_ids, limit=max_results)
+                stored = _store_citing_papers(papers, project, cites_doi=doi)
+
+                update_sync_metadata("citations", f"citing_{doi}", total_citations, project)
+                logger.info(
+                    "Citations for %s: %d total across years, stored %d recent papers",
+                    doi,
+                    total_citations,
+                    stored,
+                )
+                total_stored += stored
+            except Exception as exc:
+                # Isolate per-DOI so one failure does not abort the batch.
+                logger.exception(
+                    "citation sync failed for %s (%s): %s: %s",
+                    doi,
+                    project,
+                    type(exc).__name__,
+                    exc,
+                )
+
+    return total_stored
 
 
 def _config_from_env() -> Config:

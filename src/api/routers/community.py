@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.messages.utils import count_tokens_approximately
@@ -34,6 +34,7 @@ from src.assistants.community import PageContext as AgentPageContext
 from src.assistants.registry import AssistantInfo
 from src.core.config.community import WidgetConfig
 from src.core.services.litellm_llm import create_openrouter_llm
+from src.knowledge.search import FAQResult, get_citation_stats, list_faq_entries
 from src.metrics.cost import COST_BLOCK_THRESHOLD, COST_WARN_THRESHOLD, MODEL_PRICING, estimate_cost
 from src.metrics.db import (
     RequestLogEntry,
@@ -203,6 +204,79 @@ class CommunityConfigResponse(BaseModel):
         ..., description="Widget display configuration (title, placeholder, etc.)"
     )
     status: str = Field(..., description="Health status: healthy, degraded, or error")
+
+
+class FAQEntryResponse(BaseModel):
+    """A single FAQ entry exposed via the public feed."""
+
+    question: str = Field(..., description="Synthesized question")
+    answer: str = Field(..., description="Synthesized answer")
+    tags: list[str] = Field(default_factory=list, description="Keyword tags")
+    category: str = Field(..., description="Entry category (how-to, troubleshooting, etc.)")
+    quality_score: float = Field(..., description="LLM quality score (0.0-1.0)")
+    message_count: int = Field(..., description="Number of source messages in the thread")
+    first_message_date: str = Field(..., description="Date of the first message in the thread")
+    thread_url: str = Field(..., description="URL of the source discussion thread")
+
+
+class FAQFeedResponse(BaseModel):
+    """Paginated public FAQ feed for a community."""
+
+    community_id: str = Field(..., description="Community identifier")
+    total: int = Field(..., description="Total entries matching the filters")
+    limit: int = Field(..., description="Page size used for this response")
+    offset: int = Field(..., description="Offset used for this response")
+    entries: list[FAQEntryResponse] = Field(default_factory=list, description="FAQ entries")
+
+
+class CitationsFeedResponse(BaseModel):
+    """Public citation dashboard data for a community's canonical papers."""
+
+    community_id: str = Field(..., description="Community identifier")
+    total: int = Field(..., description="Total citing papers with a recorded canonical link")
+    per_year: dict[str, int] = Field(
+        default_factory=dict, description="Citing-paper count per year across all papers"
+    )
+    by_paper: dict[str, dict[str, int]] = Field(
+        default_factory=dict,
+        description="Stacked breakdown: canonical DOI -> year -> citing-paper count",
+    )
+    canonical_dois: list[str] = Field(
+        default_factory=list, description="Canonical DOIs tracked for this community"
+    )
+    labels: dict[str, str] = Field(
+        default_factory=dict,
+        description="Human-readable labels per canonical DOI (DOI -> label), when configured",
+    )
+
+
+# Matches bare email addresses so they can be stripped from the public feed.
+_EMAIL_PATTERN = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+
+def _redact_emails(text: str) -> str:
+    """Replace any email address in ``text`` with a redaction marker.
+
+    The FAQ feed is derived from public mailing-list content. The summarizer
+    strips most personal data, but a handful of entries still embed addresses
+    (mostly vendor support lines). A public JSON feed should not emit raw
+    addresses, so they are redacted at serialization time.
+    """
+    return _EMAIL_PATTERN.sub("[email redacted]", text)
+
+
+def _faq_result_to_response(entry: FAQResult) -> FAQEntryResponse:
+    """Convert a knowledge-layer FAQResult into a public response model."""
+    return FAQEntryResponse(
+        question=_redact_emails(entry.question),
+        answer=_redact_emails(entry.answer),
+        tags=[_redact_emails(tag) for tag in entry.tags],
+        category=entry.category,
+        quality_score=entry.quality_score,
+        message_count=entry.message_count,
+        first_message_date=entry.first_message_date,
+        thread_url=entry.thread_url,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1501,6 +1575,118 @@ def create_community_router(community_id: str) -> APIRouter:
                 status_code=503,
                 detail="Metrics database is temporarily unavailable.",
             )
+
+    @router.get("/faq", response_model=FAQFeedResponse)
+    async def community_faq(
+        response: Response,
+        q: str | None = Query(
+            default=None,
+            description="Optional full-text search phrase. If omitted, browses all entries.",
+            max_length=200,
+        ),
+        category: str | None = Query(
+            default=None,
+            description="Filter by category (how-to, troubleshooting, reference, etc.)",
+            max_length=50,
+        ),
+        min_quality: float = Query(
+            default=0.0, ge=0.0, le=1.0, description="Minimum quality score"
+        ),
+        limit: int = Query(default=50, ge=1, le=200, description="Page size"),
+        offset: int = Query(default=0, ge=0, description="Pagination offset"),
+    ) -> FAQFeedResponse:
+        """Public, read-only FAQ feed for this community.
+
+        Returns synthesized question/answer entries generated from the
+        community's mailing-list and forum archives. Disabled by default;
+        a community opts in via ``public_feeds.faq: true`` in its config.
+        Email addresses are redacted from the output. ``total`` is the full
+        match count before pagination, in both browse and search modes.
+        """
+        config = info.community_config
+        if config is None or config.public_feeds is None or not config.public_feeds.faq:
+            raise HTTPException(
+                status_code=404,
+                detail="Public FAQ feed is not enabled for this community.",
+            )
+
+        try:
+            entries, total = list_faq_entries(
+                project=community_id,
+                limit=limit,
+                offset=offset,
+                query=q,
+                category=category,
+                min_quality=min_quality,
+            )
+        except sqlite3.Error:
+            logger.exception("Failed to query FAQ feed for community %s", community_id)
+            raise HTTPException(
+                status_code=503,
+                detail="Knowledge database is temporarily unavailable.",
+            )
+        except Exception:
+            logger.exception("Unexpected error serving FAQ feed for community %s", community_id)
+            raise HTTPException(
+                status_code=500,
+                detail="An unexpected error occurred while building the FAQ feed.",
+            )
+
+        # Public, read-only data; cacheable like the other /…/public endpoints.
+        response.headers["Cache-Control"] = "public, max-age=3600"
+        return FAQFeedResponse(
+            community_id=community_id,
+            total=total,
+            limit=limit,
+            offset=offset,
+            entries=[_faq_result_to_response(e) for e in entries],
+        )
+
+    @router.get("/citations", response_model=CitationsFeedResponse)
+    async def community_citations(response: Response) -> CitationsFeedResponse:
+        """Public, read-only citation dashboard for this community.
+
+        Returns per-year counts of papers citing the community's canonical
+        works, plus a stacked breakdown keyed by the cited DOI (the shape
+        behind a citations-per-year chart). Disabled by default; a community
+        opts in via ``public_feeds.citations: true`` in its config.
+        """
+        config = info.community_config
+        if config is None or config.public_feeds is None or not config.public_feeds.citations:
+            raise HTTPException(
+                status_code=404,
+                detail="Public citations feed is not enabled for this community.",
+            )
+
+        try:
+            stats = get_citation_stats(project=community_id)
+        except sqlite3.Error:
+            logger.exception("Failed to query citations for community %s", community_id)
+            raise HTTPException(
+                status_code=503,
+                detail="Knowledge database is temporarily unavailable.",
+            )
+        except Exception:
+            logger.exception(
+                "Unexpected error serving citations feed for community %s", community_id
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="An unexpected error occurred while building the citations feed.",
+            )
+
+        canonical_dois = list(config.citations.dois) if config.citations else []
+        labels = dict(config.citations.paper_labels) if config.citations else {}
+
+        response.headers["Cache-Control"] = "public, max-age=3600"
+        return CitationsFeedResponse(
+            community_id=community_id,
+            total=stats.total,
+            per_year=stats.per_year,
+            by_paper=stats.by_paper,
+            canonical_dois=canonical_dois,
+            labels=labels,
+        )
 
     return router
 
