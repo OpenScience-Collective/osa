@@ -15,6 +15,7 @@ The client takes an optional injected ``httpx.Client`` so tests can supply an
 """
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import httpx
@@ -103,15 +104,28 @@ class OpenAlexCitationClient:
         work_id = _strip_id(resp.json().get("id"))
         return work_id or None
 
-    def counts_by_year(self, work_id: str) -> dict[int, int]:
-        """Return the complete per-year count of works citing ``work_id``.
+    @staticmethod
+    def _cites_filter(work_ids: str | Sequence[str]) -> str:
+        """Build a ``cites:`` filter, OR-joining multiple work ids with ``|``.
 
-        Uses OpenAlex ``group_by`` so the counts are exact and uncapped,
-        independent of how many citing papers are stored.
+        OpenAlex deduplicates across an OR group, so passing every version of a
+        paper (preprint + published) yields the merged, non-double-counted set.
+        """
+        ids = [work_ids] if isinstance(work_ids, str) else [w for w in work_ids if w]
+        if not ids:
+            raise ValueError("work_ids must contain at least one OpenAlex work id")
+        return "cites:" + "|".join(ids)
+
+    def counts_by_year(self, work_ids: str | Sequence[str]) -> dict[int, int]:
+        """Return the complete per-year count of works citing ``work_ids``.
+
+        Accepts one work id or several (a version group); multiple ids are
+        OR-joined and deduplicated by OpenAlex. Uses ``group_by`` so the counts
+        are exact and uncapped, independent of how many papers are stored.
         """
         resp = self._client.get(
             f"{OPENALEX_BASE}/works",
-            params=self._params(filter=f"cites:{work_id}", group_by="publication_year"),
+            params=self._params(filter=self._cites_filter(work_ids), group_by="publication_year"),
         )
         resp.raise_for_status()
         counts: dict[int, int] = {}
@@ -123,12 +137,16 @@ class OpenAlexCitationClient:
             counts[year] = int(group.get("count", 0))
         return counts
 
-    def recent_citing_papers(self, work_id: str, limit: int = 2000) -> list[CitingPaper]:
-        """Collect up to ``limit`` most-recent works citing ``work_id``.
+    def recent_citing_papers(
+        self, work_ids: str | Sequence[str], limit: int = 2000
+    ) -> list[CitingPaper]:
+        """Collect up to ``limit`` most-recent works citing ``work_ids``.
 
-        Cursor-paginates ``sort=publication_date:desc`` so the stored sample is
-        the newest citations rather than an arbitrary first page.
+        Accepts one work id or a version group (OR-joined, deduplicated by
+        OpenAlex). Cursor-paginates ``sort=publication_date:desc`` so the stored
+        sample is the newest citations rather than an arbitrary first page.
         """
+        cites_filter = self._cites_filter(work_ids)
         papers: list[CitingPaper] = []
         cursor: str | None = "*"
         # Bound the page count: a highly-cited work may have title-less records
@@ -141,7 +159,7 @@ class OpenAlexCitationClient:
             resp = self._client.get(
                 f"{OPENALEX_BASE}/works",
                 params=self._params(
-                    filter=f"cites:{work_id}",
+                    filter=cites_filter,
                     sort="publication_date:desc",
                     select="id,doi,title,publication_date",
                     cursor=cursor,
@@ -173,7 +191,7 @@ class OpenAlexCitationClient:
         if pages >= max_pages and cursor:
             logger.warning(
                 "recent_citing_papers hit page cap for %s (%d pages, %d stored)",
-                work_id,
+                cites_filter,
                 pages,
                 len(papers),
             )

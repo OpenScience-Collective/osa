@@ -219,11 +219,38 @@ class TestCitationConfig:
         """Two keys that normalize to the same DOI collapse to one (last wins)."""
         config = CitationConfig(
             paper_labels={
-                "https://doi.org/10.1234/x": "Label A",
+                "https://doi.org/10.1234/x": "Label B",
                 "10.1234/x": "Label B",
             }
         )
         assert config.paper_labels == {"10.1234/x": "Label B"}
+
+    def test_aliases_default_empty(self) -> None:
+        assert CitationConfig().aliases == {}
+
+    def test_aliases_normalizes_primary_and_versions(self) -> None:
+        config = CitationConfig(
+            dois=["10.1234/primary"],
+            aliases={
+                "https://doi.org/10.1234/primary": [
+                    "https://doi.org/10.1101/preprint",
+                    "10.1101/preprint",  # duplicate after normalization
+                ]
+            },
+        )
+        assert config.aliases == {"10.1234/primary": ["10.1101/preprint"]}
+
+    def test_aliases_rejects_invalid_doi(self) -> None:
+        with pytest.raises(ValidationError, match="Invalid DOI in aliases"):
+            CitationConfig(dois=["10.1234/primary"], aliases={"10.1234/primary": ["not-a-doi"]})
+
+    def test_aliases_rejects_empty_version(self) -> None:
+        with pytest.raises(ValidationError, match="Empty alias version DOI"):
+            CitationConfig(dois=["10.1234/primary"], aliases={"10.1234/primary": [""]})
+
+    def test_aliases_primary_must_be_in_dois(self) -> None:
+        with pytest.raises(ValidationError, match="not present in dois"):
+            CitationConfig(dois=["10.1234/a"], aliases={"10.1234/b": ["10.1101/x"]})
 
     def test_deduplicates_queries(self) -> None:
         """Should deduplicate queries."""

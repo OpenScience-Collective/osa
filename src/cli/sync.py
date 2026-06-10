@@ -99,6 +99,14 @@ def _get_community_paper_dois(community_id: str) -> list[str]:
     return []
 
 
+def _get_community_paper_aliases(community_id: str) -> dict[str, list[str]]:
+    """Get the primary-DOI -> version-DOIs alias map from the registry."""
+    info = registry.get(community_id)
+    if info and info.community_config and info.community_config.citations:
+        return info.community_config.citations.aliases
+    return {}
+
+
 def _get_all_community_ids() -> list[str]:
     """Get all registered community IDs."""
     return [info.id for info in registry.list_all()]
@@ -372,7 +380,11 @@ def sync_papers(
         if dois:
             console.print(f"\n[dim]Syncing citations for {len(dois)} DOI(s)...[/dim]")
             with console.status("[green]Syncing citations...[/green]"):
-                citing_count = sync_citing_papers(dois, project=community)
+                citing_count = sync_citing_papers(
+                    dois,
+                    project=community,
+                    aliases=_get_community_paper_aliases(community),
+                )
             results_by_source["citing"] = citing_count
             total += citing_count
             console.print(f"[dim]Recent citing papers stored: {citing_count}[/dim]")
@@ -585,7 +597,11 @@ def sync_all(
             # sync_citing_papers' own default cap, not the per-query --limit.
             if dois:
                 with console.status("[green]Syncing citing papers...[/green]"):
-                    citing_count = sync_citing_papers(dois, project=comm_id)
+                    citing_count = sync_citing_papers(
+                        dois,
+                        project=comm_id,
+                        aliases=_get_community_paper_aliases(comm_id),
+                    )
                 paper_total += citing_count
 
             console.print(f"[green]Papers: {paper_total} items[/green]")

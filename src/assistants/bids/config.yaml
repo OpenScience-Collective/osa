@@ -590,6 +590,10 @@ citations:
     "10.1038/s41597-024-03559-8": "Motion-BIDS (Jeung 2024)"
     "10.1038/s41597-025-05543-2": "MRS-BIDS (Bouchard 2025)"
     "10.1371/journal.pcbi.1005209": "BIDS Apps (Gorgolewski 2017)"
+  # Merge preprint + published versions so split OpenAlex citations accumulate
+  aliases:
+    "10.1371/journal.pcbi.1005209":       # BIDS Apps published (PLoS Comp Biol)
+      - "10.1101/079145"                  # BIDS Apps bioRxiv preprint (2016)
 
 # Expose the citation dashboard as a public, read-only JSON feed
 # (GET /bids/citations). FAQ feed stays off: BIDS has no FAQ pipeline configured.

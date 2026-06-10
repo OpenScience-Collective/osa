@@ -413,6 +413,44 @@ class TestSyncCitingPapers:
         assert stored == 0
         assert stats.total == 0
 
+    def test_version_aliases_merge_into_primary(self, tmp_path: Path, monkeypatch) -> None:
+        # Primary + preprint resolve to W1/W2; counts are queried as a group and
+        # attributed to the primary DOI.
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if "/works/doi:10.1/primary" in url:
+                return httpx.Response(200, json={"id": "https://openalex.org/W1"})
+            if "/works/doi:10.1/preprint" in url:
+                return httpx.Response(200, json={"id": "https://openalex.org/W2"})
+            if request.url.params.get("group_by"):
+                seen["filter"] = request.url.params.get("filter")
+                return httpx.Response(200, json={"group_by": [{"key": "2024", "count": 12}]})
+            return httpx.Response(200, json={"meta": {"next_cursor": None}, "results": []})
+
+        def factory(**_kwargs):
+            return OpenAlexCitationClient(
+                client=httpx.Client(transport=httpx.MockTransport(handler))
+            )
+
+        monkeypatch.setattr(ps, "OpenAlexCitationClient", factory)
+
+        db_path = tmp_path / "knowledge" / "test.db"
+        with patch("src.knowledge.db.get_db_path", return_value=db_path):
+            init_db("test")
+            sync_citing_papers(
+                ["10.1/primary"],
+                project="test",
+                aliases={"10.1/primary": ["10.1/preprint"]},
+            )
+            stats = get_citation_stats("test")
+
+        # Both work ids were OR-joined into one cites filter...
+        assert seen["filter"] == "cites:W1|W2"
+        # ...and the merged count is attributed to the primary DOI.
+        assert stats.by_paper == {"10.1/primary": {"2024": 12}}
+
     def test_empty_counts_does_not_wipe_existing(self, tmp_path: Path, monkeypatch) -> None:
         # An empty histogram (likely a transient API gap) must not erase the
         # previously stored counts for that canonical DOI.
