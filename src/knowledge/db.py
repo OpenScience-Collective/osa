@@ -778,14 +778,19 @@ def replace_citation_counts(cites_doi: str, counts: dict[int, int], project: str
     """
     now = _now_iso()
     with get_connection(project) as conn:
-        conn.execute("DELETE FROM citation_counts WHERE cites_doi = ?", (cites_doi,))
-        if counts:
-            conn.executemany(
-                "INSERT INTO citation_counts (cites_doi, year, count, synced_at) "
-                "VALUES (?, ?, ?, ?)",
-                [(cites_doi, year, count, now) for year, count in counts.items()],
-            )
-        conn.commit()
+        try:
+            conn.execute("DELETE FROM citation_counts WHERE cites_doi = ?", (cites_doi,))
+            if counts:
+                conn.executemany(
+                    "INSERT INTO citation_counts (cites_doi, year, count, synced_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    [(cites_doi, year, count, now) for year, count in counts.items()],
+                )
+            conn.commit()
+        except Exception:
+            # Keep the delete+insert atomic: never leave a DOI half-replaced.
+            conn.rollback()
+            raise
 
 
 def upsert_bep_item(

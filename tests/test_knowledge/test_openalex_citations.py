@@ -173,6 +173,56 @@ class TestRecentCitingPapers:
             papers = c.recent_citing_papers("W1", limit=3)
         assert len(papers) == 3
 
+    def test_stops_on_empty_results_page(self):
+        # A non-null cursor with no results must not spin forever.
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if request.url.params.get("cursor") == "*":
+                return httpx.Response(
+                    200,
+                    json={
+                        "meta": {"next_cursor": "p2"},
+                        "results": [
+                            {
+                                "id": "https://openalex.org/W1",
+                                "doi": None,
+                                "title": "P",
+                                "publication_date": "2025-01-01",
+                            }
+                        ],
+                    },
+                )
+            # Second page: cursor still present but no results -> must stop.
+            return httpx.Response(200, json={"meta": {"next_cursor": "p3"}, "results": []})
+
+        with _client(handler) as c:
+            papers = c.recent_citing_papers("W1", limit=100)
+        assert len(papers) == 1
+        assert calls["n"] == 2  # stopped at the empty page, did not continue
+
+    def test_absent_meta_stops_pagination(self):
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "id": "https://openalex.org/W1",
+                            "doi": "10.1/x",
+                            "title": "P",
+                            "publication_date": "2025-01-01",
+                        }
+                    ]
+                },
+            )
+
+        with _client(handler) as c:
+            papers = c.recent_citing_papers("W1", limit=100)
+        assert len(papers) == 1
+        assert papers[0].url == "https://doi.org/10.1/x"  # url built from stripped doi
+
     def test_skips_titleless_works(self):
         def handler(_request: httpx.Request) -> httpx.Response:
             return httpx.Response(

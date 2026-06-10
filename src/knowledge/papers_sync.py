@@ -390,7 +390,7 @@ def _store_citing_papers(papers: Iterable[CitingPaper], project: str, *, cites_d
                 external_id=paper.openalex_id,
                 title=paper.title,
                 first_message=None,
-                url=paper.url or (f"https://doi.org/{paper.doi}" if paper.doi else ""),
+                url=paper.url,
                 created_at=paper.publication_date,
                 cites_doi=cites_doi,
             )
@@ -447,6 +447,17 @@ def sync_citing_papers(
 
                 # 1. Complete per-year counts (source of truth for the chart).
                 counts = client.counts_by_year(work_id)
+                if not counts:
+                    # A canonical paper with zero citations is implausible; an
+                    # empty histogram almost always means a transient OpenAlex
+                    # gap. Do not wipe existing counts on a likely-bad read.
+                    logger.warning(
+                        "Empty citation histogram for %s (work %s); keeping existing "
+                        "counts and skipping this DOI",
+                        doi,
+                        work_id,
+                    )
+                    continue
                 replace_citation_counts(doi, counts, project)
                 total_citations = sum(counts.values())
 
@@ -462,9 +473,15 @@ def sync_citing_papers(
                     stored,
                 )
                 total_stored += stored
-            except Exception:
+            except Exception as exc:
                 # Isolate per-DOI so one failure does not abort the batch.
-                logger.exception("citation sync failed for %s (%s)", doi, project)
+                logger.exception(
+                    "citation sync failed for %s (%s): %s: %s",
+                    doi,
+                    project,
+                    type(exc).__name__,
+                    exc,
+                )
 
     return total_stored
 

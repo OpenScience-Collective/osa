@@ -14,7 +14,7 @@ import pytest
 from opencite import IDSet, Paper
 
 import src.knowledge.papers_sync as ps
-from src.knowledge.db import get_connection, init_db
+from src.knowledge.db import get_connection, init_db, replace_citation_counts
 from src.knowledge.openalex_citations import OpenAlexCitationClient
 from src.knowledge.papers_sync import (
     _cache_papers_async,
@@ -412,3 +412,33 @@ class TestSyncCitingPapers:
 
         assert stored == 0
         assert stats.total == 0
+
+    def test_empty_counts_does_not_wipe_existing(self, tmp_path: Path, monkeypatch) -> None:
+        # An empty histogram (likely a transient API gap) must not erase the
+        # previously stored counts for that canonical DOI.
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "/works/doi:" in str(request.url):
+                return httpx.Response(200, json={"id": "https://openalex.org/W1"})
+            if request.url.params.get("group_by"):
+                return httpx.Response(200, json={"group_by": []})  # transient gap
+            return httpx.Response(200, json={"meta": {"next_cursor": None}, "results": []})
+
+        def factory(**_kwargs):
+            return OpenAlexCitationClient(
+                client=httpx.Client(transport=httpx.MockTransport(handler))
+            )
+
+        monkeypatch.setattr(ps, "OpenAlexCitationClient", factory)
+
+        db_path = tmp_path / "knowledge" / "test.db"
+        with patch("src.knowledge.db.get_db_path", return_value=db_path):
+            init_db("test")
+            # Seed good counts as if a prior healthy sync ran.
+            replace_citation_counts("10.1/canon", {2024: 50, 2025: 80}, project="test")
+
+            stored = sync_citing_papers(["10.1/canon"], project="test")
+            stats = get_citation_stats("test")
+
+        assert stored == 0
+        # Existing histogram is preserved, not wiped to empty.
+        assert stats.by_paper == {"10.1/canon": {"2024": 50, "2025": 80}}

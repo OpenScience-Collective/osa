@@ -131,7 +131,12 @@ class OpenAlexCitationClient:
         """
         papers: list[CitingPaper] = []
         cursor: str | None = "*"
-        while cursor and len(papers) < limit:
+        # Bound the page count: a highly-cited work may have title-less records
+        # that never accumulate, so cap pages (with headroom) to avoid spinning.
+        pages = 0
+        max_pages = (limit // _PER_PAGE) + 50
+        while cursor and len(papers) < limit and pages < max_pages:
+            pages += 1
             page_size = min(_PER_PAGE, limit - len(papers))
             resp = self._client.get(
                 f"{OPENALEX_BASE}/works",
@@ -145,20 +150,31 @@ class OpenAlexCitationClient:
             )
             resp.raise_for_status()
             data = resp.json()
-            for work in data.get("results", []):
+            results = data.get("results", [])
+            if not results:
+                break  # no more works; a non-null cursor with no rows would spin
+            for work in results:
                 title = work.get("title")
                 if not title:
                     continue
+                doi = _strip_doi(work.get("doi"))
                 papers.append(
                     CitingPaper(
                         openalex_id=_strip_id(work.get("id")),
-                        doi=_strip_doi(work.get("doi")),
+                        doi=doi,
                         title=title,
                         publication_date=work.get("publication_date"),
-                        url=work.get("doi") or work.get("id") or "",
+                        url=f"https://doi.org/{doi}" if doi else (work.get("id") or ""),
                     )
                 )
                 if len(papers) >= limit:
                     break
             cursor = data.get("meta", {}).get("next_cursor")
+        if pages >= max_pages and cursor:
+            logger.warning(
+                "recent_citing_papers hit page cap for %s (%d pages, %d stored)",
+                work_id,
+                pages,
+                len(papers),
+            )
         return papers

@@ -581,10 +581,11 @@ def sync_all(
                     )
                 paper_total += sum(paper_results.values())
 
-            # Sync citing papers
+            # Sync citing papers. Counts are uncapped; the stored sample uses
+            # sync_citing_papers' own default cap, not the per-query --limit.
             if dois:
                 with console.status("[green]Syncing citing papers...[/green]"):
-                    citing_count = sync_citing_papers(dois, max_results=limit, project=comm_id)
+                    citing_count = sync_citing_papers(dois, project=comm_id)
                 paper_total += citing_count
 
             console.print(f"[green]Papers: {paper_total} items[/green]")
