@@ -26,6 +26,10 @@ class TestCitesFilter:
     def test_filters_empty_ids(self):
         assert OpenAlexCitationClient._cites_filter(["W1", "", "W2"]) == "cites:W1|W2"
 
+    def test_empty_raises(self):
+        with pytest.raises(ValueError, match="at least one"):
+            OpenAlexCitationClient._cites_filter([])
+
 
 def _client(handler) -> OpenAlexCitationClient:
     transport = httpx.MockTransport(handler)

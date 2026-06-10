@@ -301,7 +301,15 @@ class CitationConfig(BaseModel):
             clean_primary = _clean(primary)
             if not clean_primary:
                 continue
-            clean_versions = list(dict.fromkeys(c for d in versions if (c := _clean(d))))
+            clean_versions: list[str] = []
+            for d in versions:
+                clean = _clean(d)
+                if not clean:
+                    # An empty version entry (e.g. `- ""`) is an authoring slip
+                    # that would silently drop a version from the merge.
+                    raise ValueError(f"Empty alias version DOI for primary '{primary}'")
+                if clean not in clean_versions:
+                    clean_versions.append(clean)
             normalized[clean_primary] = clean_versions
         return normalized
 
@@ -334,6 +342,20 @@ class CitationConfig(BaseModel):
 
         # Deduplicate
         return list(dict.fromkeys(normalized))
+
+    @model_validator(mode="after")
+    def validate_alias_primaries_in_dois(self) -> "CitationConfig":
+        """Every alias primary DOI must be a tracked DOI, else the merge is a no-op.
+
+        Runs after field validators, so both ``dois`` and ``aliases`` keys are
+        already normalized and directly comparable.
+        """
+        unknown = set(self.aliases) - set(self.dois)
+        if unknown:
+            raise ValueError(
+                f"aliases primary DOIs not present in dois: {sorted(unknown)}"
+            )
+        return self
 
 
 class DiscourseCategoryConfig(BaseModel):

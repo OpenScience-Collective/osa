@@ -112,6 +112,8 @@ class OpenAlexCitationClient:
         paper (preprint + published) yields the merged, non-double-counted set.
         """
         ids = [work_ids] if isinstance(work_ids, str) else [w for w in work_ids if w]
+        if not ids:
+            raise ValueError("work_ids must contain at least one OpenAlex work id")
         return "cites:" + "|".join(ids)
 
     def counts_by_year(self, work_ids: str | Sequence[str]) -> dict[int, int]:
