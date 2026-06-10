@@ -48,21 +48,34 @@ class TestHelpers:
         assert _strip_doi(None) is None
 
 
-class TestResolveWorkId:
-    def test_resolves_doi_to_work_id(self):
+class TestResolveWork:
+    def test_resolves_doi_to_work_and_year(self):
         def handler(request: httpx.Request) -> httpx.Response:
             assert "/works/doi:10.1/x" in str(request.url)
-            return httpx.Response(200, json={"id": "https://openalex.org/W999"})
+            return httpx.Response(
+                200, json={"id": "https://openalex.org/W999", "publication_year": 2019}
+            )
 
         with _client(handler) as c:
-            assert c.resolve_work_id("10.1/x") == "W999"
+            resolved = c.resolve_work("10.1/x")
+        assert resolved.work_id == "W999"
+        assert resolved.publication_year == 2019
+
+    def test_missing_year_is_none(self):
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"id": "https://openalex.org/W1"})
+
+        with _client(handler) as c:
+            resolved = c.resolve_work("10.1/x")
+        assert resolved.work_id == "W1"
+        assert resolved.publication_year is None
 
     def test_unresolved_doi_returns_none(self):
         def handler(_request: httpx.Request) -> httpx.Response:
             return httpx.Response(404, json={"error": "not found"})
 
         with _client(handler) as c:
-            assert c.resolve_work_id("10.1/missing") is None
+            assert c.resolve_work("10.1/missing") is None
 
     def test_includes_mailto_param(self):
         seen = {}
@@ -72,7 +85,7 @@ class TestResolveWorkId:
             return httpx.Response(200, json={"id": "https://openalex.org/W1"})
 
         with _client(handler) as c:
-            c.resolve_work_id("10.1/x")
+            c.resolve_work("10.1/x")
         assert seen["mailto"] == "t@example.org"
 
 

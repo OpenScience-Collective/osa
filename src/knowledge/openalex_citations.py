@@ -38,6 +38,14 @@ class CitingPaper:
     url: str
 
 
+@dataclass
+class ResolvedWork:
+    """An OpenAlex work id paired with its publication year."""
+
+    work_id: str
+    publication_year: int | None
+
+
 def _strip_id(value: str | None) -> str:
     """Reduce an OpenAlex IRI (https://openalex.org/W123) to its bare id."""
     if not value:
@@ -91,18 +99,29 @@ class OpenAlexCitationClient:
             params["api_key"] = self._api_key
         return params
 
-    def resolve_work_id(self, doi: str) -> str | None:
-        """Resolve a DOI to its OpenAlex work id (e.g. ``W2128495200``)."""
+    def resolve_work(self, doi: str) -> ResolvedWork | None:
+        """Resolve a DOI to its OpenAlex work id and publication year.
+
+        The year lets callers floor a citation histogram at the paper's own
+        publication, dropping impossible pre-publication citation buckets.
+        """
         resp = self._client.get(
             f"{OPENALEX_BASE}/works/doi:{doi}",
-            params=self._params(select="id"),
+            params=self._params(select="id,publication_year"),
         )
         if resp.status_code == 404:
             logger.warning("OpenAlex has no work for DOI %s", doi)
             return None
         resp.raise_for_status()
-        work_id = _strip_id(resp.json().get("id"))
-        return work_id or None
+        data = resp.json()
+        work_id = _strip_id(data.get("id"))
+        if not work_id:
+            return None
+        year = data.get("publication_year")
+        return ResolvedWork(
+            work_id=work_id,
+            publication_year=year if isinstance(year, int) else None,
+        )
 
     @staticmethod
     def _cites_filter(work_ids: str | Sequence[str]) -> str:

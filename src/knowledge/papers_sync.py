@@ -450,15 +450,25 @@ def sync_citing_papers(
         for doi in dois:
             try:
                 # Resolve the primary DOI plus any version aliases to a group of
-                # OpenAlex work ids; citations across the group are merged.
+                # OpenAlex works; citations across the group are merged.
                 group_dois = [doi, *aliases.get(doi, [])]
-                work_ids = [wid for d in group_dois if (wid := client.resolve_work_id(d))]
-                if not work_ids:
+                resolved = [w for d in group_dois if (w := client.resolve_work(d))]
+                if not resolved:
                     logger.warning("Skipping citations: cannot resolve DOI %s", doi)
                     continue
+                work_ids = [w.work_id for w in resolved]
+
+                # The earliest publication year across the version group (the
+                # preprint, if any) is the floor: a paper cannot be cited before
+                # it exists, so drop impossible pre-publication buckets that come
+                # from citing works with bad dates.
+                pub_years = [w.publication_year for w in resolved if w.publication_year is not None]
+                floor_year = min(pub_years) if pub_years else None
 
                 # 1. Complete per-year counts (source of truth for the chart).
                 counts = client.counts_by_year(work_ids)
+                if floor_year is not None:
+                    counts = {y: c for y, c in counts.items() if y >= floor_year}
                 if not counts:
                     # A canonical paper with zero citations is implausible; an
                     # empty histogram almost always means a transient OpenAlex
