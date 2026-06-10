@@ -405,6 +405,7 @@ def sync_citing_papers(
     project: str = "hed",
     openalex_api_key: str | None = None,
     openalex_email: str | None = None,
+    aliases: dict[str, list[str]] | None = None,
 ) -> int:
     """Sync citation data for the given canonical DOIs from OpenAlex.
 
@@ -418,14 +419,21 @@ def sync_citing_papers(
     2. The latest ``max_results`` citing papers (publication date descending),
        upserted into the ``papers`` table for the search corpus.
 
+    When a DOI has version ``aliases`` (e.g. a preprint plus the published
+    version), every version is resolved and queried together: OpenAlex splits
+    citations across version records, so OR-joining and deduplicating them
+    recovers the true count, attributed to the primary DOI.
+
     Args:
-        dois: Canonical DOIs to track citations for (bare ``10.xxxx/yyyy``).
-            Unresolved DOIs are skipped with a warning.
+        dois: Canonical (primary) DOIs to track citations for. Unresolvable
+            DOIs are skipped with a warning.
         max_results: Maximum number of recent citing papers stored per DOI.
             Does not limit the per-year counts, which are always complete.
         project: Project/community ID for database isolation.
         openalex_api_key: Optional OpenAlex API key for premium throughput.
         openalex_email: Optional email for the OpenAlex polite pool.
+        aliases: Optional map of primary DOI -> additional version DOIs whose
+            citations merge into the primary.
 
     Returns:
         Total citing papers stored across all DOIs (counts are uncapped).
@@ -435,34 +443,38 @@ def sync_citing_papers(
 
     email = openalex_email or _OPENALEX_EMAIL or ""
     api_key = openalex_api_key or _OPENALEX_API_KEY or ""
+    aliases = aliases or {}
 
     total_stored = 0
     with OpenAlexCitationClient(email=email, api_key=api_key) as client:
         for doi in dois:
             try:
-                work_id = client.resolve_work_id(doi)
-                if not work_id:
+                # Resolve the primary DOI plus any version aliases to a group of
+                # OpenAlex work ids; citations across the group are merged.
+                group_dois = [doi, *aliases.get(doi, [])]
+                work_ids = [wid for d in group_dois if (wid := client.resolve_work_id(d))]
+                if not work_ids:
                     logger.warning("Skipping citations: cannot resolve DOI %s", doi)
                     continue
 
                 # 1. Complete per-year counts (source of truth for the chart).
-                counts = client.counts_by_year(work_id)
+                counts = client.counts_by_year(work_ids)
                 if not counts:
                     # A canonical paper with zero citations is implausible; an
                     # empty histogram almost always means a transient OpenAlex
                     # gap. Do not wipe existing counts on a likely-bad read.
                     logger.warning(
-                        "Empty citation histogram for %s (work %s); keeping existing "
+                        "Empty citation histogram for %s (works %s); keeping existing "
                         "counts and skipping this DOI",
                         doi,
-                        work_id,
+                        work_ids,
                     )
                     continue
                 replace_citation_counts(doi, counts, project)
                 total_citations = sum(counts.values())
 
                 # 2. Latest citing papers for the search corpus.
-                papers = client.recent_citing_papers(work_id, limit=max_results)
+                papers = client.recent_citing_papers(work_ids, limit=max_results)
                 stored = _store_citing_papers(papers, project, cites_doi=doi)
 
                 update_sync_metadata("citations", f"citing_{doi}", total_citations, project)

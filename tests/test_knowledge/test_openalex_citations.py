@@ -16,6 +16,17 @@ from src.knowledge.openalex_citations import (
 )
 
 
+class TestCitesFilter:
+    def test_single_work_id(self):
+        assert OpenAlexCitationClient._cites_filter("W1") == "cites:W1"
+
+    def test_multiple_work_ids_or_joined(self):
+        assert OpenAlexCitationClient._cites_filter(["W1", "W2", "W3"]) == "cites:W1|W2|W3"
+
+    def test_filters_empty_ids(self):
+        assert OpenAlexCitationClient._cites_filter(["W1", "", "W2"]) == "cites:W1|W2"
+
+
 def _client(handler) -> OpenAlexCitationClient:
     transport = httpx.MockTransport(handler)
     return OpenAlexCitationClient(email="t@example.org", client=httpx.Client(transport=transport))
@@ -81,6 +92,18 @@ class TestCountsByYear:
         with _client(handler) as c:
             counts = c.counts_by_year("W1")
         assert counts == {2024: 10, 2023: 5, 2022: 2}
+
+    def test_version_group_uses_or_joined_filter(self):
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["filter"] = request.url.params.get("filter")
+            return httpx.Response(200, json={"group_by": [{"key": "2024", "count": 5}]})
+
+        with _client(handler) as c:
+            counts = c.counts_by_year(["W1", "W2"])
+        assert seen["filter"] == "cites:W1|W2"
+        assert counts == {2024: 5}
 
     def test_skips_non_year_buckets(self):
         def handler(_request: httpx.Request) -> httpx.Response:

@@ -274,6 +274,37 @@ class CitationConfig(BaseModel):
             normalized[clean_doi] = label
         return normalized
 
+    aliases: dict[str, list[str]] = Field(default_factory=dict)
+    """Version DOIs to merge into a canonical paper's citation count.
+
+    Maps a primary DOI (from ``dois``) to other DOIs for the *same paper*
+    (typically a preprint and the published version). OpenAlex splits citations
+    across version records, so the citation sync queries them together and
+    deduplicates, attributing the merged per-year counts to the primary DOI.
+    Example: '10.1162/IMAG.a.136' -> ['10.1101/2024.02.13.580071']. Keys and
+    values are normalized like ``dois``."""
+
+    @field_validator("aliases")
+    @classmethod
+    def validate_aliases(cls, v: dict[str, list[str]]) -> dict[str, list[str]]:
+        """Normalize and validate primary + alias DOIs (same rules as ``dois``)."""
+        doi_pattern = re.compile(r"^10\.\d{4,}/[^\s]+$")
+
+        def _clean(doi: str) -> str:
+            cleaned = re.sub(r"^(https?://)?(dx\.)?doi\.org/", "", doi.strip())
+            if cleaned and not doi_pattern.match(cleaned):
+                raise ValueError(f"Invalid DOI in aliases (expected '10.xxxx/yyyy'): {doi}")
+            return cleaned
+
+        normalized: dict[str, list[str]] = {}
+        for primary, versions in v.items():
+            clean_primary = _clean(primary)
+            if not clean_primary:
+                continue
+            clean_versions = list(dict.fromkeys(c for d in versions if (c := _clean(d))))
+            normalized[clean_primary] = clean_versions
+        return normalized
+
     @field_validator("queries")
     @classmethod
     def validate_queries(cls, v: list[str]) -> list[str]:
