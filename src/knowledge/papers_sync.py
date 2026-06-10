@@ -462,7 +462,7 @@ def sync_citing_papers(
                 # preprint, if any) is the floor: a paper cannot be cited before
                 # it exists, so drop impossible pre-publication buckets that come
                 # from citing works with bad dates.
-                pub_years = [w.publication_year for w in resolved if w.publication_year]
+                pub_years = [w.publication_year for w in resolved if w.publication_year is not None]
                 floor_year = min(pub_years) if pub_years else None
 
                 # 1. Complete per-year counts (source of truth for the chart).

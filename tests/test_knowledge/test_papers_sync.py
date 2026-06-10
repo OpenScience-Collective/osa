@@ -450,6 +450,36 @@ class TestSyncCitingPapers:
         assert stats.by_paper == {"10.1/canon": {"2016": 5, "2020": 9}}
         assert "2013" not in stats.per_year
 
+    def test_over_aggressive_floor_preserves_existing(self, tmp_path: Path, monkeypatch) -> None:
+        # If OpenAlex reports a bogus future year for the canonical work, every
+        # current bucket is floored out; the empty-counts guard must then keep
+        # the existing histogram rather than wiping it.
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "/works/doi:" in str(request.url):
+                return httpx.Response(
+                    200, json={"id": "https://openalex.org/W1", "publication_year": 2099}
+                )
+            if request.url.params.get("group_by"):
+                return httpx.Response(200, json={"group_by": [{"key": "2024", "count": 10}]})
+            return httpx.Response(200, json={"meta": {"next_cursor": None}, "results": []})
+
+        def factory(**_kwargs):
+            return OpenAlexCitationClient(
+                client=httpx.Client(transport=httpx.MockTransport(handler))
+            )
+
+        monkeypatch.setattr(ps, "OpenAlexCitationClient", factory)
+
+        db_path = tmp_path / "knowledge" / "test.db"
+        with patch("src.knowledge.db.get_db_path", return_value=db_path):
+            init_db("test")
+            replace_citation_counts("10.1/canon", {2024: 50}, project="test")
+            sync_citing_papers(["10.1/canon"], project="test")
+            stats = get_citation_stats("test")
+
+        # Existing data preserved, not wiped to empty by the over-high floor.
+        assert stats.by_paper == {"10.1/canon": {"2024": 50}}
+
     def test_floor_is_earliest_version_year(self, tmp_path: Path, monkeypatch) -> None:
         # Primary published 2025, preprint 2024 -> floor is 2024 (the preprint).
         def handler(request: httpx.Request) -> httpx.Response:
