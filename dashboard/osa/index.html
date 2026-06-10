@@ -1173,13 +1173,23 @@
         });
     }
 
-    // Distinct color per series: use the fixed palette, then spread evenly
-    // around the HSL wheel when there are more series than palette entries
-    // (the citation chart can stack 14+ canonical papers).
-    function seriesColor(idx, total) {
-        if (total <= COLORS.length) return COLORS[idx];
-        const hue = Math.round((idx / total) * 360);
-        return `hsl(${hue}, 62%, 48%)`;
+    // Modern qualitative palette (Tableau 10 + companion tones) for charts that
+    // stack many series, e.g. the citations chart's 14+ canonical papers. The
+    // ten saturated hues come first so smaller charts stay high-contrast.
+    const CITATION_PALETTE = [
+        '#4e79a7', '#f28e2b', '#e15759', '#76b7b2', '#59a14f',
+        '#edc948', '#b07aa1', '#ff9da7', '#9c755f', '#bab0ac',
+        '#a0cbe8', '#ffbe7d', '#8cd17d', '#f1ce63', '#86bcb6',
+        '#ff9d9a', '#d37295', '#fabfd2', '#d4a6c8', '#d7b5a6',
+    ];
+
+    // Distinct color per series. Use the curated palette first; beyond it,
+    // walk the HSL wheel by the golden angle so overflow colors stay distinct
+    // and balanced rather than clustering.
+    function seriesColor(idx) {
+        if (idx < CITATION_PALETTE.length) return CITATION_PALETTE[idx];
+        const hue = Math.round((idx * 137.508) % 360);
+        return `hsl(${hue}, 55%, 55%)`;
     }
 
     function renderCitationsChart(citations) {
@@ -1204,7 +1214,7 @@
         const datasets = dois.map((doi, idx) => ({
             label: labels[doi] || doi,
             data: years.map(y => byPaper[doi][y] || 0),
-            backgroundColor: seriesColor(idx, dois.length),
+            backgroundColor: seriesColor(idx),
             borderWidth: 0,
         }));
 
