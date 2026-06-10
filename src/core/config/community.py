@@ -352,9 +352,7 @@ class CitationConfig(BaseModel):
         """
         unknown = set(self.aliases) - set(self.dois)
         if unknown:
-            raise ValueError(
-                f"aliases primary DOIs not present in dois: {sorted(unknown)}"
-            )
+            raise ValueError(f"aliases primary DOIs not present in dois: {sorted(unknown)}")
         return self
 
 
