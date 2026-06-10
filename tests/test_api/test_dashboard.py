@@ -77,6 +77,18 @@ class TestDashboardHTML:
         assert "weekly" in content
         assert "monthly" in content
 
+    def test_references_citations_api(self) -> None:
+        content = DASHBOARD_HTML_PATH.read_text()
+        # Community view fetches the public citations feed.
+        assert "/citations" in content
+
+    def test_has_citations_chart(self) -> None:
+        content = DASHBOARD_HTML_PATH.read_text()
+        assert "renderCitationsChart" in content
+        assert "citationsChart" in content
+        # Uses the configured labels for the stacked series legend.
+        assert "citations.labels" in content
+
     def test_api_base_configurable(self) -> None:
         content = DASHBOARD_HTML_PATH.read_text()
         # Should support ?api= query param or window.OSA_API_BASE override
