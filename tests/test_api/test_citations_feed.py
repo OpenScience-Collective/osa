@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from src.api.routers.community import create_community_router
 from src.assistants import discover_assistants, registry
 from src.core.config.community import PublicFeedsConfig
-from src.knowledge.db import get_connection, init_db, upsert_paper
+from src.knowledge.db import init_db, replace_citation_counts
 
 COMMUNITY_ID = "eeglab"
 DOI_A = "10.1016/j.jneumeth.2003.10.009"
@@ -30,30 +30,13 @@ discover_assistants()
 
 @pytest.fixture
 def citations_db(tmp_path: Path) -> Iterator[Path]:
-    """Temp knowledge DB with citing papers across two canonical DOIs."""
+    """Temp knowledge DB with per-year citation counts for two canonical DOIs."""
     db_path = tmp_path / "knowledge" / "test.db"
     with patch("src.knowledge.db.get_db_path", return_value=db_path):
         init_db(COMMUNITY_ID)
-        with get_connection(COMMUNITY_ID) as conn:
-            rows = [
-                ("a1", "2019-05-01", DOI_A),
-                ("a2", "2019-11-20", DOI_A),
-                ("a3", "2020", DOI_A),
-                ("b1", "2020-02-02", DOI_B),
-                ("k1", "2021", None),  # keyword-only, excluded from stats
-            ]
-            for external_id, created_at, cites_doi in rows:
-                upsert_paper(
-                    conn,
-                    source="openalex",
-                    external_id=external_id,
-                    title=f"Paper {external_id}",
-                    first_message=None,
-                    url=f"https://doi.org/10.test/{external_id}",
-                    created_at=created_at,
-                    cites_doi=cites_doi,
-                )
-            conn.commit()
+        # DOI_A: 2 in 2019, 1 in 2020 ; DOI_B: 1 in 2020
+        replace_citation_counts(DOI_A, {2019: 2, 2020: 1}, project=COMMUNITY_ID)
+        replace_citation_counts(DOI_B, {2020: 1}, project=COMMUNITY_ID)
         yield db_path
 
 

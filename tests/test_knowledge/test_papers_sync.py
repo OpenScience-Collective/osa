@@ -9,11 +9,13 @@ import asyncio
 from pathlib import Path
 from unittest.mock import patch
 
+import httpx
 import pytest
 from opencite import IDSet, Paper
 
 import src.knowledge.papers_sync as ps
 from src.knowledge.db import get_connection, init_db
+from src.knowledge.openalex_citations import OpenAlexCitationClient
 from src.knowledge.papers_sync import (
     _cache_papers_async,
     _paper_source_and_id,
@@ -26,6 +28,7 @@ from src.knowledge.papers_sync import (
     sync_citing_papers,
     sync_openalex_papers,
 )
+from src.knowledge.search import get_citation_stats
 
 
 @pytest.fixture
@@ -329,3 +332,83 @@ class TestPapersSyncTypeGuard:
     def test_sync_citing_papers_rejects_bare_string(self) -> None:
         with pytest.raises(TypeError, match="must be a list of strings"):
             sync_citing_papers(dois="10.3389/fnins.2013.00267")  # type: ignore[arg-type]
+
+
+class TestSyncCitingPapers:
+    """End-to-end sync via a mock OpenAlex transport (real client + real DB)."""
+
+    def _handler(self, request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "/works/doi:" in url:
+            return httpx.Response(200, json={"id": "https://openalex.org/W1"})
+        if request.url.params.get("group_by") == "publication_year":
+            return httpx.Response(
+                200,
+                json={"group_by": [{"key": "2024", "count": 3}, {"key": "2025", "count": 7}]},
+            )
+        # recent citing papers page (single page)
+        return httpx.Response(
+            200,
+            json={
+                "meta": {"next_cursor": None},
+                "results": [
+                    {
+                        "id": "https://openalex.org/W2",
+                        "doi": "10.1/citing-a",
+                        "title": "Citing paper A",
+                        "publication_date": "2025-03-01",
+                    },
+                    {
+                        "id": "https://openalex.org/W3",
+                        "doi": None,
+                        "title": "Citing paper B",
+                        "publication_date": "2024-09-01",
+                    },
+                ],
+            },
+        )
+
+    def test_stores_true_counts_and_recent_papers(self, tmp_path: Path, monkeypatch) -> None:
+        def factory(**_kwargs):
+            transport = httpx.MockTransport(self._handler)
+            return OpenAlexCitationClient(client=httpx.Client(transport=transport))
+
+        monkeypatch.setattr(ps, "OpenAlexCitationClient", factory)
+
+        db_path = tmp_path / "knowledge" / "test.db"
+        with patch("src.knowledge.db.get_db_path", return_value=db_path):
+            init_db("test")
+            stored = sync_citing_papers(["10.1/canon"], project="test")
+            stats = get_citation_stats("test")
+            with get_connection("test") as conn:
+                rows = conn.execute(
+                    "SELECT external_id, cites_doi FROM papers WHERE cites_doi IS NOT NULL"
+                ).fetchall()
+
+        # Counts come from the (uncapped) group_by histogram, not the stored rows.
+        assert stats.by_paper == {"10.1/canon": {"2024": 3, "2025": 7}}
+        assert stats.total == 10
+        # Two recent citing papers stored and linked to the canonical DOI.
+        assert stored == 2
+        assert {r["external_id"] for r in rows} == {"W2", "W3"}
+        assert all(r["cites_doi"] == "10.1/canon" for r in rows)
+
+    def test_unresolved_doi_skipped(self, tmp_path: Path, monkeypatch) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404, json={"error": "not found"})
+
+        def factory(**_kwargs):
+            return OpenAlexCitationClient(
+                client=httpx.Client(transport=httpx.MockTransport(handler))
+            )
+
+        monkeypatch.setattr(ps, "OpenAlexCitationClient", factory)
+
+        db_path = tmp_path / "knowledge" / "test.db"
+        with patch("src.knowledge.db.get_db_path", return_value=db_path):
+            init_db("test")
+            stored = sync_citing_papers(["10.1/missing"], project="test")
+            stats = get_citation_stats("test")
+
+        assert stored == 0
+        assert stats.total == 0

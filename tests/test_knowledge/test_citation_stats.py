@@ -9,7 +9,12 @@ from unittest.mock import patch
 
 import pytest
 
-from src.knowledge.db import get_connection, init_db, upsert_paper
+from src.knowledge.db import (
+    get_connection,
+    init_db,
+    replace_citation_counts,
+    upsert_paper,
+)
 from src.knowledge.search import CitationStats, get_citation_stats
 
 DOI_A = "10.1016/j.jneumeth.2003.10.009"
@@ -30,58 +35,52 @@ def _add_paper(conn, external_id, *, created_at, cites_doi=None, source="openale
 
 
 @pytest.fixture
-def citations_db(tmp_path: Path):
-    """Temp DB with citing papers across two canonical DOIs and several years."""
+def counts_db(tmp_path: Path):
+    """Temp DB with per-year citation counts for two canonical DOIs."""
     db_path = tmp_path / "knowledge" / "test.db"
     with patch("src.knowledge.db.get_db_path", return_value=db_path):
         init_db()
-        with get_connection() as conn:
-            # DOI_A: 2 in 2019, 1 in 2020
-            _add_paper(conn, "a1", created_at="2019-05-01", cites_doi=DOI_A)
-            _add_paper(conn, "a2", created_at="2019-11-20", cites_doi=DOI_A)
-            _add_paper(conn, "a3", created_at="2020", cites_doi=DOI_A)
-            # DOI_B: 1 in 2020, 1 in 2021
-            _add_paper(conn, "b1", created_at="2020-02-02", cites_doi=DOI_B)
-            _add_paper(conn, "b2", created_at="2021-07-07", cites_doi=DOI_B)
-            # Keyword-search paper (no citation link) - excluded from stats
-            _add_paper(conn, "k1", created_at="2022", cites_doi=None)
-            # Citing paper with an unusable date - excluded from year buckets
-            _add_paper(conn, "x1", created_at="", cites_doi=DOI_A)
-            _add_paper(conn, "x2", created_at=None, cites_doi=DOI_B)
-            conn.commit()
+        replace_citation_counts(DOI_A, {2019: 2, 2020: 1}, project="eeglab")
+        replace_citation_counts(DOI_B, {2020: 1, 2021: 1}, project="eeglab")
         yield db_path
 
 
 class TestGetCitationStats:
-    def test_returns_citation_stats_object(self, citations_db: Path):
-        with patch("src.knowledge.db.get_db_path", return_value=citations_db):
+    def test_returns_citation_stats_object(self, counts_db: Path):
+        with patch("src.knowledge.db.get_db_path", return_value=counts_db):
             stats = get_citation_stats(project="eeglab")
         assert isinstance(stats, CitationStats)
 
-    def test_total_excludes_unlinked_and_undated(self, citations_db: Path):
-        with patch("src.knowledge.db.get_db_path", return_value=citations_db):
+    def test_total_sums_all_counts(self, counts_db: Path):
+        with patch("src.knowledge.db.get_db_path", return_value=counts_db):
             stats = get_citation_stats(project="eeglab")
-        # 5 linked papers with valid years (a1,a2,a3,b1,b2); k1 unlinked,
-        # x1/x2 undated are excluded.
-        assert stats.total == 5
+        assert stats.total == 5  # 2+1 + 1+1
 
-    def test_per_year_aggregates_across_dois(self, citations_db: Path):
-        with patch("src.knowledge.db.get_db_path", return_value=citations_db):
+    def test_per_year_aggregates_across_dois(self, counts_db: Path):
+        with patch("src.knowledge.db.get_db_path", return_value=counts_db):
             stats = get_citation_stats(project="eeglab")
         assert stats.per_year == {"2019": 2, "2020": 2, "2021": 1}
 
-    def test_per_year_is_sorted_ascending(self, citations_db: Path):
-        with patch("src.knowledge.db.get_db_path", return_value=citations_db):
+    def test_per_year_is_sorted_ascending(self, counts_db: Path):
+        with patch("src.knowledge.db.get_db_path", return_value=counts_db):
             stats = get_citation_stats(project="eeglab")
         assert list(stats.per_year.keys()) == sorted(stats.per_year.keys())
 
-    def test_by_paper_stacked_breakdown(self, citations_db: Path):
-        with patch("src.knowledge.db.get_db_path", return_value=citations_db):
+    def test_by_paper_stacked_breakdown(self, counts_db: Path):
+        with patch("src.knowledge.db.get_db_path", return_value=counts_db):
             stats = get_citation_stats(project="eeglab")
         assert stats.by_paper == {
             DOI_A: {"2019": 2, "2020": 1},
             DOI_B: {"2020": 1, "2021": 1},
         }
+
+    def test_replace_overwrites_previous_counts(self, counts_db: Path):
+        """A re-sync replaces a DOI's histogram wholesale (no stale years)."""
+        with patch("src.knowledge.db.get_db_path", return_value=counts_db):
+            replace_citation_counts(DOI_A, {2025: 9}, project="eeglab")
+            stats = get_citation_stats(project="eeglab")
+        assert stats.by_paper[DOI_A] == {"2025": 9}
+        assert "2019" not in stats.per_year  # old DOI_A years gone
 
     def test_empty_database(self, tmp_path: Path):
         db_path = tmp_path / "knowledge" / "empty.db"
@@ -90,6 +89,19 @@ class TestGetCitationStats:
             stats = get_citation_stats(project="eeglab")
         assert stats.total == 0
         assert stats.per_year == {}
+        assert stats.by_paper == {}
+
+    def test_missing_table_returns_empty(self, tmp_path: Path):
+        """Before any citation sync (table absent), stats are empty, not an error."""
+        db_path = tmp_path / "knowledge" / "noinit.db"
+        with patch("src.knowledge.db.get_db_path", return_value=db_path):
+            # Create the DB file with a connection but never run init_db, so
+            # citation_counts does not exist.
+            with get_connection() as conn:
+                conn.execute("CREATE TABLE placeholder (id INTEGER)")
+                conn.commit()
+            stats = get_citation_stats(project="eeglab")
+        assert stats.total == 0
         assert stats.by_paper == {}
 
 
