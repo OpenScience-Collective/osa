@@ -254,12 +254,24 @@ class CitationConfig(BaseModel):
     @field_validator("paper_labels")
     @classmethod
     def validate_paper_labels(cls, v: dict[str, str]) -> dict[str, str]:
-        """Normalize DOI keys (strip doi.org prefixes) to match stored DOIs."""
+        """Normalize and validate DOI keys so labels line up with stored DOIs.
+
+        Applies the same prefix-stripping and format check as ``dois`` so a
+        mistyped key fails loudly at config load instead of silently producing
+        a label that never matches a citation bucket. If two keys normalize to
+        the same DOI, the last one wins (mirrors ``dois`` dedup behavior).
+        """
+        doi_pattern = re.compile(r"^10\.\d{4,}/[^\s]+$")
         normalized: dict[str, str] = {}
         for doi, label in v.items():
             clean_doi = re.sub(r"^(https?://)?(dx\.)?doi\.org/", "", doi.strip())
-            if clean_doi:
-                normalized[clean_doi] = label
+            if not clean_doi:
+                continue
+            if not doi_pattern.match(clean_doi):
+                raise ValueError(
+                    f"Invalid DOI key in paper_labels (expected '10.xxxx/yyyy'): {doi}"
+                )
+            normalized[clean_doi] = label
         return normalized
 
     @field_validator("queries")

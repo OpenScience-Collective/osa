@@ -177,6 +177,8 @@ class TestCitationsFeedContent:
         # eeglab config defines human-readable labels for its canonical DOIs.
         assert labels.get(DOI_A) == "EEGLAB (Delorme 2004)"
         assert labels.get(DOI_B) == "ICLabel (Pion-Tonachini 2019)"
+        # Mixed-case DOI suffix survives the config -> endpoint round-trip.
+        assert labels.get("10.1162/IMAG.a.136") == "LSL (Kothe 2025)"
 
 
 class TestCitationsFeedNoConfig:

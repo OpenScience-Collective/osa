@@ -1183,7 +1183,7 @@
     }
 
     function renderCitationsChart(citations) {
-        if (citationsChartInstance) citationsChartInstance.destroy();
+        if (citationsChartInstance) { citationsChartInstance.destroy(); citationsChartInstance = null; }
         const canvas = document.getElementById('citationsChart');
         if (!canvas || !citations || !citations.by_paper
             || Object.keys(citations.by_paper).length === 0) return;
@@ -1199,7 +1199,7 @@
         // Union of all years present, sorted ascending for the x-axis.
         const yearsSet = new Set();
         dois.forEach(d => Object.keys(byPaper[d]).forEach(y => yearsSet.add(y)));
-        const years = Array.from(yearsSet).sort();
+        const years = Array.from(yearsSet).sort((a, b) => Number(a) - Number(b));
 
         const datasets = dois.map((doi, idx) => ({
             label: labels[doi] || doi,
