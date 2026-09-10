@@ -186,9 +186,15 @@ system_prompt: |
 
 # Documentation sources (NEMAR is a data portal, so minimal docs)
 documentation:
-  - title: NEMAR Data Explorer
-    url: https://nemar.org/dataset
-    source_url: https://nemar.org/dataset
+  # /discover is the browser's real route, per the website's own redirect map
+  # (nemarOrg/website src/lib/host.ts: "Legacy dataset browser. The new site's
+  # equivalent is /discover"), which 301s /dataexplorer here. The browser MOVED;
+  # it was not retired. What IS gone is the dataexplorer *API* under
+  # /api/dataexplorer/, which is why this assistant's two old tools returned 404 --
+  # a different thing that is easy to conflate.
+  - title: NEMAR dataset browser
+    url: https://nemar.org/discover
+    source_url: https://nemar.org/discover
     preload: false
     category: reference
     description: NEMAR dataset browser and exploration interface.
