@@ -98,23 +98,45 @@ class TestCommunityYAMLConfiguration:
     @pytest.mark.slow
     @pytest.mark.network
     def test_documentation_urls_accessible(self, community_id):
-        """All documentation source URLs should return HTTP 200.
+        """All documentation source URLs should be reachable.
 
         This test makes real HTTP requests and is marked as 'slow' and 'network'.
         Network tests are excluded from CI by default.
         To run: pytest -m "network"
+
+        Sends a NAMED User-Agent, because `requests`' default gets blocked. The
+        openneuropet PetSurfer wiki
+        (`surfer.nmr.mgh.harvard.edu`, a third-party FreeSurfer host) answers
+        403 to `python-requests/2.32.5` and 200 to a browser UA, so this test
+        reported a working documentation page as broken. Identifying the client
+        is also the polite thing to do when hitting someone else's server on a
+        schedule.
+
+        Falls back to GET when HEAD is refused. Some hosts and CDNs reject HEAD
+        outright (405) or treat it as suspicious (403) while serving the same URL
+        happily over GET, and "does this page exist" is the question here -- not
+        "does this host implement HEAD".
         """
         from src.assistants import registry
 
         config = registry.get_community_config(community_id)
         failures = []
+        headers = {
+            "User-Agent": ("osa-doc-check/1.0 (+https://github.com/OpenScience-Collective/osa)")
+        }
 
         for doc in config.documentation:
             if not doc.source_url:
                 continue
 
             try:
-                response = requests.head(doc.source_url, timeout=10, allow_redirects=True)
+                response = requests.head(
+                    doc.source_url, timeout=10, allow_redirects=True, headers=headers
+                )
+                if response.status_code in (403, 405):
+                    response = requests.get(
+                        doc.source_url, timeout=10, allow_redirects=True, headers=headers
+                    )
                 if response.status_code != 200:
                     failures.append(
                         f"{doc.title}: {doc.source_url} returned {response.status_code}"
