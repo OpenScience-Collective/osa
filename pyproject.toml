@@ -66,6 +66,11 @@ server = [
     # Scheduling
     "apscheduler>=3.10.0,<4.0.0",
     "opencite>=0.5.3",
+    # Model Context Protocol client, for tools served by an MCP host
+    # (src/tools/mcp_client.py). 2.x specifically: the 2026-07-28 protocol
+    # revision does not exist in 1.x, and langchain-mcp-adapters -- the obvious
+    # alternative -- pins mcp<2.0.0, which is why this wraps the SDK directly.
+    "mcp>=2.2.0",
 ]
 
 observability = [
