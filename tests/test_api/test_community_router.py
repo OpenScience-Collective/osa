@@ -184,11 +184,31 @@ class TestMainAppIntegration:
         return app
 
     def test_hed_routes_mounted(self, app: FastAPI) -> None:
-        """HED routes should be mounted on main app."""
-        route_paths = [r.path for r in app.routes]
-        assert "/hed/ask" in route_paths
-        assert "/hed/chat" in route_paths
-        assert "/hed/sessions" in route_paths
+        """HED routes should be mounted on main app.
+
+        Asserted by REACHING the routes rather than by reading `app.routes`.
+        The introspection version broke on Starlette 1.x, which puts
+        `_IncludedRouter` objects in `app.routes` for anything added via
+        `include_router` -- and those have no `.path`, so
+        `[r.path for r in app.routes]` raised `AttributeError` and every PR in the
+        repo went red at once. The app itself was fine throughout, which is the
+        point: the test was asserting a framework internal, not the property its
+        own docstring names.
+
+        A 404 is the only answer that means "not mounted". A 422 means the route
+        exists and rejected an empty body, and a 405 would mean it exists with a
+        different method -- both are mounted.
+        """
+        client = TestClient(app)
+        for method, path in (
+            ("post", "/hed/ask"),
+            ("post", "/hed/chat"),
+            ("get", "/hed/sessions"),
+        ):
+            response = (
+                getattr(client, method)(path, json={}) if method == "post" else client.get(path)
+            )
+            assert response.status_code != 404, f"{method.upper()} {path} is not mounted"
 
     def test_root_shows_communities(self, app: FastAPI) -> None:
         """Root endpoint should list registered communities."""
