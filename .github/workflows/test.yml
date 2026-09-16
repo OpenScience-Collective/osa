@@ -109,6 +109,25 @@ jobs:
         run: |
           pytest tests/ -v -m "integration or llm" --tb=short
 
+      - name: Check for Anthropic credentials
+        id: check-anthropic-key
+        run: |
+          if [ -n "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
+            echo "has_anthropic_key=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_anthropic_key=false" >> $GITHUB_OUTPUT
+            echo "::warning::ANTHROPIC_API_KEY not set - skipping Anthropic integration tests"
+          fi
+
+      - name: Run Anthropic integration tests
+        if: steps.check-anthropic-key.outputs.has_anthropic_key == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+          ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
+        run: |
+          pytest tests/test_integration/test_anthropic_platform.py -v -m "integration or llm" --tb=short
+
       - name: Run network tests
         env:
           GITHUB_TOKEN: ${{ secrets.READ_GITHUB_TOKEN }}  # read-only PAT for API rate limits
