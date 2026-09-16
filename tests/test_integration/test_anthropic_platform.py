@@ -13,8 +13,10 @@ credentials through Settings, so Settings is the correct source of truth
 for "is server mode configured" and is used for the skip check instead.
 """
 
+import uuid
+
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 
 from src.api.config import get_settings
@@ -112,3 +114,59 @@ class TestSonnetAdaptiveThinking:
         assert response.usage_metadata is not None
         assert response.usage_metadata["input_tokens"] > 0
         assert response.usage_metadata["output_tokens"] > 0
+
+
+class TestPromptCaching:
+    """Proves prompt caching actually works on the wire.
+
+    No unit test can prove this: tests/test_core/test_anthropic_llm.py only
+    asserts that a cache_control marker is present in the outgoing payload,
+    never that the Claude Platform on AWS endpoint actually honors it. This
+    sends the same large system prefix twice and checks that the second
+    call's usage_metadata reports tokens read from cache.
+    """
+
+    def test_second_call_with_shared_system_prefix_reports_cache_read(self) -> None:
+        # Haiku's minimum cacheable prefix is about 4096 tokens; repeat a
+        # paragraph enough times to sit comfortably above that so this test
+        # is not sensitive to the exact tokenizer count. A unique run marker
+        # is mixed in so this test's cache entry cannot be a stale hit left
+        # over from a previous run of this same test (which would let the
+        # assertion pass without this run's own two calls proving anything).
+        run_marker = uuid.uuid4().hex
+        paragraph = (
+            f"Run {run_marker}: the Open Science Assistant helps researchers "
+            "work with BIDS, HED, and EEGLAB by answering precise, "
+            "citation-backed questions for small research communities "
+            "running their own lab servers. "
+        )
+        system_prompt = paragraph * 300
+
+        # thinking=None keeps the generated output tiny and avoids any
+        # budget/max_tokens interaction; caching (enable_caching defaults to
+        # True) is exactly what this test is exercising.
+        llm = create_anthropic_llm(model="claude-haiku-4-5", max_tokens=32, thinking=None)
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content="Reply with exactly: OK"),
+        ]
+
+        first = llm.invoke(messages)
+        assert first.usage_metadata is not None
+        first_cache_read = (first.usage_metadata.get("input_token_details") or {}).get(
+            "cache_read"
+        ) or 0
+        assert first_cache_read == 0, (
+            "First call with a freshly unique system prefix should not hit an "
+            f"existing cache entry; got usage_metadata={first.usage_metadata!r}"
+        )
+
+        second = llm.invoke(messages)
+        assert second.usage_metadata is not None
+        input_token_details = second.usage_metadata.get("input_token_details") or {}
+        cache_read = input_token_details.get("cache_read") or 0
+        assert cache_read > 0, (
+            "Expected a non-zero cache_read on the second call sharing the "
+            f"same system prefix; got usage_metadata={second.usage_metadata!r}. "
+            "Prompt caching is not taking effect against the live endpoint."
+        )
