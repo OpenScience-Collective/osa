@@ -1,5 +1,6 @@
 """Security and authentication for the OSA API."""
 
+import logging
 from dataclasses import dataclass
 from typing import Annotated, Literal
 
@@ -8,6 +9,8 @@ from fastapi.security import APIKeyHeader
 
 from src.api.config import Settings, get_settings
 
+logger = logging.getLogger(__name__)
+
 # API key header for server authentication
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
@@ -15,6 +18,47 @@ api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 openai_key_header = APIKeyHeader(name="X-OpenAI-API-Key", auto_error=False)
 anthropic_key_header = APIKeyHeader(name="X-Anthropic-API-Key", auto_error=False)
 openrouter_key_header = APIKeyHeader(name="X-OpenRouter-Key", auto_error=False)
+
+
+@dataclass(frozen=True)
+class ByokCredential:
+    """A caller-supplied (bring-your-own-key) LLM credential.
+
+    Carries both the key and which provider it authenticates against, so
+    downstream code (model selection, LLM construction) does not need to
+    re-derive the provider from which header happened to be set.
+    """
+
+    key: str
+    provider: Literal["anthropic", "openrouter"]
+
+
+def resolve_byok(
+    anthropic_key: str | None,
+    openrouter_key: str | None,
+) -> ByokCredential | None:
+    """Resolve a single BYOK credential from the two possible headers.
+
+    Anthropic wins when both are provided: it is the platform's first-party
+    provider (see src/core/services/anthropic_llm.py), so a caller sending
+    both headers most likely means to pin to Anthropic.
+
+    Args:
+        anthropic_key: Value of the X-Anthropic-API-Key header, if present.
+        openrouter_key: Value of the X-OpenRouter-Key header, if present.
+
+    Returns:
+        A ByokCredential for whichever key was provided, or None if neither
+        header was set.
+    """
+    if anthropic_key and openrouter_key:
+        logger.info("Both BYOK headers provided; preferring Anthropic")
+        return ByokCredential(key=anthropic_key, provider="anthropic")
+    if anthropic_key:
+        return ByokCredential(key=anthropic_key, provider="anthropic")
+    if openrouter_key:
+        return ByokCredential(key=openrouter_key, provider="openrouter")
+    return None
 
 
 async def verify_api_key(

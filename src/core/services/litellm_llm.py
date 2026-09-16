@@ -40,13 +40,21 @@ from langchain_core.runnables import Runnable
 
 logger = logging.getLogger(__name__)
 
+# Default OpenRouter model/provider when no caller-supplied or configured
+# default applies. Named so other modules (e.g. src.api.routers.community's
+# OpenRouter fallback when a community/platform default is a bare first-party
+# Anthropic id, not an OpenRouter creator/model-name slug) can reference the
+# same default instead of duplicating the literal.
+DEFAULT_MODEL = "openai/gpt-oss-120b"
+DEFAULT_PROVIDER = "Cerebras"
+
 
 def create_openrouter_llm(
-    model: str = "openai/gpt-oss-120b",
+    model: str = DEFAULT_MODEL,
     api_key: str | None = None,
     temperature: float = 0.1,
     max_tokens: int | None = None,
-    provider: str | None = "Cerebras",
+    provider: str | None = DEFAULT_PROVIDER,
     user_id: str | None = None,
     enable_caching: bool | None = None,
 ) -> BaseChatModel:
