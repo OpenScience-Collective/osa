@@ -7,15 +7,19 @@ Live-endpoint behavior (thinking, tool calls, streaming against the real
 Claude Platform) is covered by tests/test_integration/test_anthropic_platform.py.
 """
 
+import inspect
+
 import pytest
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
+from pydantic import ValidationError
 
 from src.api.config import Settings
 from src.core.services.anthropic_llm import (
     CACHE_TTLS,
     DEFAULT_MODEL,
+    DEFAULT_THINKING_BUDGET_TOKENS,
     MIN_THINKING_BUDGET_TOKENS,
     MODEL_ALIASES,
     OFFERED_MODELS,
@@ -65,6 +69,33 @@ def _count_cache_control(payload: dict) -> int:
 def get_weather(city: str) -> str:
     """Get the current weather for a city."""
     return f"Sunny in {city}"
+
+
+@pytest.mark.parametrize("method", ["_generate", "_stream", "_agenerate", "_astream"])
+def test_chat_anthropic_still_calls_get_request_payload(method: str) -> None:
+    """Guard the upgrade risk CachingChatAnthropic's docstring calls out.
+
+    Every caching test below calls ``_get_request_payload`` directly, so an
+    upstream langchain-anthropic release that keeps the method but stops
+    calling it from these real code paths would leave all of them green
+    while caching silently stopped working in production. This introspects
+    the installed library's source instead of calling it, so it catches that
+    upgrade even though nothing here exercises the real HTTP path.
+    """
+    assert "_get_request_payload" in inspect.getsource(getattr(ChatAnthropic, method))
+
+
+def test_default_thinking_budget_matches_settings_default() -> None:
+    """Lock the module constant and the Settings field default together.
+
+    ``DEFAULT_THINKING_BUDGET_TOKENS`` exists so this module does not have to
+    import ``Settings`` for a literal; if the two ever drift, a caller who
+    never touches Settings (e.g. constructs a plain Settings() with no env
+    vars) would silently get a different thinking budget than one that goes
+    through ``create_anthropic_llm``'s settings-based default.
+    """
+    settings_default = Settings.model_fields["anthropic_thinking_budget_tokens"].default
+    assert settings_default == DEFAULT_THINKING_BUDGET_TOKENS
 
 
 class TestNormalizeModel:
@@ -167,12 +198,23 @@ class TestCreateAnthropicLLMCredentials:
         settings = _settings(anthropic_base_url=None, anthropic_workspace_id=None)
         llm = create_anthropic_llm(settings=settings)
         # ChatAnthropic falls back to its own client default when base_url is
-        # not supplied; the point under test is that we did not force one.
-        assert (
-            llm.anthropic_api_url != settings.anthropic_base_url
-            or settings.anthropic_base_url is None
-        )
+        # not supplied; compare against a real no-argument instance instead
+        # of settings.anthropic_base_url, which is None here and would make
+        # the old "!= settings.anthropic_base_url or ... is None" assertion
+        # vacuously true regardless of what create_anthropic_llm actually did.
+        default_url = ChatAnthropic(model=DEFAULT_MODEL, api_key="x").anthropic_api_url
+        assert llm.anthropic_api_url == default_url
         assert not llm.default_headers
+
+    def test_base_url_without_workspace_id_raises(self) -> None:
+        settings = _settings(anthropic_workspace_id=None)
+        with pytest.raises(RuntimeError, match="ANTHROPIC_WORKSPACE_ID"):
+            create_anthropic_llm(settings=settings)
+
+    def test_workspace_id_without_base_url_still_constructs(self) -> None:
+        settings = _settings(anthropic_base_url=None)
+        llm = create_anthropic_llm(settings=settings)
+        assert llm.default_headers == {"anthropic-workspace-id": settings.anthropic_workspace_id}
 
     def test_byok_mode_pins_first_party_url_and_sends_no_workspace_header(self) -> None:
         settings = _settings()
@@ -207,11 +249,11 @@ class TestCreateAnthropicLLMBehavior:
         with_default_thinking = create_anthropic_llm(
             model="claude-sonnet-5", temperature=0.7, settings=settings
         )
-        with_thinking_off = create_anthropic_llm(
+        with_thinking_disabled = create_anthropic_llm(
             model="claude-sonnet-5", temperature=0.7, thinking=None, settings=settings
         )
         assert with_default_thinking.temperature is None
-        assert with_thinking_off.temperature is None
+        assert with_thinking_disabled.temperature is None
 
     def test_default_thinking_applied_per_model(self) -> None:
         settings = _settings()
@@ -220,10 +262,39 @@ class TestCreateAnthropicLLMBehavior:
         assert haiku.thinking == {"type": "enabled", "budget_tokens": 2048}
         assert sonnet.thinking == {"type": "adaptive"}
 
+    def test_thinking_budget_from_settings_is_used(self) -> None:
+        """A distinct (non-default-literal) value proves settings are plumbed through.
+
+        The default budget in Settings and in this module's own
+        DEFAULT_THINKING_BUDGET_TOKENS are both 2048, so a test using that
+        literal would still pass if the settings value were silently
+        ignored and the module fell back to its own constant instead.
+        """
+        settings = _settings(anthropic_thinking_budget_tokens=4096)
+        llm = create_anthropic_llm(model="claude-haiku-4-5", settings=settings)
+        assert llm.thinking["budget_tokens"] == 4096
+
+    def test_default_thinking_budget_conflicts_with_max_tokens(self) -> None:
+        """Exercise the budget-vs-max_tokens conflict through the public entry point."""
+        settings = _settings()
+        with pytest.raises(ValueError, match="below max_tokens"):
+            create_anthropic_llm(model="claude-haiku-4-5", max_tokens=1000, settings=settings)
+
     def test_explicit_none_thinking_disables(self) -> None:
         settings = _settings()
         llm = create_anthropic_llm(model="claude-haiku-4-5", thinking=None, settings=settings)
         assert llm.thinking is None
+
+    def test_explicit_none_thinking_sends_disabled_type_on_sonnet_5(self) -> None:
+        """claude-sonnet-5 has no bare "off"; an omitted key means adaptive-on.
+
+        thinking=None must therefore produce an explicit {"type": "disabled"}
+        rather than omitting the key (the haiku case, covered above by
+        test_explicit_none_thinking_disables).
+        """
+        settings = _settings()
+        llm = create_anthropic_llm(model="claude-sonnet-5", thinking=None, settings=settings)
+        assert llm.thinking == {"type": "disabled"}
 
     def test_invalid_thinking_for_model_raises(self) -> None:
         settings = _settings()
@@ -310,6 +381,8 @@ class TestCachingChatAnthropicPayload:
             [SystemMessage(content="sys"), HumanMessage(content="hi")]
         )
         assert payload["system"][-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+        last_message_content = payload["messages"][-1]["content"]
+        assert last_message_content[-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
 
     def test_tool_bound_model_still_caches(self) -> None:
         """bind_tools() must not bypass caching (the bug the subclass avoids)."""
@@ -335,3 +408,80 @@ class TestCachingChatAnthropicPayload:
             [SystemMessage(content="You are a helpful assistant."), HumanMessage(content="Hi")]
         )
         assert _count_cache_control(payload) == 0
+
+
+class TestCachingChatAnthropicCacheTtlValidation:
+    """Tests that cache_ttl validity is enforced on the class itself (fix 5)."""
+
+    def test_direct_construction_with_invalid_ttl_raises(self) -> None:
+        """Constructing the class directly must not bypass the CACHE_TTLS check."""
+        with pytest.raises(ValidationError, match="Unsupported prompt cache TTL"):
+            CachingChatAnthropic(
+                model="claude-haiku-4-5", api_key="test-key", max_tokens=100, cache_ttl="10m"
+            )
+
+    @pytest.mark.parametrize("ttl", CACHE_TTLS)
+    def test_direct_construction_with_valid_ttl_succeeds(self, ttl: str) -> None:
+        llm = CachingChatAnthropic(
+            model="claude-haiku-4-5", api_key="test-key", max_tokens=100, cache_ttl=ttl
+        )
+        assert llm.cache_ttl == ttl
+
+
+class TestCachingChatAnthropicSystemListForm:
+    """Tests for the list-form system content branch, previously uncovered."""
+
+    def _llm(self, **overrides: object) -> CachingChatAnthropic:
+        settings = _settings(**overrides)
+        llm = create_anthropic_llm(model="claude-haiku-4-5", thinking=None, settings=settings)
+        assert isinstance(llm, CachingChatAnthropic)
+        return llm
+
+    def test_breakpoint_lands_on_last_block_only(self) -> None:
+        llm = self._llm()
+        system_message = SystemMessage(
+            content=[
+                {"type": "text", "text": "Block one."},
+                {"type": "text", "text": "Block two."},
+            ]
+        )
+        payload = llm._get_request_payload([system_message, HumanMessage(content="Hi")])
+        system = payload["system"]
+        assert "cache_control" not in system[0]
+        assert system[-1]["cache_control"] == {"type": "ephemeral"}
+
+    def test_already_marked_system_list_is_not_double_marked(self) -> None:
+        llm = self._llm()
+        system_message = SystemMessage(
+            content=[
+                {"type": "text", "text": "Block one.", "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": "Block two."},
+            ]
+        )
+        payload = llm._get_request_payload([system_message, HumanMessage(content="Hi")])
+        system = payload["system"]
+        assert system[0]["cache_control"] == {"type": "ephemeral"}
+        assert "cache_control" not in system[-1]
+
+    def test_callers_system_message_is_not_mutated(self) -> None:
+        """Regression guard for fix 1.
+
+        langchain_anthropic's _format_messages reuses the caller's own dict
+        objects for list-content system messages, so applying the cache
+        breakpoint must copy rather than mutate them in place; otherwise a
+        later request built from the same SystemMessage instance would see
+        a stale cache_control marker and silently ship the wrong TTL.
+        """
+        llm = self._llm()
+        system_message = SystemMessage(
+            content=[
+                {"type": "text", "text": "Block one."},
+                {"type": "text", "text": "Block two."},
+            ]
+        )
+        original_content = [dict(block) for block in system_message.content]
+
+        llm._get_request_payload([system_message, HumanMessage(content="Hi")])
+
+        assert system_message.content == original_content
+        assert "cache_control" not in system_message.content[-1]
