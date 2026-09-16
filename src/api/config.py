@@ -69,7 +69,35 @@ class Settings(BaseSettings):
     # LLM Provider Settings (server defaults, can be overridden by BYOK)
     openrouter_api_key: str | None = Field(default=None, description="OpenRouter API key")
     openai_api_key: str | None = Field(default=None, description="OpenAI API key")
-    anthropic_api_key: str | None = Field(default=None, description="Anthropic API key")
+    anthropic_api_key: str | None = Field(
+        default=None,
+        description="ANTHROPIC_API_KEY: server-mode key for the Claude Platform on AWS",
+    )
+    anthropic_base_url: str | None = Field(
+        default=None,
+        description="ANTHROPIC_BASE_URL: Claude Platform on AWS endpoint (an "
+        "Anthropic-operated Messages API, not Amazon Bedrock)",
+    )
+    anthropic_workspace_id: str | None = Field(
+        default=None,
+        description="ANTHROPIC_WORKSPACE_ID: Claude Platform on AWS workspace id "
+        "(format 'wrkspc_...') sent as the anthropic-workspace-id header on "
+        "server-mode requests. AWS Marketplace is only the billing channel; "
+        "the workspace itself is an Anthropic-operated resource.",
+    )
+    anthropic_thinking_budget_tokens: int = Field(
+        default=2048,
+        description="Default extended-thinking token budget for budget-style Anthropic "
+        "models (e.g. claude-haiku-4-5)",
+    )
+    anthropic_max_output_tokens: int = Field(
+        default=8000,
+        description="Default max_tokens for Anthropic Claude Platform requests",
+    )
+    anthropic_cache_ttl: str = Field(
+        default="5m",
+        description="Default prompt-cache lifetime for Anthropic requests ('5m' or '1h')",
+    )
 
     # Model Configuration
     # OpenRouter model format: creator/model-name (e.g., openai/gpt-oss-120b, qwen/qwen3-235b-a22b-2507)
