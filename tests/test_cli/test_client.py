@@ -48,6 +48,33 @@ class TestOSAClientHeaders:
         assert "X-OpenRouter-Key" not in headers
         assert "X-OpenRouter-API-Key" not in headers
 
+    def test_headers_include_anthropic_key_when_set(self) -> None:
+        """Headers should include X-Anthropic-API-Key when configured."""
+        client = OSAClient(
+            api_url="http://localhost:8000",
+            anthropic_api_key="sk-ant-test",
+        )
+        headers = client._get_headers()
+        assert headers["X-Anthropic-API-Key"] == "sk-ant-test"
+
+    def test_headers_exclude_anthropic_key_when_not_set(self) -> None:
+        """Headers should not include X-Anthropic-API-Key when not configured."""
+        client = OSAClient(api_url="http://localhost:8000")
+        headers = client._get_headers()
+        assert "X-Anthropic-API-Key" not in headers
+
+    def test_anthropic_key_preferred_over_openrouter_key(self) -> None:
+        """When both are configured, only the Anthropic header is sent."""
+        client = OSAClient(
+            api_url="http://localhost:8000",
+            openrouter_api_key="sk-or-test",
+            anthropic_api_key="sk-ant-test",
+        )
+        headers = client._get_headers()
+        assert headers["X-Anthropic-API-Key"] == "sk-ant-test"
+        assert "X-OpenRouter-Key" not in headers
+        assert "X-OpenRouter-API-Key" not in headers
+
 
 class TestOSAClientBaseUrl:
     """Tests for OSAClient URL handling."""

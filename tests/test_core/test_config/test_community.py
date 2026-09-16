@@ -1321,6 +1321,79 @@ class TestEnvVarNameValidation:
         assert config.openrouter_api_key_env_var == "OPENROUTER_API_KEY_HED"
 
 
+class TestAnthropicEnvVarNameValidation:
+    """Tests for anthropic_api_key_env_var validation (Phase 2, issue #362)."""
+
+    def test_valid_env_var_names(self) -> None:
+        """Should accept valid ANTHROPIC_API_KEY_* patterns."""
+        valid_names = [
+            "ANTHROPIC_API_KEY_HED",
+            "ANTHROPIC_API_KEY_BIDS",
+            "ANTHROPIC_API_KEY_TEST",
+            "ANTHROPIC_API_KEY_MY_COMMUNITY",
+            "ANTHROPIC_API_KEY_123",
+        ]
+        for name in valid_names:
+            config = CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                anthropic_api_key_env_var=name,
+            )
+            assert config.anthropic_api_key_env_var == name
+
+    def test_allows_none(self) -> None:
+        """Should allow None (use platform key)."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            anthropic_api_key_env_var=None,
+        )
+        assert config.anthropic_api_key_env_var is None
+
+    def test_rejects_arbitrary_env_vars(self) -> None:
+        """Should reject non-ANTHROPIC_API_KEY_* patterns (prevents secret access)."""
+        invalid_names = [
+            "AWS_SECRET_KEY",
+            "DATABASE_PASSWORD",
+            "ANTHROPIC_KEY",  # Missing API_KEY part
+            "API_KEY_HED",  # Missing ANTHROPIC part
+            "anthropic_api_key_hed",  # Lowercase not allowed
+            "OPENROUTER_API_KEY_HED",  # Wrong provider prefix
+        ]
+        for name in invalid_names:
+            with pytest.raises(ValidationError, match="Invalid environment variable name"):
+                CommunityConfig(
+                    id="test",
+                    name="Test",
+                    description="Test",
+                    anthropic_api_key_env_var=name,
+                )
+
+    def test_strips_whitespace_from_env_var(self) -> None:
+        """Should strip whitespace from env var names."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            anthropic_api_key_env_var="  ANTHROPIC_API_KEY_HED  ",
+        )
+        assert config.anthropic_api_key_env_var == "ANTHROPIC_API_KEY_HED"
+
+    def test_both_env_vars_can_coexist(self) -> None:
+        """A community may configure both provider env vars simultaneously."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            anthropic_api_key_env_var="ANTHROPIC_API_KEY_TEST",
+            openrouter_api_key_env_var="OPENROUTER_API_KEY_TEST",
+        )
+        assert config.anthropic_api_key_env_var == "ANTHROPIC_API_KEY_TEST"
+        assert config.openrouter_api_key_env_var == "OPENROUTER_API_KEY_TEST"
+
+
 class TestSSRFProtection:
     """Tests for source_url SSRF protection (Issue #66)."""
 
@@ -1414,7 +1487,12 @@ class TestSSRFProtection:
 
 
 class TestModelNameValidation:
-    """Tests for default_model validation (Issue #68)."""
+    """Tests for default_model validation (Issue #68).
+
+    The pattern accepts both the OpenRouter creator/model-name form and a
+    bare first-party id (Phase 2, issue #362): the Claude Platform on AWS
+    path has no separate "creator" segment (e.g. "claude-haiku-4-5").
+    """
 
     def test_valid_model_names(self) -> None:
         """Should accept valid provider/model-name format."""
@@ -1434,6 +1512,18 @@ class TestModelNameValidation:
             )
             assert config.default_model == model
 
+    def test_valid_bare_first_party_ids(self) -> None:
+        """Should accept a bare first-party id with no provider prefix."""
+        valid_bare_ids = ["claude-haiku-4-5", "claude-sonnet-5", "just-a-model-name"]
+        for model in valid_bare_ids:
+            config = CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                default_model=model,
+            )
+            assert config.default_model == model
+
     def test_allows_none(self) -> None:
         """Should allow None (use platform default)."""
         config = CommunityConfig(
@@ -1445,9 +1535,8 @@ class TestModelNameValidation:
         assert config.default_model is None
 
     def test_rejects_invalid_format(self) -> None:
-        """Should reject model names not matching provider/model-name."""
+        """Should reject model names that are not a bare id or provider/model-name."""
         invalid_models = [
-            "just-a-model-name",  # No provider
             "provider/",  # No model name
             "/model-name",  # No provider
             "provider model",  # Space instead of slash
@@ -1499,6 +1588,18 @@ class TestCostManipulationProtection:
         )
         assert config.default_model == "anthropic/claude-opus-4"
         assert config.openrouter_api_key_env_var is not None
+
+    def test_allows_expensive_model_with_anthropic_env_var(self) -> None:
+        """Should also allow ultra-expensive models when anthropic_api_key_env_var is set."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            default_model="anthropic/claude-opus-4",
+            anthropic_api_key_env_var="ANTHROPIC_API_KEY_TEST",
+        )
+        assert config.default_model == "anthropic/claude-opus-4"
+        assert config.anthropic_api_key_env_var is not None
 
     def test_rejects_ultra_expensive_model_without_byok(self) -> None:
         """Should reject ultra-expensive models without BYOK (prevents surprise billing)."""

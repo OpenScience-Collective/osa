@@ -17,6 +17,7 @@ from src.cli.config import (
     CLIConfig,
     CredentialsConfig,
     get_data_dir,
+    get_effective_anthropic_key,
     get_effective_config,
     get_user_id,
     load_config,
@@ -217,6 +218,38 @@ class TestGetEffectiveConfig:
         with patched_config_paths(temp_config_dir):
             config, _ = get_effective_config(api_url="https://custom.example.com")
             assert config.api.url == "https://custom.example.com"
+
+
+class TestGetEffectiveAnthropicKey:
+    """Tests for get_effective_anthropic_key."""
+
+    def test_env_var_overrides_saved_key(self, temp_config_dir: Path) -> None:
+        """ANTHROPIC_API_KEY env var should override saved credentials."""
+        with (
+            patched_config_paths(temp_config_dir),
+            patch.dict("os.environ", {"ANTHROPIC_API_KEY": "env-anthropic-key"}),
+        ):
+            save_credentials(CredentialsConfig(anthropic_api_key="saved-anthropic-key"))
+
+            assert get_effective_anthropic_key() == "env-anthropic-key"
+
+    def test_saved_key_used_as_fallback(self, temp_config_dir: Path) -> None:
+        """Saved credentials should be used if no env var is set."""
+        with (
+            patched_config_paths(temp_config_dir),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            save_credentials(CredentialsConfig(anthropic_api_key="saved-anthropic-key"))
+
+            assert get_effective_anthropic_key() == "saved-anthropic-key"
+
+    def test_returns_none_when_unconfigured(self, temp_config_dir: Path) -> None:
+        """Returns None when neither the env var nor saved credentials are set."""
+        with (
+            patched_config_paths(temp_config_dir),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            assert get_effective_anthropic_key() is None
 
 
 class TestLegacyMigration:
