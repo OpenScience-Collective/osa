@@ -26,6 +26,7 @@ from src.cli.config import (
     CLIConfig,
     CredentialsConfig,
     get_data_dir,
+    get_effective_anthropic_key,
     get_effective_config,
     get_user_id,
     is_first_run,
@@ -185,14 +186,16 @@ def ask(
         osa ask "What is HED?" -a hed --mirror abc123def456
     """
     config, effective_key = get_effective_config(api_key=api_key, api_url=api_url)
+    effective_anthropic_key = get_effective_anthropic_key()
 
-    _check_api_key(effective_key)
+    _check_api_key(effective_key or effective_anthropic_key)
 
     from src.cli.client import APIError, OSAClient
 
     client = OSAClient(
         api_url=config.api.url,
         openrouter_api_key=effective_key,
+        anthropic_api_key=effective_anthropic_key,
         user_id=get_user_id(),
         mirror_id=mirror,
     )
@@ -286,14 +289,16 @@ def chat(
         osa chat -a hed --mirror abc123def456
     """
     config, effective_key = get_effective_config(api_key=api_key, api_url=api_url)
+    effective_anthropic_key = get_effective_anthropic_key()
 
-    _check_api_key(effective_key)
+    _check_api_key(effective_key or effective_anthropic_key)
 
     from src.cli.client import APIError, OSAClient
 
     client = OSAClient(
         api_url=config.api.url,
         openrouter_api_key=effective_key,
+        anthropic_api_key=effective_anthropic_key,
         user_id=get_user_id(),
         mirror_id=mirror,
     )

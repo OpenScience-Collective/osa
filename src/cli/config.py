@@ -167,6 +167,21 @@ def get_effective_config(
     return config, effective_key
 
 
+def get_effective_anthropic_key() -> str | None:
+    """Resolve the effective Anthropic API key.
+
+    Priority: ANTHROPIC_API_KEY env > credentials.yaml. There is no CLI flag
+    for this (the CLI's `-k/--api-key` flag is documented as OpenRouter-only;
+    see ``get_effective_config``), so this is additive and does not change
+    that function's signature or behavior.
+
+    Returns:
+        The effective Anthropic API key, or None if not configured.
+    """
+    creds = load_credentials()
+    return os.environ.get("ANTHROPIC_API_KEY") or creds.anthropic_api_key
+
+
 # --- Legacy migration ---
 
 
