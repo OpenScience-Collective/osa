@@ -1,6 +1,6 @@
 # Browser Execution Tool Design
 
-Status: draft, revised after review 2026-09-16. The transport question in Open Questions is UNRESOLVED and blocks Phase 1.
+Status: draft, revised after review 2026-09-16. Transport DECIDED: two-run continuation, no checkpointer.
 Owner: Yahya (lead maintainer).
 Scope: a community-agnostic, client-executed `execute_code` tool for OSA assistants.
 First adopter: the NEMAR assistant, against Zarr recipes from the NEMAR MCP server.
@@ -381,11 +381,30 @@ hold against the deployed code. They are Phase 0: none of Phase 1 works end to e
 1. **The turn is hard-aborted at 120 seconds, in two independent places.** The proxy worker passes
    `AbortSignal.timeout(120000)` to the backend fetch whose body is the SSE stream, and the widget sets its
    own `AbortSignal.timeout(120000)` on the chat POST. `AbortSignal.timeout` counts from construction, so
-   this is a wall-clock ceiling on the WHOLE turn, not an idle timeout. A parked stream has to fit the first
-   model response, the Pyodide boot and first-load download, a human reading the code and clicking Run, the
-   execution itself, and the resumed model call inside that budget. This design's own `exec_seconds` default
-   is 120, which consumes all of it. **This is the finding that decides the transport.** See the open
-   question below.
+   this is a wall-clock ceiling on the WHOLE turn, not an idle timeout. This is the finding that decided the
+   transport: it makes a parked stream unbuildable, which is why two-run continuation was chosen.
+   **No longer blocking, because two-run parks nothing.** Raising both ceilings to 240 seconds is still
+   worth doing as headroom for a slow run, and it is now an OPTIMIZATION rather than a requirement, which
+   matters because the widget's 120 is baked into SRI-pinned CDN copies that persist in the field: under a
+   parked-stream design those old embeds would have been broken by design, and under two-run they keep
+   working.
+
+   **Three clocks, and they must not be conflated.** The note previously used `deadline_s` for two of them.
+   - HTTP request ceiling, 240 s: the worker `REQUEST_TIMEOUT` and the widget `AbortSignal`.
+   - Browser execution budget, `exec_seconds`, about 180 s: Pyodide boot plus execution plus the
+     continuation POST should land inside the provider's prompt-cache window, so it must sit below the HTTP
+     ceiling with room for a cold boot.
+   - Approval or idle deadline, generous, on the order of 15 minutes: this is human reading time and is
+     deliberately OUTSIDE the cache window.
+
+   **The cache window is a cost boundary, not a correctness deadline.** `CachingLLMWrapper` is enabled by
+   default on the live path and documents a 5-minute time to live, refreshed on each hit, applied to SYSTEM
+   messages only. So a continuation landing inside the window keeps the large static system prompt warm,
+   and a chain of executions each under about 4 minutes keeps it warm indefinitely. The conversation history
+   is not cache-marked and is re-billed either way. A continuation that arrives late must still succeed and
+   simply cost more; turning the window into a hard cutoff would convert a cost optimization into a failure
+   mode. Caveat to measure before relying on any of this: the minimum cacheable prompt is 2048 tokens for
+   Haiku 4.5, which is NEMAR's default model, so if the assembled system prompt is smaller, nothing caches.
 2. **The resume endpoint 404s at the edge.** The proxy worker routes by an anchored allowlist whose chat
    matcher is two path segments; `/{community}/chat/resume` has three, matches nothing, and falls through to
    a 404. Phase 1 therefore includes a worker route and a deploy to both environments. The worker forwards
@@ -463,26 +482,19 @@ note and do not correspond to the global phases in `.context/plan.md`.
 
 ## Open questions
 
-- **The transport, and it is now the decision this design turns on. UNRESOLVED; do not start Phase 1
-  until it is settled.** This note recommended SSE plus a resume endpoint because the change is additive.
-  Review found that unbuildable as specified: the 120-second wall-clock abort exists independently in the
-  proxy worker and in the widget, and it covers the entire turn, so a stream cannot be parked across a
-  human deciding whether to click Run. Three options.
-  (a) Keep parked SSE and raise both timeouts, add keepalive comments and an idle-based deadline. Smallest
-  conceptual change, but it keeps a connection open across human latency and still needs the checkpointer,
-  the rendezvous registry and interrupt semantics.
-  (b) Move to one WebSocket per session. Removes the abort problem cleanly, larger client and worker change.
-  (c) **Two-run continuation, and no checkpointer at all.** End the run with the assistant message carrying
-  the client tool call; the browser executes; a second request continues the graph with the tool message
-  appended. This is what CopilotKit and the Vercel AI SDK actually ship for client-executed tools. It
-  sidesteps the 120-second ceiling entirely because nothing is parked, and it dissolves the checkpointer,
-  the expiry sweep and the anonymous-retention question below, since retention becomes the session TTL that
-  already exists. It costs idempotency work instead: validate pending `tool_call_id`s against the session's
-  last assistant message, accept each once, and synthesize abandoned tool results if the next user message
-  arrives with a call still pending, because providers reject an assistant message whose tool calls have no
-  results. Measured caveats that favor it: on the installed LangGraph, a resumed node re-runs from its start
+- ~~The transport.~~ **DECIDED 2026-09-16: two-run continuation, option (c) below.**
+  The run ends with the assistant message carrying the client tool call; the browser executes with no
+  request open; a second request continues the graph with the tool message appended. This design therefore
+  does NOT use LangGraph's `interrupt()`, `Command(resume=)`, or a checkpointer at all.
+  Rejected: (a) parking the SSE stream and raising the timeouts, and (b) one WebSocket per session. Both
+  spend real engineering on holding a connection open across human latency, and both still need the
+  checkpointer, which in this codebase is a refactor of the per-request path rather than a component.
+  Two measured LangGraph behaviors also bite (a) and (b) and not (c): a resumed node re-runs from its start,
   so any pre-interrupt side effect runs twice, and every interrupt raised in one `ToolNode` task shares an
-  `Interrupt.id`, so parallel client tool calls cannot be disambiguated.
+  `Interrupt.id`, so two `execute_code` calls in one message cannot be told apart. Under (c) these are not
+  problems, because nothing is resumed; a continuation is just a new run over a longer message list.
+  What (c) costs instead is idempotency work, listed as a Phase 1 requirement above.
+
 - Cooperative cancellation without `SharedArrayBuffer`; the reboot fallback is acceptable if the cache makes it cheap.
 - Parallel tool calls. The router returns one destination for a whole assistant message, so a batch mixing a
   server tool and a client tool cannot be split today. Constrain the model to one client-tool call per turn,
