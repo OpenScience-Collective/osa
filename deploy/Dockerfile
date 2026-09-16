@@ -2,7 +2,7 @@
 # Compatible with HEDit deployment patterns
 # Port allocation: HEDit prod=38427, HEDit dev=38428, OSA prod=38528, OSA dev=38529
 
-FROM python:3.12-slim-bullseye
+FROM python:3.12-slim-bookworm
 
 WORKDIR /app
 
