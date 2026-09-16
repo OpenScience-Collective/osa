@@ -40,13 +40,17 @@ class SSRFViolationError(ValueError):
     pass
 
 
-# Shared regex for OpenRouter model identifiers (creator/model-name)
-_MODEL_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+/[a-zA-Z0-9._-]+$")
+# Shared regex for model identifiers. Accepts both the OpenRouter
+# creator/model-name form (e.g. "anthropic/claude-3.5-sonnet") and a bare
+# first-party id with no provider prefix (e.g. "claude-haiku-4-5", one of
+# src.core.services.anthropic_llm.OFFERED_MODELS) -- the Claude Platform on
+# AWS path has no separate "creator" segment.
+_MODEL_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]+(/[a-zA-Z0-9._-]+)?$")
 _MODEL_ID_MAX_LENGTH = 100
 
 
 def _validate_model_id(v: str | None, field_label: str = "Model identifier") -> str | None:
-    """Validate an OpenRouter model identifier (creator/model-name).
+    """Validate a model identifier: creator/model-name, or a bare first-party id.
 
     Args:
         v: The model string to validate, or None.
@@ -68,8 +72,8 @@ def _validate_model_id(v: str | None, field_label: str = "Model identifier") -> 
     if not _MODEL_ID_PATTERN.match(v):
         raise ValueError(
             f"Invalid {field_label.lower()}: '{v}'. "
-            "Must match pattern: provider/model-name "
-            "(e.g., 'anthropic/claude-3.5-sonnet')"
+            "Must match pattern: provider/model-name (e.g., 'anthropic/claude-3.5-sonnet') "
+            "or a bare first-party id (e.g., 'claude-haiku-4-5')"
         )
 
     if len(v) > _MODEL_ID_MAX_LENGTH:
@@ -1054,12 +1058,29 @@ class CommunityConfig(BaseModel):
     platform-level origins at API startup.
     """
 
+    anthropic_api_key_env_var: str | None = None
+    """Environment variable name for community's own Anthropic API key.
+
+    If specified, the assistant will use the key from this environment variable
+    instead of the platform key when routing to the Claude Platform on AWS.
+    Checked before ``openrouter_api_key_env_var`` (see ``_resolve_provider`` in
+    src/api/routers/community.py). This allows per-community API key control
+    for cost attribution and management.
+
+    Example:
+        anthropic_api_key_env_var: "ANTHROPIC_API_KEY_HED"
+
+    The backend must have this environment variable set for the assistant to work.
+    """
+
     openrouter_api_key_env_var: str | None = None
     """Environment variable name for community's OpenRouter API key.
 
     If specified, the assistant will use the key from this environment variable
     instead of the platform-level default. This allows per-community API key
-    control for cost attribution and management.
+    control for cost attribution and management. Only reached when
+    ``anthropic_api_key_env_var`` is not set: a community can still fund
+    itself through OpenRouter instead of the Claude Platform on AWS.
 
     Example:
         openrouter_api_key_env_var: "OPENROUTER_API_KEY_HED"
@@ -1197,6 +1218,32 @@ class CommunityConfig(BaseModel):
                 validated.append(username)
         return validated
 
+    @field_validator("anthropic_api_key_env_var")
+    @classmethod
+    def validate_anthropic_api_key_env_var(cls, v: str | None) -> str | None:
+        """Validate environment variable name to prevent accessing arbitrary secrets.
+
+        Only allows variables matching ANTHROPIC_API_KEY_* pattern to prevent
+        communities from referencing other secrets like AWS credentials.
+        """
+        if v is None:
+            return None
+
+        v = v.strip()
+        if not v:
+            return None
+
+        # Only allow ANTHROPIC_API_KEY_* pattern (uppercase, underscores, alphanumeric)
+        env_var_pattern = re.compile(r"^ANTHROPIC_API_KEY_[A-Z0-9_]+$")
+        if not env_var_pattern.match(v):
+            raise ValueError(
+                f"Invalid environment variable name: '{v}'. "
+                "Must match pattern: ANTHROPIC_API_KEY_[A-Z0-9_]+ "
+                "(e.g., 'ANTHROPIC_API_KEY_HED')"
+            )
+
+        return v
+
     @field_validator("openrouter_api_key_env_var")
     @classmethod
     def validate_openrouter_api_key_env_var(cls, v: str | None) -> str | None:
@@ -1234,10 +1281,19 @@ class CommunityConfig(BaseModel):
         """Warn about expensive models without BYOK to prevent surprise billing.
 
         Communities using expensive models should provide their own API key
-        to avoid unexpected platform costs.
+        to avoid unexpected platform costs. This guard only concerns
+        OpenRouter-format ids: the Anthropic offering
+        (src.core.services.anthropic_llm.OFFERED_MODELS) is deliberately
+        limited to two cost-capped models, so there is no ultra-expensive
+        Anthropic id a community's default_model could resolve to.
         """
-        if not self.default_model or self.openrouter_api_key_env_var:
-            # No model specified or BYOK configured - OK
+        if (
+            not self.default_model
+            or self.openrouter_api_key_env_var
+            or self.anthropic_api_key_env_var
+        ):
+            # No model specified, or the community funds itself (either
+            # provider) - OK
             return self
 
         # Hardcoded list of known expensive models (>$15/1M output tokens)
@@ -1260,8 +1316,11 @@ class CommunityConfig(BaseModel):
         if base_model in ultra_expensive_models:
             raise ValueError(
                 f"Model '{self.default_model}' requires BYOK (Bring Your Own Key). "
-                f"Add 'openrouter_api_key_env_var: OPENROUTER_API_KEY_<YOUR_COMMUNITY>' to your config.yaml, "
-                f"then set that environment variable to your OpenRouter API key. "
+                f"Add 'openrouter_api_key_env_var: OPENROUTER_API_KEY_<YOUR_COMMUNITY>' to your "
+                f"config.yaml and set that environment variable to your OpenRouter API key -- "
+                f"or, to use the Anthropic offering instead, set 'default_model' to one of the "
+                f"models in src.core.services.anthropic_llm.OFFERED_MODELS (e.g. "
+                f"'claude-haiku-4-5'), which are cost-capped and never require BYOK. "
                 f"Ultra-expensive models (>$15/1M tokens) cannot use the platform API key."
             )
 

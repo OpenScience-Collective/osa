@@ -5,8 +5,7 @@ id: nemar
 name: NEMAR (NeuroElectroMagnetic Archive)
 description: Repository of BIDS-formatted EEG, MEG, and iEEG datasets from OpenNeuro
 status: available
-default_model: anthropic/claude-haiku-4.5
-default_model_provider: anthropic
+default_model: claude-haiku-4-5
 
 # External links for dashboard and discovery
 links:
