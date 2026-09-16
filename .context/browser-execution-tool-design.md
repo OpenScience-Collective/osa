@@ -351,6 +351,56 @@ Each community brings: a lockfile, a `preload` set, an `allow_install` list, a `
 prompt guidance on when to run code versus answer from documentation,
 and optionally a small pure-Python helper package (for NEMAR, a reader that turns a recipe into a numpy array).
 
+## What goes back to the model, and why it must be deterministic
+
+Each execution returns output to the agent loop, and that output then sits in the conversation for the rest
+of the session. Two constraints shape what it may contain, and they turn out to be the same constraint.
+
+**Prompt caching is a byte-exact prefix match.** The render order is `tools`, then `system`, then `messages`,
+and any byte change anywhere in the prefix invalidates everything after it. So a result carrying a memory
+address, a wall-clock timestamp, an elapsed duration, or unsorted dictionary keys does not merely cost tokens
+once: it poisons the cache prefix for every following turn of the session. Determinism is therefore a
+PRECONDITION for a cacheable conversation, not a tidiness preference. Format results explicitly, with fixed
+float precision and sorted keys; never `repr()`.
+
+**The context is not where bulk output belongs.** `count_tokens_approximately` does not understand image
+content and falls back to character counting, so a single 250 KB plot measures about 85,000 tokens against
+an 80,000 budget. What the model needs in order to choose the next step is a compact description, not the
+bytes.
+
+So the runtime returns a deterministic summary, and the raw output stays in the browser workspace:
+
+| Instead of | The conversation carries |
+|---|---|
+| Raw stdout | A capped tail, plus structured facts: variables created, dtype, shape, min, max, mean, NaN count |
+| A PNG | An artifact handle plus deterministic plot metadata: title, axis labels, series count, data ranges |
+| A full traceback | Exception type, message, and the offending line |
+
+Attach real image content blocks only for the MOST RECENT execution and replace older ones with text
+placeholders, because images in the history are bytes in the prefix. Provide a `get_full_output(call_id)`
+tool so the model can pull detail on demand: the common path stays cheap and the rare path stays possible.
+
+**Two caching changes follow.** `CachingLLMWrapper` marks system messages only and takes the default
+5-minute time to live. A request may carry up to FOUR cache breakpoints, so the pattern this design wants is
+one covering tools and system, and a second moving forward over the stable conversation prefix, leaving only
+the recent tail uncached. An explicit `cache_control: {type: "ephemeral", ttl: "1h"}` is also available and
+fits code iteration far better than five minutes, because a person reads a plot and thinks before the next
+step. Cache writes carry a premium; a session with several continuations repays it easily.
+
+**The trap.** `_prepare_messages` runs `trim_messages(strategy="last")` at an 80,000-token budget, and
+trimming drops messages from the FRONT, which changes the prefix and invalidates the whole cache. Trimming
+and prefix caching are in direct conflict. The deterministic summary is what keeps the history small enough
+that trimming is rare, and rare trimming is what makes caching pay. Built the other way around, the cache
+resets every few turns and the feature looks expensive for no visible reason.
+
+**Verify rather than assume.** OSA reaches Anthropic through LiteLLM and OpenRouter, not the Anthropic SDK,
+so whether a one-hour time to live and multiple breakpoints survive that path is empirical. The check is
+`usage.cache_read_input_tokens` across repeated requests: a persistent zero means something upstream is
+dropping the markers. Note also that the minimum cacheable prefix is model-dependent and Haiku 4.5, this
+community's default model, sits at the high end, so a short system prompt may not cache at all; Haiku also
+does not support mid-conversation system messages, which is the clean way to inject an operator instruction
+without breaking a cached prefix.
+
 ## Persistence and the notebook surface
 
 - Workspace layout in browser storage: `/<community>/<session>/scripts/`, `/results/`, `/artifacts/`,
@@ -378,33 +428,19 @@ and optionally a small pure-Python helper package (for NEMAR, a reader that turn
 Added after review. Each item below is a prerequisite that this design silently assumed and that does not
 hold against the deployed code. They are Phase 0: none of Phase 1 works end to end until they are settled.
 
-1. **The turn is hard-aborted at 120 seconds, in two independent places.** The proxy worker passes
-   `AbortSignal.timeout(120000)` to the backend fetch whose body is the SSE stream, and the widget sets its
-   own `AbortSignal.timeout(120000)` on the chat POST. `AbortSignal.timeout` counts from construction, so
-   this is a wall-clock ceiling on the WHOLE turn, not an idle timeout. This is the finding that decided the
-   transport: it makes a parked stream unbuildable, which is why two-run continuation was chosen.
-   **No longer blocking, because two-run parks nothing.** Raising both ceilings to 240 seconds is still
-   worth doing as headroom for a slow run, and it is now an OPTIMIZATION rather than a requirement, which
-   matters because the widget's 120 is baked into SRI-pinned CDN copies that persist in the field: under a
-   parked-stream design those old embeds would have been broken by design, and under two-run they keep
-   working.
+1. **The 120-second abort is no longer a constraint, because two-run parks nothing.** The proxy worker
+   and the widget each pass `AbortSignal.timeout(120000)`, counted from construction, so it is a wall-clock
+   ceiling on a whole request. This is the finding that decided the transport. Under two-run it bounds only
+   a single model streaming response, which is what it bounds today and already works: the browser executes
+   between run 1 and run 2 with NO request open, so neither execution nor the human's approval time is
+   inside any HTTP budget. **Do not raise it.** 120 seconds is enough, and leaving it alone avoids a
+   `wrangler deploy` to two environments and avoids depending on a widget constant that embedders pin by
+   SRI hash and never update.
 
-   **Three clocks, and they must not be conflated.** The note previously used `deadline_s` for two of them.
-   - HTTP request ceiling, 240 s: the worker `REQUEST_TIMEOUT` and the widget `AbortSignal`.
-   - Browser execution budget, `exec_seconds`, about 180 s: Pyodide boot plus execution plus the
-     continuation POST should land inside the provider's prompt-cache window, so it must sit below the HTTP
-     ceiling with room for a cold boot.
-   - Approval or idle deadline, generous, on the order of 15 minutes: this is human reading time and is
-     deliberately OUTSIDE the cache window.
+   Two clocks remain, and they are not the HTTP one. `exec_seconds` is the browser's own execution budget,
+   enforced in the worker. A separate, generous approval or idle deadline covers human reading time. The
+   note previously used `deadline_s` for both; name them apart.
 
-   **The cache window is a cost boundary, not a correctness deadline.** `CachingLLMWrapper` is enabled by
-   default on the live path and documents a 5-minute time to live, refreshed on each hit, applied to SYSTEM
-   messages only. So a continuation landing inside the window keeps the large static system prompt warm,
-   and a chain of executions each under about 4 minutes keeps it warm indefinitely. The conversation history
-   is not cache-marked and is re-billed either way. A continuation that arrives late must still succeed and
-   simply cost more; turning the window into a hard cutoff would convert a cost optimization into a failure
-   mode. Caveat to measure before relying on any of this: the minimum cacheable prompt is 2048 tokens for
-   Haiku 4.5, which is NEMAR's default model, so if the assembled system prompt is smaller, nothing caches.
 2. **The resume endpoint 404s at the edge.** The proxy worker routes by an anchored allowlist whose chat
    matcher is two path segments; `/{community}/chat/resume` has three, matches nothing, and falls through to
    a 404. Phase 1 therefore includes a worker route and a deploy to both environments. The worker forwards
