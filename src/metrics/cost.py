@@ -24,6 +24,11 @@ class ModelRate(NamedTuple):
 # Source: https://openrouter.ai/api/v1/models
 # Last verified: 2026-03
 MODEL_PRICING: dict[str, ModelRate] = {
+    # First-party Anthropic model ids (Claude Platform on AWS, src/core/services/
+    # anthropic_llm.py). Kept alongside the OpenRouter-format keys below, which
+    # BYOK requests through OpenRouter still need.
+    "claude-haiku-4-5": ModelRate(1.00, 5.00),
+    "claude-sonnet-5": ModelRate(2.00, 10.00),
     # Anthropic models
     "anthropic/claude-opus-4.6": ModelRate(5.00, 25.00),
     "anthropic/claude-opus-4.5": ModelRate(5.00, 25.00),
