@@ -19,12 +19,16 @@ provider without changing request routing. ``src/api/config.py``'s
 this module into the agents and routers is Phase 2.
 """
 
+import logging
 from typing import Any
 
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
+from pydantic import field_validator
 
 from src.api.config import Settings, get_settings
+
+logger = logging.getLogger(__name__)
 
 # Default (and cheapest) offered model.
 DEFAULT_MODEL = "claude-haiku-4-5"
@@ -108,7 +112,14 @@ def default_thinking(model: str | None = None, budget: int | None = None) -> dic
             when None.
         budget: Thinking budget in tokens for budget-style (Haiku) models.
             Falls back to ``DEFAULT_THINKING_BUDGET_TOKENS`` when None. A
-            budget of 0 or negative disables thinking for any model.
+            budget of 0 or negative disables thinking for any model by
+            returning None, which omits the ``thinking`` key from the
+            request. Note that omission is only "off" for budget-style
+            models: on adaptive-default models (claude-sonnet-5) an omitted
+            key means the API's own default, which is adaptive thinking
+            turned on. To actually disable thinking on those models, pass
+            ``thinking=None`` to :func:`create_anthropic_llm` instead, which
+            sends ``{"type": "disabled"}`` explicitly.
 
     Returns:
         A thinking configuration dict for the resolved model, or None when
@@ -160,7 +171,7 @@ def _validate_thinking(thinking: dict[str, Any], model: str, max_tokens: int) ->
         raise ValueError(
             f"{model} has no adaptive thinking mode; enable it with "
             '{"type": "enabled", "budget_tokens": N}, disable it with '
-            '{"type": "disabled"}, or leave thinking unset'
+            f'{{"type": "disabled"}}, or leave thinking unset, not {kind!r}'
         )
 
     budget = thinking.get("budget_tokens")
@@ -219,9 +230,14 @@ def create_anthropic_llm(
         max_tokens: Maximum tokens to generate. Defaults to
             ``settings.anthropic_max_output_tokens``.
         thinking: Explicit extended-thinking configuration. Leave unset to
-            get the per-model default from :func:`default_thinking`; pass
-            ``None`` explicitly to disable thinking entirely; pass a dict to
-            fully control it. The accepted shape depends on the model (see
+            get the per-model default from :func:`default_thinking` (on
+            adaptive-default models such as claude-sonnet-5, that default is
+            adaptive thinking turned on); pass ``None`` explicitly to
+            disable thinking entirely, which sends ``{"type": "disabled"}``
+            on adaptive-default models and omits the ``thinking`` key on
+            budget-style models (e.g. claude-haiku-4-5), where an omitted
+            key already means no thinking; pass a dict to fully control it.
+            The accepted shape depends on the model (see
             :func:`_validate_thinking`).
         enable_caching: Return a :class:`CachingChatAnthropic` that applies
             prompt-cache breakpoints (default True).
@@ -239,7 +255,8 @@ def create_anthropic_llm(
         ValueError: If the model is not offered, the cache TTL is not
             supported, or the thinking configuration is not valid for the
             model.
-        RuntimeError: If server mode is used without ANTHROPIC_API_KEY set.
+        RuntimeError: If server mode is used without ANTHROPIC_API_KEY set,
+            or if ANTHROPIC_BASE_URL is set without ANTHROPIC_WORKSPACE_ID.
     """
     resolved_settings = settings or get_settings()
     resolved_model = normalize_model(model)
@@ -257,6 +274,15 @@ def create_anthropic_llm(
     if isinstance(thinking, _Default):
         resolved_thinking = default_thinking(
             resolved_model, resolved_settings.anthropic_thinking_budget_tokens
+        )
+    elif thinking is None:
+        # An omitted `thinking` key is not "off" on adaptive-default models:
+        # the API's own default there is adaptive thinking turned on. Send
+        # an explicit disable so a caller's `None` actually means no
+        # thinking. Budget-style models already treat an omitted key as
+        # off, so leave the key omitted there instead of adding it.
+        resolved_thinking = (
+            {"type": "disabled"} if resolved_model in _ADAPTIVE_THINKING_MODELS else None
         )
     else:
         resolved_thinking = thinking
@@ -279,6 +305,16 @@ def create_anthropic_llm(
         server_key = resolved_settings.anthropic_api_key
         if not server_key:
             raise RuntimeError("ANTHROPIC_API_KEY is not set (server mode requires it)")
+        if resolved_settings.anthropic_base_url and not resolved_settings.anthropic_workspace_id:
+            # A half-configured server mode would otherwise construct fine
+            # and only fail later with an opaque 4xx from AWS: the Claude
+            # Platform on AWS endpoint rejects requests that lack the
+            # anthropic-workspace-id header.
+            raise RuntimeError(
+                "ANTHROPIC_BASE_URL is set but ANTHROPIC_WORKSPACE_ID is not; the "
+                "Claude Platform on AWS endpoint rejects requests without the "
+                "anthropic-workspace-id header"
+            )
         kwargs["api_key"] = server_key
         if resolved_settings.anthropic_base_url:
             kwargs["base_url"] = resolved_settings.anthropic_base_url
@@ -337,10 +373,33 @@ class CachingChatAnthropic(ChatAnthropic):
     ``tests/test_core/test_anthropic_llm.py`` asserts the payload shape
     directly, to fail loudly on an incompatible upgrade instead of silently
     caching nothing.
+
+    Breakpoint budget: Anthropic allows at most 4 ``cache_control`` markers
+    per request. This override adds at most 2 per call (one on the system
+    block, one on the trailing message block; the parent stops after the
+    first eligible message block it finds), and markers never carry forward
+    across turns because ``_format_messages`` rebuilds every block dict from
+    scratch on each call. That leaves headroom of at least 2 markers per
+    request for Phase 2 to place its own breakpoints.
     """
 
     cache_ttl: str = DEFAULT_CACHE_TTL
     """Prompt-cache lifetime for cache_control markers ("5m" or "1h")."""
+
+    @field_validator("cache_ttl")
+    @classmethod
+    def _check_cache_ttl(cls, value: str) -> str:
+        """Enforce the supported TTL set on the class itself.
+
+        ``create_anthropic_llm`` already checks this, but that check is
+        bypassed by constructing ``CachingChatAnthropic`` directly, so the
+        invariant is duplicated here on the field to travel with the type.
+        """
+        if value not in CACHE_TTLS:
+            raise ValueError(
+                f"Unsupported prompt cache TTL {value!r}. Supported: {', '.join(CACHE_TTLS)}"
+            )
+        return value
 
     def _cache_control_marker(self) -> dict[str, str]:
         """Build the cache_control dict for this instance's TTL."""
@@ -374,6 +433,18 @@ class CachingChatAnthropic(ChatAnthropic):
         kwargs.setdefault("cache_control", cache_marker)
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
 
+        if not self._message_cache_control_landed(payload):
+            # The parent silently drops the cache_control kwarg when there
+            # is no eligible message block (its own source comment says so).
+            # That turns caching into a permanent, invisible cost leak, so
+            # make it visible instead.
+            logger.warning(
+                "Prompt cache breakpoint did not land on any message block for "
+                "this request; the parent ChatAnthropic._get_request_payload "
+                "silently drops cache_control when no eligible block exists, so "
+                "this call will not benefit from prompt caching."
+            )
+
         system = payload.get("system")
         if isinstance(system, str) and system:
             payload["system"] = [{"type": "text", "text": system, "cache_control": cache_marker}]
@@ -381,7 +452,37 @@ class CachingChatAnthropic(ChatAnthropic):
             already_cached = any(
                 isinstance(block, dict) and "cache_control" in block for block in system
             )
-            if not already_cached and isinstance(system[-1], dict):
-                system[-1]["cache_control"] = cache_marker
+            if not already_cached:
+                if isinstance(system[-1], dict):
+                    # Build a new list/dict instead of mutating system[-1] in
+                    # place: _format_messages reuses the caller's own dict
+                    # objects for list-content system messages, so an
+                    # in-place assignment here would mutate the caller's
+                    # SystemMessage and leak this instance's TTL into a
+                    # later request built from the same message object.
+                    payload["system"] = [
+                        *system[:-1],
+                        {**system[-1], "cache_control": cache_marker},
+                    ]
+                else:
+                    # Defensive: _format_messages always normalizes list
+                    # system content to dicts today, but guard against a
+                    # future change that stops doing so.
+                    logger.warning(
+                        "Could not place the system prompt cache breakpoint: "
+                        "the last system content block is a %s, not a dict.",
+                        type(system[-1]).__name__,
+                    )
 
         return payload
+
+    @staticmethod
+    def _message_cache_control_landed(payload: dict) -> bool:
+        """Check whether a cache_control marker landed on a message block."""
+        for message in payload.get("messages", []):
+            content = message.get("content")
+            if isinstance(content, list) and any(
+                isinstance(block, dict) and "cache_control" in block for block in content
+            ):
+                return True
+        return False
