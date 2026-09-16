@@ -2,12 +2,19 @@
 
 This module targets the Claude Platform on AWS: an Anthropic-operated
 Messages API billed through AWS Marketplace, NOT Amazon Bedrock. Server-mode
-requests require three environment variables, read here through
+requests read three environment variables here through
 :class:`~src.api.config.Settings`:
 
     ANTHROPIC_API_KEY       long-lived key from AWS Console -> Claude Platform
     ANTHROPIC_BASE_URL      the AWS-hosted Messages API endpoint
     ANTHROPIC_WORKSPACE_ID  workspace the key is authorized on
+
+Only ``ANTHROPIC_API_KEY`` is strictly required. ``ANTHROPIC_BASE_URL`` and
+``ANTHROPIC_WORKSPACE_ID`` are each optional on their own (omitting both
+falls back to the first-party client default), but a base URL without a
+workspace id is rejected at construction time: the AWS endpoint requires the
+``anthropic-workspace-id`` header, so that combination would otherwise
+construct fine and only fail later with an opaque 4xx from AWS.
 
 A caller-supplied (BYOK) Anthropic key is not authorized on that AWS
 workspace, so BYOK requests go to the first-party API (api.anthropic.com)
@@ -323,10 +330,11 @@ def create_anthropic_llm(
                 "anthropic-workspace-id": resolved_settings.anthropic_workspace_id
             }
 
-    # Claude 5-generation models only accept temperature 1 (the implicit
-    # value when the field is omitted), and reject any temperature at all
-    # once thinking is enabled, so it is only forwarded for models that
-    # still take free-form sampling params, and only when thinking is off.
+    # claude-sonnet-5 rejects any non-default temperature/top_p/top_k with a
+    # 400 unconditionally, whether or not thinking is on, which is why it is
+    # not in _SAMPLING_MODELS. claude-haiku-4-5 does accept temperature, but
+    # not while extended thinking is on, so it is only forwarded for models
+    # in _SAMPLING_MODELS, and only when thinking is off.
     if resolved_model in _SAMPLING_MODELS and not thinking_on and temperature is not None:
         kwargs["temperature"] = temperature
 

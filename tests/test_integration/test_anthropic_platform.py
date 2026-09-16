@@ -68,7 +68,17 @@ class TestHaikuDefaultThinking:
         assert response.usage_metadata["output_tokens"] > 0
 
     def test_tool_call_round_trip_with_thinking_on(self) -> None:
-        """Tool calls plus extended thinking: the old LiteLLM wrapper could not do this."""
+        """Tool calls plus extended thinking, through the same bound object.
+
+        The old LiteLLM wrapper's public invoke()/bind_tools() path would
+        have worked; what actually broke was its _generate()/_agenerate()
+        delegating to self.llm._generate(), which raises AttributeError once
+        bind_tools() has replaced self.llm with a RunnableBinding (a
+        RunnableBinding does not expose _generate). CachingChatAnthropic
+        avoids that failure mode entirely (see its class docstring), and
+        this test exercises the same bind_tools() -> invoke() path to prove
+        it end to end against the live endpoint.
+        """
         llm = create_anthropic_llm(model="claude-haiku-4-5")
         bound = llm.bind_tools([get_secret_number])
 

@@ -80,8 +80,10 @@ class Settings(BaseSettings):
     )
     anthropic_workspace_id: str | None = Field(
         default=None,
-        description="ANTHROPIC_WORKSPACE_ID: AWS Marketplace workspace id sent as the "
-        "anthropic-workspace-id header on server-mode requests",
+        description="ANTHROPIC_WORKSPACE_ID: Claude Platform on AWS workspace id "
+        "(format 'wrkspc_...') sent as the anthropic-workspace-id header on "
+        "server-mode requests. AWS Marketplace is only the billing channel; "
+        "the workspace itself is an Anthropic-operated resource.",
     )
     anthropic_thinking_budget_tokens: int = Field(
         default=2048,
