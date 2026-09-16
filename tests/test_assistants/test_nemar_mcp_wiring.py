@@ -75,7 +75,8 @@ class TestNemarToolLoading:
         # `_load_mcp_tools` does not touch instance state, so it can be exercised
         # without standing up a model -- and it is the exact method the
         # constructor calls.
-        tools = CommunityAssistant._load_mcp_tools(None, _nemar_config())  # type: ignore[arg-type]
+        tools, degraded = CommunityAssistant._load_mcp_tools(None, _nemar_config())  # type: ignore[arg-type]
+        assert degraded == []
         assert {t.name for t in tools} == {
             "nemar_search_datasets",
             "nemar_describe_dataset",
@@ -88,11 +89,26 @@ class TestNemarToolLoading:
     def test_every_prompt_named_tool_actually_exists(self) -> None:
         """The check that matters: no gap between what the prompt promises and
         what the server provides."""
-        tools = CommunityAssistant._load_mcp_tools(None, _nemar_config())  # type: ignore[arg-type]
+        tools, _ = CommunityAssistant._load_mcp_tools(None, _nemar_config())  # type: ignore[arg-type]
         available = {t.name for t in tools}
         prompt = _nemar_config().system_prompt
-        named = {name for name in available if name in prompt}
-        # Every tool the prompt names is available...
-        assert named <= available
-        # ...and the prompt really does name the ladder, not just one of them.
-        assert len(named) >= 6
+
+        # Against an EXPLICIT literal, not a set derived from `available`. The
+        # previous form built `named` by filtering `available`, so `named <=
+        # available` was true by construction and could never fail.
+        expected = {
+            "nemar_search_datasets",
+            "nemar_describe_dataset",
+            "nemar_list_recordings",
+            "nemar_get_events",
+            "nemar_render_overview",
+            "nemar_read_window",
+        }
+        missing_from_server = expected - available
+        assert not missing_from_server, (
+            f"prompt names tools the server does not serve: {missing_from_server}"
+        )
+        missing_from_prompt = {name for name in expected if name not in prompt}
+        assert not missing_from_prompt, (
+            f"server tools the prompt never names: {missing_from_prompt}"
+        )

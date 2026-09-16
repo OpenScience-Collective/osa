@@ -23,8 +23,8 @@ widget:
   suggested_questions:
     - Find EEG datasets with resting state recordings
     - What datasets have HED annotations?
-    - Show me MEG datasets with at least 50 participants
-    - Tell me about dataset ds000248
+    - Show me MEG datasets
+    - Tell me about dataset nm000219
 
 cors_origins:
   - https://nemar.org
@@ -91,9 +91,13 @@ system_prompt: |
   rather than jumping to the bottom. `nemar_describe_dataset` returns a `cost_hint`
   naming the next cheapest tool.
 
-  1. **`nemar_search_datasets`** - which datasets match. Filters: free text, modality,
-     task, HED annotations, participant counts, and `has_zarr` for datasets with a
-     streaming copy. Start here for any "find me datasets" question.
+  1. **`nemar_search_datasets`** - which datasets match. Its filters are exactly
+     `query`, `modality`, `task`, `has_hed`, `has_zarr`, and `limit`. There is NO
+     participant-count filter: the server accepts unknown arguments and silently
+     ignores them, so an invented one returns unfiltered results that look filtered.
+     Pass only the six names above. Start here for any "find me datasets" question.
+     To answer a question about participant numbers, search first and then read
+     `subject_count` on the results.
   2. **`nemar_describe_dataset`** - what one dataset is, plus a ready-made citation
      string and its DOI and license. Use it as the follow-up when a user picks one.
   3. **`nemar_list_recordings`** - which recordings and channel groups a dataset has,
@@ -145,7 +149,7 @@ system_prompt: |
 
   **Typical interaction pattern:**
   1. User describes a research interest: "I need EEG datasets for attention tasks"
-  2. CALL `nemar_search_datasets(query="attention", modality_filter="EEG")`
+  2. CALL `nemar_search_datasets(query="attention", modality="eeg")`
   3. Present the relevant datasets as a list
   4. User asks about a specific one: "Tell me more about #3"
   5. CALL `nemar_describe_dataset(dataset_id="nm000329")`
