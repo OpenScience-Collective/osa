@@ -10,6 +10,7 @@ Features:
 - Recent GitHub activity listing (if repos configured)
 - Paper search (if citations configured)
 - Python plugin tools (if extensions configured)
+- MCP server tools (if extensions configure an MCP server)
 """
 
 import importlib
@@ -150,6 +151,7 @@ class CommunityAssistant(ToolAgent):
     - Recent GitHub activity listing (if repos configured)
     - Paper search (if citations configured)
     - Python plugin tools (if extensions configured)
+    - MCP server tools (if extensions configure an MCP server)
 
     Args:
         model: The language model to use.
@@ -203,6 +205,13 @@ class CommunityAssistant(ToolAgent):
         # Load plugin tools from extensions
         plugin_tools = self._load_plugin_tools(config)
         tools.extend(plugin_tools)
+
+        # Load tools served by configured MCP servers. Same contract as the
+        # plugin loader above: log and continue on failure, never raise out of
+        # this constructor. An assistant that cannot start because someone
+        # else's host is down is worse than one missing a few tools.
+        mcp_tools = self._load_mcp_tools(config)
+        tools.extend(mcp_tools)
 
         # Generate system prompt
         system_prompt = self._build_system_prompt(config, additional_instructions)
@@ -298,6 +307,33 @@ class CommunityAssistant(ToolAgent):
                 logger.error("Failed to import plugin %s: %s", plugin.module, e)
             except Exception as e:
                 logger.error("Error loading plugin %s: %s", plugin.module, e)
+
+        return all_tools
+
+    def _load_mcp_tools(self, config: CommunityConfig) -> list[BaseTool]:
+        """Load tools from configured Model Context Protocol (MCP) servers.
+
+        Deliberately shaped exactly like `_load_plugin_tools`: a failure is
+        logged and skipped, and this never raises. `discover_mcp_tools` already
+        swallows per-server failures, so the try here covers the import itself --
+        `mcp` lives in the `server` extra, and a CLI-only install must not break
+        on it.
+        """
+        all_tools: list[BaseTool] = []
+
+        if not config.extensions or not config.extensions.mcp_servers:
+            return all_tools
+
+        try:
+            from src.tools.mcp_client import discover_mcp_tools
+        except ImportError as e:
+            logger.error("MCP support unavailable (install the server extra): %s", e)
+            return all_tools
+
+        for server in config.extensions.mcp_servers:
+            server_tools = discover_mcp_tools(server)
+            logger.info("Loaded %d tools from MCP server %s", len(server_tools), server.name)
+            all_tools.extend(server_tools)
 
         return all_tools
 
