@@ -441,16 +441,18 @@ class CachingChatAnthropic(ChatAnthropic):
         kwargs.setdefault("cache_control", cache_marker)
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
 
-        if not self._message_cache_control_landed(payload):
-            # The parent silently drops the cache_control kwarg when there
-            # is no eligible message block (its own source comment says so).
-            # That turns caching into a permanent, invisible cost leak, so
-            # make it visible instead.
+        if not self._conversation_cache_control_landed(payload):
+            # Caching can fail quietly in two ways, and both are permanent,
+            # invisible cost leaks rather than errors: on transports that
+            # expand the kwarg into block-level markers the parent drops it
+            # when no eligible block exists (its own source comment says so),
+            # and any future release that stops honoring the kwarg entirely
+            # would look identical. Make it visible instead.
             logger.warning(
-                "Prompt cache breakpoint did not land on any message block for "
-                "this request; the parent ChatAnthropic._get_request_payload "
-                "silently drops cache_control when no eligible block exists, so "
-                "this call will not benefit from prompt caching."
+                "Prompt cache breakpoint did not land for this request, neither "
+                "as a top-level cache_control parameter nor on any message "
+                "block, so this call will not benefit from conversation prompt "
+                "caching."
             )
 
         system = payload.get("system")
@@ -485,8 +487,18 @@ class CachingChatAnthropic(ChatAnthropic):
         return payload
 
     @staticmethod
-    def _message_cache_control_landed(payload: dict) -> bool:
-        """Check whether a cache_control marker landed on a message block."""
+    def _conversation_cache_control_landed(payload: dict) -> bool:
+        """Check whether the conversation cache breakpoint was requested.
+
+        Two shapes count, because langchain-anthropic places the breakpoint
+        differently depending on the transport. Against the direct Anthropic
+        API it forwards `cache_control` as a top-level request parameter and
+        lets the API attach the breakpoint to the last cacheable block; on
+        transports that do not accept that parameter (Bedrock, for example)
+        it expands the kwarg into a block-level marker instead.
+        """
+        if payload.get("cache_control"):
+            return True
         for message in payload.get("messages", []):
             content = message.get("content")
             if isinstance(content, list) and any(

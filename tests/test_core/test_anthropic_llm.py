@@ -51,8 +51,12 @@ def _settings(**overrides: object) -> Settings:
 
 
 def _count_cache_control(payload: dict) -> int:
-    """Count cache_control markers anywhere in a request payload."""
-    count = 0
+    """Count cache_control markers anywhere in a request payload.
+
+    A top-level cache_control parameter counts as one, since it asks the
+    API for exactly one breakpoint on the last cacheable block.
+    """
+    count = 1 if payload.get("cache_control") else 0
     system = payload.get("system")
     if isinstance(system, list):
         count += sum(1 for block in system if isinstance(block, dict) and "cache_control" in block)
@@ -358,14 +362,28 @@ class TestCachingChatAnthropicPayload:
         assert system[-1]["type"] == "text"
         assert system[-1]["cache_control"] == {"type": "ephemeral"}
 
-    def test_trailing_message_gets_cache_breakpoint(self) -> None:
+    def test_conversation_gets_a_cache_breakpoint(self) -> None:
+        """The conversation prefix is marked for caching, in either shape.
+
+        Against the direct Anthropic API, langchain-anthropic forwards
+        cache_control as a top-level request parameter and the API attaches
+        the breakpoint to the last cacheable block. On a transport that does
+        not accept that parameter it expands the kwarg into a block-level
+        marker instead. Either satisfies the intent, so assert the intent
+        rather than one library's placement, and fail when neither happened.
+        """
         llm = self._llm()
         payload = llm._get_request_payload(
             [SystemMessage(content="You are a helpful assistant."), HumanMessage(content="Hi")]
         )
+        top_level = payload.get("cache_control")
         last_message_content = payload["messages"][-1]["content"]
-        assert isinstance(last_message_content, list)
-        assert last_message_content[-1]["cache_control"] == {"type": "ephemeral"}
+        block_level = isinstance(last_message_content, list) and any(
+            isinstance(block, dict) and "cache_control" in block for block in last_message_content
+        )
+        assert top_level == {"type": "ephemeral"} or block_level, (
+            f"No conversation cache breakpoint in either shape: payload={payload!r}"
+        )
 
     def test_total_cache_control_markers_within_anthropic_limit(self) -> None:
         llm = self._llm()
@@ -380,9 +398,21 @@ class TestCachingChatAnthropicPayload:
         payload = llm._get_request_payload(
             [SystemMessage(content="sys"), HumanMessage(content="hi")]
         )
-        assert payload["system"][-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+        expected = {"type": "ephemeral", "ttl": "1h"}
+        assert payload["system"][-1]["cache_control"] == expected
+        # The conversation breakpoint carries the same TTL, wherever the
+        # library places it (top-level parameter or block-level marker).
         last_message_content = payload["messages"][-1]["content"]
-        assert last_message_content[-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+        block_markers = (
+            [
+                block["cache_control"]
+                for block in last_message_content
+                if isinstance(block, dict) and "cache_control" in block
+            ]
+            if isinstance(last_message_content, list)
+            else []
+        )
+        assert payload.get("cache_control") == expected or expected in block_markers
 
     def test_tool_bound_model_still_caches(self) -> None:
         """bind_tools() must not bypass caching (the bug the subclass avoids)."""
