@@ -380,12 +380,28 @@ Attach real image content blocks only for the MOST RECENT execution and replace 
 placeholders, because images in the history are bytes in the prefix. Provide a `get_full_output(call_id)`
 tool so the model can pull detail on demand: the common path stays cheap and the rare path stays possible.
 
-**Two caching changes follow.** `CachingLLMWrapper` marks system messages only and takes the default
-5-minute time to live. A request may carry up to FOUR cache breakpoints, so the pattern this design wants is
-one covering tools and system, and a second moving forward over the stable conversation prefix, leaving only
-the recent tail uncached. An explicit `cache_control: {type: "ephemeral", ttl: "1h"}` is also available and
-fits code iteration far better than five minutes, because a person reads a plot and thinks before the next
-step. Cache writes carry a premium; a session with several continuations repays it easily.
+**The breakpoint should move past the system block.** `CachingLLMWrapper` marks system messages only. A
+request may carry up to FOUR cache breakpoints, so the pattern this design wants is one covering tools and
+system, and a second moving forward over the stable conversation prefix, leaving only the recent tail
+uncached.
+
+**Ship on the default 5-minute time to live, and instrument the gap before considering an hour.** Reads cost
+about 0.1x base input; writes cost 1.25x at five minutes and 2x at one hour, so the five-minute TTL breaks
+even at two requests and the one-hour needs three or more. The lifetime is measured from the START of the
+request that writes or reads the entry, and generation time counts against it, so run 1's own generation eats
+the window before the browser begins. The decision therefore turns on one unknown: the start-to-start gap
+between run 1 and run 2. Under five minutes, the default is strictly cheaper and every continuation refreshes
+it. Between five and sixty minutes is the only window where the doubled write price pays. Beyond an hour,
+neither helps. Nobody can know that distribution before the feature exists, and getting it wrong costs money
+rather than correctness, so it is a knob to turn on evidence, not a design commitment.
+
+**A server-side keep-alive is the better middle option.** While a call is pending the server knows it is
+pending, so it can re-send the previous request with `max_tokens: 0` just under five minutes: that refreshes
+the timer and bills a cache read instead of a 2x write. The one-hour premium is 0.75x extra on the write and
+each keep-alive is about 0.1x, so keep-alives win up to roughly seven of them, about 35 minutes of idle.
+It must be server-side: a client-driven keep-alive would consume the proxy worker's per-IP budget of 10 per
+minute and 20 per hour, while a server-side one never reaches it. Cache reads also do not count toward
+input-token rate limits on most models.
 
 **The trap.** `_prepare_messages` runs `trim_messages(strategy="last")` at an 80,000-token budget, and
 trimming drops messages from the FRONT, which changes the prefix and invalidates the whole cache. Trimming
@@ -393,13 +409,28 @@ and prefix caching are in direct conflict. The deterministic summary is what kee
 that trimming is rare, and rare trimming is what makes caching pay. Built the other way around, the cache
 resets every few turns and the feature looks expensive for no visible reason.
 
-**Verify rather than assume.** OSA reaches Anthropic through LiteLLM and OpenRouter, not the Anthropic SDK,
-so whether a one-hour time to live and multiple breakpoints survive that path is empirical. The check is
-`usage.cache_read_input_tokens` across repeated requests: a persistent zero means something upstream is
-dropping the markers. Note also that the minimum cacheable prefix is model-dependent and Haiku 4.5, this
-community's default model, sits at the high end, so a short system prompt may not cache at all; Haiku also
-does not support mid-conversation system messages, which is the clean way to inject an operator instruction
-without breaking a cached prefix.
+**This work belongs with the Claude Platform on AWS migration (#360), not beside it.** That epic retires the
+OpenRouter platform route and serves communities directly, which removes the open question of whether
+`cache_control` survives LiteLLM and OpenRouter; its phase 1 already owns "prompt caching that survives tool
+binding", which is exactly the `CachingLLMWrapper` and `bind_tools` nesting problem. Building conversation
+caching against the path being retired would be building it twice.
+
+Three consequences of that epic for this design:
+- Prompt caching at both the 5-minute and 1-hour time to live IS available on Claude Platform on AWS, so
+  there is no availability constraint on any of the above.
+- The offered models narrow to `claude-haiku-4-5` (default, explicit 2048-token thinking budget) and
+  `claude-sonnet-5`. NEITHER supports mid-conversation system messages, which are an Opus 5, Opus 4.8,
+  Fable and Mythos feature. Operator instructions therefore stay in the top-level system block, and changing
+  one resets the cache. Do not design an operator channel that assumes otherwise.
+- Cache diagnostics is a first-party API beta and is NOT on Claude Platform on AWS. Verification runs through
+  `usage.cache_read_input_tokens` and the `usage.cache_creation` breakdown, which splits by time to live
+  (`ephemeral_5m_input_tokens` and `ephemeral_1h_input_tokens`) and is the right instrument for the TTL
+  decision above. A persistent zero read count means a silent invalidator is at work.
+
+One thing to confirm early: the minimum cacheable prefix is model-dependent, between 512 and 4096 tokens, and
+Haiku 4.5 sits at the high end, so measure whether the assembled system prompt clears the floor at all.
+Haiku's explicit thinking budget also puts thinking blocks in the history, where they become part of the
+prefix, which is a further reason the result format must be deterministic.
 
 ## Persistence and the notebook surface
 
