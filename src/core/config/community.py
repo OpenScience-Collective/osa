@@ -577,19 +577,34 @@ class AgentConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     model: str
-    """Model identifier in OpenRouter format (creator/model-name)."""
+    """Model identifier: one of the offered Claude models.
+
+    FAQ generation runs on the Claude Platform on AWS, so this must resolve
+    through ``MODEL_ALIASES`` to an entry in ``OFFERED_MODELS``
+    (``claude-haiku-4-5`` or ``claude-sonnet-5``). Legacy OpenRouter-style ids
+    such as "anthropic/claude-haiku-4.5" still resolve; anything else raises
+    at run time when the agent is built.
+    """
 
     provider: str | None = None
-    """Provider routing preference (e.g., 'Anthropic', 'DeepInfra/FP8').
+    """Deprecated OpenRouter routing hint; ignored.
 
-    Provider format examples:
-    - 'Anthropic' - Direct Anthropic API for best performance
-    - 'DeepInfra/FP8' - DeepInfra with FP8 (8-bit) quantization for cost reduction
-    - 'Cerebras' - Cerebras for ultra-fast inference
+    This selected among OpenRouter's upstream hosts ('Anthropic',
+    'DeepInfra/FP8', 'Cerebras'). The Claude Platform on AWS has no routing
+    layer, so the field has no effect. It is still accepted so existing
+    config.yaml files keep loading, and
+    ``faq_summarizer._warn_if_provider_ignored`` logs a warning when one is
+    set, rather than dropping it silently.
     """
 
     temperature: float = Field(default=0.1, ge=0.0, le=2.0)
-    """Sampling temperature for model responses."""
+    """Sampling temperature for model responses.
+
+    Only honored on models that still accept sampling parameters
+    (``claude-haiku-4-5``). ``claude-sonnet-5`` rejects ``temperature``, so it
+    is not forwarded there; see ``_SAMPLING_MODELS`` in
+    src/core/services/anthropic_llm.py.
+    """
 
     enable_caching: bool = True
     """Enable prompt caching to reduce costs."""
@@ -710,15 +725,25 @@ class FAQGenerationConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_agent_roles(self) -> "FAQGenerationConfig":
-        """Warn if agent configurations don't match their intended roles."""
+        """Warn if agent configurations don't match their intended roles.
+
+        The two-agent split exists so the thousands of scoring calls run on
+        something cheap and only the few hundred surviving threads pay for
+        quality. Two models on the Claude Platform means the wasteful shape is
+        specifically "score everything with the expensive one": using
+        ``claude-haiku-4-5`` for both is now the cheapest valid configuration,
+        so warning about any repeated model would fire on the recommended
+        setup.
+        """
         import warnings
 
-        # Check if the same model is used for both (which defeats the purpose)
-        if self.evaluation_agent.model == self.summary_agent.model:
-            # This might be intentional for small communities, so warn rather than error
+        expensive = "claude-sonnet-5"
+        if self.evaluation_agent.model == expensive:
             warnings.warn(
-                f"Both agents use the same model ({self.evaluation_agent.model}). "
-                "Consider using a faster/cheaper model for evaluation_agent to reduce costs.",
+                f"evaluation_agent uses {expensive}, which scores every thread at the "
+                "higher rate and defeats the two-agent cost split. Use "
+                "claude-haiku-4-5 for evaluation and reserve the more capable model "
+                "for summary_agent.",
                 UserWarning,
                 stacklevel=2,
             )
@@ -1092,22 +1117,26 @@ class CommunityConfig(BaseModel):
     """
 
     default_model: str | None = None
-    """Default LLM model for this community (OpenRouter format: creator/model-name).
+    """Default LLM model for this community: one of the offered Claude models.
 
     If specified, overrides the platform-level default_model for this community.
-    Allows communities to use models better suited to their domain.
+    Must resolve through ``MODEL_ALIASES`` to an entry in ``OFFERED_MODELS``
+    (``claude-haiku-4-5`` or ``claude-sonnet-5``); legacy OpenRouter-style ids
+    such as "anthropic/claude-haiku-4.5" still resolve.
 
     Example:
-        default_model: "anthropic/claude-3.5-sonnet"
+        default_model: "claude-haiku-4-5"
 
     If not specified, uses the platform-level default from Settings.
     """
 
     default_model_provider: str | None = None
-    """Provider routing preference for the default model (e.g., "Cerebras", "Together").
+    """OpenRouter-only routing hint (e.g., "Cerebras", "DeepInfra/FP8").
 
-    Specifies where the model should run for optimal performance.
-    Only applies if default_model is also specified.
+    Selects among OpenRouter's upstream hosts, and so only has an effect on a
+    request that goes through OpenRouter: a caller's own OpenRouter key, or
+    ``openrouter_api_key_env_var`` on this community. The Claude Platform on
+    AWS has no routing layer and ignores it.
 
     Example:
         default_model_provider: "Cerebras"

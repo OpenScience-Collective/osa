@@ -518,3 +518,86 @@ class TestLLMResponseVariations:
 
         score = _score_thread_quality("Test thread context", mock_model)
         assert score == 0.85
+
+
+class TestFAQGenerationRunsOnTheClaudePlatform:
+    """FAQ generation used to be a server-side route to OpenRouter.
+
+    It ran from the sync scheduler with no caller and no BYOK key, so the
+    platform needed its own OPENROUTER_API_KEY for the feature to work at all.
+    These tests hold the route closed. They use real registry data and the
+    real model resolver rather than a stubbed LLM, so a regression shows up as
+    a failure here rather than as an unexpected OpenRouter bill.
+    """
+
+    def test_shipped_faq_configs_name_offered_claude_models(self) -> None:
+        """Every faq_generation agent must resolve to an offered Claude model.
+
+        Dynamic over the registry, so a community added later cannot quietly
+        reintroduce a model the Claude Platform will not serve. This is the
+        assertion that fails against the pre-migration config: eeglab's
+        evaluation agent was qwen/qwen3-235b-a22b-2507, which normalize_model
+        rejects.
+        """
+        from src.assistants import discover_assistants, registry
+        from src.core.services.anthropic_llm import OFFERED_MODELS, normalize_model
+
+        registry._assistants.clear()
+        discover_assistants()
+
+        checked = 0
+        for community_id in registry._assistants:
+            config = registry.get_community_config(community_id)
+            faq_config = getattr(config, "faq_generation", None)
+            if not faq_config:
+                continue
+            for role in ("evaluation_agent", "summary_agent"):
+                agent = getattr(faq_config, role)
+                resolved = normalize_model(agent.model)
+                assert resolved in OFFERED_MODELS, (
+                    f"{community_id}.faq_generation.{role}.model={agent.model!r} "
+                    f"resolves to {resolved!r}, which is not offered"
+                )
+                checked += 1
+
+        assert checked, "No community ships a faq_generation config; this test proved nothing"
+
+    def test_summarizer_does_not_reach_for_the_openrouter_factory(self) -> None:
+        """The module must not name create_openrouter_llm at all.
+
+        Asserted against the source text because the import is function-local:
+        there is no module attribute to inspect, and importing the symbol back
+        would not tell us whether summarize_threads calls it.
+        """
+        from pathlib import Path
+
+        import src.knowledge.faq_summarizer as summarizer
+
+        source = Path(summarizer.__file__).read_text()
+        assert "create_openrouter_llm" not in source
+        assert "create_anthropic_llm" in source
+
+    def test_provider_hint_is_reported_rather_than_dropped(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A stale provider hint has no effect, so it has to be said out loud.
+
+        A community that set DeepInfra/FP8 for cost reasons would otherwise
+        find out from a bill.
+        """
+        from src.knowledge.faq_summarizer import _warn_if_provider_ignored
+
+        with caplog.at_level("WARNING"):
+            _warn_if_provider_ignored("DeepInfra/FP8", "evaluation_agent", "eeglab")
+
+        assert "DeepInfra/FP8" in caplog.text
+        assert "evaluation_agent" in caplog.text
+        assert "eeglab" in caplog.text
+
+    def test_absent_provider_hint_is_silent(self, caplog: pytest.LogCaptureFixture) -> None:
+        from src.knowledge.faq_summarizer import _warn_if_provider_ignored
+
+        with caplog.at_level("WARNING"):
+            _warn_if_provider_ignored(None, "summary_agent", "eeglab")
+
+        assert caplog.text == ""

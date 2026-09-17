@@ -6,6 +6,7 @@ Tests cover:
 - Config serialization
 """
 
+import warnings
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
@@ -1704,3 +1705,54 @@ class TestCostManipulationProtection:
                 # No BYOK - should work for cheaper models
             )
             assert config.default_model == model
+
+
+class TestFAQAgentRoleWarning:
+    """The two-agent split only saves money if scoring runs on the cheap model.
+
+    With two offered Claude models, the wasteful shape is specifically
+    "evaluate everything with the expensive one". The old check warned whenever
+    both agents named the same model, which now fires on the recommended
+    setup: claude-haiku-4-5 for both is the cheapest valid configuration.
+    """
+
+    @staticmethod
+    def _faq_config(evaluation_model: str, summary_model: str) -> dict:
+        return {
+            "evaluation_agent": {"model": evaluation_model, "temperature": 0.0},
+            "summary_agent": {"model": summary_model, "temperature": 0.1},
+        }
+
+    def test_haiku_for_both_agents_is_not_warned_about(self) -> None:
+        from src.core.config.community import FAQGenerationConfig
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            config = FAQGenerationConfig(**self._faq_config("claude-haiku-4-5", "claude-haiku-4-5"))
+
+        assert config.evaluation_agent.model == "claude-haiku-4-5"
+
+    def test_expensive_evaluation_agent_is_warned_about(self) -> None:
+        from src.core.config.community import FAQGenerationConfig
+
+        with pytest.warns(UserWarning, match="evaluation_agent uses claude-sonnet-5"):
+            FAQGenerationConfig(**self._faq_config("claude-sonnet-5", "claude-sonnet-5"))
+
+    def test_expensive_summary_agent_alone_is_fine(self) -> None:
+        """Paying more for the few hundred surviving threads is the intended shape."""
+        from src.core.config.community import FAQGenerationConfig
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            FAQGenerationConfig(**self._faq_config("claude-haiku-4-5", "claude-sonnet-5"))
+
+    def test_provider_field_still_loads_for_backward_compatibility(self) -> None:
+        """An existing config.yaml carrying a stale provider hint must not fail
+        to load; faq_summarizer logs that it is ignored instead."""
+        from src.core.config.community import FAQGenerationConfig
+
+        config = FAQGenerationConfig(
+            evaluation_agent={"model": "claude-haiku-4-5", "provider": "DeepInfra/FP8"},
+            summary_agent={"model": "claude-haiku-4-5", "provider": "Anthropic"},
+        )
+        assert config.evaluation_agent.provider == "DeepInfra/FP8"

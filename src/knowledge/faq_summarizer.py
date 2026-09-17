@@ -297,6 +297,31 @@ def estimate_summarization_cost(
         }
 
 
+def _warn_if_provider_ignored(provider: str | None, agent_role: str, project: str) -> None:
+    """Log when a community's ``provider`` routing hint has no effect.
+
+    ``provider`` selects among OpenRouter's upstream hosts (DeepInfra, Cerebras
+    and so on). The Claude Platform on AWS has no routing layer, so the field
+    is silently inert here. A community that set it deliberately, to get FP8
+    quantization for cost reasons for instance, should hear that it stopped
+    applying rather than discover it in a bill.
+
+    Args:
+        provider: The configured provider hint, if any.
+        agent_role: "evaluation_agent" or "summary_agent", for the message.
+        project: Community ID, for the message.
+    """
+    if provider:
+        logger.warning(
+            "faq_generation.%s.provider=%r is ignored for %s: FAQ generation runs on "
+            "the Claude Platform on AWS, which has no provider routing. Remove the "
+            "field from config.yaml.",
+            agent_role,
+            provider,
+            project,
+        )
+
+
 def summarize_threads(
     list_name: str,
     project: str = "eeglab",
@@ -322,31 +347,36 @@ def summarize_threads(
     """
     # Load community config for FAQ generation settings
     from src.assistants import registry
-    from src.core.services.litellm_llm import create_openrouter_llm
+    from src.core.services.anthropic_llm import create_anthropic_llm, normalize_model
 
     config = registry.get_community_config(project)
     faq_config = config.faq_generation if config else None
 
     # Use config-based models or fall back to defaults
     if faq_config:
+        _warn_if_provider_ignored(faq_config.evaluation_agent.provider, "evaluation_agent", project)
+        _warn_if_provider_ignored(faq_config.summary_agent.provider, "summary_agent", project)
+
         # Evaluation agent (for scoring quality)
-        eval_agent = create_openrouter_llm(
+        eval_agent = create_anthropic_llm(
             model=faq_config.evaluation_agent.model,
-            provider=faq_config.evaluation_agent.provider,
             temperature=faq_config.evaluation_agent.temperature,
+            thinking=None,
             enable_caching=faq_config.evaluation_agent.enable_caching,
         )
 
         # Summary agent (for creating FAQs)
-        summary_agent = create_openrouter_llm(
+        summary_agent = create_anthropic_llm(
             model=faq_config.summary_agent.model,
-            provider=faq_config.summary_agent.provider,
             temperature=faq_config.summary_agent.temperature,
+            thinking=None,
             enable_caching=faq_config.summary_agent.enable_caching,
         )
 
-        # Track model name for database
-        summary_model_name = faq_config.summary_agent.model
+        # Track model name for database. Normalized, so a config still carrying
+        # a legacy OpenRouter-style id records the id that was actually billed,
+        # which is also the id src/metrics/cost.py prices.
+        summary_model_name = normalize_model(faq_config.summary_agent.model)
 
         # Use config threshold if not overridden
         if quality_threshold is None:
@@ -361,17 +391,17 @@ def summarize_threads(
             "No faq_generation config found for %s, using defaults",
             project,
         )
-        summary_model_name = "anthropic/claude-haiku-4.5"
-        eval_agent = create_openrouter_llm(
+        summary_model_name = "claude-haiku-4-5"
+        eval_agent = create_anthropic_llm(
             model=summary_model_name,
-            provider="Anthropic",
             temperature=0.0,  # Deterministic scoring
+            thinking=None,
             enable_caching=True,
         )
-        summary_agent = create_openrouter_llm(
+        summary_agent = create_anthropic_llm(
             model=summary_model_name,
-            provider="Anthropic",
             temperature=0.1,  # Slightly creative for natural phrasing
+            thinking=None,
             enable_caching=True,
         )
         if quality_threshold is None:
