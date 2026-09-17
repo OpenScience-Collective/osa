@@ -1,14 +1,26 @@
 """Tests for config validation CLI command."""
 
 import os
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
+import httpx
 import pytest
+import respx
 import yaml
 from typer.testing import CliRunner
 
 from src.cli.main import cli
-from src.cli.validate import _interpret_api_response, _test_openrouter_api_key
+from src.cli.validate import (
+    _community_key_env_var,
+    _interpret_api_response,
+    _test_api_key,
+    _test_openrouter_api_key,
+)
+from src.core.config.community import CommunityConfig
+from src.core.services.anthropic_endpoints import FIRST_PARTY_BASE_URL
 
 runner = CliRunner()
 
@@ -442,3 +454,252 @@ class TestRealAPIKeyTesting:
         # Should pass with warning (env var missing), not attempt to test
         assert result.exit_code == 0
         assert "not set" in result.stdout.lower()
+
+
+def _write_config(tmp_path: Path, **extra: str) -> Path:
+    """Write a minimal valid config, plus whatever key fields a test needs."""
+    config: dict[str, object] = {
+        "id": "test",
+        "name": "Test",
+        "description": "Test",
+        **extra,
+    }
+    config_path = tmp_path / "config.yaml"
+    with open(config_path, "w", encoding="utf-8") as f:
+        yaml.dump(config, f)
+    return config_path
+
+
+class TestCommunityKeyEnvVarResolution:
+    """Which of a community's two key fields the validator reports (issue #390).
+
+    The runtime prefers a community's Anthropic key over its OpenRouter one:
+    see `_resolve_provider` in src/api/routers/community.py and the
+    `anthropic_api_key_env_var or openrouter_api_key_env_var` in
+    src/api/routers/health.py. The validator read only the OpenRouter field,
+    so a community funding its own Anthropic usage was told the opposite of
+    the truth ("Not configured (using platform key)") and never got the
+    missing-env-var warning that exists to prevent surprise platform billing.
+    """
+
+    def test_anthropic_env_var_is_reported_when_set(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY_OSATEST", "sk-ant-not-used-here")
+        config_path = _write_config(tmp_path, anthropic_api_key_env_var="ANTHROPIC_API_KEY_OSATEST")
+
+        result = runner.invoke(cli, ["validate", str(config_path)])
+
+        assert result.exit_code == 0
+        assert "ANTHROPIC_API_KEY_OSATEST is set" in result.stdout
+        assert "Anthropic" in result.stdout
+        assert "Not configured" not in result.stdout
+
+    def test_missing_anthropic_env_var_warns_about_platform_billing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY_OSATEST", raising=False)
+        config_path = _write_config(tmp_path, anthropic_api_key_env_var="ANTHROPIC_API_KEY_OSATEST")
+
+        result = runner.invoke(cli, ["validate", str(config_path)])
+
+        assert result.exit_code == 0  # Passes with warning
+        assert "Validation passed with warnings" in result.stdout
+        assert "ANTHROPIC_API_KEY_OSATEST" in result.stdout
+        assert "not set" in result.stdout
+        assert "billed to the platform" in result.stdout
+
+    def test_anthropic_wins_when_both_env_vars_are_configured(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Report the key that actually pays, which is the Anthropic one."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY_OSATEST", "sk-ant-not-used-here")
+        monkeypatch.setenv("OPENROUTER_API_KEY_OSATEST", "sk-or-v1-not-used-here")
+        config_path = _write_config(
+            tmp_path,
+            anthropic_api_key_env_var="ANTHROPIC_API_KEY_OSATEST",
+            openrouter_api_key_env_var="OPENROUTER_API_KEY_OSATEST",
+        )
+
+        result = runner.invoke(cli, ["validate", str(config_path)])
+
+        assert result.exit_code == 0
+        assert "ANTHROPIC_API_KEY_OSATEST is set" in result.stdout
+        assert "OPENROUTER_API_KEY_OSATEST" not in result.stdout
+
+    def test_neither_field_set_means_the_platform_key(self, tmp_path: Path) -> None:
+        config_path = _write_config(tmp_path)
+
+        result = runner.invoke(cli, ["validate", str(config_path)])
+
+        assert result.exit_code == 0
+        assert "Not configured (using platform key)" in result.stdout
+
+    @pytest.mark.parametrize(
+        ("fields", "expected"),
+        [
+            (
+                {"anthropic_api_key_env_var": "ANTHROPIC_API_KEY_OSATEST"},
+                ("ANTHROPIC_API_KEY_OSATEST", "anthropic"),
+            ),
+            (
+                {"openrouter_api_key_env_var": "OPENROUTER_API_KEY_OSATEST"},
+                ("OPENROUTER_API_KEY_OSATEST", "openrouter"),
+            ),
+            (
+                {
+                    "anthropic_api_key_env_var": "ANTHROPIC_API_KEY_OSATEST",
+                    "openrouter_api_key_env_var": "OPENROUTER_API_KEY_OSATEST",
+                },
+                ("ANTHROPIC_API_KEY_OSATEST", "anthropic"),
+            ),
+            ({}, None),
+        ],
+    )
+    def test_helper_resolves_env_var_and_provider(
+        self, fields: dict[str, str], expected: tuple[str, str] | None
+    ) -> None:
+        config = CommunityConfig.model_validate(
+            {"id": "test", "name": "Test", "description": "Test", **fields}
+        )
+
+        assert _community_key_env_var(config) == expected
+
+
+class TestApiKeyTestRouting:
+    """--test-api-key must reach the provider that owns the key."""
+
+    @respx.mock
+    def test_anthropic_key_is_tested_against_the_first_party_endpoint(self) -> None:
+        """Not the AWS platform endpoint, where a community key is unauthorized.
+
+        `create_anthropic_llm` pins base_url to the first-party API whenever an
+        explicit key is passed, which is what a community key is, so testing it
+        anywhere else would fail a working key (or pass a dead one).
+        """
+        route = respx.get(f"{FIRST_PARTY_BASE_URL}/v1/models").mock(
+            return_value=httpx.Response(200, json={"data": []})
+        )
+
+        result = _test_api_key("sk-ant-example", "anthropic")
+
+        assert result["success"] is True
+        assert route.called
+        headers = route.calls.last.request.headers
+        assert headers["x-api-key"] == "sk-ant-example"
+        assert headers["anthropic-version"]
+        assert "authorization" not in headers
+
+    @respx.mock
+    def test_openrouter_key_is_tested_against_openrouter(self) -> None:
+        route = respx.get("https://openrouter.ai/api/v1/models").mock(
+            return_value=httpx.Response(200, json={"data": []})
+        )
+
+        result = _test_api_key("sk-or-v1-example", "openrouter")
+
+        assert result["success"] is True
+        assert route.called
+        assert route.calls.last.request.headers["authorization"] == "Bearer sk-or-v1-example"
+
+    @respx.mock
+    def test_rejected_anthropic_key_is_reported_as_a_failure(self) -> None:
+        respx.get(f"{FIRST_PARTY_BASE_URL}/v1/models").mock(
+            return_value=httpx.Response(
+                401,
+                json={"type": "error", "error": {"type": "authentication_error"}},
+            )
+        )
+
+        result = _test_api_key("sk-ant-dead", "anthropic")
+
+        assert result["success"] is False
+        assert "401" in result["error"]
+
+    @pytest.mark.network
+    def test_invalid_anthropic_key_really_is_rejected(self) -> None:
+        """The same 401 path, against the live endpoint.
+
+        This is the assertion the fixture above cannot make: that the URL and
+        header names are the ones Anthropic actually accepts. A wrong path
+        would answer 404 and a wrong header name 401-with-a-different-reason,
+        both of which the fixture would happily fake.
+        """
+        result = _test_api_key("sk-ant-invalid-key-used-only-by-this-test", "anthropic")
+
+        assert result["success"] is False
+        assert "401" in result["error"]
+
+    def test_validate_routes_a_community_anthropic_key_to_anthropic(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """End to end through the CLI, so the wiring is covered, not just the helper."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY_OSATEST", "sk-ant-example")
+        config_path = _write_config(tmp_path, anthropic_api_key_env_var="ANTHROPIC_API_KEY_OSATEST")
+
+        with respx.mock:
+            route = respx.get(f"{FIRST_PARTY_BASE_URL}/v1/models").mock(
+                return_value=httpx.Response(200, json={"data": []})
+            )
+            result = runner.invoke(cli, ["validate", str(config_path), "--test-api-key"])
+
+        assert route.called
+        assert route.calls.last.request.headers["x-api-key"] == "sk-ant-example"
+        assert result.exit_code == 0
+        assert "Testing API key with Anthropic" in result.stdout
+        assert "Key works" in result.stdout
+
+
+class TestValidateWithoutServerDependencies:
+    """File-mode validation must survive on a CLI-only install.
+
+    `src/cli/main.py` registers `osa validate` only if importing
+    `src.cli.validate` succeeds, and replaces it with a "requires server
+    dependencies" stub otherwise (`_register_server_commands`). langchain and
+    friends live in the `server` extra, so a module-level import of
+    src/core/services/anthropic_llm.py here would silently cost every
+    CLI-only user the ability to validate a config file at all. That is why
+    the shared endpoint constant lives in a dependency-free module.
+    """
+
+    # Top-level packages from the `server` extra in pyproject.toml.
+    _BLOCKED = ("langchain", "langchain_core", "langchain_anthropic", "langgraph", "litellm")
+
+    def _run_under_blocked_imports(self, body: str) -> subprocess.CompletedProcess[str]:
+        script = textwrap.dedent(f"""
+            import sys
+
+            BLOCKED = {self._BLOCKED!r}
+
+            class ServerExtraBlocker:
+                def find_spec(self, fullname, path=None, target=None):
+                    if fullname.split(".")[0] in BLOCKED:
+                        raise ImportError(f"blocked for test: {{fullname}}")
+                    return None
+
+            sys.meta_path.insert(0, ServerExtraBlocker())
+        """) + textwrap.dedent(body)
+        return subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            # `python -c` puts the working directory first on sys.path, so run
+            # from the repo root to make `src` importable regardless of where
+            # pytest was invoked.
+            cwd=Path(__file__).resolve().parents[2],
+        )
+
+    def test_the_blocker_actually_blocks(self) -> None:
+        """Without this, the next test could pass for the wrong reason."""
+        result = self._run_under_blocked_imports("import src.core.services.anthropic_llm\n")
+
+        assert result.returncode != 0
+        assert "blocked for test" in result.stderr
+
+    def test_validate_imports_without_the_server_extra(self) -> None:
+        result = self._run_under_blocked_imports(
+            "from src.cli.validate import validate\nprint('imported')\n"
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "imported" in result.stdout

@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Literal
 
 import httpx
 import typer
@@ -18,9 +19,18 @@ from rich.console import Console
 from rich.table import Table
 
 from src.core.config.community import CommunityConfig
+from src.core.services.anthropic_endpoints import API_VERSION, FIRST_PARTY_BASE_URL
 
 console = Console()
 logger = logging.getLogger(__name__)
+
+KeyProvider = Literal["anthropic", "openrouter"]
+
+# Provider names as they appear in console output.
+_PROVIDER_LABELS: dict[KeyProvider, str] = {
+    "anthropic": "Anthropic",
+    "openrouter": "OpenRouter",
+}
 
 
 def validate(
@@ -34,7 +44,7 @@ def validate(
     test_api_key: bool = typer.Option(
         False,
         "--test-api-key",
-        help="Test that API key works by making a request to OpenRouter",
+        help="Test the community's own API key against its provider (Anthropic or OpenRouter)",
     ),
     verbose: bool = typer.Option(
         False,
@@ -182,8 +192,10 @@ def validate(
 
     # Step 5: Environment Variable Check
     console.print("[dim]Checking environment variables...[/dim]")
-    if config.openrouter_api_key_env_var:
-        env_var_name = config.openrouter_api_key_env_var
+    own_key = _community_key_env_var(config)
+    if own_key is not None:
+        env_var_name, provider = own_key
+        provider_label = _PROVIDER_LABELS[provider]
         api_key = os.getenv(env_var_name)
 
         if not api_key:
@@ -196,13 +208,15 @@ def validate(
             checks.append(("API Key Env Var", f"⚠ {env_var_name} not set", "yellow"))
         else:
             logger.debug("API key env var is set: %s", env_var_name)
-            checks.append(("API Key Env Var", f"✓ {env_var_name} is set", "green"))
+            checks.append(
+                ("API Key Env Var", f"✓ {env_var_name} is set ({provider_label})", "green")
+            )
 
             # Step 6: Optional API Key Test
             if test_api_key:
-                console.print("[dim]Testing API key with OpenRouter...[/dim]")
-                logger.info("Testing API key for %s", env_var_name)
-                test_result = _test_openrouter_api_key(api_key)
+                console.print(f"[dim]Testing API key with {provider_label}...[/dim]")
+                logger.info("Testing %s API key for %s", provider, env_var_name)
+                test_result = _test_api_key(api_key, provider)
                 if test_result["success"]:
                     logger.info("API key test passed for %s", env_var_name)
                     checks.append(("API Key Test", "✓ Key works", "green"))
@@ -321,13 +335,38 @@ def _validate_community_with_tests(community_id: str, verbose: bool) -> None:
         raise typer.Exit(1)
 
 
-def _interpret_api_response(status_code: int, response_text: str = "") -> dict:
-    """Interpret OpenRouter API response.
+def _community_key_env_var(config: CommunityConfig) -> tuple[str, KeyProvider] | None:
+    """Return the env var holding the community's own key, and its provider.
 
-    Pure function to interpret HTTP response - easy to test without mocking.
+    Precedence matches ``_resolve_provider`` in ``src/api/routers/community.py``
+    (and ``src/api/routers/health.py``): a community that sets both fields is
+    served by its Anthropic key, so that is the one worth validating. Reporting
+    the other would tell a maintainer their OpenRouter key is what pays.
 
     Args:
-        status_code: HTTP status code from OpenRouter API
+        config: The validated community config.
+
+    Returns:
+        ``(env_var_name, provider)``, or None when the community sets neither
+        field and is therefore served by the platform key.
+    """
+    if config.anthropic_api_key_env_var:
+        return config.anthropic_api_key_env_var, "anthropic"
+    if config.openrouter_api_key_env_var:
+        return config.openrouter_api_key_env_var, "openrouter"
+    return None
+
+
+def _interpret_api_response(status_code: int, response_text: str = "") -> dict:
+    """Interpret a models-endpoint response from either provider.
+
+    Pure function to interpret HTTP response - easy to test without mocking.
+    Anthropic and OpenRouter agree on the status codes that matter here (401
+    for a bad key, 403 for a key without the needed permission), so one
+    interpretation serves both.
+
+    Args:
+        status_code: HTTP status code from the provider's API
         response_text: Response body text (for error details)
 
     Returns:
@@ -349,24 +388,21 @@ def _interpret_api_response(status_code: int, response_text: str = "") -> dict:
         return {"success": False, "error": error_msg}
 
 
-def _test_openrouter_api_key(api_key: str) -> dict:
-    """Test if an OpenRouter API key works.
+def _probe_models_endpoint(url: str, headers: dict[str, str]) -> dict:
+    """GET a provider's models endpoint and interpret what comes back.
 
-    Makes a simple request to the OpenRouter /models endpoint to verify
-    the key is valid and has appropriate permissions.
+    Listing models is the cheapest authenticated call both providers offer:
+    it proves the key is accepted without spending tokens on a completion.
 
     Args:
-        api_key: The OpenRouter API key to test.
+        url: The provider's models endpoint.
+        headers: Authentication headers for that provider.
 
     Returns:
         Dict with 'success' bool and 'error' message (only present when success=False).
     """
     try:
-        response = httpx.get(
-            "https://openrouter.ai/api/v1/models",
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=10.0,
-        )
+        response = httpx.get(url, headers=headers, timeout=10.0)
         return _interpret_api_response(response.status_code, response.text)
     except httpx.TimeoutException:
         logger.warning("API key test timeout after 10s")
@@ -375,6 +411,58 @@ def _test_openrouter_api_key(api_key: str) -> dict:
         logger.warning("API key test network error: %s", e)
         return {"success": False, "error": f"Network error: {e}"}
     # No broad exception handler - let unexpected errors propagate
+
+
+def _test_openrouter_api_key(api_key: str) -> dict:
+    """Test if an OpenRouter API key works.
+
+    Args:
+        api_key: The OpenRouter API key to test.
+
+    Returns:
+        Dict with 'success' bool and 'error' message (only present when success=False).
+    """
+    return _probe_models_endpoint(
+        "https://openrouter.ai/api/v1/models",
+        {"Authorization": f"Bearer {api_key}"},
+    )
+
+
+def _test_anthropic_api_key(api_key: str) -> dict:
+    """Test if a community's own Anthropic API key works.
+
+    Tested against the first-party API rather than the platform's AWS
+    endpoint, because that is where such a key is authorized and therefore
+    where the community's requests go: ``create_anthropic_llm`` pins
+    ``base_url`` to :data:`FIRST_PARTY_BASE_URL` whenever an explicit key is
+    passed. Probing the AWS endpoint instead would fail a perfectly good key.
+
+    Args:
+        api_key: The Anthropic API key to test.
+
+    Returns:
+        Dict with 'success' bool and 'error' message (only present when success=False).
+    """
+    return _probe_models_endpoint(
+        f"{FIRST_PARTY_BASE_URL}/v1/models",
+        {"x-api-key": api_key, "anthropic-version": API_VERSION},
+    )
+
+
+def _test_api_key(api_key: str, provider: KeyProvider) -> dict:
+    """Test a key against the provider that owns it.
+
+    Args:
+        api_key: The API key to test.
+        provider: Which provider the key belongs to (see
+            :func:`_community_key_env_var`).
+
+    Returns:
+        Dict with 'success' bool and 'error' message (only present when success=False).
+    """
+    if provider == "anthropic":
+        return _test_anthropic_api_key(api_key)
+    return _test_openrouter_api_key(api_key)
 
 
 def _display_results(

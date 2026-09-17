@@ -62,6 +62,15 @@ class ContentBlock(NamedTuple):
 def extract_text(content: str | list[Any]) -> str:
     """Return only the answer text of a message's ``content``.
 
+    The text-side counterpart of :func:`extract_citations`; both flatten one
+    kind of signal out of :func:`classify_content_blocks`. It is deliberately
+    not the answer-assembly path: since the API layer began interleaving
+    ``[n]`` markers with the text (``_build_answer_with_citations`` in
+    ``src/api/routers/community.py``), this function has no production
+    caller, because an answer assembled through it would carry citations no
+    client could place. Use it when plain text really is what you want, such
+    as inspecting what a response said.
+
     Args:
         content: A message's ``content``: a plain string (the common case,
             when thinking is off and no tools are bound), or a list of

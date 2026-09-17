@@ -36,6 +36,16 @@ from src.tools.citations import build_search_result, truncate
 
 logger = logging.getLogger(__name__)
 
+# Cap on one FAQ answer's citable text. The other two citable tools pass
+# search snippets, which src/knowledge/search.py has already truncated, but
+# a FAQ answer comes straight out of the database and is only capped at
+# ingest (5000 chars, src/knowledge/db.py). With the default limit=5 that
+# would put 25k chars of tool_result on the wire per search, ten times the
+# plain-string path's 5 x 500. This is more generous than the 500-char
+# display truncation below, because a citation points at an exact span and
+# a span cut mid-sentence is worse than no citation, but it is still bounded.
+_MAX_CITABLE_FAQ_ANSWER_CHARS = 2000
+
 
 def _check_db_exists(community_id: str) -> bool:
     """Check if the community's knowledge database exists."""
@@ -636,7 +646,7 @@ def create_search_faq_tool(
                 results,
                 source=lambda r: r.thread_url,
                 title=lambda r: r.question,
-                text=lambda r: r.answer,
+                text=lambda r: truncate(r.answer, _MAX_CITABLE_FAQ_ANSWER_CHARS),
             )
             if blocks:
                 return blocks

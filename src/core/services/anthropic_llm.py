@@ -34,6 +34,7 @@ from langchain_core.language_models import BaseChatModel
 from pydantic import field_validator
 
 from src.api.config import Settings, get_settings
+from src.core.services.anthropic_endpoints import FIRST_PARTY_BASE_URL
 
 logger = logging.getLogger(__name__)
 
@@ -307,7 +308,7 @@ def create_anthropic_llm(
         # points at the AWS endpoint that rejects a first-party key sent
         # without the workspace header.
         kwargs["api_key"] = api_key
-        kwargs["base_url"] = "https://api.anthropic.com"
+        kwargs["base_url"] = FIRST_PARTY_BASE_URL
     else:
         server_key = resolved_settings.anthropic_api_key
         if not server_key:

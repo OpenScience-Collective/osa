@@ -16,8 +16,9 @@ from src.cli.config import (
     CREDENTIALS_FILE,
     CLIConfig,
     CredentialsConfig,
+    classify_api_key,
     get_data_dir,
-    get_effective_anthropic_key,
+    get_effective_byok_keys,
     get_effective_config,
     get_user_id,
     load_config,
@@ -220,36 +221,101 @@ class TestGetEffectiveConfig:
             assert config.api.url == "https://custom.example.com"
 
 
-class TestGetEffectiveAnthropicKey:
-    """Tests for get_effective_anthropic_key."""
+class TestClassifyApiKey:
+    """The provider comes from the key's own prefix, not from the user."""
 
-    def test_env_var_overrides_saved_key(self, temp_config_dir: Path) -> None:
-        """ANTHROPIC_API_KEY env var should override saved credentials."""
+    def test_anthropic_prefix(self) -> None:
+        assert classify_api_key("sk-ant-api03-abc123") == "anthropic"
+
+    def test_openrouter_prefix(self) -> None:
+        assert classify_api_key("sk-or-v1-abc123") == "openrouter"
+
+    def test_unrecognized_shape_is_treated_as_openrouter(self) -> None:
+        """Every key saved before the Claude Platform migration was OpenRouter's.
+
+        Defaulting an unrecognized shape to OpenRouter keeps a pre-migration
+        credentials.yaml working; routing it to Anthropic instead would break
+        one.
+        """
+        assert classify_api_key("some-unlabeled-key") == "openrouter"
+
+
+class TestGetEffectiveByokKeys:
+    """Tests for get_effective_byok_keys."""
+
+    def test_env_var_overrides_saved_key_per_provider(self, temp_config_dir: Path) -> None:
+        """Each provider's env var beats its own saved credential."""
         with (
             patched_config_paths(temp_config_dir),
-            patch.dict("os.environ", {"ANTHROPIC_API_KEY": "env-anthropic-key"}),
+            patch.dict(
+                "os.environ",
+                {"ANTHROPIC_API_KEY": "env-anthropic-key", "OPENROUTER_API_KEY": "env-or-key"},
+                clear=True,
+            ),
         ):
-            save_credentials(CredentialsConfig(anthropic_api_key="saved-anthropic-key"))
+            save_credentials(
+                CredentialsConfig(
+                    anthropic_api_key="saved-anthropic-key",
+                    openrouter_api_key="saved-or-key",
+                )
+            )
 
-            assert get_effective_anthropic_key() == "env-anthropic-key"
+            assert get_effective_byok_keys() == ("env-or-key", "env-anthropic-key")
 
-    def test_saved_key_used_as_fallback(self, temp_config_dir: Path) -> None:
-        """Saved credentials should be used if no env var is set."""
+    def test_saved_keys_used_as_fallback(self, temp_config_dir: Path) -> None:
+        """Saved credentials are used when no env var is set."""
         with (
             patched_config_paths(temp_config_dir),
             patch.dict("os.environ", {}, clear=True),
         ):
-            save_credentials(CredentialsConfig(anthropic_api_key="saved-anthropic-key"))
+            save_credentials(
+                CredentialsConfig(
+                    anthropic_api_key="saved-anthropic-key",
+                    openrouter_api_key="saved-or-key",
+                )
+            )
 
-            assert get_effective_anthropic_key() == "saved-anthropic-key"
+            assert get_effective_byok_keys() == ("saved-or-key", "saved-anthropic-key")
 
-    def test_returns_none_when_unconfigured(self, temp_config_dir: Path) -> None:
-        """Returns None when neither the env var nor saved credentials are set."""
+    def test_returns_none_pair_when_unconfigured(self, temp_config_dir: Path) -> None:
         with (
             patched_config_paths(temp_config_dir),
             patch.dict("os.environ", {}, clear=True),
         ):
-            assert get_effective_anthropic_key() is None
+            assert get_effective_byok_keys() == (None, None)
+
+    def test_anthropic_flag_routes_to_anthropic_slot(self, temp_config_dir: Path) -> None:
+        """An Anthropic key passed to -k must not go out as an OpenRouter key."""
+        with (
+            patched_config_paths(temp_config_dir),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            assert get_effective_byok_keys("sk-ant-flag-key") == (None, "sk-ant-flag-key")
+
+    def test_openrouter_flag_routes_to_openrouter_slot(self, temp_config_dir: Path) -> None:
+        with (
+            patched_config_paths(temp_config_dir),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            assert get_effective_byok_keys("sk-or-v1-flag-key") == ("sk-or-v1-flag-key", None)
+
+    def test_explicit_flag_beats_the_other_providers_ambient_key(
+        self, temp_config_dir: Path
+    ) -> None:
+        """An explicit flag wins outright, including over the other slot.
+
+        OSAClient prefers Anthropic whenever both keys are present, so if an
+        exported ANTHROPIC_API_KEY survived alongside an OpenRouter key typed
+        on the command line, the typed key would be silently ignored and the
+        request would bill the wrong account.
+        """
+        with (
+            patched_config_paths(temp_config_dir),
+            patch.dict("os.environ", {"ANTHROPIC_API_KEY": "env-anthropic-key"}, clear=True),
+        ):
+            save_credentials(CredentialsConfig(anthropic_api_key="saved-anthropic-key"))
+
+            assert get_effective_byok_keys("sk-or-v1-flag-key") == ("sk-or-v1-flag-key", None)
 
 
 class TestLegacyMigration:
