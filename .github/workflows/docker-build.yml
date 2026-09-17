@@ -5,12 +5,47 @@ on:
     branches:
       - main
       - develop
+    # Kept, but it has never fired for an automated release and never will.
+    # `tag-release.yml` pushes the tag with `git push origin "$TAG"` after an
+    # `actions/checkout@v4` that takes no `token:` override, so the push is
+    # authored by the default GITHUB_TOKEN -- and GitHub does not start workflow
+    # runs from events a GITHUB_TOKEN created. The release in the same job IS
+    # seen, because `gh release create` there runs under CI_ADMIN_TOKEN, a PAT.
+    # That asymmetry is the whole bug: for v0.8.9 the only run on that ref was
+    # `Publish to PyPI`, with `event: release`, and `publish.yml` was the one
+    # workflow already subscribed to `release`.
+    # This trigger still covers a tag a human pushes with their own credentials.
     tags:
       - 'v*'
+  release:
+    types: [published]
+  # Lets a maintainer rebuild a specific tag on demand:
+  #   gh workflow run docker-build.yml --ref v0.8.9
+  # Which is also how to republish images for a release that predates this fix.
+  workflow_dispatch:
   pull_request:
     branches:
       - main
       - develop
+
+# Builds that can write a MOVING tag (`latest`, `main`, `dev`) must not
+# interleave. The v0.8.9 release pushed two commits to `main` ten seconds apart;
+# both builds ran, both wrote `:latest`, they finished one second apart, and the
+# OLDER commit's image won -- so production served 0.8.9.dev0 while `main` said
+# 0.8.9.
+#
+# Every tag and release build shares ONE group rather than one per ref: keying on
+# `github.ref` would put two releases published minutes apart into two groups and
+# let a slow `v1.2.3` finish after `v1.2.4`, leaving `latest` on the older one --
+# the same last-writer-wins bug with a narrower window. Branch builds keep a
+# per-branch group, since `main` and `develop` write different tags.
+#
+# Cancelling is safe ONLY for pull requests: that path runs `build-and-test`
+# alone, never touches the registry, and a stale run just wastes a runner. For
+# every other event a cancel could land mid-push, so those queue instead.
+concurrency:
+  group: ${{ github.workflow }}-${{ startsWith(github.ref, 'refs/tags/') && 'tags' || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   REGISTRY: ghcr.io
@@ -71,7 +106,9 @@ jobs:
   build-and-push:
     name: Build and Push to GHCR
     needs: build-and-test
-    # Push on main, develop, or tags - skip for PRs
+    # Push on main, develop, a tag, or a published release - skip for PRs.
+    # A release event carries `github.ref` of `refs/tags/<tag>`, so the semver
+    # patterns below read it the same way a tag push would.
     if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/tags/'))
     runs-on: ubuntu-latest
     permissions:
@@ -98,13 +135,35 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            # Branch-based tags
+            # Branch-based tags: `main` and `develop` always point at the head of
+            # their branch, for anyone who wants exactly that.
             type=ref,event=branch
-            # Tag-based tags (v1.0.0 -> 1.0.0)
+            # Versioned, immutable tags (v1.0.0 -> 1.0.0, 1.0). These are the
+            # rollback targets. None existed between 0.6.2 and 0.8.9 because the
+            # release event never reached this workflow.
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            # Latest tag for main branch
-            type=raw,value=latest,enable={{is_default_branch}}
+            # `latest` means THE LATEST STABLE RELEASE, not the head of the
+            # default branch. Production (`deploy/auto-update.sh`) pulls
+            # `:latest` hourly, so this line decides what it serves.
+            #
+            # Pre-releases are excluded, and that exclusion is load-bearing:
+            # this workflow subscribes to `published`, which GitHub fires for
+            # pre-releases too, so without the `prerelease == false` test
+            # publishing a release candidate would deploy it to production
+            # within the hour. The hyphen test covers the same case arriving as
+            # a hand-pushed `v1.2.3-rc1`. `type=semver` above already refuses to
+            # move `{{major}}.{{minor}}` for a prerelease; this keeps the raw
+            # tag consistent with it.
+            #
+            # The second clause excludes `release` deliberately. A maintainer can
+            # tick "pre-release" on a tag with no hyphen in it, and a bare
+            # `startsWith`/`!contains` test would wave that through on the very
+            # event whose own payload says not to. On a release, the payload
+            # decides, and nothing else gets a vote.
+            #
+            # Use `:main` to follow the branch instead.
+            type=raw,value=latest,enable=${{ (github.event_name == 'release' && github.event.release.prerelease == false) || (github.event_name != 'release' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-')) }}
             # Dev tag for develop branch
             type=raw,value=dev,enable=${{ github.ref == 'refs/heads/develop' }}
             # Commit SHA for traceability
