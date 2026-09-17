@@ -16,13 +16,21 @@ product decision is that clients see a content-free ``thinking`` signal
 (the model is working), never the reasoning text itself.
 """
 
+import logging
 from typing import Any, Literal
+
+logger = logging.getLogger(__name__)
 
 # Block "type" values that carry reasoning rather than answer text.
 # `redacted_thinking` is Anthropic's encrypted-reasoning variant (returned
 # when a thinking block is flagged, e.g. by safety systems); it carries no
 # usable text either way, so it is classified the same as `thinking`.
 _THINKING_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking"})
+
+# Non-text block types with their own dedicated handling elsewhere (tool-call
+# metadata streamed via separate events), so silently contributing nothing
+# here is expected, not a sign of a problem.
+_KNOWN_NON_TEXT_BLOCK_TYPES = frozenset({"tool_use"})
 
 BlockKind = Literal["text", "thinking"]
 
@@ -68,6 +76,7 @@ def classify_content_blocks(content: str | list[Any]) -> list[tuple[BlockKind, s
         return [("text", content)] if content else []
 
     pairs: list[tuple[BlockKind, str]] = []
+    warned_block_types: set[Any] = set()
     for block in content:
         if not isinstance(block, dict):
             continue
@@ -78,6 +87,20 @@ def classify_content_blocks(content: str | list[Any]) -> list[tuple[BlockKind, s
                 pairs.append(("text", text))
         elif block_type in _THINKING_BLOCK_TYPES:
             pairs.append(("thinking", ""))
-        # Other block types (tool_use, etc.) are intentionally not surfaced
-        # here; they have their own dedicated handling elsewhere.
+        elif block_type in _KNOWN_NON_TEXT_BLOCK_TYPES:
+            # tool_use, etc. -- intentionally not surfaced here; handled by
+            # their own dedicated events elsewhere.
+            pass
+        elif block_type not in warned_block_types:
+            # A future langchain-anthropic block type that carries answer
+            # text would otherwise truncate answers with no error -- the
+            # same invisible-failure class the caching layer already guards
+            # against. Dedupe per call so one odd chunk (or a whole streamed
+            # response full of them) cannot flood the log.
+            warned_block_types.add(block_type)
+            logger.warning(
+                "classify_content_blocks: unrecognized content block type %r; "
+                "any text it carries is dropped, not surfaced as answer text.",
+                block_type,
+            )
     return pairs

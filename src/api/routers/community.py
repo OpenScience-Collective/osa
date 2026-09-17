@@ -155,6 +155,14 @@ class ChatResponse(BaseModel):
         default=None,
         description="Per-request identifier the widget can attach to feedback",
     )
+    model: str = Field(
+        ...,
+        description=(
+            "The model that actually answered, after resolving requested/default/"
+            "alias/cost-guard substitution. Model substitution is otherwise "
+            "invisible to callers, detectable only in server logs."
+        ),
+    )
 
 
 class AskResponse(BaseModel):
@@ -167,6 +175,14 @@ class AskResponse(BaseModel):
     request_id: str | None = Field(
         default=None,
         description="Per-request identifier the widget can attach to feedback",
+    )
+    model: str = Field(
+        ...,
+        description=(
+            "The model that actually answered, after resolving requested/default/"
+            "alias/cost-guard substitution. Model substitution is otherwise "
+            "invisible to callers, detectable only in server logs."
+        ),
     )
 
 
@@ -568,6 +584,19 @@ def _platform_choice(settings: Settings) -> ProviderChoice:
     if settings.anthropic_api_key:
         return ProviderChoice(provider="anthropic", api_key=None, key_source="platform")
     if settings.openrouter_api_key:
+        # Falling back this far means ANTHROPIC_API_KEY is unset or empty, so
+        # the migration this epic exists for is silently not in effect for
+        # this deployment. A DEBUG-level default would leave that invisible;
+        # a dedicated `platform_provider` setting was considered instead but
+        # rejected -- inferring from key presence plus a loud warning is
+        # enough for now, and a provider toggle would reintroduce the
+        # configuration ambiguity this epic is removing.
+        logger.warning(
+            "ANTHROPIC_API_KEY is not configured; platform-funded requests are "
+            "falling back to OpenRouter and are NOT running on the Claude "
+            "Platform on AWS. Set ANTHROPIC_API_KEY to fix this.",
+            extra={"provider": "openrouter", "key_source": "platform"},
+        )
         return ProviderChoice(
             provider="openrouter", api_key=settings.openrouter_api_key, key_source="platform"
         )
@@ -1329,6 +1358,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 answer=ar.response_content,
                 tool_calls=ar.tool_calls_info,
                 request_id=getattr(http_request.state, "request_id", None),
+                model=awm.model,
             )
 
         except HTTPException:
@@ -1442,6 +1472,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 message=ChatMessage(role="assistant", content=ar.response_content),
                 tool_calls=ar.tool_calls_info,
                 request_id=getattr(http_request.state, "request_id", None),
+                model=awm.model,
             )
 
         except ValueError as e:
@@ -2021,7 +2052,7 @@ async def _stream_ask_response(
         data: {"event": "thinking"}
         data: {"event": "tool_start", "name": "tool_name", "input": {...}}
         data: {"event": "tool_end", "name": "tool_name", "output": {...}}
-        data: {"event": "done", "request_id": "..."}
+        data: {"event": "done", "request_id": "...", "model": "..."}
         data: {"event": "error", "message": "error text"}
 
     The `thinking` event is a liveness signal only -- it never carries the
@@ -2100,7 +2131,11 @@ async def _stream_ask_response(
                 }
                 yield f"data: {json.dumps(sse_event)}\n\n"
 
-        sse_event = {"event": "done", "request_id": request_id}
+        sse_event = {
+            "event": "done",
+            "request_id": request_id,
+            "model": awm.model if awm else None,
+        }
         yield f"data: {json.dumps(sse_event)}\n\n"
 
         # Log metrics at end of streaming
@@ -2219,7 +2254,7 @@ async def _stream_chat_response(
         data: {"event": "tool_end", "name": "tool_name", "output": {...}}
         data: {"event": "session", "session_id": "..."}  (sent first)
         data: {"event": "warning", "message": "..."}  (optional, before done)
-        data: {"event": "done", "session_id": "...", "request_id": "..."}
+        data: {"event": "done", "session_id": "...", "request_id": "...", "model": "..."}
         data: {"event": "error", "message": "error text"}
 
     The `thinking` event is a liveness signal only -- it never carries the
@@ -2334,6 +2369,7 @@ async def _stream_chat_response(
             "event": "done",
             "session_id": session.session_id,
             "request_id": request_id,
+            "model": awm.model if awm else None,
         }
         yield f"data: {json.dumps(sse_event)}\n\n"
 

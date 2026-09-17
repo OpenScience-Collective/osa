@@ -22,6 +22,7 @@ Example config.yaml:
 """
 
 import ipaddress
+import logging
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
@@ -29,6 +30,8 @@ from urllib.parse import urlparse
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from src.tools.base import DocRegistry
@@ -1229,9 +1232,21 @@ class CommunityConfig(BaseModel):
         if v is None:
             return None
 
-        v = v.strip()
-        if not v:
+        stripped = v.strip()
+        if not stripped:
+            # A whitespace-only value coerces to None with no signal
+            # otherwise, which is harder to notice than a wrong env var name
+            # (that logs an error at request time in _resolve_provider): a
+            # broken template substitution (e.g. an unrendered "{{ var }}")
+            # would silently look identical to "not configured".
+            logger.warning(
+                "anthropic_api_key_env_var was set but blank/whitespace-only "
+                "(%r); treating it as not configured. Check for a broken "
+                "template substitution in config.yaml.",
+                v,
+            )
             return None
+        v = stripped
 
         # Only allow ANTHROPIC_API_KEY_* pattern (uppercase, underscores, alphanumeric)
         env_var_pattern = re.compile(r"^ANTHROPIC_API_KEY_[A-Z0-9_]+$")
@@ -1255,9 +1270,19 @@ class CommunityConfig(BaseModel):
         if v is None:
             return None
 
-        v = v.strip()
-        if not v:
+        stripped = v.strip()
+        if not stripped:
+            # See the matching comment in validate_anthropic_api_key_env_var:
+            # a whitespace-only value coercing to None silently is harder to
+            # notice than a wrong env var name, which does log at request time.
+            logger.warning(
+                "openrouter_api_key_env_var was set but blank/whitespace-only "
+                "(%r); treating it as not configured. Check for a broken "
+                "template substitution in config.yaml.",
+                v,
+            )
             return None
+        v = stripped
 
         # Only allow OPENROUTER_API_KEY_* pattern (uppercase, underscores, alphanumeric)
         env_var_pattern = re.compile(r"^OPENROUTER_API_KEY_[A-Z0-9_]+$")
