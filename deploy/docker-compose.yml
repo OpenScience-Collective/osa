@@ -22,44 +22,22 @@ services:
     volumes:
       # Persist knowledge database across container restarts
       - osa-data:/app/data
-    environment:
-      # API Settings
-      - DEBUG=${DEBUG:-false}
-      - ROOT_PATH=${ROOT_PATH:-}
-      - REQUIRE_API_AUTH=${REQUIRE_API_AUTH:-true}
-      - API_KEYS=${API_KEYS:-}
-
-      # LLM Provider Keys (server-side, for shared access)
-      # Claude Platform on AWS is the default (see ../.env.example); OpenRouter
-      # remains a supported BYOK-only alternative.
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-}
-      - ANTHROPIC_WORKSPACE_ID=${ANTHROPIC_WORKSPACE_ID:-}
-      - ANTHROPIC_THINKING_BUDGET_TOKENS=${ANTHROPIC_THINKING_BUDGET_TOKENS:-2048}
-      - ANTHROPIC_MAX_OUTPUT_TOKENS=${ANTHROPIC_MAX_OUTPUT_TOKENS:-8000}
-      - ANTHROPIC_CACHE_TTL=${ANTHROPIC_CACHE_TTL:-5m}
-
-      # DEFAULT_MODEL and DEFAULT_MODEL_PROVIDER are intentionally not
-      # repeated here: env_file above already loads them from ../.env, and
-      # redeclaring them here with a stale default would silently win over
-      # whatever ../.env says whenever deploy/.env does not also define them.
-
-      # Knowledge Sync API Keys (optional, for higher rate limits)
-      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
-      - SEMANTIC_SCHOLAR_API_KEY=${SEMANTIC_SCHOLAR_API_KEY:-}
-      - PUBMED_API_KEY=${PUBMED_API_KEY:-}
-
-      # Knowledge Sync Scheduling
-      # SYNC_ENABLED is the master switch; per-community schedules are in config.yaml
-      # Empty databases are automatically seeded on startup
-      - SYNC_ENABLED=${SYNC_ENABLED:-true}
-
-      # Observability (optional)
-      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
-      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
-      - LANGFUSE_HOST=${LANGFUSE_HOST:-https://cloud.langfuse.com}
+    # No environment: block here on purpose. Every variable this service
+    # needs (API keys, ANTHROPIC_*, sync/observability settings, etc.) is
+    # already supplied by env_file above, and every one of them has a
+    # default on Settings (src/api/config.py) for when it is absent.
+    # An environment: entry of the form `- FOO=${FOO:-default}` resolves
+    # at compose time from the shell (or deploy/.env, which does not
+    # exist), NOT from env_file, and silently overrides whatever env_file
+    # provides with that compose-time value -- verified with
+    # `docker compose config`. That is exactly how DEFAULT_MODEL used to
+    # pin a stale openai/gpt-oss-120b regardless of the real .env, and the
+    # same defect applied to every other entry that used to be declared
+    # this way, including every API key. Do not re-add one of these
+    # entries without first checking whether it actually needs to win
+    # over env_file; if it does, use the pass-through form `- FOO` (no
+    # `=`), which does not override env_file when FOO is unset in the
+    # compose-invoking shell.
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:38528/health"]
       interval: 30s

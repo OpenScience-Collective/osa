@@ -4,6 +4,7 @@ These parse the files directly rather than eyeballing them, since nobody
 runs deploy/docker-compose.yml or .env.example until a deploy breaks.
 """
 
+import re
 from pathlib import Path
 
 import yaml
@@ -11,6 +12,9 @@ import yaml
 from src.api.config import Settings
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# Matches the `${VAR:-default}` / `${VAR:-}` compose interpolation form.
+_VAR_DEFAULT_INTERPOLATION = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:-")
 
 
 class TestDockerComposeModelConfig:
@@ -28,7 +32,7 @@ class TestDockerComposeModelConfig:
         compose_path = REPO_ROOT / "deploy" / "docker-compose.yml"
         compose = yaml.safe_load(compose_path.read_text())
 
-        environment = compose["services"]["osa"]["environment"]
+        environment = compose["services"]["osa"].get("environment") or []
         env_keys = {entry.split("=", 1)[0] for entry in environment}
 
         assert "DEFAULT_MODEL" not in env_keys
@@ -39,6 +43,34 @@ class TestDockerComposeModelConfig:
         compose = yaml.safe_load(compose_path.read_text())
 
         assert compose["services"]["osa"]["env_file"] == ["../.env"]
+
+    def test_environment_block_never_uses_var_default_interpolation(self) -> None:
+        """No environment: entry may use the ``${VAR:-...}`` interpolation form.
+
+        That form resolves at compose time from the shell (or
+        deploy/.env, which does not exist), NOT from env_file, and
+        overrides whatever env_file provides. Verified directly with
+        `docker compose config`: given env_file providing
+        REAL_SECRET=value-from-env-file, an environment: entry of
+        ``- REAL_SECRET=${REAL_SECRET:-}`` renders as REAL_SECRET: ""
+        regardless. This is exactly how DEFAULT_MODEL used to pin a
+        stale openai/gpt-oss-120b default over whatever ../.env said,
+        and the same defect applied to every other entry that used to
+        be declared this way (API keys included).
+
+        Asserted over whatever the environment: block currently
+        contains, not a hardcoded list of names, so a future addition
+        of the same shape fails this test too.
+        """
+        compose_path = REPO_ROOT / "deploy" / "docker-compose.yml"
+        compose = yaml.safe_load(compose_path.read_text())
+
+        environment = compose["services"]["osa"].get("environment") or []
+        offending = [entry for entry in environment if _VAR_DEFAULT_INTERPOLATION.search(entry)]
+        assert offending == [], (
+            f"These environment: entries use ${{VAR:-...}} interpolation, "
+            f"which silently overrides env_file at compose time: {offending}"
+        )
 
 
 class TestEnvExampleCoversAnthropicSettings:
