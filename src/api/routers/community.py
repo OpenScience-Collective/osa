@@ -13,7 +13,7 @@ import sqlite3
 import time
 import uuid
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -25,7 +25,7 @@ from langchain_core.messages.utils import count_tokens_approximately
 from pydantic import BaseModel, Field, field_validator
 
 from src.agents.base import DEFAULT_MAX_CONVERSATION_TOKENS
-from src.agents.content import classify_content_blocks, extract_text
+from src.agents.content import CitationTracker, classify_content_blocks
 from src.api.config import Settings, get_settings
 from src.api.routers.health import compute_community_health
 from src.api.security import AuthScope, ByokCredential, RequireAuth, RequireScopedAuth, resolve_byok
@@ -143,6 +143,22 @@ class ToolCallInfo(BaseModel):
     args: dict = Field(default_factory=dict, description="Tool arguments")
 
 
+class CitationInfo(BaseModel):
+    """One inline citation: the [n] marker in the answer, and its source.
+
+    Only ever populated on the Anthropic path when the model actually cited
+    something (see src/tools/citations.py and src/agents/content.py's
+    CitationTracker). Empty on the OpenRouter path and whenever the model
+    cited nothing, so the field is always present on the response and never
+    lies about what was cited.
+    """
+
+    marker: int = Field(..., description="The [n] used inline in the answer text")
+    source: str = Field(..., description="Stable source identifier, typically a URL")
+    title: str = Field(..., description="Human-readable title of the cited source")
+    cited_text: str = Field(..., description="The exact span of source text the citation points at")
+
+
 class ChatResponse(BaseModel):
     """Response body for chat/ask endpoints."""
 
@@ -150,6 +166,10 @@ class ChatResponse(BaseModel):
     message: ChatMessage = Field(..., description="Assistant response")
     tool_calls: list[ToolCallInfo] = Field(
         default_factory=list, description="Tools called during response generation"
+    )
+    citations: list[CitationInfo] = Field(
+        default_factory=list,
+        description="Inline citations backing the answer's [n] markers, in marker order",
     )
     request_id: str | None = Field(
         default=None,
@@ -171,6 +191,10 @@ class AskResponse(BaseModel):
     answer: str = Field(..., description="Assistant's answer")
     tool_calls: list[ToolCallInfo] = Field(
         default_factory=list, description="Tools called during response generation"
+    )
+    citations: list[CitationInfo] = Field(
+        default_factory=list,
+        description="Inline citations backing the answer's [n] markers, in marker order",
     )
     request_id: str | None = Field(
         default=None,
@@ -1157,21 +1181,60 @@ class AgentResult:
     total_tokens: int
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
+    citations: list[CitationInfo] = field(default_factory=list)
+
+
+def _build_answer_with_citations(content: str | list[Any]) -> tuple[str, list[CitationInfo]]:
+    """Assemble the answer text (with inline [n] markers) and its citation list.
+
+    Walks the message content's text blocks in order (see
+    ``classify_content_blocks``): each block's own text is followed
+    immediately by the marker(s) for whatever it cited, so a marker lands
+    at the end of the span it supports rather than in a trailing dump.
+    Numbering is delegated to ``CitationTracker`` so streaming and
+    non-streaming responses number identically.
+
+    Args:
+        content: A final AIMessage's ``content`` (plain string, or a list
+            of content blocks; see src/agents/content.py's module
+            docstring).
+
+    Returns:
+        The answer text with inline markers, and the citation list in
+        marker order (empty when nothing was cited).
+    """
+    tracker = CitationTracker()
+    parts: list[str] = []
+    for block in classify_content_blocks(content):
+        if block.kind != "text":
+            continue
+        parts.append(block.text)
+        marker_text, _new_marks = tracker.record_block(block.citations)
+        if marker_text:
+            parts.append(marker_text)
+
+    answer = "".join(parts)
+    citations = [
+        CitationInfo(marker=m.marker, source=m.source, title=m.title, cited_text=m.cited_text)
+        for m in tracker.marks
+    ]
+    return answer, citations
 
 
 def _extract_agent_result(result: dict) -> AgentResult:
-    """Extract response content, tool calls, and token usage from agent result.
+    """Extract response content, tool calls, citations, and token usage.
 
     Consolidates the common post-invocation logic shared by ask and chat endpoints.
     """
     response_content = ""
+    citations: list[CitationInfo] = []
     if result.get("messages"):
         last_msg = result["messages"][-1]
         if isinstance(last_msg, AIMessage):
             # last_msg.content is a plain string unless thinking is enabled or
             # tools are bound, in which case it is a list of typed content
             # blocks (see src/agents/content.py's module docstring).
-            response_content = extract_text(last_msg.content)
+            response_content, citations = _build_answer_with_citations(last_msg.content)
 
     tools_called = extract_tool_names(result)
     tool_calls_info = [
@@ -1189,6 +1252,7 @@ def _extract_agent_result(result: dict) -> AgentResult:
         total_tokens=usage.total_tokens,
         cache_read_tokens=usage.cache_read_tokens,
         cache_creation_tokens=usage.cache_creation_tokens,
+        citations=citations,
     )
 
 
@@ -1372,6 +1436,7 @@ def create_community_router(community_id: str) -> APIRouter:
             return AskResponse(
                 answer=ar.response_content,
                 tool_calls=ar.tool_calls_info,
+                citations=ar.citations,
                 request_id=getattr(http_request.state, "request_id", None),
                 model=awm.model,
             )
@@ -1486,6 +1551,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 session_id=session.session_id,
                 message=ChatMessage(role="assistant", content=ar.response_content),
                 tool_calls=ar.tool_calls_info,
+                citations=ar.citations,
                 request_id=getattr(http_request.state, "request_id", None),
                 model=awm.model,
             )
@@ -2071,12 +2137,20 @@ async def _stream_ask_response(
         data: {"event": "thinking"}
         data: {"event": "tool_start", "name": "tool_name", "input": {...}}
         data: {"event": "tool_end", "name": "tool_name", "output": {...}}
-        data: {"event": "done", "request_id": "...", "model": "..."}
+        data: {"event": "citation", "marker": 1, "source": "...", "title": "...", "cited_text": "..."}
+        data: {"event": "done", "request_id": "...", "model": "...", "citations": [...]}
         data: {"event": "error", "message": "error text"}
 
     The `thinking` event is a liveness signal only -- it never carries the
     model's reasoning text (see src/agents/content.py's module docstring);
     clients that do not recognize it are expected to ignore it.
+
+    A `citation` event fires the first time a source is cited, at the point
+    in the stream where Claude attaches it (the end of the span it
+    supports); its marker text (e.g. "[1]") is also appended to the
+    `content` stream at that same point so a client that ignores `citation`
+    events still sees the marker inline. `done` repeats the full citation
+    list so a client that missed a `citation` event can still render it.
     """
     start_time = time.monotonic()
     tools_called: list[str] = []
@@ -2085,6 +2159,7 @@ async def _stream_ask_response(
     total_output_tokens = 0
     total_cache_read_tokens = 0
     total_cache_creation_tokens = 0
+    citation_tracker = CitationTracker()
 
     # Per-request id (set by metrics middleware) so the widget can attach feedback.
     request_id = getattr(http_request.state, "request_id", None) if http_request else None
@@ -2115,11 +2190,28 @@ async def _stream_ask_response(
                 chunk = event.get("data", {}).get("chunk", {})
                 raw_content = getattr(chunk, "content", None)
                 if raw_content:
-                    for block_kind, text in classify_content_blocks(raw_content):
-                        if block_kind == "text":
-                            sse_event = {"event": "content", "content": text}
-                            yield f"data: {json.dumps(sse_event)}\n\n"
-                        elif block_kind == "thinking":
+                    for block in classify_content_blocks(raw_content):
+                        if block.kind == "text":
+                            if block.text:
+                                sse_event = {"event": "content", "content": block.text}
+                                yield f"data: {json.dumps(sse_event)}\n\n"
+                            if block.citations:
+                                marker_text, new_marks = citation_tracker.record_block(
+                                    block.citations
+                                )
+                                if marker_text:
+                                    sse_event = {"event": "content", "content": marker_text}
+                                    yield f"data: {json.dumps(sse_event)}\n\n"
+                                for mark in new_marks:
+                                    sse_event = {
+                                        "event": "citation",
+                                        "marker": mark.marker,
+                                        "source": mark.source,
+                                        "title": mark.title,
+                                        "cited_text": mark.cited_text,
+                                    }
+                                    yield f"data: {json.dumps(sse_event)}\n\n"
+                        elif block.kind == "thinking":
                             yield f"data: {json.dumps({'event': 'thinking'})}\n\n"
 
             elif kind == "on_chat_model_end":
@@ -2154,6 +2246,15 @@ async def _stream_ask_response(
             "event": "done",
             "request_id": request_id,
             "model": awm.model if awm else None,
+            "citations": [
+                {
+                    "marker": m.marker,
+                    "source": m.source,
+                    "title": m.title,
+                    "cited_text": m.cited_text,
+                }
+                for m in citation_tracker.marks
+            ],
         }
         yield f"data: {json.dumps(sse_event)}\n\n"
 
@@ -2272,13 +2373,21 @@ async def _stream_chat_response(
         data: {"event": "tool_start", "name": "tool_name", "input": {...}}
         data: {"event": "tool_end", "name": "tool_name", "output": {...}}
         data: {"event": "session", "session_id": "..."}  (sent first)
+        data: {"event": "citation", "marker": 1, "source": "...", "title": "...", "cited_text": "..."}
         data: {"event": "warning", "message": "..."}  (optional, before done)
-        data: {"event": "done", "session_id": "...", "request_id": "...", "model": "..."}
+        data: {"event": "done", "session_id": "...", "request_id": "...", "model": "...", "citations": [...]}
         data: {"event": "error", "message": "error text"}
 
     The `thinking` event is a liveness signal only -- it never carries the
     model's reasoning text (see src/agents/content.py's module docstring);
     clients that do not recognize it are expected to ignore it.
+
+    A `citation` event fires the first time a source is cited; its marker
+    text is also appended to the `content` stream at that point (see
+    _stream_ask_response's docstring for the full rationale). `done`
+    repeats the full citation list, and the markers are part of
+    `full_response`, so they are persisted in session history exactly as
+    the user saw them.
     """
     start_time = time.monotonic()
     tools_called: list[str] = []
@@ -2287,6 +2396,7 @@ async def _stream_chat_response(
     total_output_tokens = 0
     total_cache_read_tokens = 0
     total_cache_creation_tokens = 0
+    citation_tracker = CitationTracker()
 
     # The metrics middleware assigns a per-request UUID; expose it only on the
     # final `done` event (below) so the widget attaches it only to a reply that
@@ -2328,12 +2438,30 @@ async def _stream_chat_response(
                 chunk = event.get("data", {}).get("chunk", {})
                 raw_content = getattr(chunk, "content", None)
                 if raw_content:
-                    for block_kind, text in classify_content_blocks(raw_content):
-                        if block_kind == "text":
-                            full_response += text
-                            sse_event = {"event": "content", "content": text}
-                            yield f"data: {json.dumps(sse_event)}\n\n"
-                        elif block_kind == "thinking":
+                    for block in classify_content_blocks(raw_content):
+                        if block.kind == "text":
+                            if block.text:
+                                full_response += block.text
+                                sse_event = {"event": "content", "content": block.text}
+                                yield f"data: {json.dumps(sse_event)}\n\n"
+                            if block.citations:
+                                marker_text, new_marks = citation_tracker.record_block(
+                                    block.citations
+                                )
+                                if marker_text:
+                                    full_response += marker_text
+                                    sse_event = {"event": "content", "content": marker_text}
+                                    yield f"data: {json.dumps(sse_event)}\n\n"
+                                for mark in new_marks:
+                                    sse_event = {
+                                        "event": "citation",
+                                        "marker": mark.marker,
+                                        "source": mark.source,
+                                        "title": mark.title,
+                                        "cited_text": mark.cited_text,
+                                    }
+                                    yield f"data: {json.dumps(sse_event)}\n\n"
+                        elif block.kind == "thinking":
                             yield f"data: {json.dumps({'event': 'thinking'})}\n\n"
 
             elif kind == "on_chat_model_end":
@@ -2389,6 +2517,15 @@ async def _stream_chat_response(
             "session_id": session.session_id,
             "request_id": request_id,
             "model": awm.model if awm else None,
+            "citations": [
+                {
+                    "marker": m.marker,
+                    "source": m.source,
+                    "title": m.title,
+                    "cited_text": m.cited_text,
+                }
+                for m in citation_tracker.marks
+            ],
         }
         yield f"data: {json.dumps(sse_event)}\n\n"
 
