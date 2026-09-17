@@ -32,13 +32,17 @@ ARG GIT_COMMIT=unknown
 ENV GIT_COMMIT_SHA=${GIT_COMMIT}
 
 # Copy version.py first (required by hatchling for version detection)
-# Then copy pyproject.toml and README.md for dependency installation
+# Then copy pyproject.toml, the lockfile, and README.md for dependency installation
 COPY src/version.py ./src/version.py
-COPY pyproject.toml README.md ./
+COPY pyproject.toml uv.lock README.md ./
 
-# Install uv and dependencies
+# Install uv and dependencies from the lockfile, so the image ships exactly
+# what was resolved and tested, not whatever PyPI resolves on build day.
+# UV_PROJECT_ENVIRONMENT=/usr/local keeps packages where CMD below already
+# finds them; --no-install-project is correct because the container runs
+# from /app/src on sys.path (see CMD), never from the installed distribution.
 RUN pip install uv && \
-    uv pip install --system --no-cache ".[server]"
+    UV_PROJECT_ENVIRONMENT=/usr/local uv sync --frozen --no-dev --extra server --no-install-project
 
 # Copy the rest of the application code
 COPY src/ ./src/
