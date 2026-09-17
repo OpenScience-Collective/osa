@@ -18,20 +18,35 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from src.core.services.anthropic_models import accepts_temperature
+from src.core.services.anthropic_models import accepts_temperature, normalize_model
 from src.knowledge.db import get_connection, update_summarization_status, upsert_faq_entry
+from src.metrics.cost import estimate_cost
 
 logger = logging.getLogger(__name__)
 console = Console()
 
-# Cost tracking (per 1M tokens) - ANTHROPIC MODELS ONLY
-# Note: These constants are used for legacy cost estimation and may not
-# reflect actual costs when using non-Anthropic models (e.g., qwen, deepseek).
-# Cost estimates should be considered approximate.
-HAIKU_COST_PER_1M_INPUT = 0.25
-HAIKU_COST_PER_1M_OUTPUT = 1.25
-SONNET_COST_PER_1M_INPUT = 3.0
-SONNET_COST_PER_1M_OUTPUT = 15.0
+# Model ids used by the strategy comparison in estimate_summarization_cost.
+# Priced through src.metrics.cost, the same table the API path bills against,
+# so a rate change lands in one place.
+CHEAP_MODEL = "claude-haiku-4-5"
+QUALITY_MODEL = "claude-sonnet-5"
+
+# Fraction of scored threads expected to clear the quality threshold and be
+# summarized, for the "hybrid" strategy: score everything cheaply, summarize
+# only the survivors on the quality model.
+HYBRID_SUMMARIZED_FRACTION = 0.2
+
+# Characters per token, Anthropic's own rule of thumb for English prose. Used
+# only for cost accounting: the two LLM helpers return a score and a summary,
+# not the responses, so real usage_metadata token counts are not available at
+# the call site.
+CHARS_PER_TOKEN = 4
+
+# Output tokens each call produces, for the same accounting. A quality score is
+# a single number; a summary is a question, an answer and tags, which is the
+# ~300 tokens estimate_summarization_cost assumes per thread.
+SCORE_OUTPUT_TOKENS = 10
+SUMMARY_OUTPUT_TOKENS = 300
 
 
 @dataclass
@@ -228,11 +243,39 @@ Format as JSON:
         raise
 
 
+def _estimate_call_cost(model: str, thread_context: str, output_tokens: int) -> float:
+    """Estimate the cost of one LLM call over one thread.
+
+    Priced through ``src.metrics.cost.estimate_cost`` on the model that was
+    actually used, so a community running both agents on Haiku is not charged
+    Sonnet rates in the run summary.
+
+    Approximate in two known directions: the input is derived from the thread's
+    character count rather than counted (the caller has a score or a summary
+    back, not the response object), and the fixed prompt overhead of a few
+    dozen tokens is not counted at all.
+
+    Args:
+        model: Normalized model id the call ran on.
+        thread_context: The formatted thread sent as input.
+        output_tokens: Expected output size for this kind of call.
+
+    Returns:
+        Estimated cost in USD.
+    """
+    return estimate_cost(model, len(thread_context) // CHARS_PER_TOKEN, output_tokens)
+
+
 def estimate_summarization_cost(
     list_name: str,
     project: str = "eeglab",
 ) -> dict:
     """Estimate cost to summarize all threads.
+
+    Compares the three strategies a community can pick between, priced from
+    ``src.metrics.cost``, rather than the models any one community has
+    configured. Thread sizes are estimated from message counts, so the figures
+    are order-of-magnitude guidance for choosing a strategy, not a bill.
 
     Args:
         list_name: Mailing list identifier
@@ -271,21 +314,15 @@ def estimate_summarization_cost(
         # Estimate tokens (heuristic: 600 tokens per message)
         avg_tokens = sum(row["msg_count"] * 600 for row in threads) // max(thread_count, 1)
         total_input_tokens = thread_count * avg_tokens
-        total_output_tokens = thread_count * 300  # Summaries ~300 tokens
+        total_output_tokens = thread_count * SUMMARY_OUTPUT_TOKENS
 
-        # Calculate costs
-        haiku_cost = (
-            total_input_tokens * HAIKU_COST_PER_1M_INPUT / 1_000_000
-            + total_output_tokens * HAIKU_COST_PER_1M_OUTPUT / 1_000_000
-        )
+        # Cost of running every thread through one model or the other.
+        haiku_cost = estimate_cost(CHEAP_MODEL, total_input_tokens, total_output_tokens)
+        sonnet_cost = estimate_cost(QUALITY_MODEL, total_input_tokens, total_output_tokens)
 
-        sonnet_cost = (
-            total_input_tokens * SONNET_COST_PER_1M_INPUT / 1_000_000
-            + total_output_tokens * SONNET_COST_PER_1M_OUTPUT / 1_000_000
-        )
-
-        # Hybrid approach (20% with Sonnet after Haiku scoring)
-        hybrid_cost = haiku_cost + (sonnet_cost * 0.2)
+        # Hybrid: score everything on the cheap model, summarize the survivors
+        # on the quality model.
+        hybrid_cost = haiku_cost + sonnet_cost * HYBRID_SUMMARIZED_FRACTION
 
         return {
             "thread_count": thread_count,
@@ -378,7 +415,7 @@ def summarize_threads(
     """
     # Load community config for FAQ generation settings
     from src.assistants import registry
-    from src.core.services.anthropic_llm import create_anthropic_llm, normalize_model
+    from src.core.services.anthropic_llm import create_anthropic_llm
 
     config = registry.get_community_config(project)
     faq_config = config.faq_generation if config else None
@@ -408,10 +445,12 @@ def summarize_threads(
             enable_caching=faq_config.summary_agent.enable_caching,
         )
 
-        # Track model name for database. Normalized, so a config still carrying
-        # a legacy OpenRouter-style id records the id that was actually billed,
-        # which is also the id src/metrics/cost.py prices.
+        # Track model names for the database and for cost accounting.
+        # Normalized, so a config still carrying a legacy OpenRouter-style id
+        # records the id that was actually billed, which is also the id
+        # src/metrics/cost.py prices.
         summary_model_name = normalize_model(faq_config.summary_agent.model)
+        eval_model_name = normalize_model(faq_config.evaluation_agent.model)
 
         # Use config threshold if not overridden
         if quality_threshold is None:
@@ -426,7 +465,8 @@ def summarize_threads(
             "No faq_generation config found for %s, using defaults",
             project,
         )
-        summary_model_name = "claude-haiku-4-5"
+        summary_model_name = CHEAP_MODEL
+        eval_model_name = CHEAP_MODEL
         eval_agent = create_anthropic_llm(
             model=summary_model_name,
             temperature=0.0,  # Deterministic scoring
@@ -503,6 +543,13 @@ def summarize_threads(
                     # Score quality
                     quality_score = _score_thread_quality(thread_context, eval_agent)
 
+                    # The scoring call billed whether or not its answer parsed
+                    # (an API failure raises instead of returning None), and it
+                    # runs on every thread, so it is most of a run's cost.
+                    total_cost += _estimate_call_cost(
+                        eval_model_name, thread_context, SCORE_OUTPUT_TOKENS
+                    )
+
                     if quality_score is None:
                         # Scoring failed due to LLM error (not a low score, which would be < threshold)
                         # These threads are marked 'failed' and won't be retried automatically
@@ -533,6 +580,13 @@ def summarize_threads(
 
                     # Summarize with summary agent (for high-quality threads)
                     summary = _summarize_thread(thread_context, summary_agent)
+
+                    # Same reasoning as the scoring call: unparsable output
+                    # still cost what it cost.
+                    total_cost += _estimate_call_cost(
+                        summary_model_name, thread_context, SUMMARY_OUTPUT_TOKENS
+                    )
+
                     if not summary:
                         update_summarization_status(
                             conn,
@@ -572,13 +626,6 @@ def summarize_threads(
                     )
 
                     summarized += 1
-
-                    # Estimate cost (rough)
-                    tokens = len(thread_context) // 4  # ~4 chars per token
-                    cost = (
-                        tokens * (SONNET_COST_PER_1M_INPUT + SONNET_COST_PER_1M_OUTPUT) / 1_000_000
-                    )
-                    total_cost += cost
 
                     # Commit every batch
                     if summarized % batch_size == 0:
