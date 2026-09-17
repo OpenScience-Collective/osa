@@ -64,6 +64,18 @@ logger = logging.getLogger(__name__)
 # Models (shared across all community routers)
 # ---------------------------------------------------------------------------
 
+# Built from OFFERED_MODELS rather than spelled out, so a third offered model
+# cannot leave this description (which is what /docs and the API reference
+# show) naming two. See _select_model for the rule it describes: on the Claude
+# Platform any offered model is allowed from any caller, because the platform
+# runs only these two and neither can be used to run up an unbounded bill.
+MODEL_OVERRIDE_DESCRIPTION = (
+    "Optional model override: "
+    + " or ".join(f"'{model}'" for model in sorted(OFFERED_MODELS))
+    + ", or a legacy alias of either. Any other id requires your own OpenRouter "
+    "key via the X-OpenRouter-Key header."
+)
+
 
 class ChatMessage(BaseModel):
     """A single chat message."""
@@ -111,10 +123,7 @@ class ChatRequest(BaseModel):
         description="Session ID for conversation continuity. If not provided, a new session is created.",
     )
     stream: bool = Field(default=True, description="Whether to stream the response")
-    model: str | None = Field(
-        default=None,
-        description="Optional model override (OpenRouter format: creator/model-name). Requires BYOK.",
-    )
+    model: str | None = Field(default=None, description=MODEL_OVERRIDE_DESCRIPTION)
     page_context: PageContext | None = Field(
         default=None,
         description="Optional context about the page where the widget is embedded",
@@ -130,10 +139,7 @@ class AskRequest(BaseModel):
         default=None,
         description="Optional context about the page where the widget is embedded",
     )
-    model: str | None = Field(
-        default=None,
-        description="Optional model override (OpenRouter format: creator/model-name). Requires BYOK.",
-    )
+    model: str | None = Field(default=None, description=MODEL_OVERRIDE_DESCRIPTION)
 
 
 class ToolCallInfo(BaseModel):
