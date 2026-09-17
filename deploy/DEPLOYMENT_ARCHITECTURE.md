@@ -53,13 +53,15 @@ Users can pass their own API keys via HTTP headers:
 
 | Header | Provider |
 |--------|----------|
-| `X-OpenAI-API-Key` | OpenAI |
-| `X-Anthropic-API-Key` | Anthropic |
+| `X-Anthropic-API-Key` | Anthropic (Claude Platform); wins if both are sent |
 | `X-OpenRouter-Key` | OpenRouter |
+
+Those two, and no others.
+A key header naming any other provider is ignored, and does not authenticate the request.
 
 ### Authentication Policy
 
-- **With BYOK**: Users providing any BYOK header bypass server API key requirement
+- **With BYOK**: Users providing either header above bypass the server API key requirement, because the key they send is the key their request runs on
 - **Without BYOK**: Users must provide server API key via `X-API-Key` header
 
 ### Example Request with BYOK
@@ -85,10 +87,11 @@ No `X-API-Key` required when using BYOK headers.
 ### CLI Configuration for BYOK
 
 ```bash
-# Set up your API key
-osa init --api-key "sk-or-your-key"
+# Set up your API key (the provider is read from the key's prefix)
+osa init --api-key "sk-ant-your-key"
 
-# Or set it directly
+# Or set it directly, per provider
+osa config set --anthropic-key "sk-ant-your-key"
 osa config set --openrouter-key "sk-or-your-key"
 
 # Ask a question (uses saved key via BYOK)

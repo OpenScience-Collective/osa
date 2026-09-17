@@ -59,13 +59,11 @@ def _expected_byok_headers() -> set[str]:
     real credential"), each mapped back to its APIKeyHeader name via the
     `{provider}_key_header` naming convention used in that module.
 
-    Deliberately excludes X-OpenAI-API-Key: security.py still declares
-    openai_key_header and still checks its truthiness in the server-auth
-    bypass, but "openai" is not a valid ByokCredential.provider and that
-    header's value is never turned into a real credential (there is no
-    OpenAI code path any more; see issue #363). It is a header the backend
-    no longer meaningfully reads, so the worker correctly omits it, and a
-    drift test that required the worker to carry it would be wrong.
+    Deliberately excludes X-OpenAI-API-Key: there is no OpenAI code path any
+    more (issue #363), so "openai" is not a valid ByokCredential.provider and
+    the backend no longer reads that header at all (issue #393 removed the last
+    place it did). The worker correctly omits it, and a drift test that
+    required the worker to carry it would be wrong.
     """
     providers = typing.get_args(typing.get_type_hints(security.ByokCredential)["provider"])
     return {getattr(security, f"{provider}_key_header").model.name for provider in providers}
