@@ -147,13 +147,11 @@ deploy_update() {
         ENV_FILE="${SCRIPT_DIR}/.env"
     fi
 
-    ENV_ARGS=""
-    if [ -f "$ENV_FILE" ]; then
-        ENV_ARGS="--env-file ${ENV_FILE}"
-        log "Using env file: ${ENV_FILE}"
-    else
-        log "Warning: No .env file found"
+    if [ ! -f "$ENV_FILE" ]; then
+        error_exit "No .env file found (checked ${SCRIPT_DIR}/../.env and ${SCRIPT_DIR}/.env). Refusing to deploy a misconfigured container."
     fi
+    ENV_ARGS="--env-file ${ENV_FILE}"
+    log "Using env file: ${ENV_FILE}"
 
     # Stop and remove existing container
     log "Stopping existing container..."
