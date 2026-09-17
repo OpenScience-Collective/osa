@@ -14,8 +14,8 @@ logger = logging.getLogger(__name__)
 # API key header for server authentication
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
-# Header extractors for BYOK (defined before verify_api_key which uses them)
-openai_key_header = APIKeyHeader(name="X-OpenAI-API-Key", auto_error=False)
+# Header extractors for BYOK (defined before verify_api_key which uses them).
+# One per provider resolve_byok knows about, and no others: see verify_api_key.
 anthropic_key_header = APIKeyHeader(name="X-Anthropic-API-Key", auto_error=False)
 openrouter_key_header = APIKeyHeader(name="X-OpenRouter-Key", auto_error=False)
 
@@ -64,7 +64,6 @@ def resolve_byok(
 async def verify_api_key(
     api_key: Annotated[str | None, Security(api_key_header)],
     settings: Annotated[Settings, Depends(get_settings)],
-    openai_key: Annotated[str | None, Security(openai_key_header)] = None,
     anthropic_key: Annotated[str | None, Security(anthropic_key_header)] = None,
     openrouter_key: Annotated[str | None, Security(openrouter_key_header)] = None,
 ) -> str | None:
@@ -80,6 +79,13 @@ async def verify_api_key(
     BYOK Policy: If user provides their own LLM API key (BYOK), they don't
     need a server API key. This allows researchers to use their own keys
     without requiring server authentication.
+
+    The two headers accepted here are exactly the two ``resolve_byok``
+    understands. That is the whole safety argument for the bypass: whatever
+    the caller sends is the credential the request runs on, so a junk value
+    fails upstream against their own provider. A header we accepted here but
+    dropped afterwards would instead fall through to the community's key or
+    the platform's, and hand out answers we pay for (issue #393).
     """
     # If auth is not required, skip verification
     if not settings.require_api_auth:
@@ -91,7 +97,7 @@ async def verify_api_key(
 
     # BYOK bypass: If user provides their own LLM key, skip server auth
     # This allows researchers to use the service with their own API keys
-    if openai_key or anthropic_key or openrouter_key:
+    if anthropic_key or openrouter_key:
         return None
 
     valid_keys = settings.parse_admin_keys()
