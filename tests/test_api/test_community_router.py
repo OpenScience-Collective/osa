@@ -469,32 +469,59 @@ class TestCommunityConfigHealthStatus:
         assert isinstance(health["warnings"], list)
 
     def test_public_metrics_config_health_has_warnings_for_missing_key(
-        self, client: TestClient
+        self, tmp_path, monkeypatch
     ) -> None:
-        """config_health should include warnings when API key env var is not set."""
+        """config_health should include warnings when API key env var is not set.
+
+        No shipped community sets openrouter_api_key_env_var any more
+        (issue #363: the four that used to are now platform-funded by
+        default), but the field is still supported, so this monkeypatches
+        it onto a real, registered CommunityConfig rather than searching
+        the registry for a shipped one that no longer exists. Also clears
+        anthropic_api_key_env_var, which compute_community_health now
+        checks first, so the OpenRouter branch under test is actually
+        reached.
+
+        Builds a fresh router bound to the just-patched config instead of
+        reusing this class's ``client`` fixture: that fixture's ``app``
+        (from src.api.main) closes its community routes over whatever
+        registry snapshot existed the first time src.api.main was
+        imported in this test session. Other test modules' own
+        discover_assistants() calls run later and replace the registry's
+        CommunityConfig objects with new ones carrying the same field
+        values but a different identity, so monkeypatching a
+        freshly-fetched object would not necessarily be the one the
+        already-built routes actually read.
+        """
+        from unittest.mock import patch
+
         from src.assistants import registry
+        from src.metrics.db import init_metrics_db
 
-        # Find a community with openrouter_api_key_env_var
-        for assistant in registry.list_all():
-            config = assistant.community_config
-            if config and config.openrouter_api_key_env_var:
-                env_var = config.openrouter_api_key_env_var
-                original = os.environ.pop(env_var, None)
-                try:
-                    response = client.get(f"/{assistant.id}/metrics/public")
-                    assert response.status_code == 200
-                    health = response.json()["config_health"]
-                    assert health["api_key"] == "missing"
-                    assert len(health["warnings"]) > 0
-                    assert any("not sustainable" in w for w in health["warnings"])
-                    # Env var names must not leak to public endpoint
-                    assert not any(env_var in w for w in health["warnings"])
-                finally:
-                    if original is not None:
-                        os.environ[env_var] = original
-                return
+        info = registry.get("hed")
+        assert info is not None and info.community_config is not None
+        config = info.community_config
+        env_var = "OPENROUTER_API_KEY_TEST_HED_PUBLIC_METRICS"
+        monkeypatch.setattr(config, "anthropic_api_key_env_var", None)
+        monkeypatch.setattr(config, "openrouter_api_key_env_var", env_var)
+        monkeypatch.delenv(env_var, raising=False)
 
-        pytest.skip("No community with openrouter_api_key_env_var configured")
+        router = create_community_router("hed")
+        app = FastAPI()
+        app.include_router(router)
+
+        db_path = tmp_path / "metrics.db"
+        init_metrics_db(db_path)
+        with patch("src.metrics.db.get_metrics_db_path", return_value=db_path):
+            response = TestClient(app).get("/hed/metrics/public")
+
+        assert response.status_code == 200
+        health = response.json()["config_health"]
+        assert health["api_key"] == "missing"
+        assert len(health["warnings"]) > 0
+        assert any("not sustainable" in w for w in health["warnings"])
+        # Env var names must not leak to public endpoint
+        assert not any(env_var in w for w in health["warnings"])
 
 
 class TestCommunityConfigOfferedModels:

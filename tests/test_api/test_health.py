@@ -279,48 +279,47 @@ class TestComputeCommunityHealth:
         assert isinstance(result["documents"], int)
         assert isinstance(result["warnings"], list)
 
-    def test_missing_api_key_env_var_produces_warning(self) -> None:
-        """Should warn when env var is configured but not set."""
-        # Find a community that has openrouter_api_key_env_var configured
-        for assistant in registry.list_all():
-            config = assistant.community_config
-            if config and config.openrouter_api_key_env_var:
-                env_var = config.openrouter_api_key_env_var
-                original = os.environ.pop(env_var, None)
-                try:
-                    result = compute_community_health(config)
-                    assert result["api_key"] == "missing"
-                    assert result["status"] == "error"
-                    assert any(env_var in w for w in result["warnings"])
-                    assert any("not sustainable" in w for w in result["warnings"])
-                finally:
-                    if original is not None:
-                        os.environ[env_var] = original
-                return
+    def test_missing_openrouter_api_key_env_var_produces_warning(self, monkeypatch) -> None:
+        """Should warn when the OpenRouter env var is configured but not set.
 
-        pytest.skip("No community with openrouter_api_key_env_var configured")
+        No shipped community sets openrouter_api_key_env_var any more
+        (issue #363: the four that used to are now platform-funded by
+        default), but the field is still supported, so this monkeypatches
+        it onto a real, registered CommunityConfig rather than searching
+        the registry for a shipped one that no longer exists. Also clears
+        anthropic_api_key_env_var, which compute_community_health now
+        checks first, so the OpenRouter branch under test is actually
+        reached.
+        """
+        info = registry.get("hed")
+        assert info is not None and info.community_config is not None
+        config = info.community_config
+        env_var = "OPENROUTER_API_KEY_TEST_HED_HEALTH"
+        monkeypatch.setattr(config, "anthropic_api_key_env_var", None)
+        monkeypatch.setattr(config, "openrouter_api_key_env_var", env_var)
+        monkeypatch.delenv(env_var, raising=False)
 
-    def test_set_api_key_env_var_is_healthy(self) -> None:
-        """Should be healthy when env var is set and docs exist."""
-        for assistant in registry.list_all():
-            config = assistant.community_config
-            if config and config.openrouter_api_key_env_var and config.documentation:
-                env_var = config.openrouter_api_key_env_var
-                original = os.environ.get(env_var)
-                try:
-                    os.environ[env_var] = "sk-or-v1-test"
-                    result = compute_community_health(config)
-                    assert result["api_key"] == "configured"
-                    assert result["status"] == "healthy"
-                    assert not any(env_var in w for w in result["warnings"])
-                finally:
-                    if original is not None:
-                        os.environ[env_var] = original
-                    elif env_var in os.environ:
-                        del os.environ[env_var]
-                return
+        result = compute_community_health(config)
+        assert result["api_key"] == "missing"
+        assert result["status"] == "error"
+        assert any(env_var in w for w in result["warnings"])
+        assert any("not sustainable" in w for w in result["warnings"])
 
-        pytest.skip("No community with openrouter_api_key_env_var configured")
+    def test_set_openrouter_api_key_env_var_is_healthy(self, monkeypatch) -> None:
+        """Should be healthy when the OpenRouter env var is set and docs exist."""
+        info = registry.get("hed")
+        assert info is not None and info.community_config is not None
+        config = info.community_config
+        assert config.documentation, "hed is expected to have documentation configured"
+        env_var = "OPENROUTER_API_KEY_TEST_HED_HEALTH"
+        monkeypatch.setattr(config, "anthropic_api_key_env_var", None)
+        monkeypatch.setattr(config, "openrouter_api_key_env_var", env_var)
+        monkeypatch.setenv(env_var, "sk-or-v1-test")
+
+        result = compute_community_health(config)
+        assert result["api_key"] == "configured"
+        assert result["status"] == "healthy"
+        assert not any(env_var in w for w in result["warnings"])
 
     def test_missing_anthropic_api_key_env_var_produces_warning(self, monkeypatch) -> None:
         """A configured but unset anthropic_api_key_env_var reports missing/error.
