@@ -34,7 +34,7 @@ from src.assistants.community import CommunityAssistant
 from src.assistants.community import PageContext as AgentPageContext
 from src.assistants.registry import AssistantInfo
 from src.core.config.community import WidgetConfig
-from src.core.services.anthropic_llm import create_anthropic_llm, normalize_model
+from src.core.services.anthropic_llm import OFFERED_MODELS, create_anthropic_llm, normalize_model
 from src.core.services.litellm_llm import DEFAULT_MODEL as OPENROUTER_DEFAULT_MODEL
 from src.core.services.litellm_llm import DEFAULT_PROVIDER as OPENROUTER_DEFAULT_PROVIDER
 from src.core.services.litellm_llm import create_openrouter_llm, to_openrouter_model
@@ -211,6 +211,13 @@ class WidgetConfigResponse(BaseModel):
     theme_color: str | None = Field(default=None, description="Primary theme color as hex #RRGGBB")
 
 
+class OfferedModelResponse(BaseModel):
+    """A model offered by the platform, for widget model-menu display."""
+
+    id: str = Field(..., description="First-party model identifier")
+    label: str = Field(..., description="Human-readable display label")
+
+
 class CommunityConfigResponse(BaseModel):
     """Community configuration information."""
 
@@ -220,6 +227,9 @@ class CommunityConfigResponse(BaseModel):
     default_model: str = Field(..., description="Default LLM model for this community")
     default_model_provider: str | None = Field(
         default=None, description="Default provider for model routing"
+    )
+    offered_models: list[OfferedModelResponse] = Field(
+        ..., description="Models the platform offers, for the widget model menu"
     )
     widget: WidgetConfigResponse = Field(
         ..., description="Widget display configuration (title, placeholder, etc.)"
@@ -1574,6 +1584,10 @@ def create_community_router(community_id: str) -> APIRouter:
             description=info.description,
             default_model=default_model,
             default_model_provider=default_provider,
+            offered_models=[
+                OfferedModelResponse(id=model_id, label=label)
+                for model_id, label in OFFERED_MODELS.items()
+            ],
             widget=WidgetConfigResponse(**widget_cfg.resolve(info.name, logo_url=conv_logo)),
             status=health_status,
         )

@@ -23,11 +23,6 @@ cors_origins:
   - https://www.hedtools.org
   - https://hedtools.org
 
-# Per-community OpenRouter API key (optional)
-# If specified, this community will use its own API key instead of the platform default
-# The backend must have this environment variable set
-openrouter_api_key_env_var: "OPENROUTER_API_KEY_HED"
-
 # Community maintainers (GitHub usernames)
 # Used for scoped admin access and budget alert @mentions
 maintainers:

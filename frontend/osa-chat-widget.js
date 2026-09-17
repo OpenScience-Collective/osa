@@ -67,23 +67,52 @@
     console.log('[OSA] Using DEV backend:', CONFIG.apiEndpoint);
   }
 
-  // Default model options for settings dropdown
-  // Last updated: 2026-03
+  // Fallback model options for the settings dropdown, used only until
+  // fetchCommunityConfig's offered_models response arrives (or if a
+  // community config ever omits that field). The live list is the source
+  // of truth; see offeredModels below.
   const DEFAULT_MODELS = [
-    { value: 'anthropic/claude-sonnet-4.6', label: 'Claude Sonnet 4.6' },
-    { value: 'anthropic/claude-haiku-4.5', label: 'Claude Haiku 4.5' },
-    { value: 'openai/gpt-5.2-chat', label: 'GPT-5.2 Chat' },
-    { value: 'openai/gpt-5-mini', label: 'GPT-5 Mini' },
-    { value: 'google/gemini-3-flash-preview', label: 'Gemini 3 Flash' },
-    { value: 'google/gemini-3-pro-preview', label: 'Gemini 3 Pro' },
-    { value: 'deepseek/deepseek-v3.2', label: 'DeepSeek V3.2' },
-    { value: 'qwen/qwen3.5-397b-a17b', label: 'Qwen 3.5 397B' }
+    { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
+    { value: 'claude-sonnet-5', label: 'Claude Sonnet 5' }
   ];
+
+  // Models to show in the settings dropdown: the live offered_models list
+  // from the community config endpoint, falling back to DEFAULT_MODELS
+  // until that response arrives.
+  function getModelMenuOptions() {
+    return (offeredModels && offeredModels.length) ? offeredModels : DEFAULT_MODELS;
+  }
 
   // Helper to get human-readable label for a model
   function getModelLabel(modelId) {
-    const model = DEFAULT_MODELS.find(m => m.value === modelId);
+    const model = getModelMenuOptions().find(m => m.value === modelId);
     return model ? model.label : modelId;
+  }
+
+  // A valid model id is either a bare first-party id (e.g. "claude-haiku-4-5")
+  // or an OpenRouter-style "provider/model" id (e.g. "openai/gpt-5"), which
+  // the custom-model field still accepts for BYOK callers.
+  function isValidModelId(model) {
+    if (typeof model !== 'string' || !model) return false;
+    return /^[a-zA-Z0-9._-]+$/.test(model) || /^[a-zA-Z0-9_-]+\/[a-zA-Z0-9._-]+$/.test(model);
+  }
+
+  // BYOK key formats, matching the server-side redaction patterns in
+  // src/core/logging.py so widget-side validation stays in sync with what
+  // the backend actually accepts.
+  const ANTHROPIC_KEY_PATTERN = /^sk-ant-[a-zA-Z0-9_-]{80,}$/i;
+  const OPENROUTER_KEY_PATTERN = /^sk-or-v1-[0-9a-f]{64}$/i;
+
+  // Infer which provider a BYOK key belongs to from its prefix, so
+  // keyProvider never has to be stored as a separate user choice.
+  function inferKeyProvider(apiKey) {
+    if (ANTHROPIC_KEY_PATTERN.test(apiKey)) return 'anthropic';
+    if (OPENROUTER_KEY_PATTERN.test(apiKey)) return 'openrouter';
+    return null;
+  }
+
+  function isValidApiKey(apiKey) {
+    return ANTHROPIC_KEY_PATTERN.test(apiKey) || OPENROUTER_KEY_PATTERN.test(apiKey);
   }
 
   // Track which CONFIG keys were explicitly set by the embedder via setConfig,
@@ -93,6 +122,7 @@
   // State
   let isOpen = false;
   let isLoading = false;
+  let isThinking = false; // True once a 'thinking' SSE event arrives before any content chunk; swaps the loading label to "Thinking..."
   let messages = [];
   let turnstileToken = null;
   let turnstileWidgetId = null;
@@ -101,9 +131,33 @@
   let backendCommitSha = null; // Backend git commit SHA from health check
   let pageContextEnabled = true; // Runtime state for page context toggle
   let chatPopup = null; // Reference to pop-out window (prevents duplicates)
-  let userSettings = { apiKey: null, model: null }; // User settings (BYOK and model selection)
+  let userSettings = { apiKey: null, model: null, keyProvider: null }; // User settings (BYOK and model selection)
   let communityDefaultModel = null; // Community's default model from API
+  let offeredModels = null; // Live offered_models list from the community config API; null until loaded
   let sessionId = null; // Server-side session ID for multi-turn conversations
+
+  // Notice queued by an init-time failure (corrupted/inaccessible settings,
+  // an invalid saved key or model, or corrupted history) that happened
+  // before the widget's DOM existed or before the user had opened it, so
+  // there was nowhere to show it yet. Flushed via showError the first time
+  // the widget is actually opened (see flushPendingNotice).
+  let pendingNotice = null;
+
+  // Queue a notice for display the next time the widget opens, instead of
+  // trying (and failing) to show it immediately at load time.
+  function queuePendingNotice(message) {
+    pendingNotice = pendingNotice ? `${pendingNotice} ${message}` : message;
+  }
+
+  // Show any notice queued by an init-time failure. Called once, the first
+  // time the widget is opened, so a user whose saved settings or history
+  // failed to load is not left silently switched to defaults.
+  function flushPendingNotice(container) {
+    if (pendingNotice) {
+      showError(container, pendingNotice);
+      pendingNotice = null;
+    }
+  }
 
   // Store script URL at load time for reliable pop-out
   const WIDGET_SCRIPT_URL = document.currentScript?.src || null;
@@ -1430,6 +1484,7 @@
     } catch (e) {
       console.error('Failed to load chat history:', e);
       historyLoadFailed = true;
+      queuePendingNotice('Saved chat history is corrupted and could not be loaded.');
     }
     if (messages.length === 0) {
       messages = [{ role: 'assistant', content: CONFIG.initialMessage }];
@@ -1545,7 +1600,7 @@
     try {
       const saved = localStorage.getItem(storageKey);
       if (!saved) {
-        userSettings = { apiKey: null, model: null };
+        userSettings = { apiKey: null, model: null, keyProvider: null };
         return;
       }
 
@@ -1554,46 +1609,42 @@
         parsed = JSON.parse(saved);
       } catch (jsonErr) {
         console.error('[OSA] Saved settings contain invalid JSON:', jsonErr.message);
-        const container = document.querySelector('.osa-chat-widget');
-        if (container && isOpen) {
-          showError(container, 'Saved settings are corrupted. Using defaults.');
-        }
-        userSettings = { apiKey: null, model: null };
+        queuePendingNotice('Saved settings are corrupted. Using defaults.');
+        userSettings = { apiKey: null, model: null, keyProvider: null };
         // Clear corrupted data
         try { localStorage.removeItem(storageKey); } catch {}
         return;
       }
 
-      // Validate API key format if present
-      if (parsed.apiKey) {
-        // Basic format validation: sk-or-v1-[hex]
-        if (!/^sk-or-v1-[0-9a-f]{64}$/i.test(parsed.apiKey)) {
-          console.error('[OSA] Saved API key has invalid format, ignoring');
-          parsed.apiKey = null;
-        }
+      // Validate API key format if present: either an Anthropic or an
+      // OpenRouter key. keyProvider is never read from storage directly;
+      // it is always re-derived from the key itself below, so settings
+      // saved before this phase (with no keyProvider at all) still work.
+      if (parsed.apiKey && !isValidApiKey(parsed.apiKey)) {
+        console.error('[OSA] Saved API key has invalid format, ignoring');
+        queuePendingNotice('Your saved API key is invalid and was ignored.');
+        parsed.apiKey = null;
       }
 
       // Validate model format if present
       if (parsed.model && typeof parsed.model === 'string') {
-        // Validate model format: provider/model-name
-        if (!/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9._-]+$/.test(parsed.model)) {
+        if (!isValidModelId(parsed.model)) {
           console.error('[OSA] Saved model has invalid format, ignoring');
+          queuePendingNotice('Your saved model selection is invalid and was ignored.');
           parsed.model = null;
         }
       }
 
       userSettings = {
         apiKey: parsed.apiKey || null,
-        model: parsed.model || null
+        model: parsed.model || null,
+        keyProvider: inferKeyProvider(parsed.apiKey || '')
       };
     } catch (e) {
       // localStorage access error
       console.error('[OSA] Cannot access localStorage for settings:', e.message);
-      const container = document.querySelector('.osa-chat-widget');
-      if (container && isOpen) {
-        showError(container, 'Cannot access browser storage. Settings will not persist.');
-      }
-      userSettings = { apiKey: null, model: null };
+      queuePendingNotice('Cannot access browser storage. Settings will not persist.');
+      userSettings = { apiKey: null, model: null, keyProvider: null };
     }
   }
 
@@ -1671,6 +1722,17 @@
         if (container && isOpen) {
           disableWidget(container, 'Community configuration is incomplete. Please contact support.');
         }
+      }
+
+      // Offered models drive the settings model menu; DEFAULT_MODELS remains
+      // the fallback if this is missing (older backend) or empty.
+      if (data && Array.isArray(data.offered_models) && data.offered_models.length > 0) {
+        offeredModels = data.offered_models.map(m => ({ value: m.id, label: m.label }));
+      } else {
+        console.warn(
+          '[OSA] Community config response has no offered_models; falling back to DEFAULT_MODELS. ' +
+          'This is expected against an older backend during a rolling deploy, but should not persist.'
+        );
       }
 
       // Apply widget display config from API for fields not explicitly set by the embedder.
@@ -1800,7 +1862,7 @@
     // Update loading label if currently loading
     const loadingLabel = container.querySelector('.osa-loading-label');
     if (loadingLabel) {
-      loadingLabel.textContent = CONFIG.title;
+      loadingLabel.textContent = isThinking ? 'Thinking...' : CONFIG.title;
     }
   }
 
@@ -1815,6 +1877,18 @@
     const customModelField = container.querySelector('#osa-settings-custom-model-field');
     const customModelInput = container.querySelector('#osa-settings-custom-model');
     const modelHint = container.querySelector('#osa-settings-model-hint');
+
+    // Rebuild the model options from the live offered_models list (falls
+    // back to DEFAULT_MODELS until fetchCommunityConfig resolves), so a
+    // config that loads after the widget's initial render is still
+    // reflected the next time settings are opened.
+    if (modelSelect) {
+      const options = getModelMenuOptions()
+        .filter(m => m.value !== communityDefaultModel)
+        .map(m => `<option value="${escapeHtml(m.value)}">${escapeHtml(m.label)}</option>`)
+        .join('');
+      modelSelect.innerHTML = `<option value="default">Default (Community Setting)</option>${options}<option value="custom">Custom</option>`;
+    }
 
     // Update default option label with community default model
     if (modelSelect) {
@@ -1839,8 +1913,8 @@
       apiKeyInput.value = userSettings.apiKey || '';
     }
     if (modelSelect) {
-      // Check if current model is in the default list
-      const isDefaultModel = userSettings.model === null || DEFAULT_MODELS.some(m => m.value === userSettings.model);
+      // Check if current model is in the offered list
+      const isDefaultModel = userSettings.model === null || getModelMenuOptions().some(m => m.value === userSettings.model);
       if (isDefaultModel) {
         modelSelect.value = userSettings.model || 'default';
         if (customModelField) customModelField.style.display = 'none';
@@ -1887,9 +1961,10 @@
     const apiKey = apiKeyInput ? apiKeyInput.value.trim() : '';
     const modelSelection = modelSelect ? modelSelect.value : 'default';
 
-    // Validate API key format if provided
-    if (apiKey && !/^sk-or-v1-[0-9a-f]{64}$/i.test(apiKey)) {
-      showError(container, 'Invalid API key format. Expected: sk-or-v1-[64 hex chars]');
+    // Validate API key format if provided: either an Anthropic or an
+    // OpenRouter key.
+    if (apiKey && !isValidApiKey(apiKey)) {
+      showError(container, 'Invalid API key format. Expected an Anthropic key (sk-ant-...) or an OpenRouter key (sk-or-v1-[64 hex chars]).');
       return;
     }
 
@@ -1901,18 +1976,19 @@
         showError(container, 'Please enter a custom model name');
         return;
       }
-      // Validate custom model format: provider/model-name
-      if (!/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9._-]+$/.test(model)) {
-        showError(container, 'Invalid model format. Expected: provider/model-name');
+      if (!isValidModelId(model)) {
+        showError(container, 'Invalid model format. Expected a Claude model id or provider/model-name');
         return;
       }
     } else if (modelSelection !== 'default') {
       model = modelSelection;
     }
 
-    // Update settings
+    // Update settings. keyProvider is always re-derived from the key
+    // itself, never stored as an independent choice.
     userSettings.apiKey = apiKey || null;
     userSettings.model = model;
+    userSettings.keyProvider = inferKeyProvider(apiKey);
 
     // Save to localStorage
     try {
@@ -2317,17 +2393,17 @@
           <div class="osa-settings-body">
             <div class="osa-settings-field">
               <label class="osa-settings-label" for="osa-settings-api-key">
-                OpenRouter API Key (Optional)
+                API Key (Optional)
               </label>
               <input
                 type="password"
                 id="osa-settings-api-key"
                 class="osa-settings-input"
-                placeholder="sk-or-v1-..."
+                placeholder="sk-ant-... or sk-or-v1-..."
                 autocomplete="off"
               />
               <span class="osa-settings-hint">
-                Use your own API key for testing. Stored locally in your browser.
+                Use your own Anthropic or OpenRouter API key for testing. Stored locally in your browser.
               </span>
             </div>
             <div class="osa-settings-field">
@@ -2336,7 +2412,7 @@
               </label>
               <select id="osa-settings-model" class="osa-settings-select">
                 <option value="default">Default (Community Setting)</option>
-                ${DEFAULT_MODELS.filter(m => m.value !== communityDefaultModel).map(m => `<option value="${escapeHtml(m.value)}">${escapeHtml(m.label)}</option>`).join('')}
+                ${getModelMenuOptions().filter(m => m.value !== communityDefaultModel).map(m => `<option value="${escapeHtml(m.value)}">${escapeHtml(m.label)}</option>`).join('')}
                 <option value="custom">Custom</option>
               </select>
               <span class="osa-settings-hint" id="osa-settings-model-hint">
@@ -2345,7 +2421,7 @@
             </div>
             <div class="osa-settings-field" id="osa-settings-custom-model-field" style="display: none;">
               <label class="osa-settings-label" for="osa-settings-custom-model">
-                Model name (<a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer" style="color: var(--osa-primary); text-decoration: underline;">from OpenRouter</a>)
+                Model name, requires your own <a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer" style="color: var(--osa-primary); text-decoration: underline;">OpenRouter</a> key
               </label>
               <input
                 type="text"
@@ -2541,8 +2617,9 @@
     if (isLoading) {
       const loadingEl = document.createElement('div');
       loadingEl.className = 'osa-loading';
+      const loadingLabelText = isThinking ? 'Thinking...' : CONFIG.title;
       loadingEl.innerHTML = `
-        <span class="osa-loading-label">${escapeHtml(CONFIG.title)}</span>
+        <span class="osa-loading-label">${escapeHtml(loadingLabelText)}</span>
         <div class="osa-loading-dots">
           <span class="osa-loading-dot"></span>
           <span class="osa-loading-dot"></span>
@@ -2609,6 +2686,7 @@
   // Handle streaming response from API
   // SSE Event formats:
   //   data: {"event": "content", "content": "text chunk"}
+  //   data: {"event": "thinking"}
   //   data: {"event": "tool_start", "name": "tool_name", "input": {...}}
   //   data: {"event": "tool_end", "name": "tool_name", "output": "result"}
   //   data: {"event": "done"}
@@ -2662,6 +2740,7 @@
             if (!receivedFirstContent) {
               receivedFirstContent = true;
               isLoading = false;
+              isThinking = false;
             }
 
             // Accumulate content
@@ -2673,6 +2752,15 @@
               messages[messageIndex].content = accumulatedContent;
               renderMessages(container);
               lastUpdateTime = now;
+            }
+          } else if (event.event === 'thinking') {
+            // Carries no reasoning text; only swaps the loading label to
+            // "Thinking...". Scoped to before the first content chunk so a
+            // thinking event arriving between tool calls mid-answer does not
+            // make the label flicker under already-rendered content.
+            if (!receivedFirstContent && !isThinking) {
+              isThinking = true;
+              renderMessages(container);
             }
           } else if (event.event === 'tool_start') {
             // Log tool execution for debugging
@@ -2811,6 +2899,7 @@
     flushPendingResponseFeedback(container);
 
     isLoading = true;
+    isThinking = false;
 
     // Track message indices to avoid corruption on error
     const userMessageIndex = messages.length;
@@ -2865,9 +2954,19 @@
         'Content-Type': 'application/json',
       };
 
-      // Add BYOK API key if set
+      // Add BYOK API key if set, on the header matching its provider
+      // (inferred from the key's own prefix; see inferKeyProvider). The
+      // provider is checked explicitly rather than treating "not anthropic"
+      // as "openrouter", so an unrecognized provider never silently sends
+      // the wrong header.
       if (userSettings.apiKey) {
-        headers['X-OpenRouter-Key'] = userSettings.apiKey;
+        if (userSettings.keyProvider === 'anthropic') {
+          headers['X-Anthropic-API-Key'] = userSettings.apiKey;
+        } else if (userSettings.keyProvider === 'openrouter') {
+          headers['X-OpenRouter-Key'] = userSettings.apiKey;
+        } else {
+          console.error('[OSA] BYOK key has unknown provider; not sent with the request:', userSettings.keyProvider);
+        }
       }
 
       const response = await fetch(`${CONFIG.apiEndpoint}/${CONFIG.communityId}/chat`, {
@@ -2989,6 +3088,7 @@
       updateStatusDisplay(false);
     } finally {
       isLoading = false;
+      isThinking = false;
       input.disabled = false;
       sendBtn.disabled = false;
       resetBtn.disabled = messages.length <= 1;
@@ -3067,6 +3167,8 @@
       container.querySelector('.osa-chat-input input').focus();
       // Hide tooltip when chat opens
       if (tooltip) tooltip.classList.remove('visible');
+      // Surface any notice queued by an init-time failure (see loadUserSettings/loadHistory).
+      flushPendingNotice(container);
     } else {
       // Commit any open thumbs-down comment box on close.
       flushPendingResponseFeedback(container);
@@ -3368,6 +3470,8 @@
       isOpen = true;
       const chatWindow = container.querySelector('.osa-chat-window');
       chatWindow?.classList.add('open');
+      // Surface any notice queued by an init-time failure (see loadUserSettings/loadHistory).
+      flushPendingNotice(container);
       setTimeout(() => {
         input?.focus();
       }, 100);

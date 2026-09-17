@@ -469,29 +469,145 @@ class TestCommunityConfigHealthStatus:
         assert isinstance(health["warnings"], list)
 
     def test_public_metrics_config_health_has_warnings_for_missing_key(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """config_health should include warnings when API key env var is not set.
+
+        No shipped community sets openrouter_api_key_env_var any more
+        (issue #363: the four that used to are now platform-funded by
+        default), but the field is still supported, so this monkeypatches
+        it onto a real, registered CommunityConfig rather than searching
+        the registry for a shipped one that no longer exists. Also clears
+        anthropic_api_key_env_var, which compute_community_health now
+        checks first, so the OpenRouter branch under test is actually
+        reached.
+
+        Builds a fresh router bound to the just-patched config instead of
+        reusing this class's ``client`` fixture: that fixture's ``app``
+        (from src.api.main) closes its community routes over whatever
+        registry snapshot existed the first time src.api.main was
+        imported in this test session. Other test modules' own
+        discover_assistants() calls run later and replace the registry's
+        CommunityConfig objects with new ones carrying the same field
+        values but a different identity, so monkeypatching a
+        freshly-fetched object would not necessarily be the one the
+        already-built routes actually read.
+        """
+        from unittest.mock import patch
+
+        from src.assistants import registry
+        from src.metrics.db import init_metrics_db
+
+        info = registry.get("hed")
+        assert info is not None and info.community_config is not None
+        config = info.community_config
+        env_var = "OPENROUTER_API_KEY_TEST_HED_PUBLIC_METRICS"
+        monkeypatch.setattr(config, "anthropic_api_key_env_var", None)
+        monkeypatch.setattr(config, "openrouter_api_key_env_var", env_var)
+        monkeypatch.delenv(env_var, raising=False)
+
+        router = create_community_router("hed")
+        app = FastAPI()
+        app.include_router(router)
+
+        db_path = tmp_path / "metrics.db"
+        init_metrics_db(db_path)
+        with patch("src.metrics.db.get_metrics_db_path", return_value=db_path):
+            response = TestClient(app).get("/hed/metrics/public")
+
+        assert response.status_code == 200
+        health = response.json()["config_health"]
+        assert health["api_key"] == "missing"
+        assert len(health["warnings"]) > 0
+        assert any("not sustainable" in w for w in health["warnings"])
+        # Env var names must not leak to public endpoint
+        assert not any(env_var in w for w in health["warnings"])
+
+
+class TestCommunityConfigOfferedModels:
+    """Tests for the ``offered_models`` field on the community config endpoint.
+
+    A drift test: the widget's model menu comes straight from this field, so
+    it must always match the backend's real offer list (``OFFERED_MODELS``)
+    and every id in it must be one ``normalize_model`` actually accepts.
+    """
+
+    @pytest.fixture
+    def client(self) -> TestClient:
+        """Create a test client with auth disabled."""
+        os.environ["REQUIRE_API_AUTH"] = "false"
+        from src.api.config import get_settings
+
+        get_settings.cache_clear()
+
+        from src.api.main import app
+
+        return TestClient(app)
+
+    def test_offered_models_matches_backend_offer_list(self, client: TestClient) -> None:
+        from src.core.services.anthropic_llm import OFFERED_MODELS
+
+        response = client.get("/hed/")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert "offered_models" in data
+
+        returned = {entry["id"]: entry["label"] for entry in data["offered_models"]}
+        assert returned == OFFERED_MODELS
+
+    def test_every_offered_model_id_is_accepted_by_normalize_model(
         self, client: TestClient
     ) -> None:
-        """config_health should include warnings when API key env var is not set."""
+        from src.core.services.anthropic_llm import normalize_model
+
+        response = client.get("/hed/")
+        data = response.json()
+
+        for entry in data["offered_models"]:
+            assert normalize_model(entry["id"]) == entry["id"]
+
+    def test_default_model_is_one_of_the_offered_models(self, client: TestClient) -> None:
+        response = client.get("/hed/")
+        data = response.json()
+
+        offered_ids = {entry["id"] for entry in data["offered_models"]}
+        assert data["default_model"] in offered_ids
+
+
+class TestCommunityConfigPlatformDefaultModel:
+    """Tests for get_community_config's platform-default fallback branch.
+
+    Every shipped community sets its own default_model, so the branch
+    where a community config has none and the endpoint falls back to
+    settings.default_model was exercised by no test.
+    """
+
+    def test_falls_back_to_platform_default_model(self, monkeypatch) -> None:
+        """A community config with no default_model returns the platform default."""
+        os.environ["REQUIRE_API_AUTH"] = "false"
+        from src.api.config import get_settings
+
+        get_settings.cache_clear()
+
         from src.assistants import registry
 
-        # Find a community with openrouter_api_key_env_var
-        for assistant in registry.list_all():
-            config = assistant.community_config
-            if config and config.openrouter_api_key_env_var:
-                env_var = config.openrouter_api_key_env_var
-                original = os.environ.pop(env_var, None)
-                try:
-                    response = client.get(f"/{assistant.id}/metrics/public")
-                    assert response.status_code == 200
-                    health = response.json()["config_health"]
-                    assert health["api_key"] == "missing"
-                    assert len(health["warnings"]) > 0
-                    assert any("not sustainable" in w for w in health["warnings"])
-                    # Env var names must not leak to public endpoint
-                    assert not any(env_var in w for w in health["warnings"])
-                finally:
-                    if original is not None:
-                        os.environ[env_var] = original
-                return
+        info = registry.get("hed")
+        assert info is not None and info.community_config is not None
+        monkeypatch.setattr(info.community_config, "default_model", None)
 
-        pytest.skip("No community with openrouter_api_key_env_var configured")
+        router = create_community_router("hed")
+        app = FastAPI()
+        app.include_router(router)
+
+        response = TestClient(app).get("/hed/")
+        assert response.status_code == 200
+
+        data = response.json()
+        settings = get_settings()
+        assert data["default_model"] == settings.default_model
+
+        assert data["offered_models"], "offered_models must not be empty"
+        for entry in data["offered_models"]:
+            assert entry["id"]
+            assert entry["label"]

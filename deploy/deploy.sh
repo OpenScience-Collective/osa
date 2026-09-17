@@ -48,10 +48,10 @@ run_container() {
     echo "Starting container ${CONTAINER_NAME} on port ${HOST_PORT}..."
 
     ENV_FILE="${DEPLOY_DIR}/.env"
-    ENV_ARGS=""
-    if [ -f "$ENV_FILE" ]; then
-        ENV_ARGS="--env-file ${ENV_FILE}"
+    if [ ! -f "$ENV_FILE" ]; then
+        error_exit "Missing env file: ${ENV_FILE}. Refusing to start a container with no configuration (no Anthropic credentials, no API keys)."
     fi
+    ENV_ARGS="--env-file ${ENV_FILE}"
 
     # Create persistent data directory on host
     DATA_DIR="/var/lib/osa/${CONTAINER_NAME}/data"

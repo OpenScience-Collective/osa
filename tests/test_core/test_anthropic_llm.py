@@ -128,6 +128,27 @@ class TestNormalizeModel:
             normalize_model("claude-opus-4-6")
 
 
+class TestOfferedModelsLabels:
+    """Tests for OFFERED_MODELS label content.
+
+    The community config endpoint serves these labels verbatim to the
+    widget's model menu, so they must be plain display names: no policy
+    words like "(default)" baked in. Which model is the default is a
+    separate, per-community fact (``default_model``) that the same
+    response already carries; encoding it into the label string would
+    create two sources of truth that can drift apart.
+    """
+
+    def test_labels_do_not_encode_default_status(self) -> None:
+        for label in OFFERED_MODELS.values():
+            assert "default" not in label.lower()
+
+    def test_labels_are_non_empty_plain_strings(self) -> None:
+        for label in OFFERED_MODELS.values():
+            assert label.strip() == label
+            assert len(label) > 0
+
+
 class TestDefaultThinking:
     """Tests for default_thinking()."""
 

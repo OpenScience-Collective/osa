@@ -34,7 +34,7 @@ jobs:
           docker run -d --name osa-test \
             -p 38528:38528 \
             -e REQUIRE_API_AUTH=false \
-            -e OPENROUTER_API_KEY=test-key-for-ci \
+            -e ANTHROPIC_API_KEY=test-key-for-ci \
             osa-test:ci
 
       - name: Wait for container to be healthy

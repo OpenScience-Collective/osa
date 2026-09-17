@@ -42,7 +42,7 @@ DEFAULT_MODEL = "claude-haiku-4-5"
 
 # Models offered to callers (widget dropdown, CLI, community config.yaml).
 OFFERED_MODELS: dict[str, str] = {
-    "claude-haiku-4-5": "Claude Haiku 4.5 (default)",
+    "claude-haiku-4-5": "Claude Haiku 4.5",
     "claude-sonnet-5": "Claude Sonnet 5",
 }
 
