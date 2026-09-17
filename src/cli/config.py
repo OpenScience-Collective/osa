@@ -170,12 +170,20 @@ def get_effective_config(
 def classify_api_key(key: str) -> Literal["anthropic", "openrouter"]:
     """Infer which provider a BYOK key belongs to from the key's own prefix.
 
-    Mirrors the widget's ``inferKeyProvider``: the user holds one key and
-    should not have to declare what kind it is, because the key already says
-    so. Anthropic keys start with ``sk-ant-``; OpenRouter's start with
-    ``sk-or-``. Anything unrecognized is treated as OpenRouter, since every
-    key saved before the Claude Platform migration was an OpenRouter key and
-    that keeps a pre-existing config working.
+    Same motivation as the widget's ``inferKeyProvider``: the user holds one
+    key and should not have to declare what kind it is, because the key
+    already says so. Anthropic keys start with ``sk-ant-``; OpenRouter's start
+    with ``sk-or-``.
+
+    The rule here is looser than the widget's on purpose. The widget validates
+    the full key shape (``/^sk-ant-[a-zA-Z0-9_-]{80,}$/i``) and returns null
+    for anything it does not recognize, because it is gating a text field a
+    person just typed. The CLI instead routes anything unrecognized to
+    OpenRouter: every key saved before the Claude Platform migration was an
+    OpenRouter key stored without a prefix check, so a stricter rule would
+    strand a working config. Rejecting malformed keys is the server's job
+    either way, and a wrong guess costs one clear 401 rather than a silently
+    dropped credential.
 
     Args:
         key: A non-empty API key.

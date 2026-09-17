@@ -297,3 +297,45 @@ class TestChatCommand:
         clean = unstyle(result.output)
         assert "--assistant" in clean
         assert "--api-key" in clean
+
+    def test_chat_with_only_anthropic_key_sends_anthropic_header(self, tmp_path: Path) -> None:
+        """chat resolves BYOK keys separately from ask, so it needs its own check.
+
+        The REPL is driven by feeding one question and then "quit" on stdin,
+        with --no-stream so the turn is a single POST that respx can inspect.
+
+        The response body is serialized from the server's own ChatResponse
+        model rather than hand-written, because hand-writing it gets the shape
+        wrong: `message` is a nested ChatMessage object, not a string, and the
+        CLI reads `response["message"]["content"]`. Building from the model
+        means the fixture cannot drift from the contract.
+        """
+        from src.api.routers.community import ChatMessage, ChatResponse
+
+        chat_response = ChatResponse(
+            session_id="sess-1",
+            message=ChatMessage(role="assistant", content="Mocked reply."),
+            model="test-model",
+        )
+
+        with (
+            patched_config_paths(tmp_path),
+            patch("src.cli.config.FIRST_RUN_FILE", tmp_path / ".first_run"),
+            patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-ant-cli-test-key"}, clear=True),
+            respx.mock,
+        ):
+            route = respx.post("https://api.osc.earth/osa/hed/chat").mock(
+                return_value=httpx.Response(200, json=chat_response.model_dump(mode="json"))
+            )
+            result = runner.invoke(
+                cli,
+                ["chat", "-a", "hed", "--no-stream"],
+                input="test question\nquit\n",
+            )
+
+        assert "No API key" not in result.output
+        assert result.exit_code == 0, result.output
+        assert route.called
+        sent_request = route.calls.last.request
+        assert sent_request.headers["X-Anthropic-API-Key"] == "sk-ant-cli-test-key"
+        assert "X-OpenRouter-Key" not in sent_request.headers
