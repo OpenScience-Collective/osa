@@ -18,6 +18,7 @@ NOT:
 
 import logging
 import sqlite3
+from typing import Any
 
 from langchain_core.tools import BaseTool, StructuredTool
 
@@ -31,6 +32,7 @@ from src.knowledge.search import (
     search_github_items,
     search_papers,
 )
+from src.tools.citations import build_search_result, truncate
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +40,39 @@ logger = logging.getLogger(__name__)
 def _check_db_exists(community_id: str) -> bool:
     """Check if the community's knowledge database exists."""
     return get_db_path(community_id).exists()
+
+
+def _build_citation_blocks(
+    results: list[Any],
+    *,
+    source: Any,
+    title: Any,
+    text: Any,
+) -> list[dict[str, Any]]:
+    """Build one search_result block per result item, for a citable tool.
+
+    Args:
+        results: The tool's own result objects (already fetched).
+        source: Callable ``item -> str`` returning the citation source
+            (typically the item's URL).
+        title: Callable ``item -> str`` returning the citation title.
+        text: Callable ``item -> str`` returning the citable text. Items
+            whose text is empty are skipped -- a search_result's content
+            cannot be empty, and an item with nothing to show is not worth
+            a block.
+
+    Returns:
+        A list of search_result blocks, one per item with non-empty text.
+        Never raises even if every item lacks text; callers fall back to
+        the plain-string formatting when this comes back empty.
+    """
+    blocks = []
+    for item in results:
+        item_text = text(item)
+        if not item_text:
+            continue
+        blocks.append(build_search_result(source=source(item), title=title(item), text=item_text))
+    return blocks
 
 
 def create_search_discussions_tool(
@@ -190,8 +225,10 @@ def create_list_recent_tool(
 
     description = (
         f"List recent {community_name} GitHub issues and PRs ordered by date. "
+        "**IMPORTANT: This is for DISCOVERY, not answering.** "
         "Use when users ask about recent activity, latest PRs, or newest issues. "
-        f"Unlike search which finds by keywords, this lists items by creation date.{repo_options}"
+        "Unlike search which finds by keywords, this lists items by creation date. "
+        f"Do NOT use listed item content to formulate answers.{repo_options}"
     )
 
     return StructuredTool.from_function(
@@ -206,6 +243,10 @@ def create_search_papers_tool(
     community_name: str,
 ) -> BaseTool:
     """Create a tool for searching academic papers for a community.
+
+    Not citable: its description tells the model this is for discovery,
+    not for formulating answers (see create_knowledge_tools' `citations`
+    docstring for the rule this follows).
 
     Args:
         community_id: The community identifier (e.g., 'hed', 'bids')
@@ -234,8 +275,7 @@ def create_search_papers_tool(
             lines.append(f"- {r.title} {source_label}")
             lines.append(f"  [View Paper]({r.url})")
             if r.snippet:
-                snippet = r.snippet[:200] + "..." if len(r.snippet) > 200 else r.snippet
-                lines.append(f"  Abstract: {snippet}")
+                lines.append(f"  Abstract: {truncate(r.snippet, 200)}")
             if r.created_at:
                 lines.append(f"  Published: {r.created_at}")
             lines.append("")
@@ -266,6 +306,9 @@ def create_search_papers_live_tool(
     Unlike the local paper search (pre-synced rows), this fetches fresh results
     from the live literature, newest first, and caches them for next time.
 
+    Not citable: its description tells the model this is for discovery,
+    not for formulating answers (see create_search_papers_tool).
+
     Args:
         community_id: The community identifier (e.g., 'hed', 'eeglab')
         community_name: Display name (e.g., 'HED', 'EEGLAB')
@@ -291,8 +334,7 @@ def create_search_papers_live_tool(
             lines.append(f"- {r.title}{year} {source_label}")
             lines.append(f"  [View Paper]({r.url})")
             if r.snippet:
-                snippet = r.snippet[:200] + "..." if len(r.snippet) > 200 else r.snippet
-                lines.append(f"  Abstract: {snippet}")
+                lines.append(f"  Abstract: {truncate(r.snippet, 200)}")
             lines.append("")
 
         return "\n".join(lines)
@@ -322,6 +364,7 @@ def create_search_docstrings_tool(
     community_id: str,
     community_name: str,
     language: str | None = None,
+    citations: bool = False,
 ) -> BaseTool:
     """Create a tool for searching code docstrings for a community.
 
@@ -329,6 +372,9 @@ def create_search_docstrings_tool(
         community_id: The community identifier (e.g., 'hed', 'bids', 'eeglab')
         community_name: Display name (e.g., 'HED', 'BIDS', 'EEGLAB')
         language: Optional language filter ('matlab' or 'python')
+        citations: When True, and at least one result has a snippet to
+            cite, return search_result blocks (one per symbol) instead of
+            the formatted string. See create_search_papers_tool.
 
     Returns:
         A LangChain tool for searching code documentation
@@ -339,7 +385,7 @@ def create_search_docstrings_tool(
     else:
         lang_help = " Searches both MATLAB and Python code."
 
-    def search_docstrings_impl(query: str, limit: int = 5) -> str:
+    def search_docstrings_impl(query: str, limit: int = 5) -> str | list[dict[str, Any]]:
         """Search code docstrings implementation."""
         if not _check_db_exists(community_id):
             return (
@@ -365,6 +411,16 @@ def create_search_docstrings_tool(
         if not results:
             lang_str = f" ({language})" if language else ""
             return f"No code documentation found for '{query}'{lang_str}."
+
+        if citations:
+            blocks = _build_citation_blocks(
+                results,
+                source=lambda r: r.url,
+                title=lambda r: r.title,
+                text=lambda r: r.snippet,
+            )
+            if blocks:
+                return blocks
 
         lines = [f"Code documentation in {community_name}:\n"]
         # `_make_snippet` appends "..." iff it truncated. Only nudge the LLM
@@ -407,6 +463,7 @@ def create_get_full_docstring_tool(
     community_id: str,
     community_name: str,
     language: str | None = None,
+    citations: bool = False,
 ) -> BaseTool:
     """Create a tool for fetching the complete docstring of a specific symbol.
 
@@ -418,12 +475,15 @@ def create_get_full_docstring_tool(
         community_id: The community identifier (e.g., 'hed', 'eeglab')
         community_name: Display name (e.g., 'HED', 'EEGLAB')
         language: Optional language filter ('matlab' or 'python')
+        citations: When True, and at least one match has a docstring to
+            cite, return search_result blocks (one per match) instead of
+            the formatted string. See create_search_papers_tool.
 
     Returns:
         A LangChain tool that returns the full docstring for a given symbol
     """
 
-    def get_full_docstring_impl(symbol_name: str) -> str:
+    def get_full_docstring_impl(symbol_name: str) -> str | list[dict[str, Any]]:
         """Fetch the stored docstring for a symbol (in full, up to 10K chars)."""
         if not _check_db_exists(community_id):
             return (
@@ -470,6 +530,16 @@ def create_get_full_docstring_tool(
                 f"Try search_{community_id}_code_docs first to find the correct symbol name."
             )
 
+        if citations:
+            blocks = _build_citation_blocks(
+                results,
+                source=lambda r: r.url,
+                title=lambda r: r.title,
+                text=lambda r: r.snippet,
+            )
+            if blocks:
+                return blocks
+
         lines = [f"Full docstring(s) for '{symbol_name}' in {community_name}:\n"]
         for r in results:
             lines.append(f"## {r.title}")
@@ -501,6 +571,7 @@ def create_search_faq_tool(
     community_id: str,
     community_name: str,
     list_names: list[str] | None = None,
+    citations: bool = False,
 ) -> BaseTool:
     """Create a tool for searching FAQ entries from mailing lists.
 
@@ -508,6 +579,10 @@ def create_search_faq_tool(
         community_id: The community identifier (e.g., 'eeglab', 'hed')
         community_name: Display name (e.g., 'EEGLAB', 'HED')
         list_names: Optional list of mailing list names for help text
+        citations: When True, and at least one result has an answer to
+            cite, return search_result blocks (one per FAQ entry, keyed by
+            its thread URL) instead of the formatted string. See
+            create_search_papers_tool.
 
     Returns:
         A LangChain tool for searching FAQ entries
@@ -521,7 +596,7 @@ def create_search_faq_tool(
         query: str,
         category: str | None = None,
         limit: int = 5,
-    ) -> str:
+    ) -> str | list[dict[str, Any]]:
         """Search FAQ entries implementation."""
         if not _check_db_exists(community_id):
             return (
@@ -556,6 +631,16 @@ def create_search_faq_tool(
             cat_str = f" (category: {category})" if category else ""
             return f"No FAQ entries found for '{query}'{cat_str}."
 
+        if citations:
+            blocks = _build_citation_blocks(
+                results,
+                source=lambda r: r.thread_url,
+                title=lambda r: r.question,
+                text=lambda r: r.answer,
+            )
+            if blocks:
+                return blocks
+
         lines = [f"Found {len(results)} FAQ entries:\n"]
         for i, result in enumerate(results, 1):
             lines.append(f"**{i}. {result.question}**")
@@ -567,9 +652,7 @@ def create_search_faq_tool(
                 lines.append(f"Tags: {', '.join(result.tags)}")
 
             # Truncate answer if too long
-            answer = result.answer
-            if len(answer) > 500:
-                answer = answer[:500] + "..."
+            answer = truncate(result.answer, 500)
             lines.append(f"\n{answer}\n")
             lines.append(f"[View full thread]({result.thread_url})\n")
 
@@ -593,6 +676,10 @@ def create_search_discourse_tool(
     community_name: str,
 ) -> BaseTool:
     """Create a tool for searching Discourse forum topics.
+
+    Not citable: its description tells the model this is for discovery,
+    not for formulating answers (see create_knowledge_tools' `citations`
+    docstring for the rule this follows).
 
     Args:
         community_id: The community identifier (e.g., 'mne')
@@ -679,6 +766,7 @@ def create_knowledge_tools(
     include_faq: bool = False,
     faq_list_names: list[str] | None = None,
     include_discourse: bool = False,
+    citations: bool = False,
 ) -> list[BaseTool]:
     """Create all knowledge discovery tools for a community.
 
@@ -698,6 +786,22 @@ def create_knowledge_tools(
         include_faq: Include mailing list FAQ search tool (default: False)
         faq_list_names: List of mailing list names for FAQ help text
         include_discourse: Include Discourse forum search tool (default: False)
+        citations: When True, every citable tool (retrieve_docs [wired in
+            CommunityAssistant, not here], code docs, full docstring, FAQ)
+            returns search_result blocks instead of formatted strings,
+            enabling Claude's native inline citations. Anthropic-only.
+
+            The rule for which tools are citable: a tool is citable if and
+            only if its description permits answering from its content.
+            Discussion search, recent activity, papers, live papers, and
+            forum search are all deliberately excluded here because their
+            descriptions say the opposite -- "This is for DISCOVERY, not
+            answering" / "Do NOT use ... content to formulate answers".
+            Making any of them citable would invite exactly what their own
+            description forbids, and would make what OSA treats as an
+            authoritative source a side effect of this phase rather than a
+            deliberate product decision. Their tool descriptions never
+            change based on this flag, on either path.
 
     Returns:
         List of LangChain tools for the community
@@ -718,14 +822,22 @@ def create_knowledge_tools(
 
     if include_docstrings:
         tools.append(
-            create_search_docstrings_tool(community_id, community_name, docstrings_language)
+            create_search_docstrings_tool(
+                community_id, community_name, docstrings_language, citations=citations
+            )
         )
         tools.append(
-            create_get_full_docstring_tool(community_id, community_name, docstrings_language)
+            create_get_full_docstring_tool(
+                community_id, community_name, docstrings_language, citations=citations
+            )
         )
 
     if include_faq:
-        tools.append(create_search_faq_tool(community_id, community_name, faq_list_names))
+        tools.append(
+            create_search_faq_tool(
+                community_id, community_name, faq_list_names, citations=citations
+            )
+        )
 
     if include_discourse:
         tools.append(create_search_discourse_tool(community_id, community_name))

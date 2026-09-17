@@ -1,4 +1,4 @@
-"""Helpers for extracting text from Anthropic's block-list message content.
+"""Helpers for extracting text and citations from Anthropic's block-list content.
 
 An assistant message's ``content`` is not always a plain string. Whenever
 extended thinking is enabled, or whenever tools are bound to the model,
@@ -14,10 +14,21 @@ place that understands the block-list shape, so call sites do not each need
 to re-derive it -- and so streamed reasoning never leaks to a client: the
 product decision is that clients see a content-free ``thinking`` signal
 (the model is working), never the reasoning text itself.
+
+A text block returned when the request used citable ``search_result`` tool
+content (see ``src/tools/citations.py``) can also carry a ``citations`` list,
+e.g. ``{"type": "search_result_location", "cited_text": ..., "source": ...,
+"title": ..., "search_result_index": int, "start_block_index": int,
+"end_block_index": int}``. ``classify_content_blocks`` surfaces those
+alongside the block's text, and ``CitationTracker`` assigns each unique
+``source`` a stable ``[n]`` marker (in order of first appearance) so callers
+can build an answer with inline citation markers identically whether the
+content came from a single final message or a stream of chunks.
 """
 
 import logging
-from typing import Any, Literal
+from dataclasses import dataclass
+from typing import Any, Literal, NamedTuple
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +44,19 @@ _THINKING_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking"})
 _KNOWN_NON_TEXT_BLOCK_TYPES = frozenset({"tool_use"})
 
 BlockKind = Literal["text", "thinking"]
+
+
+class ContentBlock(NamedTuple):
+    """One classified content block: its kind, text, and any citations.
+
+    A plain 3-tuple (kind, text, citations), so existing call sites that
+    unpack ``classify_content_blocks()`` as pairs only need to add the third
+    element; new call sites can use the named fields instead.
+    """
+
+    kind: BlockKind
+    text: str
+    citations: list[dict[str, Any]]
 
 
 def extract_text(content: str | list[Any]) -> str:
@@ -53,29 +77,33 @@ def extract_text(content: str | list[Any]) -> str:
     """
     if isinstance(content, str):
         return content
-    return "".join(text for kind, text in classify_content_blocks(content) if kind == "text")
+    return "".join(block.text for block in classify_content_blocks(content) if block.kind == "text")
 
 
-def classify_content_blocks(content: str | list[Any]) -> list[tuple[BlockKind, str]]:
-    """Classify a message's or streamed chunk's content into (kind, text) pairs.
+def classify_content_blocks(content: str | list[Any]) -> list[ContentBlock]:
+    """Classify a message's or streamed chunk's content into blocks.
 
     Args:
         content: A message's or streamed chunk's ``content``.
 
     Returns:
-        A list of ``(kind, text)`` pairs in block order, skipping blocks
-        with no useful signal (empty text blocks, and non-text/non-thinking
-        blocks such as ``tool_use``, which are already handled by their own
-        dedicated event streams). ``"thinking"`` pairs always carry an
-        empty string: callers use that kind only as a liveness signal (e.g.
-        an SSE ``thinking`` event with no payload), never as text. A plain
-        string is returned as a single ``("text", content)`` pair (or ``[]``
-        for an empty string), matching the pre-thinking shape.
+        A list of :class:`ContentBlock` in block order, skipping blocks with
+        no useful signal at all (an empty text block with no citations, and
+        non-text/non-thinking blocks such as ``tool_use``, which are already
+        handled by their own dedicated event streams). ``"thinking"`` blocks
+        always carry empty text and no citations: callers use that kind only
+        as a liveness signal (e.g. an SSE ``thinking`` event with no
+        payload), never as text. A text block is still surfaced when it
+        carries citations but no text of its own -- this is exactly the
+        shape of a streamed citation-delta chunk (see the module docstring).
+        A plain string is returned as a single ``ContentBlock("text",
+        content, [])`` (or ``[]`` for an empty string), matching the
+        pre-citations shape.
     """
     if isinstance(content, str):
-        return [("text", content)] if content else []
+        return [ContentBlock("text", content, [])] if content else []
 
-    pairs: list[tuple[BlockKind, str]] = []
+    blocks: list[ContentBlock] = []
     warned_block_types: set[Any] = set()
     for block in content:
         if not isinstance(block, dict):
@@ -83,10 +111,11 @@ def classify_content_blocks(content: str | list[Any]) -> list[tuple[BlockKind, s
         block_type = block.get("type")
         if block_type == "text":
             text = block.get("text", "")
-            if text:
-                pairs.append(("text", text))
+            citations = block.get("citations") or []
+            if text or citations:
+                blocks.append(ContentBlock("text", text, citations))
         elif block_type in _THINKING_BLOCK_TYPES:
-            pairs.append(("thinking", ""))
+            blocks.append(ContentBlock("thinking", "", []))
         elif block_type in _KNOWN_NON_TEXT_BLOCK_TYPES:
             # tool_use, etc. -- intentionally not surfaced here; handled by
             # their own dedicated events elsewhere.
@@ -103,4 +132,112 @@ def classify_content_blocks(content: str | list[Any]) -> list[tuple[BlockKind, s
                 "any text it carries is dropped, not surfaced as answer text.",
                 block_type,
             )
-    return pairs
+    return blocks
+
+
+def extract_citations(content: str | list[Any]) -> list[dict[str, Any]]:
+    """Return every citation attached to any text block in ``content``, in order.
+
+    A low-level primitive: it does not number markers or dedupe by source
+    (see :class:`CitationTracker` for that), it just flattens the raw
+    ``search_result_location`` dicts the API attaches to text blocks, in
+    block order and then in each block's own order. Useful on its own for
+    inspecting what a response cited, and as the layer tested directly
+    against a recorded real response payload.
+
+    Args:
+        content: A message's or streamed chunk's ``content`` (see
+            ``classify_content_blocks``).
+
+    Returns:
+        The ``citations`` entries from every text block, concatenated. A
+        plain string, or content with no cited text block, returns ``[]``.
+    """
+    citations: list[dict[str, Any]] = []
+    for block in classify_content_blocks(content):
+        if block.kind == "text":
+            citations.extend(block.citations)
+    return citations
+
+
+@dataclass(frozen=True)
+class CitationMark:
+    """A citation source, with the stable ``[n]`` marker assigned to it."""
+
+    marker: int
+    source: str
+    title: str
+    cited_text: str
+
+
+class CitationTracker:
+    """Assigns stable ``[n]`` markers to citation sources across a response.
+
+    One marker per unique ``source``, assigned in order of first
+    appearance, so three claims drawn from the same document all render
+    ``[1]``. The same tracker instance is used across an entire response
+    (streamed or not) so numbering is identical between the two paths.
+    """
+
+    def __init__(self) -> None:
+        self._marker_by_source: dict[str, int] = {}
+        self._marks: list[CitationMark] = []
+
+    def _record(self, citation: dict[str, Any]) -> tuple[CitationMark, bool] | None:
+        """Record one citation. Returns (its mark, is_new), or None if unusable."""
+        source = citation.get("source")
+        if not source:
+            return None
+        existing_marker = self._marker_by_source.get(source)
+        if existing_marker is not None:
+            return self._marks[existing_marker - 1], False
+        marker = len(self._marker_by_source) + 1
+        self._marker_by_source[source] = marker
+        mark = CitationMark(
+            marker=marker,
+            source=source,
+            title=citation.get("title", ""),
+            cited_text=citation.get("cited_text", ""),
+        )
+        self._marks.append(mark)
+        return mark, True
+
+    def record_block(self, citations: list[dict[str, Any]]) -> tuple[str, list[CitationMark]]:
+        """Record every citation carried by one content block, in order.
+
+        Args:
+            citations: The block's raw citation dicts (a text block's
+                ``citations`` field, or a streamed citation-delta chunk's).
+
+        Returns:
+            A tuple of:
+              - The inline marker text for this block (e.g. ``"[1][2]"``),
+                with each unique marker rendered once, in the order its
+                source first appears within this block. Appending this
+                directly after the block's own text places the marker at
+                the end of the span it supports.
+              - The list of newly discovered marks in this call (sources
+                not seen in any earlier call on this tracker), for callers
+                that need to announce only what is new (e.g. a streaming
+                ``citation`` SSE event per newly seen source).
+        """
+        marker_order: list[int] = []
+        seen_markers: set[int] = set()
+        new_marks: list[CitationMark] = []
+        for citation in citations:
+            recorded = self._record(citation)
+            if recorded is None:
+                continue
+            mark, is_new = recorded
+            if is_new:
+                new_marks.append(mark)
+            if mark.marker not in seen_markers:
+                seen_markers.add(mark.marker)
+                marker_order.append(mark.marker)
+        marker_text = "".join(f"[{n}]" for n in marker_order)
+        return marker_text, new_marks
+
+    @property
+    def marks(self) -> list[CitationMark]:
+        """Every distinct citation mark recorded so far, in marker order."""
+        return list(self._marks)

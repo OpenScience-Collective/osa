@@ -128,6 +128,70 @@ class TestKeyPatternsMatchBackendRedaction:
         assert widget_pattern == openrouter_alt
 
 
+class TestWidgetAttributeEscaping:
+    """Values interpolated into HTML attributes must be escaped, quotes included.
+
+    The widget builds HTML by string concatenation, so any value placed inside
+    a quoted attribute has to have its quote characters escaped: an unescaped
+    one closes the attribute and everything after it is parsed as further
+    attributes, an event handler included. Serializing a text node (the
+    ``div.textContent`` trick ``escapeHtml`` is built on) escapes ``&``, ``<``
+    and ``>`` but deliberately leaves both quote characters alone, so that
+    trick alone is not sufficient and the gap is invisible by inspection.
+
+    This matters most for citations, whose ``title`` attribute carries
+    ``cited_text``: a verbatim span of a retrieved community document, which
+    is the least trusted input the widget renders.
+
+    Verified in a real DOM (happy-dom) while writing these: before the
+    ``replace`` calls in ``escapeHtml``, a ``cited_text`` of
+    ``'prefix" onmouseover="..."'`` produced an anchor with a live
+    ``onmouseover`` attribute; after, the anchor carries exactly
+    href/target/rel/title. There is no JS harness in CI (issue #377), so what
+    is enforced here is the source-level invariant rather than the DOM result.
+    """
+
+    # Attribute values built from data the widget did not generate itself.
+    # Anything else interpolated into an attribute needs a reason listed below.
+    _SAFE_UNESCAPED_INTERPOLATIONS = {
+        "blockId",  # getCodeBlockId(), an internal "osa-code-N" counter
+        "codeId",  # read back from the data-code-id this file just wrote
+        "msgIndex",  # array index into messages, a number
+        "fb",  # compared against string literals, yields a boolean
+    }
+
+    def test_escape_html_escapes_both_quote_characters(self) -> None:
+        """``escapeHtml`` must escape ``"`` and ``'`` on top of the textContent pass."""
+        widget_source = _widget_source()
+        match = re.search(r"function escapeHtml\(text\) \{(.*?)\n  \}", widget_source, re.DOTALL)
+        assert match, "Could not find escapeHtml in osa-chat-widget.js"
+        body = match.group(1)
+        assert "&quot;" in body, "escapeHtml does not escape double quotes"
+        assert "&#39;" in body or "&apos;" in body, "escapeHtml does not escape single quotes"
+
+    def test_every_attribute_interpolation_is_escaped(self) -> None:
+        """Each value interpolated into a quoted attribute goes through escapeHtml.
+
+        Covers both forms the widget uses: ``attr="' + expr + '"`` inside
+        single-quoted concatenation, and ``attr="${expr}"`` inside a template
+        literal. The leading identifier of each interpolated expression must be
+        ``escapeHtml`` or be listed as safe with its reason.
+        """
+        widget_source = _widget_source()
+        concat = re.findall(r"""=\\?"'\s*\+\s*([A-Za-z_$][\w.$\[\]]*)""", widget_source)
+        template = re.findall(r"""=\\?"\$\{\s*([A-Za-z_$][\w.$\[\]]*)""", widget_source)
+        found = set(concat) | set(template)
+        assert found, "Found no attribute interpolations at all; the patterns above have rotted"
+
+        unescaped = {expr for expr in found if expr != "escapeHtml"}
+        assert unescaped <= self._SAFE_UNESCAPED_INTERPOLATIONS, (
+            "HTML attribute values interpolated without escapeHtml: "
+            f"{sorted(unescaped - self._SAFE_UNESCAPED_INTERPOLATIONS)}. "
+            "Wrap them in escapeHtml, or add them to _SAFE_UNESCAPED_INTERPOLATIONS "
+            "with the reason they cannot carry a quote character."
+        )
+
+
 class TestWorkerByokHeaderDrift:
     """The worker's CORS allow-list and BYOK forwarding list must match the backend.
 
