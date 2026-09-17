@@ -18,6 +18,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
+from src.core.services.anthropic_models import accepts_temperature
 from src.knowledge.db import get_connection, update_summarization_status, upsert_faq_entry
 
 logger = logging.getLogger(__name__)
@@ -297,6 +298,36 @@ def estimate_summarization_cost(
         }
 
 
+def _warn_if_temperature_ignored(
+    temperature: float | None, model: str, agent_role: str, project: str
+) -> None:
+    """Log when a community's ``temperature`` will not reach the API.
+
+    ``claude-sonnet-5`` accepts only its default temperature, so
+    ``create_anthropic_llm`` drops the field rather than sending a value the
+    API would reject. A community that lowered the temperature to make scoring
+    deterministic should hear that it stopped applying. ``CommunityConfig``
+    warns about this at config load too; this covers the sync run, where the
+    warning lands in the log the operator is already watching.
+
+    Args:
+        temperature: The configured temperature, if any.
+        model: The agent's configured model id, in any form.
+        agent_role: "evaluation_agent" or "summary_agent", for the message.
+        project: Community ID, for the message.
+    """
+    if temperature is not None and not accepts_temperature(model):
+        logger.warning(
+            "faq_generation.%s.temperature=%s is ignored for %s: %s accepts only its "
+            "default temperature. Use claude-haiku-4-5 for this agent if the "
+            "temperature matters.",
+            agent_role,
+            temperature,
+            project,
+            model,
+        )
+
+
 def _warn_if_provider_ignored(provider: str | None, agent_role: str, project: str) -> None:
     """Log when a community's ``provider`` routing hint has no effect.
 
@@ -354,8 +385,12 @@ def summarize_threads(
 
     # Use config-based models or fall back to defaults
     if faq_config:
-        _warn_if_provider_ignored(faq_config.evaluation_agent.provider, "evaluation_agent", project)
-        _warn_if_provider_ignored(faq_config.summary_agent.provider, "summary_agent", project)
+        for role, agent in (
+            ("evaluation_agent", faq_config.evaluation_agent),
+            ("summary_agent", faq_config.summary_agent),
+        ):
+            _warn_if_provider_ignored(agent.provider, role, project)
+            _warn_if_temperature_ignored(agent.temperature, agent.model, role, project)
 
         # Evaluation agent (for scoring quality)
         eval_agent = create_anthropic_llm(

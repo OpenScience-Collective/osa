@@ -601,3 +601,39 @@ class TestFAQGenerationRunsOnTheClaudePlatform:
             _warn_if_provider_ignored(None, "summary_agent", "eeglab")
 
         assert caplog.text == ""
+
+    def test_ignored_temperature_is_reported(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A temperature claude-sonnet-5 discards should be said out loud.
+
+        The community config warns at load time; this is the same fact in the
+        log an operator watches while a sync runs.
+        """
+        from src.knowledge.faq_summarizer import _warn_if_temperature_ignored
+
+        with caplog.at_level("WARNING"):
+            _warn_if_temperature_ignored(0.0, "claude-sonnet-5", "evaluation_agent", "eeglab")
+
+        assert "temperature=0.0 is ignored" in caplog.text
+        assert "evaluation_agent" in caplog.text
+        assert "claude-sonnet-5" in caplog.text
+
+    def test_ignored_temperature_behind_a_legacy_id_is_reported(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from src.knowledge.faq_summarizer import _warn_if_temperature_ignored
+
+        with caplog.at_level("WARNING"):
+            _warn_if_temperature_ignored(
+                0.3, "anthropic/claude-sonnet-4.5", "summary_agent", "eeglab"
+            )
+
+        assert "is ignored" in caplog.text
+
+    def test_honored_temperature_is_silent(self, caplog: pytest.LogCaptureFixture) -> None:
+        """claude-haiku-4-5 does accept a temperature, so there is nothing to say."""
+        from src.knowledge.faq_summarizer import _warn_if_temperature_ignored
+
+        with caplog.at_level("WARNING"):
+            _warn_if_temperature_ignored(0.0, "claude-haiku-4-5", "evaluation_agent", "eeglab")
+
+        assert caplog.text == ""

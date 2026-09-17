@@ -24,12 +24,19 @@ Example config.yaml:
 import ipaddress
 import logging
 import re
+import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from urllib.parse import urlparse
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
+
+# Dependency-free by design, so importing it here keeps this module usable on a
+# CLI-only install (see src/core/services/anthropic_models.py). Importing
+# anthropic_llm instead would break `osa validate` for anyone without the
+# server extra.
+from src.core.services.anthropic_models import SAMPLING_MODELS, normalize_model
 
 logger = logging.getLogger(__name__)
 
@@ -602,8 +609,10 @@ class AgentConfig(BaseModel):
 
     Only honored on models that still accept sampling parameters
     (``claude-haiku-4-5``). ``claude-sonnet-5`` rejects ``temperature``, so it
-    is not forwarded there; see ``_SAMPLING_MODELS`` in
-    src/core/services/anthropic_llm.py.
+    is not forwarded there; see ``SAMPLING_MODELS`` in
+    src/core/services/anthropic_models.py. Setting one anyway is a warning at
+    config load, not an error, so a community can switch models without its
+    config failing to parse.
     """
 
     enable_caching: bool = True
@@ -727,26 +736,69 @@ class FAQGenerationConfig(BaseModel):
     def validate_agent_roles(self) -> "FAQGenerationConfig":
         """Warn if agent configurations don't match their intended roles.
 
-        The two-agent split exists so the thousands of scoring calls run on
-        something cheap and only the few hundred surviving threads pay for
-        quality. Two models on the Claude Platform means the wasteful shape is
-        specifically "score everything with the expensive one": using
-        ``claude-haiku-4-5`` for both is now the cheapest valid configuration,
-        so warning about any repeated model would fire on the recommended
-        setup.
-        """
-        import warnings
+        Every check runs against the model id ``normalize_model`` resolves, not
+        the literal string, so a config still carrying a legacy OpenRouter-style
+        id ("anthropic/claude-sonnet-4.5") is judged as the model it will
+        actually bill (``claude-sonnet-5``).
 
+        Three things are worth saying at config load, all as warnings rather
+        than errors so that a config keeps parsing (this schema backs the whole
+        community, not just FAQ generation):
+
+        - An unresolvable model, which would otherwise fail at the first
+          FAQ run rather than at ``osa validate`` time.
+        - The expensive model on the evaluation agent. The two-agent split
+          exists so the thousands of scoring calls run on something cheap and
+          only the few hundred surviving threads pay for quality. With two
+          models offered, the wasteful shape is specifically "score everything
+          with the expensive one": ``claude-haiku-4-5`` for both is the
+          cheapest valid configuration, so warning about any repeated model
+          would fire on the recommended setup.
+        - A ``temperature`` on a model that ignores it, which is otherwise
+          dropped silently at request time.
+        """
         expensive = "claude-sonnet-5"
-        if self.evaluation_agent.model == expensive:
-            warnings.warn(
-                f"evaluation_agent uses {expensive}, which scores every thread at the "
-                "higher rate and defeats the two-agent cost split. Use "
-                "claude-haiku-4-5 for evaluation and reserve the more capable model "
-                "for summary_agent.",
-                UserWarning,
-                stacklevel=2,
-            )
+
+        for role, agent in (
+            ("evaluation_agent", self.evaluation_agent),
+            ("summary_agent", self.summary_agent),
+        ):
+            try:
+                resolved = normalize_model(agent.model)
+            except ValueError as e:
+                warnings.warn(
+                    f"{role}.model is not usable: {e} FAQ generation for this "
+                    "community will fail until it is changed.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                continue
+
+            # Name both ids when they differ, so a maintainer who wrote an
+            # alias recognizes the config line the warning is about.
+            as_written = agent.model if agent.model == resolved else f"{agent.model} ({resolved})"
+
+            if role == "evaluation_agent" and resolved == expensive:
+                warnings.warn(
+                    f"evaluation_agent uses {as_written}, which scores every thread at "
+                    "the higher rate and defeats the two-agent cost split. Use "
+                    "claude-haiku-4-5 for evaluation and reserve the more capable model "
+                    "for summary_agent.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+
+            # Only an explicitly configured temperature is worth a warning; the
+            # field's own default is not something the community chose.
+            if "temperature" in agent.model_fields_set and resolved not in SAMPLING_MODELS:
+                warnings.warn(
+                    f"{role}.temperature={agent.temperature} is ignored: {as_written} "
+                    "accepts only its default temperature, so the value is dropped "
+                    "rather than sent. Remove the field, or use claude-haiku-4-5 for "
+                    "this agent if the temperature matters.",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
         return self
 
