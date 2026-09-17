@@ -5,12 +5,34 @@ on:
     branches:
       - main
       - develop
+    # Kept, but it is NOT what fires on a release: a release created through the
+    # API or the UI creates its tag as part of the release, and GitHub emits the
+    # `release` event WITHOUT a corresponding tag `push`. That is why no image was
+    # built for v0.8.9 -- the only run on that ref was `Publish to PyPI`, whose
+    # trigger list already included `release`. This trigger still covers a tag
+    # pushed by hand with `git push --tags`.
     tags:
       - 'v*'
+  release:
+    types: [published]
+  # Lets a maintainer rebuild a specific tag on demand:
+  #   gh workflow run docker-build.yml --ref v0.8.9
+  # Which is also how to republish images for a release that predates this fix.
+  workflow_dispatch:
   pull_request:
     branches:
       - main
       - develop
+
+# Two pushes to the same ref must not interleave their tag writes. The v0.8.9
+# release pushed two commits to `main` ten seconds apart; both builds ran, both
+# wrote `:latest`, they finished one second apart, and the OLDER commit's image
+# won -- so production served 0.8.9.dev0 while `main` said 0.8.9. Serialized by
+# ref, the later run writes last. Never cancel: a cancelled run can be one that
+# is already pushing layers.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io
@@ -71,7 +93,9 @@ jobs:
   build-and-push:
     name: Build and Push to GHCR
     needs: build-and-test
-    # Push on main, develop, or tags - skip for PRs
+    # Push on main, develop, a tag, or a published release - skip for PRs.
+    # A release event carries `github.ref` of `refs/tags/<tag>`, so the semver
+    # patterns below read it the same way a tag push would.
     if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/tags/'))
     runs-on: ubuntu-latest
     permissions:
@@ -98,13 +122,20 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            # Branch-based tags
+            # Branch-based tags: `main` and `develop` always point at the head of
+            # their branch, for anyone who wants exactly that.
             type=ref,event=branch
-            # Tag-based tags (v1.0.0 -> 1.0.0)
+            # Versioned, immutable tags (v1.0.0 -> 1.0.0, 1.0). These are the
+            # rollback targets. None existed between 0.6.2 and 0.8.9 because the
+            # release event never reached this workflow.
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            # Latest tag for main branch
-            type=raw,value=latest,enable={{is_default_branch}}
+            # `latest` means THE LATEST RELEASE, not the head of the default
+            # branch. Production (`deploy/auto-update.sh`) pulls `:latest`, so
+            # this is what decides what it serves: a released version, built from
+            # the tagged commit, rather than whichever main push last won a race.
+            # Use `:main` to follow the branch instead.
+            type=raw,value=latest,enable=${{ github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v') }}
             # Dev tag for develop branch
             type=raw,value=dev,enable=${{ github.ref == 'refs/heads/develop' }}
             # Commit SHA for traceability

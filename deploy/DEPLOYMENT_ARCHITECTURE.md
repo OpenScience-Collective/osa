@@ -37,6 +37,32 @@ This document explains the deployment architecture for OSA (Open Science Assista
 | Production | `https://api.osc.earth/osa` | `ghcr.io/openscience-collective/osa:latest` | 38528 |
 | Development | `https://api.osc.earth/osa-dev` | `ghcr.io/openscience-collective/osa:dev` | 38529 |
 
+### What each image tag means
+
+| Tag | Moves when | Use it for |
+|-----|-----------|------------|
+| `latest` | a release is published | production; it is the most recent RELEASED version, not the head of `main` |
+| `X.Y.Z`, `X.Y` | a release is published | pinning and rollback; immutable once written |
+| `main`, `develop` | every push to that branch | following a branch head deliberately |
+| `dev` | every push to `develop` | the development host |
+| `sha-<commit>` | every build | tracing an image back to a commit |
+
+`latest` followed the head of `main` until issue #379. That was two problems at
+once: two pushes to `main` seconds apart both wrote the tag with no ordering
+between them (the v0.8.9 release lost that race, and production served
+`0.8.9.dev0` while `main` said `0.8.9`), and a release published through the API
+or the UI emits a `release` event with no accompanying tag `push`, so the
+workflow keyed only on `push` never built the versioned images at all -- none
+existed between 0.6.2 and 0.8.9. Production now tracks releases. To follow the
+branch instead, point a host at `:main`.
+
+**Republishing images for an existing tag**, including releases that predate the
+fix:
+
+```bash
+gh workflow run docker-build.yml --ref v0.8.9
+```
+
 **Frontend:**
 - Production: `https://demo.osc.earth`
 - Development: `https://develop-demo.osc.earth`
