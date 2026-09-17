@@ -6,12 +6,7 @@ name: OpenNeuroPET Assistant
 description: Technical support and documentation access for Open and Reproducible tools in PET imaging
 status: available
 
-default_model: anthropic/claude-haiku-4.5
-default_model_provider: anthropic
-
-# Per-community OpenRouter API key for cost attribution
-# Set this environment variable on the backend server with the community's key
-openrouter_api_key_env_var: OPENROUTER_API_KEY_OPENNEUROPET
+default_model: claude-haiku-4-5
 
 # External links for dashboard and discovery
 links:

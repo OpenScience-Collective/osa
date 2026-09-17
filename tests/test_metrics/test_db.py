@@ -189,10 +189,12 @@ class TestExtractTokenUsage:
         msg.usage_metadata = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
         result = {"messages": [HumanMessage(content="hi"), msg]}
 
-        inp, out, total = extract_token_usage(result)
-        assert inp == 10
-        assert out == 5
-        assert total == 15
+        usage = extract_token_usage(result)
+        assert usage.input_tokens == 10
+        assert usage.output_tokens == 5
+        assert usage.total_tokens == 15
+        assert usage.cache_read_tokens == 0
+        assert usage.cache_creation_tokens == 0
 
     def test_sums_multiple_messages(self):
         """Sums usage across multiple AIMessages."""
@@ -202,21 +204,110 @@ class TestExtractTokenUsage:
         msg2.usage_metadata = {"input_tokens": 20, "output_tokens": 10, "total_tokens": 30}
         result = {"messages": [msg1, msg2]}
 
-        inp, out, total = extract_token_usage(result)
-        assert inp == 30
-        assert out == 15
-        assert total == 45
+        usage = extract_token_usage(result)
+        assert usage.input_tokens == 30
+        assert usage.output_tokens == 15
+        assert usage.total_tokens == 45
 
     def test_returns_zeros_when_no_usage(self):
-        """Returns (0, 0, 0) when no usage_metadata."""
+        """Returns all zeros when no usage_metadata."""
         result = {"messages": [AIMessage(content="hello")]}
-        inp, out, total = extract_token_usage(result)
-        assert (inp, out, total) == (0, 0, 0)
+        usage = extract_token_usage(result)
+        assert usage == (0, 0, 0, 0, 0)
 
     def test_returns_zeros_for_empty_result(self):
-        """Returns (0, 0, 0) for empty result."""
-        assert extract_token_usage({}) == (0, 0, 0)
-        assert extract_token_usage({"messages": []}) == (0, 0, 0)
+        """Returns all zeros for empty result."""
+        assert extract_token_usage({}) == (0, 0, 0, 0, 0)
+        assert extract_token_usage({"messages": []}) == (0, 0, 0, 0, 0)
+
+    def test_extracts_cache_read_and_creation_tokens(self):
+        """Extracts the cache breakdown from input_token_details."""
+        msg = AIMessage(content="hello")
+        msg.usage_metadata = {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "total_tokens": 120,
+            "input_token_details": {"cache_read": 70, "cache_creation": 10},
+        }
+        result = {"messages": [msg]}
+
+        usage = extract_token_usage(result)
+        assert usage.input_tokens == 100
+        assert usage.cache_read_tokens == 70
+        assert usage.cache_creation_tokens == 10
+
+    def test_sums_cache_details_across_messages(self):
+        """Sums cache read/creation tokens across multiple AIMessages."""
+        msg1 = AIMessage(content="first")
+        msg1.usage_metadata = {
+            "input_tokens": 100,
+            "output_tokens": 10,
+            "total_tokens": 110,
+            "input_token_details": {"cache_read": 50, "cache_creation": 5},
+        }
+        msg2 = AIMessage(content="second")
+        msg2.usage_metadata = {
+            "input_tokens": 200,
+            "output_tokens": 20,
+            "total_tokens": 220,
+            "input_token_details": {"cache_read": 100, "cache_creation": 0},
+        }
+        result = {"messages": [msg1, msg2]}
+
+        usage = extract_token_usage(result)
+        assert usage.cache_read_tokens == 150
+        assert usage.cache_creation_tokens == 5
+
+    def test_missing_input_token_details_defaults_to_zero(self):
+        """A message with usage_metadata but no input_token_details has zero cache tokens."""
+        msg = AIMessage(content="hello")
+        msg.usage_metadata = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+        result = {"messages": [msg]}
+
+        usage = extract_token_usage(result)
+        assert usage.cache_read_tokens == 0
+        assert usage.cache_creation_tokens == 0
+
+    def test_real_langchain_anthropic_cache_creation_shape(self):
+        """Regression (item 1): a real per-TTL breakdown must not price as 0.
+
+        The hand-built ``{"cache_read": N, "cache_creation": M}`` shape used
+        by the other tests in this class is not what the real API produces
+        once caching is active (CachingChatAnthropic always sends a
+        cache_control marker). Building usage_metadata through the real
+        ``langchain_anthropic._create_usage_metadata`` against a real
+        ``anthropic.types.usage.Usage`` reproduces the actual shape: the
+        real cache-write count lands under
+        ``ephemeral_5m_input_tokens``/``ephemeral_1h_input_tokens``, and the
+        generic ``cache_creation`` key is zeroed. Reading only the generic
+        key (the pre-fix bug) would report 0 cache-creation tokens here.
+        """
+        from anthropic.types.cache_creation import CacheCreation
+        from anthropic.types.usage import Usage
+        from langchain_anthropic.chat_models import _create_usage_metadata
+
+        anthropic_usage = Usage(
+            input_tokens=100,
+            output_tokens=20,
+            cache_creation_input_tokens=500,
+            cache_read_input_tokens=70,
+            cache_creation=CacheCreation(
+                ephemeral_5m_input_tokens=500, ephemeral_1h_input_tokens=0
+            ),
+        )
+        usage_metadata = _create_usage_metadata(anthropic_usage)
+        # Sanity check on the fixture itself: the generic key really is
+        # zeroed and the real count really is under the TTL-specific key.
+        assert usage_metadata["input_token_details"]["cache_creation"] == 0
+        assert usage_metadata["input_token_details"]["ephemeral_5m_input_tokens"] == 500
+
+        msg = AIMessage(content="hello")
+        msg.usage_metadata = usage_metadata
+        result = {"messages": [msg]}
+
+        usage = extract_token_usage(result)
+        assert usage.cache_creation_tokens == 500
+        assert usage.cache_read_tokens == 70
 
 
 class TestExtractToolNames:

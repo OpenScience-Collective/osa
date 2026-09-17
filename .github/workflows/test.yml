@@ -92,19 +92,22 @@ jobs:
           pip install uv
           uv pip install --system ".[dev]"
 
-      - name: Check for API key
-        id: check-key
+      - name: Check for Anthropic credentials
+        id: check-anthropic-key
         run: |
-          if [ -n "${{ secrets.OPENROUTER_API_KEY }}" ]; then
-            echo "has_key=true" >> $GITHUB_OUTPUT
+          if [ -n "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
+            echo "has_anthropic_key=true" >> $GITHUB_OUTPUT
           else
-            echo "has_key=false" >> $GITHUB_OUTPUT
-            echo "::warning::OPENROUTER_API_KEY not set - skipping integration tests"
+            echo "has_anthropic_key=false" >> $GITHUB_OUTPUT
+            echo "::warning::ANTHROPIC_API_KEY not set - skipping integration tests"
           fi
 
       - name: Run integration tests
-        if: steps.check-key.outputs.has_key == 'true'
+        if: steps.check-anthropic-key.outputs.has_anthropic_key == 'true'
         env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+          ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
           pytest tests/ -v -m "integration or llm" --tb=short

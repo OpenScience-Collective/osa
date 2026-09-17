@@ -3,11 +3,14 @@
 from unittest.mock import MagicMock, patch
 
 import httpx
+import respx
 
 from src.assistants import discover_assistants, registry
 from src.assistants.community import PageContext
 from src.utils.page_fetcher import (
     MAX_PAGE_CONTENT_LENGTH,
+    PageFetchResult,
+    fetch_page,
     fetch_page_content,
     is_safe_url,
 )
@@ -355,6 +358,89 @@ class TestFetchPageContentImpl:
         assert "Error" in result
 
 
+class TestFetchPageReportsFailureStructurally:
+    """Every failure branch must come back with ``success`` false.
+
+    The point of the flag is that a caller which treats content and errors
+    differently, such as the citable page tool, never has to guess from the
+    message. It cannot guess correctly: these branches do not share a
+    prefix, and the two below that read "Error fetching ..." are exactly the
+    ones a `startswith("Error:")` check missed.
+    """
+
+    @patch("src.utils.page_fetcher.is_safe_url")
+    @respx.mock
+    def test_http_status_error_is_a_failure(self, mock_is_safe):
+        mock_is_safe.return_value = (True, "", "93.184.216.34")
+        respx.get("https://example.com/missing").mock(return_value=httpx.Response(404))
+
+        result = fetch_page("https://example.com/missing")
+
+        assert result.success is False
+        assert "404" in result.content
+
+    @patch("src.utils.page_fetcher.is_safe_url")
+    @respx.mock
+    def test_network_error_is_a_failure(self, mock_is_safe):
+        mock_is_safe.return_value = (True, "", "93.184.216.34")
+        respx.get("https://example.com").mock(side_effect=httpx.ConnectError("refused"))
+
+        result = fetch_page("https://example.com")
+
+        assert result.success is False
+
+    @patch("src.utils.page_fetcher.is_safe_url")
+    @respx.mock
+    def test_non_html_content_is_a_failure(self, mock_is_safe):
+        mock_is_safe.return_value = (True, "", "93.184.216.34")
+        respx.get("https://example.com/data.json").mock(
+            return_value=httpx.Response(200, json={"not": "html"})
+        )
+
+        result = fetch_page("https://example.com/data.json")
+
+        assert result.success is False
+
+    def test_invalid_url_is_a_failure(self):
+        result = fetch_page("ftp://example.com")
+
+        assert result.success is False
+
+    @patch("src.utils.page_fetcher.is_safe_url")
+    @respx.mock
+    def test_fetched_page_is_a_success(self, mock_is_safe):
+        mock_is_safe.return_value = (True, "", "93.184.216.34")
+        respx.get("https://example.com").mock(
+            return_value=httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text="<html><body><h1>Docs</h1><p>Body text</p></body></html>",
+            )
+        )
+
+        result = fetch_page("https://example.com")
+
+        assert result.success is True
+        assert "Body text" in result.content
+
+    @patch("src.utils.page_fetcher.is_safe_url")
+    @respx.mock
+    def test_no_failure_branch_is_recognizable_by_prefix_alone(self, mock_is_safe):
+        """The wordings genuinely differ, which is why the flag exists.
+
+        If a future change normalized every message to one prefix, this
+        would fail and whoever wrote it could decide knowingly whether to
+        keep the flag. It must not be deleted just because the strings
+        happen to line up on some particular day.
+        """
+        mock_is_safe.return_value = (True, "", "93.184.216.34")
+        respx.get("https://example.com/missing").mock(return_value=httpx.Response(404))
+
+        by_prefix = fetch_page("https://example.com/missing").content.startswith("Error:")
+
+        assert by_prefix is False
+
+
 class TestPageContextDataclass:
     """Tests for PageContext dataclass."""
 
@@ -450,10 +536,12 @@ class TestCommunityAssistantWithPageContext:
         prompt = assistant.get_system_prompt()
         assert "(No title)" in prompt
 
-    @patch("src.assistants.community.fetch_page_content")
+    @patch("src.assistants.community.fetch_page")
     def test_fetch_current_page_tool_calls_impl(self, mock_fetch):
-        """Should call fetch_page_content with bound URL."""
-        mock_fetch.return_value = "# Content from https://hedtags.org\n\nTest content"
+        """Should call the page fetch with the bound URL."""
+        mock_fetch.return_value = PageFetchResult(
+            True, "# Content from https://hedtags.org\n\nTest content"
+        )
 
         model = MagicMock()
         model.bind_tools = MagicMock(return_value=model)
@@ -470,10 +558,10 @@ class TestCommunityAssistantWithPageContext:
         mock_fetch.assert_called_once_with("https://hedtags.org")
         assert "Test content" in result
 
-    @patch("src.assistants.community.fetch_page_content")
+    @patch("src.assistants.community.fetch_page")
     def test_fetch_current_page_tool_bound_to_specific_url(self, mock_fetch):
         """Should only fetch the bound URL, not allow arbitrary URLs."""
-        mock_fetch.return_value = "Content"
+        mock_fetch.return_value = PageFetchResult(True, "Content")
 
         model = MagicMock()
         model.bind_tools = MagicMock(return_value=model)
@@ -489,6 +577,104 @@ class TestCommunityAssistantWithPageContext:
 
         # Should be called with the bound URL
         mock_fetch.assert_called_once_with("https://specific-page.com/doc")
+
+    @patch("src.assistants.community.fetch_page")
+    def test_fetch_current_page_returns_plain_string_when_citations_disabled(self, mock_fetch):
+        """citations=False (default) must keep today's plain-string return, unchanged."""
+        mock_fetch.return_value = PageFetchResult(True, "# Page\n\nSome fetched content")
+
+        model = MagicMock()
+        model.bind_tools = MagicMock(return_value=model)
+        page_context = PageContext(url="https://hedtags.org/docs", title="Docs")
+        assistant = registry.create_assistant(
+            "hed", model=model, preload_docs=False, page_context=page_context
+        )
+
+        fetch_tool = next(t for t in assistant.tools if t.name == "fetch_current_page")
+        result = fetch_tool.invoke({})
+
+        assert result == "# Page\n\nSome fetched content"
+
+    @patch("src.assistants.community.fetch_page")
+    def test_fetch_current_page_returns_citation_block_when_enabled(self, mock_fetch):
+        """citations=True on a successful fetch returns one search_result block."""
+        mock_fetch.return_value = PageFetchResult(True, "# Page\n\nSome fetched content")
+
+        model = MagicMock()
+        model.bind_tools = MagicMock(return_value=model)
+        page_context = PageContext(url="https://hedtags.org/docs", title="Docs")
+        assistant = registry.create_assistant(
+            "hed",
+            model=model,
+            preload_docs=False,
+            page_context=page_context,
+            citations=True,
+        )
+
+        fetch_tool = next(t for t in assistant.tools if t.name == "fetch_current_page")
+        result = fetch_tool.invoke({})
+
+        assert isinstance(result, list)
+        assert len(result) == 1
+        block = result[0]
+        assert block["type"] == "search_result"
+        assert block["source"] == "https://hedtags.org/docs"
+        assert block["citations"] == {"enabled": True}
+        assert block["content"] == [{"type": "text", "text": "# Page\n\nSome fetched content"}]
+
+    @patch("src.assistants.community.fetch_page")
+    def test_fetch_current_page_citations_enabled_but_fetch_errors(self, mock_fetch):
+        """citations=True on a failed fetch still returns the plain error string."""
+        mock_fetch.return_value = PageFetchResult(
+            False, "Error: Invalid URL 'https://hedtags.org/docs'"
+        )
+
+        model = MagicMock()
+        model.bind_tools = MagicMock(return_value=model)
+        page_context = PageContext(url="https://hedtags.org/docs", title="Docs")
+        assistant = registry.create_assistant(
+            "hed",
+            model=model,
+            preload_docs=False,
+            page_context=page_context,
+            citations=True,
+        )
+
+        fetch_tool = next(t for t in assistant.tools if t.name == "fetch_current_page")
+        result = fetch_tool.invoke({})
+
+        assert isinstance(result, str)
+        assert result.startswith("Error:")
+
+    @patch("src.assistants.community.fetch_page")
+    def test_fetch_current_page_gates_on_the_flag_not_the_error_wording(self, mock_fetch):
+        """A failure that does not announce itself as "Error:" is still a failure.
+
+        The gate used to read `content.startswith("Error:")`, which two of
+        fetch_page's own failure branches do not match (both HTTP-status and
+        network errors read "Error fetching <url>: ..."). A failed fetch was
+        then handed to Claude as a citable search_result whose entire content
+        was the error text, so the widget could render a numbered source with
+        a working link and the error message as its tooltip: a fetch failure
+        presented as page content the model had read.
+        """
+        mock_fetch.return_value = PageFetchResult(False, "the page could not be reached")
+
+        model = MagicMock()
+        model.bind_tools = MagicMock(return_value=model)
+        page_context = PageContext(url="https://hedtags.org/docs", title="Docs")
+        assistant = registry.create_assistant(
+            "hed",
+            model=model,
+            preload_docs=False,
+            page_context=page_context,
+            citations=True,
+        )
+
+        fetch_tool = next(t for t in assistant.tools if t.name == "fetch_current_page")
+        result = fetch_tool.invoke({})
+
+        assert result == "the page could not be reached"
 
     def test_page_context_properties(self):
         """Should have correct preloaded and available doc counts."""

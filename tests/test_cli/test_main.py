@@ -7,10 +7,12 @@ with real output verification.
 from pathlib import Path
 from unittest.mock import patch
 
+import httpx
+import respx
 from click import unstyle
 from typer.testing import CliRunner
 
-from src.cli.config import CLIConfig, save_config
+from src.cli.config import CLIConfig, load_credentials, save_config
 from src.cli.main import cli
 from tests.test_cli.test_config import patched_config_paths
 
@@ -92,6 +94,30 @@ class TestConfigCommands:
         assert result.exit_code == 0
         assert "No changes made" in result.output
 
+    def test_config_set_saves_anthropic_key(self, tmp_path: Path) -> None:
+        """config set --anthropic-key persists to the Anthropic slot.
+
+        Without this flag the only way to persist an Anthropic key was to
+        hand-edit credentials.yaml or export the env var in every shell.
+        """
+        with patched_config_paths(tmp_path):
+            result = runner.invoke(cli, ["config", "set", "--anthropic-key", "sk-ant-api03-saved"])
+            creds = load_credentials()
+
+        assert result.exit_code == 0, result.output
+        assert creds.anthropic_api_key == "sk-ant-api03-saved"
+        assert creds.openrouter_api_key is None
+
+    def test_config_set_keys_do_not_overwrite_each_other(self, tmp_path: Path) -> None:
+        """Setting one provider's key leaves the other provider's key alone."""
+        with patched_config_paths(tmp_path):
+            runner.invoke(cli, ["config", "set", "--openrouter-key", "sk-or-v1-saved"])
+            runner.invoke(cli, ["config", "set", "--anthropic-key", "sk-ant-api03-saved"])
+            creds = load_credentials()
+
+        assert creds.openrouter_api_key == "sk-or-v1-saved"
+        assert creds.anthropic_api_key == "sk-ant-api03-saved"
+
     def test_config_path_shows_directories(self) -> None:
         """config path should show config and data directories."""
         result = runner.invoke(cli, ["config", "path"])
@@ -112,6 +138,80 @@ class TestConfigCommands:
 
         assert result.exit_code == 0
         assert "reset to defaults" in result.output.lower()
+
+
+class TestInitCommand:
+    """`osa init` is the first thing a new CLI user runs.
+
+    Before the Claude Platform migration it prompted for an OpenRouter key
+    and saved whatever it got into the OpenRouter slot, so an Anthropic key
+    typed at that prompt would have gone out on the wrong header and failed.
+    The provider now comes from the key's own prefix.
+    """
+
+    def test_init_saves_anthropic_key_to_anthropic_slot(self, tmp_path: Path) -> None:
+        with (
+            patched_config_paths(tmp_path),
+            patch.dict("os.environ", {}, clear=True),
+            respx.mock,
+        ):
+            respx.get("https://api.osc.earth/osa/health").mock(
+                return_value=httpx.Response(200, json={"status": "healthy", "version": "0.0.0"})
+            )
+            result = runner.invoke(cli, ["init", "--api-key", "sk-ant-api03-typed"])
+            creds = load_credentials()
+
+        assert result.exit_code == 0, result.output
+        assert creds.anthropic_api_key == "sk-ant-api03-typed"
+        assert creds.openrouter_api_key is None
+
+    def test_init_saves_openrouter_key_to_openrouter_slot(self, tmp_path: Path) -> None:
+        with (
+            patched_config_paths(tmp_path),
+            patch.dict("os.environ", {}, clear=True),
+            respx.mock,
+        ):
+            respx.get("https://api.osc.earth/osa/health").mock(
+                return_value=httpx.Response(200, json={"status": "healthy", "version": "0.0.0"})
+            )
+            result = runner.invoke(cli, ["init", "--api-key", "sk-or-v1-typed"])
+            creds = load_credentials()
+
+        assert result.exit_code == 0, result.output
+        assert creds.openrouter_api_key == "sk-or-v1-typed"
+        assert creds.anthropic_api_key is None
+
+    def test_init_connection_test_uses_the_key_it_just_saved(self, tmp_path: Path) -> None:
+        """init's own connection test must go out on the saved key's header.
+
+        Asserting on the header rather than merely that the request happened:
+        the previous code stored an Anthropic key in the OpenRouter slot and
+        then built its test client from that slot, so a "was the health
+        endpoint called" assertion passed even though the request carried the
+        key on the wrong header, where the server could not use it.
+        """
+        with (
+            patched_config_paths(tmp_path),
+            patch.dict("os.environ", {}, clear=True),
+            respx.mock,
+        ):
+            route = respx.get("https://api.osc.earth/osa/health").mock(
+                return_value=httpx.Response(200, json={"status": "healthy", "version": "9.9.9"})
+            )
+            result = runner.invoke(cli, ["init", "--api-key", "sk-ant-api03-typed"])
+
+        assert route.called, "init skipped its connection test for an Anthropic-only setup"
+        sent = route.calls.last.request
+        assert sent.headers["X-Anthropic-API-Key"] == "sk-ant-api03-typed"
+        assert "X-OpenRouter-Key" not in sent.headers
+        assert "9.9.9" in unstyle(result.output)
+
+    def test_init_help_points_at_both_providers(self) -> None:
+        result = runner.invoke(cli, ["init", "--help"])
+        assert result.exit_code == 0
+        plain = unstyle(result.output)
+        assert "Anthropic" in plain
+        assert "OpenRouter" in plain
 
 
 class TestCLIHelp:
@@ -154,6 +254,38 @@ class TestAskCommand:
         assert result.exit_code == 1
         assert "No API key" in result.output
 
+    def test_ask_with_only_anthropic_key_sends_anthropic_header(self, tmp_path: Path) -> None:
+        """A user with only ANTHROPIC_API_KEY configured must not take the
+        "No API key" path, and the outgoing request must carry
+        X-Anthropic-API-Key.
+
+        get_effective_byok_keys() resolves both providers and _check_api_key
+        accepts either, so an Anthropic-only user should sail through.
+        respx mocks the HTTP boundary so this runs offline: the CLI's own
+        client (src/cli/client.py) builds its own httpx.Client per call with
+        no transport injection point, so respx (rather than
+        httpx.MockTransport) is what the project rules call for here.
+        """
+        with (
+            patched_config_paths(tmp_path),
+            patch("src.cli.config.FIRST_RUN_FILE", tmp_path / ".first_run"),
+            patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-ant-cli-test-key"}, clear=True),
+            respx.mock,
+        ):
+            route = respx.post("https://api.osc.earth/osa/hed/ask").mock(
+                return_value=httpx.Response(
+                    200, json={"answer": "Mocked answer.", "tool_calls": [], "model": "test-model"}
+                )
+            )
+            result = runner.invoke(cli, ["ask", "test question", "-a", "hed"])
+
+        assert "No API key" not in result.output
+        assert result.exit_code == 0, result.output
+        assert route.called
+        sent_request = route.calls.last.request
+        assert sent_request.headers["X-Anthropic-API-Key"] == "sk-ant-cli-test-key"
+        assert "X-OpenRouter-Key" not in sent_request.headers
+
 
 class TestChatCommand:
     """Tests for the chat command."""
@@ -165,3 +297,45 @@ class TestChatCommand:
         clean = unstyle(result.output)
         assert "--assistant" in clean
         assert "--api-key" in clean
+
+    def test_chat_with_only_anthropic_key_sends_anthropic_header(self, tmp_path: Path) -> None:
+        """chat resolves BYOK keys separately from ask, so it needs its own check.
+
+        The REPL is driven by feeding one question and then "quit" on stdin,
+        with --no-stream so the turn is a single POST that respx can inspect.
+
+        The response body is serialized from the server's own ChatResponse
+        model rather than hand-written, because hand-writing it gets the shape
+        wrong: `message` is a nested ChatMessage object, not a string, and the
+        CLI reads `response["message"]["content"]`. Building from the model
+        means the fixture cannot drift from the contract.
+        """
+        from src.api.routers.community import ChatMessage, ChatResponse
+
+        chat_response = ChatResponse(
+            session_id="sess-1",
+            message=ChatMessage(role="assistant", content="Mocked reply."),
+            model="test-model",
+        )
+
+        with (
+            patched_config_paths(tmp_path),
+            patch("src.cli.config.FIRST_RUN_FILE", tmp_path / ".first_run"),
+            patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-ant-cli-test-key"}, clear=True),
+            respx.mock,
+        ):
+            route = respx.post("https://api.osc.earth/osa/hed/chat").mock(
+                return_value=httpx.Response(200, json=chat_response.model_dump(mode="json"))
+            )
+            result = runner.invoke(
+                cli,
+                ["chat", "-a", "hed", "--no-stream"],
+                input="test question\nquit\n",
+            )
+
+        assert "No API key" not in result.output
+        assert result.exit_code == 0, result.output
+        assert route.called
+        sent_request = route.calls.last.request
+        assert sent_request.headers["X-Anthropic-API-Key"] == "sk-ant-cli-test-key"
+        assert "X-OpenRouter-Key" not in sent_request.headers

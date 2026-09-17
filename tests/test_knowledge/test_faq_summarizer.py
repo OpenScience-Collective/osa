@@ -518,3 +518,304 @@ class TestLLMResponseVariations:
 
         score = _score_thread_quality("Test thread context", mock_model)
         assert score == 0.85
+
+
+class TestFAQGenerationRunsOnTheClaudePlatform:
+    """FAQ generation used to be a server-side route to OpenRouter.
+
+    It ran from the sync scheduler with no caller and no BYOK key, so the
+    platform needed its own OPENROUTER_API_KEY for the feature to work at all.
+    These tests hold the route closed. They use real registry data and the
+    real model resolver rather than a stubbed LLM, so a regression shows up as
+    a failure here rather than as an unexpected OpenRouter bill.
+    """
+
+    def test_shipped_faq_configs_name_offered_claude_models(self) -> None:
+        """Every faq_generation agent must resolve to an offered Claude model.
+
+        Dynamic over the registry, so a community added later cannot quietly
+        reintroduce a model the Claude Platform will not serve. This is the
+        assertion that fails against the pre-migration config: eeglab's
+        evaluation agent was qwen/qwen3-235b-a22b-2507, which normalize_model
+        rejects.
+        """
+        from src.assistants import discover_assistants, registry
+        from src.core.services.anthropic_llm import OFFERED_MODELS, normalize_model
+
+        registry._assistants.clear()
+        discover_assistants()
+
+        checked = 0
+        for community_id in registry._assistants:
+            config = registry.get_community_config(community_id)
+            faq_config = getattr(config, "faq_generation", None)
+            if not faq_config:
+                continue
+            for role in ("evaluation_agent", "summary_agent"):
+                agent = getattr(faq_config, role)
+                resolved = normalize_model(agent.model)
+                assert resolved in OFFERED_MODELS, (
+                    f"{community_id}.faq_generation.{role}.model={agent.model!r} "
+                    f"resolves to {resolved!r}, which is not offered"
+                )
+                checked += 1
+
+        assert checked, "No community ships a faq_generation config; this test proved nothing"
+
+    def test_summarizer_does_not_reach_for_the_openrouter_factory(self) -> None:
+        """The module must not name create_openrouter_llm at all.
+
+        Asserted against the source text because the import is function-local:
+        there is no module attribute to inspect, and importing the symbol back
+        would not tell us whether summarize_threads calls it.
+        """
+        from pathlib import Path
+
+        import src.knowledge.faq_summarizer as summarizer
+
+        source = Path(summarizer.__file__).read_text()
+        assert "create_openrouter_llm" not in source
+        assert "create_anthropic_llm" in source
+
+    def test_provider_hint_is_reported_rather_than_dropped(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A stale provider hint has no effect, so it has to be said out loud.
+
+        A community that set DeepInfra/FP8 for cost reasons would otherwise
+        find out from a bill.
+        """
+        from src.knowledge.faq_summarizer import _warn_if_provider_ignored
+
+        with caplog.at_level("WARNING"):
+            _warn_if_provider_ignored("DeepInfra/FP8", "evaluation_agent", "eeglab")
+
+        assert "DeepInfra/FP8" in caplog.text
+        assert "evaluation_agent" in caplog.text
+        assert "eeglab" in caplog.text
+
+    def test_absent_provider_hint_is_silent(self, caplog: pytest.LogCaptureFixture) -> None:
+        from src.knowledge.faq_summarizer import _warn_if_provider_ignored
+
+        with caplog.at_level("WARNING"):
+            _warn_if_provider_ignored(None, "summary_agent", "eeglab")
+
+        assert caplog.text == ""
+
+    def test_ignored_temperature_is_reported(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A temperature claude-sonnet-5 discards should be said out loud.
+
+        The community config warns at load time; this is the same fact in the
+        log an operator watches while a sync runs.
+        """
+        from src.knowledge.faq_summarizer import _warn_if_temperature_ignored
+
+        with caplog.at_level("WARNING"):
+            _warn_if_temperature_ignored(0.0, "claude-sonnet-5", "evaluation_agent", "eeglab")
+
+        assert "temperature=0.0 is ignored" in caplog.text
+        assert "evaluation_agent" in caplog.text
+        assert "claude-sonnet-5" in caplog.text
+
+    def test_ignored_temperature_behind_a_legacy_id_is_reported(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from src.knowledge.faq_summarizer import _warn_if_temperature_ignored
+
+        with caplog.at_level("WARNING"):
+            _warn_if_temperature_ignored(
+                0.3, "anthropic/claude-sonnet-4.5", "summary_agent", "eeglab"
+            )
+
+        assert "is ignored" in caplog.text
+
+    def test_honored_temperature_is_silent(self, caplog: pytest.LogCaptureFixture) -> None:
+        """claude-haiku-4-5 does accept a temperature, so there is nothing to say."""
+        from src.knowledge.faq_summarizer import _warn_if_temperature_ignored
+
+        with caplog.at_level("WARNING"):
+            _warn_if_temperature_ignored(0.0, "claude-haiku-4-5", "evaluation_agent", "eeglab")
+
+        assert caplog.text == ""
+
+
+class TestCostAccounting:
+    """Costs come from src.metrics.cost, keyed on the model that ran.
+
+    Before the migration this module carried its own price list (Haiku at
+    0.25/1.25, Sonnet at 3.00/15.00, both pre-migration OpenRouter rates) and
+    charged every processed thread at the Sonnet rate regardless of what was
+    configured, while ignoring the evaluation calls that make up the bulk of a
+    run. These tests pin the accounting to the same table the API path bills
+    against.
+    """
+
+    def test_strategy_estimate_uses_the_shared_pricing_table(
+        self, populated_mailman_db: Path
+    ) -> None:
+        """Derived from the returned token counts, so no rate is duplicated here."""
+        from src.knowledge.faq_summarizer import CHEAP_MODEL, QUALITY_MODEL
+        from src.metrics.cost import estimate_cost
+
+        with patch("src.knowledge.db.get_db_path", return_value=populated_mailman_db):
+            estimate = estimate_summarization_cost("test-list", project="test-faq")
+
+        input_tokens = estimate["estimated_input_tokens"]
+        output_tokens = estimate["estimated_output_tokens"]
+
+        assert estimate["haiku_cost"] == estimate_cost(CHEAP_MODEL, input_tokens, output_tokens)
+        assert estimate["sonnet_cost"] == estimate_cost(QUALITY_MODEL, input_tokens, output_tokens)
+
+    def test_the_two_strategies_are_the_models_the_platform_offers(self) -> None:
+        """The comparison is only useful if it compares what can actually run.
+
+        Dynamic over OFFERED_MODELS, so a third offered model forces a decision
+        here rather than leaving the estimate quietly two-thirds complete, and a
+        stale id (a retired Haiku, say) cannot linger as a strategy that is
+        priced but unusable. The fallback path in ``summarize_threads`` builds
+        both agents on CHEAP_MODEL, so it has to be the default model too.
+        """
+        from src.core.services.anthropic_models import DEFAULT_MODEL, OFFERED_MODELS
+        from src.knowledge.faq_summarizer import CHEAP_MODEL, QUALITY_MODEL
+
+        assert {CHEAP_MODEL, QUALITY_MODEL} == set(OFFERED_MODELS)
+        assert CHEAP_MODEL == DEFAULT_MODEL
+
+    def test_strategy_estimate_prices_both_models_from_the_table(self) -> None:
+        """Both strategy models must be priced, not silently fall back.
+
+        estimate_cost falls back to a generic rate for an unpriced model, which
+        would make the comparison meaningless without failing anything.
+        """
+        from src.knowledge.faq_summarizer import CHEAP_MODEL, QUALITY_MODEL
+        from src.metrics.cost import MODEL_PRICING
+
+        assert CHEAP_MODEL in MODEL_PRICING
+        assert QUALITY_MODEL in MODEL_PRICING
+        assert MODEL_PRICING[CHEAP_MODEL].input_per_1m < MODEL_PRICING[QUALITY_MODEL].input_per_1m
+
+    def test_hybrid_sits_between_the_two_strategies(self, populated_mailman_db: Path) -> None:
+        with patch("src.knowledge.db.get_db_path", return_value=populated_mailman_db):
+            estimate = estimate_summarization_cost("test-list", project="test-faq")
+
+        assert estimate["haiku_cost"] < estimate["hybrid_cost"] < estimate["sonnet_cost"]
+
+    def test_per_call_cost_follows_the_model_that_ran(self) -> None:
+        """The same call is cheaper on Haiku than on Sonnet, by the table's ratio."""
+        from src.knowledge.faq_summarizer import (
+            CHEAP_MODEL,
+            QUALITY_MODEL,
+            SCORE_OUTPUT_TOKENS,
+            _estimate_call_cost,
+        )
+        from src.metrics.cost import estimate_cost
+
+        context = "From: Alice\nHow do I import a BDF file?\n" * 50
+        expected_input_tokens = len(context) // 4
+
+        cheap = _estimate_call_cost(CHEAP_MODEL, context, SCORE_OUTPUT_TOKENS)
+        quality = _estimate_call_cost(QUALITY_MODEL, context, SCORE_OUTPUT_TOKENS)
+
+        assert cheap == estimate_cost(CHEAP_MODEL, expected_input_tokens, SCORE_OUTPUT_TOKENS)
+        assert cheap < quality
+
+    def test_scoring_is_counted_even_when_nothing_is_summarized(
+        self, populated_mailman_db: Path
+    ) -> None:
+        """Scoring runs on every thread, so a run that summarizes nothing still costs.
+
+        The old accounting only charged summarized threads, which reported
+        $0.00 for a run that scored thousands of threads and kept none. The
+        scored thread here comes back below the 0.7 threshold, so the summary
+        agent is never called and the whole cost is the one scoring call.
+
+        The LLM itself is langchain's own GenericFakeChatModel rather than a
+        mock of anything in this codebase: the accounting under test is real,
+        and only the network boundary is replaced.
+        """
+        import itertools
+
+        from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+        from langchain_core.messages import AIMessage
+
+        from src.knowledge.faq_summarizer import (
+            CHEAP_MODEL,
+            SCORE_OUTPUT_TOKENS,
+            _estimate_call_cost,
+            summarize_threads,
+        )
+
+        low_score = GenericFakeChatModel(messages=itertools.cycle([AIMessage(content="0.1")]))
+
+        with patch("src.knowledge.db.get_db_path", return_value=populated_mailman_db):
+            with patch(
+                "src.core.services.anthropic_llm.create_anthropic_llm", return_value=low_score
+            ):
+                result = summarize_threads("test-list", project="test-faq")
+
+            context = self._thread_context(populated_mailman_db, "thread001")
+
+        assert result["summarized"] == 0
+        assert result["skipped"] == 1
+        assert result["total_cost"] == pytest.approx(
+            _estimate_call_cost(CHEAP_MODEL, context, SCORE_OUTPUT_TOKENS)
+        )
+
+    def test_a_summarized_thread_is_charged_for_both_calls(
+        self, populated_mailman_db: Path
+    ) -> None:
+        """A thread that clears the threshold pays for scoring and for the summary."""
+        import json
+
+        from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+        from langchain_core.messages import AIMessage
+
+        from src.knowledge.faq_summarizer import (
+            CHEAP_MODEL,
+            SCORE_OUTPUT_TOKENS,
+            SUMMARY_OUTPUT_TOKENS,
+            _estimate_call_cost,
+            summarize_threads,
+        )
+
+        summary_json = json.dumps(
+            {
+                "question": "How do I import a BDF file?",
+                "answer": "Use pop_biosig from the File menu.",
+                "tags": ["data-import"],
+                "category": "how-to",
+            }
+        )
+        # One score, then one summary: the two agents share this fake, and
+        # summarize_threads calls them in that order for each thread.
+        scripted = GenericFakeChatModel(
+            messages=iter([AIMessage(content="0.9"), AIMessage(content=summary_json)])
+        )
+
+        with patch("src.knowledge.db.get_db_path", return_value=populated_mailman_db):
+            with patch(
+                "src.core.services.anthropic_llm.create_anthropic_llm", return_value=scripted
+            ):
+                result = summarize_threads("test-list", project="test-faq")
+
+            context = self._thread_context(populated_mailman_db, "thread001")
+
+        assert result["summarized"] == 1
+        assert result["total_cost"] == pytest.approx(
+            _estimate_call_cost(CHEAP_MODEL, context, SCORE_OUTPUT_TOKENS)
+            + _estimate_call_cost(CHEAP_MODEL, context, SUMMARY_OUTPUT_TOKENS)
+        )
+
+    @staticmethod
+    def _thread_context(db_path: Path, thread_id: str) -> str:
+        """Rebuild the prompt text a thread produced, for cost comparison."""
+        with (
+            patch("src.knowledge.db.get_db_path", return_value=db_path),
+            get_connection("test-faq") as conn,
+        ):
+            rows = conn.execute(
+                "SELECT * FROM mailing_list_messages WHERE thread_id = ? ORDER BY date",
+                (thread_id,),
+            ).fetchall()
+
+        return _build_thread_context([dict(row) for row in rows])

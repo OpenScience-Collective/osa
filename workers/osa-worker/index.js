@@ -225,7 +225,7 @@ function getCorsHeaders(origin) {
   return {
     'Access-Control-Allow-Origin': allowedOrigin,
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, X-API-Key, X-OpenRouter-Key, X-OpenRouter-Model, X-OpenRouter-Provider, X-OpenRouter-Temperature, X-User-Id, cf-turnstile-response',
+    'Access-Control-Allow-Headers': 'Content-Type, X-API-Key, X-Anthropic-API-Key, X-OpenRouter-Key, X-User-Id, cf-turnstile-response',
     'Access-Control-Allow-Credentials': 'true',
   };
 }
@@ -305,7 +305,7 @@ async function _proxyToBackend(request, env, path, body, corsHeaders, CONFIG, au
   }
 
   // Forward BYOK headers
-  const byokHeaders = ['X-OpenRouter-Key', 'X-OpenRouter-Model', 'X-OpenRouter-Provider', 'X-OpenRouter-Temperature', 'X-User-Id'];
+  const byokHeaders = ['X-Anthropic-API-Key', 'X-OpenRouter-Key', 'X-User-Id'];
   for (const header of byokHeaders) {
     const value = request.headers.get(header);
     if (value) {
@@ -671,8 +671,10 @@ async function handleProtectedEndpoint(request, env, ctx, path, corsHeaders, CON
   }
 
   // Check for BYOK mode - CLI/programmatic access with user's own API key
-  // BYOK users skip Turnstile but still get rate limited
-  const isBYOK = request.headers.get('X-OpenRouter-Key') !== null;
+  // (Anthropic or OpenRouter). BYOK users skip Turnstile but still get
+  // rate limited.
+  const isBYOK = request.headers.get('X-Anthropic-API-Key') !== null ||
+    request.headers.get('X-OpenRouter-Key') !== null;
 
   // Verify Turnstile token for non-BYOK requests
   if (!isBYOK) {
@@ -689,7 +691,7 @@ async function handleProtectedEndpoint(request, env, ctx, path, corsHeaders, CON
       return new Response(JSON.stringify({
         error: 'Bot verification failed',
         details: turnstileResult.error,
-        hint: 'Complete the Turnstile challenge or use BYOK mode with X-OpenRouter-Key header',
+        hint: 'Complete the Turnstile challenge or use BYOK mode with an X-Anthropic-API-Key or X-OpenRouter-Key header',
       }), {
         status: 403,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },

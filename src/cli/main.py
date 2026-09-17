@@ -25,7 +25,9 @@ from src.cli.config import (
     CREDENTIALS_FILE,
     CLIConfig,
     CredentialsConfig,
+    classify_api_key,
     get_data_dir,
+    get_effective_byok_keys,
     get_effective_config,
     get_user_id,
     is_first_run,
@@ -68,7 +70,7 @@ def init(
         typer.Option(
             "--api-key",
             "-k",
-            help="OpenRouter API key (get one at https://openrouter.ai/keys)",
+            help="Anthropic (sk-ant-...) or OpenRouter (sk-or-...) API key",
         ),
     ] = None,
     api_url: Annotated[
@@ -81,7 +83,11 @@ def init(
     Saves configuration to ~/.config/osa/ so you don't need to provide
     the API key for every command.
 
-    Get an OpenRouter API key at: https://openrouter.ai/keys
+    Either credential works, and which provider it belongs to is read from
+    the key itself:
+
+    - Anthropic (recommended): https://console.anthropic.com/settings/keys
+    - OpenRouter: https://openrouter.ai/keys
     """
     config = load_config()
     creds = load_credentials()
@@ -91,15 +97,24 @@ def init(
         output.err_console.print()
         output.err_console.print("[bold]Welcome to OSA (Open Science Assistant)![/bold]")
         output.err_console.print()
-        output.err_console.print("To use OSA, you need an OpenRouter API key.")
+        output.err_console.print("Using OSA from the command line needs your own API key.")
         output.err_console.print(
-            "Get one at: [link=https://openrouter.ai/keys]https://openrouter.ai/keys[/link]"
+            "Anthropic (recommended): "
+            "[link=https://console.anthropic.com/settings/keys]"
+            "console.anthropic.com/settings/keys[/link]"
+        )
+        output.err_console.print(
+            "OpenRouter: [link=https://openrouter.ai/keys]openrouter.ai/keys[/link]"
         )
         output.err_console.print()
-        api_key = typer.prompt("OpenRouter API key", hide_input=True)
+        api_key = typer.prompt("API key", hide_input=True)
 
+    # The key says which provider it belongs to, so there is nothing to ask.
     if api_key:
-        creds.openrouter_api_key = api_key
+        if classify_api_key(api_key) == "anthropic":
+            creds.anthropic_api_key = api_key
+        else:
+            creds.openrouter_api_key = api_key
     if api_url:
         config.api.url = api_url
 
@@ -111,7 +126,7 @@ def init(
     output.print_info(f"  Credentials: {CREDENTIALS_FILE}")
 
     # Test connection
-    if creds.openrouter_api_key:
+    if creds.anthropic_api_key or creds.openrouter_api_key:
         output.err_console.print()
         output.print_progress("Testing API connection")
         from src.cli.client import APIError, OSAClient
@@ -120,6 +135,7 @@ def init(
             client = OSAClient(
                 api_url=config.api.url,
                 openrouter_api_key=creds.openrouter_api_key,
+                anthropic_api_key=creds.anthropic_api_key,
             )
             result = client.health_check()
             status = result.get("status", "unknown")
@@ -157,7 +173,11 @@ def ask(
     ] = "hed",
     api_key: Annotated[
         str | None,
-        typer.Option("--api-key", "-k", help="OpenRouter API key (overrides saved config)"),
+        typer.Option(
+            "--api-key",
+            "-k",
+            help="Anthropic or OpenRouter API key (overrides saved config)",
+        ),
     ] = None,
     api_url: Annotated[
         str | None,
@@ -184,15 +204,17 @@ def ask(
         osa ask "What is pop_newset?" -a eeglab -o json
         osa ask "What is HED?" -a hed --mirror abc123def456
     """
-    config, effective_key = get_effective_config(api_key=api_key, api_url=api_url)
+    config, _ = get_effective_config(api_url=api_url)
+    effective_key, effective_anthropic_key = get_effective_byok_keys(api_key)
 
-    _check_api_key(effective_key)
+    _check_api_key(effective_key or effective_anthropic_key)
 
     from src.cli.client import APIError, OSAClient
 
     client = OSAClient(
         api_url=config.api.url,
         openrouter_api_key=effective_key,
+        anthropic_api_key=effective_anthropic_key,
         user_id=get_user_id(),
         mirror_id=mirror,
     )
@@ -262,7 +284,11 @@ def chat(
     ] = "hed",
     api_key: Annotated[
         str | None,
-        typer.Option("--api-key", "-k", help="OpenRouter API key (overrides saved config)"),
+        typer.Option(
+            "--api-key",
+            "-k",
+            help="Anthropic or OpenRouter API key (overrides saved config)",
+        ),
     ] = None,
     api_url: Annotated[
         str | None,
@@ -285,15 +311,17 @@ def chat(
         osa chat -a eeglab --no-stream
         osa chat -a hed --mirror abc123def456
     """
-    config, effective_key = get_effective_config(api_key=api_key, api_url=api_url)
+    config, _ = get_effective_config(api_url=api_url)
+    effective_key, effective_anthropic_key = get_effective_byok_keys(api_key)
 
-    _check_api_key(effective_key)
+    _check_api_key(effective_key or effective_anthropic_key)
 
     from src.cli.client import APIError, OSAClient
 
     client = OSAClient(
         api_url=config.api.url,
         openrouter_api_key=effective_key,
+        anthropic_api_key=effective_anthropic_key,
         user_id=get_user_id(),
         mirror_id=mirror,
     )
@@ -503,6 +531,10 @@ def config_set(
         str | None,
         typer.Option("--api-url", help="API URL"),
     ] = None,
+    anthropic_key: Annotated[
+        str | None,
+        typer.Option("--anthropic-key", help="Anthropic API key"),
+    ] = None,
     openrouter_key: Annotated[
         str | None,
         typer.Option("--openrouter-key", help="OpenRouter API key"),
@@ -539,6 +571,10 @@ def config_set(
         updated = True
     if streaming is not None:
         config.output.streaming = streaming
+        updated = True
+    if anthropic_key is not None:
+        creds.anthropic_api_key = anthropic_key
+        save_credentials(creds)
         updated = True
     if openrouter_key is not None:
         creds.openrouter_api_key = openrouter_key
