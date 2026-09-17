@@ -26,7 +26,7 @@ from src.tools.base import DocRegistry
 from src.tools.citations import build_search_result, truncate
 from src.tools.fetcher import get_fetcher
 from src.tools.knowledge import create_knowledge_tools
-from src.utils.page_fetcher import fetch_page_content
+from src.utils.page_fetcher import fetch_page
 
 # Cap on a single document's content, whether embedded in the system prompt
 # (preloaded docs) or returned as a citable search_result block (retrieve
@@ -120,16 +120,16 @@ def _create_fetch_current_page_tool(page_url: str, citations: bool = False) -> B
         Returns:
             The page content in markdown format, or an error message.
         """
-        content = fetch_page_content(page_url)
-        if citations and content and not content.startswith("Error:"):
+        result = fetch_page(page_url)
+        if citations and result.success and result.content:
             return [
                 build_search_result(
                     source=page_url,
                     title=page_url,
-                    text=truncate(content, _MAX_CITABLE_CONTENT_CHARS),
+                    text=truncate(result.content, _MAX_CITABLE_CONTENT_CHARS),
                 )
             ]
-        return content
+        return result.content
 
     return fetch_current_page
 
