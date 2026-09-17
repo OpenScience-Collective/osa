@@ -703,3 +703,21 @@ class TestValidateWithoutServerDependencies:
 
         assert result.returncode == 0, result.stderr
         assert "imported" in result.stdout
+
+    def test_community_config_resolves_models_without_the_server_extra(self) -> None:
+        """The config schema resolves model ids, which must not cost langchain.
+
+        ``FAQGenerationConfig.validate_agent_roles`` normalizes each agent's
+        model in order to judge it, so src/core/config/community.py imports the
+        model tables. They live in the dependency-free anthropic_models module
+        for this reason: importing them from anthropic_llm would break this
+        command through its own import of CommunityConfig.
+        """
+        result = self._run_under_blocked_imports(
+            "from src.core.config.community import CommunityConfig\n"
+            "from src.core.services.anthropic_models import normalize_model\n"
+            "print(normalize_model('anthropic/claude-sonnet-4.5'))\n"
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "claude-sonnet-5" in result.stdout

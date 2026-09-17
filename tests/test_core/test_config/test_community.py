@@ -6,6 +6,7 @@ Tests cover:
 - Config serialization
 """
 
+import warnings
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
@@ -1704,3 +1705,176 @@ class TestCostManipulationProtection:
                 # No BYOK - should work for cheaper models
             )
             assert config.default_model == model
+
+
+class TestFAQAgentRoleWarning:
+    """The two-agent split only saves money if scoring runs on the cheap model.
+
+    With two offered Claude models, the wasteful shape is specifically
+    "evaluate everything with the expensive one". The old check warned whenever
+    both agents named the same model, which now fires on the recommended
+    setup: claude-haiku-4-5 for both is the cheapest valid configuration.
+    """
+
+    @staticmethod
+    def _faq_config(evaluation_model: str, summary_model: str) -> dict:
+        """Two agents, with no temperature set.
+
+        Temperature is left out because it carries its own warning on models
+        that ignore it (see TestFAQTemperatureWarning); including it here would
+        make the cost-split tests below pass or fail for the wrong reason.
+        """
+        return {
+            "evaluation_agent": {"model": evaluation_model},
+            "summary_agent": {"model": summary_model},
+        }
+
+    def test_haiku_for_both_agents_is_not_warned_about(self) -> None:
+        from src.core.config.community import FAQGenerationConfig
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            config = FAQGenerationConfig(**self._faq_config("claude-haiku-4-5", "claude-haiku-4-5"))
+
+        assert config.evaluation_agent.model == "claude-haiku-4-5"
+
+    def test_expensive_evaluation_agent_is_warned_about(self) -> None:
+        from src.core.config.community import FAQGenerationConfig
+
+        with pytest.warns(UserWarning, match="evaluation_agent uses claude-sonnet-5"):
+            FAQGenerationConfig(**self._faq_config("claude-sonnet-5", "claude-sonnet-5"))
+
+    def test_expensive_summary_agent_alone_is_fine(self) -> None:
+        """Paying more for the few hundred surviving threads is the intended shape."""
+        from src.core.config.community import FAQGenerationConfig
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            FAQGenerationConfig(**self._faq_config("claude-haiku-4-5", "claude-sonnet-5"))
+
+    def test_provider_field_still_loads_for_backward_compatibility(self) -> None:
+        """An existing config.yaml carrying a stale provider hint must not fail
+        to load; faq_summarizer logs that it is ignored instead."""
+        from src.core.config.community import FAQGenerationConfig
+
+        config = FAQGenerationConfig(
+            evaluation_agent={"model": "claude-haiku-4-5", "provider": "DeepInfra/FP8"},
+            summary_agent={"model": "claude-haiku-4-5", "provider": "Anthropic"},
+        )
+        assert config.evaluation_agent.provider == "DeepInfra/FP8"
+
+    def test_legacy_id_for_the_expensive_model_is_still_warned_about(self) -> None:
+        """The check is about what gets billed, not about how it is spelled.
+
+        A config that predates the migration and still says
+        "anthropic/claude-sonnet-4.5" resolves to claude-sonnet-5 and scores
+        every thread at the higher rate, which is exactly the shape this
+        warning exists for.
+        """
+        from src.core.config.community import FAQGenerationConfig
+
+        with pytest.warns(UserWarning, match="evaluation_agent uses") as caught:
+            FAQGenerationConfig(
+                **self._faq_config("anthropic/claude-sonnet-4.5", "claude-sonnet-5")
+            )
+
+        # Both ids, so a maintainer can find the config line and knows what it bills.
+        message = str(caught[0].message)
+        assert "anthropic/claude-sonnet-4.5" in message
+        assert "claude-sonnet-5" in message
+
+    def test_legacy_id_for_the_cheap_model_is_not_warned_about(self) -> None:
+        """The mirror case: a legacy Haiku id is the recommended setup."""
+        from src.core.config.community import FAQGenerationConfig
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            FAQGenerationConfig(**self._faq_config("anthropic/claude-haiku-4.5", "claude-sonnet-5"))
+
+    def test_unresolvable_model_is_warned_about(self) -> None:
+        """A model the platform will not serve should surface at config load.
+
+        Left as a warning rather than an error on purpose: this schema backs
+        the entire community, so raising here would take the community's
+        assistant down over a field only FAQ generation reads.
+        """
+        from src.core.config.community import FAQGenerationConfig
+
+        with pytest.warns(UserWarning, match="evaluation_agent.model is not usable"):
+            config = FAQGenerationConfig(
+                **self._faq_config("qwen/qwen3-235b-a22b-2507", "claude-haiku-4-5")
+            )
+
+        assert config.evaluation_agent.model == "qwen/qwen3-235b-a22b-2507"
+
+
+class TestFAQTemperatureWarning:
+    """A temperature the API never sees should not pass in silence.
+
+    ``claude-sonnet-5`` accepts only its default temperature, so
+    ``create_anthropic_llm`` drops the field instead of sending a value that
+    would 400. A community that set 0.0 for deterministic scoring is entitled
+    to hear that it stopped applying.
+    """
+
+    def test_temperature_on_the_expensive_model_is_warned_about(self) -> None:
+        from src.core.config.community import FAQGenerationConfig
+
+        with pytest.warns(UserWarning, match="summary_agent.temperature=0.4 is ignored"):
+            FAQGenerationConfig(
+                evaluation_agent={"model": "claude-haiku-4-5"},
+                summary_agent={"model": "claude-sonnet-5", "temperature": 0.4},
+            )
+
+    def test_temperature_behind_a_legacy_id_is_warned_about(self) -> None:
+        from src.core.config.community import FAQGenerationConfig
+
+        with pytest.warns(UserWarning, match="temperature=0.2 is ignored"):
+            FAQGenerationConfig(
+                evaluation_agent={"model": "claude-haiku-4-5"},
+                summary_agent={"model": "anthropic/claude-sonnet-4.6", "temperature": 0.2},
+            )
+
+    def test_temperature_behind_a_legacy_haiku_id_is_silent(self) -> None:
+        """The mirror of the case above, and the one an alias table gets wrong.
+
+        "anthropic/claude-haiku-4.5" resolves to a model that does honor a
+        temperature, so warning here would be a false alarm on a config that
+        works.
+        """
+        from src.core.config.community import FAQGenerationConfig
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            FAQGenerationConfig(
+                evaluation_agent={"model": "anthropic/claude-haiku-4.5", "temperature": 0.0},
+                summary_agent={"model": "claude-haiku-4-5"},
+            )
+
+    def test_temperature_on_a_model_that_honors_it_is_silent(self) -> None:
+        from src.core.config.community import FAQGenerationConfig
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            FAQGenerationConfig(
+                evaluation_agent={"model": "claude-haiku-4-5", "temperature": 0.0},
+                summary_agent={"model": "claude-haiku-4-5", "temperature": 0.1},
+            )
+
+    def test_the_fields_own_default_is_not_warned_about(self) -> None:
+        """Only a temperature the community actually wrote is worth a warning.
+
+        AgentConfig.temperature defaults to 0.1, which claude-sonnet-5 also
+        ignores. Warning about it would fire on every config that names the
+        model and sets nothing, which is the recommended summary_agent.
+        """
+        from src.core.config.community import FAQGenerationConfig
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            config = FAQGenerationConfig(
+                evaluation_agent={"model": "claude-haiku-4-5"},
+                summary_agent={"model": "claude-sonnet-5"},
+            )
+
+        assert config.summary_agent.temperature == 0.1
