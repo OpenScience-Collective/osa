@@ -244,7 +244,7 @@ docker pull ghcr.io/openscience-collective/osa:latest
 docker run -d \
   --name osa \
   -p 38528:38528 \
-  -e API_KEY=your-api-token \
+  -e API_KEYS=your-api-token \
   -e ANTHROPIC_API_KEY=your-anthropic-key \
   ghcr.io/openscience-collective/osa:latest
 
@@ -310,7 +310,7 @@ PORT=38528
 HOST=0.0.0.0
 
 # Security
-API_KEY=your-backend-api-token
+API_KEYS=your-backend-api-token
 
 # LLM Provider: Claude Platform on AWS (see .env.example for the full
 # ANTHROPIC_* set). OpenRouter remains a supported BYOK-only alternative.

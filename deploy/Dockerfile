@@ -78,6 +78,12 @@ CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "38528"]
 # ENVIRONMENT VARIABLES
 # =============================================================================
 #
+# Required to answer requests (Claude Platform on AWS, not Amazon Bedrock):
+#   ANTHROPIC_API_KEY       - Platform key for server-funded requests
+#   ANTHROPIC_BASE_URL      - AWS-hosted Messages API endpoint
+#   ANTHROPIC_WORKSPACE_ID  - Workspace the key is authorized on (wrkspc_...)
+#                             See ../.env.example for the optional tuning vars.
+#
 # Required for full functionality:
 #   GITHUB_TOKEN            - GitHub token for syncing issues/PRs (higher rate limits)
 #
@@ -85,10 +91,10 @@ CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "38528"]
 #   SEMANTIC_SCHOLAR_API_KEY - Semantic Scholar API key
 #   PUBMED_API_KEY          - PubMed/NCBI API key
 #
-# Sync scheduling (cron expressions):
-#   SYNC_ENABLED            - Enable/disable auto sync (default: true)
-#   SYNC_GITHUB_CRON        - GitHub sync schedule (default: "0 2 * * *" = daily 2am)
-#   SYNC_PAPERS_CRON        - Papers sync schedule (default: "0 3 * * 0" = weekly Sun 3am)
+# Knowledge sync:
+#   SYNC_ENABLED            - Master switch for auto sync (default: true).
+#                             Per-community schedules live in each community's
+#                             config.yaml; there are no cron env vars.
 #
 # Data directory:
 #   DATA_DIR                - Data directory path (default: /app/data)

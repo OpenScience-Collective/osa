@@ -2396,7 +2396,7 @@
             </div>
             <div class="osa-settings-field" id="osa-settings-custom-model-field" style="display: none;">
               <label class="osa-settings-label" for="osa-settings-custom-model">
-                Model name — requires your own <a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer" style="color: var(--osa-primary); text-decoration: underline;">OpenRouter</a> key
+                Model name, requires your own <a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer" style="color: var(--osa-primary); text-decoration: underline;">OpenRouter</a> key
               </label>
               <input
                 type="text"
