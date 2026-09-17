@@ -196,6 +196,11 @@ class CitationTracker:
         """Record one citation. Returns (its mark, is_new), or None if unusable."""
         source = citation.get("source")
         if not source:
+            # Nothing to attribute the claim to, so no marker can be shown.
+            # Logged because the model did mean to cite something here: a tool
+            # that starts emitting blank sources would otherwise just quietly
+            # produce fewer citations than the answer actually relies on.
+            logger.warning("Dropping a citation with no source: %s", citation)
             return None
         existing_marker = self._marker_by_source.get(source)
         if existing_marker is not None:

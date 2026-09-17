@@ -69,7 +69,7 @@ def _build_citation_blocks(
         text: Callable ``item -> str`` returning the citable text. Items
             whose text is empty are skipped -- a search_result's content
             cannot be empty, and an item with nothing to show is not worth
-            a block.
+            a block. An item with no source is still included: see below.
 
     Returns:
         A list of search_result blocks, one per item with non-empty text.
@@ -80,8 +80,30 @@ def _build_citation_blocks(
     for item in results:
         item_text = text(item)
         if not item_text:
+            # A skipped item is one the model never sees on this path, while
+            # the plain-string path still shows its title and link, so the
+            # same query can yield a different set of sources depending on
+            # which provider is paying. Logged so a systematic ingestion gap
+            # (rows with an empty answer) is visible instead of quietly
+            # shrinking the citable corpus.
+            logger.warning(
+                "Skipping an uncitable search result with no text: source=%r", source(item)
+            )
             continue
-        blocks.append(build_search_result(source=source(item), title=title(item), text=item_text))
+        item_source = source(item)
+        if not item_source:
+            # Kept rather than skipped. The API accepts an empty source
+            # (verified against the live endpoint: the request succeeds and
+            # the citation comes back with source ""), so the only thing lost
+            # is the marker, which CitationTracker drops and logs. Skipping
+            # would instead hide retrieved content from the answer entirely,
+            # which is the worse of the two failures for a tool whose job is
+            # answering from documentation.
+            logger.warning(
+                "Citable search result has no source, so its citation cannot be rendered: %r",
+                title(item),
+            )
+        blocks.append(build_search_result(source=item_source, title=title(item), text=item_text))
     return blocks
 
 

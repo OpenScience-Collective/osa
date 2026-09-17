@@ -36,6 +36,7 @@ correct, which the description-only check above cannot see. Kept
 alongside rather than instead of it: the two tests do not overlap.
 """
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -488,3 +489,78 @@ class TestCitablePayloadsAreBounded:
         assert result[0]["content"][0]["text"] == (
             "Use ICA decomposition and reject components correlated with EOG channels."
         )
+
+
+class TestIncompleteRowsOnTheCitablePath:
+    """What a row missing its answer or its thread URL does to a citable tool.
+
+    The two gaps are not symmetric, and the difference is the point of
+    these tests. An empty answer leaves nothing for a citation to point at
+    (``build_search_result`` rejects it outright), so the row cannot become
+    a block at all. A missing thread URL only costs the marker: the API
+    accepts a ``search_result`` whose source is empty, and it is
+    ``CitationTracker`` that later declines to number it. Dropping such a
+    row would hide a real answer from the model to save a marker it was
+    never going to get, so it is kept.
+
+    Both cases are logged, because either one means the synced data is
+    incomplete: a run of them is an ingestion bug worth seeing, not a
+    property of the question that was asked.
+    """
+
+    @staticmethod
+    def _seed(community_id: str, *, thread_url: str, answer: str, thread_id: str) -> None:
+        with get_connection(community_id) as conn:
+            upsert_faq_entry(
+                conn,
+                list_name="eeglab-list",
+                thread_id=thread_id,
+                thread_url=thread_url,
+                question="How do I reject bad channels?",
+                answer=answer,
+                tags=["channels"],
+                category="how-to",
+                message_count=3,
+                participant_count=2,
+                first_message_date="2024-01-01",
+                quality_score=0.8,
+                summary_model="test-model",
+            )
+            conn.commit()
+
+    def _invoke(self, tmp_path: Path, *, thread_url: str, answer: str) -> str | list[Any]:
+        db_path = tmp_path / "knowledge" / "test.db"
+        with patch("src.knowledge.db.get_db_path", return_value=db_path):
+            init_db("test")
+            self._seed("test", thread_url=thread_url, answer=answer, thread_id="thread-1")
+            with patch("src.tools.knowledge.get_db_path", return_value=db_path):
+                tool = create_search_faq_tool("test", "Test Community", citations=True)
+                return tool.invoke({"query": "reject bad channels"})
+
+    def test_row_with_no_source_is_still_citable_content(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="src.tools.knowledge"):
+            result = self._invoke(tmp_path, thread_url="", answer="Use pop_rejchan on the dataset.")
+
+        assert isinstance(result, list), (
+            "A row with a usable answer must reach the model even without a "
+            "source; dropping it would cost the answer, not just the marker"
+        )
+        assert result[0]["content"][0]["text"] == "Use pop_rejchan on the dataset."
+        assert result[0]["source"] == ""
+        assert "no source" in caplog.text
+
+    def test_row_with_no_answer_yields_no_block_and_falls_back_to_the_string_path(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="src.tools.knowledge"):
+            result = self._invoke(
+                tmp_path, thread_url="https://mailman.example.org/thread/1", answer=""
+            )
+
+        assert isinstance(result, str), (
+            "With no citable block to return, the tool must fall back to the "
+            "plain-string formatting rather than returning an empty list"
+        )
+        assert "no text" in caplog.text

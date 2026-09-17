@@ -11,6 +11,7 @@ payload rather than a hand-built dict).
 """
 
 import json
+import logging
 from pathlib import Path
 
 from src.agents.content import (
@@ -358,6 +359,19 @@ class TestCitationTracker:
         marker_text, new_marks = tracker.record_block([{"title": "No source"}])
         assert marker_text == ""
         assert new_marks == []
+
+    def test_citation_missing_source_is_logged(self, caplog):
+        """Dropping it silently would look like an answer that cited less.
+
+        The model did attach a citation here, so a tool emitting blank
+        sources shows up as answers with fewer markers than sources, with
+        nothing anywhere saying why. The warning is the only trace.
+        """
+        tracker = CitationTracker()
+        with caplog.at_level(logging.WARNING, logger="src.agents.content"):
+            tracker.record_block([{"title": "No source", "cited_text": "some span"}])
+
+        assert "no source" in caplog.text
 
     def test_marks_property_returns_a_copy(self):
         tracker = CitationTracker()
