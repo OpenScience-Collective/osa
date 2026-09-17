@@ -9,6 +9,7 @@ Tests cover:
 """
 
 import os
+import re
 
 import pytest
 from fastapi import FastAPI
@@ -611,3 +612,38 @@ class TestCommunityConfigPlatformDefaultModel:
         for entry in data["offered_models"]:
             assert entry["id"]
             assert entry["label"]
+
+
+class TestModelOverrideDescription:
+    """The description the OpenAPI schema shows for the ``model`` field.
+
+    It is the only place a caller reading /docs learns which ids are accepted
+    without a key of their own, so it has to keep matching ``_select_model``.
+    """
+
+    def test_it_names_every_offered_model(self) -> None:
+        from src.api.routers.community import MODEL_OVERRIDE_DESCRIPTION
+        from src.core.services.anthropic_llm import OFFERED_MODELS
+
+        for model in OFFERED_MODELS:
+            assert model in MODEL_OVERRIDE_DESCRIPTION
+
+    def test_it_names_no_model_the_platform_does_not_offer(self) -> None:
+        """Guards the stale case this replaced: a description promising a
+        model the platform will now reject with a 400."""
+        from src.api.routers.community import MODEL_OVERRIDE_DESCRIPTION
+        from src.core.services.anthropic_llm import OFFERED_MODELS
+
+        quoted = set(re.findall(r"'([^']+)'", MODEL_OVERRIDE_DESCRIPTION))
+        assert quoted == set(OFFERED_MODELS)
+
+    def test_both_request_bodies_use_it(self) -> None:
+        """Ask and chat resolve the model the same way, so they must say so."""
+        from src.api.routers.community import (
+            MODEL_OVERRIDE_DESCRIPTION,
+            AskRequest,
+            ChatRequest,
+        )
+
+        for model_cls in (AskRequest, ChatRequest):
+            assert model_cls.model_fields["model"].description == MODEL_OVERRIDE_DESCRIPTION
