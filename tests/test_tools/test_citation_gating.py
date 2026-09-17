@@ -392,3 +392,99 @@ class TestDiscoveryToolsHaveNoCitationCapability:
             if "citations" in inspect.signature(f).parameters
         ]
         assert not offenders, f"Discovery-only factories must not accept citations: {offenders}"
+
+
+class TestCitablePayloadsAreBounded:
+    """A citable tool must not put far more on the wire than its string path.
+
+    The other two citable tools pass search snippets that
+    src/knowledge/search.py has already truncated, but a FAQ answer comes
+    straight from the database, capped only at ingest (5000 chars,
+    src/knowledge/db.py). Uncapped, one search_faq call at the default
+    limit=5 would carry 25k chars on the Anthropic path against 2.5k on the
+    OpenRouter path for the identical query: a size and cost difference
+    visible only to whichever provider happens to be paying.
+    """
+
+    LONG_ANSWER_SENTENCE = "Reject the ICA component correlated with the EOG channel. "
+
+    def _seed_long_faq(self, community_id: str, entries: int) -> None:
+        """Seed `entries` FAQ rows whose answers exceed the ingest cap."""
+        long_answer = self.LONG_ANSWER_SENTENCE * 200  # ~11k chars, capped to 5000 at ingest
+        with get_connection(community_id) as conn:
+            for n in range(entries):
+                upsert_faq_entry(
+                    conn,
+                    list_name="eeglab-list",
+                    thread_id=f"thread-{n}",
+                    thread_url=f"https://mailman.example.org/thread/{n}",
+                    question=f"How do I remove artifacts from EEG data, case {n}?",
+                    answer=long_answer,
+                    tags=["artifacts", "ica"],
+                    category="how-to",
+                    message_count=4,
+                    participant_count=2,
+                    first_message_date="2024-01-01",
+                    quality_score=0.9,
+                    summary_model="test-model",
+                )
+            conn.commit()
+
+    def test_faq_citation_blocks_cap_each_answer(self, tmp_path: Path) -> None:
+        """One block's text stays within the citable cap, not the 5000-char row."""
+        from src.tools.citations import DEFAULT_TRUNCATION_SUFFIX
+        from src.tools.knowledge import _MAX_CITABLE_FAQ_ANSWER_CHARS
+
+        db_path = tmp_path / "knowledge" / "test.db"
+        with patch("src.knowledge.db.get_db_path", return_value=db_path):
+            init_db("test")
+            self._seed_long_faq("test", entries=1)
+            with patch("src.tools.knowledge.get_db_path", return_value=db_path):
+                tool = create_search_faq_tool("test", "Test Community", citations=True)
+                result = tool.invoke({"query": "remove artifacts"})
+
+        assert isinstance(result, list)
+        text = result[0]["content"][0]["text"]
+        assert len(text) == _MAX_CITABLE_FAQ_ANSWER_CHARS + len(DEFAULT_TRUNCATION_SUFFIX)
+        assert text.endswith(DEFAULT_TRUNCATION_SUFFIX)
+
+    def test_faq_citation_payload_stays_near_the_string_payload(self, tmp_path: Path) -> None:
+        """Whole-call size, at the default limit, on both paths.
+
+        Asserted as a ratio rather than an absolute size: the citable path is
+        allowed to carry more context, since a citation points at an exact
+        span and a span cut mid-sentence is worse than no citation, but not
+        an order of magnitude more.
+        """
+        db_path = tmp_path / "knowledge" / "test.db"
+        with patch("src.knowledge.db.get_db_path", return_value=db_path):
+            init_db("test")
+            self._seed_long_faq("test", entries=5)
+            with patch("src.tools.knowledge.get_db_path", return_value=db_path):
+                citable = create_search_faq_tool("test", "Test Community", citations=True)
+                blocks = citable.invoke({"query": "remove artifacts"})
+                plain = create_search_faq_tool("test", "Test Community", citations=False)
+                string_result = plain.invoke({"query": "remove artifacts"})
+
+        assert isinstance(blocks, list) and len(blocks) == 5
+        assert isinstance(string_result, str)
+        citable_chars = sum(len(b["content"][0]["text"]) for b in blocks)
+        assert citable_chars < 5 * len(string_result), (
+            f"citable path carried {citable_chars} chars against "
+            f"{len(string_result)} on the string path"
+        )
+
+    def test_short_faq_answers_are_not_truncated(self, tmp_path: Path) -> None:
+        """The cap must not clip an ordinary answer; most FAQ answers are short."""
+        db_path = tmp_path / "knowledge" / "test.db"
+        with patch("src.knowledge.db.get_db_path", return_value=db_path):
+            init_db("test")
+            _seed_faq("test")
+            with patch("src.tools.knowledge.get_db_path", return_value=db_path):
+                tool = create_search_faq_tool("test", "Test Community", citations=True)
+                result = tool.invoke({"query": "remove artifacts"})
+
+        assert isinstance(result, list)
+        assert result[0]["content"][0]["text"] == (
+            "Use ICA decomposition and reject components correlated with EOG channels."
+        )
