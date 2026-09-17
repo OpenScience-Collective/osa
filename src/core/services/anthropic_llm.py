@@ -36,28 +36,19 @@ from pydantic import field_validator
 from src.api.config import Settings, get_settings
 from src.core.services.anthropic_endpoints import FIRST_PARTY_BASE_URL
 
+# The model tables live in a langchain-free module so config validation can
+# reach them on a CLI-only install (see anthropic_models.py). DEFAULT_MODEL,
+# MODEL_ALIASES and OFFERED_MODELS are re-exported here because server-side
+# callers have imported them from this module all along.
+from src.core.services.anthropic_models import (
+    DEFAULT_MODEL,  # noqa: F401
+    MODEL_ALIASES,  # noqa: F401
+    OFFERED_MODELS,  # noqa: F401
+    SAMPLING_MODELS,
+    normalize_model,
+)
+
 logger = logging.getLogger(__name__)
-
-# Default (and cheapest) offered model.
-DEFAULT_MODEL = "claude-haiku-4-5"
-
-# Models offered to callers (widget dropdown, CLI, community config.yaml).
-OFFERED_MODELS: dict[str, str] = {
-    "claude-haiku-4-5": "Claude Haiku 4.5",
-    "claude-sonnet-5": "Claude Sonnet 5",
-}
-
-# Legacy OpenRouter-style identifiers that exist in saved widget settings,
-# CLI configs, and community config.yaml files, normalized to first-party ids.
-MODEL_ALIASES: dict[str, str] = {
-    "anthropic/claude-haiku-4.5": "claude-haiku-4-5",
-    "anthropic/claude-haiku-4-5": "claude-haiku-4-5",
-    "claude-haiku-4.5": "claude-haiku-4-5",
-    "anthropic/claude-sonnet-5": "claude-sonnet-5",
-    "anthropic/claude-sonnet-4.6": "claude-sonnet-5",
-    "anthropic/claude-sonnet-4.5": "claude-sonnet-5",
-    "claude-sonnet-4.5": "claude-sonnet-5",
-}
 
 # Thinking policy. The two offered model generations accept different, mutually
 # exclusive `thinking` shapes and the API is strict about it (a mismatch is a
@@ -76,11 +67,6 @@ MIN_THINKING_BUDGET_TOKENS = 1024
 # stay in sync without importing Settings just for a literal.
 DEFAULT_THINKING_BUDGET_TOKENS = 2048
 
-# Models that still accept sampling parameters. Claude 5-generation models
-# (claude-sonnet-5) reject `temperature` with a 400 because the only value
-# they accept is 1, the implicit default when the field is simply omitted.
-_SAMPLING_MODELS = {"claude-haiku-4-5"}
-
 # Prompt-cache lifetimes. A 5-minute entry costs 1.25x the input price to
 # write, a 1-hour entry 2x; both read back at 0.1x. Back-to-back requests
 # break even on the 5-minute entry after two calls; traffic spaced further
@@ -88,28 +74,6 @@ _SAMPLING_MODELS = {"claude-haiku-4-5"}
 # time, which is when "1h" is worth the higher write cost.
 CACHE_TTLS = ("5m", "1h")
 DEFAULT_CACHE_TTL = "5m"
-
-
-def normalize_model(model: str | None) -> str:
-    """Normalize a requested model id to an offered Anthropic model.
-
-    Args:
-        model: Requested model identifier (first-party id, legacy
-            OpenRouter-style id, or None for the default).
-
-    Returns:
-        A first-party Anthropic model id present in ``OFFERED_MODELS``.
-
-    Raises:
-        ValueError: If the model is not an offered Anthropic model.
-    """
-    if not model:
-        return DEFAULT_MODEL
-    resolved = MODEL_ALIASES.get(model, model)
-    if resolved not in OFFERED_MODELS:
-        offered = ", ".join(sorted(OFFERED_MODELS))
-        raise ValueError(f"Model '{model}' is not available. Offered models: {offered}")
-    return resolved
 
 
 def default_thinking(model: str | None = None, budget: int | None = None) -> dict[str, Any] | None:
@@ -333,11 +297,26 @@ def create_anthropic_llm(
 
     # claude-sonnet-5 rejects any non-default temperature/top_p/top_k with a
     # 400 unconditionally, whether or not thinking is on, which is why it is
-    # not in _SAMPLING_MODELS. claude-haiku-4-5 does accept temperature, but
+    # not in SAMPLING_MODELS. claude-haiku-4-5 does accept temperature, but
     # not while extended thinking is on, so it is only forwarded for models
-    # in _SAMPLING_MODELS, and only when thinking is off.
-    if resolved_model in _SAMPLING_MODELS and not thinking_on and temperature is not None:
-        kwargs["temperature"] = temperature
+    # in SAMPLING_MODELS, and only when thinking is off.
+    if temperature is not None:
+        if resolved_model in SAMPLING_MODELS and not thinking_on:
+            kwargs["temperature"] = temperature
+        else:
+            # Debug rather than warning: this fires per request, and the two
+            # cases it covers are both known ahead of time. A community that
+            # pairs a temperature with claude-sonnet-5 in config.yaml is warned
+            # once at config load (FAQGenerationConfig.validate_agent_roles),
+            # and thinking-plus-temperature is a documented API constraint.
+            logger.debug(
+                "Dropping temperature=%s for %s: %s",
+                temperature,
+                resolved_model,
+                "extended thinking is on"
+                if thinking_on
+                else "the model only accepts its default temperature",
+            )
 
     if resolved_thinking is not None:
         kwargs["thinking"] = resolved_thinking

@@ -280,6 +280,49 @@ class TestCreateAnthropicLLMBehavior:
         assert with_default_thinking.temperature is None
         assert with_thinking_disabled.temperature is None
 
+    def test_dropped_temperature_says_which_reason_applied(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Dropping a caller's parameter should leave a trace, cheaply.
+
+        Debug rather than warning because this runs per request; the loud
+        version of the same fact is the config-load warning in
+        FAQGenerationConfig.validate_agent_roles.
+        """
+        settings = _settings()
+
+        with caplog.at_level("DEBUG", logger="src.core.services.anthropic_llm"):
+            create_anthropic_llm(
+                model="claude-sonnet-5", temperature=0.7, thinking=None, settings=settings
+            )
+
+        assert "Dropping temperature=0.7 for claude-sonnet-5" in caplog.text
+        assert "only accepts its default temperature" in caplog.text
+
+    def test_temperature_dropped_for_thinking_says_so(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Haiku does accept a temperature, but not while it is thinking."""
+        settings = _settings()
+
+        with caplog.at_level("DEBUG", logger="src.core.services.anthropic_llm"):
+            create_anthropic_llm(model="claude-haiku-4-5", temperature=0.5, settings=settings)
+
+        assert "extended thinking is on" in caplog.text
+
+    def test_honored_temperature_is_not_reported_as_dropped(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        settings = _settings()
+
+        with caplog.at_level("DEBUG", logger="src.core.services.anthropic_llm"):
+            llm = create_anthropic_llm(
+                model="claude-haiku-4-5", temperature=0.5, thinking=None, settings=settings
+            )
+
+        assert llm.temperature == 0.5
+        assert "Dropping temperature" not in caplog.text
+
     def test_default_thinking_applied_per_model(self) -> None:
         settings = _settings()
         haiku = create_anthropic_llm(model="claude-haiku-4-5", settings=settings)
