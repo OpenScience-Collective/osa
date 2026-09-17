@@ -136,6 +136,29 @@
   let offeredModels = null; // Live offered_models list from the community config API; null until loaded
   let sessionId = null; // Server-side session ID for multi-turn conversations
 
+  // Notice queued by an init-time failure (corrupted/inaccessible settings,
+  // an invalid saved key or model, or corrupted history) that happened
+  // before the widget's DOM existed or before the user had opened it, so
+  // there was nowhere to show it yet. Flushed via showError the first time
+  // the widget is actually opened (see flushPendingNotice).
+  let pendingNotice = null;
+
+  // Queue a notice for display the next time the widget opens, instead of
+  // trying (and failing) to show it immediately at load time.
+  function queuePendingNotice(message) {
+    pendingNotice = pendingNotice ? `${pendingNotice} ${message}` : message;
+  }
+
+  // Show any notice queued by an init-time failure. Called once, the first
+  // time the widget is opened, so a user whose saved settings or history
+  // failed to load is not left silently switched to defaults.
+  function flushPendingNotice(container) {
+    if (pendingNotice) {
+      showError(container, pendingNotice);
+      pendingNotice = null;
+    }
+  }
+
   // Store script URL at load time for reliable pop-out
   const WIDGET_SCRIPT_URL = document.currentScript?.src || null;
 
@@ -1461,6 +1484,7 @@
     } catch (e) {
       console.error('Failed to load chat history:', e);
       historyLoadFailed = true;
+      queuePendingNotice('Saved chat history is corrupted and could not be loaded.');
     }
     if (messages.length === 0) {
       messages = [{ role: 'assistant', content: CONFIG.initialMessage }];
@@ -1585,10 +1609,7 @@
         parsed = JSON.parse(saved);
       } catch (jsonErr) {
         console.error('[OSA] Saved settings contain invalid JSON:', jsonErr.message);
-        const container = document.querySelector('.osa-chat-widget');
-        if (container && isOpen) {
-          showError(container, 'Saved settings are corrupted. Using defaults.');
-        }
+        queuePendingNotice('Saved settings are corrupted. Using defaults.');
         userSettings = { apiKey: null, model: null, keyProvider: null };
         // Clear corrupted data
         try { localStorage.removeItem(storageKey); } catch {}
@@ -1601,6 +1622,7 @@
       // saved before this phase (with no keyProvider at all) still work.
       if (parsed.apiKey && !isValidApiKey(parsed.apiKey)) {
         console.error('[OSA] Saved API key has invalid format, ignoring');
+        queuePendingNotice('Your saved API key is invalid and was ignored.');
         parsed.apiKey = null;
       }
 
@@ -1608,6 +1630,7 @@
       if (parsed.model && typeof parsed.model === 'string') {
         if (!isValidModelId(parsed.model)) {
           console.error('[OSA] Saved model has invalid format, ignoring');
+          queuePendingNotice('Your saved model selection is invalid and was ignored.');
           parsed.model = null;
         }
       }
@@ -1620,10 +1643,7 @@
     } catch (e) {
       // localStorage access error
       console.error('[OSA] Cannot access localStorage for settings:', e.message);
-      const container = document.querySelector('.osa-chat-widget');
-      if (container && isOpen) {
-        showError(container, 'Cannot access browser storage. Settings will not persist.');
-      }
+      queuePendingNotice('Cannot access browser storage. Settings will not persist.');
       userSettings = { apiKey: null, model: null, keyProvider: null };
     }
   }
@@ -1708,6 +1728,11 @@
       // the fallback if this is missing (older backend) or empty.
       if (data && Array.isArray(data.offered_models) && data.offered_models.length > 0) {
         offeredModels = data.offered_models.map(m => ({ value: m.id, label: m.label }));
+      } else {
+        console.warn(
+          '[OSA] Community config response has no offered_models; falling back to DEFAULT_MODELS. ' +
+          'This is expected against an older backend during a rolling deploy, but should not persist.'
+        );
       }
 
       // Apply widget display config from API for fields not explicitly set by the embedder.
@@ -2930,12 +2955,17 @@
       };
 
       // Add BYOK API key if set, on the header matching its provider
-      // (inferred from the key's own prefix; see inferKeyProvider).
+      // (inferred from the key's own prefix; see inferKeyProvider). The
+      // provider is checked explicitly rather than treating "not anthropic"
+      // as "openrouter", so an unrecognized provider never silently sends
+      // the wrong header.
       if (userSettings.apiKey) {
         if (userSettings.keyProvider === 'anthropic') {
           headers['X-Anthropic-API-Key'] = userSettings.apiKey;
-        } else {
+        } else if (userSettings.keyProvider === 'openrouter') {
           headers['X-OpenRouter-Key'] = userSettings.apiKey;
+        } else {
+          console.error('[OSA] BYOK key has unknown provider; not sent with the request:', userSettings.keyProvider);
         }
       }
 
@@ -3137,6 +3167,8 @@
       container.querySelector('.osa-chat-input input').focus();
       // Hide tooltip when chat opens
       if (tooltip) tooltip.classList.remove('visible');
+      // Surface any notice queued by an init-time failure (see loadUserSettings/loadHistory).
+      flushPendingNotice(container);
     } else {
       // Commit any open thumbs-down comment box on close.
       flushPendingResponseFeedback(container);
@@ -3438,6 +3470,8 @@
       isOpen = true;
       const chatWindow = container.querySelector('.osa-chat-window');
       chatWindow?.classList.add('open');
+      // Surface any notice queued by an init-time failure (see loadUserSettings/loadHistory).
+      flushPendingNotice(container);
       setTimeout(() => {
         input?.focus();
       }, 100);
