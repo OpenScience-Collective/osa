@@ -146,7 +146,7 @@ addopts = "-v --cov=src --cov-report=term-missing"
 markers = [
     "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    "llm: marks tests that require real LLM API calls (requires OPENROUTER_API_KEY_FOR_TESTING)",
+    "llm: marks tests that require real LLM API calls (requires ANTHROPIC_API_KEY; a few OpenRouter-specific tests use OPENROUTER_API_KEY_FOR_TESTING)",
     "network: marks tests that make real HTTP calls to external services (flaky in CI)",
 ]
 

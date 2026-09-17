@@ -90,7 +90,7 @@ OSA can be deployed via Docker:
 # Pull and run
 docker pull ghcr.io/openscience-collective/osa:latest
 docker run -d --name osa -p 38528:38528 \
-  -e OPENROUTER_API_KEY=your-key \
+  -e ANTHROPIC_API_KEY=your-key \
   ghcr.io/openscience-collective/osa:latest
 
 # Check health
@@ -120,9 +120,10 @@ name: My Tool
 description: A research tool for neuroscience
 status: available
 
-# Required: Per-community OpenRouter API key for cost attribution
-# Set the environment variable on your backend server
-openrouter_api_key_env_var: "OPENROUTER_API_KEY_MY_TOOL"
+# By default, every community runs on the shared Claude Platform key.
+# Optional: only set this if the community funds its own OpenRouter usage
+# instead. Set the named environment variable on your backend server.
+# openrouter_api_key_env_var: "OPENROUTER_API_KEY_MY_TOOL"
 
 system_prompt: |
   You are a technical assistant for {name}.
@@ -140,7 +141,7 @@ github:
     - org/my-tool
 ```
 
-2. Set the API key environment variable on your backend:
+2. (Optional) If you set `openrouter_api_key_env_var`, export it on your backend:
 
 ```bash
 export OPENROUTER_API_KEY_MY_TOOL="your-openrouter-key"

@@ -30,13 +30,21 @@ services:
       - API_KEYS=${API_KEYS:-}
 
       # LLM Provider Keys (server-side, for shared access)
+      # Claude Platform on AWS is the default (see ../.env.example); OpenRouter
+      # remains a supported BYOK-only alternative.
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-}
+      - ANTHROPIC_WORKSPACE_ID=${ANTHROPIC_WORKSPACE_ID:-}
+      - ANTHROPIC_THINKING_BUDGET_TOKENS=${ANTHROPIC_THINKING_BUDGET_TOKENS:-2048}
+      - ANTHROPIC_MAX_OUTPUT_TOKENS=${ANTHROPIC_MAX_OUTPUT_TOKENS:-8000}
+      - ANTHROPIC_CACHE_TTL=${ANTHROPIC_CACHE_TTL:-5m}
 
-      # Model Configuration
-      - DEFAULT_MODEL=${DEFAULT_MODEL:-openai/gpt-oss-120b}
-      - DEFAULT_MODEL_PROVIDER=${DEFAULT_MODEL_PROVIDER:-Cerebras}
+      # DEFAULT_MODEL and DEFAULT_MODEL_PROVIDER are intentionally not
+      # repeated here: env_file above already loads them from ../.env, and
+      # redeclaring them here with a stale default would silently win over
+      # whatever ../.env says whenever deploy/.env does not also define them.
 
       # Knowledge Sync API Keys (optional, for higher rate limits)
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
