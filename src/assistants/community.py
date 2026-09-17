@@ -165,6 +165,18 @@ def _create_retrieve_docs_tool(
         result = fetcher.fetch(doc)
         if not result.success:
             return f"Error retrieving {result.url}: {result.error}"
+        if citations and not result.content:
+            # RetrievedDoc.success only means no error was raised, so a 200
+            # whose body reduces to nothing after markdown cleaning arrives
+            # here as success with empty content. build_search_result rejects
+            # empty text, and that ValueError would surface to the user as a
+            # 400 "invalid request" from inside the graph, so fall back to the
+            # plain string this path returns on the OpenRouter side.
+            logger.warning(
+                "Retrieved %s successfully but it has no text content, so it cannot be cited",
+                result.url,
+            )
+            return f"# {result.title}\n\nSource: {result.url}\n\n(no text content)"
         if citations:
             return [
                 build_search_result(

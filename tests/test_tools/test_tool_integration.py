@@ -8,10 +8,16 @@ These tests verify that the tool functions work correctly for:
 - Tool docstring generation
 """
 
+import logging
+
+import httpx
 import pytest
+import respx
 from langchain_core.language_models import FakeListChatModel
 
 from src.assistants import discover_assistants, registry
+from src.assistants.community import _create_retrieve_docs_tool
+from src.tools.base import DocPage, DocRegistry
 from src.tools.fetcher import DocumentFetcher
 
 # Ensure assistants are discovered
@@ -159,6 +165,86 @@ class TestRetrieveDocsToolCitations:
 
         assert isinstance(result, str)
         assert "not found" in result.lower()
+
+
+class TestRetrieveDocsCitationsWhenThePageHasNoText:
+    """A fetch that succeeds but yields no text must not fail the whole request.
+
+    ``RetrievedDoc.success`` is ``error is None``; it says nothing about
+    there being content. A page that is entirely navigation chrome reduces
+    to an empty string once the HTML is converted and cleaned, and arrives
+    here as a success. ``build_search_result`` refuses empty text, and that
+    ValueError escapes LangGraph's ToolNode into the router, which catches
+    ValueError as a malformed request and answers the user with a 400. So
+    the citable path has to notice the empty content itself and fall back
+    to the string the OpenRouter path already returns.
+
+    The HTTP layer is a respx fixture (allowed for exercising specific
+    responses), while the fetching, HTML conversion, markdown cleaning and
+    tool logic under test are all real.
+    """
+
+    PAGE_URL = "https://example.com/chrome-only.html"
+    CHROME_ONLY_HTML = '<!DOCTYPE html><html><body><nav><a href="/">Home</a></nav></body></html>'
+
+    def _tool(self, *, citations: bool, source_url: str):
+        doc_registry = DocRegistry(
+            name="test",
+            docs=[
+                DocPage(
+                    title="Chrome Only Page",
+                    url=self.PAGE_URL,
+                    source_url=source_url,
+                )
+            ],
+        )
+        return _create_retrieve_docs_tool("test", "Test", doc_registry, citations=citations)
+
+    @respx.mock
+    def test_falls_back_to_a_string_instead_of_raising(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # A distinct source_url per test: the fetcher is a process-wide
+        # singleton with a live cache, so sharing one would let the first
+        # test's body answer the second one's request.
+        source_url = "https://example.com/chrome-only-citable.md"
+        respx.get(source_url).mock(
+            return_value=httpx.Response(
+                200, text=self.CHROME_ONLY_HTML, headers={"content-type": "text/html"}
+            )
+        )
+        tool = self._tool(citations=True, source_url=source_url)
+
+        with caplog.at_level(logging.WARNING, logger="src.assistants.community"):
+            result = tool.invoke({"url": self.PAGE_URL})
+
+        assert isinstance(result, str), (
+            "An empty page cannot become a search_result block, so the "
+            "citable path must return the plain string rather than let "
+            "build_search_result's ValueError reach the router"
+        )
+        assert self.PAGE_URL in result
+        assert "cannot be cited" in caplog.text
+
+    @respx.mock
+    def test_both_provider_paths_return_a_string_naming_the_source(self) -> None:
+        """The fallback keeps the two paths comparable, which is the point of it."""
+        citable_url = "https://example.com/chrome-only-parity-citable.md"
+        plain_url = "https://example.com/chrome-only-parity-plain.md"
+        for url in (citable_url, plain_url):
+            respx.get(url).mock(
+                return_value=httpx.Response(
+                    200, text=self.CHROME_ONLY_HTML, headers={"content-type": "text/html"}
+                )
+            )
+
+        citable = self._tool(citations=True, source_url=citable_url).invoke({"url": self.PAGE_URL})
+        plain = self._tool(citations=False, source_url=plain_url).invoke({"url": self.PAGE_URL})
+
+        assert isinstance(citable, str) and isinstance(plain, str)
+        for result in (citable, plain):
+            assert "Chrome Only Page" in result
+            assert self.PAGE_URL in result
 
 
 class TestPreloadedContent:
