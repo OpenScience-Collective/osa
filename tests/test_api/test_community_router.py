@@ -573,3 +573,41 @@ class TestCommunityConfigOfferedModels:
 
         offered_ids = {entry["id"] for entry in data["offered_models"]}
         assert data["default_model"] in offered_ids
+
+
+class TestCommunityConfigPlatformDefaultModel:
+    """Tests for get_community_config's platform-default fallback branch.
+
+    Every shipped community sets its own default_model, so the branch
+    where a community config has none and the endpoint falls back to
+    settings.default_model was exercised by no test.
+    """
+
+    def test_falls_back_to_platform_default_model(self, monkeypatch) -> None:
+        """A community config with no default_model returns the platform default."""
+        os.environ["REQUIRE_API_AUTH"] = "false"
+        from src.api.config import get_settings
+
+        get_settings.cache_clear()
+
+        from src.assistants import registry
+
+        info = registry.get("hed")
+        assert info is not None and info.community_config is not None
+        monkeypatch.setattr(info.community_config, "default_model", None)
+
+        router = create_community_router("hed")
+        app = FastAPI()
+        app.include_router(router)
+
+        response = TestClient(app).get("/hed/")
+        assert response.status_code == 200
+
+        data = response.json()
+        settings = get_settings()
+        assert data["default_model"] == settings.default_model
+
+        assert data["offered_models"], "offered_models must not be empty"
+        for entry in data["offered_models"]:
+            assert entry["id"]
+            assert entry["label"]

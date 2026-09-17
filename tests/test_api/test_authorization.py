@@ -68,22 +68,21 @@ def _get_wildcard_origin(community_id):
     pytest.skip(f"No wildcard CORS origin for '{community_id}'")
 
 
-def _community_without_configured_keys():
-    """Find a registered community with neither key env var configured.
+def _community_without_configured_keys(monkeypatch):
+    """Configure a real registered community with neither key env var set.
 
-    Dynamic lookup rather than a hardcoded id, per the project's testing
-    guidelines: whichever community qualifies today is used to exercise the
-    pure-platform-fallback path.
+    Previously scanned the registry for a community that happened to
+    qualify, and skipped (taking six tests with it) the moment every
+    shipped community had a key env var configured -- an even easier way
+    to lose coverage than the single-community helper beside it, since
+    this one needs *all* communities configured to break, not just one.
+    Hardened the same way: monkeypatch a real, registered CommunityConfig
+    directly instead of searching for one that qualifies.
     """
-    for info in registry.list_all():
-        config = info.community_config
-        if (
-            config
-            and not config.anthropic_api_key_env_var
-            and not config.openrouter_api_key_env_var
-        ):
-            return info
-    pytest.skip("No community without a configured key env var")
+    info = _get_config("hed")
+    monkeypatch.setattr(info.community_config, "anthropic_api_key_env_var", None)
+    monkeypatch.setattr(info.community_config, "openrouter_api_key_env_var", None)
+    return info
 
 
 def _community_with_openrouter_env_var(monkeypatch):
@@ -257,7 +256,7 @@ class TestResolveProvider:
     def test_authorized_origin_uses_platform_anthropic_key_by_default(self, monkeypatch):
         """Authorized origin with no community key uses the platform Anthropic key."""
         _force_platform_keys(monkeypatch, anthropic="platform-anthropic-key")
-        info = _community_without_configured_keys()
+        info = _community_without_configured_keys(monkeypatch)
         origin = _get_exact_origin(info.id)
 
         choice = _resolve_provider(info.id, None, origin)
@@ -268,7 +267,7 @@ class TestResolveProvider:
     ):
         """No Anthropic platform key configured falls back to the OpenRouter platform key."""
         _force_platform_keys(monkeypatch, anthropic=None, openrouter="platform-or-key")
-        info = _community_without_configured_keys()
+        info = _community_without_configured_keys(monkeypatch)
         origin = _get_exact_origin(info.id)
 
         choice = _resolve_provider(info.id, None, origin)
@@ -277,13 +276,25 @@ class TestResolveProvider:
         )
 
     def test_authorized_origin_uses_community_anthropic_key(self, monkeypatch):
-        """A configured anthropic_api_key_env_var wins over both openrouter and platform."""
+        """A configured anthropic_api_key_env_var wins over both openrouter and platform.
+
+        Sets BOTH env var fields (with the OpenRouter one pointing at a
+        populated, distinct env var) rather than only the Anthropic one:
+        hed no longer ships an openrouter_api_key_env_var, so with only the
+        Anthropic field set, an implementation that checked OpenRouter
+        first would find it unset, fall through to Anthropic anyway, and
+        this test would still pass without actually proving precedence.
+        """
         _force_platform_keys(monkeypatch, anthropic="platform-anthropic-key")
         hed_info = _get_config("hed")
         monkeypatch.setattr(
             hed_info.community_config, "anthropic_api_key_env_var", "ANTHROPIC_API_KEY_TEST_HED"
         )
         monkeypatch.setenv("ANTHROPIC_API_KEY_TEST_HED", "community-anthropic-key")
+        monkeypatch.setattr(
+            hed_info.community_config, "openrouter_api_key_env_var", "OPENROUTER_API_KEY_TEST_HED"
+        )
+        monkeypatch.setenv("OPENROUTER_API_KEY_TEST_HED", "community-openrouter-key")
 
         origin = _get_exact_origin("hed")
         choice = _resolve_provider("hed", None, origin)
@@ -352,7 +363,7 @@ class TestResolveProvider:
     def test_no_platform_key_configured_raises_500(self, monkeypatch):
         """No platform key configured (either provider) should raise 500."""
         _force_platform_keys(monkeypatch, anthropic=None, openrouter=None)
-        info = _community_without_configured_keys()
+        info = _community_without_configured_keys(monkeypatch)
         origin = _get_exact_origin(info.id)
 
         with pytest.raises(HTTPException) as exc_info:
@@ -693,7 +704,7 @@ class TestProviderAndModelSelectionCombined:
     def test_widget_user_gets_anthropic_platform_default(self, monkeypatch):
         """Widget user on an authorized site defaults to the Anthropic platform key."""
         _force_platform_keys(monkeypatch, anthropic="platform-anthropic-key")
-        info = _community_without_configured_keys()
+        info = _community_without_configured_keys(monkeypatch)
         origin = _get_exact_origin(info.id)
 
         choice = _resolve_provider(info.id, None, origin)
@@ -707,7 +718,7 @@ class TestProviderAndModelSelectionCombined:
     def test_widget_user_can_request_any_offered_model(self, monkeypatch):
         """Widget user on the Anthropic path may request either offered model."""
         _force_platform_keys(monkeypatch, anthropic="platform-anthropic-key")
-        info = _community_without_configured_keys()
+        info = _community_without_configured_keys(monkeypatch)
         origin = _get_exact_origin(info.id)
 
         choice = _resolve_provider(info.id, None, origin)
@@ -720,7 +731,7 @@ class TestProviderAndModelSelectionCombined:
     def test_widget_user_unoffered_model_rejected(self, monkeypatch):
         """Widget user requesting an unoffered model on the Anthropic path gets 400."""
         _force_platform_keys(monkeypatch, anthropic="platform-anthropic-key")
-        info = _community_without_configured_keys()
+        info = _community_without_configured_keys(monkeypatch)
         origin = _get_exact_origin(info.id)
 
         choice = _resolve_provider(info.id, None, origin)

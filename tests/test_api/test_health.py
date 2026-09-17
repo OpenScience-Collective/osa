@@ -321,6 +321,49 @@ class TestComputeCommunityHealth:
         assert result["status"] == "healthy"
         assert not any(env_var in w for w in result["warnings"])
 
+    def test_both_env_vars_configured_anthropic_wins(self, monkeypatch) -> None:
+        """Anthropic wins when both key env vars are configured on the same config.
+
+        Mirrors the same precedence gap fixed in test_authorization.py's
+        test_authorized_origin_uses_community_anthropic_key: setting only
+        the Anthropic field would not prove precedence, because hed's
+        openrouter_api_key_env_var defaults to None, and `A or B` picks A
+        regardless of check order whenever B is falsy.
+
+        The Anthropic env var is left unset (missing) while the OpenRouter
+        one is set to a real value. compute_community_health mirrors
+        _resolve_provider and commits to whichever env var name it selects
+        first, regardless of whether that var is actually set -- it never
+        falls through to the other one. So correct (Anthropic-first)
+        precedence reports "missing" here (Anthropic's name was selected,
+        and it is unset), even though a populated OpenRouter var was
+        available. An implementation that checked OpenRouter first would
+        select the OpenRouter name instead, find it set, and incorrectly
+        report "configured"/"healthy" -- which is exactly what this test
+        would catch.
+
+        Both underlying values are deliberately not "populated" in the
+        sense of both holding a truthy key: if they were, the two
+        precedence orders would produce identical output (either name
+        picked, either found configured), and the test would not be able
+        to tell them apart.
+        """
+        info = registry.get("hed")
+        assert info is not None and info.community_config is not None
+        config = info.community_config
+        anthropic_env_var = "ANTHROPIC_API_KEY_TEST_HED_HEALTH_BOTH"
+        openrouter_env_var = "OPENROUTER_API_KEY_TEST_HED_HEALTH_BOTH"
+        monkeypatch.setattr(config, "anthropic_api_key_env_var", anthropic_env_var)
+        monkeypatch.setattr(config, "openrouter_api_key_env_var", openrouter_env_var)
+        monkeypatch.delenv(anthropic_env_var, raising=False)
+        monkeypatch.setenv(openrouter_env_var, "sk-or-v1-test")
+
+        result = compute_community_health(config)
+        assert result["api_key"] == "missing"
+        assert result["status"] == "error"
+        assert any(anthropic_env_var in w for w in result["warnings"])
+        assert not any(openrouter_env_var in w for w in result["warnings"])
+
     def test_missing_anthropic_api_key_env_var_produces_warning(self, monkeypatch) -> None:
         """A configured but unset anthropic_api_key_env_var reports missing/error.
 
