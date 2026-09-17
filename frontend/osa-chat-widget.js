@@ -560,6 +560,48 @@
       background: rgba(0,0,0,0.02);
     }
 
+    /* Inline citation markers */
+    .osa-citation {
+      font-size: 0.75em;
+      line-height: 0;
+      margin-left: 1px;
+    }
+
+    .osa-citation a {
+      color: var(--osa-primary);
+      text-decoration: none;
+    }
+
+    .osa-citation a:hover {
+      text-decoration: underline;
+    }
+
+    /* Compact numbered source list under a cited answer */
+    .osa-message-sources {
+      margin: 8px 0 0;
+      padding-left: 18px;
+      font-size: 12px;
+      color: var(--osa-text-light);
+    }
+
+    .osa-message-sources li {
+      margin: 2px 0;
+    }
+
+    .osa-source-marker {
+      font-variant-numeric: tabular-nums;
+      margin-right: 2px;
+    }
+
+    .osa-message-sources a {
+      color: var(--osa-text-light);
+      text-decoration: underline;
+    }
+
+    .osa-message-sources a:hover {
+      color: var(--osa-primary);
+    }
+
     /* Copy button styles */
     .osa-copy-btn {
       position: absolute;
@@ -1252,8 +1294,12 @@
     return 'osa-code-' + (++codeBlockId);
   }
 
-  // Render inline markdown (bold, italic, links, plain URLs)
-  function renderInlineMarkdown(text) {
+  // Render inline markdown (bold, italic, links, plain URLs, citation markers)
+  // citationsByMarker: optional {"1": {source, title, cited_text}, ...} map.
+  // When provided, a bare "[1]" (not followed by "(", so it never collides
+  // with a real markdown link) whose number is a known marker renders as a
+  // superscript link to its source; any other "[n]" is left as plain text.
+  function renderInlineMarkdown(text, citationsByMarker) {
     if (!text) return '';
 
     let result = '';
@@ -1264,13 +1310,21 @@
       const italicMatch = remaining.match(/(?<!\*)\*([^*]+)\*(?!\*)/);
       const linkMatch = remaining.match(/\[([^\]]+)\]\(([^)]+)\)/);
       const urlMatch = remaining.match(/(?<!\]\()(https?:\/\/[^\s\)]+)/);
+      let citationMatch = null;
+      if (citationsByMarker) {
+        const candidate = remaining.match(/\[(\d+)\](?!\()/);
+        if (candidate && citationsByMarker[candidate[1]]) {
+          citationMatch = candidate;
+        }
+      }
 
       const boldIndex = boldMatch ? remaining.indexOf(boldMatch[0]) : -1;
       const italicIndex = italicMatch ? remaining.indexOf(italicMatch[0]) : -1;
       const linkIndex = linkMatch ? remaining.indexOf(linkMatch[0]) : -1;
       const urlIndex = urlMatch ? remaining.indexOf(urlMatch[0]) : -1;
+      const citationIndex = citationMatch ? remaining.indexOf(citationMatch[0]) : -1;
 
-      const indices = [boldIndex, italicIndex, linkIndex, urlIndex].filter(i => i !== -1);
+      const indices = [boldIndex, italicIndex, linkIndex, urlIndex, citationIndex].filter(i => i !== -1);
       if (indices.length === 0) {
         result += escapeHtml(remaining);
         break;
@@ -1299,6 +1353,18 @@
         // Plain URLs are already validated by regex to start with https?://
         result += '<a href="' + escapeHtml(urlMatch[0]) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(urlMatch[0]) + '</a>';
         remaining = remaining.substring(urlIndex + urlMatch[0].length);
+      } else if (minIndex === citationIndex && citationMatch) {
+        if (citationIndex > 0) result += escapeHtml(remaining.substring(0, citationIndex));
+        const citation = citationsByMarker[citationMatch[1]];
+        const label = escapeHtml(citationMatch[1]);
+        if (isSafeUrl(citation.source)) {
+          const hoverText = escapeHtml(citation.cited_text || citation.title || '');
+          result += '<sup class="osa-citation"><a href="' + escapeHtml(citation.source) +
+            '" target="_blank" rel="noopener noreferrer" title="' + hoverText + '">[' + label + ']</a></sup>';
+        } else {
+          result += '<sup class="osa-citation">[' + label + ']</sup>';
+        }
+        remaining = remaining.substring(citationIndex + citationMatch[0].length);
       }
     }
 
@@ -1306,7 +1372,7 @@
   }
 
   // Full markdown to HTML converter
-  function markdownToHtml(text) {
+  function markdownToHtml(text, citationsByMarker) {
     if (!text) return '';
 
     const lines = text.split('\n');
@@ -1336,7 +1402,7 @@
           const tag = idx === 0 ? 'th' : 'td';
           tableHtml += '<tr>';
           cells.forEach(cell => {
-            tableHtml += '<' + tag + '>' + renderInlineMarkdown(cell.trim()) + '</' + tag + '>';
+            tableHtml += '<' + tag + '>' + renderInlineMarkdown(cell.trim(), citationsByMarker) + '</' + tag + '>';
           });
           tableHtml += '</tr>';
         });
@@ -1394,7 +1460,7 @@
       if (headerMatch) {
         flushList();
         const level = headerMatch[1].length;
-        result += '<h' + level + '>' + renderInlineMarkdown(headerMatch[2]) + '</h' + level + '>';
+        result += '<h' + level + '>' + renderInlineMarkdown(headerMatch[2], citationsByMarker) + '</h' + level + '>';
         continue;
       }
 
@@ -1403,7 +1469,7 @@
       if (bulletMatch) {
         if (currentListType !== 'ul') flushList();
         currentListType = 'ul';
-        currentList.push('<li>' + renderInlineMarkdown(bulletMatch[1]) + '</li>');
+        currentList.push('<li>' + renderInlineMarkdown(bulletMatch[1], citationsByMarker) + '</li>');
         continue;
       }
 
@@ -1412,7 +1478,7 @@
       if (numberedMatch) {
         if (currentListType !== 'ol') flushList();
         currentListType = 'ol';
-        currentList.push('<li>' + renderInlineMarkdown(numberedMatch[1]) + '</li>');
+        currentList.push('<li>' + renderInlineMarkdown(numberedMatch[1], citationsByMarker) + '</li>');
         continue;
       }
 
@@ -1426,7 +1492,7 @@
         // Process inline markdown for non-code parts
         processedLine = processedLine.replace(/(<code[^>]*>.*?<\/code>)|([^<]+)/g, function(match, codeTag, text) {
           if (codeTag) return codeTag;
-          if (text) return renderInlineMarkdown(text);
+          if (text) return renderInlineMarkdown(text, citationsByMarker);
           return match;
         });
 
@@ -2501,7 +2567,30 @@
       msgEl.className = `osa-message ${msg.role}`;
 
       const label = msg.role === 'user' ? 'You' : CONFIG.title;
-      const content = msg.role === 'assistant' ? markdownToHtml(msg.content) : escapeHtml(msg.content);
+
+      // Build a marker -> citation lookup for this message (empty for a
+      // message with no citations, e.g. every OpenRouter-answered reply).
+      const citationsByMarker = {};
+      (msg.citations || []).forEach((c) => {
+        if (c && typeof c.marker !== 'undefined') citationsByMarker[c.marker] = c;
+      });
+
+      const content = msg.role === 'assistant'
+        ? markdownToHtml(msg.content, citationsByMarker)
+        : escapeHtml(msg.content);
+
+      // Compact numbered source list under the answer, when anything was cited.
+      let sourcesRow = '';
+      if (msg.role === 'assistant' && msg.citations && msg.citations.length) {
+        const items = msg.citations.map((c) => {
+          const sourceLabel = escapeHtml(String(c.title || c.source || ''));
+          const inner = isSafeUrl(c.source)
+            ? '<a href="' + escapeHtml(c.source) + '" target="_blank" rel="noopener noreferrer">' + sourceLabel + '</a>'
+            : '<span>' + sourceLabel + '</span>';
+          return '<li><span class="osa-source-marker">[' + escapeHtml(String(c.marker)) + ']</span> ' + inner + '</li>';
+        }).join('');
+        sourcesRow = '<ol class="osa-message-sources">' + items + '</ol>';
+      }
 
       // Add copy button for assistant messages
       const copyBtn = msg.role === 'assistant'
@@ -2544,6 +2633,7 @@
           ${copyBtn}
         </div>
         <div class="osa-message-content">${content}</div>
+        ${sourcesRow}
         ${feedbackRow}
       `;
       messagesEl.appendChild(msgEl);
@@ -2689,7 +2779,8 @@
   //   data: {"event": "thinking"}
   //   data: {"event": "tool_start", "name": "tool_name", "input": {...}}
   //   data: {"event": "tool_end", "name": "tool_name", "output": "result"}
-  //   data: {"event": "done"}
+  //   data: {"event": "citation", "marker": 1, "source": "...", "title": "...", "cited_text": "..."}
+  //   data: {"event": "done", "citations": [...]}
   //   data: {"event": "error", "message": "error description"}
   async function handleStreamingResponse(response, container) {
     const reader = response.body.getReader();
@@ -2704,7 +2795,7 @@
     let receivedFirstContent = false;
 
     // Create placeholder assistant message (not rendered yet - loading dots stay visible)
-    messages.push({ role: 'assistant', content: '' });
+    messages.push({ role: 'assistant', content: '', citations: [] });
     const messageIndex = messages.length - 1;
 
     try {
@@ -2768,6 +2859,22 @@
           } else if (event.event === 'tool_end') {
             // Log tool completion
             console.log('[OSA] Tool completed:', event.name);
+          } else if (event.event === 'citation') {
+            // A source was cited for the first time; its marker text also
+            // arrives as its own 'content' chunk (handled above), so the
+            // inline [n] is already part of accumulatedContent by the time
+            // this renders. Kept even if a later 'done' event repeats it,
+            // so a client watching only 'citation' events still gets each
+            // source as soon as it is cited.
+            if (typeof event.marker !== 'undefined' && event.source) {
+              messages[messageIndex].citations = messages[messageIndex].citations || [];
+              messages[messageIndex].citations.push({
+                marker: event.marker,
+                source: event.source,
+                title: event.title || '',
+                cited_text: event.cited_text || '',
+              });
+            }
           } else if (event.event === 'session') {
             // Capture session ID early (sent at stream start). request_id is
             // intentionally NOT sent here; it arrives on the 'done' event so it
@@ -2788,6 +2895,12 @@
             }
             if (event.request_id && typeof event.request_id === 'string') {
               messages[messageIndex].requestId = event.request_id;
+            }
+            // Authoritative citation list: replaces whatever 'citation'
+            // events arrived, so a client that missed one still renders
+            // correctly (see _stream_ask_response's SSE docstring).
+            if (Array.isArray(event.citations)) {
+              messages[messageIndex].citations = event.citations;
             }
             messages[messageIndex].content = accumulatedContent;
             renderMessages(container);
@@ -3028,6 +3141,9 @@
         const assistantMsg = { role: 'assistant', content: answer };
         if (data && typeof data.request_id === 'string') {
           assistantMsg.requestId = data.request_id;
+        }
+        if (data && Array.isArray(data.citations)) {
+          assistantMsg.citations = data.citations;
         }
         messages.push(assistantMsg);
         try {
