@@ -1253,11 +1253,19 @@
     }
   `;
 
-  // Escape HTML for user messages
+  // Escape text for interpolation into HTML, including quoted attribute values.
+  // Serializing a text node escapes & < > but deliberately leaves both quote
+  // characters alone, so the textContent trick alone is not enough here: this
+  // helper's output is interpolated into href=""/title=""/value="" attributes,
+  // where an unescaped quote closes the attribute and everything after it is
+  // parsed as further attributes (an event handler, for instance). Citation
+  // hover text is a verbatim span of a retrieved document, so that input is not
+  // ours to trust. Escaped quotes still render as quotes in text and still copy
+  // as quotes from a code block, which reads textContent.
   function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
-    return div.innerHTML;
+    return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
   // Validate URL protocol to prevent javascript: XSS
@@ -1358,9 +1366,12 @@
         const citation = citationsByMarker[citationMatch[1]];
         const label = escapeHtml(citationMatch[1]);
         if (isSafeUrl(citation.source)) {
-          const hoverText = escapeHtml(citation.cited_text || citation.title || '');
+          // Every attribute value here is escaped inline rather than via a
+          // pre-escaped local, so the "attribute values go through escapeHtml"
+          // check in tests/test_frontend/test_widget_drift.py can stay literal.
           result += '<sup class="osa-citation"><a href="' + escapeHtml(citation.source) +
-            '" target="_blank" rel="noopener noreferrer" title="' + hoverText + '">[' + label + ']</a></sup>';
+            '" target="_blank" rel="noopener noreferrer" title="' +
+            escapeHtml(citation.cited_text || citation.title || '') + '">[' + label + ']</a></sup>';
         } else {
           result += '<sup class="osa-citation">[' + label + ']</sup>';
         }
