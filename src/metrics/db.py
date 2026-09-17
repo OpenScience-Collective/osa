@@ -383,6 +383,42 @@ class TokenUsage(NamedTuple):
     cache_creation_tokens: int = 0
 
 
+def resolve_cache_creation_tokens(details: dict) -> int:
+    """Resolve the cache-write token count from an ``input_token_details`` dict.
+
+    ``langchain_anthropic.chat_models._create_usage_metadata`` reports
+    cache-write tokens two different ways depending on whether Anthropic
+    returned a per-TTL breakdown:
+
+    - When the API response includes a ``cache_creation`` breakdown (the
+      normal shape whenever a ``cache_control`` marker is sent -- which
+      ``CachingChatAnthropic`` always does), the real count is summed into
+      the TTL-specific keys ``ephemeral_5m_input_tokens`` /
+      ``ephemeral_1h_input_tokens``, and the generic ``cache_creation`` key
+      is deliberately zeroed there to avoid double-counting.
+    - Only when no per-TTL breakdown is present does the generic
+      ``cache_creation`` key hold the real count.
+
+    So the generic key cannot be trusted on its own: reading it first (or
+    only) silently reports 0 whenever caching is actually active, which is
+    the normal case for this platform, undercharging cache writes by pricing
+    them as ordinary input tokens instead of at the 1.25x write rate (see
+    ``src.metrics.cost.CACHE_WRITE_MULTIPLIER``). This mirrors langchain's
+    own precedence: TTL-specific sum first, generic key as a fallback for
+    providers/transports that never populate the TTL-specific keys.
+
+    Args:
+        details: An ``input_token_details`` dict (or a plain subset of one).
+
+    Returns:
+        The resolved cache-creation (cache-write) token count.
+    """
+    ttl_specific = (details.get("ephemeral_5m_input_tokens") or 0) + (
+        details.get("ephemeral_1h_input_tokens") or 0
+    )
+    return ttl_specific or (details.get("cache_creation") or 0)
+
+
 def extract_token_usage(result: dict) -> TokenUsage:
     """Extract token usage from agent result messages.
 
@@ -417,7 +453,7 @@ def extract_token_usage(result: dict) -> TokenUsage:
             details = usage.get("input_token_details") or {}
             if isinstance(details, dict):
                 cache_read_tokens += details.get("cache_read") or 0
-                cache_creation_tokens += details.get("cache_creation") or 0
+                cache_creation_tokens += resolve_cache_creation_tokens(details)
 
     return TokenUsage(
         input_tokens, output_tokens, total_tokens, cache_read_tokens, cache_creation_tokens

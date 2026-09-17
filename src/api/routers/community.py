@@ -47,6 +47,7 @@ from src.metrics.db import (
     log_request,
     metrics_connection,
     now_iso,
+    resolve_cache_creation_tokens,
 )
 from src.metrics.queries import (
     get_community_summary,
@@ -1889,10 +1890,13 @@ def _extract_token_usage(event_data: dict) -> tuple[int, int, int, int]:
             usage.get("input_tokens") or 0,
             usage.get("output_tokens") or 0,
             details.get("cache_read") or 0,
-            details.get("cache_creation") or 0,
+            resolve_cache_creation_tokens(details),
         )
     except Exception:
-        logger.debug("Failed to extract token usage from event data", exc_info=True)
+        # DEBUG is invisible at this repo's default INFO level, so a genuine
+        # extraction bug would silently show up as a free request on the
+        # dashboard instead of a visible log line.
+        logger.warning("Failed to extract token usage from event data", exc_info=True)
         return 0, 0, 0, 0
 
 
