@@ -37,6 +37,43 @@ This document explains the deployment architecture for OSA (Open Science Assista
 | Production | `https://api.osc.earth/osa` | `ghcr.io/openscience-collective/osa:latest` | 38528 |
 | Development | `https://api.osc.earth/osa-dev` | `ghcr.io/openscience-collective/osa:dev` | 38529 |
 
+### What each image tag means
+
+| Tag | Moves when | Use it for |
+|-----|-----------|------------|
+| `latest` | a STABLE release is published | production; the most recent released version, not the head of `main`. Pre-releases never move it |
+| `X.Y.Z` | any release is published | pinning and rollback; immutable once written |
+| `X.Y` | a stable release is published | following a minor line; `type=semver` skips prereleases |
+| `main`, `develop` | every push to that branch | following a branch head deliberately |
+| `dev` | every push to `develop` | the development host |
+| `sha-<commit>` | every build | tracing an image back to a commit |
+
+`latest` followed the head of `main` until issue #379. That was two problems at
+once.
+
+Two pushes to `main` seconds apart both wrote the tag with no ordering between
+them; the v0.8.9 release lost that race, and production served `0.8.9.dev0`
+while `main` said `0.8.9`.
+
+And no versioned image existed between 0.6.2 and 0.8.9, because
+`docker-build.yml` was keyed only on `push`, while `tag-release.yml` pushes the
+release tag using the default `GITHUB_TOKEN` -- and GitHub does not start
+workflow runs from events that token created. The `gh release create` step in
+the same job runs under `CI_ADMIN_TOKEN`, a PAT, which is why the `release`
+event was seen and `Publish to PyPI` (already subscribed to it) was the only
+workflow that ran. Anything in this pipeline that needs to trigger another
+workflow has to be authored by the PAT, not the default token.
+
+Production now tracks stable releases. To follow the branch instead, point a
+host at `:main`.
+
+**Republishing images for an existing tag**, including releases that predate the
+fix:
+
+```bash
+gh workflow run docker-build.yml --ref v0.8.9
+```
+
 **Frontend:**
 - Production: `https://demo.osc.earth`
 - Development: `https://develop-demo.osc.earth`

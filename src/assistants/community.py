@@ -270,11 +270,29 @@ class CommunityAssistant(ToolAgent):
         # plugin loader above: log and continue on failure, never raise out of
         # this constructor. An assistant that cannot start because someone
         # else's host is down is worse than one missing a few tools.
-        mcp_tools = self._load_mcp_tools(config)
+        mcp_tools, self._degraded_mcp_servers = self._load_mcp_tools(config)
         tools.extend(mcp_tools)
 
         # Generate system prompt
         system_prompt = self._build_system_prompt(config, additional_instructions)
+
+        # A configured server that yielded nothing is the dangerous failure, not a
+        # loud one. The prompt still describes tools that are not bound, and it also
+        # tells the model to answer rather than decline, so the model answers dataset
+        # questions from memory: plausible-looking accessions, real-looking links, and
+        # invented citations, handed to a researcher with nothing marking them as
+        # unverified. Say so in the prompt instead.
+        if self._degraded_mcp_servers:
+            system_prompt += (
+                "\n\n## IMPORTANT: dataset tools are unavailable right now\n\n"
+                "The tools served by "
+                + ", ".join(self._degraded_mcp_servers)
+                + " could not be loaded for this conversation, so any tool named in the "
+                "sections above is NOT available to you. Do not answer questions about "
+                "specific datasets from memory, and never invent a dataset identifier, "
+                "a link, or a citation. Say that the dataset service is temporarily "
+                "unreachable and point the user at https://nemar.org/discover."
+            )
 
         super().__init__(
             model=model,
@@ -371,32 +389,48 @@ class CommunityAssistant(ToolAgent):
 
         return all_tools
 
-    def _load_mcp_tools(self, config: CommunityConfig) -> list[BaseTool]:
+    def _load_mcp_tools(self, config: CommunityConfig) -> tuple[list[BaseTool], list[str]]:
         """Load tools from configured Model Context Protocol (MCP) servers.
+
+        Returns the tools, and the names of any configured servers that yielded
+        none. The caller needs the second list because a server that returns
+        nothing leaves the prompt describing tools that are not bound, which is a
+        silent failure rather than a loud one.
 
         Deliberately shaped exactly like `_load_plugin_tools`: a failure is
         logged and skipped, and this never raises. `discover_mcp_tools` already
         swallows per-server failures, so the try here covers the import itself --
         `mcp` lives in the `server` extra, and a CLI-only install must not break
         on it.
+
+        Touches no instance state, so it stays callable as an unbound function.
         """
         all_tools: list[BaseTool] = []
+        degraded: list[str] = []
 
         if not config.extensions or not config.extensions.mcp_servers:
-            return all_tools
+            return all_tools, degraded
 
         try:
             from src.tools.mcp_client import discover_mcp_tools
         except ImportError as e:
-            logger.error("MCP support unavailable (install the server extra): %s", e)
-            return all_tools
+            logger.error(
+                "MCP support unavailable; install the server extra (uv sync --extra server): %s", e
+            )
+            return all_tools, [s.name for s in config.extensions.mcp_servers]
 
         for server in config.extensions.mcp_servers:
             server_tools = discover_mcp_tools(server)
-            logger.info("Loaded %d tools from MCP server %s", len(server_tools), server.name)
+            if server_tools:
+                logger.info("Loaded %d tools from MCP server %s", len(server_tools), server.name)
+            else:
+                # Recorded, not just logged: the constructor uses this to tell the
+                # model it is running without these tools.
+                logger.error("MCP server %s yielded no tools; assistant is degraded", server.name)
+                degraded.append(server.name)
             all_tools.extend(server_tools)
 
-        return all_tools
+        return all_tools, degraded
 
     def _format_preloaded_section(self) -> str:
         """Format preloaded documents for the system prompt."""

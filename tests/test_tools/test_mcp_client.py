@@ -199,6 +199,10 @@ class TestInvocation:
         )
         result = await tool.ainvoke({})
         assert isinstance(result, str)
+        # The PREFIX, not just the server's sentence. Without this the test passes
+        # even if the `is_error` branch is deleted, because the fallback path
+        # returns the same sentence unprefixed (mutation-checked).
+        assert result.startswith("The tool reported an error:")
         assert "over the 60 s cap" in result
 
     async def test_an_input_the_schema_rejects_does_not_raise_out(self, mcp_url: str) -> None:
@@ -223,6 +227,56 @@ class TestDegradation:
         # immediately rather than hanging, so this does not depend on a timeout.
         tools = discover_mcp_tools(McpServer(name="dead", url="http://127.0.0.1:1/mcp"))
         assert tools == []
+
+    def test_a_stalled_server_gives_up_instead_of_hanging(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The failure that matters, and the one an unreachable port does NOT cover.
+
+        A refused connection fails instantly. A server that completes the TCP
+        handshake and then never answers used to hang forever: the discovery
+        timeout wrapped only `list_tools()`, leaving connect bounded solely by the
+        SDK's 300 s read default, and `.result()` carried no timeout at all. Since
+        `discover_mcp_tools` is called per request from the API's event loop
+        thread, that froze every community, not just this one.
+        """
+        import socket as _socket
+
+        listener = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        listener.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(8)
+        port = listener.getsockname()[1]
+        accepted: list[Any] = []
+
+        def _accept_and_stall() -> None:
+            # Accept so the client's connect() succeeds, then never respond. Hold a
+            # reference so the socket is not garbage collected into a reset.
+            while True:
+                try:
+                    accepted.append(listener.accept()[0])
+                except OSError:
+                    return
+
+        stall_thread = threading.Thread(target=_accept_and_stall, daemon=True)
+        stall_thread.start()
+
+        monkeypatch.setattr("src.tools.mcp_client.DISCOVERY_TIMEOUT_S", 2.0)
+        try:
+            started = time.monotonic()
+            tools = discover_mcp_tools(
+                McpServer(name="stalled", url=f"http://127.0.0.1:{port}/mcp")
+            )
+            elapsed = time.monotonic() - started
+        finally:
+            listener.close()
+            for conn in accepted:
+                conn.close()
+
+        assert tools == []
+        # Generous, but far below the SDK's 300 s read default, which is what this
+        # would take if the bound were lost again.
+        assert elapsed < 30.0, f"discovery took {elapsed:.1f}s; the timeout is not bounding connect"
 
     def test_a_url_that_is_not_an_mcp_server_yields_no_tools(self, mcp_url: str) -> None:
         # The right host, the wrong path: the descriptor route, not the transport.
@@ -277,7 +331,7 @@ class TestAgainstProductionNemar:
             assert row["dataset_id"][:2] in {"nm", "on"}
 
     async def test_a_refusal_arrives_as_readable_text(self) -> None:
-        """The behaviour the prompt tells the model to relay: a declined request
+        """The behavior the prompt tells the model to relay: a declined request
         explains itself and names a workaround."""
         tools = discover_mcp_tools(McpServer(name="nemar", url=self.URL))
         describe = next(t for t in tools if t.name == "nemar_describe_dataset")

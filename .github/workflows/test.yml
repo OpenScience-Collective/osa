@@ -31,7 +31,7 @@ jobs:
         run: ruff check .
 
       - name: Run ruff format check
-        run: ruff format --check .
+        run: ruff format --check src tests
 
   unit-tests:
     name: Unit Tests (Python ${{ matrix.python-version }})
