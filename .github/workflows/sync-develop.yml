@@ -6,6 +6,11 @@ name: Sync develop with main and bump
 # replaces the manual "create release PR -> resolve src/version.py
 # conflict" dance.
 #
+# It lands that merge through a PULL REQUEST with auto-merge, not a direct
+# push. A ruleset on `develop` requires status checks, so a direct push is
+# rejected with GH013 and this workflow failed on every release after that
+# ruleset was added, leaving develop quietly behind main (issue #372).
+#
 # Trigger: Tag and Release workflow completes successfully. The tag-push
 # event also triggers release.yml + the deploy pipeline; this workflow
 # is independent and only handles the develop-side bookkeeping.
@@ -41,8 +46,9 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-          # CI_ADMIN_TOKEN lets this push to develop without tripping
-          # branch protection (same pattern as ensure-stable-version.yml).
+          # CI_ADMIN_TOKEN pushes the sync BRANCH and opens the pull request.
+          # It deliberately does not bypass the develop ruleset; the pull
+          # request faces the same checks as any other change (issue #372).
           token: ${{ secrets.CI_ADMIN_TOKEN }}
 
       - name: Check out develop by explicit ref
@@ -111,9 +117,45 @@ jobs:
           git add src/version.py
           git commit -m "Bump version to $NEW"
 
-      - name: Push develop
+      - name: Open a sync pull request and let it auto-merge
         if: steps.main_version.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.CI_ADMIN_TOKEN }}
+          VERSION: ${{ steps.main_version.outputs.main_version }}
         run: |
+          # NOT a direct push. A ruleset on `develop` requires status checks, so
+          # `git push origin develop` is rejected with GH013 ("2 of 2 required
+          # status checks are expected") regardless of what the token may do.
+          # That is why this workflow failed on every release after the ruleset
+          # was added, and why `develop` silently fell behind `main` each time
+          # (issue #372). A pull request runs the same checks every other change
+          # to `develop` faces, and auto-merge lands it without a human.
+          #
           # Bot's commit message starts with "Bump version to ..." so
-          # auto-bump-dev.yml self-filters on this push.
-          git push origin develop
+          # auto-bump-dev.yml self-filters on the resulting push.
+          BRANCH="chore/sync-develop-after-v${VERSION}"
+          git push --force-with-lease origin "HEAD:refs/heads/${BRANCH}"
+
+          # Re-runs are expected: the tag workflow can fire more than once, and
+          # a failed earlier attempt may already have opened this. Reuse the
+          # open pull request rather than failing on a duplicate.
+          EXISTING=$(gh pr list --head "$BRANCH" --base develop --state open \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            echo "Reusing open pull request #${EXISTING} for ${BRANCH}"
+            PR="$EXISTING"
+          else
+            PR=$(gh pr create --base develop --head "$BRANCH" \
+              --title "chore: sync develop with main after v${VERSION}" \
+              --body "Automated by \`sync-develop.yml\` after the v${VERSION} release: merges \`main\` into \`develop\` and bumps \`develop\` to the next dev version, so branches cut from \`develop\` do not collide with the released version.
+
+          Opened as a pull request rather than pushed directly because a ruleset on \`develop\` requires status checks (issue #372)." \
+              | grep -oE '[0-9]+$')
+          fi
+
+          # Merge commit, not squash: develop <-> main syncs preserve the
+          # release commit graph, and a squash would leave git unaware that
+          # main's commits are ancestors of develop.
+          if ! gh pr merge "$PR" --auto --merge; then
+            echo "::warning::Could not enable auto-merge on #${PR}; merge it by hand."
+          fi
