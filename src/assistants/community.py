@@ -477,6 +477,30 @@ class CommunityAssistant(ToolAgent):
 
         return "\n\n".join(sections)
 
+    def _format_citation_fallback_section(self) -> str:
+        """Instruction added only when native citations are unavailable.
+
+        Native search_result citations (self._citations=True) require the
+        Anthropic path; on OpenRouter/BYOK, Claude attaches nothing
+        automatically, so this asks the model to do by convention what it
+        would otherwise do for free: a markdown link to the source
+        immediately after each claim drawn from a retrieved document,
+        discussion, FAQ entry, forum post, or paper -- not a links dump at
+        the end. A prompt rule is a request, not a guarantee, which is
+        exactly the honest trade-off this fallback is meant to represent.
+        """
+        if self._citations:
+            return ""
+        return (
+            "## Source Links Required (No Native Citations)\n\n"
+            "This session is not running on a provider that supports automatic inline "
+            "citations. Whenever you state a fact drawn from a retrieved document, GitHub "
+            "discussion, FAQ entry, forum post, or paper, end that sentence with a markdown "
+            'link to its exact source immediately, e.g. "...as described in the tutorial '
+            '([source](https://example.com/tutorial))." Do this after every such claim, not '
+            "just once at the end of your response."
+        )
+
     def _build_system_prompt(
         self,
         config: CommunityConfig,
@@ -505,6 +529,16 @@ class CommunityAssistant(ToolAgent):
         available_docs_section = self._format_available_docs_section()
         page_context_section = self._format_page_context_section()
 
+        # The citation fallback rides in on {additional_instructions} rather
+        # than a dedicated placeholder: every community config (custom
+        # system_prompt or not) already includes {additional_instructions}
+        # by convention, while a new placeholder would only reach the
+        # default template and any config someone remembered to update.
+        citation_fallback_section = self._format_citation_fallback_section()
+        combined_additional_instructions = "\n\n".join(
+            section for section in (citation_fallback_section, additional_instructions) if section
+        )
+
         # Substitute placeholders
         # Use a safe approach that ignores missing placeholders
         prompt = template
@@ -516,7 +550,7 @@ class CommunityAssistant(ToolAgent):
             "preloaded_docs_section": preloaded_section,
             "available_docs_section": available_docs_section,
             "page_context_section": page_context_section,
-            "additional_instructions": additional_instructions,
+            "additional_instructions": combined_additional_instructions,
         }
 
         for key, value in substitutions.items():
