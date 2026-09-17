@@ -5,8 +5,7 @@ id: mne
 name: MNE-Python
 description: Open-source Python toolkit for exploring, visualizing, and analyzing human neurophysiological data (MEG, EEG, sEEG, ECoG, NIRS, and eye-tracking)
 status: available
-default_model: anthropic/claude-haiku-4.5
-default_model_provider: anthropic
+default_model: claude-haiku-4-5
 
 # External links for dashboard and discovery
 links:

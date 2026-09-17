@@ -2,8 +2,7 @@ id: metabci
 name: MetaBCI
 description: Python-based open-source software platform for Brain-Computer Interfaces (BCI)
 status: available
-default_model: deepseek/deepseek-v3.2
-default_model_provider: deepseek
+default_model: claude-haiku-4-5
 
 # External links for dashboard and discovery
 links:

@@ -54,9 +54,9 @@ widget:
 
 # Default model for this community (optional)
 # If specified, overrides the platform-level default model
-# Format: creator/model-name (OpenRouter format)
-default_model: "anthropic/claude-haiku-4.5"
-default_model_provider: "anthropic"
+# First-party Claude Platform on AWS id; see
+# src.core.services.anthropic_llm.OFFERED_MODELS
+default_model: "claude-haiku-4-5"
 
 # System prompt template
 # Available placeholders: {name}, {description}, {repo_list}, {paper_dois},

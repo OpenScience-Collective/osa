@@ -308,6 +308,43 @@ class TestCreateCommunityAssistant:
         with pytest.raises(ValueError, match="Unknown community: fake_community"):
             create_community_assistant("fake_community")
 
+    def test_anthropic_byok_constructs_anthropic_model(self) -> None:
+        """A BYOK Anthropic credential builds a CachingChatAnthropic model.
+
+        Regression for item 13: nothing previously exercised the branch
+        between create_anthropic_llm and create_openrouter_llm in
+        create_community_assistant, so a regression that always took the
+        OpenRouter path would have passed the whole suite. A bogus key
+        string is fine since construction does not call the API.
+        """
+        from src.api.routers.community import create_community_assistant
+        from src.api.security import ByokCredential
+        from src.core.services.anthropic_llm import CachingChatAnthropic
+
+        awm = create_community_assistant(
+            "hed",
+            byok=ByokCredential(key="sk-ant-fake-test-key", provider="anthropic"),
+            preload_docs=False,
+        )
+
+        assert isinstance(awm.assistant.model, CachingChatAnthropic)
+        assert awm.key_source == "byok"
+
+    def test_openrouter_byok_constructs_litellm_model(self) -> None:
+        """A BYOK OpenRouter credential builds the LiteLLM caching wrapper."""
+        from src.api.routers.community import create_community_assistant
+        from src.api.security import ByokCredential
+        from src.core.services.litellm_llm import CachingLLMWrapper
+
+        awm = create_community_assistant(
+            "hed",
+            byok=ByokCredential(key="sk-or-fake-test-key", provider="openrouter"),
+            preload_docs=False,
+        )
+
+        assert isinstance(awm.assistant.model, CachingLLMWrapper)
+        assert awm.key_source == "byok"
+
 
 class TestSessionEndpointBehavior:
     """Tests for session endpoint behavior using unit-level functions."""

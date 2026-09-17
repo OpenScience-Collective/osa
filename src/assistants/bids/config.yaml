@@ -51,9 +51,9 @@ widget:
     - What are the BIDS Common Principles?
     - How do I validate my BIDS dataset?
 
-# Default model for this community
-default_model: "anthropic/claude-haiku-4.5"
-default_model_provider: "anthropic"
+# Default model for this community (first-party Claude Platform on AWS id;
+# see src.core.services.anthropic_llm.OFFERED_MODELS)
+default_model: "claude-haiku-4-5"
 
 # System prompt template
 system_prompt: |

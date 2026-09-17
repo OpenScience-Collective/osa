@@ -37,20 +37,24 @@ class OSAClient:
     """HTTP client for the OSA API.
 
     Thin client that forwards requests to the OSA backend.
-    BYOK (Bring Your Own Key): the user's OpenRouter API key is
-    forwarded via the X-OpenRouter-Key header.
+    BYOK (Bring Your Own Key): an Anthropic API key is forwarded via the
+    X-Anthropic-API-Key header, or an OpenRouter API key via the
+    X-OpenRouter-Key header. Anthropic wins if both are configured (matches
+    the server's own preference; see ``src.api.security.resolve_byok``).
     """
 
     def __init__(
         self,
         api_url: str,
         openrouter_api_key: str | None = None,
+        anthropic_api_key: str | None = None,
         user_id: str | None = None,
         timeout: httpx.Timeout = DEFAULT_TIMEOUT,
         mirror_id: str | None = None,
     ) -> None:
         self.api_url = api_url.rstrip("/")
         self.openrouter_api_key = openrouter_api_key
+        self.anthropic_api_key = anthropic_api_key
         self._user_id = user_id
         self.timeout = timeout
         self.mirror_id = mirror_id
@@ -69,7 +73,9 @@ class OSAClient:
             "User-Agent": "osa-cli",
             "X-User-ID": self.user_id,
         }
-        if self.openrouter_api_key:
+        if self.anthropic_api_key:
+            headers["X-Anthropic-API-Key"] = self.anthropic_api_key
+        elif self.openrouter_api_key:
             headers["X-OpenRouter-Key"] = self.openrouter_api_key
             # Also send legacy header for servers that haven't updated yet
             headers["X-OpenRouter-API-Key"] = self.openrouter_api_key

@@ -1,5 +1,6 @@
 """Security and authentication for the OSA API."""
 
+import logging
 from dataclasses import dataclass
 from typing import Annotated, Literal
 
@@ -8,6 +9,8 @@ from fastapi.security import APIKeyHeader
 
 from src.api.config import Settings, get_settings
 
+logger = logging.getLogger(__name__)
+
 # API key header for server authentication
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
@@ -15,6 +18,47 @@ api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 openai_key_header = APIKeyHeader(name="X-OpenAI-API-Key", auto_error=False)
 anthropic_key_header = APIKeyHeader(name="X-Anthropic-API-Key", auto_error=False)
 openrouter_key_header = APIKeyHeader(name="X-OpenRouter-Key", auto_error=False)
+
+
+@dataclass(frozen=True)
+class ByokCredential:
+    """A caller-supplied (bring-your-own-key) LLM credential.
+
+    Carries both the key and which provider it authenticates against, so
+    downstream code (model selection, LLM construction) does not need to
+    re-derive the provider from which header happened to be set.
+    """
+
+    key: str
+    provider: Literal["anthropic", "openrouter"]
+
+
+def resolve_byok(
+    anthropic_key: str | None,
+    openrouter_key: str | None,
+) -> ByokCredential | None:
+    """Resolve a single BYOK credential from the two possible headers.
+
+    Anthropic wins when both are provided: it is the platform's first-party
+    provider (see src/core/services/anthropic_llm.py), so a caller sending
+    both headers most likely means to pin to Anthropic.
+
+    Args:
+        anthropic_key: Value of the X-Anthropic-API-Key header, if present.
+        openrouter_key: Value of the X-OpenRouter-Key header, if present.
+
+    Returns:
+        A ByokCredential for whichever key was provided, or None if neither
+        header was set.
+    """
+    if anthropic_key and openrouter_key:
+        logger.info("Both BYOK headers provided; preferring Anthropic")
+        return ByokCredential(key=anthropic_key, provider="anthropic")
+    if anthropic_key:
+        return ByokCredential(key=anthropic_key, provider="anthropic")
+    if openrouter_key:
+        return ByokCredential(key=openrouter_key, provider="openrouter")
+    return None
 
 
 async def verify_api_key(
@@ -188,62 +232,3 @@ async def verify_scoped_admin_key(
 
 # Dependency for scoped admin routes (supports per-community keys)
 RequireScopedAuth = Annotated[AuthScope, Depends(verify_scoped_admin_key)]
-
-
-class BYOKHeaders:
-    """BYOK (Bring Your Own Key) headers for LLM providers.
-
-    Users can provide their own API keys for LLM providers.
-    These override server-provided keys when present.
-    """
-
-    def __init__(
-        self,
-        openai_key: str | None = None,
-        anthropic_key: str | None = None,
-        openrouter_key: str | None = None,
-    ) -> None:
-        self.openai_key = openai_key
-        self.anthropic_key = anthropic_key
-        self.openrouter_key = openrouter_key
-
-
-async def get_byok_headers(
-    openai_key: Annotated[str | None, Security(openai_key_header)],
-    anthropic_key: Annotated[str | None, Security(anthropic_key_header)],
-    openrouter_key: Annotated[str | None, Security(openrouter_key_header)],
-) -> BYOKHeaders:
-    """Extract BYOK headers from request.
-
-    These allow users to provide their own LLM API keys,
-    which override server-configured keys.
-    """
-    return BYOKHeaders(
-        openai_key=openai_key,
-        anthropic_key=anthropic_key,
-        openrouter_key=openrouter_key,
-    )
-
-
-# Dependency for extracting BYOK headers
-GetBYOK = Annotated[BYOKHeaders, Depends(get_byok_headers)]
-
-
-def get_llm_api_key(
-    provider: str,
-    byok: BYOKHeaders,
-    settings: Settings,
-) -> str | None:
-    """Get the API key for an LLM provider.
-
-    Priority: BYOK header > server config > None
-    """
-    key_mapping = {
-        "openai": (byok.openai_key, settings.openai_api_key),
-        "anthropic": (byok.anthropic_key, settings.anthropic_api_key),
-        "openrouter": (byok.openrouter_key, settings.openrouter_api_key),
-    }
-    if provider not in key_mapping:
-        return None
-    byok_key, server_key = key_mapping[provider]
-    return byok_key or server_key

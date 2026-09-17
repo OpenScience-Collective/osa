@@ -25,15 +25,19 @@ from langchain_core.messages.utils import count_tokens_approximately
 from pydantic import BaseModel, Field, field_validator
 
 from src.agents.base import DEFAULT_MAX_CONVERSATION_TOKENS
-from src.api.config import get_settings
+from src.agents.content import classify_content_blocks, extract_text
+from src.api.config import Settings, get_settings
 from src.api.routers.health import compute_community_health
-from src.api.security import AuthScope, RequireAuth, RequireScopedAuth
+from src.api.security import AuthScope, ByokCredential, RequireAuth, RequireScopedAuth, resolve_byok
 from src.assistants import registry
 from src.assistants.community import CommunityAssistant
 from src.assistants.community import PageContext as AgentPageContext
 from src.assistants.registry import AssistantInfo
 from src.core.config.community import WidgetConfig
-from src.core.services.litellm_llm import create_openrouter_llm
+from src.core.services.anthropic_llm import create_anthropic_llm, normalize_model
+from src.core.services.litellm_llm import DEFAULT_MODEL as OPENROUTER_DEFAULT_MODEL
+from src.core.services.litellm_llm import DEFAULT_PROVIDER as OPENROUTER_DEFAULT_PROVIDER
+from src.core.services.litellm_llm import create_openrouter_llm, to_openrouter_model
 from src.knowledge.search import FAQResult, get_citation_stats, list_faq_entries
 from src.metrics.cost import COST_BLOCK_THRESHOLD, COST_WARN_THRESHOLD, MODEL_PRICING, estimate_cost
 from src.metrics.db import (
@@ -43,6 +47,7 @@ from src.metrics.db import (
     log_request,
     metrics_connection,
     now_iso,
+    resolve_cache_creation_tokens,
 )
 from src.metrics.queries import (
     get_community_summary,
@@ -150,6 +155,14 @@ class ChatResponse(BaseModel):
         default=None,
         description="Per-request identifier the widget can attach to feedback",
     )
+    model: str = Field(
+        ...,
+        description=(
+            "The model that actually answered, after resolving requested/default/"
+            "alias/cost-guard substitution. Model substitution is otherwise "
+            "invisible to callers, detectable only in server logs."
+        ),
+    )
 
 
 class AskResponse(BaseModel):
@@ -162,6 +175,14 @@ class AskResponse(BaseModel):
     request_id: str | None = Field(
         default=None,
         description="Per-request identifier the widget can attach to feedback",
+    )
+    model: str = Field(
+        ...,
+        description=(
+            "The model that actually answered, after resolving requested/default/"
+            "alias/cost-guard substitution. Model substitution is otherwise "
+            "invisible to callers, detectable only in server logs."
+        ),
     )
 
 
@@ -528,51 +549,109 @@ def _is_authorized_origin(origin: str | None, community_id: str) -> bool:
     return False
 
 
-def _select_api_key(
-    community_id: str,
-    byok: str | None,
-    origin: str | None,
-) -> tuple[str, str]:
-    """Select API key based on BYOK and origin authorization.
+@dataclass(frozen=True)
+class ProviderChoice:
+    """Resolved LLM provider, API key, and key source for a request.
 
-    **Authorization Logic:**
-    1. If BYOK provided → use it (always allowed)
-    2. If origin matches community CORS → allow fallback to community/platform key
-    3. Otherwise → reject (CLI or unauthorized origin must provide BYOK)
+    Attributes:
+        provider: Which LLM backend to build ("anthropic" or "openrouter").
+        api_key: The key to use, or None to let the provider layer read its
+            own server-mode credentials from Settings (only possible for
+            "anthropic": create_anthropic_llm's server mode reads
+            ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL / ANTHROPIC_WORKSPACE_ID
+            itself, which is required to hit the Claude Platform on AWS
+            endpoint rather than the first-party api.anthropic.com).
+        key_source: "byok", "community", or "platform".
+    """
 
-    This ensures:
-    - CLI users must provide their own key
-    - Widget users on authorized sites can use platform keys
-    - Custom model requests require BYOK (checked separately)
+    provider: Literal["anthropic", "openrouter"]
+    api_key: str | None
+    key_source: Literal["byok", "community", "platform"]
 
-    Args:
-        community_id: Community identifier
-        byok: User-provided API key from X-OpenRouter-Key header
-        origin: Origin header from HTTP request
 
-    Returns:
-        Tuple of (api_key, source) where source is "byok", "community", or "platform"
+def _platform_choice(settings: Settings) -> ProviderChoice:
+    """Fall back to the platform's own key, preferring Anthropic.
+
+    Phase 2 flips platform-key routing to the Claude Platform on AWS: when
+    no BYOK or community key applies, an authorized request uses the
+    platform's Anthropic key (server mode, api_key=None so the provider
+    layer reads the AWS endpoint/workspace from Settings). OpenRouter is a
+    fallback only for deployments that have not configured an Anthropic key.
 
     Raises:
-        HTTPException(403): If origin is not authorized and BYOK is not provided
-        HTTPException(500): If no platform API key is configured and no other key is available
+        HTTPException(500): If neither platform key is configured.
+    """
+    if settings.anthropic_api_key:
+        return ProviderChoice(provider="anthropic", api_key=None, key_source="platform")
+    if settings.openrouter_api_key:
+        # Falling back this far means ANTHROPIC_API_KEY is unset or empty, so
+        # the migration this epic exists for is silently not in effect for
+        # this deployment. A DEBUG-level default would leave that invisible;
+        # a dedicated `platform_provider` setting was considered instead but
+        # rejected -- inferring from key presence plus a loud warning is
+        # enough for now, and a provider toggle would reintroduce the
+        # configuration ambiguity this epic is removing.
+        logger.warning(
+            "ANTHROPIC_API_KEY is not configured; platform-funded requests are "
+            "falling back to OpenRouter and are NOT running on the Claude "
+            "Platform on AWS. Set ANTHROPIC_API_KEY to fix this.",
+            extra={"provider": "openrouter", "key_source": "platform"},
+        )
+        return ProviderChoice(
+            provider="openrouter", api_key=settings.openrouter_api_key, key_source="platform"
+        )
+    raise HTTPException(
+        status_code=500,
+        detail="No API key configured for this community. Please contact support.",
+    )
+
+
+def _resolve_provider(
+    community_id: str,
+    byok: ByokCredential | None,
+    origin: str | None,
+) -> ProviderChoice:
+    """Resolve which LLM provider, API key, and key source to use.
+
+    **Authorization Logic:**
+    1. If BYOK provided → use it (always allowed), for whichever provider
+       the caller's header selected (see ``resolve_byok``).
+    2. If origin matches community CORS → allow fallback to a community key
+       (Anthropic env var checked before OpenRouter's), then the platform key.
+    3. Otherwise → reject (CLI or unauthorized origin must provide BYOK).
+
+    Args:
+        community_id: Community identifier.
+        byok: Caller-supplied credential, if any (see ``resolve_byok``).
+        origin: Origin header from the HTTP request.
+
+    Returns:
+        The resolved ProviderChoice.
+
+    Raises:
+        HTTPException(403): If origin is not authorized and BYOK is not provided.
+        HTTPException(500): If no platform API key is configured and no other key is available.
     """
     # Case 1: BYOK provided - always allowed
-    if byok:
+    if byok is not None:
         logger.debug(
-            "Using BYOK for community %s",
+            "Using BYOK (%s) for community %s",
+            byok.provider,
             community_id,
-            extra={"community_id": community_id, "key_source": "byok"},
+            extra={"community_id": community_id, "key_source": "byok", "provider": byok.provider},
         )
-        return (byok, "byok")
+        return ProviderChoice(provider=byok.provider, api_key=byok.key, key_source="byok")
 
     # Case 2: Check if origin is authorized for platform key usage
     if not _is_authorized_origin(origin, community_id):
         raise HTTPException(
             status_code=403,
             detail=(
-                "API key required. Please provide your OpenRouter API key via the X-OpenRouter-Key header. "
-                "Get your key at: https://openrouter.ai/keys"
+                "API key required. Please provide your Anthropic API key via the "
+                "X-Anthropic-API-Key header, or your OpenRouter API key via the "
+                "X-OpenRouter-Key header. Get an Anthropic key at: "
+                "https://console.anthropic.com/settings/keys, or an OpenRouter key at: "
+                "https://openrouter.ai/keys"
             ),
         )
 
@@ -580,82 +659,143 @@ def _select_api_key(
     settings = get_settings()
     community_info = registry.get(community_id)
 
-    # Try community-specific key first
     if community_info and community_info.community_config:
-        env_var = community_info.community_config.openrouter_api_key_env_var
-        if env_var:
-            community_key = os.getenv(env_var)
+        config = community_info.community_config
+
+        anthropic_env_var = config.anthropic_api_key_env_var
+        if anthropic_env_var:
+            community_key = os.getenv(anthropic_env_var)
             if community_key:
                 logger.info(
-                    "Using community-specific API key from %s for %s",
-                    env_var,
+                    "Using community-specific Anthropic API key from %s for %s",
+                    anthropic_env_var,
                     community_id,
                     extra={
                         "community_id": community_id,
                         "key_source": "community",
-                        "env_var": env_var,
+                        "provider": "anthropic",
+                        "env_var": anthropic_env_var,
                     },
                 )
-                return (community_key, "community")
+                return ProviderChoice(
+                    provider="anthropic", api_key=community_key, key_source="community"
+                )
             logger.error(
-                "Community %s configured to use %s but env var not set, falling back to platform key. "
-                "This may incur unexpected costs. Set the environment variable to fix this.",
+                "Community %s configured to use %s but env var not set, falling back to "
+                "the platform key. This may incur unexpected costs. Set the environment "
+                "variable to fix this.",
                 community_id,
-                env_var,
+                anthropic_env_var,
                 extra={
                     "community_id": community_id,
                     "key_source": "platform",
-                    "configured_env_var": env_var,
+                    "configured_env_var": anthropic_env_var,
                     "env_var_missing": True,
                     "fallback_to_platform": True,
                     "origin": origin,
                 },
             )
+            return _platform_choice(settings)
 
-    # Fall back to platform key
-    if not settings.openrouter_api_key:
-        raise HTTPException(
-            status_code=500,
-            detail="No API key configured for this community. Please contact support.",
-        )
+        # Anthropic env var not configured for this community; a community
+        # can still fund itself through OpenRouter instead.
+        openrouter_env_var = config.openrouter_api_key_env_var
+        if openrouter_env_var:
+            community_key = os.getenv(openrouter_env_var)
+            if community_key:
+                logger.info(
+                    "Using community-specific OpenRouter API key from %s for %s",
+                    openrouter_env_var,
+                    community_id,
+                    extra={
+                        "community_id": community_id,
+                        "key_source": "community",
+                        "provider": "openrouter",
+                        "env_var": openrouter_env_var,
+                    },
+                )
+                return ProviderChoice(
+                    provider="openrouter", api_key=community_key, key_source="community"
+                )
+            logger.error(
+                "Community %s configured to use %s but env var not set, falling back to "
+                "the platform key. This may incur unexpected costs. Set the environment "
+                "variable to fix this.",
+                community_id,
+                openrouter_env_var,
+                extra={
+                    "community_id": community_id,
+                    "key_source": "platform",
+                    "configured_env_var": openrouter_env_var,
+                    "env_var_missing": True,
+                    "fallback_to_platform": True,
+                    "origin": origin,
+                },
+            )
+            return _platform_choice(settings)
 
-    logger.debug(
-        "Using platform API key for community %s",
-        community_id,
-        extra={"community_id": community_id, "key_source": "platform"},
-    )
-    return (settings.openrouter_api_key, "platform")
+    return _platform_choice(settings)
+
+
+def _to_openrouter_model_via_canonical(model: str) -> str | None:
+    """Map a model id to its OpenRouter slug, canonicalizing aliases first.
+
+    ``to_openrouter_model`` only recognizes the two canonical first-party ids
+    in ``OPENROUTER_MODEL_IDS`` ("claude-haiku-4-5", "claude-sonnet-5"), not
+    the bare legacy aliases in ``MODEL_ALIASES`` (e.g. "claude-haiku-4.5",
+    "claude-sonnet-4.5"). Passing one of those straight to
+    ``to_openrouter_model`` returns None and falls through to the emergency
+    default -- the exact model-family substitution this migration set out to
+    eliminate. Resolving through ``normalize_model`` first fixes that, since
+    it knows every alias; a value that is not a recognized Anthropic id at
+    all (an existing OpenRouter slug, or garbage) raises ``ValueError``
+    there, so the raw value is passed through unchanged to
+    ``to_openrouter_model``, which still handles "already a slug" and
+    "unmappable" correctly.
+    """
+    try:
+        canonical = normalize_model(model)
+    except ValueError:
+        canonical = model
+    return to_openrouter_model(canonical)
 
 
 def _select_model(
     community_info: AssistantInfo,
     requested_model: str | None,
+    provider: Literal["anthropic", "openrouter"],
     has_byok: bool,
 ) -> tuple[str, str | None]:
-    """Select model based on community config and user request.
+    """Select the model (and, on OpenRouter, its provider-routing hint).
 
-    **Model Selection Logic:**
-    1. If user requests custom model:
-       - Must have BYOK (otherwise reject)
-       - Use requested model
-    2. Else if community has default_model → use it
-    3. Else → use platform default_model
+    **Anthropic:** the requested model, or else the community/platform
+    default, is normalized against the offered Claude models (see
+    ``normalize_model``). An id that is not offered is rejected with 400
+    regardless of key source, since the Claude Platform on AWS only ever
+    runs the two offered models -- there is no cost-abuse risk in letting
+    any request pick either one. ``default_model_provider`` is ignored
+    here: it is OpenRouter-only routing.
 
-    This ensures:
-    - Custom models always require BYOK (prevents abuse)
-    - Communities can have preferred models
-    - Platform default is the fallback
+    **OpenRouter** (reached via BYOK, or a community's own funded
+    OpenRouter key -- see ``_resolve_provider``): unchanged from before
+    Phase 2 -- a custom model requires BYOK, otherwise the community or
+    platform default (and its provider-routing hint) is used.
 
     Args:
-        community_info: Community information from registry
-        requested_model: User-requested model from request body
-        has_byok: Whether user provided their own API key
+        community_info: Community information from registry.
+        requested_model: User-requested model from the request body.
+        provider: The provider resolved by ``_resolve_provider``.
+        has_byok: Whether the caller provided their own API key.
 
     Returns:
-        Tuple of (model, provider)
+        Tuple of (model, provider_routing_hint). The routing hint is always
+        None on the Anthropic path.
 
     Raises:
-        HTTPException(403): If custom model requested without BYOK
+        HTTPException(400): On the Anthropic path, if the resolved model is
+            not one of the offered models.
+        HTTPException(403): On the OpenRouter path, if a custom model is
+            requested without BYOK.
     """
     settings = get_settings()
 
@@ -666,7 +806,20 @@ def _select_model(
         default_model = community_info.community_config.default_model
         default_provider = community_info.community_config.default_model_provider
 
-    # If user requests a custom model, require BYOK
+    if provider == "anthropic":
+        try:
+            resolved_model = normalize_model(requested_model or default_model)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{e} Provide your own OpenRouter API key via the X-OpenRouter-Key "
+                    "header to use other models."
+                ),
+            ) from e
+        return (resolved_model, None)
+
+    # OpenRouter path: if user requests a custom model, require BYOK
     if requested_model and requested_model != default_model:
         if not has_byok:
             raise HTTPException(
@@ -677,8 +830,43 @@ def _select_model(
                     "Get your key at: https://openrouter.ai/keys"
                 ),
             )
-        # User has BYOK, allow custom model
-        return (requested_model, None)  # Custom model uses default routing
+        # User has BYOK, allow custom model. A caller may name an offered
+        # model by its first-party id or a legacy alias (e.g.
+        # "claude-sonnet-5" or "claude-sonnet-4.5"), neither of which is a
+        # valid OpenRouter slug, so map it across; anything else passes
+        # through untouched. Provider routing is left to OpenRouter, which
+        # auto-selects the Anthropic provider for anthropic/* models.
+        return (_to_openrouter_model_via_canonical(requested_model) or requested_model, None)
+
+    if default_model and "/" not in default_model:
+        # Phase 2 (issue #362) made every community and platform
+        # default_model a bare first-party Anthropic id such as
+        # "claude-haiku-4-5" (or a legacy alias of one), which is not a valid
+        # OpenRouter slug. Map it to the same model's OpenRouter slug so a
+        # request funded by an OpenRouter key still answers with the model
+        # the community chose. Switching to OpenRouter's own default here
+        # instead would silently change model family based on which key paid
+        # for the request.
+        mapped = _to_openrouter_model_via_canonical(default_model)
+        if mapped:
+            # Provider routing is left to OpenRouter, which auto-selects the
+            # Anthropic provider for anthropic/* models.
+            return (mapped, None)
+        # An unmappable bare id means a default was configured that is
+        # neither an offered model (or alias of one) nor an OpenRouter slug.
+        # Falling back to the factory default keeps the request serviceable,
+        # but it is a misconfiguration worth seeing in the logs, and naming
+        # the community is what makes it actionable.
+        logger.error(
+            "Community %s: default model %r is neither an offered Anthropic "
+            "model nor an OpenRouter slug; falling back to %s for this "
+            "OpenRouter-funded request",
+            community_info.id,
+            default_model,
+            OPENROUTER_DEFAULT_MODEL,
+            extra={"community_id": community_info.id},
+        )
+        return (OPENROUTER_DEFAULT_MODEL, OPENROUTER_DEFAULT_PROVIDER)
 
     # Use community or platform default
     return (default_model, default_provider)
@@ -799,7 +987,7 @@ class AssistantWithMetrics:
 
 def create_community_assistant(
     community_id: str,
-    byok: str | None = None,
+    byok: ByokCredential | None = None,
     origin: str | None = None,
     user_id: str | None = None,
     requested_model: str | None = None,
@@ -809,19 +997,19 @@ def create_community_assistant(
     """Create a community assistant instance with authorization checks.
 
     **Authorization:**
-    - If BYOK provided -> always allowed
+    - If BYOK provided -> always allowed, for whichever provider it selects
     - If origin matches community CORS -> can use community/platform keys
     - Otherwise -> rejects with 403 (CLI/unauthorized must provide BYOK)
 
     **Model Selection:**
-    - Custom model requests require BYOK
-    - Otherwise uses community default_model or platform default_model
+    - Anthropic: any offered model may be requested; an unoffered model is a 400
+    - OpenRouter: custom model requests require BYOK
 
     Args:
         community_id: The community identifier (e.g., "hed", "bids")
-        byok: User-provided API key from X-OpenRouter-Key header
+        byok: Caller-supplied credential, if any (see ``resolve_byok``)
         origin: Origin header from HTTP request (for CORS authorization)
-        user_id: User ID for cache optimization (sticky routing)
+        user_id: User ID for cache optimization (sticky routing, OpenRouter only)
         requested_model: Optional model override from request body
         preload_docs: Whether to preload documents
         page_context: Optional context about the page where the widget is embedded
@@ -832,7 +1020,9 @@ def create_community_assistant(
 
     Raises:
         ValueError: If community_id is not registered
-        HTTPException(403): If authorization fails or custom model requested without BYOK
+        HTTPException(400): If an unoffered model is requested on the Anthropic path
+        HTTPException(403): If authorization fails, or a custom model is requested
+            on the OpenRouter path without BYOK
     """
     community_info = registry.get(community_id)
     if community_info is None:
@@ -840,21 +1030,30 @@ def create_community_assistant(
 
     settings = get_settings()
 
-    # Select API key with authorization checks
-    effective_api_key, key_source = _select_api_key(community_id, byok, origin)
+    # Select provider and API key with authorization checks
+    provider_choice = _resolve_provider(community_id, byok, origin)
     logger.debug(
-        "Using %s API key",
-        key_source,
-        extra={"community_id": community_id, "origin": origin, "key_source": key_source},
+        "Using %s API key for provider %s",
+        provider_choice.key_source,
+        provider_choice.provider,
+        extra={
+            "community_id": community_id,
+            "origin": origin,
+            "key_source": provider_choice.key_source,
+            "provider": provider_choice.provider,
+        },
     )
 
-    # Select model (checks BYOK requirement for custom models)
+    # Select model (provider-aware; checks BYOK requirement for OpenRouter custom models)
     selected_model, selected_provider = _select_model(
-        community_info, requested_model, has_byok=bool(byok)
+        community_info,
+        requested_model,
+        provider=provider_choice.provider,
+        has_byok=provider_choice.key_source == "byok",
     )
 
     # Block expensive models on platform/community keys
-    _check_model_cost(selected_model, key_source)
+    _check_model_cost(selected_model, provider_choice.key_source)
 
     logger.debug(
         "Using model %s",
@@ -862,16 +1061,26 @@ def create_community_assistant(
         extra={"community_id": community_id, "origin": origin, "model": selected_model},
     )
 
-    # Determine user_id for prompt caching optimization
-    cache_user_id = _get_cache_user_id(community_id, byok, user_id)
-
-    model = create_openrouter_llm(
-        model=selected_model,
-        api_key=effective_api_key,
-        temperature=settings.llm_temperature,
-        provider=selected_provider,
-        user_id=cache_user_id,
-    )
+    if provider_choice.provider == "anthropic":
+        # Prompt caching on this path is handled by the provider layer
+        # (CachingChatAnthropic's cache_control breakpoints in
+        # src/core/services/anthropic_llm.py), not by a per-user cache
+        # lane, so there is no cache_user_id to compute here.
+        model = create_anthropic_llm(
+            model=selected_model,
+            api_key=provider_choice.api_key,
+            temperature=settings.llm_temperature,
+        )
+    else:
+        # Determine user_id for prompt caching optimization
+        cache_user_id = _get_cache_user_id(community_id, byok.key if byok else None, user_id)
+        model = create_openrouter_llm(
+            model=selected_model,
+            api_key=provider_choice.api_key,
+            temperature=settings.llm_temperature,
+            provider=selected_provider,
+            user_id=cache_user_id,
+        )
 
     # Convert Pydantic PageContext to agent's dataclass PageContext
     agent_page_context = None
@@ -915,7 +1124,7 @@ def create_community_assistant(
     return AssistantWithMetrics(
         assistant=assistant,
         model=selected_model,
-        key_source=key_source,
+        key_source=provider_choice.key_source,
         langfuse_config=langfuse_config,
         langfuse_trace_id=langfuse_trace_id,
     )
@@ -931,6 +1140,8 @@ class AgentResult:
     input_tokens: int
     output_tokens: int
     total_tokens: int
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
 
 
 def _extract_agent_result(result: dict) -> AgentResult:
@@ -942,8 +1153,10 @@ def _extract_agent_result(result: dict) -> AgentResult:
     if result.get("messages"):
         last_msg = result["messages"][-1]
         if isinstance(last_msg, AIMessage):
-            content = last_msg.content
-            response_content = content if isinstance(content, str) else str(content)
+            # last_msg.content is a plain string unless thinking is enabled or
+            # tools are bound, in which case it is a list of typed content
+            # blocks (see src/agents/content.py's module docstring).
+            response_content = extract_text(last_msg.content)
 
     tools_called = extract_tool_names(result)
     tool_calls_info = [
@@ -951,14 +1164,16 @@ def _extract_agent_result(result: dict) -> AgentResult:
         for tc in result.get("tool_calls", [])
     ]
 
-    inp, out, total = extract_token_usage(result)
+    usage = extract_token_usage(result)
     return AgentResult(
         response_content=response_content,
         tool_calls_info=tool_calls_info,
         tools_called=tools_called,
-        input_tokens=inp,
-        output_tokens=out,
-        total_tokens=total,
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        total_tokens=usage.total_tokens,
+        cache_read_tokens=usage.cache_read_tokens,
+        cache_creation_tokens=usage.cache_creation_tokens,
     )
 
 
@@ -975,7 +1190,11 @@ def _set_metrics_on_request(
         "output_tokens": agent_result.output_tokens,
         "total_tokens": agent_result.total_tokens,
         "estimated_cost": estimate_cost(
-            awm.model, agent_result.input_tokens, agent_result.output_tokens
+            awm.model,
+            agent_result.input_tokens,
+            agent_result.output_tokens,
+            cache_read_tokens=agent_result.cache_read_tokens,
+            cache_creation_tokens=agent_result.cache_creation_tokens,
         ),
         "tools_called": agent_result.tools_called,
         "tool_call_count": len(agent_result.tools_called),
@@ -1074,6 +1293,7 @@ def create_community_router(community_id: str) -> APIRouter:
         body: AskRequest,
         http_request: Request,
         _auth: RequireAuth,
+        x_anthropic_key: Annotated[str | None, Header(alias="X-Anthropic-API-Key")] = None,
         x_openrouter_key: Annotated[str | None, Header(alias="X-OpenRouter-Key")] = None,
         x_user_id: Annotated[str | None, Header(alias="X-User-ID")] = None,
     ) -> AskResponse | StreamingResponse:
@@ -1083,25 +1303,29 @@ def create_community_router(community_id: str) -> APIRouter:
         For multi-turn conversations, use the /chat endpoint.
 
         **BYOK (Bring Your Own Key):**
-        Pass your OpenRouter API key in the `X-OpenRouter-Key` header.
-        Required for CLI usage and custom model requests.
+        Pass your Anthropic API key in the `X-Anthropic-API-Key` header, or
+        your OpenRouter API key in the `X-OpenRouter-Key` header. Anthropic
+        wins if both are provided. Required for CLI usage and, on the
+        OpenRouter path, for custom model requests.
 
         **Custom Models:**
         Specify a custom model via the `model` field in the request body.
-        Custom models require BYOK.
+        On the Anthropic path, any offered model may be requested; on the
+        OpenRouter path, custom models require BYOK.
 
         **Cache Optimization:**
         Pass a stable user ID in the `X-User-ID` header for better cache hit rates.
         """
         # Extract origin for authorization
         origin = http_request.headers.get("origin")
+        byok = resolve_byok(x_anthropic_key, x_openrouter_key)
 
         if body.stream:
             return StreamingResponse(
                 _stream_ask_response(
                     community_id,
                     body.question,
-                    x_openrouter_key,
+                    byok,
                     origin,
                     x_user_id,
                     body.page_context,
@@ -1118,7 +1342,7 @@ def create_community_router(community_id: str) -> APIRouter:
         try:
             awm = create_community_assistant(
                 community_id,
-                byok=x_openrouter_key,
+                byok=byok,
                 origin=origin,
                 user_id=x_user_id,
                 requested_model=body.model,
@@ -1134,6 +1358,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 answer=ar.response_content,
                 tool_calls=ar.tool_calls_info,
                 request_id=getattr(http_request.state, "request_id", None),
+                model=awm.model,
             )
 
         except HTTPException:
@@ -1163,6 +1388,7 @@ def create_community_router(community_id: str) -> APIRouter:
         body: ChatRequest,
         http_request: Request,
         _auth: RequireAuth,
+        x_anthropic_key: Annotated[str | None, Header(alias="X-Anthropic-API-Key")] = None,
         x_openrouter_key: Annotated[str | None, Header(alias="X-OpenRouter-Key")] = None,
         x_user_id: Annotated[str | None, Header(alias="X-User-ID")] = None,
     ) -> ChatResponse | StreamingResponse:
@@ -1171,18 +1397,22 @@ def create_community_router(community_id: str) -> APIRouter:
         Supports multi-turn conversations with session persistence.
 
         **BYOK (Bring Your Own Key):**
-        Pass your OpenRouter API key in the `X-OpenRouter-Key` header.
-        Required for CLI usage and custom model requests.
+        Pass your Anthropic API key in the `X-Anthropic-API-Key` header, or
+        your OpenRouter API key in the `X-OpenRouter-Key` header. Anthropic
+        wins if both are provided. Required for CLI usage and, on the
+        OpenRouter path, for custom model requests.
 
         **Custom Models:**
         Specify a custom model via the `model` field in the request body.
-        Custom models require BYOK.
+        On the Anthropic path, any offered model may be requested; on the
+        OpenRouter path, custom models require BYOK.
 
         **Cache Optimization:**
         Pass a stable user ID in the `X-User-ID` header for better cache hit rates.
         """
         # Extract origin for authorization
         origin = http_request.headers.get("origin")
+        byok = resolve_byok(x_anthropic_key, x_openrouter_key)
 
         session = get_or_create_session(community_id, body.session_id)
         user_id = x_user_id or session.session_id
@@ -1198,7 +1428,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 _stream_chat_response(
                     community_id,
                     session,
-                    x_openrouter_key,
+                    byok,
                     origin,
                     user_id,
                     body.model,
@@ -1216,7 +1446,7 @@ def create_community_router(community_id: str) -> APIRouter:
         try:
             awm = create_community_assistant(
                 community_id,
-                byok=x_openrouter_key,
+                byok=byok,
                 origin=origin,
                 user_id=user_id,
                 requested_model=body.model,
@@ -1242,6 +1472,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 message=ChatMessage(role="assistant", content=ar.response_content),
                 tool_calls=ar.tool_calls_info,
                 request_id=getattr(http_request.state, "request_id", None),
+                model=awm.model,
             )
 
         except ValueError as e:
@@ -1696,22 +1927,36 @@ def create_community_router(community_id: str) -> APIRouter:
 # ---------------------------------------------------------------------------
 
 
-def _extract_token_usage(event_data: dict) -> tuple[int, int]:
-    """Extract input/output token counts from an on_chat_model_end event.
+def _extract_token_usage(event_data: dict) -> tuple[int, int, int, int]:
+    """Extract token counts from an on_chat_model_end event.
 
-    Returns (input_tokens, output_tokens), defaulting to (0, 0) when
-    usage metadata is absent or malformed. Never raises; metrics collection
-    must not disrupt user-facing streams.
+    Returns (input_tokens, output_tokens, cache_read_tokens,
+    cache_creation_tokens), defaulting to all zeros when usage metadata is
+    absent or malformed. Never raises; metrics collection must not disrupt
+    user-facing streams. See ``src.metrics.db.extract_token_usage`` for the
+    non-streaming equivalent and why input_tokens already includes the two
+    cache fields.
     """
     try:
         ai_msg = event_data.get("output")
         usage = getattr(ai_msg, "usage_metadata", None) if ai_msg else None
         if not usage or not isinstance(usage, dict):
-            return 0, 0
-        return usage.get("input_tokens") or 0, usage.get("output_tokens") or 0
+            return 0, 0, 0, 0
+        details = usage.get("input_token_details") or {}
+        if not isinstance(details, dict):
+            details = {}
+        return (
+            usage.get("input_tokens") or 0,
+            usage.get("output_tokens") or 0,
+            details.get("cache_read") or 0,
+            resolve_cache_creation_tokens(details),
+        )
     except Exception:
-        logger.debug("Failed to extract token usage from event data", exc_info=True)
-        return 0, 0
+        # DEBUG is invisible at this repo's default INFO level, so a genuine
+        # extraction bug would silently show up as a free request on the
+        # dashboard instead of a visible log line.
+        logger.warning("Failed to extract token usage from event data", exc_info=True)
+        return 0, 0, 0, 0
 
 
 def _log_streaming_metrics(
@@ -1724,6 +1969,8 @@ def _log_streaming_metrics(
     status_code: int,
     input_tokens: int = 0,
     output_tokens: int = 0,
+    cache_read_tokens: int = 0,
+    cache_creation_tokens: int = 0,
 ) -> None:
     """Log metrics at the end of a streaming response.
 
@@ -1742,7 +1989,17 @@ def _log_streaming_metrics(
         total_tokens = input_tokens + output_tokens
         has_tokens = total_tokens > 0
         model = awm.model if awm else None
-        cost = estimate_cost(model, input_tokens, output_tokens) if has_tokens else None
+        cost = (
+            estimate_cost(
+                model,
+                input_tokens,
+                output_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_creation_tokens=cache_creation_tokens,
+            )
+            if has_tokens
+            else None
+        )
 
         entry = RequestLogEntry(
             request_id=request_id,
@@ -1781,7 +2038,7 @@ def _log_streaming_metrics(
 async def _stream_ask_response(
     community_id: str,
     question: str,
-    byok: str | None,
+    byok: ByokCredential | None,
     origin: str | None,
     user_id: str | None,
     page_context: PageContext | None = None,
@@ -1792,16 +2049,23 @@ async def _stream_ask_response(
 
     Event format:
         data: {"event": "content", "content": "text chunk"}
+        data: {"event": "thinking"}
         data: {"event": "tool_start", "name": "tool_name", "input": {...}}
         data: {"event": "tool_end", "name": "tool_name", "output": {...}}
-        data: {"event": "done", "request_id": "..."}
+        data: {"event": "done", "request_id": "...", "model": "..."}
         data: {"event": "error", "message": "error text"}
+
+    The `thinking` event is a liveness signal only -- it never carries the
+    model's reasoning text (see src/agents/content.py's module docstring);
+    clients that do not recognize it are expected to ignore it.
     """
     start_time = time.monotonic()
     tools_called: list[str] = []
     awm: AssistantWithMetrics | None = None
     total_input_tokens = 0
     total_output_tokens = 0
+    total_cache_read_tokens = 0
+    total_cache_creation_tokens = 0
 
     # Per-request id (set by metrics middleware) so the widget can attach feedback.
     request_id = getattr(http_request.state, "request_id", None) if http_request else None
@@ -1829,15 +2093,22 @@ async def _stream_ask_response(
             kind = event.get("event")
 
             if kind == "on_chat_model_stream":
-                content = event.get("data", {}).get("chunk", {})
-                if hasattr(content, "content") and content.content:
-                    sse_event = {"event": "content", "content": content.content}
-                    yield f"data: {json.dumps(sse_event)}\n\n"
+                chunk = event.get("data", {}).get("chunk", {})
+                raw_content = getattr(chunk, "content", None)
+                if raw_content:
+                    for block_kind, text in classify_content_blocks(raw_content):
+                        if block_kind == "text":
+                            sse_event = {"event": "content", "content": text}
+                            yield f"data: {json.dumps(sse_event)}\n\n"
+                        elif block_kind == "thinking":
+                            yield f"data: {json.dumps({'event': 'thinking'})}\n\n"
 
             elif kind == "on_chat_model_end":
-                inp, out = _extract_token_usage(event.get("data", {}))
+                inp, out, cache_read, cache_creation = _extract_token_usage(event.get("data", {}))
                 total_input_tokens += inp
                 total_output_tokens += out
+                total_cache_read_tokens += cache_read
+                total_cache_creation_tokens += cache_creation
 
             elif kind == "on_tool_start":
                 tool_input = event.get("data", {}).get("input", {})
@@ -1860,7 +2131,11 @@ async def _stream_ask_response(
                 }
                 yield f"data: {json.dumps(sse_event)}\n\n"
 
-        sse_event = {"event": "done", "request_id": request_id}
+        sse_event = {
+            "event": "done",
+            "request_id": request_id,
+            "model": awm.model if awm else None,
+        }
         yield f"data: {json.dumps(sse_event)}\n\n"
 
         # Log metrics at end of streaming
@@ -1874,6 +2149,8 @@ async def _stream_ask_response(
             status_code=200,
             input_tokens=total_input_tokens,
             output_tokens=total_output_tokens,
+            cache_read_tokens=total_cache_read_tokens,
+            cache_creation_tokens=total_cache_creation_tokens,
         )
 
     except HTTPException as e:
@@ -1897,6 +2174,8 @@ async def _stream_ask_response(
             status_code=e.status_code,
             input_tokens=total_input_tokens,
             output_tokens=total_output_tokens,
+            cache_read_tokens=total_cache_read_tokens,
+            cache_creation_tokens=total_cache_creation_tokens,
         )
     except ValueError as e:
         # Input validation errors - user's fault
@@ -1917,6 +2196,8 @@ async def _stream_ask_response(
             status_code=400,
             input_tokens=total_input_tokens,
             output_tokens=total_output_tokens,
+            cache_read_tokens=total_cache_read_tokens,
+            cache_creation_tokens=total_cache_creation_tokens,
         )
     except Exception as e:
         # Unexpected errors - log with full context
@@ -1949,13 +2230,15 @@ async def _stream_ask_response(
             status_code=500,
             input_tokens=total_input_tokens,
             output_tokens=total_output_tokens,
+            cache_read_tokens=total_cache_read_tokens,
+            cache_creation_tokens=total_cache_creation_tokens,
         )
 
 
 async def _stream_chat_response(
     community_id: str,
     session: ChatSession,
-    byok: str | None,
+    byok: ByokCredential | None,
     origin: str | None,
     user_id: str | None,
     requested_model: str | None = None,
@@ -1966,18 +2249,25 @@ async def _stream_chat_response(
 
     Event format:
         data: {"event": "content", "content": "text chunk"}
+        data: {"event": "thinking"}
         data: {"event": "tool_start", "name": "tool_name", "input": {...}}
         data: {"event": "tool_end", "name": "tool_name", "output": {...}}
         data: {"event": "session", "session_id": "..."}  (sent first)
         data: {"event": "warning", "message": "..."}  (optional, before done)
-        data: {"event": "done", "session_id": "...", "request_id": "..."}
+        data: {"event": "done", "session_id": "...", "request_id": "...", "model": "..."}
         data: {"event": "error", "message": "error text"}
+
+    The `thinking` event is a liveness signal only -- it never carries the
+    model's reasoning text (see src/agents/content.py's module docstring);
+    clients that do not recognize it are expected to ignore it.
     """
     start_time = time.monotonic()
     tools_called: list[str] = []
     awm: AssistantWithMetrics | None = None
     total_input_tokens = 0
     total_output_tokens = 0
+    total_cache_read_tokens = 0
+    total_cache_creation_tokens = 0
 
     # The metrics middleware assigns a per-request UUID; expose it only on the
     # final `done` event (below) so the widget attaches it only to a reply that
@@ -2016,17 +2306,23 @@ async def _stream_chat_response(
             kind = event.get("event")
 
             if kind == "on_chat_model_stream":
-                content = event.get("data", {}).get("chunk", {})
-                if hasattr(content, "content") and content.content:
-                    chunk = content.content
-                    full_response += chunk
-                    sse_event = {"event": "content", "content": chunk}
-                    yield f"data: {json.dumps(sse_event)}\n\n"
+                chunk = event.get("data", {}).get("chunk", {})
+                raw_content = getattr(chunk, "content", None)
+                if raw_content:
+                    for block_kind, text in classify_content_blocks(raw_content):
+                        if block_kind == "text":
+                            full_response += text
+                            sse_event = {"event": "content", "content": text}
+                            yield f"data: {json.dumps(sse_event)}\n\n"
+                        elif block_kind == "thinking":
+                            yield f"data: {json.dumps({'event': 'thinking'})}\n\n"
 
             elif kind == "on_chat_model_end":
-                inp, out = _extract_token_usage(event.get("data", {}))
+                inp, out, cache_read, cache_creation = _extract_token_usage(event.get("data", {}))
                 total_input_tokens += inp
                 total_output_tokens += out
+                total_cache_read_tokens += cache_read
+                total_cache_creation_tokens += cache_creation
 
             elif kind == "on_tool_start":
                 tool_input = event.get("data", {}).get("input", {})
@@ -2073,6 +2369,7 @@ async def _stream_chat_response(
             "event": "done",
             "session_id": session.session_id,
             "request_id": request_id,
+            "model": awm.model if awm else None,
         }
         yield f"data: {json.dumps(sse_event)}\n\n"
 
@@ -2087,6 +2384,8 @@ async def _stream_chat_response(
             status_code=200,
             input_tokens=total_input_tokens,
             output_tokens=total_output_tokens,
+            cache_read_tokens=total_cache_read_tokens,
+            cache_creation_tokens=total_cache_creation_tokens,
         )
 
     except HTTPException as e:
@@ -2111,6 +2410,8 @@ async def _stream_chat_response(
             status_code=e.status_code,
             input_tokens=total_input_tokens,
             output_tokens=total_output_tokens,
+            cache_read_tokens=total_cache_read_tokens,
+            cache_creation_tokens=total_cache_creation_tokens,
         )
     except ValueError as e:
         # Session limit errors
@@ -2127,6 +2428,8 @@ async def _stream_chat_response(
             status_code=400,
             input_tokens=total_input_tokens,
             output_tokens=total_output_tokens,
+            cache_read_tokens=total_cache_read_tokens,
+            cache_creation_tokens=total_cache_creation_tokens,
         )
     except Exception as e:
         error_id = str(uuid.uuid4())
@@ -2159,4 +2462,6 @@ async def _stream_chat_response(
             status_code=500,
             input_tokens=total_input_tokens,
             output_tokens=total_output_tokens,
+            cache_read_tokens=total_cache_read_tokens,
+            cache_creation_tokens=total_cache_creation_tokens,
         )

@@ -1,6 +1,11 @@
 """Tests for cost estimation."""
 
-from src.metrics.cost import MODEL_PRICING, estimate_cost
+from src.metrics.cost import (
+    CACHE_READ_MULTIPLIER,
+    CACHE_WRITE_MULTIPLIER,
+    MODEL_PRICING,
+    estimate_cost,
+)
 
 
 class TestEstimateCost:
@@ -62,3 +67,101 @@ class TestEstimateCost:
         )
         # input: 15.00, output: 75.00, total: 90.00
         assert cost == 90.0
+
+
+class TestCacheMultiplierValues:
+    """Pin the multiplier constants themselves.
+
+    The other tests in this module recompute expected cost from these same
+    constants, so a wrong multiplier value would be undetectable there.
+    These are external business facts (Anthropic's published prompt-cache
+    pricing: a 5-minute cache write costs 1.25x the base input rate, a cache
+    read costs 0.1x), so hardcoding the expected values here is correct.
+    """
+
+    def test_cache_write_multiplier(self):
+        assert CACHE_WRITE_MULTIPLIER == 1.25
+
+    def test_cache_read_multiplier(self):
+        assert CACHE_READ_MULTIPLIER == 0.1
+
+
+class TestEstimateCostCacheAware:
+    """Tests for estimate_cost()'s cache_read_tokens / cache_creation_tokens pricing."""
+
+    def test_no_cache_detail_matches_pre_cache_aware_pricing(self):
+        """Omitting cache args reproduces the flat-rate pricing exactly."""
+        without_cache = estimate_cost("claude-haiku-4-5", input_tokens=1000, output_tokens=500)
+        with_explicit_zeros = estimate_cost(
+            "claude-haiku-4-5",
+            input_tokens=1000,
+            output_tokens=500,
+            cache_read_tokens=0,
+            cache_creation_tokens=0,
+        )
+        assert without_cache == with_explicit_zeros
+
+    def test_cache_read_cheaper_than_fresh_input(self):
+        """Identical token counts cost less when most input was a cache read."""
+        model = "claude-haiku-4-5"
+        total_input = 100_000
+        output_tokens = 1000
+
+        all_fresh = estimate_cost(model, input_tokens=total_input, output_tokens=output_tokens)
+        mostly_cache_read = estimate_cost(
+            model,
+            input_tokens=total_input,
+            output_tokens=output_tokens,
+            cache_read_tokens=90_000,
+        )
+
+        assert mostly_cache_read < all_fresh
+
+    def test_cache_read_priced_at_read_multiplier(self):
+        """A fully cache-read request costs input_rate * CACHE_READ_MULTIPLIER."""
+        rate = MODEL_PRICING["claude-haiku-4-5"]
+        cost = estimate_cost(
+            "claude-haiku-4-5",
+            input_tokens=1_000_000,
+            output_tokens=0,
+            cache_read_tokens=1_000_000,
+        )
+        assert cost == round(rate.input_per_1m * CACHE_READ_MULTIPLIER, 6)
+
+    def test_cache_creation_priced_at_write_multiplier(self):
+        """A fully cache-write request costs input_rate * CACHE_WRITE_MULTIPLIER."""
+        rate = MODEL_PRICING["claude-haiku-4-5"]
+        cost = estimate_cost(
+            "claude-haiku-4-5",
+            input_tokens=1_000_000,
+            output_tokens=0,
+            cache_creation_tokens=1_000_000,
+        )
+        assert cost == round(rate.input_per_1m * CACHE_WRITE_MULTIPLIER, 6)
+
+    def test_cache_write_costs_more_than_fresh_input(self):
+        """A cache write premium costs more than the same tokens as fresh input."""
+        model = "claude-haiku-4-5"
+        all_fresh = estimate_cost(model, input_tokens=100_000, output_tokens=0)
+        all_cache_write = estimate_cost(
+            model, input_tokens=100_000, output_tokens=0, cache_creation_tokens=100_000
+        )
+        assert all_cache_write > all_fresh
+
+    def test_mixed_cache_and_fresh_input(self):
+        """Ordinary, cache-read, and cache-write portions are priced independently."""
+        rate = MODEL_PRICING["claude-haiku-4-5"]
+        cost = estimate_cost(
+            "claude-haiku-4-5",
+            input_tokens=1000,
+            output_tokens=0,
+            cache_read_tokens=300,
+            cache_creation_tokens=200,
+        )
+        # ordinary: 1000 - 300 - 200 = 500
+        expected = (
+            500 * rate.input_per_1m
+            + 200 * rate.input_per_1m * CACHE_WRITE_MULTIPLIER
+            + 300 * rate.input_per_1m * CACHE_READ_MULTIPLIER
+        ) / 1_000_000
+        assert cost == round(expected, 6)

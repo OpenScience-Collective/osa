@@ -100,24 +100,31 @@ class Settings(BaseSettings):
     )
 
     # Model Configuration
-    # OpenRouter model format: creator/model-name (e.g., openai/gpt-oss-120b, qwen/qwen3-235b-a22b-2507)
-    # Provider is separate - specifies where the model runs (e.g., DeepInfra/FP8 for Qwen)
-    # See .context/research.md for benchmark details
+    # Phase 2 (issue #362) routes platform/community requests to the Claude
+    # Platform on AWS by default: default_model/test_model are first-party
+    # Anthropic ids (src.core.services.anthropic_llm.OFFERED_MODELS), not
+    # OpenRouter's creator/model-name format. default_model_provider and
+    # test_model_provider are OpenRouter-only routing hints (see
+    # src.core.services.litellm_llm.create_openrouter_llm's `provider` arg):
+    # they are ignored on the Anthropic path (src.api.routers.community's
+    # _select_model) and only apply when a BYOK or community-funded
+    # OpenRouter key selects that provider. See .context/research.md for
+    # benchmark details behind the OpenRouter defaults.
     default_model: str = Field(
-        default="qwen/qwen3-235b-a22b-2507",
-        description="Default model (OpenRouter format: creator/model-name)",
+        default="claude-haiku-4-5",
+        description="Default model for the Claude Platform on AWS path",
     )
     default_model_provider: str | None = Field(
         default="DeepInfra/FP8",
-        description="Provider for routing (e.g., DeepInfra/FP8 for optimized inference)",
+        description="OpenRouter-BYOK-only: provider for routing (e.g., DeepInfra/FP8)",
     )
     test_model: str = Field(
-        default="qwen/qwen3-235b-a22b-2507",
-        description="Model for testing (OpenRouter format: creator/model-name)",
+        default="claude-haiku-4-5",
+        description="Default model for testing",
     )
     test_model_provider: str | None = Field(
         default="DeepInfra/FP8",
-        description="Provider for test model routing",
+        description="OpenRouter-BYOK-only: provider for test model routing",
     )
     llm_temperature: float = Field(
         default=0.1,
