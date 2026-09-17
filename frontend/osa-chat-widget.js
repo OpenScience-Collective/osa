@@ -122,6 +122,7 @@
   // State
   let isOpen = false;
   let isLoading = false;
+  let isThinking = false; // True once a 'thinking' SSE event arrives before any content chunk; swaps the loading label to "Thinking..."
   let messages = [];
   let turnstileToken = null;
   let turnstileWidgetId = null;
@@ -1836,7 +1837,7 @@
     // Update loading label if currently loading
     const loadingLabel = container.querySelector('.osa-loading-label');
     if (loadingLabel) {
-      loadingLabel.textContent = CONFIG.title;
+      loadingLabel.textContent = isThinking ? 'Thinking...' : CONFIG.title;
     }
   }
 
@@ -2591,8 +2592,9 @@
     if (isLoading) {
       const loadingEl = document.createElement('div');
       loadingEl.className = 'osa-loading';
+      const loadingLabelText = isThinking ? 'Thinking...' : CONFIG.title;
       loadingEl.innerHTML = `
-        <span class="osa-loading-label">${escapeHtml(CONFIG.title)}</span>
+        <span class="osa-loading-label">${escapeHtml(loadingLabelText)}</span>
         <div class="osa-loading-dots">
           <span class="osa-loading-dot"></span>
           <span class="osa-loading-dot"></span>
@@ -2659,6 +2661,7 @@
   // Handle streaming response from API
   // SSE Event formats:
   //   data: {"event": "content", "content": "text chunk"}
+  //   data: {"event": "thinking"}
   //   data: {"event": "tool_start", "name": "tool_name", "input": {...}}
   //   data: {"event": "tool_end", "name": "tool_name", "output": "result"}
   //   data: {"event": "done"}
@@ -2712,6 +2715,7 @@
             if (!receivedFirstContent) {
               receivedFirstContent = true;
               isLoading = false;
+              isThinking = false;
             }
 
             // Accumulate content
@@ -2723,6 +2727,15 @@
               messages[messageIndex].content = accumulatedContent;
               renderMessages(container);
               lastUpdateTime = now;
+            }
+          } else if (event.event === 'thinking') {
+            // Carries no reasoning text; only swaps the loading label to
+            // "Thinking...". Scoped to before the first content chunk so a
+            // thinking event arriving between tool calls mid-answer does not
+            // make the label flicker under already-rendered content.
+            if (!receivedFirstContent && !isThinking) {
+              isThinking = true;
+              renderMessages(container);
             }
           } else if (event.event === 'tool_start') {
             // Log tool execution for debugging
@@ -2861,6 +2874,7 @@
     flushPendingResponseFeedback(container);
 
     isLoading = true;
+    isThinking = false;
 
     // Track message indices to avoid corruption on error
     const userMessageIndex = messages.length;
@@ -3044,6 +3058,7 @@
       updateStatusDisplay(false);
     } finally {
       isLoading = false;
+      isThinking = false;
       input.disabled = false;
       sendBtn.disabled = false;
       resetBtn.disabled = messages.length <= 1;
