@@ -268,6 +268,47 @@ class TestExtractTokenUsage:
         assert usage.cache_read_tokens == 0
         assert usage.cache_creation_tokens == 0
 
+    def test_real_langchain_anthropic_cache_creation_shape(self):
+        """Regression (item 1): a real per-TTL breakdown must not price as 0.
+
+        The hand-built ``{"cache_read": N, "cache_creation": M}`` shape used
+        by the other tests in this class is not what the real API produces
+        once caching is active (CachingChatAnthropic always sends a
+        cache_control marker). Building usage_metadata through the real
+        ``langchain_anthropic._create_usage_metadata`` against a real
+        ``anthropic.types.usage.Usage`` reproduces the actual shape: the
+        real cache-write count lands under
+        ``ephemeral_5m_input_tokens``/``ephemeral_1h_input_tokens``, and the
+        generic ``cache_creation`` key is zeroed. Reading only the generic
+        key (the pre-fix bug) would report 0 cache-creation tokens here.
+        """
+        from anthropic.types.cache_creation import CacheCreation
+        from anthropic.types.usage import Usage
+        from langchain_anthropic.chat_models import _create_usage_metadata
+
+        anthropic_usage = Usage(
+            input_tokens=100,
+            output_tokens=20,
+            cache_creation_input_tokens=500,
+            cache_read_input_tokens=70,
+            cache_creation=CacheCreation(
+                ephemeral_5m_input_tokens=500, ephemeral_1h_input_tokens=0
+            ),
+        )
+        usage_metadata = _create_usage_metadata(anthropic_usage)
+        # Sanity check on the fixture itself: the generic key really is
+        # zeroed and the real count really is under the TTL-specific key.
+        assert usage_metadata["input_token_details"]["cache_creation"] == 0
+        assert usage_metadata["input_token_details"]["ephemeral_5m_input_tokens"] == 500
+
+        msg = AIMessage(content="hello")
+        msg.usage_metadata = usage_metadata
+        result = {"messages": [msg]}
+
+        usage = extract_token_usage(result)
+        assert usage.cache_creation_tokens == 500
+        assert usage.cache_read_tokens == 70
+
 
 class TestExtractToolNames:
     """Tests for extract_tool_names()."""

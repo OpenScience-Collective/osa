@@ -2,10 +2,19 @@
 
 These make real, paid API calls (the HED assistant binds knowledge-search
 tools and thinking defaults on, so nearly every response here is exactly the
-block-list content shape src/agents/content.py exists to handle). They prove
-end to end what tests/test_agents/test_content.py can only prove in
-isolation: that a real answer never leaks a stringified block list or raw
-reasoning text to the client, on both the non-streaming and streaming paths.
+block-list content shape src/agents/content.py exists to handle). What this
+actually checks, end to end: that a real answer/stream never contains a
+stringified block-list artifact (the pre-Phase-2 "str(content)" bug), on
+both the non-streaming and streaming paths, and that streamed `thinking`
+events carry no payload.
+
+This is narrower than "reasoning never leaks": it greps for dict-repr
+fingerprints, so it cannot detect a classification swap that streams
+reasoning text as an ordinary "text" block -- that content would be
+plain prose with no artifact to grep for. Classification correctness
+(thinking/redacted_thinking blocks never contribute to extract_text's or
+classify_content_blocks's "text" pairs) is covered directly by the unit
+tests in tests/test_agents/test_content.py.
 
 Skip condition: see tests/test_integration/test_anthropic_platform.py's
 module docstring for why this checks Settings rather than os.getenv.

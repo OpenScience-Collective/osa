@@ -116,3 +116,34 @@ class TestExtractTokenUsage:
             }
         )
         assert _extract_token_usage({"output": ai_msg}) == (100, 10, 0, 0)
+
+    def test_real_langchain_anthropic_cache_creation_shape(self):
+        """Regression (item 1): a real per-TTL breakdown must not price as 0.
+
+        See the matching test in tests/test_metrics/test_db.py for why the
+        hand-built ``{"cache_read": N, "cache_creation": M}`` shape used by
+        the other tests in this class is not what the real API produces once
+        caching is active. This builds usage_metadata through the real
+        ``langchain_anthropic._create_usage_metadata`` against a real
+        ``anthropic.types.usage.Usage`` and checks the streaming extractor
+        reports the real cache-creation count, not 0.
+        """
+        from anthropic.types.cache_creation import CacheCreation
+        from anthropic.types.usage import Usage
+        from langchain_anthropic.chat_models import _create_usage_metadata
+
+        anthropic_usage = Usage(
+            input_tokens=100,
+            output_tokens=20,
+            cache_creation_input_tokens=500,
+            cache_read_input_tokens=70,
+            cache_creation=CacheCreation(
+                ephemeral_5m_input_tokens=500, ephemeral_1h_input_tokens=0
+            ),
+        )
+        usage_metadata = _create_usage_metadata(anthropic_usage)
+        assert usage_metadata["input_token_details"]["cache_creation"] == 0
+        assert usage_metadata["input_token_details"]["ephemeral_5m_input_tokens"] == 500
+
+        ai_msg = SimpleNamespace(usage_metadata=usage_metadata)
+        assert _extract_token_usage({"output": ai_msg}) == (670, 20, 70, 500)

@@ -69,6 +69,23 @@ class TestEstimateCost:
         assert cost == 90.0
 
 
+class TestCacheMultiplierValues:
+    """Pin the multiplier constants themselves.
+
+    The other tests in this module recompute expected cost from these same
+    constants, so a wrong multiplier value would be undetectable there.
+    These are external business facts (Anthropic's published prompt-cache
+    pricing: a 5-minute cache write costs 1.25x the base input rate, a cache
+    read costs 0.1x), so hardcoding the expected values here is correct.
+    """
+
+    def test_cache_write_multiplier(self):
+        assert CACHE_WRITE_MULTIPLIER == 1.25
+
+    def test_cache_read_multiplier(self):
+        assert CACHE_READ_MULTIPLIER == 0.1
+
+
 class TestEstimateCostCacheAware:
     """Tests for estimate_cost()'s cache_read_tokens / cache_creation_tokens pricing."""
 

@@ -7,6 +7,8 @@ with real output verification.
 from pathlib import Path
 from unittest.mock import patch
 
+import httpx
+import respx
 from click import unstyle
 from typer.testing import CliRunner
 
@@ -153,6 +155,38 @@ class TestAskCommand:
 
         assert result.exit_code == 1
         assert "No API key" in result.output
+
+    def test_ask_with_only_anthropic_key_sends_anthropic_header(self, tmp_path: Path) -> None:
+        """A user with only ANTHROPIC_API_KEY configured must not take the
+        "No API key" path, and the outgoing request must carry
+        X-Anthropic-API-Key.
+
+        get_effective_anthropic_key() is checked alongside the OpenRouter
+        key in _check_api_key, so an Anthropic-only user should sail through.
+        respx mocks the HTTP boundary so this runs offline: the CLI's own
+        client (src/cli/client.py) builds its own httpx.Client per call with
+        no transport injection point, so respx (rather than
+        httpx.MockTransport) is what the project rules call for here.
+        """
+        with (
+            patched_config_paths(tmp_path),
+            patch("src.cli.config.FIRST_RUN_FILE", tmp_path / ".first_run"),
+            patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-ant-cli-test-key"}, clear=True),
+            respx.mock,
+        ):
+            route = respx.post("https://api.osc.earth/osa/hed/ask").mock(
+                return_value=httpx.Response(
+                    200, json={"answer": "Mocked answer.", "tool_calls": [], "model": "test-model"}
+                )
+            )
+            result = runner.invoke(cli, ["ask", "test question", "-a", "hed"])
+
+        assert "No API key" not in result.output
+        assert result.exit_code == 0, result.output
+        assert route.called
+        sent_request = route.calls.last.request
+        assert sent_request.headers["X-Anthropic-API-Key"] == "sk-ant-cli-test-key"
+        assert "X-OpenRouter-Key" not in sent_request.headers
 
 
 class TestChatCommand:

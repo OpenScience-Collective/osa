@@ -594,6 +594,54 @@ class TestSelectModelOpenRouter:
         assert "anthropic/claude-opus-4" in exc_info.value.detail
         assert "requires your own API key" in exc_info.value.detail
 
+    def test_legacy_alias_default_maps_to_claude_slug_not_emergency_default(self, monkeypatch):
+        """A legacy alias community default must map to its Claude slug.
+
+        Regression for item 2: before canonicalizing through normalize_model,
+        to_openrouter_model("claude-sonnet-4.5") returned None (it only knows
+        the two canonical ids), so this fell through to the OpenRouter
+        emergency default -- a model-family substitution, not the community's
+        chosen model.
+        """
+        settings = get_settings()
+        monkeypatch.setattr(settings, "default_model", "claude-sonnet-4.5")
+        monkeypatch.setattr(settings, "default_model_provider", None)
+
+        community_info = AssistantInfo(
+            id="test-legacy-alias-default",
+            name="Test",
+            description="x",
+            community_config=None,
+        )
+
+        model, provider = _select_model(community_info, None, provider="openrouter", has_byok=True)
+
+        assert model == OPENROUTER_MODEL_IDS["claude-sonnet-5"]
+        assert model != OPENROUTER_DEFAULT_MODEL
+        assert provider is None
+
+    def test_legacy_alias_requested_model_maps_to_claude_slug_not_emergency_default(
+        self, monkeypatch
+    ):
+        """A legacy alias requested directly (with BYOK) also maps correctly."""
+        settings = get_settings()
+        monkeypatch.setattr(settings, "default_model", "openai/gpt-oss-120b")
+        monkeypatch.setattr(settings, "default_model_provider", "Cerebras")
+
+        community_info = AssistantInfo(
+            id="test-legacy-alias-requested",
+            name="Test",
+            description="x",
+            community_config=None,
+        )
+
+        model, provider = _select_model(
+            community_info, "claude-haiku-4.5", provider="openrouter", has_byok=True
+        )
+
+        assert model == OPENROUTER_MODEL_IDS["claude-haiku-4-5"]
+        assert provider is None
+
     def test_requesting_default_model_explicitly_allowed(self, monkeypatch):
         """Explicitly requesting the community default model should not require BYOK."""
         settings = get_settings()
@@ -619,8 +667,15 @@ class TestSelectModelOpenRouter:
         assert provider is None
 
 
-class TestIntegration:
-    """Integration tests for combined provider resolution + model selection."""
+class TestProviderAndModelSelectionCombined:
+    """Combined _resolve_provider + _select_model scenarios (unit-level, no HTTP).
+
+    Renamed from "TestIntegration": these call the two functions directly in
+    the same test, not through the HTTP layer, so the name should not imply
+    HTTP/integration coverage it does not have. See tests/test_api/
+    test_community_router.py and the TestClient-driven BYOK tests in
+    tests/test_api/test_security.py for actual HTTP-level coverage.
+    """
 
     def test_widget_user_gets_anthropic_platform_default(self, monkeypatch):
         """Widget user on an authorized site defaults to the Anthropic platform key."""
