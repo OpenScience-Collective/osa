@@ -495,3 +495,54 @@ class TestCommunityConfigHealthStatus:
                 return
 
         pytest.skip("No community with openrouter_api_key_env_var configured")
+
+
+class TestCommunityConfigOfferedModels:
+    """Tests for the ``offered_models`` field on the community config endpoint.
+
+    A drift test: the widget's model menu comes straight from this field, so
+    it must always match the backend's real offer list (``OFFERED_MODELS``)
+    and every id in it must be one ``normalize_model`` actually accepts.
+    """
+
+    @pytest.fixture
+    def client(self) -> TestClient:
+        """Create a test client with auth disabled."""
+        os.environ["REQUIRE_API_AUTH"] = "false"
+        from src.api.config import get_settings
+
+        get_settings.cache_clear()
+
+        from src.api.main import app
+
+        return TestClient(app)
+
+    def test_offered_models_matches_backend_offer_list(self, client: TestClient) -> None:
+        from src.core.services.anthropic_llm import OFFERED_MODELS
+
+        response = client.get("/hed/")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert "offered_models" in data
+
+        returned = {entry["id"]: entry["label"] for entry in data["offered_models"]}
+        assert returned == OFFERED_MODELS
+
+    def test_every_offered_model_id_is_accepted_by_normalize_model(
+        self, client: TestClient
+    ) -> None:
+        from src.core.services.anthropic_llm import normalize_model
+
+        response = client.get("/hed/")
+        data = response.json()
+
+        for entry in data["offered_models"]:
+            assert normalize_model(entry["id"]) == entry["id"]
+
+    def test_default_model_is_one_of_the_offered_models(self, client: TestClient) -> None:
+        response = client.get("/hed/")
+        data = response.json()
+
+        offered_ids = {entry["id"] for entry in data["offered_models"]}
+        assert data["default_model"] in offered_ids
