@@ -1320,9 +1320,16 @@
       const urlMatch = remaining.match(/(?<!\]\()(https?:\/\/[^\s\)]+)/);
       let citationMatch = null;
       if (citationsByMarker) {
-        const candidate = remaining.match(/\[(\d+)\](?!\()/);
-        if (candidate && citationsByMarker[candidate[1]]) {
-          citationMatch = candidate;
+        // Scan every bracketed number, not just the first: prose of its own
+        // like "see item [42]" must not hide a real marker later in the same
+        // run. Matching only the first would leave that marker unlinked, and
+        // if nothing else matched either, the rest of the run would be
+        // emitted as plain text and the loop would exit.
+        for (const candidate of remaining.matchAll(/\[(\d+)\](?!\()/g)) {
+          if (citationsByMarker[candidate[1]]) {
+            citationMatch = candidate;
+            break;
+          }
         }
       }
 
@@ -1330,7 +1337,7 @@
       const italicIndex = italicMatch ? remaining.indexOf(italicMatch[0]) : -1;
       const linkIndex = linkMatch ? remaining.indexOf(linkMatch[0]) : -1;
       const urlIndex = urlMatch ? remaining.indexOf(urlMatch[0]) : -1;
-      const citationIndex = citationMatch ? remaining.indexOf(citationMatch[0]) : -1;
+      const citationIndex = citationMatch ? citationMatch.index : -1;
 
       const indices = [boldIndex, italicIndex, linkIndex, urlIndex, citationIndex].filter(i => i !== -1);
       if (indices.length === 0) {

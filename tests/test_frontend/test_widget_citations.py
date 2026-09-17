@@ -1,11 +1,17 @@
 """Widget invariants for Phase 4 inline citations (issue #350 / #364).
 
-There is no JS test harness in this project (see CLAUDE.md / .rules), so
-these parse osa-chat-widget.js as text via regex, the same approach
+CI has no JS runtime (see CLAUDE.md / .rules), so these parse
+osa-chat-widget.js as text via regex, the same approach
 test_widget_drift.py uses. Where possible, expectations are derived from
 the real Python source (CitationInfo's own field names) rather than
 hardcoded, so a field rename on the backend is caught here instead of
 shipping a widget that silently stops rendering it.
+
+Reading the source has a limit worth stating: it caught none of the
+marker-scanning bug that ``frontend/test-citation-markers.js`` was written
+for, because every regex involved looked correct on its own and only their
+combination was wrong. Run that file with ``bun`` for actual behavior; the
+checks here pin the shape it depends on, so a regression still fails in CI.
 """
 
 import re
@@ -80,6 +86,25 @@ class TestRenderInlineMarkdownCitationSupport:
         assert r"/\[(\d+)\](?!\()/" in source, (
             "Expected a citation-marker regex literal with a (?!\\() "
             "lookahead, to avoid matching markdown links"
+        )
+
+    def test_marker_scan_considers_every_bracketed_number(self) -> None:
+        """The scan must be exhaustive, not first-match.
+
+        With a single ``.match()``, an unknown bracketed number earlier in
+        the run (the model's own "see item [42]", or an "arr[0]") ends the
+        search, so a real marker after it renders as dead plain text and,
+        if nothing else in that run matched either, the remainder is emitted
+        unparsed. Verified by execution in frontend/test-citation-markers.js;
+        pinned here because CI cannot run that file.
+        """
+        source = _widget_source()
+        assert r"matchAll(/\[(\d+)\](?!\()/g)" in source, (
+            "Expected the marker scan to iterate every candidate via matchAll with the /g flag"
+        )
+        assert r".match(/\[(\d+)\](?!\()/)" not in source, (
+            "A single .match() only sees the first bracketed number, so an "
+            "unrelated one earlier in the text hides a real marker after it"
         )
 
 
