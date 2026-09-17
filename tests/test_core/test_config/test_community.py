@@ -1394,6 +1394,47 @@ class TestAnthropicEnvVarNameValidation:
         assert config.openrouter_api_key_env_var == "OPENROUTER_API_KEY_TEST"
 
 
+class TestNoShippedOpenRouterKeyEnvVar:
+    """No shipped community claims a per-community OpenRouter key (Phase 3).
+
+    The named env vars were never set on the server, so every request for
+    those communities logged an ERROR in ``_resolve_provider`` and silently
+    fell back to the platform key. The schema field itself stays supported
+    for a community that genuinely funds itself through OpenRouter; this
+    just asserts nothing in the tree claims one any more. Iterates the real
+    config.yaml files rather than hardcoding the four affected community
+    ids, per .rules/testing_guidelines.md.
+    """
+
+    def test_no_shipped_config_sets_openrouter_api_key_env_var(self) -> None:
+        from src.assistants import discover_assistants, registry
+
+        registry._assistants.clear()
+        discover_assistants()
+        communities = list(registry.list_all())
+        assert communities, "Expected at least one discovered community"
+
+        offenders = [
+            assistant.id
+            for assistant in communities
+            if assistant.community_config
+            and assistant.community_config.openrouter_api_key_env_var is not None
+        ]
+        assert offenders == [], (
+            f"These communities still set openrouter_api_key_env_var: {offenders}"
+        )
+
+    def test_synthetic_config_with_openrouter_api_key_env_var_still_validates(self) -> None:
+        """The schema field itself is still supported, just unused today."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            openrouter_api_key_env_var="OPENROUTER_API_KEY_TEST",
+        )
+        assert config.openrouter_api_key_env_var == "OPENROUTER_API_KEY_TEST"
+
+
 class TestSSRFProtection:
     """Tests for source_url SSRF protection (Issue #66)."""
 
