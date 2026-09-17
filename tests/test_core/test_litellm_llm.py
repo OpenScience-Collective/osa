@@ -37,7 +37,13 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langchain_core.tools import tool
 from langchain_litellm import ChatLiteLLM
 
-from src.core.services.litellm_llm import CachingLLMWrapper, create_openrouter_llm
+from src.core.services.anthropic_llm import OFFERED_MODELS
+from src.core.services.litellm_llm import (
+    OPENROUTER_MODEL_IDS,
+    CachingLLMWrapper,
+    create_openrouter_llm,
+    to_openrouter_model,
+)
 
 # ============================================================================
 # Provider Selection Tests
@@ -907,3 +913,38 @@ class TestTrailingCacheControl:
 
         # Empty string content: trailing cache_control skipped
         assert result[1]["content"] == ""
+
+
+# ============================================================================
+# OpenRouter slugs for the offered models
+# ============================================================================
+
+
+class TestOpenRouterModelIds:
+    """Tests for the first-party to OpenRouter slug mapping.
+
+    A request funded by an OpenRouter key should run the same model the
+    community chose, not a different model family, so every offered model
+    needs a slug here.
+    """
+
+    def test_every_offered_model_has_an_openrouter_slug(self) -> None:
+        """Adding an offered model must not silently skip the mapping."""
+        assert set(OPENROUTER_MODEL_IDS) == set(OFFERED_MODELS)
+
+    def test_slugs_are_openrouter_shaped(self) -> None:
+        for first_party, slug in OPENROUTER_MODEL_IDS.items():
+            assert "/" in slug, f"{first_party} maps to {slug!r}, not a creator/model slug"
+
+    def test_maps_offered_first_party_ids(self) -> None:
+        for first_party, slug in OPENROUTER_MODEL_IDS.items():
+            assert to_openrouter_model(first_party) == slug
+
+    def test_passes_through_existing_openrouter_slugs(self) -> None:
+        assert to_openrouter_model("qwen/qwen3-235b-a22b-2507") == "qwen/qwen3-235b-a22b-2507"
+
+    def test_returns_none_for_unmappable_bare_id(self) -> None:
+        assert to_openrouter_model("some-unknown-model") is None
+
+    def test_returns_none_for_no_model(self) -> None:
+        assert to_openrouter_model(None) is None

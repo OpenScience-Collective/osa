@@ -25,6 +25,7 @@ from src.core.config.community import CommunityConfig
 from src.core.services.anthropic_llm import OFFERED_MODELS, normalize_model
 from src.core.services.litellm_llm import DEFAULT_MODEL as OPENROUTER_DEFAULT_MODEL
 from src.core.services.litellm_llm import DEFAULT_PROVIDER as OPENROUTER_DEFAULT_PROVIDER
+from src.core.services.litellm_llm import OPENROUTER_MODEL_IDS
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -451,13 +452,15 @@ class TestSelectModelAnthropic:
 class TestSelectModelOpenRouter:
     """Tests for _select_model on the OpenRouter path (unchanged by Phase 2)."""
 
-    def test_bare_anthropic_default_falls_back_to_openrouter_default(self, monkeypatch):
-        """A bare first-party default_model is not a valid OpenRouter slug.
+    def test_bare_anthropic_default_maps_to_the_same_model_on_openrouter(self, monkeypatch):
+        """A bare first-party default resolves to the same model's OpenRouter slug.
 
-        Phase 2 made every community/platform default_model a bare id like
-        "claude-haiku-4-5". A BYOK/community-funded OpenRouter request with
-        no explicit model override must not forward that invalid slug to
-        OpenRouter; it should fall back to OpenRouter's own default instead.
+        Phase 2 made every community and platform default_model a bare id
+        like "claude-haiku-4-5", which is not a valid OpenRouter slug. The
+        request must still run the model the community chose: OpenRouter
+        serves the same Claude models under creator/model slugs, so it maps
+        across. Falling back to OpenRouter's own default here would silently
+        change model family based on which key funded the request.
         """
         settings = get_settings()
         monkeypatch.setattr(settings, "default_model", "claude-haiku-4-5")
@@ -472,9 +475,53 @@ class TestSelectModelOpenRouter:
 
         model, provider = _select_model(community_info, None, provider="openrouter", has_byok=True)
 
-        assert "/" in model
+        assert model == OPENROUTER_MODEL_IDS["claude-haiku-4-5"]
+        # Routing is left to OpenRouter, which auto-selects the Anthropic
+        # provider for anthropic/* models.
+        assert provider is None
+
+    def test_unmappable_bare_default_falls_back_to_openrouter_default(self, monkeypatch):
+        """A misconfigured bare default still serves, via the factory default.
+
+        An id that is neither an offered Anthropic model nor an OpenRouter
+        slug cannot be routed. The request stays serviceable rather than
+        failing, and the code logs an error so the misconfiguration is
+        visible instead of silent.
+        """
+        settings = get_settings()
+        monkeypatch.setattr(settings, "default_model", "not-a-real-model")
+        monkeypatch.setattr(settings, "default_model_provider", None)
+
+        community_info = AssistantInfo(
+            id="test-unmappable-default",
+            name="Test",
+            description="x",
+            community_config=None,
+        )
+
+        model, provider = _select_model(community_info, None, provider="openrouter", has_byok=True)
+
         assert model == OPENROUTER_DEFAULT_MODEL
         assert provider == OPENROUTER_DEFAULT_PROVIDER
+
+    def test_offered_model_requested_by_first_party_id_maps_across(self, monkeypatch):
+        """Naming an offered model by first-party id works on an OpenRouter key."""
+        settings = get_settings()
+        monkeypatch.setattr(settings, "default_model", "claude-haiku-4-5")
+        monkeypatch.setattr(settings, "default_model_provider", None)
+
+        community_info = AssistantInfo(
+            id="test-requested-first-party",
+            name="Test",
+            description="x",
+            community_config=None,
+        )
+
+        model, _provider = _select_model(
+            community_info, "claude-sonnet-5", provider="openrouter", has_byok=True
+        )
+
+        assert model == OPENROUTER_MODEL_IDS["claude-sonnet-5"]
 
     def test_uses_community_default_model(self, monkeypatch):
         """Should use community default_model when configured."""

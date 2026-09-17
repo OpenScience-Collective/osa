@@ -37,7 +37,7 @@ from src.core.config.community import WidgetConfig
 from src.core.services.anthropic_llm import create_anthropic_llm, normalize_model
 from src.core.services.litellm_llm import DEFAULT_MODEL as OPENROUTER_DEFAULT_MODEL
 from src.core.services.litellm_llm import DEFAULT_PROVIDER as OPENROUTER_DEFAULT_PROVIDER
-from src.core.services.litellm_llm import create_openrouter_llm
+from src.core.services.litellm_llm import create_openrouter_llm, to_openrouter_model
 from src.knowledge.search import FAQResult, get_citation_stats, list_faq_entries
 from src.metrics.cost import COST_BLOCK_THRESHOLD, COST_WARN_THRESHOLD, MODEL_PRICING, estimate_cost
 from src.metrics.db import (
@@ -777,17 +777,37 @@ def _select_model(
                     "Get your key at: https://openrouter.ai/keys"
                 ),
             )
-        # User has BYOK, allow custom model
-        return (requested_model, None)  # Custom model uses default routing
+        # User has BYOK, allow custom model. A caller may name an offered
+        # model by its first-party id ("claude-sonnet-5"), which is not a
+        # valid OpenRouter slug, so map it across; anything else passes
+        # through untouched. Provider routing is left to OpenRouter, which
+        # auto-selects the Anthropic provider for anthropic/* models.
+        return (to_openrouter_model(requested_model) or requested_model, None)
 
     if default_model and "/" not in default_model:
-        # Phase 2 (issue #362) made every community/platform default_model a
-        # bare first-party Anthropic id (e.g. "claude-haiku-4-5"), which is
-        # not a valid OpenRouter creator/model-name slug. A caller reaching
-        # this path (BYOK, or a community's own funded OpenRouter key) with
-        # no explicit model override would otherwise get an invalid
-        # "openrouter/claude-haiku-4-5" request; fall back to OpenRouter's
-        # own default instead.
+        # Phase 2 (issue #362) made every community and platform
+        # default_model a bare first-party Anthropic id such as
+        # "claude-haiku-4-5", which is not a valid OpenRouter slug. Map it to
+        # the same model's OpenRouter slug so a request funded by an
+        # OpenRouter key still answers with the model the community chose.
+        # Switching to OpenRouter's own default here instead would silently
+        # change model family based on which key paid for the request.
+        mapped = to_openrouter_model(default_model)
+        if mapped:
+            # Provider routing is left to OpenRouter, which auto-selects the
+            # Anthropic provider for anthropic/* models.
+            return (mapped, None)
+        # An unmappable bare id means a default was configured that is
+        # neither an offered model nor an OpenRouter slug. Falling back to
+        # the factory default keeps the request serviceable, but it is a
+        # misconfiguration worth seeing in the logs.
+        logger.error(
+            "Community/platform default model %r is neither an offered Anthropic "
+            "model nor an OpenRouter slug; falling back to %s for this "
+            "OpenRouter-funded request",
+            default_model,
+            OPENROUTER_DEFAULT_MODEL,
+        )
         return (OPENROUTER_DEFAULT_MODEL, OPENROUTER_DEFAULT_PROVIDER)
 
     # Use community or platform default
