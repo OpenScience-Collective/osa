@@ -321,3 +321,46 @@ class TestComputeCommunityHealth:
                 return
 
         pytest.skip("No community with openrouter_api_key_env_var configured")
+
+    def test_missing_anthropic_api_key_env_var_produces_warning(self, monkeypatch) -> None:
+        """A configured but unset anthropic_api_key_env_var reports missing/error.
+
+        Regression coverage for the bug where compute_community_health
+        consulted only openrouter_api_key_env_var: _resolve_provider checks
+        the Anthropic env var first, so a community funded by Anthropic was
+        reporting api_key="using_platform"/status="degraded" and a
+        misleading "no community-specific key configured" warning even
+        though a key env var was genuinely configured (just unset).
+        """
+        info = registry.get("hed")
+        assert info is not None and info.community_config is not None
+        config = info.community_config
+        env_var = "ANTHROPIC_API_KEY_TEST_HED_HEALTH"
+        monkeypatch.setattr(config, "anthropic_api_key_env_var", env_var)
+        monkeypatch.delenv(env_var, raising=False)
+
+        result = compute_community_health(config)
+        assert result["api_key"] == "missing"
+        assert result["status"] == "error"
+        assert any(env_var in w for w in result["warnings"])
+        assert any("not sustainable" in w for w in result["warnings"])
+
+    def test_set_anthropic_api_key_env_var_is_healthy(self, monkeypatch) -> None:
+        """A configured and set anthropic_api_key_env_var reports configured/healthy.
+
+        Regression coverage for the same bug: before the fix this reported
+        api_key="using_platform" regardless of whether the Anthropic key
+        was actually configured and set.
+        """
+        info = registry.get("hed")
+        assert info is not None and info.community_config is not None
+        config = info.community_config
+        assert config.documentation, "hed is expected to have documentation configured"
+        env_var = "ANTHROPIC_API_KEY_TEST_HED_HEALTH"
+        monkeypatch.setattr(config, "anthropic_api_key_env_var", env_var)
+        monkeypatch.setenv(env_var, "sk-ant-test")
+
+        result = compute_community_health(config)
+        assert result["api_key"] == "configured"
+        assert result["status"] == "healthy"
+        assert not any(env_var in w for w in result["warnings"])
