@@ -225,8 +225,10 @@ def create_list_recent_tool(
 
     description = (
         f"List recent {community_name} GitHub issues and PRs ordered by date. "
+        "**IMPORTANT: This is for DISCOVERY, not answering.** "
         "Use when users ask about recent activity, latest PRs, or newest issues. "
-        f"Unlike search which finds by keywords, this lists items by creation date.{repo_options}"
+        "Unlike search which finds by keywords, this lists items by creation date. "
+        f"Do NOT use listed item content to formulate answers.{repo_options}"
     )
 
     return StructuredTool.from_function(
@@ -239,24 +241,22 @@ def create_list_recent_tool(
 def create_search_papers_tool(
     community_id: str,
     community_name: str,
-    citations: bool = False,
 ) -> BaseTool:
     """Create a tool for searching academic papers for a community.
+
+    Not citable: its description tells the model this is for discovery,
+    not for formulating answers (see create_knowledge_tools' `citations`
+    docstring for the rule this follows).
 
     Args:
         community_id: The community identifier (e.g., 'hed', 'bids')
         community_name: Display name (e.g., 'HED', 'BIDS')
-        citations: When True, and at least one result has an abstract to
-            cite, return search_result blocks (one per paper) instead of
-            the formatted string, so Claude can attach inline citations to
-            claims drawn from these abstracts. Anthropic-only; see
-            CommunityAssistant's `citations` flag.
 
     Returns:
         A LangChain tool for searching papers
     """
 
-    def search_papers_impl(query: str, limit: int = 5) -> str | list[dict[str, Any]]:
+    def search_papers_impl(query: str, limit: int = 5) -> str:
         """Search academic papers implementation."""
         if not _check_db_exists(community_id):
             return (
@@ -268,16 +268,6 @@ def create_search_papers_tool(
 
         if not results:
             return f"No related papers found for '{query}'."
-
-        if citations:
-            blocks = _build_citation_blocks(
-                results,
-                source=lambda r: r.url,
-                title=lambda r: r.title,
-                text=lambda r: r.snippet,
-            )
-            if blocks:
-                return blocks
 
         lines = ["Related papers:\n"]
         for r in results:
@@ -310,25 +300,24 @@ def create_search_papers_tool(
 def create_search_papers_live_tool(
     community_id: str,
     community_name: str,
-    citations: bool = False,
 ) -> BaseTool:
     """Create a tool for live (on-demand) academic paper search via opencite.
 
     Unlike the local paper search (pre-synced rows), this fetches fresh results
     from the live literature, newest first, and caches them for next time.
 
+    Not citable: its description tells the model this is for discovery,
+    not for formulating answers (see create_search_papers_tool).
+
     Args:
         community_id: The community identifier (e.g., 'hed', 'eeglab')
         community_name: Display name (e.g., 'HED', 'EEGLAB')
-        citations: When True, and at least one result has an abstract to
-            cite, return search_result blocks (one per paper) instead of
-            the formatted string. See create_search_papers_tool.
 
     Returns:
         A LangChain tool for live paper search
     """
 
-    def search_papers_live_impl(query: str, limit: int = 5) -> str | list[dict[str, Any]]:
+    def search_papers_live_impl(query: str, limit: int = 5) -> str:
         """Live academic paper search implementation."""
         results = search_papers_live(query, project=community_id, limit=limit)
 
@@ -337,16 +326,6 @@ def create_search_papers_live_tool(
                 f"No recent papers found online for '{query}'. "
                 "Try rephrasing, or use the local paper search."
             )
-
-        if citations:
-            blocks = _build_citation_blocks(
-                results,
-                source=lambda r: r.url,
-                title=lambda r: r.title,
-                text=lambda r: r.snippet,
-            )
-            if blocks:
-                return blocks
 
         lines = ["Most recent papers (live search):\n"]
         for r in results:
@@ -695,20 +674,16 @@ def create_search_faq_tool(
 def create_search_discourse_tool(
     community_id: str,
     community_name: str,
-    citations: bool = False,
 ) -> BaseTool:
     """Create a tool for searching Discourse forum topics.
+
+    Not citable: its description tells the model this is for discovery,
+    not for formulating answers (see create_knowledge_tools' `citations`
+    docstring for the rule this follows).
 
     Args:
         community_id: The community identifier (e.g., 'mne')
         community_name: Display name (e.g., 'MNE-Python')
-        citations: When True, and at least one result has forum text to
-            cite, return search_result blocks (one per topic) instead of
-            the formatted string. See create_search_papers_tool. Unlike
-            search_{id}_discussions and list_{id}_recent, forum topics
-            often carry a community-accepted answer, so this tool's
-            description switches to permitting answers grounded in that
-            content once citations make the source traceable.
 
     Returns:
         A LangChain tool for searching Discourse forum topics
@@ -718,7 +693,7 @@ def create_search_discourse_tool(
         query: str,
         category: str | None = None,
         limit: int = 5,
-    ) -> str | list[dict[str, Any]]:
+    ) -> str:
         """Search Discourse forum topics implementation."""
         if not _check_db_exists(community_id):
             return (
@@ -750,23 +725,6 @@ def create_search_discourse_tool(
             cat_str = f" (category: {category})" if category else ""
             return f"No forum topics found for '{query}'{cat_str}."
 
-        if citations:
-
-            def _forum_text(r: Any) -> str:
-                parts = [r.snippet] if r.snippet else []
-                if r.accepted_answer_snippet:
-                    parts.append(f"Accepted answer: {r.accepted_answer_snippet}")
-                return "\n\n".join(parts)
-
-            blocks = _build_citation_blocks(
-                results,
-                source=lambda r: r.url,
-                title=lambda r: r.title,
-                text=_forum_text,
-            )
-            if blocks:
-                return blocks
-
         lines = [f"Found {len(results)} forum topics:\n"]
         for i, r in enumerate(results, 1):
             cat_label = f" [{r.category_name}]" if r.category_name else ""
@@ -780,22 +738,13 @@ def create_search_discourse_tool(
 
         return "\n".join(lines)
 
-    if citations:
-        description = (
-            f"Search {community_name} Discourse forum topics for community discussions and Q&A. "
-            "Results are citable: when you use a topic's content (especially an accepted "
-            "answer) to formulate part of your answer, the platform attaches an inline "
-            "citation automatically. Prefer official documentation first; use forum content "
-            "when it directly answers the question and no better source is available."
-        )
-    else:
-        description = (
-            f"Search {community_name} Discourse forum topics for community discussions and Q&A. "
-            "**IMPORTANT: This is for DISCOVERY, not answering.** "
-            "Use this to find forum discussions where users have asked similar questions. "
-            'Present results as: "There\'s a related discussion on the forum, see: [link]" '
-            "Do NOT use forum content to formulate authoritative answers."
-        )
+    description = (
+        f"Search {community_name} Discourse forum topics for community discussions and Q&A. "
+        "**IMPORTANT: This is for DISCOVERY, not answering.** "
+        "Use this to find forum discussions where users have asked similar questions. "
+        'Present results as: "There\'s a related discussion on the forum, see: [link]" '
+        "Do NOT use forum content to formulate authoritative answers."
+    )
 
     return StructuredTool.from_function(
         func=search_discourse_impl,
@@ -837,13 +786,22 @@ def create_knowledge_tools(
         include_faq: Include mailing list FAQ search tool (default: False)
         faq_list_names: List of mailing list names for FAQ help text
         include_discourse: Include Discourse forum search tool (default: False)
-        citations: When True, every citable tool (papers, live papers,
-            docstrings, full docstring, FAQ, forum) returns search_result
-            blocks instead of formatted strings, enabling Claude's native
-            inline citations. Anthropic-only. Discussion search and recent
-            activity are deliberately excluded: their tool descriptions
-            say to use them for discovery, not to formulate answers from,
-            so making them citable would invite exactly what they forbid.
+        citations: When True, every citable tool (retrieve_docs [wired in
+            CommunityAssistant, not here], code docs, full docstring, FAQ)
+            returns search_result blocks instead of formatted strings,
+            enabling Claude's native inline citations. Anthropic-only.
+
+            The rule for which tools are citable: a tool is citable if and
+            only if its description permits answering from its content.
+            Discussion search, recent activity, papers, live papers, and
+            forum search are all deliberately excluded here because their
+            descriptions say the opposite -- "This is for DISCOVERY, not
+            answering" / "Do NOT use ... content to formulate answers".
+            Making any of them citable would invite exactly what their own
+            description forbids, and would make what OSA treats as an
+            authoritative source a side effect of this phase rather than a
+            deliberate product decision. Their tool descriptions never
+            change based on this flag, on either path.
 
     Returns:
         List of LangChain tools for the community
@@ -857,12 +815,10 @@ def create_knowledge_tools(
         tools.append(create_list_recent_tool(community_id, community_name, repos))
 
     if include_papers:
-        tools.append(create_search_papers_tool(community_id, community_name, citations=citations))
+        tools.append(create_search_papers_tool(community_id, community_name))
 
     if include_live_papers:
-        tools.append(
-            create_search_papers_live_tool(community_id, community_name, citations=citations)
-        )
+        tools.append(create_search_papers_live_tool(community_id, community_name))
 
     if include_docstrings:
         tools.append(
@@ -884,8 +840,6 @@ def create_knowledge_tools(
         )
 
     if include_discourse:
-        tools.append(
-            create_search_discourse_tool(community_id, community_name, citations=citations)
-        )
+        tools.append(create_search_discourse_tool(community_id, community_name))
 
     return tools
