@@ -1,11 +1,33 @@
-"""Tests for src.agents.content: extracting text from Anthropic block-list content.
+"""Tests for src.agents.content: extracting text and citations from block-list content.
 
 No mocks: these exercise the pure functions directly against real content
-shapes (plain strings and the block-list shape langchain-anthropic produces
-when thinking is enabled or tools are bound).
+shapes (plain strings, the block-list shape langchain-anthropic produces
+when thinking is enabled or tools are bound, and -- for the citation
+extraction tests -- a recorded real response payload; see
+TestExtractCitationsAgainstRecordedPayload for how it was captured. Phase 2
+shipped a bug that every test hand-built a shape the API never actually
+produces, so the citation-carrying shape is asserted against that real
+payload rather than a hand-built dict).
 """
 
-from src.agents.content import classify_content_blocks, extract_text
+import json
+from pathlib import Path
+
+from src.agents.content import (
+    CitationMark,
+    CitationTracker,
+    ContentBlock,
+    classify_content_blocks,
+    extract_citations,
+    extract_text,
+)
+
+FIXTURES_DIR = Path(__file__).resolve().parents[1] / "fixtures"
+
+
+def _load_citation_response() -> list[dict]:
+    """Load the recorded real Claude Platform response (see its module note)."""
+    return json.loads((FIXTURES_DIR / "citation_response.json").read_text())
 
 
 class TestExtractText:
@@ -71,31 +93,42 @@ class TestExtractText:
         assert "secret reasoning" not in result
         assert result == "public answer"
 
+    def test_ignores_citations_on_text_blocks(self):
+        """A cited text block still contributes only its text, unchanged."""
+        content = [
+            {
+                "type": "text",
+                "text": "Tags go in events.tsv.",
+                "citations": [{"source": "https://example.com/doc", "title": "Doc"}],
+            }
+        ]
+        assert extract_text(content) == "Tags go in events.tsv."
+
 
 class TestClassifyContentBlocks:
     """Tests for classify_content_blocks()."""
 
     def test_plain_string(self):
-        assert classify_content_blocks("hello") == [("text", "hello")]
+        assert classify_content_blocks("hello") == [("text", "hello", [])]
 
     def test_empty_string_yields_no_pairs(self):
         assert classify_content_blocks("") == []
 
     def test_text_block(self):
         content = [{"type": "text", "text": "hello"}]
-        assert classify_content_blocks(content) == [("text", "hello")]
+        assert classify_content_blocks(content) == [("text", "hello", [])]
 
     def test_thinking_block_carries_no_text(self):
         """A thinking chunk classifies as thinking with an empty payload -- never reasoning text."""
         content = [{"type": "thinking", "thinking": "reasoning content", "signature": "abc"}]
-        pairs = classify_content_blocks(content)
-        assert pairs == [("thinking", "")]
+        blocks = classify_content_blocks(content)
+        assert blocks == [("thinking", "", [])]
         # The reasoning text itself must never appear anywhere in the result.
-        assert not any("reasoning content" in text for _kind, text in pairs)
+        assert not any("reasoning content" in b.text for b in blocks)
 
     def test_redacted_thinking_block_classified_as_thinking(self):
         content = [{"type": "redacted_thinking", "data": "encrypted"}]
-        assert classify_content_blocks(content) == [("thinking", "")]
+        assert classify_content_blocks(content) == [("thinking", "", [])]
 
     def test_mixed_blocks_preserve_order(self):
         content = [
@@ -105,10 +138,10 @@ class TestClassifyContentBlocks:
             {"type": "text", "text": "part two."},
         ]
         assert classify_content_blocks(content) == [
-            ("thinking", ""),
-            ("text", "part one. "),
-            ("thinking", ""),
-            ("text", "part two."),
+            ("thinking", "", []),
+            ("text", "part one. ", []),
+            ("thinking", "", []),
+            ("text", "part two.", []),
         ]
 
     def test_tool_use_block_is_skipped_entirely(self):
@@ -117,16 +150,16 @@ class TestClassifyContentBlocks:
             {"type": "tool_use", "id": "toolu_1", "name": "search", "input": {}},
             {"type": "text", "text": "ok"},
         ]
-        assert classify_content_blocks(content) == [("text", "ok")]
+        assert classify_content_blocks(content) == [("text", "ok", [])]
 
     def test_empty_text_block_skipped(self):
         content = [{"type": "text", "text": ""}, {"type": "text", "text": "ok"}]
-        assert classify_content_blocks(content) == [("text", "ok")]
+        assert classify_content_blocks(content) == [("text", "ok", [])]
 
     def test_non_dict_block_skipped(self):
         """Defensive: a malformed non-dict block entry is ignored, not an error."""
         content = ["not a dict", {"type": "text", "text": "ok"}]
-        assert classify_content_blocks(content) == [("text", "ok")]
+        assert classify_content_blocks(content) == [("text", "ok", [])]
 
     def test_empty_list_yields_no_pairs(self):
         assert classify_content_blocks([]) == []
@@ -137,7 +170,7 @@ class TestClassifyContentBlocks:
         just with nothing to contribute yet.
         """
         content = [{"type": "text"}, {"type": "text", "text": "ok"}]
-        assert classify_content_blocks(content) == [("text", "ok")]
+        assert classify_content_blocks(content) == [("text", "ok", [])]
         assert "unrecognized content block type" not in caplog.text
 
     def test_unrecognized_block_type_warns(self, caplog):
@@ -150,7 +183,7 @@ class TestClassifyContentBlocks:
         with caplog.at_level("WARNING"):
             result = classify_content_blocks(content)
 
-        assert result == [("text", "ok")]
+        assert result == [("text", "ok", [])]
         assert "some_future_block" in caplog.text
         assert "unrecognized content block type" in caplog.text
 
@@ -174,3 +207,174 @@ class TestClassifyContentBlocks:
             classify_content_blocks(content)
 
         assert caplog.text == ""
+
+    def test_text_block_with_citations_but_no_text_is_surfaced(self):
+        """A citations-only block (no "text" key) is not dropped as 'empty'.
+
+        This is exactly the shape of a streamed citation-delta chunk (see
+        the module docstring): the citations arrive on their own, in a
+        chunk that carries no text of its own.
+        """
+        content = [{"type": "text", "citations": [{"source": "https://example.com"}]}]
+        blocks = classify_content_blocks(content)
+        assert len(blocks) == 1
+        assert blocks[0].kind == "text"
+        assert blocks[0].text == ""
+        assert blocks[0].citations == [{"source": "https://example.com"}]
+
+    def test_text_block_without_citations_key_has_empty_citations_list(self):
+        content = [{"type": "text", "text": "no citations here"}]
+        block = classify_content_blocks(content)[0]
+        assert block.citations == []
+
+
+class TestExtractCitationsAgainstRecordedPayload:
+    """extract_citations() against a real Claude Platform response payload.
+
+    tests/fixtures/citation_response.json is the raw `.content` of a real
+    AIMessage, captured by binding a tool that returns a
+    build_search_result() block (see src/tools/citations.py) and asking a
+    live claude-haiku-4-5 call (through this repo's own
+    create_anthropic_llm) to answer using it. Not hand-built: Phase 2's
+    cache-token bug shipped precisely because every test hand-built a shape
+    the API never produces, and citations are exactly the kind of nested,
+    easy-to-guess-wrong shape that class of bug comes from.
+    """
+
+    def test_extracts_the_recorded_citation(self):
+        content = _load_citation_response()
+        citations = extract_citations(content)
+
+        assert len(citations) == 1
+        citation = citations[0]
+        assert citation["type"] == "search_result_location"
+        assert citation["source"] == (
+            "https://www.hedtags.org/hed-resources/HedAnnotationQuickstart.html"
+        )
+        assert citation["title"] == "HED Annotation Quickstart"
+        assert "HED" in citation["cited_text"]
+        assert citation["search_result_index"] == 0
+        assert isinstance(citation["start_block_index"], int)
+        assert isinstance(citation["end_block_index"], int)
+
+    def test_classify_content_blocks_surfaces_the_same_citation(self):
+        """classify_content_blocks() carries the citation on its text block."""
+        content = _load_citation_response()
+        blocks = classify_content_blocks(content)
+
+        assert len(blocks) == 1
+        assert blocks[0].kind == "text"
+        assert len(blocks[0].text) > 0
+        assert len(blocks[0].citations) == 1
+        assert blocks[0].citations[0]["source"] == (
+            "https://www.hedtags.org/hed-resources/HedAnnotationQuickstart.html"
+        )
+
+    def test_extract_text_still_returns_only_the_answer(self):
+        """The citation metadata never leaks into the plain answer text."""
+        content = _load_citation_response()
+        text = extract_text(content)
+
+        assert "search_result_location" not in text
+        assert "annotate an event" in text.lower() or "hed tags" in text.lower()
+
+    def test_no_citations_case_returns_empty_list(self):
+        content = [{"type": "text", "text": "An answer with nothing cited."}]
+        assert extract_citations(content) == []
+
+    def test_plain_string_returns_empty_list(self):
+        assert extract_citations("plain string answer") == []
+
+
+class TestCitationTracker:
+    """Marker numbering: one marker per unique source, in first-appearance order.
+
+    These use hand-built citation dicts on purpose: unlike the extraction
+    tests above (which must prove the real API shape parses correctly),
+    this is testing the tracker's own numbering algorithm, a pure function
+    of whatever "source" strings it is given.
+    """
+
+    def test_first_citation_gets_marker_one(self):
+        tracker = CitationTracker()
+        marker_text, new_marks = tracker.record_block(
+            [{"source": "https://a.example", "title": "A", "cited_text": "a text"}]
+        )
+        assert marker_text == "[1]"
+        assert len(new_marks) == 1
+        assert new_marks[0] == CitationMark(1, "https://a.example", "A", "a text")
+
+    def test_repeated_source_shares_marker(self):
+        tracker = CitationTracker()
+        tracker.record_block([{"source": "https://a.example", "title": "A", "cited_text": "x"}])
+        marker_text, new_marks = tracker.record_block(
+            [{"source": "https://a.example", "title": "A", "cited_text": "y"}]
+        )
+        assert marker_text == "[1]"
+        assert new_marks == []  # not newly discovered the second time
+
+    def test_ordering_follows_first_appearance(self):
+        tracker = CitationTracker()
+        tracker.record_block([{"source": "https://b.example", "title": "B"}])
+        tracker.record_block([{"source": "https://a.example", "title": "A"}])
+        tracker.record_block([{"source": "https://b.example", "title": "B"}])
+
+        markers = [m.marker for m in tracker.marks]
+        sources = [m.source for m in tracker.marks]
+        assert markers == [1, 2]
+        assert sources == ["https://b.example", "https://a.example"]
+
+    def test_multiple_distinct_sources_in_one_block(self):
+        tracker = CitationTracker()
+        marker_text, new_marks = tracker.record_block(
+            [
+                {"source": "https://a.example", "title": "A"},
+                {"source": "https://b.example", "title": "B"},
+            ]
+        )
+        assert marker_text == "[1][2]"
+        assert [m.marker for m in new_marks] == [1, 2]
+
+    def test_same_source_twice_in_one_block_renders_marker_once(self):
+        tracker = CitationTracker()
+        marker_text, _ = tracker.record_block(
+            [
+                {"source": "https://a.example", "title": "A"},
+                {"source": "https://a.example", "title": "A"},
+            ]
+        )
+        assert marker_text == "[1]"
+
+    def test_no_citations_yields_no_markers_and_empty_marks_list(self):
+        tracker = CitationTracker()
+        marker_text, new_marks = tracker.record_block([])
+        assert marker_text == ""
+        assert new_marks == []
+        assert tracker.marks == []
+
+    def test_citation_missing_source_is_ignored(self):
+        """A malformed citation with no source cannot be attributed; skip it."""
+        tracker = CitationTracker()
+        marker_text, new_marks = tracker.record_block([{"title": "No source"}])
+        assert marker_text == ""
+        assert new_marks == []
+
+    def test_marks_property_returns_a_copy(self):
+        tracker = CitationTracker()
+        tracker.record_block([{"source": "https://a.example", "title": "A"}])
+        marks = tracker.marks
+        marks.append(CitationMark(99, "fake", "fake", "fake"))
+        assert len(tracker.marks) == 1
+
+
+class TestContentBlockShape:
+    """ContentBlock is a plain tuple, so existing 2/3-tuple comparisons keep working."""
+
+    def test_is_a_named_tuple_with_three_fields(self):
+        block = ContentBlock("text", "hi", [])
+        assert block.kind == "text"
+        assert block.text == "hi"
+        assert block.citations == []
+        assert block == ("text", "hi", [])
+        kind, text, citations = block
+        assert (kind, text, citations) == ("text", "hi", [])

@@ -1,0 +1,18 @@
+[
+  {
+    "type": "text",
+    "index": 0,
+    "citations": [
+      {
+        "cited_text": "HED (Hierarchical Event Descriptors) is a framework for annotating events in neuroimaging and behavioral data using structured tags drawn from a controlled vocabulary. To annotate an event with HED tags, you assign one or more comma-separated tags from the HED schema to that event, describing what happened using terms like Sensory-event, Visual-presentation, or Agent-action. Tags are typically stored in an events.tsv sidecar file alongside the raw data, following the BIDS specification for tabular event files.",
+        "end_block_index": 1,
+        "search_result_index": 0,
+        "source": "https://www.hedtags.org/hed-resources/HedAnnotationQuickstart.html",
+        "start_block_index": 0,
+        "title": "HED Annotation Quickstart",
+        "type": "search_result_location"
+      }
+    ],
+    "text": "To annotate an event with HED tags, you assign one or more comma-separated tags from the HED schema to that event, describing what happened using terms like Sensory-event, Visual-presentation, or Agent-action. Tags are typically stored in an events.tsv sidecar file alongside the raw data, following the BIDS specification for tabular event files."
+  }
+]
