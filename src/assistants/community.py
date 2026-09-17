@@ -16,16 +16,23 @@ Features:
 import importlib
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from langchain_core.tools import BaseTool, StructuredTool, tool
 
 from src.agents.base import ToolAgent
 from src.core.config.community import CommunityConfig
 from src.tools.base import DocRegistry
+from src.tools.citations import build_search_result, truncate
 from src.tools.fetcher import get_fetcher
 from src.tools.knowledge import create_knowledge_tools
 from src.utils.page_fetcher import fetch_page_content
+
+# Cap on a single document's content, whether embedded in the system prompt
+# (preloaded docs) or returned as a citable search_result block (retrieve
+# docs / fetch current page). Keeps one huge document from blowing up the
+# prompt or a tool_result payload; the plain-string tool path is unaffected.
+_MAX_CITABLE_CONTENT_CHARS = 50000
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
@@ -90,11 +97,20 @@ and explore further.
 """
 
 
-def _create_fetch_current_page_tool(page_url: str) -> BaseTool:
-    """Create a bound tool that fetches a specific page URL."""
+def _create_fetch_current_page_tool(page_url: str, citations: bool = False) -> BaseTool:
+    """Create a bound tool that fetches a specific page URL.
+
+    Args:
+        page_url: The URL of the page the widget is embedded on.
+        citations: When True, and the fetch succeeds, return a single
+            search_result block (source=page_url) instead of the plain
+            markdown string, so Claude can attach an inline citation to
+            claims drawn from the current page. Anthropic-only; see
+            CommunityAssistant's `citations` flag.
+    """
 
     @tool
-    def fetch_current_page() -> str:
+    def fetch_current_page() -> str | list[dict[str, Any]]:
         """Fetch content from the page where the user is currently asking their question.
 
         Use this tool when the user's question seems related to the content of the page
@@ -104,27 +120,60 @@ def _create_fetch_current_page_tool(page_url: str) -> BaseTool:
         Returns:
             The page content in markdown format, or an error message.
         """
-        return fetch_page_content(page_url)
+        content = fetch_page_content(page_url)
+        if citations and content and not content.startswith("Error:"):
+            return [
+                build_search_result(
+                    source=page_url,
+                    title=page_url,
+                    text=truncate(content, _MAX_CITABLE_CONTENT_CHARS),
+                )
+            ]
+        return content
 
     return fetch_current_page
 
 
 def _create_retrieve_docs_tool(
-    community_id: str, community_name: str, doc_registry: DocRegistry
+    community_id: str,
+    community_name: str,
+    doc_registry: DocRegistry,
+    citations: bool = False,
 ) -> BaseTool:
-    """Create a retrieve docs tool for a community."""
+    """Create a retrieve docs tool for a community.
+
+    Args:
+        community_id: The community identifier (e.g., 'hed', 'bids').
+        community_name: Display name (e.g., 'HED', 'BIDS').
+        doc_registry: The community's document registry.
+        citations: When True, and the fetch succeeds, return a single
+            search_result block (source=the document's URL) instead of the
+            plain markdown string, so Claude can attach an inline citation
+            to claims drawn from the retrieved document. This is the most
+            important citable tool: communities ship many more documents
+            than are preloaded, so most answers are built from it.
+            Anthropic-only; see CommunityAssistant's `citations` flag.
+    """
     fetcher = get_fetcher()
 
-    def retrieve_docs_impl(url: str) -> str:
+    def retrieve_docs_impl(url: str) -> str | list[dict[str, Any]]:
         """Retrieve documentation by URL."""
         doc = doc_registry.find_by_url(url)
         if doc is None:
             return f"Document not found in {community_name} registry: {url}"
 
         result = fetcher.fetch(doc)
-        if result.success:
-            return f"# {result.title}\n\nSource: {result.url}\n\n{result.content}"
-        return f"Error retrieving {result.url}: {result.error}"
+        if not result.success:
+            return f"Error retrieving {result.url}: {result.error}"
+        if citations:
+            return [
+                build_search_result(
+                    source=result.url,
+                    title=result.title,
+                    text=truncate(result.content, _MAX_CITABLE_CONTENT_CHARS),
+                )
+            ]
+        return f"# {result.title}\n\nSource: {result.url}\n\n{result.content}"
 
     doc_list = doc_registry.format_doc_list(include_preloaded=False)
 
@@ -160,6 +209,13 @@ class CommunityAssistant(ToolAgent):
         page_context: Optional context about the page where widget is embedded.
         additional_tools: Extra tools to include beyond auto-generated ones.
         additional_instructions: Extra text to add to the system prompt.
+        citations: Whether the model in use supports Anthropic's native
+            search_result citations. When True, every citable tool
+            returns search_result blocks instead of formatted strings, so
+            Claude can attach inline citations to claims it draws from
+            them. Defaults to False so a caller who does not pass it gets
+            today's plain-string tool behavior; the API layer resolves
+            this from the request's provider choice (Anthropic only).
     """
 
     def __init__(
@@ -170,12 +226,14 @@ class CommunityAssistant(ToolAgent):
         page_context: PageContext | None = None,
         additional_tools: list[BaseTool] | None = None,
         additional_instructions: str = "",
+        citations: bool = False,
     ) -> None:
         """Initialize the community assistant."""
         self.config = config
         self.additional_instructions = additional_instructions
         self._preload_docs = preload_docs
         self._page_context = page_context
+        self._citations = citations
         self._preloaded_content: dict[str, str] = {}
 
         # Build doc registry from config
@@ -190,12 +248,14 @@ class CommunityAssistant(ToolAgent):
 
         # Add documentation tool if docs are configured
         if config.documentation:
-            doc_tool = _create_retrieve_docs_tool(config.id, config.name, self._doc_registry)
+            doc_tool = _create_retrieve_docs_tool(
+                config.id, config.name, self._doc_registry, citations=citations
+            )
             tools.append(doc_tool)
 
         # Add page context tool if enabled in config and page context is provided
         if config.enable_page_context and page_context and page_context.url:
-            fetch_tool = _create_fetch_current_page_tool(page_context.url)
+            fetch_tool = _create_fetch_current_page_tool(page_context.url, citations=citations)
             tools.append(fetch_tool)
 
         # Add any additional tools
@@ -254,6 +314,7 @@ class CommunityAssistant(ToolAgent):
             include_faq=bool(has_faq),
             faq_list_names=([m.list_name for m in config.mailman] if config.mailman else None),
             include_discourse=bool(has_discourse),
+            citations=self._citations,
         )
         tools.extend(knowledge_tools)
 
@@ -346,9 +407,9 @@ class CommunityAssistant(ToolAgent):
         for doc in self._doc_registry.get_preloaded():
             content = self._preloaded_content.get(doc.url, "")
             if content:
-                # Truncate very long content
-                if len(content) > 50000:
-                    content = content[:50000] + "\n\n... [truncated for length]"
+                content = truncate(
+                    content, _MAX_CITABLE_CONTENT_CHARS, suffix="\n\n... [truncated for length]"
+                )
                 sections.append(f"### {doc.title}\nSource: {doc.url}\n\n{content}")
 
         if sections:
@@ -481,6 +542,7 @@ class CommunityAssistant(ToolAgent):
 def create_community_assistant(
     model: "BaseChatModel",
     config: CommunityConfig,
+    citations: bool = False,
     **kwargs,
 ) -> CommunityAssistant:
     """Factory function to create a generic community assistant.
@@ -488,6 +550,9 @@ def create_community_assistant(
     Args:
         model: The language model to use.
         config: Community configuration from YAML.
+        citations: Whether the model in use supports Anthropic's native
+            search_result citations (see CommunityAssistant's `citations`
+            flag). The API layer passes True only on the Anthropic path.
         **kwargs: Additional arguments passed to CommunityAssistant.
             - preload_docs: Whether to preload docs (default: True)
             - page_context: PageContext for widget embedding
@@ -497,4 +562,4 @@ def create_community_assistant(
     Returns:
         Configured CommunityAssistant instance.
     """
-    return CommunityAssistant(model=model, config=config, **kwargs)
+    return CommunityAssistant(model=model, config=config, citations=citations, **kwargs)

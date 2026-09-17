@@ -108,6 +108,59 @@ class TestRetrieveDocsTool:
         assert titles_found >= 1, "Expected at least 1 document title in description"
 
 
+class TestRetrieveDocsToolCitations:
+    """Tests for retrieve_docs when the assistant is built with citations=True.
+
+    Uses the same real-fetch pattern as TestRetrieveDocsTool (no mocked
+    business logic): a live document fetch, but asserting the
+    search_result block shape instead of the formatted string.
+    """
+
+    @pytest.fixture
+    def hed_assistant_citable(self):
+        """Create a HED assistant with native citations enabled."""
+        model = FakeListChatModel(responses=["Test response"])
+        return registry.create_assistant("hed", model=model, preload_docs=False, citations=True)
+
+    @pytest.fixture
+    def retrieve_tool_citable(self, hed_assistant_citable):
+        """Get the citable retrieve_hed_docs tool."""
+        tools = {t.name: t for t in hed_assistant_citable.tools}
+        return tools.get("retrieve_hed_docs")
+
+    def test_returns_search_result_block_on_success(self, retrieve_tool_citable) -> None:
+        """A successful fetch with citations=True returns one search_result block."""
+        info = registry.get("hed")
+        assert info is not None
+        assert info.community_config is not None
+        docs = info.community_config.documentation
+        assert len(docs) > 0
+
+        url = str(docs[0].url)
+        result = retrieve_tool_citable.invoke({"url": url})
+
+        if isinstance(result, str):
+            # Network fetch failed for this doc; not what this test targets,
+            # and covered separately by the plain-string error-path test.
+            pytest.skip(f"Live fetch did not succeed for {url}: {result[:200]}")
+
+        assert isinstance(result, list)
+        assert len(result) == 1
+        block = result[0]
+        assert block["type"] == "search_result"
+        assert block["source"] == url
+        assert block["citations"] == {"enabled": True}
+        assert block["content"][0]["type"] == "text"
+        assert len(block["content"][0]["text"]) > 0
+
+    def test_unknown_url_still_returns_plain_error_string(self, retrieve_tool_citable) -> None:
+        """A registry-lookup failure has nothing to cite, so it stays a string."""
+        result = retrieve_tool_citable.invoke({"url": "https://example.com/nonexistent.html"})
+
+        assert isinstance(result, str)
+        assert "not found" in result.lower()
+
+
 class TestPreloadedContent:
     """Tests for preloaded document functionality."""
 

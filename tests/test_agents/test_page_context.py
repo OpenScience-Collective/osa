@@ -490,6 +490,72 @@ class TestCommunityAssistantWithPageContext:
         # Should be called with the bound URL
         mock_fetch.assert_called_once_with("https://specific-page.com/doc")
 
+    @patch("src.assistants.community.fetch_page_content")
+    def test_fetch_current_page_returns_plain_string_when_citations_disabled(self, mock_fetch):
+        """citations=False (default) must keep today's plain-string return, unchanged."""
+        mock_fetch.return_value = "# Page\n\nSome fetched content"
+
+        model = MagicMock()
+        model.bind_tools = MagicMock(return_value=model)
+        page_context = PageContext(url="https://hedtags.org/docs", title="Docs")
+        assistant = registry.create_assistant(
+            "hed", model=model, preload_docs=False, page_context=page_context
+        )
+
+        fetch_tool = next(t for t in assistant.tools if t.name == "fetch_current_page")
+        result = fetch_tool.invoke({})
+
+        assert result == "# Page\n\nSome fetched content"
+
+    @patch("src.assistants.community.fetch_page_content")
+    def test_fetch_current_page_returns_citation_block_when_enabled(self, mock_fetch):
+        """citations=True on a successful fetch returns one search_result block."""
+        mock_fetch.return_value = "# Page\n\nSome fetched content"
+
+        model = MagicMock()
+        model.bind_tools = MagicMock(return_value=model)
+        page_context = PageContext(url="https://hedtags.org/docs", title="Docs")
+        assistant = registry.create_assistant(
+            "hed",
+            model=model,
+            preload_docs=False,
+            page_context=page_context,
+            citations=True,
+        )
+
+        fetch_tool = next(t for t in assistant.tools if t.name == "fetch_current_page")
+        result = fetch_tool.invoke({})
+
+        assert isinstance(result, list)
+        assert len(result) == 1
+        block = result[0]
+        assert block["type"] == "search_result"
+        assert block["source"] == "https://hedtags.org/docs"
+        assert block["citations"] == {"enabled": True}
+        assert block["content"] == [{"type": "text", "text": "# Page\n\nSome fetched content"}]
+
+    @patch("src.assistants.community.fetch_page_content")
+    def test_fetch_current_page_citations_enabled_but_fetch_errors(self, mock_fetch):
+        """citations=True on a failed fetch still returns the plain error string."""
+        mock_fetch.return_value = "Error: Invalid URL 'https://hedtags.org/docs'"
+
+        model = MagicMock()
+        model.bind_tools = MagicMock(return_value=model)
+        page_context = PageContext(url="https://hedtags.org/docs", title="Docs")
+        assistant = registry.create_assistant(
+            "hed",
+            model=model,
+            preload_docs=False,
+            page_context=page_context,
+            citations=True,
+        )
+
+        fetch_tool = next(t for t in assistant.tools if t.name == "fetch_current_page")
+        result = fetch_tool.invoke({})
+
+        assert isinstance(result, str)
+        assert result.startswith("Error:")
+
     def test_page_context_properties(self):
         """Should have correct preloaded and available doc counts."""
         model = MagicMock()

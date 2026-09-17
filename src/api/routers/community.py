@@ -1106,6 +1106,11 @@ def create_community_assistant(
         model=model,
         preload_docs=preload_docs,
         page_context=agent_page_context,
+        # Native search_result citations are Anthropic-only, and every
+        # search result in a request must share one citations.enabled
+        # setting; the provider choice is already fixed per request, so
+        # this satisfies that constraint for free.
+        citations=provider_choice.provider == "anthropic",
     )
 
     # Wire LangFuse tracing if configured
