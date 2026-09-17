@@ -708,6 +708,29 @@ def _resolve_provider(
     return _platform_choice(settings)
 
 
+def _to_openrouter_model_via_canonical(model: str) -> str | None:
+    """Map a model id to its OpenRouter slug, canonicalizing aliases first.
+
+    ``to_openrouter_model`` only recognizes the two canonical first-party ids
+    in ``OPENROUTER_MODEL_IDS`` ("claude-haiku-4-5", "claude-sonnet-5"), not
+    the bare legacy aliases in ``MODEL_ALIASES`` (e.g. "claude-haiku-4.5",
+    "claude-sonnet-4.5"). Passing one of those straight to
+    ``to_openrouter_model`` returns None and falls through to the emergency
+    default -- the exact model-family substitution this migration set out to
+    eliminate. Resolving through ``normalize_model`` first fixes that, since
+    it knows every alias; a value that is not a recognized Anthropic id at
+    all (an existing OpenRouter slug, or garbage) raises ``ValueError``
+    there, so the raw value is passed through unchanged to
+    ``to_openrouter_model``, which still handles "already a slug" and
+    "unmappable" correctly.
+    """
+    try:
+        canonical = normalize_model(model)
+    except ValueError:
+        canonical = model
+    return to_openrouter_model(canonical)
+
+
 def _select_model(
     community_info: AssistantInfo,
     requested_model: str | None,
@@ -779,35 +802,40 @@ def _select_model(
                 ),
             )
         # User has BYOK, allow custom model. A caller may name an offered
-        # model by its first-party id ("claude-sonnet-5"), which is not a
+        # model by its first-party id or a legacy alias (e.g.
+        # "claude-sonnet-5" or "claude-sonnet-4.5"), neither of which is a
         # valid OpenRouter slug, so map it across; anything else passes
         # through untouched. Provider routing is left to OpenRouter, which
         # auto-selects the Anthropic provider for anthropic/* models.
-        return (to_openrouter_model(requested_model) or requested_model, None)
+        return (_to_openrouter_model_via_canonical(requested_model) or requested_model, None)
 
     if default_model and "/" not in default_model:
         # Phase 2 (issue #362) made every community and platform
         # default_model a bare first-party Anthropic id such as
-        # "claude-haiku-4-5", which is not a valid OpenRouter slug. Map it to
-        # the same model's OpenRouter slug so a request funded by an
-        # OpenRouter key still answers with the model the community chose.
-        # Switching to OpenRouter's own default here instead would silently
-        # change model family based on which key paid for the request.
-        mapped = to_openrouter_model(default_model)
+        # "claude-haiku-4-5" (or a legacy alias of one), which is not a valid
+        # OpenRouter slug. Map it to the same model's OpenRouter slug so a
+        # request funded by an OpenRouter key still answers with the model
+        # the community chose. Switching to OpenRouter's own default here
+        # instead would silently change model family based on which key paid
+        # for the request.
+        mapped = _to_openrouter_model_via_canonical(default_model)
         if mapped:
             # Provider routing is left to OpenRouter, which auto-selects the
             # Anthropic provider for anthropic/* models.
             return (mapped, None)
         # An unmappable bare id means a default was configured that is
-        # neither an offered model nor an OpenRouter slug. Falling back to
-        # the factory default keeps the request serviceable, but it is a
-        # misconfiguration worth seeing in the logs.
+        # neither an offered model (or alias of one) nor an OpenRouter slug.
+        # Falling back to the factory default keeps the request serviceable,
+        # but it is a misconfiguration worth seeing in the logs, and naming
+        # the community is what makes it actionable.
         logger.error(
-            "Community/platform default model %r is neither an offered Anthropic "
+            "Community %s: default model %r is neither an offered Anthropic "
             "model nor an OpenRouter slug; falling back to %s for this "
             "OpenRouter-funded request",
+            community_info.id,
             default_model,
             OPENROUTER_DEFAULT_MODEL,
+            extra={"community_id": community_info.id},
         )
         return (OPENROUTER_DEFAULT_MODEL, OPENROUTER_DEFAULT_PROVIDER)
 

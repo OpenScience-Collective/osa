@@ -30,6 +30,12 @@ MODEL_PRICING: dict[str, ModelRate] = {
     "claude-haiku-4-5": ModelRate(1.00, 5.00),
     "claude-sonnet-5": ModelRate(2.00, 10.00),
     # Anthropic models
+    # anthropic/claude-sonnet-5: the OpenRouter-slug form of claude-sonnet-5
+    # above (see OPENROUTER_MODEL_IDS in src/core/services/litellm_llm.py).
+    # A community whose default resolves to this slug over OpenRouter would
+    # otherwise 403 as "not in the approved pricing list" even though the
+    # first-party id is priced. Same rate as the first-party entry.
+    "anthropic/claude-sonnet-5": ModelRate(2.00, 10.00),
     "anthropic/claude-opus-4.6": ModelRate(5.00, 25.00),
     "anthropic/claude-opus-4.5": ModelRate(5.00, 25.00),
     "anthropic/claude-opus-4.1": ModelRate(15.00, 75.00),
@@ -111,6 +117,15 @@ COST_BLOCK_THRESHOLD = 15.0  # Block requests for models above this
 # ("5m" vs "1h" cache entries are both priced at the 5m write rate), which slightly
 # undercounts the rarer, more expensive 1h writes -- a deliberate simplification
 # since the platform defaults to (and mostly uses) the 5m TTL.
+#
+# These multipliers are derived from Anthropic's own pricing and applied to
+# cache_read_tokens/cache_creation_tokens regardless of which provider the
+# request went through. langchain_openai does populate
+# input_token_details["cache_read"] when an upstream provider reports cached
+# tokens, so an OpenRouter-routed request can carry cache detail too -- but
+# OpenRouter's own cache economics are not published the way Anthropic's are,
+# so applying this Anthropic-derived multiplier to an OpenRouter cache read is
+# only an approximation, not a verified rate.
 CACHE_WRITE_MULTIPLIER = 1.25
 CACHE_READ_MULTIPLIER = 0.1
 
