@@ -2928,11 +2928,20 @@
             if (Array.isArray(event.citations)) {
               messages[messageIndex].citations = event.citations;
             }
-            if (typeof event.content === 'string') {
-              accumulatedContent = event.content;
-            }
-            if (accumulatedContent) {
-              messages[messageIndex].content = accumulatedContent;
+            // The streamed buffer can contain citation markers at the
+            // provider's delta boundary (including in the middle of a word).
+            // The backend's done.content is the canonical, sentence-placed
+            // answer. Replace the message object as a whole so the final
+            // render/save cannot retain the raw streamed buffer.
+            const finalContent = typeof event.content === 'string'
+              ? event.content
+              : accumulatedContent;
+            accumulatedContent = finalContent;
+            if (finalContent) {
+              messages[messageIndex] = {
+                ...messages[messageIndex],
+                content: finalContent,
+              };
             } else {
               // A successful empty stream is still not an assistant message;
               // leave no empty bubble behind after the thinking indicator is

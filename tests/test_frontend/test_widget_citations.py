@@ -64,7 +64,8 @@ class TestWidgetHandlesCitationSseEvents:
     def test_done_event_can_replace_raw_stream_with_normalized_content(self) -> None:
         source = _widget_source()
         assert "typeof event.content === 'string'" in source
-        assert "accumulatedContent = event.content;" in source
+        assert "const finalContent = typeof event.content === 'string'" in source
+        assert "content: finalContent" in source
 
     def test_non_streaming_response_reads_citations_field(self) -> None:
         """The /chat non-streaming fallback path also carries citations."""
