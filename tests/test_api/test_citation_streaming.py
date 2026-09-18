@@ -94,6 +94,33 @@ class TestStreamAskResponseCitations:
     """Citation SSE events in _stream_ask_response."""
 
     @pytest.mark.asyncio
+    async def test_citation_before_text_is_emitted_after_text(self) -> None:
+        events_in = [
+            _text_event(
+                citations=[
+                    {
+                        "source": CITED_DOC_URL,
+                        "title": "HED Annotation Quickstart",
+                        "cited_text": "claim",
+                    }
+                ]
+            ),
+            _text_event("The cited claim."),
+        ]
+        fake_awm = AssistantWithMetrics(
+            assistant=_FakeAssistant(events_in),
+            model="claude-haiku-4-5",
+            key_source="platform",
+        )
+        with patch("src.api.routers.community.create_community_assistant", return_value=fake_awm):
+            events = await _collect_sse_events(
+                _stream_ask_response("hed", "A question", None, None, None)
+            )
+
+        content_strings = [e["content"] for e in events if e["event"] == "content"]
+        assert content_strings == ["The cited claim.", "[1]"]
+
+    @pytest.mark.asyncio
     async def test_citation_event_and_inline_marker_emitted(self) -> None:
         fake_awm = AssistantWithMetrics(
             assistant=_FakeAssistant(_events_for_one_citation()),

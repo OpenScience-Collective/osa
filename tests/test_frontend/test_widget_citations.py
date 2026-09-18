@@ -67,6 +67,23 @@ class TestWidgetHandlesCitationSseEvents:
         assert "Array.isArray(data.citations)" in source
 
 
+class TestThinkingPlaceholderRendering:
+    """The transient assistant entry must not render beside the loader."""
+
+    def test_empty_streaming_assistant_is_skipped_while_loading(self) -> None:
+        source = _widget_source()
+        guard = (
+            "if (isLoading && msg.role === 'assistant' && !msg.content "
+            "&& msgIndex === messages.length - 1)"
+        )
+        assert guard in source
+        assert "loading bubble below is the assistant" in source
+
+    def test_empty_completed_stream_is_removed(self) -> None:
+        source = _widget_source()
+        assert "messages.splice(messageIndex, 1);" in source
+
+
 class TestRenderInlineMarkdownCitationSupport:
     """renderInlineMarkdown must accept and use a citations lookup."""
 

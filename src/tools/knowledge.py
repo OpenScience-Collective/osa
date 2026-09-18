@@ -478,7 +478,9 @@ def create_search_docstrings_tool(
     description = (
         f"Search {community_name} code documentation (docstrings from functions, classes, scripts).{lang_help} "
         "Use this to find how specific functions work, what parameters they accept, "
-        "and see usage examples. Results include direct links to source code on GitHub. "
+        "and see usage examples. Call it with a specific function or symbol name; "
+        "do not use it for conceptual, algorithm, paper, or general troubleshooting questions. "
+        "Results include direct links to source code on GitHub. "
         "If the returned snippet is truncated (marked with `...`) and you need full "
         "details about outputs, parameters, or examples, follow up with "
         f"get_{community_id}_full_docstring."

@@ -345,6 +345,11 @@ class TestFTS5Sanitization:
         result = _sanitize_fts5_query("validation error")
         assert result == '"validation" OR "error"'
 
+    def test_sanitize_can_require_all_terms(self):
+        """Citable code searches can choose precision over partial matches."""
+        result = _sanitize_fts5_query("validation error", require_all_terms=True)
+        assert result == '"validation" AND "error"'
+
     def test_sanitize_drops_stopwords(self):
         """Noise words are removed; meaningful terms (incl. acronyms) kept."""
         result = _sanitize_fts5_query("what papers are about ICA")

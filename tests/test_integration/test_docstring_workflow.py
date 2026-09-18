@@ -119,6 +119,47 @@ def test_search_with_data(clean_db):
     assert len(results) == 2
 
 
+def test_docstring_search_does_not_cite_partial_generic_matches(clean_db):
+    """Natural-language queries must not surface an unrelated function."""
+    from src.knowledge.db import get_connection, upsert_docstring
+
+    with get_connection(clean_db) as conn:
+        upsert_docstring(
+            conn,
+            repo="sccn/eeglab",
+            file_path="functions/studyfunc/pop_clust.m",
+            language="matlab",
+            symbol_name="pop_clust",
+            symbol_type="function",
+            docstring="This function provides more detail about clustering results.",
+            line_number=4,
+            branch="develop",
+        )
+        upsert_docstring(
+            conn,
+            repo="sccn/eeglab",
+            file_path="functions/popfunc/runamica15.m",
+            language="matlab",
+            symbol_name="runamica15",
+            symbol_type="function",
+            docstring="AMICA multimodel decomposition for EEG components.",
+            line_number=1,
+            branch="develop",
+        )
+        conn.commit()
+
+    results = search_docstrings(
+        "provide more detail on multimodel AMICA", project=clean_db, limit=5
+    )
+
+    assert results == []
+
+    results = search_docstrings("AMICA", project=clean_db, limit=5)
+    assert [result.title for result in results] == [
+        "runamica15 (function) - functions/popfunc/runamica15.m"
+    ]
+
+
 def test_tool_with_empty_db(clean_db):
     """Test tool returns helpful message when database is empty."""
     tool = create_search_docstrings_tool(clean_db, "Test Community", language="matlab")

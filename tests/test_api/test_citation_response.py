@@ -123,6 +123,28 @@ class TestBuildAnswerWithCitationsViaExtractAgentResult:
 
         assert ar.response_content == "Tags are stored in events.tsv.[1]"
 
+    def test_citation_delta_before_text_is_placed_after_text(self) -> None:
+        """Provider adapters may surface a citation-only block before its text."""
+        content = [
+            {
+                "type": "text",
+                "index": 0,
+                "citations": [
+                    {
+                        "source": "https://doc.example/amica",
+                        "title": "AMICA paper",
+                        "cited_text": "AMICA claim",
+                    }
+                ],
+            },
+            {"type": "text", "index": 0, "text": "AMICA claim."},
+        ]
+        result = {"messages": [AIMessage(content=content)]}
+        ar = _extract_agent_result(result)
+
+        assert ar.response_content == "AMICA claim.[1]"
+        assert ar.citations[0].source == "https://doc.example/amica"
+
     def test_no_messages_key_returns_empty_result(self) -> None:
         ar = _extract_agent_result({})
         assert ar.response_content == ""
