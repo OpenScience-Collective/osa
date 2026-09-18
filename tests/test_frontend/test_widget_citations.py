@@ -64,7 +64,8 @@ class TestWidgetHandlesCitationSseEvents:
     def test_done_event_can_replace_raw_stream_with_normalized_content(self) -> None:
         source = _widget_source()
         assert "typeof event.content === 'string'" in source
-        assert "accumulatedContent = event.content;" in source
+        assert "const finalContent = typeof event.content === 'string'" in source
+        assert "content: finalContent" in source
 
     def test_non_streaming_response_reads_citations_field(self) -> None:
         """The /chat non-streaming fallback path also carries citations."""
@@ -86,7 +87,18 @@ class TestThinkingPlaceholderRendering:
 
     def test_empty_completed_stream_is_removed(self) -> None:
         source = _widget_source()
-        assert "messages.splice(messageIndex, 1);" in source
+        assert "messageList.splice(messageIndex, 1);" in source
+
+    def test_done_feedback_replacement_has_stable_local_identity(self) -> None:
+        source = _widget_source()
+        assert "function isSameResponseMessage(original, current)" in source
+        assert "_responseId: createResponseId()" in source
+        assert "const sameResponse = isSameResponseMessage(msg, currentMsg);" in source
+
+    def test_history_load_failure_does_not_trigger_a_rewrite(self) -> None:
+        source = _widget_source()
+        assert "return !historyLoadFailed && historyNeedsSave;" in source
+        assert "version: CHAT_HISTORY_VERSION" in source
 
 
 class TestRenderInlineMarkdownCitationSupport:

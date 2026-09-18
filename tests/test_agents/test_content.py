@@ -466,6 +466,25 @@ class TestNormalizeCitationMarkers:
 
         assert result == "- First claim[1]\n- Second claim."
 
+    def test_places_marker_after_markdown_sentence_closers(self):
+        marks = [CitationMark(1, "https://a.example", "A", "claim")]
+
+        for text, expected in [
+            (
+                "**Claim" + encode_citation_markers("[1]") + ".** Next.",
+                "**Claim.**[1] Next.",
+            ),
+            (
+                "`Claim" + encode_citation_markers("[1]") + ".` Next.",
+                "`Claim.`[1] Next.",
+            ),
+            (
+                "[Claim" + encode_citation_markers("[1]") + ".](https://example.com) Next.",
+                "[Claim.](https://example.com)[1] Next.",
+            ),
+        ]:
+            assert normalize_citation_markers(text, marks) == expected
+
 
 class TestCitationAssembler:
     """Citation markers follow the text block they annotate."""

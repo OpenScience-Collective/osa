@@ -135,6 +135,13 @@
   let communityDefaultModel = null; // Community's default model from API
   let offeredModels = null; // Live offered_models list from the community config API; null until loaded
   let sessionId = null; // Server-side session ID for multi-turn conversations
+  const CHAT_HISTORY_VERSION = 2;
+  let responseSequence = 0;
+
+  function createResponseId() {
+    responseSequence += 1;
+    return `response-${Date.now()}-${responseSequence}`;
+  }
 
   // Notice queued by an init-time failure (corrupted/inaccessible settings,
   // an invalid saved key or model, or corrupted history) that happened
@@ -1541,26 +1548,163 @@
       msg.content.length < 100000; // Prevent DoS
   }
 
+  // Older history entries may not have citations, and corrupted storage can
+  // contain a non-array value. Normalize the optional field before rendering
+  // so a malformed saved reply cannot crash widget initialization.
+  function normalizePersistedMessage(msg) {
+    if (!isValidMessage(msg)) return null;
+    if (msg.role !== 'assistant') return { ...msg };
+    return {
+      ...msg,
+      citations: Array.isArray(msg.citations)
+        ? msg.citations.filter((citation) => citation && typeof citation === 'object'
+          && !Array.isArray(citation)
+          && Number.isInteger(citation.marker)
+          && citation.marker > 0
+          && typeof citation.source === 'string')
+        : [],
+    };
+  }
+
+  // Older widget versions persisted citation markers at the stream delta
+  // boundary (for example, "ru[1]nica"). Move only markers that belong to a
+  // known citation, leaving unknown bracketed numbers and Markdown links
+  // alone. New responses are normalized by the backend before this code runs;
+  // this is a one-time repair for replies already in browser storage.
+  function migrateLegacyCitationMarkers(content, citations) {
+    if (typeof content !== 'string' || !content || !Array.isArray(citations) || !citations.length) {
+      return content;
+    }
+
+    const knownMarkers = new Set(
+      citations.map((citation) => String(citation.marker))
+    );
+    const markerPattern = /\[(\d+)\](?!\()/g;
+    const sentenceEndAtEnd = /[.!?](?:\]\([^\)\n]*\)|["'”’)\]`*_])*$/;
+    const sentenceEnd = /[.!?](?:\]\([^\)\n]*\)|["'”’)\]`*_])*(?=\s|$)/g;
+    const blockBoundary = /\n[ \t]*(?:(?:[-*+]\s+)|(?:\d+[.)]\s+)|(?:#{1,6}\s+)|(?:>\s+)|(?:```)|(?:\n))/g;
+    const markers = [];
+    let match;
+
+    const isInsideInlineCode = (position) => {
+      let backtickCount = 0;
+      let escaped = false;
+      for (const character of content.slice(0, position)) {
+        if (character === '`' && !escaped) backtickCount += 1;
+        escaped = character === '\\' && !escaped;
+        if (character !== '\\') escaped = false;
+      }
+      return backtickCount % 2 === 1;
+    };
+
+    while ((match = markerPattern.exec(content)) !== null) {
+      if (knownMarkers.has(match[1]) && !isInsideInlineCode(match.index)) {
+        markers.push({
+          start: match.index,
+          end: markerPattern.lastIndex,
+          marker: match[1],
+        });
+      }
+    }
+    if (!markers.length) return content;
+
+    const moves = [];
+    for (const marker of markers) {
+      const prefix = content.slice(0, marker.start).trimEnd();
+      if (sentenceEndAtEnd.test(prefix)) continue;
+
+      const precedingIdentifier = content.slice(0, marker.start).match(/[A-Za-z_$][\w$]*$/)?.[0];
+      const afterMarker = content.slice(marker.end);
+      if (precedingIdentifier && precedingIdentifier.length > 1
+          && (/^\s/.test(afterMarker) || /^[,.;:)]/.test(afterMarker))) {
+        // A known citation marker can share a number with an ordinary array
+        // index in legacy text. Do not rewrite an unambiguous identifier
+        // index such as arr[1] just because the reply also cites source [1].
+        continue;
+      }
+
+      sentenceEnd.lastIndex = marker.end;
+      const sentence = sentenceEnd.exec(content);
+      blockBoundary.lastIndex = marker.end;
+      const block = blockBoundary.exec(content);
+      const boundary = block && (!sentence || block.index < sentence.index) ? block : sentence;
+      moves.push({
+        marker: `[${marker.marker}]`,
+        start: marker.start,
+        end: marker.end,
+        target: boundary
+          ? (boundary === block ? boundary.index : boundary.index + boundary[0].length)
+          : content.length,
+      });
+    }
+    if (!moves.length) return content;
+
+    const insertions = new Map();
+    for (const move of moves) {
+      const atTarget = insertions.get(move.target) || [];
+      atTarget.push(move.marker);
+      insertions.set(move.target, atTarget);
+    }
+
+    // Rebuild against the original positions so multiple markers can share a
+    // sentence end without disturbing one another's offsets.
+    const removals = new Set(moves.flatMap((move) => {
+      const positions = [];
+      for (let index = move.start; index < move.end; index += 1) positions.push(index);
+      const lineStart = content.lastIndexOf('\n', move.start - 1) + 1;
+      const linePrefix = content.slice(lineStart, move.start);
+      const isListIndent = /^\s*(?:[-*+]\s+|\d+[.)]\s+)$/.test(linePrefix);
+      if (!isListIndent) {
+        for (let index = move.start - 1; index >= lineStart && /[ \t]/.test(content[index]); index -= 1) {
+          positions.push(index);
+        }
+      }
+      return positions;
+    }));
+    let cleaned = '';
+    for (let index = 0; index <= content.length; index += 1) {
+      const values = insertions.get(index);
+      if (values) cleaned += values.join('');
+      if (index < content.length && !removals.has(index)) cleaned += content[index];
+    }
+    return cleaned;
+  }
+
   // Load chat history from localStorage
   function loadHistory() {
     let historyLoadFailed = false;
+    let historyNeedsSave = false;
     try {
       const saved = localStorage.getItem(CONFIG.storageKey);
       if (saved) {
         const parsed = JSON.parse(saved);
         // Validate structure to prevent injection attacks
         let rawMessages;
+        let historyVersion = 0;
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Array.isArray(parsed.messages)) {
-          // New format: { messages, sessionId }
+          // Stored format: { version, messages, sessionId }
           rawMessages = parsed.messages;
           sessionId = parsed.sessionId || null;
+          historyVersion = Number.isInteger(parsed.version) ? parsed.version : 0;
         } else if (Array.isArray(parsed)) {
           // Legacy format: just messages array (backward compatible)
           rawMessages = parsed;
           sessionId = null;
         }
         if (rawMessages) {
-          messages = rawMessages.filter(isValidMessage);
+          messages = rawMessages.map(normalizePersistedMessage).filter(Boolean);
+          if (messages.length !== rawMessages.length || historyVersion < CHAT_HISTORY_VERSION) {
+            historyNeedsSave = true;
+          }
+          if (historyVersion < CHAT_HISTORY_VERSION) {
+            messages = messages.map((message) => {
+              if (message.role !== 'assistant' || !message.citations.length) return message;
+              const content = migrateLegacyCitationMarkers(message.content, message.citations);
+              if (content === message.content) return message;
+              historyNeedsSave = true;
+              return { ...message, content };
+            });
+          }
           if (messages.length !== rawMessages.length) {
             console.warn('Some chat messages were invalid and filtered out');
           }
@@ -1574,7 +1718,9 @@
     if (messages.length === 0) {
       messages = [{ role: 'assistant', content: CONFIG.initialMessage }];
     }
-    return historyLoadFailed;
+    // A read/parse failure must never trigger a write: preserving the
+    // existing storage value is safer than replacing it with the greeting.
+    return !historyLoadFailed && historyNeedsSave;
   }
 
   // Save chat history to localStorage
@@ -1590,11 +1736,11 @@
       // in-progress draft, and never persist a vote that has not been confirmed
       // by the server (so a reload can't show a false "recorded" state).
       const persistable = messages.map((m) => {
-        const { _feedbackCommitting, _feedbackJustOpened, feedbackDraft, ...rest } = m;
+        const { _feedbackCommitting, _feedbackJustOpened, _responseId, feedbackDraft, ...rest } = m;
         if (rest.feedback && !rest.feedbackCommitted) delete rest.feedback;
         return rest;
       });
-      const data = JSON.stringify({ messages: persistable, sessionId });
+      const data = JSON.stringify({ version: CHAT_HISTORY_VERSION, messages: persistable, sessionId });
       localStorage.setItem(CONFIG.storageKey, data);
       saveErrorShown = false;
     } catch (e) {
@@ -2133,6 +2279,12 @@
     }
   }
 
+  function isSameResponseMessage(original, current) {
+    return current === original
+      || (original?._responseId && current?._responseId === original._responseId)
+      || (original?.requestId && current?.requestId === original.requestId);
+  }
+
   // Post a per-response vote (with the optional down-vote comment) exactly once.
   // Confirm-then-commit: the "Thanks!" / committed state is only shown AFTER the
   // POST succeeds, so a failure never leaves a false success (in the UI or in
@@ -2156,12 +2308,20 @@
       session_id: sessionId || null,
       message_index: msgIndex,
     });
-    msg._feedbackCommitting = false;
+    // The streaming completion path may replace the assistant object while
+    // this request is in flight. Re-acquire the current object so the result
+    // is not applied only to the stale object captured before the await.
+    const currentMsg = messages[msgIndex];
+    const sameResponse = isSameResponseMessage(msg, currentMsg);
+    if (!currentMsg || currentMsg.role !== 'assistant' || !sameResponse) {
+      return;
+    }
+    currentMsg._feedbackCommitting = false;
 
     if (ok) {
-      msg.feedbackCommitted = true;
-      delete msg.feedbackDraft;
-      delete msg._feedbackJustOpened;
+      currentMsg.feedbackCommitted = true;
+      delete currentMsg.feedbackDraft;
+      delete currentMsg._feedbackJustOpened;
       // Reveal "Thanks!" (and replace any open box). Safe in every path: harmless
       // on a hidden window, and a no-op for a reply already removed by a reset.
       renderMessages(container);
@@ -2175,14 +2335,14 @@
 
     // Failed. An up-vote reverts to unvoted; a down-vote keeps its pending box
     // (and the typed comment) so it can be retried on the next Send or flush.
-    if (sentiment === 'up') delete msg.feedback;
+    if (sentiment === 'up') delete currentMsg.feedback;
     if (!interactive) {
       // Best-effort flush during teardown: do not touch the (possibly hidden or
       // already-reset) UI. A pending down stays pending and retries next flush.
       console.warn('[OSA] Feedback flush did not send; will retry on next attempt.');
       return;
     }
-    if (sentiment === 'down') msg._feedbackJustOpened = true; // refocus the box
+    if (sentiment === 'down') currentMsg._feedbackJustOpened = true; // refocus the box
     renderMessages(container);
     showError(container, 'Could not send feedback. Please try again.');
   }
@@ -2598,7 +2758,8 @@
       // Build a marker -> citation lookup for this message (empty for a
       // message with no citations, e.g. every OpenRouter-answered reply).
       const citationsByMarker = {};
-      (msg.citations || []).forEach((c) => {
+      const citations = Array.isArray(msg.citations) ? msg.citations : [];
+      citations.forEach((c) => {
         if (c && typeof c.marker !== 'undefined') citationsByMarker[c.marker] = c;
       });
 
@@ -2608,8 +2769,8 @@
 
       // Compact numbered source list under the answer, when anything was cited.
       let sourcesRow = '';
-      if (msg.role === 'assistant' && msg.citations && msg.citations.length) {
-        const items = msg.citations.map((c) => {
+      if (msg.role === 'assistant' && citations.length) {
+        const items = citations.map((c) => {
           const sourceLabel = escapeHtml(String(c.title || c.source || ''));
           const inner = isSafeUrl(c.source)
             ? '<a href="' + escapeHtml(c.source) + '" target="_blank" rel="noopener noreferrer">' + sourceLabel + '</a>'
@@ -2800,6 +2961,34 @@
     }
   }
 
+  // Apply the authoritative completion payload to the active assistant
+  // message. Kept separate from the stream loop so the state transition can
+  // be tested without depending on a live model or browser network.
+  function applyDoneEvent(messageList, messageIndex, event, streamedContent) {
+    const message = messageList[messageIndex];
+    if (!message) return '';
+
+    if (event.request_id && typeof event.request_id === 'string') {
+      message.requestId = event.request_id;
+    }
+    if (Array.isArray(event.citations)) {
+      message.citations = event.citations;
+    }
+
+    const finalContent = typeof event.content === 'string'
+      ? event.content
+      : streamedContent;
+    if (finalContent) {
+      messageList[messageIndex] = {
+        ...message,
+        content: finalContent,
+      };
+    } else {
+      messageList.splice(messageIndex, 1);
+    }
+    return finalContent;
+  }
+
   // Handle streaming response from API
   // SSE Event formats:
   //   data: {"event": "content", "content": "text chunk"}
@@ -2822,7 +3011,7 @@
     let receivedFirstContent = false;
 
     // Create placeholder assistant message (not rendered yet - loading dots stay visible)
-    messages.push({ role: 'assistant', content: '', citations: [] });
+    messages.push({ role: 'assistant', content: '', citations: [], _responseId: createResponseId() });
     const messageIndex = messages.length - 1;
 
     try {
@@ -2887,11 +3076,10 @@
             // Log tool completion
             console.log('[OSA] Tool completed:', event.name);
           } else if (event.event === 'citation') {
-            // A source was cited for the first time; its marker text also
-            // arrives as its own 'content' chunk (handled above), so the
-            // inline [n] is already part of accumulatedContent by the time
-            // this renders. The final 'done' event replaces that raw stream
-            // with the backend's canonical sentence placement.
+            // A source was cited for the first time. The backend announces
+            // metadata before sending the marker as its own content chunk, so
+            // the next render can link it immediately. The final 'done' event
+            // replaces that raw stream with canonical sentence placement.
             if (typeof event.marker !== 'undefined' && event.source) {
               messages[messageIndex].citations = messages[messageIndex].citations || [];
               messages[messageIndex].citations.push({
@@ -2919,26 +3107,15 @@
             if (event.session_id && typeof event.session_id === 'string') {
               sessionId = event.session_id;
             }
-            if (event.request_id && typeof event.request_id === 'string') {
-              messages[messageIndex].requestId = event.request_id;
-            }
-            // Authoritative citation list: replaces whatever 'citation'
-            // events arrived, so a client that missed one still renders
-            // correctly (see _stream_ask_response's SSE docstring).
-            if (Array.isArray(event.citations)) {
-              messages[messageIndex].citations = event.citations;
-            }
-            if (typeof event.content === 'string') {
-              accumulatedContent = event.content;
-            }
-            if (accumulatedContent) {
-              messages[messageIndex].content = accumulatedContent;
-            } else {
-              // A successful empty stream is still not an assistant message;
-              // leave no empty bubble behind after the thinking indicator is
-              // removed.
-              messages.splice(messageIndex, 1);
-            }
+            // The backend's done.content is canonical and replaces any raw
+            // citation boundaries accumulated while streaming.
+            const finalContent = applyDoneEvent(
+              messages,
+              messageIndex,
+              event,
+              accumulatedContent,
+            );
+            accumulatedContent = finalContent;
             renderMessages(container);
             try {
               saveHistory();
@@ -3490,9 +3667,18 @@
 
     loadPageContextPreference();
     loadUserSettings();
-    loadHistory();
+    const historyNeedsSave = loadHistory();
     injectStyles();
     const container = createWidget();
+
+    if (historyNeedsSave) {
+      try {
+        saveHistory();
+      } catch (saveError) {
+        console.error('[OSA] Failed to persist migrated chat history:', saveError);
+        queuePendingNotice('Saved chat history was repaired but could not be persisted.');
+      }
+    }
 
     // Fetch community default model (async, non-blocking)
     fetchCommunityConfig();
@@ -3665,6 +3851,13 @@
       }
     }
   };
+
+  // Keep the state reducer testable without exposing it in normal embeds.
+  if (window.__OSA_TEST__) {
+    window.OSAChatWidget.__applyDoneEvent = applyDoneEvent;
+    window.OSAChatWidget.__migrateLegacyCitationMarkers = migrateLegacyCitationMarkers;
+    window.OSAChatWidget.__isSameResponseMessage = isSameResponseMessage;
+  }
 
   // Auto-init unless the script tag has data-no-auto-init attribute
   let initialized = false;

@@ -277,8 +277,10 @@ class CitationTracker:
 
 _CITATION_MARKER_PATTERN = re.compile(r"\[(\d+)\]")
 _CITATION_MARKER_TOKEN_PATTERN = re.compile(r"\x00osa-citation-(\d+)\x00")
-_SENTENCE_END_PATTERN = re.compile(r"""[.!?](?:["'”’)\]]*)?(?=\s|$)""")
-_SENTENCE_END_AT_END_PATTERN = re.compile(r"""[.!?](?:["'”’)\]]*)?$""")
+_MARKDOWN_LINK_CLOSER = r"(?:\]\([^\)\n]*\))"
+_SENTENCE_END_CLOSERS = rf"(?:{_MARKDOWN_LINK_CLOSER}|[\"'”’)\]`*_])*"
+_SENTENCE_END_PATTERN = re.compile(rf"[.!?]{_SENTENCE_END_CLOSERS}(?=\s|$)")
+_SENTENCE_END_AT_END_PATTERN = re.compile(rf"[.!?]{_SENTENCE_END_CLOSERS}$")
 _MARKDOWN_BLOCK_BOUNDARY_PATTERN = re.compile(
     r"\n[ \t]*(?:(?:[-*+]\s+)|(?:\d+[.)]\s+)|(?:#{1,6}\s+)|(?:>\s+)|(?:```)|(?:\n))"
 )
@@ -331,6 +333,19 @@ def _next_citation_insertion_position(text: str, start: int) -> int:
     return sentence_boundary.end() if sentence_boundary else len(text)
 
 
+def _completed_sentence_position(text: str, start: int) -> int | None:
+    """Return the position after a completed Markdown sentence before a marker."""
+    prefix = text[:start].rstrip()
+    if not prefix or _SENTENCE_END_AT_END_PATTERN.search(prefix) is None:
+        return None
+
+    closing = re.match(_SENTENCE_END_CLOSERS, text[len(prefix) :])
+    insertion_position = len(prefix) + (len(closing.group()) if closing else 0)
+    if insertion_position == len(text) or text[insertion_position].isspace():
+        return insertion_position
+    return len(prefix)
+
+
 def normalize_citation_markers(text: str, marks: list[CitationMark]) -> str:
     """Move generated citation markers to the end of their sentence.
 
@@ -375,10 +390,8 @@ def normalize_citation_markers(text: str, marks: list[CitationMark]) -> str:
     insertions: dict[int, list[str]] = {}
 
     for original_position, marker in occurrences:
-        prefix = clean_text[:original_position].rstrip()
-        if prefix and _SENTENCE_END_AT_END_PATTERN.search(prefix):
-            insertion_position = len(prefix)
-        else:
+        insertion_position = _completed_sentence_position(clean_text, original_position)
+        if insertion_position is None:
             insertion_position = _next_citation_insertion_position(clean_text, original_position)
         marker_number = marker.removeprefix("[").removesuffix("]")
         insertions.setdefault(insertion_position, []).append(

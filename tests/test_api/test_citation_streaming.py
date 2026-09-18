@@ -17,9 +17,11 @@ from unittest.mock import patch
 
 import pytest
 
+from src.agents.content import CitationAssembler, ContentBlock
 from src.api.routers.community import (
     AssistantWithMetrics,
     ChatSession,
+    _build_citation_sse_events,
     _stream_ask_response,
     _stream_chat_response,
 )
@@ -76,6 +78,22 @@ async def _collect_sse_events(agen) -> list[dict]:
 
 
 CITED_DOC_URL = "https://www.hedtags.org/hed-resources/HedAnnotationQuickstart.html"
+
+
+def test_citation_sse_announces_metadata_before_inline_marker() -> None:
+    assembler = CitationAssembler()
+    events = _build_citation_sse_events(
+        assembler,
+        ContentBlock(
+            "text",
+            "The cited claim.",
+            [{"source": CITED_DOC_URL, "title": "HED", "cited_text": "claim"}],
+        ),
+        block_index=0,
+    )
+
+    assert [event["event"] for event in events] == ["citation", "content"]
+    assert events[1]["content"] == "[1]"
 
 
 def _events_for_one_citation() -> list[dict]:
