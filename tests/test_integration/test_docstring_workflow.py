@@ -420,6 +420,9 @@ def test_docstring_search_does_not_treat_generic_terms_as_symbols(clean_db):
     results = search_docstrings("how do I set 64 channels", project=clean_db, limit=5)
     assert results == []
 
+    results = search_docstrings("channels (64 total)", project=clean_db, limit=5)
+    assert results == []
+
 
 def test_branch_fallback_for_null(clean_db):
     """Test that NULL branch values fallback to 'main' in URLs."""

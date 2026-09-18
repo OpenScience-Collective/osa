@@ -244,7 +244,7 @@ def _is_identifier_token(token: str) -> bool:
 def _explicit_symbol_terms(query: str) -> list[str]:
     """Extract symbols explicitly marked as code in a natural-language query."""
     terms: list[str] = []
-    pattern = re.compile(r"`([A-Za-z][A-Za-z0-9_]*)`|(?<![A-Za-z0-9_])([A-Za-z][A-Za-z0-9_]*)\s*\(")
+    pattern = re.compile(r"`([A-Za-z][A-Za-z0-9_]*)`|(?<![A-Za-z0-9_])([A-Za-z][A-Za-z0-9_]*)\(")
     for match in pattern.finditer(query):
         term = (match.group(1) or match.group(2)).lower()
         if term not in terms:
