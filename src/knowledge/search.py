@@ -227,11 +227,18 @@ def _sanitize_docstring_query(query: str) -> tuple[str, str]:
     symbol ranking.
     """
     tokens = re.findall(r"[A-Za-z0-9_]+", query.lower())
-    identifier_terms = [
-        token for token in tokens if "_" in token or any(char.isdigit() for char in token)
-    ]
+    identifier_terms = [token for token in tokens if _is_identifier_token(token)]
     search_input = " ".join(identifier_terms) if identifier_terms else query
     return _sanitize_fts5_query(search_input, require_all_terms=True), search_input.strip().lower()
+
+
+def _is_identifier_token(token: str) -> bool:
+    """Return whether a token looks like a code symbol, not a plain number."""
+    return (
+        bool(token)
+        and any(char.isalpha() for char in token)
+        and ("_" in token or any(char.isdigit() for char in token))
+    )
 
 
 @dataclass
@@ -711,7 +718,41 @@ def search_docstrings(
             safe_query, query_lower = _sanitize_docstring_query(query)
             params[0] = safe_query
 
-            for idx, row in enumerate(conn.execute(sql, params)):
+            rows = list(conn.execute(sql, params))
+            exact_symbols: set[str] = set()
+            if not rows:
+                # A natural-language question can contain a plain symbol such
+                # as ``erpimage`` without the underscores/digits that make an
+                # identifier easy to recognize lexically. Only use this
+                # fallback after the precise conceptual query found nothing;
+                # that keeps generic terms from weakening an otherwise good
+                # all-terms match.
+                candidates = [
+                    token
+                    for token in re.findall(r"[A-Za-z0-9_]+", query.lower())
+                    if len(token) >= 4 and token not in _FTS_STOPWORDS
+                ]
+                if candidates:
+                    placeholders = ", ".join("?" for _ in candidates)
+                    exact_sql = f"""
+                        SELECT d.symbol_name, d.docstring, d.file_path, d.repo,
+                               d.language, d.symbol_type, d.line_number, d.branch
+                        FROM docstrings d
+                        WHERE lower(d.symbol_name) IN ({placeholders})
+                    """
+                    exact_params: list[str | int] = candidates.copy()
+                    if language:
+                        exact_sql += " AND d.language = ?"
+                        exact_params.append(language)
+                    if repo:
+                        exact_sql += " AND d.repo = ?"
+                        exact_params.append(repo)
+                    exact_sql += " ORDER BY lower(d.symbol_name) LIMIT ?"
+                    exact_params.append(fetch_limit)
+                    rows = list(conn.execute(exact_sql, exact_params))
+                    exact_symbols = set(candidates)
+
+            for idx, row in enumerate(rows):
                 snippet = _make_snippet(row["docstring"], max_length=DOCSTRING_SNIPPET_MAX_LENGTH)
 
                 # Build GitHub URL to the specific line
@@ -731,7 +772,11 @@ def search_docstrings(
                 title = f"{symbol_name} ({symbol_type}) - {file_path}"
 
                 # Rank: exact symbol_name match (0), then bm25 order (1)
-                priority = 0 if symbol_name.lower() == query_lower else 1
+                priority = (
+                    0
+                    if symbol_name.lower() == query_lower or symbol_name.lower() in exact_symbols
+                    else 1
+                )
 
                 ranked.append(
                     (

@@ -579,9 +579,10 @@
     /* Compact numbered source list under a cited answer */
     .osa-message-sources {
       margin: 8px 0 0;
-      padding-left: 18px;
+      padding-left: 0;
       font-size: 12px;
       color: var(--osa-text-light);
+      list-style: none;
     }
 
     .osa-message-sources li {
@@ -2615,7 +2616,7 @@
             : '<span>' + sourceLabel + '</span>';
           return '<li><span class="osa-source-marker">[' + escapeHtml(String(c.marker)) + ']</span> ' + inner + '</li>';
         }).join('');
-        sourcesRow = '<ol class="osa-message-sources">' + items + '</ol>';
+        sourcesRow = '<ul class="osa-message-sources">' + items + '</ul>';
       }
 
       // Add copy button for assistant messages

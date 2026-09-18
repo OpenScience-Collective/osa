@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field, field_validator
 from src.agents.base import DEFAULT_MAX_CONVERSATION_TOKENS
 from src.agents.content import (
     CitationAssembler,
+    ContentBlock,
     classify_content_blocks_with_indices,
 )
 from src.api.config import Settings, get_settings
@@ -1223,12 +1224,36 @@ def _build_answer_with_citations(content: str | list[Any]) -> tuple[str, list[Ci
         if marker_text:
             parts.append(marker_text)
 
+    assembler.finish_model_run()
     answer = "".join(parts)
     citations = [
         CitationInfo(marker=m.marker, source=m.source, title=m.title, cited_text=m.cited_text)
         for m in assembler.marks
     ]
     return answer, citations
+
+
+def _build_citation_sse_events(
+    assembler: CitationAssembler,
+    block: ContentBlock,
+    block_index: int | None,
+) -> list[dict[str, Any]]:
+    """Build the shared SSE events emitted for one citation-bearing block."""
+    marker_text, new_marks = assembler.add_block(block, block_index)
+    events: list[dict[str, Any]] = []
+    if marker_text:
+        events.append({"event": "content", "content": marker_text})
+    events.extend(
+        {
+            "event": "citation",
+            "marker": mark.marker,
+            "source": mark.source,
+            "title": mark.title,
+            "cited_text": mark.cited_text,
+        }
+        for mark in new_marks
+    )
+    return events
 
 
 def _extract_agent_result(result: dict) -> AgentResult:
@@ -2206,20 +2231,9 @@ async def _stream_ask_response(
                             if block.text:
                                 sse_event = {"event": "content", "content": block.text}
                                 yield f"data: {json.dumps(sse_event)}\n\n"
-                            marker_text, new_marks = citation_assembler.add_block(
-                                block, block_index
-                            )
-                            if marker_text:
-                                sse_event = {"event": "content", "content": marker_text}
-                                yield f"data: {json.dumps(sse_event)}\n\n"
-                            for mark in new_marks:
-                                sse_event = {
-                                    "event": "citation",
-                                    "marker": mark.marker,
-                                    "source": mark.source,
-                                    "title": mark.title,
-                                    "cited_text": mark.cited_text,
-                                }
+                            for sse_event in _build_citation_sse_events(
+                                citation_assembler, block, block_index
+                            ):
                                 yield f"data: {json.dumps(sse_event)}\n\n"
                         elif block.kind == "thinking":
                             yield f"data: {json.dumps({'event': 'thinking'})}\n\n"
@@ -2230,6 +2244,7 @@ async def _stream_ask_response(
                 total_output_tokens += out
                 total_cache_read_tokens += cache_read
                 total_cache_creation_tokens += cache_creation
+                citation_assembler.finish_model_run()
 
             elif kind == "on_tool_start":
                 tool_input = event.get("data", {}).get("input", {})
@@ -2454,21 +2469,11 @@ async def _stream_chat_response(
                                 full_response += block.text
                                 sse_event = {"event": "content", "content": block.text}
                                 yield f"data: {json.dumps(sse_event)}\n\n"
-                            marker_text, new_marks = citation_assembler.add_block(
-                                block, block_index
-                            )
-                            if marker_text:
-                                full_response += marker_text
-                                sse_event = {"event": "content", "content": marker_text}
-                                yield f"data: {json.dumps(sse_event)}\n\n"
-                            for mark in new_marks:
-                                sse_event = {
-                                    "event": "citation",
-                                    "marker": mark.marker,
-                                    "source": mark.source,
-                                    "title": mark.title,
-                                    "cited_text": mark.cited_text,
-                                }
+                            for sse_event in _build_citation_sse_events(
+                                citation_assembler, block, block_index
+                            ):
+                                if sse_event["event"] == "content":
+                                    full_response += sse_event["content"]
                                 yield f"data: {json.dumps(sse_event)}\n\n"
                         elif block.kind == "thinking":
                             yield f"data: {json.dumps({'event': 'thinking'})}\n\n"
@@ -2479,6 +2484,7 @@ async def _stream_chat_response(
                 total_output_tokens += out
                 total_cache_read_tokens += cache_read
                 total_cache_creation_tokens += cache_creation
+                citation_assembler.finish_model_run()
 
             elif kind == "on_tool_start":
                 tool_input = event.get("data", {}).get("input", {})

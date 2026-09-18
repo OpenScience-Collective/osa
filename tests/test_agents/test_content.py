@@ -413,6 +413,50 @@ class TestCitationAssembler:
 
         assert marker_text == "[1]"
 
+    def test_model_run_reset_prevents_reused_block_index_from_leading(self):
+        assembler = CitationAssembler()
+        first = {"source": "https://a.example", "title": "A"}
+        second = {"source": "https://b.example", "title": "B"}
+
+        marker_text, _new_marks = assembler.add_block(
+            ContentBlock("text", "First claim.", [first]), block_index=0
+        )
+        assert marker_text == "[1]"
+        assembler.finish_model_run()
+
+        marker_text, _new_marks = assembler.add_block(
+            ContentBlock("text", "", [second]), block_index=0
+        )
+        assert marker_text == ""
+
+        marker_text, new_marks = assembler.add_block(
+            ContentBlock("text", "Second claim.", []), block_index=0
+        )
+        assert marker_text == "[2]"
+        assert [mark.source for mark in new_marks] == ["https://b.example"]
+        assert [mark.source for mark in assembler.marks] == [
+            "https://a.example",
+            "https://b.example",
+        ]
+
+    def test_unresolved_citation_is_logged_and_discarded_at_model_run_end(self, caplog):
+        assembler = CitationAssembler()
+        assembler.add_block(
+            ContentBlock(
+                "text",
+                "",
+                [{"source": "https://a.example", "title": "A"}],
+            ),
+            block_index=0,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="src.agents.content"):
+            unresolved = assembler.finish_model_run()
+
+        assert unresolved == 1
+        assert "matching text block" in caplog.text
+        assert assembler.marks == []
+
 
 class TestContentBlockShape:
     """ContentBlock is a plain tuple, so existing 2/3-tuple comparisons keep working."""

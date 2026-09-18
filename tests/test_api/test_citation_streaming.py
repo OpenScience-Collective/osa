@@ -51,8 +51,8 @@ class _FakeAssistant:
         return self._graph
 
 
-def _text_event(text: str = "", citations: list[dict] | None = None) -> dict:
-    block: dict[str, Any] = {"type": "text", "index": 0}
+def _text_event(text: str = "", citations: list[dict] | None = None, index: int = 0) -> dict:
+    block: dict[str, Any] = {"type": "text", "index": index}
     if text:
         block["text"] = text
     if citations:
@@ -61,6 +61,10 @@ def _text_event(text: str = "", citations: list[dict] | None = None) -> dict:
         "event": "on_chat_model_stream",
         "data": {"chunk": _FakeChunk([block])},
     }
+
+
+def _model_end_event() -> dict:
+    return {"event": "on_chat_model_end", "data": {}}
 
 
 async def _collect_sse_events(agen) -> list[dict]:
@@ -119,6 +123,37 @@ class TestStreamAskResponseCitations:
 
         content_strings = [e["content"] for e in events if e["event"] == "content"]
         assert content_strings == ["The cited claim.", "[1]"]
+
+    @pytest.mark.asyncio
+    async def test_block_indices_reset_between_model_runs(self) -> None:
+        events_in = [
+            _text_event("Tool result visible.", index=0),
+            _model_end_event(),
+            _text_event(
+                citations=[
+                    {
+                        "source": CITED_DOC_URL,
+                        "title": "HED Annotation Quickstart",
+                        "cited_text": "final claim",
+                    }
+                ],
+                index=0,
+            ),
+            _text_event("Final claim.", index=0),
+            _model_end_event(),
+        ]
+        fake_awm = AssistantWithMetrics(
+            assistant=_FakeAssistant(events_in),
+            model="claude-haiku-4-5",
+            key_source="platform",
+        )
+        with patch("src.api.routers.community.create_community_assistant", return_value=fake_awm):
+            events = await _collect_sse_events(
+                _stream_ask_response("hed", "A question", None, None, None)
+            )
+
+        content_strings = [e["content"] for e in events if e["event"] == "content"]
+        assert content_strings == ["Tool result visible.", "Final claim.", "[1]"]
 
     @pytest.mark.asyncio
     async def test_citation_event_and_inline_marker_emitted(self) -> None:
@@ -229,3 +264,32 @@ class TestStreamChatResponseCitations:
         assert assistant_message.content == (
             "Tags go in events.tsv.[1] More context after the citation."
         )
+
+    @pytest.mark.asyncio
+    async def test_citation_before_text_is_emitted_after_text(self) -> None:
+        events_in = [
+            _text_event(
+                citations=[
+                    {
+                        "source": CITED_DOC_URL,
+                        "title": "HED Annotation Quickstart",
+                        "cited_text": "claim",
+                    }
+                ]
+            ),
+            _text_event("The cited claim."),
+        ]
+        session = ChatSession(session_id="test-session-2", community_id="hed")
+        session.add_user_message("A question")
+        fake_awm = AssistantWithMetrics(
+            assistant=_FakeAssistant(events_in),
+            model="claude-haiku-4-5",
+            key_source="platform",
+        )
+        with patch("src.api.routers.community.create_community_assistant", return_value=fake_awm):
+            events = await _collect_sse_events(
+                _stream_chat_response("hed", session, None, None, None)
+            )
+
+        content_strings = [e["content"] for e in events if e["event"] == "content"]
+        assert content_strings == ["The cited claim.", "[1]"]

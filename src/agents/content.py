@@ -318,6 +318,28 @@ class CitationAssembler:
 
         return self._tracker.record_block(citations)
 
+    def finish_model_run(self) -> int:
+        """Discard unresolved block-local citations before the next model run.
+
+        Anthropic block indices are scoped to one model invocation. The
+        response-wide tracker must retain its marker numbering, but pending
+        and seen-block state must not leak into a later tool-loop invocation
+        where the provider can reuse the same indices.
+
+        Returns:
+            The number of citation payloads discarded because their matching
+            text block never arrived.
+        """
+        unresolved = sum(len(citations) for citations in self._pending.values())
+        if unresolved:
+            logger.warning(
+                "Dropping %d citation(s) without a matching text block at model-run end",
+                unresolved,
+            )
+        self._pending.clear()
+        self._text_seen.clear()
+        return unresolved
+
     @property
     def marks(self) -> list[CitationMark]:
         """Every citation that has been attached to emitted answer text."""

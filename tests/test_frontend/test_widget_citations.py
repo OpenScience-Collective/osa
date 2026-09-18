@@ -105,6 +105,11 @@ class TestRenderInlineMarkdownCitationSupport:
             "lookahead, to avoid matching markdown links"
         )
 
+    def test_source_list_uses_only_citation_markers_for_numbering(self) -> None:
+        source = _widget_source()
+        assert "sourcesRow = '<ul class=\"osa-message-sources\">'" in source
+        assert "list-style: none;" in source
+
     def test_marker_scan_considers_every_bracketed_number(self) -> None:
         """The scan must be exhaustive, not first-match.
 

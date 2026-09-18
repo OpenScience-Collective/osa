@@ -159,6 +159,11 @@ def test_docstring_search_does_not_cite_partial_generic_matches(clean_db):
         "runamica15 (function) - functions/popfunc/runamica15.m"
     ]
 
+    results = search_docstrings("how do I use runamica15", project=clean_db, limit=5)
+    assert [result.title for result in results] == [
+        "runamica15 (function) - functions/popfunc/runamica15.m"
+    ]
+
 
 def test_tool_with_empty_db(clean_db):
     """Test tool returns helpful message when database is empty."""
@@ -390,6 +395,9 @@ def test_exact_symbol_match_ranks_above_wrappers(clean_db):
     assert results[0].title == "erpimage (function) - functions/sigprocfunc/erpimage.m", (
         f"Expected exact match 'erpimage' first, got: {results[0].title}"
     )
+
+    results = search_docstrings("how do I use erpimage", project=clean_db, limit=3)
+    assert results[0].title == "erpimage (function) - functions/sigprocfunc/erpimage.m"
 
 
 def test_branch_fallback_for_null(clean_db):
