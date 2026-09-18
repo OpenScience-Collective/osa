@@ -15,6 +15,7 @@ import logging
 from pathlib import Path
 
 from src.agents.content import (
+    CitationAssembler,
     CitationMark,
     CitationTracker,
     ContentBlock,
@@ -379,6 +380,82 @@ class TestCitationTracker:
         marks = tracker.marks
         marks.append(CitationMark(99, "fake", "fake", "fake"))
         assert len(tracker.marks) == 1
+
+
+class TestCitationAssembler:
+    """Citation markers follow the text block they annotate."""
+
+    def test_citation_before_text_is_buffered_until_that_block_text(self):
+        assembler = CitationAssembler()
+        citation = {"source": "https://a.example", "title": "A", "cited_text": "claim"}
+
+        marker_text, new_marks = assembler.add_block(
+            ContentBlock("text", "", [citation]), block_index=0
+        )
+        assert marker_text == ""
+        assert new_marks == []
+
+        marker_text, new_marks = assembler.add_block(
+            ContentBlock("text", "The claim is supported.", []), block_index=0
+        )
+        assert marker_text == "[1]"
+        assert [mark.source for mark in new_marks] == ["https://a.example"]
+        assert assembler.marks[0].source == "https://a.example"
+
+    def test_citation_after_text_keeps_inline_stream_position(self):
+        assembler = CitationAssembler()
+        citation = {"source": "https://a.example", "title": "A"}
+
+        assembler.add_block(ContentBlock("text", "The claim.", []), block_index=0)
+        marker_text, _new_marks = assembler.add_block(
+            ContentBlock("text", "", [citation]), block_index=0
+        )
+
+        assert marker_text == "[1]"
+
+    def test_model_run_reset_prevents_reused_block_index_from_leading(self):
+        assembler = CitationAssembler()
+        first = {"source": "https://a.example", "title": "A"}
+        second = {"source": "https://b.example", "title": "B"}
+
+        marker_text, _new_marks = assembler.add_block(
+            ContentBlock("text", "First claim.", [first]), block_index=0
+        )
+        assert marker_text == "[1]"
+        assembler.finish_model_run()
+
+        marker_text, _new_marks = assembler.add_block(
+            ContentBlock("text", "", [second]), block_index=0
+        )
+        assert marker_text == ""
+
+        marker_text, new_marks = assembler.add_block(
+            ContentBlock("text", "Second claim.", []), block_index=0
+        )
+        assert marker_text == "[2]"
+        assert [mark.source for mark in new_marks] == ["https://b.example"]
+        assert [mark.source for mark in assembler.marks] == [
+            "https://a.example",
+            "https://b.example",
+        ]
+
+    def test_unresolved_citation_is_logged_and_discarded_at_model_run_end(self, caplog):
+        assembler = CitationAssembler()
+        assembler.add_block(
+            ContentBlock(
+                "text",
+                "",
+                [{"source": "https://a.example", "title": "A"}],
+            ),
+            block_index=0,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="src.agents.content"):
+            unresolved = assembler.finish_model_run()
+
+        assert unresolved == 1
+        assert "matching text block" in caplog.text
+        assert assembler.marks == []
 
 
 class TestContentBlockShape:

@@ -109,22 +109,39 @@ def classify_content_blocks(content: str | list[Any]) -> list[ContentBlock]:
         content, [])`` (or ``[]`` for an empty string), matching the
         pre-citations shape.
     """
-    if isinstance(content, str):
-        return [ContentBlock("text", content, [])] if content else []
+    return [block for block, _index in classify_content_blocks_with_indices(content)]
 
-    blocks: list[ContentBlock] = []
+
+def classify_content_blocks_with_indices(
+    content: str | list[Any],
+) -> list[tuple[ContentBlock, int | None]]:
+    """Classify blocks while retaining Anthropic's streamed block index.
+
+    Anthropic sends citation deltas on the active text block. Most streams
+    deliver the text before its citation, but a provider adapter can surface
+    the citation-only delta first. Keeping the block index lets the response
+    assembler hold that citation until the matching text arrives without
+    changing the three-field ``ContentBlock`` tuple used by existing callers.
+    """
+    if isinstance(content, str):
+        return [(ContentBlock("text", content, []), None)] if content else []
+
+    blocks: list[tuple[ContentBlock, int | None]] = []
     warned_block_types: set[Any] = set()
     for block in content:
         if not isinstance(block, dict):
             continue
         block_type = block.get("type")
+        block_index = block.get("index")
+        if not isinstance(block_index, int):
+            block_index = None
         if block_type == "text":
             text = block.get("text", "")
             citations = block.get("citations") or []
             if text or citations:
-                blocks.append(ContentBlock("text", text, citations))
+                blocks.append((ContentBlock("text", text, citations), block_index))
         elif block_type in _THINKING_BLOCK_TYPES:
-            blocks.append(ContentBlock("thinking", "", []))
+            blocks.append((ContentBlock("thinking", "", []), block_index))
         elif block_type in _KNOWN_NON_TEXT_BLOCK_TYPES:
             # tool_use, etc. -- intentionally not surfaced here; handled by
             # their own dedicated events elsewhere.
@@ -255,3 +272,75 @@ class CitationTracker:
     def marks(self) -> list[CitationMark]:
         """Every distinct citation mark recorded so far, in marker order."""
         return list(self._marks)
+
+
+class CitationAssembler:
+    """Place citation markers after the text block they annotate.
+
+    A citation delta belongs to Anthropic's current text block. In the normal
+    order, the block carries text first and the marker can be emitted
+    immediately. If a framework adapter exposes the citation-only delta first,
+    keep it pending for that block index and emit it after the block's text.
+    Citations arriving after text on an already-seen block retain the existing
+    behavior and are emitted at that point.
+    """
+
+    def __init__(self) -> None:
+        self._tracker = CitationTracker()
+        self._text_seen: set[int | None] = set()
+        self._pending: dict[int | None, list[dict[str, Any]]] = {}
+
+    def add_block(
+        self,
+        block: ContentBlock,
+        block_index: int | None = None,
+    ) -> tuple[str, list[CitationMark]]:
+        """Add one classified block and return marker text plus new marks."""
+        if block.kind != "text":
+            return "", []
+
+        citations: list[dict[str, Any]] = []
+        if block.text:
+            # A citation-only delta that preceded this block is attached to
+            # this same block and must be rendered after its text.
+            citations.extend(self._pending.pop(block_index, []))
+            citations.extend(block.citations)
+            self._text_seen.add(block_index)
+        elif block.citations:
+            if block_index in self._text_seen:
+                # The usual streaming shape: text delta(s), then the
+                # citations_delta for that same text block.
+                citations.extend(block.citations)
+            else:
+                # The adapter exposed the citation before the text for this
+                # block. Do not create a leading marker; wait for its text.
+                self._pending.setdefault(block_index, []).extend(block.citations)
+
+        return self._tracker.record_block(citations)
+
+    def finish_model_run(self) -> int:
+        """Discard unresolved block-local citations before the next model run.
+
+        Anthropic block indices are scoped to one model invocation. The
+        response-wide tracker must retain its marker numbering, but pending
+        and seen-block state must not leak into a later tool-loop invocation
+        where the provider can reuse the same indices.
+
+        Returns:
+            The number of citation payloads discarded because their matching
+            text block never arrived.
+        """
+        unresolved = sum(len(citations) for citations in self._pending.values())
+        if unresolved:
+            logger.warning(
+                "Dropping %d citation(s) without a matching text block at model-run end",
+                unresolved,
+            )
+        self._pending.clear()
+        self._text_seen.clear()
+        return unresolved
+
+    @property
+    def marks(self) -> list[CitationMark]:
+        """Every citation that has been attached to emitted answer text."""
+        return self._tracker.marks

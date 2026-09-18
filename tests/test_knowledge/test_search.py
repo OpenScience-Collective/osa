@@ -14,6 +14,7 @@ from src.knowledge.search import (
     SearchResult,
     _extract_number,
     _is_pure_number_query,
+    _sanitize_docstring_query,
     _sanitize_fts5_query,
     search_all,
     search_github_items,
@@ -345,6 +346,11 @@ class TestFTS5Sanitization:
         result = _sanitize_fts5_query("validation error")
         assert result == '"validation" OR "error"'
 
+    def test_sanitize_can_require_all_terms(self):
+        """Citable code searches can choose precision over partial matches."""
+        result = _sanitize_fts5_query("validation error", require_all_terms=True)
+        assert result == '"validation" AND "error"'
+
     def test_sanitize_drops_stopwords(self):
         """Noise words are removed; meaningful terms (incl. acronyms) kept."""
         result = _sanitize_fts5_query("what papers are about ICA")
@@ -354,6 +360,12 @@ class TestFTS5Sanitization:
         """Function/identifier names stay intact (underscores preserved)."""
         result = _sanitize_fts5_query("pop_runica parameters")
         assert result == '"pop_runica" OR "parameters"'
+
+    def test_docstring_sanitizer_keeps_numeric_concepts(self):
+        """Standalone numbers remain terms in conceptual code questions."""
+        result, normalized = _sanitize_docstring_query("how do I set 64 channels")
+        assert result == '"set" AND "64" AND "channels"'
+        assert normalized == "how do i set 64 channels"
 
     def test_sanitize_keeps_command_noun_terms(self):
         """Words that double as content/command nouns are not stopwords.

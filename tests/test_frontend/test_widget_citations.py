@@ -67,6 +67,23 @@ class TestWidgetHandlesCitationSseEvents:
         assert "Array.isArray(data.citations)" in source
 
 
+class TestThinkingPlaceholderRendering:
+    """The transient assistant entry must not render beside the loader."""
+
+    def test_empty_streaming_assistant_is_skipped_while_loading(self) -> None:
+        source = _widget_source()
+        guard = (
+            "if (isLoading && msg.role === 'assistant' && !msg.content "
+            "&& msgIndex === messages.length - 1)"
+        )
+        assert guard in source
+        assert "loading bubble below is the assistant" in source
+
+    def test_empty_completed_stream_is_removed(self) -> None:
+        source = _widget_source()
+        assert "messages.splice(messageIndex, 1);" in source
+
+
 class TestRenderInlineMarkdownCitationSupport:
     """renderInlineMarkdown must accept and use a citations lookup."""
 
@@ -87,6 +104,11 @@ class TestRenderInlineMarkdownCitationSupport:
             "Expected a citation-marker regex literal with a (?!\\() "
             "lookahead, to avoid matching markdown links"
         )
+
+    def test_source_list_uses_only_citation_markers_for_numbering(self) -> None:
+        source = _widget_source()
+        assert "sourcesRow = '<ul class=\"osa-message-sources\">'" in source
+        assert "list-style: none;" in source
 
     def test_marker_scan_considers_every_bracketed_number(self) -> None:
         """The scan must be exhaustive, not first-match.

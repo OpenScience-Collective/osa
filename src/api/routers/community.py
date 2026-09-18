@@ -25,7 +25,11 @@ from langchain_core.messages.utils import count_tokens_approximately
 from pydantic import BaseModel, Field, field_validator
 
 from src.agents.base import DEFAULT_MAX_CONVERSATION_TOKENS
-from src.agents.content import CitationTracker, classify_content_blocks
+from src.agents.content import (
+    CitationAssembler,
+    ContentBlock,
+    classify_content_blocks_with_indices,
+)
 from src.api.config import Settings, get_settings
 from src.api.routers.health import compute_community_health
 from src.api.security import AuthScope, ByokCredential, RequireAuth, RequireScopedAuth, resolve_byok
@@ -1194,11 +1198,12 @@ def _build_answer_with_citations(content: str | list[Any]) -> tuple[str, list[Ci
     """Assemble the answer text (with inline [n] markers) and its citation list.
 
     Walks the message content's text blocks in order (see
-    ``classify_content_blocks``): each block's own text is followed
-    immediately by the marker(s) for whatever it cited, so a marker lands
-    at the end of the span it supports rather than in a trailing dump.
-    Numbering is delegated to ``CitationTracker`` so streaming and
-    non-streaming responses number identically.
+    ``classify_content_blocks_with_indices``): each block's own text is
+    followed immediately by the marker(s) for whatever it cited, so a marker
+    lands at the end of the span it supports rather than in a trailing dump.
+    ``CitationAssembler`` also handles a citation-only delta that arrives
+    before its matching text block. Numbering is delegated to the shared
+    tracker so streaming and non-streaming responses number identically.
 
     Args:
         content: A final AIMessage's ``content`` (plain string, or a list
@@ -1209,22 +1214,46 @@ def _build_answer_with_citations(content: str | list[Any]) -> tuple[str, list[Ci
         The answer text with inline markers, and the citation list in
         marker order (empty when nothing was cited).
     """
-    tracker = CitationTracker()
+    assembler = CitationAssembler()
     parts: list[str] = []
-    for block in classify_content_blocks(content):
+    for block, block_index in classify_content_blocks_with_indices(content):
         if block.kind != "text":
             continue
         parts.append(block.text)
-        marker_text, _new_marks = tracker.record_block(block.citations)
+        marker_text, _new_marks = assembler.add_block(block, block_index)
         if marker_text:
             parts.append(marker_text)
 
+    assembler.finish_model_run()
     answer = "".join(parts)
     citations = [
         CitationInfo(marker=m.marker, source=m.source, title=m.title, cited_text=m.cited_text)
-        for m in tracker.marks
+        for m in assembler.marks
     ]
     return answer, citations
+
+
+def _build_citation_sse_events(
+    assembler: CitationAssembler,
+    block: ContentBlock,
+    block_index: int | None,
+) -> list[dict[str, Any]]:
+    """Build the shared SSE events emitted for one citation-bearing block."""
+    marker_text, new_marks = assembler.add_block(block, block_index)
+    events: list[dict[str, Any]] = []
+    if marker_text:
+        events.append({"event": "content", "content": marker_text})
+    events.extend(
+        {
+            "event": "citation",
+            "marker": mark.marker,
+            "source": mark.source,
+            "title": mark.title,
+            "cited_text": mark.cited_text,
+        }
+        for mark in new_marks
+    )
+    return events
 
 
 def _extract_agent_result(result: dict) -> AgentResult:
@@ -2151,12 +2180,13 @@ async def _stream_ask_response(
     model's reasoning text (see src/agents/content.py's module docstring);
     clients that do not recognize it are expected to ignore it.
 
-    A `citation` event fires the first time a source is cited, at the point
-    in the stream where Claude attaches it (the end of the span it
-    supports); its marker text (e.g. "[1]") is also appended to the
+    A `citation` event fires the first time a source is cited, after the text
+    block it supports; its marker text (e.g. "[1]") is also appended to the
     `content` stream at that same point so a client that ignores `citation`
-    events still sees the marker inline. `done` repeats the full citation
-    list so a client that missed a `citation` event can still render it.
+    events still sees the marker inline. If an adapter surfaces a
+    citation-only delta before that block's text, the assembler buffers it
+    until the text arrives. `done` repeats the full citation list so a client
+    that missed a `citation` event can still render it.
     """
     start_time = time.monotonic()
     tools_called: list[str] = []
@@ -2165,7 +2195,7 @@ async def _stream_ask_response(
     total_output_tokens = 0
     total_cache_read_tokens = 0
     total_cache_creation_tokens = 0
-    citation_tracker = CitationTracker()
+    citation_assembler = CitationAssembler()
 
     # Per-request id (set by metrics middleware) so the widget can attach feedback.
     request_id = getattr(http_request.state, "request_id", None) if http_request else None
@@ -2196,27 +2226,15 @@ async def _stream_ask_response(
                 chunk = event.get("data", {}).get("chunk", {})
                 raw_content = getattr(chunk, "content", None)
                 if raw_content:
-                    for block in classify_content_blocks(raw_content):
+                    for block, block_index in classify_content_blocks_with_indices(raw_content):
                         if block.kind == "text":
                             if block.text:
                                 sse_event = {"event": "content", "content": block.text}
                                 yield f"data: {json.dumps(sse_event)}\n\n"
-                            if block.citations:
-                                marker_text, new_marks = citation_tracker.record_block(
-                                    block.citations
-                                )
-                                if marker_text:
-                                    sse_event = {"event": "content", "content": marker_text}
-                                    yield f"data: {json.dumps(sse_event)}\n\n"
-                                for mark in new_marks:
-                                    sse_event = {
-                                        "event": "citation",
-                                        "marker": mark.marker,
-                                        "source": mark.source,
-                                        "title": mark.title,
-                                        "cited_text": mark.cited_text,
-                                    }
-                                    yield f"data: {json.dumps(sse_event)}\n\n"
+                            for sse_event in _build_citation_sse_events(
+                                citation_assembler, block, block_index
+                            ):
+                                yield f"data: {json.dumps(sse_event)}\n\n"
                         elif block.kind == "thinking":
                             yield f"data: {json.dumps({'event': 'thinking'})}\n\n"
 
@@ -2226,6 +2244,7 @@ async def _stream_ask_response(
                 total_output_tokens += out
                 total_cache_read_tokens += cache_read
                 total_cache_creation_tokens += cache_creation
+                citation_assembler.finish_model_run()
 
             elif kind == "on_tool_start":
                 tool_input = event.get("data", {}).get("input", {})
@@ -2259,7 +2278,7 @@ async def _stream_ask_response(
                     "title": m.title,
                     "cited_text": m.cited_text,
                 }
-                for m in citation_tracker.marks
+                for m in citation_assembler.marks
             ],
         }
         yield f"data: {json.dumps(sse_event)}\n\n"
@@ -2388,12 +2407,12 @@ async def _stream_chat_response(
     model's reasoning text (see src/agents/content.py's module docstring);
     clients that do not recognize it are expected to ignore it.
 
-    A `citation` event fires the first time a source is cited; its marker
-    text is also appended to the `content` stream at that point (see
-    _stream_ask_response's docstring for the full rationale). `done`
-    repeats the full citation list, and the markers are part of
-    `full_response`, so they are persisted in session history exactly as
-    the user saw them.
+    A `citation` event fires the first time a source is cited after the text
+    block it supports; its marker text is also appended to the `content`
+    stream at that point (see _stream_ask_response's docstring for the full
+    rationale). `done` repeats the full citation list, and the markers are
+    part of `full_response`, so they are persisted in session history exactly
+    as the user saw them.
     """
     start_time = time.monotonic()
     tools_called: list[str] = []
@@ -2402,7 +2421,7 @@ async def _stream_chat_response(
     total_output_tokens = 0
     total_cache_read_tokens = 0
     total_cache_creation_tokens = 0
-    citation_tracker = CitationTracker()
+    citation_assembler = CitationAssembler()
 
     # The metrics middleware assigns a per-request UUID; expose it only on the
     # final `done` event (below) so the widget attaches it only to a reply that
@@ -2444,29 +2463,18 @@ async def _stream_chat_response(
                 chunk = event.get("data", {}).get("chunk", {})
                 raw_content = getattr(chunk, "content", None)
                 if raw_content:
-                    for block in classify_content_blocks(raw_content):
+                    for block, block_index in classify_content_blocks_with_indices(raw_content):
                         if block.kind == "text":
                             if block.text:
                                 full_response += block.text
                                 sse_event = {"event": "content", "content": block.text}
                                 yield f"data: {json.dumps(sse_event)}\n\n"
-                            if block.citations:
-                                marker_text, new_marks = citation_tracker.record_block(
-                                    block.citations
-                                )
-                                if marker_text:
-                                    full_response += marker_text
-                                    sse_event = {"event": "content", "content": marker_text}
-                                    yield f"data: {json.dumps(sse_event)}\n\n"
-                                for mark in new_marks:
-                                    sse_event = {
-                                        "event": "citation",
-                                        "marker": mark.marker,
-                                        "source": mark.source,
-                                        "title": mark.title,
-                                        "cited_text": mark.cited_text,
-                                    }
-                                    yield f"data: {json.dumps(sse_event)}\n\n"
+                            for sse_event in _build_citation_sse_events(
+                                citation_assembler, block, block_index
+                            ):
+                                if sse_event["event"] == "content":
+                                    full_response += sse_event["content"]
+                                yield f"data: {json.dumps(sse_event)}\n\n"
                         elif block.kind == "thinking":
                             yield f"data: {json.dumps({'event': 'thinking'})}\n\n"
 
@@ -2476,6 +2484,7 @@ async def _stream_chat_response(
                 total_output_tokens += out
                 total_cache_read_tokens += cache_read
                 total_cache_creation_tokens += cache_creation
+                citation_assembler.finish_model_run()
 
             elif kind == "on_tool_start":
                 tool_input = event.get("data", {}).get("input", {})
@@ -2530,7 +2539,7 @@ async def _stream_chat_response(
                     "title": m.title,
                     "cited_text": m.cited_text,
                 }
-                for m in citation_tracker.marks
+                for m in citation_assembler.marks
             ],
         }
         yield f"data: {json.dumps(sse_event)}\n\n"

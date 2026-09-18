@@ -579,9 +579,10 @@
     /* Compact numbered source list under a cited answer */
     .osa-message-sources {
       margin: 8px 0 0;
-      padding-left: 18px;
+      padding-left: 0;
       font-size: 12px;
       color: var(--osa-text-light);
+      list-style: none;
     }
 
     .osa-message-sources li {
@@ -2581,6 +2582,14 @@
     messagesEl.innerHTML = '';
 
     messages.forEach((msg, msgIndex) => {
+      // The streaming handler keeps an empty assistant entry so the final
+      // response can update it in place. While the model is thinking, that
+      // state must stay invisible: the loading bubble below is the assistant
+      // response placeholder until the first answer text arrives.
+      if (isLoading && msg.role === 'assistant' && !msg.content && msgIndex === messages.length - 1) {
+        return;
+      }
+
       const msgEl = document.createElement('div');
       msgEl.className = `osa-message ${msg.role}`;
 
@@ -2607,7 +2616,7 @@
             : '<span>' + sourceLabel + '</span>';
           return '<li><span class="osa-source-marker">[' + escapeHtml(String(c.marker)) + ']</span> ' + inner + '</li>';
         }).join('');
-        sourcesRow = '<ol class="osa-message-sources">' + items + '</ol>';
+        sourcesRow = '<ul class="osa-message-sources">' + items + '</ul>';
       }
 
       // Add copy button for assistant messages
@@ -2920,7 +2929,14 @@
             if (Array.isArray(event.citations)) {
               messages[messageIndex].citations = event.citations;
             }
-            messages[messageIndex].content = accumulatedContent;
+            if (accumulatedContent) {
+              messages[messageIndex].content = accumulatedContent;
+            } else {
+              // A successful empty stream is still not an assistant message;
+              // leave no empty bubble behind after the thinking indicator is
+              // removed.
+              messages.splice(messageIndex, 1);
+            }
             renderMessages(container);
             try {
               saveHistory();
