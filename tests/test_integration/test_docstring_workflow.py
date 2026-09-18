@@ -396,8 +396,29 @@ def test_exact_symbol_match_ranks_above_wrappers(clean_db):
         f"Expected exact match 'erpimage' first, got: {results[0].title}"
     )
 
-    results = search_docstrings("how do I use erpimage", project=clean_db, limit=3)
+    results = search_docstrings("how do I use erpimage()", project=clean_db, limit=3)
     assert results[0].title == "erpimage (function) - functions/sigprocfunc/erpimage.m"
+
+
+def test_docstring_search_does_not_treat_generic_terms_as_symbols(clean_db):
+    """Natural-language terms must not trigger exact-symbol citation fallback."""
+    from src.knowledge.db import get_connection, upsert_docstring
+
+    with get_connection(clean_db) as conn:
+        upsert_docstring(
+            conn,
+            repo="sccn/eeglab",
+            file_path="functions/util/channels.m",
+            language="matlab",
+            symbol_name="channels",
+            symbol_type="function",
+            docstring="Generic helper for channel bookkeeping.",
+            line_number=1,
+        )
+        conn.commit()
+
+    results = search_docstrings("how do I set 64 channels", project=clean_db, limit=5)
+    assert results == []
 
 
 def test_branch_fallback_for_null(clean_db):

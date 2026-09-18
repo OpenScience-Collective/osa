@@ -241,6 +241,17 @@ def _is_identifier_token(token: str) -> bool:
     )
 
 
+def _explicit_symbol_terms(query: str) -> list[str]:
+    """Extract symbols explicitly marked as code in a natural-language query."""
+    terms: list[str] = []
+    pattern = re.compile(r"`([A-Za-z][A-Za-z0-9_]*)`|(?<![A-Za-z0-9_])([A-Za-z][A-Za-z0-9_]*)\s*\(")
+    for match in pattern.finditer(query):
+        term = (match.group(1) or match.group(2)).lower()
+        if term not in terms:
+            terms.append(term)
+    return terms
+
+
 @dataclass
 class SearchResult:
     """A search result from the knowledge database."""
@@ -721,17 +732,11 @@ def search_docstrings(
             rows = list(conn.execute(sql, params))
             exact_symbols: set[str] = set()
             if not rows:
-                # A natural-language question can contain a plain symbol such
-                # as ``erpimage`` without the underscores/digits that make an
-                # identifier easy to recognize lexically. Only use this
-                # fallback after the precise conceptual query found nothing;
-                # that keeps generic terms from weakening an otherwise good
-                # all-terms match.
-                candidates = [
-                    token
-                    for token in re.findall(r"[A-Za-z0-9_]+", query.lower())
-                    if len(token) >= 4 and token not in _FTS_STOPWORDS
-                ]
+                # Only fall back to exact symbol lookup when the query marks
+                # the token as code. Treating every ordinary word as a symbol
+                # would let a generic term such as "channels" become an
+                # unrelated citable function.
+                candidates = _explicit_symbol_terms(query)
                 if candidates:
                     placeholders = ", ".join("?" for _ in candidates)
                     exact_sql = f"""
