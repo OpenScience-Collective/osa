@@ -1243,8 +1243,8 @@ def _build_citation_sse_events(
     """Build the shared SSE events emitted for one citation-bearing block."""
     marker_text, new_marks = assembler.add_block(block, block_index)
     events: list[dict[str, Any]] = []
-    if marker_text:
-        events.append({"event": "content", "content": marker_text})
+    # Announce the metadata before the marker so clients can link it
+    # atomically when the inline token is rendered.
     events.extend(
         {
             "event": "citation",
@@ -1255,6 +1255,8 @@ def _build_citation_sse_events(
         }
         for mark in new_marks
     )
+    if marker_text:
+        events.append({"event": "content", "content": marker_text})
     return events
 
 

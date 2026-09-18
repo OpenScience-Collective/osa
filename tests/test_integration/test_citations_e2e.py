@@ -133,10 +133,6 @@ class TestStreamedCitationsEndToEnd:
 
         events: list[dict] = []
         content_so_far = ""
-        # Content accumulated at the moment each citation event fired, so
-        # inline placement can be checked afterwards.
-        content_at_citation: list[tuple[int, str]] = []
-
         async for raw in _stream_ask_response(
             community_id="hed",
             question=question,
@@ -152,8 +148,6 @@ class TestStreamedCitationsEndToEnd:
                 events.append(event)
                 if event.get("event") == "content":
                     content_so_far += event["content"]
-                elif event.get("event") == "citation":
-                    content_at_citation.append((event["marker"], content_so_far))
 
         kinds = [e.get("event") for e in events]
         assert "error" not in kinds, f"Stream reported an error: {events}"
@@ -182,14 +176,23 @@ class TestStreamedCitationsEndToEnd:
             f"Expected an inline [1] marker in the streamed content: {content_so_far!r}"
         )
 
-        # The marker text must already be in the stream when its citation
-        # event fires: that is what makes it inline rather than a trailing
-        # bundle of links, which is the complaint issue #350 is about.
-        for marker, accumulated in content_at_citation:
-            assert accumulated.rstrip().endswith(f"[{marker}]"), (
-                f"Marker [{marker}] was not emitted at the point its citation "
-                f"event fired; content ended with {accumulated[-80:]!r}"
+        # Metadata must precede the marker so a client can link the inline
+        # token as soon as it is rendered. The marker remains an inline event,
+        # not a trailing bundle of links.
+        for citation_index, citation in enumerate(events):
+            if citation.get("event") != "citation":
+                continue
+            marker = citation["marker"]
+            marker_index = next(
+                (
+                    index
+                    for index, event in enumerate(events[citation_index + 1 :], citation_index + 1)
+                    if event.get("event") == "content" and event.get("content") == f"[{marker}]"
+                ),
+                None,
             )
+            assert marker_index is not None, f"No inline marker event followed citation [{marker}]"
+            assert citation_index < marker_index
 
         done = [e for e in events if e.get("event") == "done"]
         assert done, "Stream did not end with a done event"

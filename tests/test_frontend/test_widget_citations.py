@@ -87,7 +87,18 @@ class TestThinkingPlaceholderRendering:
 
     def test_empty_completed_stream_is_removed(self) -> None:
         source = _widget_source()
-        assert "messages.splice(messageIndex, 1);" in source
+        assert "messageList.splice(messageIndex, 1);" in source
+
+    def test_done_feedback_replacement_has_stable_local_identity(self) -> None:
+        source = _widget_source()
+        assert "function isSameResponseMessage(original, current)" in source
+        assert "_responseId: createResponseId()" in source
+        assert "const sameResponse = isSameResponseMessage(msg, currentMsg);" in source
+
+    def test_history_load_failure_does_not_trigger_a_rewrite(self) -> None:
+        source = _widget_source()
+        assert "return !historyLoadFailed && historyNeedsSave;" in source
+        assert "version: CHAT_HISTORY_VERSION" in source
 
 
 class TestRenderInlineMarkdownCitationSupport:
