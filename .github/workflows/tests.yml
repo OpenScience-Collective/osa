@@ -67,3 +67,21 @@ jobs:
         with:
           files: ./coverage.xml
           fail_ci_if_error: false
+
+  frontend-tests:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Run citation marker tests
+        run: bun frontend/test-citation-markers.js
+
+      - name: Run streaming tests
+        run: bun frontend/test-streaming.js
+
+      - name: Check widget syntax
+        run: node --check frontend/osa-chat-widget.js

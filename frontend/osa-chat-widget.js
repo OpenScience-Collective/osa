@@ -1303,63 +1303,6 @@
     return 'osa-code-' + (++codeBlockId);
   }
 
-  // Move known citation markers to the end of their sentence. Citation deltas
-  // can arrive between text chunks, including in the middle of a word; the
-  // backend also normalizes completed responses, but doing this at render time
-  // keeps older saved responses readable and gives the widget a safe fallback.
-  function normalizeCitationMarkersAtSentenceEnd(text, citations) {
-    if (!text || !citations || !citations.length) return text;
-
-    const known = new Set(citations.map(c => String(c.marker)));
-    const markerPattern = /\[(\d+)\]/g;
-    const sentenceEndPattern = /[.!?](?:["'”’)\]]*)?(?=\s|$)/g;
-    const sentenceEndAtEndPattern = /[.!?](?:["'”’)\]]*)?$/;
-    const occurrences = [];
-    const cleanParts = [];
-    let rawCursor = 0;
-    let cleanLength = 0;
-    let match;
-
-    while ((match = markerPattern.exec(text)) !== null) {
-      if (!known.has(match[1])) continue;
-      const segment = text.substring(rawCursor, match.index);
-      cleanParts.push(segment);
-      cleanLength += segment.length;
-      occurrences.push({ position: cleanLength, marker: match[0] });
-      rawCursor = match.index + match[0].length;
-    }
-
-    if (!occurrences.length) return text;
-    cleanParts.push(text.substring(rawCursor));
-    const cleanText = cleanParts.join('');
-    const insertions = new Map();
-
-    occurrences.forEach(({ position, marker }) => {
-      const prefix = cleanText.substring(0, position).trimEnd();
-
-      let insertionPosition;
-      if (prefix && sentenceEndAtEndPattern.test(prefix)) {
-        insertionPosition = prefix.length;
-      } else {
-        sentenceEndPattern.lastIndex = position;
-        const nextBoundary = sentenceEndPattern.exec(cleanText);
-        insertionPosition = nextBoundary
-          ? nextBoundary.index + nextBoundary[0].length
-          : cleanText.length;
-      }
-      const existing = insertions.get(insertionPosition) || [];
-      existing.push(marker);
-      insertions.set(insertionPosition, existing);
-    });
-
-    let normalized = '';
-    for (let index = 0; index <= cleanText.length; index++) {
-      if (insertions.has(index)) normalized += insertions.get(index).join('');
-      if (index < cleanText.length) normalized += cleanText[index];
-    }
-    return normalized;
-  }
-
   // Render inline markdown (bold, italic, links, plain URLs, citation markers)
   // citationsByMarker: optional {"1": {source, title, cited_text}, ...} map.
   // When provided, a bare "[1]" (not followed by "(", so it never collides
@@ -2659,11 +2602,8 @@
         if (c && typeof c.marker !== 'undefined') citationsByMarker[c.marker] = c;
       });
 
-      const displayContent = msg.role === 'assistant'
-        ? normalizeCitationMarkersAtSentenceEnd(msg.content, msg.citations || [])
-        : msg.content;
       const content = msg.role === 'assistant'
-        ? markdownToHtml(displayContent, citationsByMarker)
+        ? markdownToHtml(msg.content, citationsByMarker)
         : escapeHtml(msg.content);
 
       // Compact numbered source list under the answer, when anything was cited.
@@ -2867,7 +2807,7 @@
   //   data: {"event": "tool_start", "name": "tool_name", "input": {...}}
   //   data: {"event": "tool_end", "name": "tool_name", "output": "result"}
   //   data: {"event": "citation", "marker": 1, "source": "...", "title": "...", "cited_text": "..."}
-  //   data: {"event": "done", "citations": [...]}
+  //   data: {"event": "done", "content": "final answer", "citations": [...]}
   //   data: {"event": "error", "message": "error description"}
   async function handleStreamingResponse(response, container) {
     const reader = response.body.getReader();
@@ -2950,9 +2890,8 @@
             // A source was cited for the first time; its marker text also
             // arrives as its own 'content' chunk (handled above), so the
             // inline [n] is already part of accumulatedContent by the time
-            // this renders. Kept even if a later 'done' event repeats it,
-            // so a client watching only 'citation' events still gets each
-            // source as soon as it is cited.
+            // this renders. The final 'done' event replaces that raw stream
+            // with the backend's canonical sentence placement.
             if (typeof event.marker !== 'undefined' && event.source) {
               messages[messageIndex].citations = messages[messageIndex].citations || [];
               messages[messageIndex].citations.push({
@@ -2991,11 +2930,6 @@
             }
             if (typeof event.content === 'string') {
               accumulatedContent = event.content;
-            } else {
-              accumulatedContent = normalizeCitationMarkersAtSentenceEnd(
-                accumulatedContent,
-                messages[messageIndex].citations || []
-              );
             }
             if (accumulatedContent) {
               messages[messageIndex].content = accumulatedContent;

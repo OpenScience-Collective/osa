@@ -4,6 +4,7 @@ These tests use Typer's CliRunner to test CLI commands
 with real output verification.
 """
 
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,8 +13,9 @@ import respx
 from click import unstyle
 from typer.testing import CliRunner
 
+from src.cli.client import OSAClient
 from src.cli.config import CLIConfig, load_credentials, save_config
-from src.cli.main import cli
+from src.cli.main import _ask_streaming, _chat_turn_streaming, cli
 from tests.test_cli.test_config import patched_config_paths
 
 runner = CliRunner()
@@ -339,3 +341,57 @@ class TestChatCommand:
         sent_request = route.calls.last.request
         assert sent_request.headers["X-Anthropic-API-Key"] == "sk-ant-cli-test-key"
         assert "X-OpenRouter-Key" not in sent_request.headers
+
+
+class TestStreamingCitationContent:
+    """Streaming clients must replace raw chunks with authoritative done content."""
+
+    def test_ask_uses_normalized_done_content(self) -> None:
+        with (
+            respx.mock,
+            patch("src.cli.main.output.streaming_status", return_value=nullcontext()),
+            patch("src.cli.main.output.print_markdown") as print_markdown,
+        ):
+            route = respx.post("https://test.example/hed/ask").mock(
+                return_value=httpx.Response(
+                    200,
+                    headers={"content-type": "text/event-stream"},
+                    content=(
+                        b'data: {"event":"content","content":"Infomax in ru[1]nica.m"}\n\n'
+                        b'data: {"event":"done","content":"Infomax in runica.m.[1]"}\n\n'
+                    ),
+                )
+            )
+            _ask_streaming(OSAClient("https://test.example", user_id="test-user"), "hed", "How?")
+
+        assert route.called
+        print_markdown.assert_called_once_with("Infomax in runica.m.[1]", title="HED")
+
+    def test_chat_uses_normalized_done_content_and_keeps_session(self) -> None:
+        with (
+            respx.mock,
+            patch("src.cli.main.output.streaming_status", return_value=nullcontext()),
+            patch("src.cli.main.output.console.print"),
+            patch("src.cli.main.Markdown", return_value="final-markdown") as markdown,
+        ):
+            route = respx.post("https://test.example/hed/chat").mock(
+                return_value=httpx.Response(
+                    200,
+                    headers={"content-type": "text/event-stream"},
+                    content=(
+                        b'data: {"event":"content","content":"ru[1]nica.m"}\n\n'
+                        b'data: {"event":"done","session_id":"session-2",'
+                        b'"content":"runica.m.[1]"}\n\n'
+                    ),
+                )
+            )
+            session_id = _chat_turn_streaming(
+                OSAClient("https://test.example", user_id="test-user"),
+                "hed",
+                "How?",
+                "session-1",
+            )
+
+        assert route.called
+        assert session_id == "session-2"
+        markdown.assert_called_once_with("runica.m.[1]")

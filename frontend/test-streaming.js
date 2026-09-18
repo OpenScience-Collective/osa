@@ -193,6 +193,29 @@ test('Event processing: done event after content', () => {
   assertEqual(done, true, 'Done event should be received');
 });
 
+test('Event processing: done content replaces raw citation boundary', () => {
+  let accumulated = '';
+  const lines = [
+    'data: {"event": "content", "content": "Infomax in ru[1]nica.m"}',
+    'data: {"event": "done", "content": "Infomax in runica.m.[1]"}',
+  ];
+
+  for (const line of lines) {
+    const event = parseSSE(line);
+    if (event && event.event === 'content') {
+      accumulated += event.content;
+    } else if (event && event.event === 'done' && typeof event.content === 'string') {
+      accumulated = event.content;
+    }
+  }
+
+  assertEqual(
+    accumulated,
+    'Infomax in runica.m.[1]',
+    'Canonical done content should replace raw streamed markers'
+  );
+});
+
 test('Event processing: error event stops processing', () => {
   let accumulated = '';
   let errorMessage = null;

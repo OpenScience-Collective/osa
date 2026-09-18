@@ -242,6 +242,7 @@ class TestStreamAskResponseCitations:
         citation_events = [e for e in events if e["event"] == "citation"]
         done_events = [e for e in events if e["event"] == "done"]
         assert citation_events == []
+        assert done_events[0]["content"] == "Just an answer, nothing cited."
         assert done_events[0]["citations"] == []
 
     @pytest.mark.asyncio
@@ -286,6 +287,9 @@ class TestStreamChatResponseCitations:
 
         done_events = [e for e in events if e["event"] == "done"]
         assert len(done_events) == 1
+        assert done_events[0]["content"] == (
+            "Tags go in events.tsv.[1] More context after the citation."
+        )
         assert done_events[0]["citations"][0]["source"] == CITED_DOC_URL
 
         # The marker text is part of what gets saved to session history, so
