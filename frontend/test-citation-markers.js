@@ -75,8 +75,8 @@ const renderInlineMarkdown = new Function(
 )();
 
 const CITATIONS = {
-  1: { source: 'https://example.com/doc', title: 'Doc', cited_text: 'a cited span' },
-  2: { source: 'https://example.com/other', title: 'Other', cited_text: 'another span' },
+  1: { marker: 1, source: 'https://example.com/doc', title: 'Doc', cited_text: 'a cited span' },
+  2: { marker: 2, source: 'https://example.com/other', title: 'Other', cited_text: 'another span' },
 };
 
 function linkedMarkers(rendered) {

@@ -125,6 +125,36 @@ class TestStreamAskResponseCitations:
         assert content_strings == ["The cited claim.", "[1]"]
 
     @pytest.mark.asyncio
+    async def test_done_content_moves_mid_sentence_marker_to_sentence_end(self) -> None:
+        events_in = [
+            _text_event("Infomax is implemented in ru"),
+            _text_event(
+                citations=[
+                    {
+                        "source": "https://doc.example/runica",
+                        "title": "RUNICA",
+                        "cited_text": "runica.m",
+                    }
+                ]
+            ),
+            _text_event("nica.m, a MATLAB version."),
+        ]
+        fake_awm = AssistantWithMetrics(
+            assistant=_FakeAssistant(events_in),
+            model="claude-haiku-4-5",
+            key_source="platform",
+        )
+        with patch("src.api.routers.community.create_community_assistant", return_value=fake_awm):
+            events = await _collect_sse_events(
+                _stream_ask_response("hed", "A question", None, None, None)
+            )
+
+        done_events = [e for e in events if e["event"] == "done"]
+        assert done_events[0]["content"] == (
+            "Infomax is implemented in runica.m, a MATLAB version.[1]"
+        )
+
+    @pytest.mark.asyncio
     async def test_block_indices_reset_between_model_runs(self) -> None:
         events_in = [
             _text_event("Tool result visible.", index=0),
@@ -212,6 +242,7 @@ class TestStreamAskResponseCitations:
         citation_events = [e for e in events if e["event"] == "citation"]
         done_events = [e for e in events if e["event"] == "done"]
         assert citation_events == []
+        assert done_events[0]["content"] == "Just an answer, nothing cited."
         assert done_events[0]["citations"] == []
 
     @pytest.mark.asyncio
@@ -256,6 +287,9 @@ class TestStreamChatResponseCitations:
 
         done_events = [e for e in events if e["event"] == "done"]
         assert len(done_events) == 1
+        assert done_events[0]["content"] == (
+            "Tags go in events.tsv.[1] More context after the citation."
+        )
         assert done_events[0]["citations"][0]["source"] == CITED_DOC_URL
 
         # The marker text is part of what gets saved to session history, so
@@ -293,3 +327,32 @@ class TestStreamChatResponseCitations:
 
         content_strings = [e["content"] for e in events if e["event"] == "content"]
         assert content_strings == ["The cited claim.", "[1]"]
+
+    @pytest.mark.asyncio
+    async def test_session_history_uses_sentence_end_marker_position(self) -> None:
+        events_in = [
+            _text_event("Infomax is implemented in ru"),
+            _text_event(
+                citations=[
+                    {
+                        "source": "https://doc.example/runica",
+                        "title": "RUNICA",
+                        "cited_text": "runica.m",
+                    }
+                ]
+            ),
+            _text_event("nica.m, a MATLAB version."),
+        ]
+        session = ChatSession(session_id="test-session-3", community_id="hed")
+        session.add_user_message("A question")
+        fake_awm = AssistantWithMetrics(
+            assistant=_FakeAssistant(events_in),
+            model="claude-haiku-4-5",
+            key_source="platform",
+        )
+        with patch("src.api.routers.community.create_community_assistant", return_value=fake_awm):
+            await _collect_sse_events(_stream_chat_response("hed", session, None, None, None))
+
+        assert session.messages[-1].content == (
+            "Infomax is implemented in runica.m, a MATLAB version.[1]"
+        )

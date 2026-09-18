@@ -2807,7 +2807,7 @@
   //   data: {"event": "tool_start", "name": "tool_name", "input": {...}}
   //   data: {"event": "tool_end", "name": "tool_name", "output": "result"}
   //   data: {"event": "citation", "marker": 1, "source": "...", "title": "...", "cited_text": "..."}
-  //   data: {"event": "done", "citations": [...]}
+  //   data: {"event": "done", "content": "final answer", "citations": [...]}
   //   data: {"event": "error", "message": "error description"}
   async function handleStreamingResponse(response, container) {
     const reader = response.body.getReader();
@@ -2890,9 +2890,8 @@
             // A source was cited for the first time; its marker text also
             // arrives as its own 'content' chunk (handled above), so the
             // inline [n] is already part of accumulatedContent by the time
-            // this renders. Kept even if a later 'done' event repeats it,
-            // so a client watching only 'citation' events still gets each
-            // source as soon as it is cited.
+            // this renders. The final 'done' event replaces that raw stream
+            // with the backend's canonical sentence placement.
             if (typeof event.marker !== 'undefined' && event.source) {
               messages[messageIndex].citations = messages[messageIndex].citations || [];
               messages[messageIndex].citations.push({
@@ -2928,6 +2927,9 @@
             // correctly (see _stream_ask_response's SSE docstring).
             if (Array.isArray(event.citations)) {
               messages[messageIndex].citations = event.citations;
+            }
+            if (typeof event.content === 'string') {
+              accumulatedContent = event.content;
             }
             if (accumulatedContent) {
               messages[messageIndex].content = accumulatedContent;

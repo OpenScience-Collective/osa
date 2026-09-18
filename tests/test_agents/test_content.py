@@ -20,8 +20,10 @@ from src.agents.content import (
     CitationTracker,
     ContentBlock,
     classify_content_blocks,
+    encode_citation_markers,
     extract_citations,
     extract_text,
+    normalize_citation_markers,
 )
 
 FIXTURES_DIR = Path(__file__).resolve().parents[1] / "fixtures"
@@ -380,6 +382,89 @@ class TestCitationTracker:
         marks = tracker.marks
         marks.append(CitationMark(99, "fake", "fake", "fake"))
         assert len(tracker.marks) == 1
+
+
+class TestNormalizeCitationMarkers:
+    """Generated citation markers are moved to sentence boundaries."""
+
+    def test_moves_marker_out_of_the_middle_of_a_word(self):
+        marks = [CitationMark(1, "https://a.example", "A", "runica.m")]
+
+        result = normalize_citation_markers(
+            "Infomax is implemented in ru"
+            + encode_citation_markers("[1]")
+            + "nica.m, a MATLAB version.",
+            marks,
+        )
+
+        assert result == "Infomax is implemented in runica.m, a MATLAB version.[1]"
+
+    def test_moves_leading_marker_after_the_sentence(self):
+        marks = [CitationMark(1, "https://a.example", "A", "claim")]
+
+        result = normalize_citation_markers(
+            encode_citation_markers("[1]") + "The cited claim.", marks
+        )
+
+        assert result == "The cited claim.[1]"
+
+    def test_keeps_marker_after_the_sentence_it_already_follows(self):
+        marks = [CitationMark(1, "https://a.example", "A", "claim")]
+
+        result = normalize_citation_markers(
+            "First claim. " + encode_citation_markers("[1]") + " Next claim.", marks
+        )
+
+        assert result == "First claim.[1] Next claim."
+
+    def test_keeps_marker_after_the_last_of_multiple_completed_sentences(self):
+        marks = [CitationMark(1, "https://a.example", "A", "claim")]
+
+        result = normalize_citation_markers(
+            "First. Second." + encode_citation_markers("[1]") + " Next.", marks
+        )
+
+        assert result == "First. Second.[1] Next."
+
+    def test_leaves_unknown_bracketed_numbers_untouched(self):
+        marks = [CitationMark(1, "https://a.example", "A", "claim")]
+
+        result = normalize_citation_markers(
+            "arr[1] contains a cited sentence." + encode_citation_markers("[1]"),
+            marks,
+        )
+
+        assert result == "arr[1] contains a cited sentence.[1]"
+
+    def test_removes_space_when_marker_arrives_before_sentence_punctuation(self):
+        marks = [CitationMark(1, "https://a.example", "A", "claim")]
+
+        result = normalize_citation_markers(
+            "The cited claim " + encode_citation_markers("[1]") + ".", marks
+        )
+
+        assert result == "The cited claim.[1]"
+
+    def test_does_not_rewrite_markdown_links_or_array_indices(self):
+        marks = [CitationMark(1, "https://a.example", "A", "claim")]
+
+        result = normalize_citation_markers(
+            "See [1](https://example.com) and arr[1]. "
+            "The cited claim." + encode_citation_markers("[1]"),
+            marks,
+        )
+
+        assert result == ("See [1](https://example.com) and arr[1]. The cited claim.[1]")
+
+    def test_does_not_move_marker_across_a_markdown_list_item(self):
+        marks = [CitationMark(1, "https://a.example", "A", "claim")]
+
+        result = normalize_citation_markers(
+            "- First claim " + encode_citation_markers("[1]") + "\n- Second claim.",
+            marks,
+        )
+
+        assert result == "- First claim[1]\n- Second claim."
 
 
 class TestCitationAssembler:

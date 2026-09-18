@@ -29,6 +29,8 @@ from src.agents.content import (
     CitationAssembler,
     ContentBlock,
     classify_content_blocks_with_indices,
+    encode_citation_markers,
+    normalize_citation_markers,
 )
 from src.api.config import Settings, get_settings
 from src.api.routers.health import compute_community_health
@@ -1199,8 +1201,8 @@ def _build_answer_with_citations(content: str | list[Any]) -> tuple[str, list[Ci
 
     Walks the message content's text blocks in order (see
     ``classify_content_blocks_with_indices``): each block's own text is
-    followed immediately by the marker(s) for whatever it cited, so a marker
-    lands at the end of the span it supports rather than in a trailing dump.
+    followed by protected marker tokens for whatever it cited, then the
+    completed answer moves those markers to sentence ends.
     ``CitationAssembler`` also handles a citation-only delta that arrives
     before its matching text block. Numbering is delegated to the shared
     tracker so streaming and non-streaming responses number identically.
@@ -1222,10 +1224,10 @@ def _build_answer_with_citations(content: str | list[Any]) -> tuple[str, list[Ci
         parts.append(block.text)
         marker_text, _new_marks = assembler.add_block(block, block_index)
         if marker_text:
-            parts.append(marker_text)
+            parts.append(encode_citation_markers(marker_text))
 
     assembler.finish_model_run()
-    answer = "".join(parts)
+    answer = normalize_citation_markers("".join(parts), assembler.marks)
     citations = [
         CitationInfo(marker=m.marker, source=m.source, title=m.title, cited_text=m.cited_text)
         for m in assembler.marks
@@ -2173,7 +2175,7 @@ async def _stream_ask_response(
         data: {"event": "tool_start", "name": "tool_name", "input": {...}}
         data: {"event": "tool_end", "name": "tool_name", "output": {...}}
         data: {"event": "citation", "marker": 1, "source": "...", "title": "...", "cited_text": "..."}
-        data: {"event": "done", "request_id": "...", "model": "...", "citations": [...]}
+        data: {"event": "done", "request_id": "...", "model": "...", "content": "final answer", "citations": [...]}
         data: {"event": "error", "message": "error text"}
 
     The `thinking` event is a liveness signal only -- it never carries the
@@ -2185,8 +2187,9 @@ async def _stream_ask_response(
     `content` stream at that same point so a client that ignores `citation`
     events still sees the marker inline. If an adapter surfaces a
     citation-only delta before that block's text, the assembler buffers it
-    until the text arrives. `done` repeats the full citation list so a client
-    that missed a `citation` event can still render it.
+    until the text arrives. The final `done.content` is authoritative and
+    moves generated markers to sentence boundaries before clients render or
+    persist the completed answer.
     """
     start_time = time.monotonic()
     tools_called: list[str] = []
@@ -2219,6 +2222,7 @@ async def _stream_ask_response(
         }
 
         stream_config = awm.langfuse_config or {}
+        full_response = ""
         async for event in graph.astream_events(state, version="v2", config=stream_config):
             kind = event.get("event")
 
@@ -2229,11 +2233,14 @@ async def _stream_ask_response(
                     for block, block_index in classify_content_blocks_with_indices(raw_content):
                         if block.kind == "text":
                             if block.text:
+                                full_response += block.text
                                 sse_event = {"event": "content", "content": block.text}
                                 yield f"data: {json.dumps(sse_event)}\n\n"
                             for sse_event in _build_citation_sse_events(
                                 citation_assembler, block, block_index
                             ):
+                                if sse_event["event"] == "content":
+                                    full_response += encode_citation_markers(sse_event["content"])
                                 yield f"data: {json.dumps(sse_event)}\n\n"
                         elif block.kind == "thinking":
                             yield f"data: {json.dumps({'event': 'thinking'})}\n\n"
@@ -2267,10 +2274,12 @@ async def _stream_ask_response(
                 }
                 yield f"data: {json.dumps(sse_event)}\n\n"
 
+        final_response = normalize_citation_markers(full_response, citation_assembler.marks)
         sse_event = {
             "event": "done",
             "request_id": request_id,
             "model": awm.model if awm else None,
+            "content": final_response,
             "citations": [
                 {
                     "marker": m.marker,
@@ -2400,7 +2409,7 @@ async def _stream_chat_response(
         data: {"event": "session", "session_id": "..."}  (sent first)
         data: {"event": "citation", "marker": 1, "source": "...", "title": "...", "cited_text": "..."}
         data: {"event": "warning", "message": "..."}  (optional, before done)
-        data: {"event": "done", "session_id": "...", "request_id": "...", "model": "...", "citations": [...]}
+        data: {"event": "done", "session_id": "...", "request_id": "...", "model": "...", "content": "final answer", "citations": [...]}
         data: {"event": "error", "message": "error text"}
 
     The `thinking` event is a liveness signal only -- it never carries the
@@ -2410,9 +2419,9 @@ async def _stream_chat_response(
     A `citation` event fires the first time a source is cited after the text
     block it supports; its marker text is also appended to the `content`
     stream at that point (see _stream_ask_response's docstring for the full
-    rationale). `done` repeats the full citation list, and the markers are
-    part of `full_response`, so they are persisted in session history exactly
-    as the user saw them.
+    rationale). `done.content` is authoritative and contains the normalized
+    answer that is persisted in session history, while `done.citations`
+    repeats the full citation list.
     """
     start_time = time.monotonic()
     tools_called: list[str] = []
@@ -2473,7 +2482,7 @@ async def _stream_chat_response(
                                 citation_assembler, block, block_index
                             ):
                                 if sse_event["event"] == "content":
-                                    full_response += sse_event["content"]
+                                    full_response += encode_citation_markers(sse_event["content"])
                                 yield f"data: {json.dumps(sse_event)}\n\n"
                         elif block.kind == "thinking":
                             yield f"data: {json.dumps({'event': 'thinking'})}\n\n"
@@ -2507,9 +2516,10 @@ async def _stream_chat_response(
                 }
                 yield f"data: {json.dumps(sse_event)}\n\n"
 
-        if full_response:
+        final_response = normalize_citation_markers(full_response, citation_assembler.marks)
+        if final_response:
             try:
-                session.add_assistant_message(full_response)
+                session.add_assistant_message(final_response)
             except ValueError as e:
                 # Session limit exceeded
                 logger.error("Session limit exceeded in streaming: %s", e)
@@ -2532,6 +2542,7 @@ async def _stream_chat_response(
             "session_id": session.session_id,
             "request_id": request_id,
             "model": awm.model if awm else None,
+            "content": final_response,
             "citations": [
                 {
                     "marker": m.marker,

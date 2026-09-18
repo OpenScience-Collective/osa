@@ -238,12 +238,16 @@ def ask(
 
 
 def _ask_streaming(client: OSAClient, assistant: str, question: str) -> None:
-    """Handle streaming ask response."""
+    """Handle streaming ask response, preferring the final canonical content."""
     full_content = ""
     with output.streaming_status(f"Asking {assistant} assistant...") as status:
         for event_type, data in client.ask_stream(assistant, question):
             if event_type == "content":
                 full_content += data.get("content", "")
+            elif event_type == "done":
+                final_content = data.get("content")
+                if isinstance(final_content, str):
+                    full_content = final_content
             elif event_type == "tool_start":
                 tool_name = data.get("name", "").replace("_", " ").title()
                 status.update(f"[dim]Using tool: {tool_name}[/dim]")
@@ -372,7 +376,7 @@ def _chat_turn_streaming(
     message: str,
     session_id: str | None,
 ) -> str | None:
-    """Handle one streaming chat turn. Returns the session_id."""
+    """Handle one streaming chat turn and its canonical final content."""
     full_content = ""
     new_session_id = session_id
 
@@ -387,6 +391,9 @@ def _chat_turn_streaming(
                 status.update(f"[dim]Using tool: {tool_name}[/dim]")
             elif event_type == "done":
                 new_session_id = data.get("session_id", new_session_id)
+                final_content = data.get("content")
+                if isinstance(final_content, str):
+                    full_content = final_content
             elif event_type == "error":
                 output.print_error(data.get("message", "Unknown error"))
                 return new_session_id

@@ -27,6 +27,7 @@ content came from a single final message or a stream of chunks.
 """
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Literal, NamedTuple
 
@@ -272,6 +273,142 @@ class CitationTracker:
     def marks(self) -> list[CitationMark]:
         """Every distinct citation mark recorded so far, in marker order."""
         return list(self._marks)
+
+
+_CITATION_MARKER_PATTERN = re.compile(r"\[(\d+)\]")
+_CITATION_MARKER_TOKEN_PATTERN = re.compile(r"\x00osa-citation-(\d+)\x00")
+_SENTENCE_END_PATTERN = re.compile(r"""[.!?](?:["'”’)\]]*)?(?=\s|$)""")
+_SENTENCE_END_AT_END_PATTERN = re.compile(r"""[.!?](?:["'”’)\]]*)?$""")
+_MARKDOWN_BLOCK_BOUNDARY_PATTERN = re.compile(
+    r"\n[ \t]*(?:(?:[-*+]\s+)|(?:\d+[.)]\s+)|(?:#{1,6}\s+)|(?:>\s+)|(?:```)|(?:\n))"
+)
+_OUTPUT_CITATION_TOKEN_PATTERN = re.compile(r"\x00osa-output-citation-(\d+)\x00")
+_OUTPUT_CITATION_TOKEN_TEXT = r"\x00osa-output-citation-\d+\x00"
+
+
+def encode_citation_markers(marker_text: str) -> str:
+    """Protect generated markers from being confused with answer text."""
+    return _CITATION_MARKER_PATTERN.sub(
+        lambda match: f"\x00osa-citation-{match.group(1)}\x00", marker_text
+    )
+
+
+def _remove_whitespace_before_sentence_punctuation(
+    text: str, occurrences: list[tuple[int, str]]
+) -> tuple[str, list[tuple[int, str]]]:
+    """Repair a marker delta that arrived immediately before punctuation."""
+    removals: set[int] = set()
+    for position, _marker in occurrences:
+        boundary = _SENTENCE_END_PATTERN.search(text, position)
+        if boundary is None or text[position : boundary.start()].strip():
+            continue
+
+        cursor = position - 1
+        while cursor >= 0 and text[cursor].isspace():
+            removals.add(cursor)
+            cursor -= 1
+        removals.update(range(position, boundary.start()))
+
+    if not removals:
+        return text, occurrences
+
+    cleaned = "".join(char for index, char in enumerate(text) if index not in removals)
+    adjusted = [
+        (position - sum(index < position for index in removals), marker)
+        for position, marker in occurrences
+    ]
+    return cleaned, adjusted
+
+
+def _next_citation_insertion_position(text: str, start: int) -> int:
+    """Find a sentence end without crossing the next Markdown block."""
+    sentence_boundary = _SENTENCE_END_PATTERN.search(text, start)
+    block_boundary = _MARKDOWN_BLOCK_BOUNDARY_PATTERN.search(text, start)
+    if block_boundary and (
+        sentence_boundary is None or block_boundary.start() < sentence_boundary.start()
+    ):
+        return block_boundary.start()
+    return sentence_boundary.end() if sentence_boundary else len(text)
+
+
+def normalize_citation_markers(text: str, marks: list[CitationMark]) -> str:
+    """Move generated citation markers to the end of their sentence.
+
+    Anthropic citation deltas can arrive between two text chunks, including in
+    the middle of a word. The streaming path must still expose those markers
+    as soon as the source is known, so the internal response accumulator may
+    contain a marker at the delta boundary (for example ``ru[1]nica.m``).
+    Before a response is persisted or sent in the final event, move each
+    generated marker to the nearest sentence or Markdown block boundary at or
+    after its original position.
+
+    Markers are tokenized before this function is called. That distinction is
+    important because ordinary answer text can contain the same visible shape,
+    such as an array index ``arr[1]``.
+    """
+    if not text or not marks:
+        return text
+
+    known_markers = {str(mark.marker) for mark in marks}
+    clean_parts: list[str] = []
+    occurrences: list[tuple[int, str]] = []
+    raw_cursor = 0
+    clean_length = 0
+
+    for match in _CITATION_MARKER_TOKEN_PATTERN.finditer(text):
+        if match.group(1) not in known_markers:
+            continue
+        segment = text[raw_cursor : match.start()]
+        clean_parts.append(segment)
+        clean_length += len(segment)
+        occurrences.append((clean_length, f"[{match.group(1)}]"))
+        raw_cursor = match.end()
+
+    if not occurrences:
+        return text
+
+    clean_parts.append(text[raw_cursor:])
+    clean_text = "".join(clean_parts)
+    clean_text, occurrences = _remove_whitespace_before_sentence_punctuation(
+        clean_text, occurrences
+    )
+    insertions: dict[int, list[str]] = {}
+
+    for original_position, marker in occurrences:
+        prefix = clean_text[:original_position].rstrip()
+        if prefix and _SENTENCE_END_AT_END_PATTERN.search(prefix):
+            insertion_position = len(prefix)
+        else:
+            insertion_position = _next_citation_insertion_position(clean_text, original_position)
+        marker_number = marker.removeprefix("[").removesuffix("]")
+        insertions.setdefault(insertion_position, []).append(
+            f"\x00osa-output-citation-{marker_number}\x00"
+        )
+
+    normalized: list[str] = []
+    for index in range(len(clean_text) + 1):
+        normalized.extend(insertions.get(index, []))
+        if index < len(clean_text):
+            normalized.append(clean_text[index])
+    normalized_text = "".join(normalized)
+    normalized_text = re.sub(rf"[ \t]+(?={_OUTPUT_CITATION_TOKEN_TEXT})", "", normalized_text)
+    marker_run = rf"({_OUTPUT_CITATION_TOKEN_TEXT}(?:{_OUTPUT_CITATION_TOKEN_TEXT})*)"
+    normalized_text = re.sub(
+        rf"{marker_run}[ \t]+(?={_OUTPUT_CITATION_TOKEN_TEXT})",
+        lambda match: match.group(1),
+        normalized_text,
+    )
+    normalized_text = re.sub(
+        rf"{marker_run}[ \t]+(?=\S)",
+        lambda match: f"{match.group(1)} ",
+        normalized_text,
+    )
+    normalized_text = re.sub(
+        rf"{marker_run}[ \t]+$",
+        lambda match: match.group(1),
+        normalized_text,
+    )
+    return _OUTPUT_CITATION_TOKEN_PATTERN.sub(lambda match: f"[{match.group(1)}]", normalized_text)
 
 
 class CitationAssembler:
