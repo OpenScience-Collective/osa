@@ -61,6 +61,11 @@ class TestWidgetHandlesCitationSseEvents:
         # or missing citations field from an older/misbehaving backend.
         assert "Array.isArray(event.citations)" in source
 
+    def test_done_event_can_replace_raw_stream_with_normalized_content(self) -> None:
+        source = _widget_source()
+        assert "typeof event.content === 'string'" in source
+        assert "normalizeCitationMarkersAtSentenceEnd" in source
+
     def test_non_streaming_response_reads_citations_field(self) -> None:
         """The /chat non-streaming fallback path also carries citations."""
         source = _widget_source()

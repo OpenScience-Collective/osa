@@ -73,10 +73,14 @@ const renderInlineMarkdown = new Function(
     .map((name) => extractFunction(widgetSource, name))
     .join('\n') + '\nreturn renderInlineMarkdown;'
 )();
+const normalizeCitationMarkersAtSentenceEnd = new Function(
+  extractFunction(widgetSource, 'normalizeCitationMarkersAtSentenceEnd') +
+    '\nreturn normalizeCitationMarkersAtSentenceEnd;'
+)();
 
 const CITATIONS = {
-  1: { source: 'https://example.com/doc', title: 'Doc', cited_text: 'a cited span' },
-  2: { source: 'https://example.com/other', title: 'Other', cited_text: 'another span' },
+  1: { marker: 1, source: 'https://example.com/doc', title: 'Doc', cited_text: 'a cited span' },
+  2: { marker: 2, source: 'https://example.com/other', title: 'Other', cited_text: 'another span' },
 };
 
 function linkedMarkers(rendered) {
@@ -118,6 +122,32 @@ assert(
 assert(
   renderInlineMarkdown('No brackets at all.', CITATIONS) === 'No brackets at all.',
   'plain text is returned unchanged'
+);
+
+assert(
+  normalizeCitationMarkersAtSentenceEnd(
+    'Infomax is implemented in ru[1]nica.m, a MATLAB version.',
+    [CITATIONS[1]]
+  ) === 'Infomax is implemented in runica.m, a MATLAB version.[1]',
+  'a marker split into the middle of a word moves to the sentence end'
+);
+
+assert(
+  normalizeCitationMarkersAtSentenceEnd('[1]The cited claim.', [CITATIONS[1]]) ===
+    'The cited claim.[1]',
+  'a leading marker moves after the sentence'
+);
+
+assert(
+  normalizeCitationMarkersAtSentenceEnd('First claim.[1] Next claim.', [CITATIONS[1]]) ===
+    'First claim.[1] Next claim.',
+  'a marker already after a sentence stays with that sentence'
+);
+
+assert(
+  normalizeCitationMarkersAtSentenceEnd('First. Second.[1] Next.', [CITATIONS[1]]) ===
+    'First. Second.[1] Next.',
+  'a marker after the last of multiple sentences stays with that sentence'
 );
 
 // Behavior that was already correct, pinned so the scan change cannot break it.

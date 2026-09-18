@@ -27,6 +27,7 @@ content came from a single final message or a stream of chunks.
 """
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Literal, NamedTuple
 
@@ -272,6 +273,66 @@ class CitationTracker:
     def marks(self) -> list[CitationMark]:
         """Every distinct citation mark recorded so far, in marker order."""
         return list(self._marks)
+
+
+_CITATION_MARKER_PATTERN = re.compile(r"\[(\d+)\]")
+_SENTENCE_END_PATTERN = re.compile(r"""[.!?](?:["'”’)\]]*)?(?=\s|$)""")
+_SENTENCE_END_AT_END_PATTERN = re.compile(r"""[.!?](?:["'”’)\]]*)?$""")
+
+
+def normalize_citation_markers(text: str, marks: list[CitationMark]) -> str:
+    """Move known inline citation markers to the end of their sentence.
+
+    Anthropic citation deltas can arrive between two text chunks, including in
+    the middle of a word. The streaming path must still expose those markers
+    as soon as the source is known, so a completed response may contain a
+    marker at the delta boundary (for example ``ru[1]nica.m``). Before a
+    response is persisted or finalized in the client, move each known marker
+    to the nearest sentence boundary at or after its original position.
+
+    Unknown bracketed numbers are left untouched because they may be ordinary
+    answer content (for example a numbered item or an array index).
+    """
+    if not text or not marks:
+        return text
+
+    known_markers = {str(mark.marker) for mark in marks}
+    clean_parts: list[str] = []
+    occurrences: list[tuple[int, str]] = []
+    raw_cursor = 0
+    clean_length = 0
+
+    for match in _CITATION_MARKER_PATTERN.finditer(text):
+        if match.group(1) not in known_markers:
+            continue
+        segment = text[raw_cursor : match.start()]
+        clean_parts.append(segment)
+        clean_length += len(segment)
+        occurrences.append((clean_length, match.group(0)))
+        raw_cursor = match.end()
+
+    if not occurrences:
+        return text
+
+    clean_parts.append(text[raw_cursor:])
+    clean_text = "".join(clean_parts)
+    insertions: dict[int, list[str]] = {}
+
+    for original_position, marker in occurrences:
+        prefix = clean_text[:original_position].rstrip()
+        if prefix and _SENTENCE_END_AT_END_PATTERN.search(prefix):
+            insertion_position = len(prefix)
+        else:
+            next_boundary = _SENTENCE_END_PATTERN.search(clean_text, original_position)
+            insertion_position = next_boundary.end() if next_boundary else len(clean_text)
+        insertions.setdefault(insertion_position, []).append(marker)
+
+    normalized: list[str] = []
+    for index in range(len(clean_text) + 1):
+        normalized.extend(insertions.get(index, []))
+        if index < len(clean_text):
+            normalized.append(clean_text[index])
+    return "".join(normalized)
 
 
 class CitationAssembler:

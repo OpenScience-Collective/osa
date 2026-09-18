@@ -29,6 +29,7 @@ from src.agents.content import (
     CitationAssembler,
     ContentBlock,
     classify_content_blocks_with_indices,
+    normalize_citation_markers,
 )
 from src.api.config import Settings, get_settings
 from src.api.routers.health import compute_community_health
@@ -1225,7 +1226,7 @@ def _build_answer_with_citations(content: str | list[Any]) -> tuple[str, list[Ci
             parts.append(marker_text)
 
     assembler.finish_model_run()
-    answer = "".join(parts)
+    answer = normalize_citation_markers("".join(parts), assembler.marks)
     citations = [
         CitationInfo(marker=m.marker, source=m.source, title=m.title, cited_text=m.cited_text)
         for m in assembler.marks
@@ -2219,6 +2220,7 @@ async def _stream_ask_response(
         }
 
         stream_config = awm.langfuse_config or {}
+        full_response = ""
         async for event in graph.astream_events(state, version="v2", config=stream_config):
             kind = event.get("event")
 
@@ -2229,11 +2231,14 @@ async def _stream_ask_response(
                     for block, block_index in classify_content_blocks_with_indices(raw_content):
                         if block.kind == "text":
                             if block.text:
+                                full_response += block.text
                                 sse_event = {"event": "content", "content": block.text}
                                 yield f"data: {json.dumps(sse_event)}\n\n"
                             for sse_event in _build_citation_sse_events(
                                 citation_assembler, block, block_index
                             ):
+                                if sse_event["event"] == "content":
+                                    full_response += sse_event["content"]
                                 yield f"data: {json.dumps(sse_event)}\n\n"
                         elif block.kind == "thinking":
                             yield f"data: {json.dumps({'event': 'thinking'})}\n\n"
@@ -2267,10 +2272,12 @@ async def _stream_ask_response(
                 }
                 yield f"data: {json.dumps(sse_event)}\n\n"
 
+        final_response = normalize_citation_markers(full_response, citation_assembler.marks)
         sse_event = {
             "event": "done",
             "request_id": request_id,
             "model": awm.model if awm else None,
+            "content": final_response,
             "citations": [
                 {
                     "marker": m.marker,
@@ -2507,9 +2514,10 @@ async def _stream_chat_response(
                 }
                 yield f"data: {json.dumps(sse_event)}\n\n"
 
-        if full_response:
+        final_response = normalize_citation_markers(full_response, citation_assembler.marks)
+        if final_response:
             try:
-                session.add_assistant_message(full_response)
+                session.add_assistant_message(final_response)
             except ValueError as e:
                 # Session limit exceeded
                 logger.error("Session limit exceeded in streaming: %s", e)
@@ -2532,6 +2540,7 @@ async def _stream_chat_response(
             "session_id": session.session_id,
             "request_id": request_id,
             "model": awm.model if awm else None,
+            "content": final_response,
             "citations": [
                 {
                     "marker": m.marker,

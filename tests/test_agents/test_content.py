@@ -22,6 +22,7 @@ from src.agents.content import (
     classify_content_blocks,
     extract_citations,
     extract_text,
+    normalize_citation_markers,
 )
 
 FIXTURES_DIR = Path(__file__).resolve().parents[1] / "fixtures"
@@ -380,6 +381,47 @@ class TestCitationTracker:
         marks = tracker.marks
         marks.append(CitationMark(99, "fake", "fake", "fake"))
         assert len(tracker.marks) == 1
+
+
+class TestNormalizeCitationMarkers:
+    """Known inline markers are moved to sentence boundaries."""
+
+    def test_moves_marker_out_of_the_middle_of_a_word(self):
+        marks = [CitationMark(1, "https://a.example", "A", "runica.m")]
+
+        result = normalize_citation_markers(
+            "Infomax is implemented in ru[1]nica.m, a MATLAB version.", marks
+        )
+
+        assert result == "Infomax is implemented in runica.m, a MATLAB version.[1]"
+
+    def test_moves_leading_marker_after_the_sentence(self):
+        marks = [CitationMark(1, "https://a.example", "A", "claim")]
+
+        result = normalize_citation_markers("[1]The cited claim.", marks)
+
+        assert result == "The cited claim.[1]"
+
+    def test_keeps_marker_after_the_sentence_it_already_follows(self):
+        marks = [CitationMark(1, "https://a.example", "A", "claim")]
+
+        result = normalize_citation_markers("First claim.[1] Next claim.", marks)
+
+        assert result == "First claim.[1] Next claim."
+
+    def test_keeps_marker_after_the_last_of_multiple_completed_sentences(self):
+        marks = [CitationMark(1, "https://a.example", "A", "claim")]
+
+        result = normalize_citation_markers("First. Second.[1] Next.", marks)
+
+        assert result == "First. Second.[1] Next."
+
+    def test_leaves_unknown_bracketed_numbers_untouched(self):
+        marks = [CitationMark(1, "https://a.example", "A", "claim")]
+
+        result = normalize_citation_markers("See item [42], then claim[1].", marks)
+
+        assert result == "See item [42], then claim.[1]"
 
 
 class TestCitationAssembler:

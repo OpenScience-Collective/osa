@@ -145,6 +145,28 @@ class TestBuildAnswerWithCitationsViaExtractAgentResult:
         assert ar.response_content == "AMICA claim.[1]"
         assert ar.citations[0].source == "https://doc.example/amica"
 
+    def test_stream_boundary_marker_is_normalized_to_sentence_end(self) -> None:
+        content = [
+            {"type": "text", "index": 0, "text": "Infomax is implemented in ru"},
+            {
+                "type": "text",
+                "index": 0,
+                "citations": [
+                    {
+                        "source": "https://doc.example/runica",
+                        "title": "RUNICA",
+                        "cited_text": "runica.m",
+                    }
+                ],
+            },
+            {"type": "text", "index": 0, "text": "nica.m, a MATLAB version."},
+        ]
+        result = {"messages": [AIMessage(content=content)]}
+
+        ar = _extract_agent_result(result)
+
+        assert ar.response_content == "Infomax is implemented in runica.m, a MATLAB version.[1]"
+
     def test_no_messages_key_returns_empty_result(self) -> None:
         ar = _extract_agent_result({})
         assert ar.response_content == ""
