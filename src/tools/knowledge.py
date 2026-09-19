@@ -36,15 +36,25 @@ from src.tools.citations import build_search_result, truncate
 
 logger = logging.getLogger(__name__)
 
-# Cap on one FAQ answer's citable text. The other two citable tools pass
-# search snippets, which src/knowledge/search.py has already truncated, but
-# a FAQ answer comes straight out of the database and is only capped at
-# ingest (5000 chars, src/knowledge/db.py). With the default limit=5 that
-# would put 25k chars of tool_result on the wire per search, ten times the
-# plain-string path's 5 x 500. This is more generous than the 500-char
-# display truncation below, because a citation points at an exact span and
-# a span cut mid-sentence is worse than no citation, but it is still bounded.
+# Cap on one FAQ answer's citable text. search_docstrings' citable snippets
+# are already truncated to DOCSTRING_SNIPPET_MAX_LENGTH by
+# src/knowledge/search.py, but a FAQ answer comes straight out of the
+# database and is only capped at ingest (5000 chars, src/knowledge/db.py).
+# With the default limit=5 that would put 25k chars of tool_result on the
+# wire per search, ten times the plain-string path's 5 x 500. This is more
+# generous than the 500-char display truncation below, because a citation
+# points at an exact span and a span cut mid-sentence is worse than no
+# citation, but it is still bounded.
 _MAX_CITABLE_FAQ_ANSWER_CHARS = 2000
+
+# Cap on one get_full_docstring result's citable text. Unlike the search
+# snippet cap above, this tool's whole purpose is returning more than
+# DOCSTRING_SNIPPET_MAX_LENGTH, so it stays well above that -- but each
+# docstring is only capped at ingest (10K chars, src/knowledge/db.py), and
+# with the default FULL_DOCSTRING_DEFAULT_LIMIT=5 an uncapped citation
+# payload could put ~50K chars on the wire per call. This keeps the worst
+# case in the same order of magnitude as the FAQ path's 5 x 2000 = 10K.
+_MAX_CITABLE_DOCSTRING_CHARS = 4000
 
 
 def _check_db_exists(community_id: str) -> bool:
@@ -569,7 +579,7 @@ def create_get_full_docstring_tool(
                 results,
                 source=lambda r: r.url,
                 title=lambda r: r.title,
-                text=lambda r: r.snippet,
+                text=lambda r: truncate(r.snippet, _MAX_CITABLE_DOCSTRING_CHARS),
             )
             if blocks:
                 return blocks
