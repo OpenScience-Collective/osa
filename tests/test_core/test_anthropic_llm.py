@@ -232,7 +232,19 @@ class TestCreateAnthropicLLMCredentials:
         assert not llm.default_headers
 
     def test_base_url_without_workspace_id_raises(self) -> None:
-        settings = _settings(anthropic_workspace_id=None)
+        """Settings itself now rejects this combination at construction
+        time (see tests/test_api/test_config.py), so this exercises it via
+        _settings() rather than via create_anthropic_llm."""
+        with pytest.raises(ValidationError, match="ANTHROPIC_WORKSPACE_ID"):
+            _settings(anthropic_workspace_id=None)
+
+    def test_create_anthropic_llm_rechecks_settings_mutated_after_construction(self) -> None:
+        """Defense-in-depth: Settings.validate_workspace_id_with_base_url
+        only runs at construction time, and Settings is mutable, so a value
+        changed afterward (e.g. by a bug elsewhere) is not re-validated by
+        pydantic. create_anthropic_llm's own check still catches it."""
+        settings = _settings()
+        settings.anthropic_workspace_id = None
         with pytest.raises(RuntimeError, match="ANTHROPIC_WORKSPACE_ID"):
             create_anthropic_llm(settings=settings)
 
