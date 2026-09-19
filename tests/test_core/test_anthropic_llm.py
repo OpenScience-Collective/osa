@@ -258,6 +258,10 @@ class TestCreateAnthropicLLMCredentials:
         llm = create_anthropic_llm(api_key="byok-key", settings=settings)
         assert llm.anthropic_api_url == "https://api.anthropic.com"
         assert not llm.default_headers
+        # URL and header shape alone would also be satisfied by a regression
+        # that silently falls back to the server key instead of the
+        # caller's -- the exact bug class #393/#394 already shipped once.
+        assert llm.anthropic_api_key.get_secret_value() == "byok-key"
 
 
 class TestCreateAnthropicLLMBehavior:

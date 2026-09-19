@@ -87,6 +87,13 @@ dev = [
     # no transport injection point) can assert on outgoing requests without
     # a real network call.
     "respx>=0.22.0",
+    # The anthropic SDK vendors its own isolated httpx fork under this name
+    # (anthropic.DefaultHttpxClient subclasses httpx2.Client, not
+    # httpx.Client), which respx cannot intercept. tests/test_api/
+    # test_byok_http.py mocks that vendored client directly instead; pinned
+    # explicitly here since it's a direct test import, not just a
+    # transitive dependency of anthropic. See that file's module docstring.
+    "httpx2>=2.12.0",
     "ruff>=0.14.0",
     "pre-commit>=4.5.0",
     "mypy>=1.19.0",
