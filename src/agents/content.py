@@ -287,6 +287,46 @@ _MARKDOWN_BLOCK_BOUNDARY_PATTERN = re.compile(
 _OUTPUT_CITATION_TOKEN_PATTERN = re.compile(r"\x00osa-output-citation-(\d+)\x00")
 _OUTPUT_CITATION_TOKEN_TEXT = r"\x00osa-output-citation-\d+\x00"
 
+# Sentence-boundary detection here is punctuation-only, so an abbreviation's
+# period (e.g. "Dr.", "etc.", "et al.") looks identical to a real sentence
+# end. Two review rounds each tried a heuristic to tell them apart -- a
+# fixed "title vs. ambiguous" split, then a next-character-case check -- and
+# each one fixed its reported case while relocating a marker into a
+# different, unrelated sentence in the opposite direction (confirmed even
+# for the seemingly reliable "title followed by a capitalized name" signal:
+# "became a Dr. Her family..." has a capitalized word after the period too,
+# and it is not a name). No cheap local signal reliably distinguishes them.
+#
+# The conservative choice: never relocate a marker across an abbreviation's
+# period into a different sentence. A marker left right after "Dr." or
+# "et al." is imprecisely placed but still within (or immediately adjacent
+# to) the sentence it supports, which this project's "precision over
+# features" principle treats as an acceptable, bounded degradation --
+# unlike attaching a citation to the wrong claim entirely. "vs." is the one
+# exception: across both review passes nobody could construct natural prose
+# where "vs." genuinely ends a sentence, so its boundary is still skipped
+# when searching forward for where a sentence really ends.
+_ALWAYS_SKIPPED_ABBREVIATION_WORDS = frozenset({"vs"})
+_ABBREVIATION_WORD_PATTERN = re.compile(r"(?:^|[\s(])([A-Za-z]+)\.$")
+
+
+def _is_always_skipped_abbreviation(period_prefix: str) -> bool:
+    """True when ``period_prefix`` ends in an abbreviation never treated as
+    a sentence end (see module note above). ``period_prefix`` must end
+    exactly at the period (no trailing closers)."""
+    match = _ABBREVIATION_WORD_PATTERN.search(period_prefix)
+    return bool(match and match.group(1).lower() in _ALWAYS_SKIPPED_ABBREVIATION_WORDS)
+
+
+def _search_sentence_end(text: str, start: int) -> re.Match[str] | None:
+    """Find the next real sentence end at or after ``start``, skipping "vs."."""
+    position = start
+    while True:
+        match = _SENTENCE_END_PATTERN.search(text, position)
+        if match is None or not _is_always_skipped_abbreviation(text[: match.start() + 1]):
+            return match
+        position = match.end()
+
 
 def encode_citation_markers(marker_text: str) -> str:
     """Protect generated markers from being confused with answer text."""
@@ -301,7 +341,7 @@ def _remove_whitespace_before_sentence_punctuation(
     """Repair a marker delta that arrived immediately before punctuation."""
     removals: set[int] = set()
     for position, _marker in occurrences:
-        boundary = _SENTENCE_END_PATTERN.search(text, position)
+        boundary = _search_sentence_end(text, position)
         if boundary is None or text[position : boundary.start()].strip():
             continue
 
@@ -324,7 +364,7 @@ def _remove_whitespace_before_sentence_punctuation(
 
 def _next_citation_insertion_position(text: str, start: int) -> int:
     """Find a sentence end without crossing the next Markdown block."""
-    sentence_boundary = _SENTENCE_END_PATTERN.search(text, start)
+    sentence_boundary = _search_sentence_end(text, start)
     block_boundary = _MARKDOWN_BLOCK_BOUNDARY_PATTERN.search(text, start)
     if block_boundary and (
         sentence_boundary is None or block_boundary.start() < sentence_boundary.start()
@@ -336,7 +376,12 @@ def _next_citation_insertion_position(text: str, start: int) -> int:
 def _completed_sentence_position(text: str, start: int) -> int | None:
     """Return the position after a completed Markdown sentence before a marker."""
     prefix = text[:start].rstrip()
-    if not prefix or _SENTENCE_END_AT_END_PATTERN.search(prefix) is None:
+    if not prefix:
+        return None
+    end_match = _SENTENCE_END_AT_END_PATTERN.search(prefix)
+    if end_match is None:
+        return None
+    if _is_always_skipped_abbreviation(prefix[: end_match.start() + 1]):
         return None
 
     closing = re.match(_SENTENCE_END_CLOSERS, text[len(prefix) :])

@@ -1613,15 +1613,12 @@
       const prefix = content.slice(0, marker.start).trimEnd();
       if (sentenceEndAtEnd.test(prefix)) continue;
 
-      const precedingIdentifier = content.slice(0, marker.start).match(/[A-Za-z_$][\w$]*$/)?.[0];
-      const afterMarker = content.slice(marker.end);
-      if (precedingIdentifier && precedingIdentifier.length > 1
-          && (/^\s/.test(afterMarker) || /^[,.;:)]/.test(afterMarker))) {
-        // A known citation marker can share a number with an ordinary array
-        // index in legacy text. Do not rewrite an unambiguous identifier
-        // index such as arr[1] just because the reply also cites source [1].
-        continue;
-      }
+      // A code-style index such as arr[1] is only exempted from migration
+      // when it is actually marked as code (inline backticks, checked via
+      // isInsideInlineCode above). A bare word immediately before [n] with
+      // no other signal is indistinguishable from a real, unlinked citation
+      // marker (e.g. "the documentation[1] explains"), so it is not treated
+      // as code here; wrap array-index-style text in backticks to preserve it.
 
       sentenceEnd.lastIndex = marker.end;
       const sentence = sentenceEnd.exec(content);

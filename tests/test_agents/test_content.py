@@ -486,6 +486,160 @@ class TestNormalizeCitationMarkers:
             assert normalize_citation_markers(text, marks) == expected
 
 
+class TestNormalizeCitationMarkersAbbreviations:
+    """A marker landed right after an abbreviation (Dr., etc., et al., ...)
+    is left there rather than relocated by a guess, except "vs." (see the
+    module note above ``_ALWAYS_SKIPPED_ABBREVIATION_WORDS`` in
+    src/agents/content.py). Two earlier heuristics each fixed one direction
+    of misplacement while introducing the opposite one -- relocating a
+    marker into a different, unrelated sentence -- so every case here
+    covers both directions per abbreviation family, using domain-flavored
+    HED/BIDS/EEGLAB-style prose where that risk concentrates (lowercase
+    filenames/identifiers, capitalized tool names, CLI flags).
+    """
+
+    def test_title_before_a_name_does_not_relocate_into_the_next_sentence(self):
+        marks = [CitationMark(1, "https://a.example", "A", "claim")]
+
+        result = normalize_citation_markers(
+            "Dr." + encode_citation_markers("[1]") + " Smith conducted the study.",
+            marks,
+        )
+
+        assert result == "Dr.[1] Smith conducted the study."
+
+    def test_title_used_as_a_standalone_noun_stays_with_its_own_sentence(self):
+        """Regression: a title-only heuristic (skip forward whenever the
+        next word is capitalized) fails here, since "Her" is capitalized
+        too but is not a name -- it starts a genuinely new sentence."""
+        marks = [CitationMark(1, "https://a.example", "A", "claim")]
+
+        result = normalize_citation_markers(
+            "After years of study, she finally became a Dr."
+            + encode_citation_markers("[1]")
+            + " Her family celebrated the achievement.",
+            marks,
+        )
+
+        assert result == (
+            "After years of study, she finally became a Dr.[1] "
+            "Her family celebrated the achievement."
+        )
+
+    def test_et_al_continuing_the_same_sentence_does_not_relocate(self):
+        marks = [CitationMark(1, "https://a.example", "A", "claim")]
+
+        result = normalize_citation_markers(
+            "As shown by Smith et al." + encode_citation_markers("[1]") + " in the trial.",
+            marks,
+        )
+
+        assert result == "As shown by Smith et al.[1] in the trial."
+
+    def test_et_al_genuinely_ending_a_sentence_does_not_relocate_into_the_next(self):
+        marks = [CitationMark(1, "https://a.example", "A", "claim")]
+
+        result = normalize_citation_markers(
+            "The dataset was annotated by three coders et al."
+            + encode_citation_markers("[1]")
+            + " Validation followed a separate protocol.",
+            marks,
+        )
+
+        assert result == (
+            "The dataset was annotated by three coders et al.[1] "
+            "Validation followed a separate protocol."
+        )
+
+    def test_etc_ending_a_sentence_with_a_lowercase_identifier_next(self):
+        """Regression for a reported bug: a next-character-case heuristic
+        relocated this marker into the following, unrelated sentence
+        because "eeg_data.set" happens to start lowercase."""
+        marks = [CitationMark(1, "https://a.example", "A", "claim")]
+
+        result = normalize_citation_markers(
+            "The pipeline logs timestamps, channel counts, etc."
+            + encode_citation_markers("[1]")
+            + " eeg_data.set was used for the validation run.",
+            marks,
+        )
+
+        assert result == (
+            "The pipeline logs timestamps, channel counts, etc.[1] "
+            "eeg_data.set was used for the validation run."
+        )
+
+    def test_etc_continuing_the_same_sentence_in_enumerative_technical_prose(self):
+        marks = [CitationMark(1, "https://a.example", "A", "claim")]
+
+        result = normalize_citation_markers(
+            "EEGLAB provides filtering, referencing, ICA decomposition, etc."
+            + encode_citation_markers("[1]")
+            + " which are documented in the plugin manager.",
+            marks,
+        )
+
+        assert result == (
+            "EEGLAB provides filtering, referencing, ICA decomposition, etc.[1] "
+            "which are documented in the plugin manager."
+        )
+
+    def test_eg_continuing_with_a_capitalized_tool_name_does_not_relocate(self):
+        """Regression: a lowercase/uppercase heuristic accepted "e.g." as a
+        real sentence end here because "MATLAB" is capitalized, then left
+        the marker stuck too early instead of leaving it consistently."""
+        marks = [CitationMark(1, "https://a.example", "A", "claim")]
+
+        result = normalize_citation_markers(
+            "Various tools, e.g."
+            + encode_citation_markers("[1]")
+            + " MATLAB toolboxes, are available.",
+            marks,
+        )
+
+        assert result == "Various tools, e.g.[1] MATLAB toolboxes, are available."
+
+    def test_eg_continuing_with_a_non_alphabetic_flag_does_not_relocate(self):
+        marks = [CitationMark(1, "https://a.example", "A", "claim")]
+
+        result = normalize_citation_markers(
+            "Configure the tool via flags, e.g."
+            + encode_citation_markers("[1]")
+            + " --verbose enables extra logging.",
+            marks,
+        )
+
+        assert result == ("Configure the tool via flags, e.g.[1] --verbose enables extra logging.")
+
+    def test_vs_already_at_boundary_still_skips_forward(self):
+        """ "vs." is the sole exception: across two review passes nobody
+        could construct natural prose where it genuinely ends a sentence."""
+        marks = [CitationMark(1, "https://a.example", "A", "claim")]
+
+        result = normalize_citation_markers(
+            "We evaluated ICA vs."
+            + encode_citation_markers("[1]")
+            + " PCA for artifact removal in this study.",
+            marks,
+        )
+
+        assert result == "We evaluated ICA vs. PCA for artifact removal in this study.[1]"
+
+    def test_vs_mid_sentence_still_skips_forward_during_the_search(self):
+        """Same exception, but exercised via the forward-search loop rather
+        than the already-at-a-boundary check: the marker starts well
+        before "vs.", so the search must pass over its period en route to
+        the real sentence end."""
+        marks = [CitationMark(1, "https://a.example", "A", "claim")]
+
+        result = normalize_citation_markers(
+            "We compared A" + encode_citation_markers("[1]") + " vs. B for accuracy.",
+            marks,
+        )
+
+        assert result == "We compared A vs. B for accuracy.[1]"
+
+
 class TestCitationAssembler:
     """Citation markers follow the text block they annotate."""
 
