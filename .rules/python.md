@@ -28,8 +28,16 @@ uv sync
 ## Code Style
 - **Formatter:** `ruff format` (Black-compatible)
 - **Linter:** `ruff check --fix --unsafe-fixes`
-- **Type Checker:** `ty` (not mypy)
-- **Line Length:** 88 characters (Black standard)
+- **Type Checker:** the global policy direction is `ty`, not `mypy` - but as of
+  this writing `pyproject.toml` still lists `mypy>=1.19.0` as a dev
+  dependency with a full `[tool.mypy]` config block, `ty` isn't present
+  anywhere in the repo (not in `pyproject.toml`, `uv.lock`, the pre-commit
+  config, or any CI workflow), and CI doesn't actually run either mypy or ty
+  today (only `ruff`). Don't assume `ty` is in use just because this file
+  says it's the target - check `pyproject.toml` first, and see issue #412
+  for the actual migration.
+- **Line Length:** 100 characters (`[tool.ruff] line-length = 100` in
+  `pyproject.toml` - not the Black default of 88)
 - **Imports:** Sorted by ruff (isort-compatible)
 
 ## Type Hints
@@ -50,7 +58,7 @@ src/
 ├── core/services/    # Business logic
 ├── tools/            # Document retrieval tools
 tests/                # Real tests only
-pyproject.toml        # Project config (UV + ruff + ty)
+pyproject.toml        # Project config (UV + ruff; still mypy pending #412)
 ```
 (See AGENTS.md "Project Structure" for the full layout.)
 
@@ -91,7 +99,9 @@ except SpecificError as e:
 ## Never Do This
 - Never use `pip install` directly; use `uv add` or `uv pip install`
 - Never use `conda`, `virtualenv`, or `venv`; UV handles environments
-- Never use `mypy`; use `ty` for type checking
+- Don't introduce new `mypy`-specific config or lean further into it; the
+  direction is `ty` (issue #412 tracks removing `mypy` - it's still in
+  `pyproject.toml` today, so don't rip it out unilaterally either)
 - Never use bare `except:` or `except Exception: pass`
 - Never use `os.path`; use `pathlib.Path`
 - Never commit `.env` files or hardcoded secrets
@@ -102,4 +112,4 @@ except SpecificError as e:
 - **Type hints:** Self-documenting code
 
 ---
-*UV for everything. Ruff for style. Ty for types. Real tests only.*
+*UV for everything. Ruff for style. Ty for types (target - see #412). Real tests only.*
