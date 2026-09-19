@@ -1555,16 +1555,33 @@ class TestModelNameValidation:
             assert config.default_model == model
 
     def test_valid_bare_first_party_ids(self) -> None:
-        """Should accept a bare first-party id with no provider prefix."""
-        valid_bare_ids = ["claude-haiku-4-5", "claude-sonnet-5", "just-a-model-name"]
+        """Should accept a bare first-party id with no provider prefix, and
+        not warn: these are real, resolvable Anthropic ids/aliases."""
+        valid_bare_ids = ["claude-haiku-4-5", "claude-sonnet-5"]
         for model in valid_bare_ids:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                config = CommunityConfig(
+                    id="test",
+                    name="Test",
+                    description="Test",
+                    default_model=model,
+                )
+            assert config.default_model == model
+
+    def test_bare_id_format_valid_but_unresolvable_warns(self) -> None:
+        """A bare id passes format validation (no '/') but isn't an offered
+        Anthropic model or alias, so it silently falls back on the
+        OpenRouter path (see validate_default_model_resolvable). The config
+        still parses -- this is a warning, not an error."""
+        with pytest.warns(UserWarning, match="not an offered Anthropic model"):
             config = CommunityConfig(
                 id="test",
                 name="Test",
                 description="Test",
-                default_model=model,
+                default_model="just-a-model-name",
             )
-            assert config.default_model == model
+        assert config.default_model == "just-a-model-name"
 
     def test_allows_none(self) -> None:
         """Should allow None (use platform default)."""
