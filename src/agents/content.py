@@ -287,77 +287,43 @@ _MARKDOWN_BLOCK_BOUNDARY_PATTERN = re.compile(
 _OUTPUT_CITATION_TOKEN_PATTERN = re.compile(r"\x00osa-output-citation-(\d+)\x00")
 _OUTPUT_CITATION_TOKEN_TEXT = r"\x00osa-output-citation-\d+\x00"
 
-# Common abbreviations whose period is not always a sentence end.
-# Sentence-boundary detection here is punctuation-only, so without this a
-# citation marker gets planted mid-title (e.g. "Dr.[1] Smith") instead of
-# at the real sentence end -- a real defect for this project's domains,
-# where "et al." and title abbreviations are common in cited documentation.
-# This is a fixed exception list, not general abbreviation detection: it
-# covers the common cases, not every abbreviation that could ever appear.
+# Sentence-boundary detection here is punctuation-only, so an abbreviation's
+# period (e.g. "Dr.", "etc.", "et al.") looks identical to a real sentence
+# end. Two review rounds each tried a heuristic to tell them apart -- a
+# fixed "title vs. ambiguous" split, then a next-character-case check -- and
+# each one fixed its reported case while relocating a marker into a
+# different, unrelated sentence in the opposite direction (confirmed even
+# for the seemingly reliable "title followed by a capitalized name" signal:
+# "became a Dr. Her family..." has a capitalized word after the period too,
+# and it is not a name). No cheap local signal reliably distinguishes them.
 #
-# Title abbreviations are (virtually) never sentence-final -- a period
-# after "Dr" is always followed by a name in the same sentence, so their
-# boundary is always skipped.
-_TITLE_ABBREVIATION_WORDS = frozenset({"dr", "mr", "mrs", "ms", "prof", "vs"})
-# These commonly END a sentence too (a list-final "etc.", a citation-final
-# "et al.", both frequent in HED/BIDS/EEGLAB documentation), so their
-# boundary is only skipped when the text right after it is lowercase --
-# the signal that the same sentence continues rather than a new one
-# starting. Capitalized (or end-of-text) is accepted as a real boundary.
-_AMBIGUOUS_ABBREVIATION_WORDS = frozenset({"etc", "al"})
+# The conservative choice: never relocate a marker across an abbreviation's
+# period into a different sentence. A marker left right after "Dr." or
+# "et al." is imprecisely placed but still within (or immediately adjacent
+# to) the sentence it supports, which this project's "precision over
+# features" principle treats as an acceptable, bounded degradation --
+# unlike attaching a citation to the wrong claim entirely. "vs." is the one
+# exception: across both review passes nobody could construct natural prose
+# where "vs." genuinely ends a sentence, so its boundary is still skipped
+# when searching forward for where a sentence really ends.
+_ALWAYS_SKIPPED_ABBREVIATION_WORDS = frozenset({"vs"})
 _ABBREVIATION_WORD_PATTERN = re.compile(r"(?:^|[\s(])([A-Za-z]+)\.$")
-_TWO_PART_ABBREVIATION_PATTERN = re.compile(r"(?:^|[\s(])(?:i\.e|e\.g)\.$", re.IGNORECASE)
 
 
-def _abbreviation_kind(period_prefix: str) -> Literal["always", "ambiguous"] | None:
-    """Classify the abbreviation, if any, that ``period_prefix`` ends with.
-
-    ``period_prefix`` must end exactly at the abbreviation's period (no
-    trailing closers).
-    """
-    if _TWO_PART_ABBREVIATION_PATTERN.search(period_prefix):
-        return "ambiguous"
+def _is_always_skipped_abbreviation(period_prefix: str) -> bool:
+    """True when ``period_prefix`` ends in an abbreviation never treated as
+    a sentence end (see module note above). ``period_prefix`` must end
+    exactly at the period (no trailing closers)."""
     match = _ABBREVIATION_WORD_PATTERN.search(period_prefix)
-    if not match:
-        return None
-    word = match.group(1).lower()
-    if word in _TITLE_ABBREVIATION_WORDS:
-        return "always"
-    if word in _AMBIGUOUS_ABBREVIATION_WORDS:
-        return "ambiguous"
-    return None
-
-
-def _continues_same_sentence(text: str, position: int) -> bool:
-    """True when the text after ``position`` starts with a lowercase letter."""
-    rest = text[position:].lstrip(" \t")
-    return bool(rest) and rest[0].islower()
-
-
-def _is_abbreviation_boundary(period_prefix: str, text: str, after: int) -> bool:
-    """True when a sentence-end-shaped boundary is really an abbreviation.
-
-    ``period_prefix`` locates and classifies the abbreviation (see
-    ``_abbreviation_kind``); ``text``/``after`` look at what follows the
-    boundary, since an "ambiguous" abbreviation (unlike a title) can
-    genuinely end a sentence.
-    """
-    kind = _abbreviation_kind(period_prefix)
-    if kind == "always":
-        return True
-    if kind == "ambiguous":
-        return _continues_same_sentence(text, after)
-    return False
+    return bool(match and match.group(1).lower() in _ALWAYS_SKIPPED_ABBREVIATION_WORDS)
 
 
 def _search_sentence_end(text: str, start: int) -> re.Match[str] | None:
-    """Find the next real sentence end at or after ``start``, skipping abbreviations."""
+    """Find the next real sentence end at or after ``start``, skipping "vs."."""
     position = start
     while True:
         match = _SENTENCE_END_PATTERN.search(text, position)
-        if match is None or not _is_abbreviation_boundary(
-            text[: match.start() + 1], text, match.end()
-        ):
+        if match is None or not _is_always_skipped_abbreviation(text[: match.start() + 1]):
             return match
         position = match.end()
 
@@ -415,7 +381,7 @@ def _completed_sentence_position(text: str, start: int) -> int | None:
     end_match = _SENTENCE_END_AT_END_PATTERN.search(prefix)
     if end_match is None:
         return None
-    if _is_abbreviation_boundary(prefix[: end_match.start() + 1], text, start):
+    if _is_always_skipped_abbreviation(prefix[: end_match.start() + 1]):
         return None
 
     closing = re.match(_SENTENCE_END_CLOSERS, text[len(prefix) :])
