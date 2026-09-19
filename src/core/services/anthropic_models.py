@@ -39,6 +39,26 @@ MODEL_ALIASES: dict[str, str] = {
 # they accept is 1, the implicit default when the field is simply omitted.
 SAMPLING_MODELS = {"claude-haiku-4-5"}
 
+# Image media types the Messages API accepts on a content block, including a
+# content block nested in a tool result.
+#
+# Nothing in the client stack checks this. langchain-anthropic copies the media
+# type straight into the request, so a producer that emits an unaccepted type
+# learns about it as a 400 from the endpoint, after the work that made the
+# picture has already been done. A client-executed tool that returns figures
+# (see .context/browser-execution-tool-design.md) has to gate on this set
+# itself, which is why it is declared rather than left implicit; SVG in
+# particular is matplotlib's natural vector output and is NOT accepted.
+#
+# Declared here, next to the model tables and free of third-party imports, so
+# community config validation can reach it on a CLI-only install. The anthropic
+# SDK declares the same set on Base64ImageSourceParam.media_type, and
+# tests/test_core/test_tool_result_image_transport.py compares the two so this
+# copy cannot drift silently.
+IMAGE_MEDIA_TYPES: frozenset[str] = frozenset(
+    {"image/jpeg", "image/png", "image/gif", "image/webp"}
+)
+
 
 def normalize_model(model: str | None) -> str:
     """Normalize a requested model id to an offered Anthropic model.

@@ -13,6 +13,7 @@ credentials through Settings, so Settings is the correct source of truth
 for "is server mode configured" and is used for the skip check instead.
 """
 
+import base64
 import uuid
 
 import pytest
@@ -21,6 +22,7 @@ from langchain_core.tools import tool
 
 from src.api.config import get_settings
 from src.core.services.anthropic_llm import create_anthropic_llm
+from tests.helpers.images import digits_png
 
 pytestmark = [
     pytest.mark.integration,
@@ -169,4 +171,97 @@ class TestPromptCaching:
             "Expected a non-zero cache_read on the second call sharing the "
             f"same system prefix; got usage_metadata={second.usage_metadata!r}. "
             "Prompt caching is not taking effect against the live endpoint."
+        )
+
+
+@tool
+def execute_code(code: str) -> str:
+    """Run Python in the user's browser and return what it printed."""
+    # Declared for its schema only: these tests synthesize the tool result the
+    # browser would have returned, so nothing here ever runs the code.
+    return f"ran {code}"
+
+
+# The number the fixture figure draws. It appears nowhere in any text block, so
+# a reply containing it can only have come from the picture.
+FIGURE_NUMBER = "734"
+
+
+class TestToolResultImages:
+    """Does a figure made in the browser actually reach the model?
+
+    The browser-execution design note plans for ``execute_code`` to run in the
+    user's browser and return its output as a tool result with the plots
+    included, and lists "whether the provider layer accepts image content
+    blocks on a TOOL message" as an open question, noted as asserted earlier in
+    that note without being verified.
+
+    ``tests/test_core/test_tool_result_image_transport.py`` settles the half
+    that needs no network: the image survives every layer in this process and
+    leaves as an Anthropic image block nested in the tool result. Only a real
+    request can settle the other half, which is that the endpoint accepts that
+    payload and the model looks at the picture.
+    """
+
+    def _figure_round_trip(self, *, with_image: bool) -> str:
+        """One browser tool round trip, with or without the figure attached."""
+        llm = create_anthropic_llm(model="claude-haiku-4-5", thinking=None, max_tokens=64)
+        bound = llm.bind_tools([execute_code])
+
+        call_id = f"toolu_{uuid.uuid4().hex[:24]}"
+        tool_content: list[dict] = [{"type": "text", "text": "Figure rendered."}]
+        if with_image:
+            tool_content.append(
+                {
+                    "type": "image",
+                    "base64": base64.b64encode(digits_png(FIGURE_NUMBER)).decode(),
+                    "mime_type": "image/png",
+                }
+            )
+
+        messages: list[AIMessage | HumanMessage | ToolMessage] = [
+            HumanMessage(
+                content=(
+                    "Run the code, then reply with only the three-digit number "
+                    "printed in the figure."
+                )
+            ),
+            AIMessage(
+                content=[{"type": "text", "text": "Running it."}],
+                tool_calls=[
+                    {
+                        "name": "execute_code",
+                        "args": {"code": "render_figure()"},
+                        "id": call_id,
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            ToolMessage(content=tool_content, tool_call_id=call_id),
+        ]
+        return _extract_text(bound.invoke(messages).content)
+
+    def test_model_reads_a_figure_returned_on_a_tool_message(self) -> None:
+        text = self._figure_round_trip(with_image=True)
+
+        assert FIGURE_NUMBER in text, (
+            "The model did not report the number drawn in the figure attached to "
+            f"the tool result; it replied {text!r}. Either the endpoint dropped "
+            "the image block or the model did not receive it, and the browser "
+            "execution design cannot return plots on the tool result."
+        )
+
+    def test_the_same_round_trip_without_the_figure_cannot_report_the_number(self) -> None:
+        """The control: the number is in the picture and nowhere else.
+
+        Without this, the test above would still pass if the number ever
+        leaked into a text block, into the tool arguments, or into the prompt,
+        and it would then be green while proving nothing about images.
+        """
+        text = self._figure_round_trip(with_image=False)
+
+        assert FIGURE_NUMBER not in text, (
+            f"A round trip carrying no image still produced {FIGURE_NUMBER}: "
+            f"{text!r}. The number is reachable without the figure, so the "
+            "image test above proves nothing."
         )
