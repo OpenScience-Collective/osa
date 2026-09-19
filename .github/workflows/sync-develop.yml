@@ -119,6 +119,14 @@ jobs:
       - name: Merge main into develop
         if: steps.main_version.outputs.skip == 'false'
         run: |
+          # The local `develop` checkout is from the "Check out develop by
+          # explicit ref" step, before Python/uv setup and git-identity
+          # config ran - it can be stale relative to the ancestry check just
+          # above, which re-fetched origin/develop fresh. Reset to that fresh
+          # ref so the merge always operates on exactly what the check
+          # validated, not a snapshot from several steps earlier.
+          git reset --hard origin/develop
+
           # Regular merge (--no-ff) preserves the release commit graph,
           # matching the project's "regular merge commits, not squash"
           # rule for develop <-> main.
