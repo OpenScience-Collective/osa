@@ -1,9 +1,21 @@
 name: Notify Documentation Repo
 
+# During a release, two separate commits touch `main` within seconds of each
+# other (the release PR merge, then ensure-stable-version.yml's dev-suffix
+# strip - see issue #417), each firing this workflow once. Unlike
+# sync-develop.yml, this job does no stateful git work - it's a single
+# idempotent API call - so cancelling a stale in-flight run when a newer
+# push arrives is safe and correct: only the dispatch for the latest commit
+# on main should actually go out.
+
 on:
   push:
     branches:
       - main
+
+concurrency:
+  group: notify-docs
+  cancel-in-progress: true
 
 jobs:
   notify:
