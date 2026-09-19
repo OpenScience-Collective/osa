@@ -37,7 +37,14 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langchain_core.tools import tool
 from langchain_litellm import ChatLiteLLM
 
-from src.core.services.litellm_llm import CachingLLMWrapper, create_openrouter_llm
+from src.core.services.anthropic_llm import MODEL_ALIASES, OFFERED_MODELS, normalize_model
+from src.core.services.litellm_llm import (
+    OPENROUTER_MODEL_IDS,
+    CachingLLMWrapper,
+    create_openrouter_llm,
+    to_openrouter_model,
+)
+from src.metrics.cost import MODEL_PRICING
 
 # ============================================================================
 # Provider Selection Tests
@@ -169,6 +176,28 @@ class TestCreateOpenRouterLLMConfiguration:
             api_key="test-key",
         )
         assert llm.llm.streaming is True
+
+
+class TestCreateOpenRouterLLMKeyResolution:
+    """Tests that a missing API key fails loud instead of constructing an
+    LLM with no key that would only surface an opaque auth error later."""
+
+    def test_no_api_key_and_no_env_var_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        with pytest.raises(RuntimeError, match="No OpenRouter API key available"):
+            create_openrouter_llm(model="openai/gpt-oss-120b", api_key=None)
+
+    def test_env_var_used_when_api_key_not_passed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OPENROUTER_API_KEY", "env-key")
+        llm = create_openrouter_llm(model="openai/gpt-oss-120b", api_key=None)
+        assert llm.llm.api_key == "env-key"
+
+    def test_explicit_api_key_takes_precedence_over_env_var(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENROUTER_API_KEY", "env-key")
+        llm = create_openrouter_llm(model="openai/gpt-oss-120b", api_key="explicit-key")
+        assert llm.llm.api_key == "explicit-key"
 
 
 class TestCreateOpenRouterLLMCachingWrapper:
@@ -907,3 +936,82 @@ class TestTrailingCacheControl:
 
         # Empty string content: trailing cache_control skipped
         assert result[1]["content"] == ""
+
+
+# ============================================================================
+# OpenRouter slugs for the offered models
+# ============================================================================
+
+
+class TestOpenRouterModelIds:
+    """Tests for the first-party to OpenRouter slug mapping.
+
+    A request funded by an OpenRouter key should run the same model the
+    community chose, not a different model family, so every offered model
+    needs a slug here.
+    """
+
+    def test_every_offered_model_has_an_openrouter_slug(self) -> None:
+        """Adding an offered model must not silently skip the mapping."""
+        assert set(OPENROUTER_MODEL_IDS) == set(OFFERED_MODELS)
+
+    def test_every_offered_model_is_priced(self) -> None:
+        """Every offered first-party id must be in MODEL_PRICING.
+
+        Drift test for item 3: a community whose default resolves to an
+        offered model that is missing from MODEL_PRICING gets blocked
+        outright by _check_model_cost with a 403, on both provider paths.
+        """
+        missing = set(OFFERED_MODELS) - set(MODEL_PRICING)
+        assert not missing, f"Offered models missing from MODEL_PRICING: {missing}"
+
+    def test_every_openrouter_slug_is_priced(self) -> None:
+        """Every OpenRouter slug an offered model maps to must be priced.
+
+        This is what stops item 3 (anthropic/claude-sonnet-5 missing from
+        MODEL_PRICING) from recurring when a third model is added: the slug
+        a bare id maps to over OpenRouter needs its own pricing entry, since
+        MODEL_PRICING is keyed by the id actually sent to _check_model_cost,
+        not by the first-party id.
+        """
+        missing = set(OPENROUTER_MODEL_IDS.values()) - set(MODEL_PRICING)
+        assert not missing, f"OpenRouter slugs missing from MODEL_PRICING: {missing}"
+
+    def test_slugs_are_openrouter_shaped(self) -> None:
+        """Shape check only: a wrong-but-well-formed slug is not caught here.
+
+        No test in this suite makes a real OpenRouter call, so a slug that
+        looks like "creator/model" but names a model OpenRouter does not
+        actually serve would pass this test and only surface later as a
+        live 400 from OpenRouter.
+        """
+        for first_party, slug in OPENROUTER_MODEL_IDS.items():
+            assert "/" in slug, f"{first_party} maps to {slug!r}, not a creator/model slug"
+
+    def test_maps_offered_first_party_ids(self) -> None:
+        for first_party, slug in OPENROUTER_MODEL_IDS.items():
+            assert to_openrouter_model(first_party) == slug
+
+    def test_passes_through_existing_openrouter_slugs(self) -> None:
+        assert to_openrouter_model("qwen/qwen3-235b-a22b-2507") == "qwen/qwen3-235b-a22b-2507"
+
+    def test_returns_none_for_unmappable_bare_id(self) -> None:
+        assert to_openrouter_model("some-unknown-model") is None
+
+    def test_returns_none_for_no_model(self) -> None:
+        assert to_openrouter_model(None) is None
+
+    def test_every_legacy_alias_resolves_through_canonicalize_then_map(self) -> None:
+        """Every bare alias in MODEL_ALIASES must map to a valid OpenRouter slug.
+
+        Regression for item 2: to_openrouter_model() alone only knows the
+        two canonical ids, so a bare legacy alias (e.g. "claude-sonnet-4.5")
+        needs normalize_model() first. This is the canonicalize-then-map
+        path _select_model now uses (see
+        _to_openrouter_model_via_canonical in src/api/routers/community.py).
+        """
+        for alias in MODEL_ALIASES:
+            canonical = normalize_model(alias)
+            slug = to_openrouter_model(canonical)
+            assert slug is not None, f"alias {alias!r} (-> {canonical!r}) did not map"
+            assert "/" in slug, f"alias {alias!r} mapped to non-slug {slug!r}"

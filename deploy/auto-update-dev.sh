@@ -33,8 +33,12 @@ if [ "$RUNNING_ID" != "$NEW_ID" ]; then
     docker rm "$CONTAINER_NAME" 2>/dev/null || true
 
     ENV_FILE="${SCRIPT_DIR}/../.env"
-    ENV_ARGS=""
-    [ -f "$ENV_FILE" ] && ENV_ARGS="--env-file $ENV_FILE"
+    if [ ! -f "$ENV_FILE" ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M')] ERROR: No .env file found at ${ENV_FILE}. Refusing to deploy a misconfigured container."
+        rm -f "$LOCK_FILE"
+        exit 1
+    fi
+    ENV_ARGS="--env-file $ENV_FILE"
 
     # Create persistent data directory
     DATA_DIR="/var/lib/osa/${CONTAINER_NAME}/data"

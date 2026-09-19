@@ -5,8 +5,7 @@ id: fieldtrip
 name: FieldTrip
 description: MATLAB toolbox for MEG, EEG, and iEEG analysis
 status: available
-default_model: anthropic/claude-haiku-4.5
-default_model_provider: anthropic
+default_model: claude-haiku-4-5
 
 # External links for dashboard and discovery
 links:
@@ -29,9 +28,6 @@ widget:
 cors_origins:
   - https://www.fieldtriptoolbox.org
   - https://fieldtriptoolbox.org
-
-# Per-community OpenRouter API key (optional)
-openrouter_api_key_env_var: "OPENROUTER_API_KEY_FIELDTRIP"
 
 # Community maintainers (GitHub usernames)
 maintainers:

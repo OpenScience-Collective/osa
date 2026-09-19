@@ -195,3 +195,67 @@ class TestSystemPromptTemplate:
         assert "Discovery, Not Authority" in COMMUNITY_SYSTEM_PROMPT_TEMPLATE
         assert "Be Helpful" in COMMUNITY_SYSTEM_PROMPT_TEMPLATE
         assert "Cite Sources" in COMMUNITY_SYSTEM_PROMPT_TEMPLATE
+
+
+class TestCitationFallbackPrompt:
+    """The prompt rule that fills in for native citations on the OpenRouter/BYOK path."""
+
+    @pytest.fixture
+    def config(self) -> CommunityConfig:
+        return CommunityConfig(
+            id="fallback-test",
+            name="Fallback Test Community",
+            description="A test community for the citation fallback prompt",
+        )
+
+    def test_defaults_to_no_native_citations_and_adds_fallback_rule(
+        self, config: CommunityConfig
+    ) -> None:
+        """citations defaults to False, so a caller who forgets it still gets the fallback."""
+        assistant = CommunityAssistant(model=MagicMock(), config=config)
+        prompt = assistant.get_system_prompt()
+
+        assert "Source Links Required" in prompt
+        assert "markdown link to its exact source" in prompt
+
+    def test_citations_true_omits_fallback_rule(self, config: CommunityConfig) -> None:
+        """Native citations available -> no need to ask the model to paste links."""
+        assistant = CommunityAssistant(model=MagicMock(), config=config, citations=True)
+        prompt = assistant.get_system_prompt()
+
+        assert "Source Links Required" not in prompt
+
+    def test_fallback_rule_coexists_with_additional_instructions(
+        self, config: CommunityConfig
+    ) -> None:
+        assistant = CommunityAssistant(
+            model=MagicMock(),
+            config=config,
+            citations=False,
+            additional_instructions="Always mention the version number.",
+        )
+        prompt = assistant.get_system_prompt()
+
+        assert "Source Links Required" in prompt
+        assert "Always mention the version number." in prompt
+
+    def test_fallback_rule_reaches_a_custom_system_prompt(self) -> None:
+        """A community with its own system_prompt still gets the fallback rule.
+
+        Every real community config's custom system_prompt includes the
+        {additional_instructions} placeholder (see
+        test_community_yaml_generic.py's dynamic check across all of them),
+        which is exactly why the fallback is folded into that value rather
+        than a new placeholder only the default template would substitute.
+        """
+        custom_config = CommunityConfig(
+            id="custom-prompt-test",
+            name="Custom Prompt Community",
+            description="Uses its own system_prompt",
+            system_prompt="You are a custom assistant for {name}.\n\n{additional_instructions}",
+        )
+        assistant = CommunityAssistant(model=MagicMock(), config=custom_config, citations=False)
+        prompt = assistant.get_system_prompt()
+
+        assert "Source Links Required" in prompt
+        assert "{additional_instructions}" not in prompt

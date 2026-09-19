@@ -14,7 +14,8 @@ Security proxy for the Open Science Assistant backend. Provides:
 ```
 Web Frontend                    CLI / Programmatic
      │                                │
-     │ Turnstile token                │ X-OpenRouter-Key header
+     │ Turnstile token                │ X-Anthropic-API-Key or
+     │                                │ X-OpenRouter-Key header
      ▼                                ▼
 ┌─────────────────────────────────────────────────┐
 │              OSA Cloudflare Worker              │
@@ -113,7 +114,14 @@ Hybrid approach for optimal performance and protection:
 
 ## BYOK Mode
 
-CLI and programmatic clients can bypass Turnstile by providing their own OpenRouter API key:
+CLI and programmatic clients can bypass Turnstile by providing their own Anthropic or OpenRouter API key:
+
+```bash
+curl -X POST https://osa-worker.your-subdomain.workers.dev/hed/ask \
+  -H "Content-Type: application/json" \
+  -H "X-Anthropic-API-Key: your-anthropic-key" \
+  -d '{"question": "What is HED?"}'
+```
 
 ```bash
 curl -X POST https://osa-worker.your-subdomain.workers.dev/hed/ask \

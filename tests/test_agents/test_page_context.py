@@ -3,11 +3,14 @@
 from unittest.mock import MagicMock, patch
 
 import httpx
+import respx
 
 from src.assistants import discover_assistants, registry
 from src.assistants.community import PageContext
 from src.utils.page_fetcher import (
     MAX_PAGE_CONTENT_LENGTH,
+    PageFetchResult,
+    fetch_page,
     fetch_page_content,
     is_safe_url,
 )
@@ -152,21 +155,18 @@ class TestFetchPageContentImpl:
         assert "private" in result.lower()
 
     @patch("src.utils.page_fetcher.is_safe_url")
-    @patch("src.utils.page_fetcher.httpx.Client")
-    def test_successful_fetch(self, mock_client_class, mock_is_safe):
+    @respx.mock
+    def test_successful_fetch(self, mock_is_safe):
         """Should fetch and convert HTML to markdown."""
         mock_is_safe.return_value = (True, "", "93.184.216.34")
-
-        # Create mock response
-        mock_response = MagicMock()
-        mock_response.is_redirect = False
-        mock_response.headers = {"content-type": "text/html"}
-        mock_response.text = "<html><body><h1>Test</h1><p>Hello world</p></body></html>"
-
-        # Set up the context manager
-        mock_client = MagicMock()
-        mock_client.get.return_value = mock_response
-        mock_client_class.return_value.__enter__.return_value = mock_client
+        # Anchored with a trailing slash: see test_handles_redirect_to_safe_url.
+        respx.get("https://example.com/").mock(
+            return_value=httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                text="<html><body><h1>Test</h1><p>Hello world</p></body></html>",
+            )
+        )
 
         result = fetch_page_content("https://example.com")
         assert "Content from https://example.com" in result
@@ -174,132 +174,117 @@ class TestFetchPageContentImpl:
         assert "Hello world" in result
 
     @patch("src.utils.page_fetcher.is_safe_url")
-    @patch("src.utils.page_fetcher.httpx.Client")
-    def test_rejects_non_html_content(self, mock_client_class, mock_is_safe):
+    @respx.mock
+    def test_rejects_non_html_content(self, mock_is_safe):
         """Should reject non-HTML content types."""
         mock_is_safe.return_value = (True, "", "93.184.216.34")
-
-        mock_response = MagicMock()
-        mock_response.is_redirect = False
-        mock_response.headers = {"content-type": "application/json"}
-
-        mock_client = MagicMock()
-        mock_client.get.return_value = mock_response
-        mock_client_class.return_value.__enter__.return_value = mock_client
+        respx.get("https://example.com/api").mock(
+            return_value=httpx.Response(200, headers={"content-type": "application/json"}, json={})
+        )
 
         result = fetch_page_content("https://example.com/api")
         assert "Error" in result
         assert "non-HTML" in result
 
     @patch("src.utils.page_fetcher.is_safe_url")
-    @patch("src.utils.page_fetcher.httpx.Client")
-    def test_handles_redirect_to_safe_url(self, mock_client_class, mock_is_safe):
+    @respx.mock
+    def test_handles_redirect_to_safe_url(self, mock_is_safe):
         """Should follow redirects to safe URLs."""
         # First call safe, redirect also safe
         mock_is_safe.side_effect = [
             (True, "", "93.184.216.34"),  # Original URL
             (True, "", "93.184.216.34"),  # Redirect URL
         ]
-
-        # Create redirect and final responses
-        redirect_response = MagicMock()
-        redirect_response.is_redirect = True
-        redirect_response.headers = {"location": "https://example.com/page"}
-
-        final_response = MagicMock()
-        final_response.is_redirect = False
-        final_response.headers = {"content-type": "text/html"}
-        final_response.text = "<html><body>Final page</body></html>"
-
-        mock_client = MagicMock()
-        mock_client.get.side_effect = [redirect_response, final_response]
-        mock_client_class.return_value.__enter__.return_value = mock_client
+        # Anchored with a trailing slash: a bare "https://example.com" route
+        # matches any path on the host in respx, which would shadow the
+        # more specific /page route registered below.
+        respx.get("https://example.com/").mock(
+            return_value=httpx.Response(302, headers={"location": "https://example.com/page"})
+        )
+        respx.get("https://example.com/page").mock(
+            return_value=httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                text="<html><body>Final page</body></html>",
+            )
+        )
 
         result = fetch_page_content("https://example.com")
         assert "Final page" in result
 
     @patch("src.utils.page_fetcher.is_safe_url")
-    @patch("src.utils.page_fetcher.httpx.Client")
-    def test_blocks_redirect_to_unsafe_url(self, mock_client_class, mock_is_safe):
+    @respx.mock
+    def test_blocks_redirect_to_unsafe_url(self, mock_is_safe):
         """Should block redirects to unsafe URLs (SSRF protection)."""
         # Original safe, redirect unsafe
         mock_is_safe.side_effect = [
             (True, "", "93.184.216.34"),  # Original URL safe
             (False, "Access to private IP ranges is not allowed", None),  # Redirect unsafe
         ]
-
-        redirect_response = MagicMock()
-        redirect_response.is_redirect = True
-        redirect_response.headers = {"location": "http://192.168.1.1/internal"}
-
-        mock_client = MagicMock()
-        mock_client.get.return_value = redirect_response
-        mock_client_class.return_value.__enter__.return_value = mock_client
+        # Anchored with a trailing slash: see test_handles_redirect_to_safe_url.
+        respx.get("https://example.com/").mock(
+            return_value=httpx.Response(302, headers={"location": "http://192.168.1.1/internal"})
+        )
 
         result = fetch_page_content("https://example.com")
         assert "Error" in result
         assert "Redirect to unsafe URL" in result
 
     @patch("src.utils.page_fetcher.is_safe_url")
-    @patch("src.utils.page_fetcher.httpx.Client")
-    def test_handles_too_many_redirects(self, mock_client_class, mock_is_safe):
+    @respx.mock
+    def test_handles_too_many_redirects(self, mock_is_safe):
         """Should limit redirect count."""
         mock_is_safe.return_value = (True, "", "93.184.216.34")
-
-        # Always redirect
-        redirect_response = MagicMock()
-        redirect_response.is_redirect = True
-        redirect_response.headers = {"location": "https://example.com/loop"}
-
-        mock_client = MagicMock()
-        mock_client.get.return_value = redirect_response
-        mock_client_class.return_value.__enter__.return_value = mock_client
+        # Always redirect, including back to itself, to exercise the cap.
+        # Anchored with a trailing slash: see test_handles_redirect_to_safe_url.
+        respx.get("https://example.com/").mock(
+            return_value=httpx.Response(302, headers={"location": "https://example.com/loop"})
+        )
+        respx.get("https://example.com/loop").mock(
+            return_value=httpx.Response(302, headers={"location": "https://example.com/loop"})
+        )
 
         result = fetch_page_content("https://example.com")
         assert "Error" in result
         assert "Too many redirects" in result
 
     @patch("src.utils.page_fetcher.is_safe_url")
-    @patch("src.utils.page_fetcher.httpx.Client")
-    def test_handles_relative_redirect(self, mock_client_class, mock_is_safe):
+    @respx.mock
+    def test_handles_relative_redirect(self, mock_is_safe):
         """Should handle relative redirects properly."""
         mock_is_safe.side_effect = [
             (True, "", "93.184.216.34"),  # Original
             (True, "", "93.184.216.34"),  # Relative redirect converted to absolute
         ]
-
-        redirect_response = MagicMock()
-        redirect_response.is_redirect = True
-        redirect_response.headers = {"location": "/new-page"}  # Relative URL
-
-        final_response = MagicMock()
-        final_response.is_redirect = False
-        final_response.headers = {"content-type": "text/html"}
-        final_response.text = "<html><body>New page</body></html>"
-
-        mock_client = MagicMock()
-        mock_client.get.side_effect = [redirect_response, final_response]
-        mock_client_class.return_value.__enter__.return_value = mock_client
+        # Anchored with a trailing slash: see test_handles_redirect_to_safe_url.
+        respx.get("https://example.com/").mock(
+            return_value=httpx.Response(302, headers={"location": "/new-page"})
+        )
+        respx.get("https://example.com/new-page").mock(
+            return_value=httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                text="<html><body>New page</body></html>",
+            )
+        )
 
         result = fetch_page_content("https://example.com")
         assert "New page" in result
 
     @patch("src.utils.page_fetcher.is_safe_url")
-    @patch("src.utils.page_fetcher.httpx.Client")
-    def test_truncates_large_content(self, mock_client_class, mock_is_safe):
+    @respx.mock
+    def test_truncates_large_content(self, mock_is_safe):
         """Should truncate content that exceeds MAX_PAGE_CONTENT_LENGTH."""
         mock_is_safe.return_value = (True, "", "93.184.216.34")
-
-        # Create response with very large content
         large_content = "x" * (MAX_PAGE_CONTENT_LENGTH + 10000)
-        mock_response = MagicMock()
-        mock_response.is_redirect = False
-        mock_response.headers = {"content-type": "text/html"}
-        mock_response.text = f"<html><body>{large_content}</body></html>"
-
-        mock_client = MagicMock()
-        mock_client.get.return_value = mock_response
-        mock_client_class.return_value.__enter__.return_value = mock_client
+        # Anchored with a trailing slash: see test_handles_redirect_to_safe_url.
+        respx.get("https://example.com/").mock(
+            return_value=httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                text=f"<html><body>{large_content}</body></html>",
+            )
+        )
 
         result = fetch_page_content("https://example.com")
         assert "[content truncated]" in result
@@ -307,52 +292,123 @@ class TestFetchPageContentImpl:
         assert len(result) < MAX_PAGE_CONTENT_LENGTH + 1000  # Account for header/footer
 
     @patch("src.utils.page_fetcher.is_safe_url")
-    @patch("src.utils.page_fetcher.httpx.Client")
-    def test_handles_http_error(self, mock_client_class, mock_is_safe):
+    @respx.mock
+    def test_handles_http_error(self, mock_is_safe):
         """Should handle HTTP errors gracefully."""
         mock_is_safe.return_value = (True, "", "93.184.216.34")
-
-        mock_response = MagicMock()
-        mock_response.is_redirect = False
-        mock_response.status_code = 404
-        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
-            "Not Found", request=MagicMock(), response=mock_response
-        )
-
-        mock_client = MagicMock()
-        mock_client.get.return_value = mock_response
-        mock_client_class.return_value.__enter__.return_value = mock_client
+        respx.get("https://example.com/missing").mock(return_value=httpx.Response(404))
 
         result = fetch_page_content("https://example.com/missing")
         assert "Error" in result
         assert "404" in result
 
     @patch("src.utils.page_fetcher.is_safe_url")
-    @patch("src.utils.page_fetcher.httpx.Client")
-    def test_handles_timeout(self, mock_client_class, mock_is_safe):
+    @respx.mock
+    def test_handles_timeout(self, mock_is_safe):
         """Should handle request timeouts gracefully."""
         mock_is_safe.return_value = (True, "", "93.184.216.34")
-
-        mock_client = MagicMock()
-        mock_client.get.side_effect = httpx.TimeoutException("Connection timed out")
-        mock_client_class.return_value.__enter__.return_value = mock_client
+        # Anchored with a trailing slash: see test_handles_redirect_to_safe_url.
+        respx.get("https://example.com/").mock(
+            side_effect=httpx.TimeoutException("Connection timed out")
+        )
 
         result = fetch_page_content("https://example.com")
         assert "Error" in result
         assert "timed out" in result.lower()
 
     @patch("src.utils.page_fetcher.is_safe_url")
-    @patch("src.utils.page_fetcher.httpx.Client")
-    def test_handles_request_error(self, mock_client_class, mock_is_safe):
+    @respx.mock
+    def test_handles_request_error(self, mock_is_safe):
         """Should handle generic request errors gracefully."""
         mock_is_safe.return_value = (True, "", "93.184.216.34")
-
-        mock_client = MagicMock()
-        mock_client.get.side_effect = httpx.RequestError("Connection refused")
-        mock_client_class.return_value.__enter__.return_value = mock_client
+        # Anchored with a trailing slash: see test_handles_redirect_to_safe_url.
+        respx.get("https://example.com/").mock(side_effect=httpx.RequestError("Connection refused"))
 
         result = fetch_page_content("https://example.com")
         assert "Error" in result
+
+
+class TestFetchPageReportsFailureStructurally:
+    """Every failure branch must come back with ``success`` false.
+
+    The point of the flag is that a caller which treats content and errors
+    differently, such as the citable page tool, never has to guess from the
+    message. It cannot guess correctly: these branches do not share a
+    prefix, and the two below that read "Error fetching ..." are exactly the
+    ones a `startswith("Error:")` check missed.
+    """
+
+    @patch("src.utils.page_fetcher.is_safe_url")
+    @respx.mock
+    def test_http_status_error_is_a_failure(self, mock_is_safe):
+        mock_is_safe.return_value = (True, "", "93.184.216.34")
+        respx.get("https://example.com/missing").mock(return_value=httpx.Response(404))
+
+        result = fetch_page("https://example.com/missing")
+
+        assert result.success is False
+        assert "404" in result.content
+
+    @patch("src.utils.page_fetcher.is_safe_url")
+    @respx.mock
+    def test_network_error_is_a_failure(self, mock_is_safe):
+        mock_is_safe.return_value = (True, "", "93.184.216.34")
+        respx.get("https://example.com").mock(side_effect=httpx.ConnectError("refused"))
+
+        result = fetch_page("https://example.com")
+
+        assert result.success is False
+
+    @patch("src.utils.page_fetcher.is_safe_url")
+    @respx.mock
+    def test_non_html_content_is_a_failure(self, mock_is_safe):
+        mock_is_safe.return_value = (True, "", "93.184.216.34")
+        respx.get("https://example.com/data.json").mock(
+            return_value=httpx.Response(200, json={"not": "html"})
+        )
+
+        result = fetch_page("https://example.com/data.json")
+
+        assert result.success is False
+
+    def test_invalid_url_is_a_failure(self):
+        result = fetch_page("ftp://example.com")
+
+        assert result.success is False
+
+    @patch("src.utils.page_fetcher.is_safe_url")
+    @respx.mock
+    def test_fetched_page_is_a_success(self, mock_is_safe):
+        mock_is_safe.return_value = (True, "", "93.184.216.34")
+        respx.get("https://example.com").mock(
+            return_value=httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text="<html><body><h1>Docs</h1><p>Body text</p></body></html>",
+            )
+        )
+
+        result = fetch_page("https://example.com")
+
+        assert result.success is True
+        assert "Body text" in result.content
+
+    @patch("src.utils.page_fetcher.is_safe_url")
+    @respx.mock
+    def test_no_failure_branch_is_recognizable_by_prefix_alone(self, mock_is_safe):
+        """The wordings genuinely differ, which is why the flag exists.
+
+        If a future change normalized every message to one prefix, this
+        would fail and whoever wrote it could decide knowingly whether to
+        keep the flag. It must not be deleted just because the strings
+        happen to line up on some particular day.
+        """
+        mock_is_safe.return_value = (True, "", "93.184.216.34")
+        respx.get("https://example.com/missing").mock(return_value=httpx.Response(404))
+
+        by_prefix = fetch_page("https://example.com/missing").content.startswith("Error:")
+
+        assert by_prefix is False
 
 
 class TestPageContextDataclass:
@@ -450,10 +506,12 @@ class TestCommunityAssistantWithPageContext:
         prompt = assistant.get_system_prompt()
         assert "(No title)" in prompt
 
-    @patch("src.assistants.community.fetch_page_content")
+    @patch("src.assistants.community.fetch_page")
     def test_fetch_current_page_tool_calls_impl(self, mock_fetch):
-        """Should call fetch_page_content with bound URL."""
-        mock_fetch.return_value = "# Content from https://hedtags.org\n\nTest content"
+        """Should call the page fetch with the bound URL."""
+        mock_fetch.return_value = PageFetchResult(
+            True, "# Content from https://hedtags.org\n\nTest content"
+        )
 
         model = MagicMock()
         model.bind_tools = MagicMock(return_value=model)
@@ -470,10 +528,10 @@ class TestCommunityAssistantWithPageContext:
         mock_fetch.assert_called_once_with("https://hedtags.org")
         assert "Test content" in result
 
-    @patch("src.assistants.community.fetch_page_content")
+    @patch("src.assistants.community.fetch_page")
     def test_fetch_current_page_tool_bound_to_specific_url(self, mock_fetch):
         """Should only fetch the bound URL, not allow arbitrary URLs."""
-        mock_fetch.return_value = "Content"
+        mock_fetch.return_value = PageFetchResult(True, "Content")
 
         model = MagicMock()
         model.bind_tools = MagicMock(return_value=model)
@@ -489,6 +547,104 @@ class TestCommunityAssistantWithPageContext:
 
         # Should be called with the bound URL
         mock_fetch.assert_called_once_with("https://specific-page.com/doc")
+
+    @patch("src.assistants.community.fetch_page")
+    def test_fetch_current_page_returns_plain_string_when_citations_disabled(self, mock_fetch):
+        """citations=False (default) must keep today's plain-string return, unchanged."""
+        mock_fetch.return_value = PageFetchResult(True, "# Page\n\nSome fetched content")
+
+        model = MagicMock()
+        model.bind_tools = MagicMock(return_value=model)
+        page_context = PageContext(url="https://hedtags.org/docs", title="Docs")
+        assistant = registry.create_assistant(
+            "hed", model=model, preload_docs=False, page_context=page_context
+        )
+
+        fetch_tool = next(t for t in assistant.tools if t.name == "fetch_current_page")
+        result = fetch_tool.invoke({})
+
+        assert result == "# Page\n\nSome fetched content"
+
+    @patch("src.assistants.community.fetch_page")
+    def test_fetch_current_page_returns_citation_block_when_enabled(self, mock_fetch):
+        """citations=True on a successful fetch returns one search_result block."""
+        mock_fetch.return_value = PageFetchResult(True, "# Page\n\nSome fetched content")
+
+        model = MagicMock()
+        model.bind_tools = MagicMock(return_value=model)
+        page_context = PageContext(url="https://hedtags.org/docs", title="Docs")
+        assistant = registry.create_assistant(
+            "hed",
+            model=model,
+            preload_docs=False,
+            page_context=page_context,
+            citations=True,
+        )
+
+        fetch_tool = next(t for t in assistant.tools if t.name == "fetch_current_page")
+        result = fetch_tool.invoke({})
+
+        assert isinstance(result, list)
+        assert len(result) == 1
+        block = result[0]
+        assert block["type"] == "search_result"
+        assert block["source"] == "https://hedtags.org/docs"
+        assert block["citations"] == {"enabled": True}
+        assert block["content"] == [{"type": "text", "text": "# Page\n\nSome fetched content"}]
+
+    @patch("src.assistants.community.fetch_page")
+    def test_fetch_current_page_citations_enabled_but_fetch_errors(self, mock_fetch):
+        """citations=True on a failed fetch still returns the plain error string."""
+        mock_fetch.return_value = PageFetchResult(
+            False, "Error: Invalid URL 'https://hedtags.org/docs'"
+        )
+
+        model = MagicMock()
+        model.bind_tools = MagicMock(return_value=model)
+        page_context = PageContext(url="https://hedtags.org/docs", title="Docs")
+        assistant = registry.create_assistant(
+            "hed",
+            model=model,
+            preload_docs=False,
+            page_context=page_context,
+            citations=True,
+        )
+
+        fetch_tool = next(t for t in assistant.tools if t.name == "fetch_current_page")
+        result = fetch_tool.invoke({})
+
+        assert isinstance(result, str)
+        assert result.startswith("Error:")
+
+    @patch("src.assistants.community.fetch_page")
+    def test_fetch_current_page_gates_on_the_flag_not_the_error_wording(self, mock_fetch):
+        """A failure that does not announce itself as "Error:" is still a failure.
+
+        The gate used to read `content.startswith("Error:")`, which two of
+        fetch_page's own failure branches do not match (both HTTP-status and
+        network errors read "Error fetching <url>: ..."). A failed fetch was
+        then handed to Claude as a citable search_result whose entire content
+        was the error text, so the widget could render a numbered source with
+        a working link and the error message as its tooltip: a fetch failure
+        presented as page content the model had read.
+        """
+        mock_fetch.return_value = PageFetchResult(False, "the page could not be reached")
+
+        model = MagicMock()
+        model.bind_tools = MagicMock(return_value=model)
+        page_context = PageContext(url="https://hedtags.org/docs", title="Docs")
+        assistant = registry.create_assistant(
+            "hed",
+            model=model,
+            preload_docs=False,
+            page_context=page_context,
+            citations=True,
+        )
+
+        fetch_tool = next(t for t in assistant.tools if t.name == "fetch_current_page")
+        result = fetch_tool.invoke({})
+
+        assert result == "the page could not be reached"
 
     def test_page_context_properties(self):
         """Should have correct preloaded and available doc counts."""

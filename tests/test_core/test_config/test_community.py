@@ -6,6 +6,7 @@ Tests cover:
 - Config serialization
 """
 
+import warnings
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
@@ -1321,6 +1322,120 @@ class TestEnvVarNameValidation:
         assert config.openrouter_api_key_env_var == "OPENROUTER_API_KEY_HED"
 
 
+class TestAnthropicEnvVarNameValidation:
+    """Tests for anthropic_api_key_env_var validation (Phase 2, issue #362)."""
+
+    def test_valid_env_var_names(self) -> None:
+        """Should accept valid ANTHROPIC_API_KEY_* patterns."""
+        valid_names = [
+            "ANTHROPIC_API_KEY_HED",
+            "ANTHROPIC_API_KEY_BIDS",
+            "ANTHROPIC_API_KEY_TEST",
+            "ANTHROPIC_API_KEY_MY_COMMUNITY",
+            "ANTHROPIC_API_KEY_123",
+        ]
+        for name in valid_names:
+            config = CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                anthropic_api_key_env_var=name,
+            )
+            assert config.anthropic_api_key_env_var == name
+
+    def test_allows_none(self) -> None:
+        """Should allow None (use platform key)."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            anthropic_api_key_env_var=None,
+        )
+        assert config.anthropic_api_key_env_var is None
+
+    def test_rejects_arbitrary_env_vars(self) -> None:
+        """Should reject non-ANTHROPIC_API_KEY_* patterns (prevents secret access)."""
+        invalid_names = [
+            "AWS_SECRET_KEY",
+            "DATABASE_PASSWORD",
+            "ANTHROPIC_KEY",  # Missing API_KEY part
+            "API_KEY_HED",  # Missing ANTHROPIC part
+            "anthropic_api_key_hed",  # Lowercase not allowed
+            "OPENROUTER_API_KEY_HED",  # Wrong provider prefix
+        ]
+        for name in invalid_names:
+            with pytest.raises(ValidationError, match="Invalid environment variable name"):
+                CommunityConfig(
+                    id="test",
+                    name="Test",
+                    description="Test",
+                    anthropic_api_key_env_var=name,
+                )
+
+    def test_strips_whitespace_from_env_var(self) -> None:
+        """Should strip whitespace from env var names."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            anthropic_api_key_env_var="  ANTHROPIC_API_KEY_HED  ",
+        )
+        assert config.anthropic_api_key_env_var == "ANTHROPIC_API_KEY_HED"
+
+    def test_both_env_vars_can_coexist(self) -> None:
+        """A community may configure both provider env vars simultaneously."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            anthropic_api_key_env_var="ANTHROPIC_API_KEY_TEST",
+            openrouter_api_key_env_var="OPENROUTER_API_KEY_TEST",
+        )
+        assert config.anthropic_api_key_env_var == "ANTHROPIC_API_KEY_TEST"
+        assert config.openrouter_api_key_env_var == "OPENROUTER_API_KEY_TEST"
+
+
+class TestNoShippedOpenRouterKeyEnvVar:
+    """No shipped community claims a per-community OpenRouter key (Phase 3).
+
+    The named env vars were never set on the server, so every request for
+    those communities logged an ERROR in ``_resolve_provider`` and silently
+    fell back to the platform key. The schema field itself stays supported
+    for a community that genuinely funds itself through OpenRouter; this
+    just asserts nothing in the tree claims one any more. Iterates the real
+    config.yaml files rather than hardcoding the four affected community
+    ids, per .rules/testing_guidelines.md.
+    """
+
+    def test_no_shipped_config_sets_openrouter_api_key_env_var(self) -> None:
+        from src.assistants import discover_assistants, registry
+
+        registry._assistants.clear()
+        discover_assistants()
+        communities = list(registry.list_all())
+        assert communities, "Expected at least one discovered community"
+
+        offenders = [
+            assistant.id
+            for assistant in communities
+            if assistant.community_config
+            and assistant.community_config.openrouter_api_key_env_var is not None
+        ]
+        assert offenders == [], (
+            f"These communities still set openrouter_api_key_env_var: {offenders}"
+        )
+
+    def test_synthetic_config_with_openrouter_api_key_env_var_still_validates(self) -> None:
+        """The schema field itself is still supported, just unused today."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            openrouter_api_key_env_var="OPENROUTER_API_KEY_TEST",
+        )
+        assert config.openrouter_api_key_env_var == "OPENROUTER_API_KEY_TEST"
+
+
 class TestSSRFProtection:
     """Tests for source_url SSRF protection (Issue #66)."""
 
@@ -1414,7 +1529,12 @@ class TestSSRFProtection:
 
 
 class TestModelNameValidation:
-    """Tests for default_model validation (Issue #68)."""
+    """Tests for default_model validation (Issue #68).
+
+    The pattern accepts both the OpenRouter creator/model-name form and a
+    bare first-party id (Phase 2, issue #362): the Claude Platform on AWS
+    path has no separate "creator" segment (e.g. "claude-haiku-4-5").
+    """
 
     def test_valid_model_names(self) -> None:
         """Should accept valid provider/model-name format."""
@@ -1434,6 +1554,35 @@ class TestModelNameValidation:
             )
             assert config.default_model == model
 
+    def test_valid_bare_first_party_ids(self) -> None:
+        """Should accept a bare first-party id with no provider prefix, and
+        not warn: these are real, resolvable Anthropic ids/aliases."""
+        valid_bare_ids = ["claude-haiku-4-5", "claude-sonnet-5"]
+        for model in valid_bare_ids:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                config = CommunityConfig(
+                    id="test",
+                    name="Test",
+                    description="Test",
+                    default_model=model,
+                )
+            assert config.default_model == model
+
+    def test_bare_id_format_valid_but_unresolvable_warns(self) -> None:
+        """A bare id passes format validation (no '/') but isn't an offered
+        Anthropic model or alias, so it silently falls back on the
+        OpenRouter path (see validate_default_model_resolvable). The config
+        still parses -- this is a warning, not an error."""
+        with pytest.warns(UserWarning, match="not an offered Anthropic model"):
+            config = CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                default_model="just-a-model-name",
+            )
+        assert config.default_model == "just-a-model-name"
+
     def test_allows_none(self) -> None:
         """Should allow None (use platform default)."""
         config = CommunityConfig(
@@ -1445,9 +1594,8 @@ class TestModelNameValidation:
         assert config.default_model is None
 
     def test_rejects_invalid_format(self) -> None:
-        """Should reject model names not matching provider/model-name."""
+        """Should reject model names that are not a bare id or provider/model-name."""
         invalid_models = [
-            "just-a-model-name",  # No provider
             "provider/",  # No model name
             "/model-name",  # No provider
             "provider model",  # Space instead of slash
@@ -1499,6 +1647,18 @@ class TestCostManipulationProtection:
         )
         assert config.default_model == "anthropic/claude-opus-4"
         assert config.openrouter_api_key_env_var is not None
+
+    def test_allows_expensive_model_with_anthropic_env_var(self) -> None:
+        """Should also allow ultra-expensive models when anthropic_api_key_env_var is set."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            default_model="anthropic/claude-opus-4",
+            anthropic_api_key_env_var="ANTHROPIC_API_KEY_TEST",
+        )
+        assert config.default_model == "anthropic/claude-opus-4"
+        assert config.anthropic_api_key_env_var is not None
 
     def test_rejects_ultra_expensive_model_without_byok(self) -> None:
         """Should reject ultra-expensive models without BYOK (prevents surprise billing)."""
@@ -1562,3 +1722,176 @@ class TestCostManipulationProtection:
                 # No BYOK - should work for cheaper models
             )
             assert config.default_model == model
+
+
+class TestFAQAgentRoleWarning:
+    """The two-agent split only saves money if scoring runs on the cheap model.
+
+    With two offered Claude models, the wasteful shape is specifically
+    "evaluate everything with the expensive one". The old check warned whenever
+    both agents named the same model, which now fires on the recommended
+    setup: claude-haiku-4-5 for both is the cheapest valid configuration.
+    """
+
+    @staticmethod
+    def _faq_config(evaluation_model: str, summary_model: str) -> dict:
+        """Two agents, with no temperature set.
+
+        Temperature is left out because it carries its own warning on models
+        that ignore it (see TestFAQTemperatureWarning); including it here would
+        make the cost-split tests below pass or fail for the wrong reason.
+        """
+        return {
+            "evaluation_agent": {"model": evaluation_model},
+            "summary_agent": {"model": summary_model},
+        }
+
+    def test_haiku_for_both_agents_is_not_warned_about(self) -> None:
+        from src.core.config.community import FAQGenerationConfig
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            config = FAQGenerationConfig(**self._faq_config("claude-haiku-4-5", "claude-haiku-4-5"))
+
+        assert config.evaluation_agent.model == "claude-haiku-4-5"
+
+    def test_expensive_evaluation_agent_is_warned_about(self) -> None:
+        from src.core.config.community import FAQGenerationConfig
+
+        with pytest.warns(UserWarning, match="evaluation_agent uses claude-sonnet-5"):
+            FAQGenerationConfig(**self._faq_config("claude-sonnet-5", "claude-sonnet-5"))
+
+    def test_expensive_summary_agent_alone_is_fine(self) -> None:
+        """Paying more for the few hundred surviving threads is the intended shape."""
+        from src.core.config.community import FAQGenerationConfig
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            FAQGenerationConfig(**self._faq_config("claude-haiku-4-5", "claude-sonnet-5"))
+
+    def test_provider_field_still_loads_for_backward_compatibility(self) -> None:
+        """An existing config.yaml carrying a stale provider hint must not fail
+        to load; faq_summarizer logs that it is ignored instead."""
+        from src.core.config.community import FAQGenerationConfig
+
+        config = FAQGenerationConfig(
+            evaluation_agent={"model": "claude-haiku-4-5", "provider": "DeepInfra/FP8"},
+            summary_agent={"model": "claude-haiku-4-5", "provider": "Anthropic"},
+        )
+        assert config.evaluation_agent.provider == "DeepInfra/FP8"
+
+    def test_legacy_id_for_the_expensive_model_is_still_warned_about(self) -> None:
+        """The check is about what gets billed, not about how it is spelled.
+
+        A config that predates the migration and still says
+        "anthropic/claude-sonnet-4.5" resolves to claude-sonnet-5 and scores
+        every thread at the higher rate, which is exactly the shape this
+        warning exists for.
+        """
+        from src.core.config.community import FAQGenerationConfig
+
+        with pytest.warns(UserWarning, match="evaluation_agent uses") as caught:
+            FAQGenerationConfig(
+                **self._faq_config("anthropic/claude-sonnet-4.5", "claude-sonnet-5")
+            )
+
+        # Both ids, so a maintainer can find the config line and knows what it bills.
+        message = str(caught[0].message)
+        assert "anthropic/claude-sonnet-4.5" in message
+        assert "claude-sonnet-5" in message
+
+    def test_legacy_id_for_the_cheap_model_is_not_warned_about(self) -> None:
+        """The mirror case: a legacy Haiku id is the recommended setup."""
+        from src.core.config.community import FAQGenerationConfig
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            FAQGenerationConfig(**self._faq_config("anthropic/claude-haiku-4.5", "claude-sonnet-5"))
+
+    def test_unresolvable_model_is_warned_about(self) -> None:
+        """A model the platform will not serve should surface at config load.
+
+        Left as a warning rather than an error on purpose: this schema backs
+        the entire community, so raising here would take the community's
+        assistant down over a field only FAQ generation reads.
+        """
+        from src.core.config.community import FAQGenerationConfig
+
+        with pytest.warns(UserWarning, match="evaluation_agent.model is not usable"):
+            config = FAQGenerationConfig(
+                **self._faq_config("qwen/qwen3-235b-a22b-2507", "claude-haiku-4-5")
+            )
+
+        assert config.evaluation_agent.model == "qwen/qwen3-235b-a22b-2507"
+
+
+class TestFAQTemperatureWarning:
+    """A temperature the API never sees should not pass in silence.
+
+    ``claude-sonnet-5`` accepts only its default temperature, so
+    ``create_anthropic_llm`` drops the field instead of sending a value that
+    would 400. A community that set 0.0 for deterministic scoring is entitled
+    to hear that it stopped applying.
+    """
+
+    def test_temperature_on_the_expensive_model_is_warned_about(self) -> None:
+        from src.core.config.community import FAQGenerationConfig
+
+        with pytest.warns(UserWarning, match="summary_agent.temperature=0.4 is ignored"):
+            FAQGenerationConfig(
+                evaluation_agent={"model": "claude-haiku-4-5"},
+                summary_agent={"model": "claude-sonnet-5", "temperature": 0.4},
+            )
+
+    def test_temperature_behind_a_legacy_id_is_warned_about(self) -> None:
+        from src.core.config.community import FAQGenerationConfig
+
+        with pytest.warns(UserWarning, match="temperature=0.2 is ignored"):
+            FAQGenerationConfig(
+                evaluation_agent={"model": "claude-haiku-4-5"},
+                summary_agent={"model": "anthropic/claude-sonnet-4.6", "temperature": 0.2},
+            )
+
+    def test_temperature_behind_a_legacy_haiku_id_is_silent(self) -> None:
+        """The mirror of the case above, and the one an alias table gets wrong.
+
+        "anthropic/claude-haiku-4.5" resolves to a model that does honor a
+        temperature, so warning here would be a false alarm on a config that
+        works.
+        """
+        from src.core.config.community import FAQGenerationConfig
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            FAQGenerationConfig(
+                evaluation_agent={"model": "anthropic/claude-haiku-4.5", "temperature": 0.0},
+                summary_agent={"model": "claude-haiku-4-5"},
+            )
+
+    def test_temperature_on_a_model_that_honors_it_is_silent(self) -> None:
+        from src.core.config.community import FAQGenerationConfig
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            FAQGenerationConfig(
+                evaluation_agent={"model": "claude-haiku-4-5", "temperature": 0.0},
+                summary_agent={"model": "claude-haiku-4-5", "temperature": 0.1},
+            )
+
+    def test_the_fields_own_default_is_not_warned_about(self) -> None:
+        """Only a temperature the community actually wrote is worth a warning.
+
+        AgentConfig.temperature defaults to 0.1, which claude-sonnet-5 also
+        ignores. Warning about it would fire on every config that names the
+        model and sets nothing, which is the recommended summary_agent.
+        """
+        from src.core.config.community import FAQGenerationConfig
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            config = FAQGenerationConfig(
+                evaluation_agent={"model": "claude-haiku-4-5"},
+                summary_agent={"model": "claude-sonnet-5"},
+            )
+
+        assert config.summary_agent.temperature == 0.1

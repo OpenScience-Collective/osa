@@ -172,14 +172,15 @@ _FTS_STOPWORDS = frozenset(
 )
 
 
-def _sanitize_fts5_query(query: str) -> str:
+def _sanitize_fts5_query(query: str, *, require_all_terms: bool = False) -> str:
     """Build a safe, forgiving FTS5 MATCH expression from raw user input.
 
     Splits the query into individual terms, drops noise words and any FTS5
     operator characters, quotes each remaining term (so reserved words like
-    AND/OR/NEAR and punctuation cannot inject operators), and ORs them
-    together. Callers order results by BM25 ``rank``, so documents matching
-    the most (and rarest) terms surface first.
+    AND/OR/NEAR and punctuation cannot inject operators), and joins them with
+    OR by default. Callers order results by BM25 ``rank``, so documents
+    matching the most (and rarest) terms surface first. A caller that needs a
+    conservative all-terms match can set ``require_all_terms=True``.
 
     This replaces the previous behaviour of wrapping the whole query in quotes,
     which forced an exact consecutive-phrase match and caused multi-word
@@ -187,6 +188,7 @@ def _sanitize_fts5_query(query: str) -> str:
 
     Args:
         query: Raw user input
+        require_all_terms: Join meaningful terms with AND instead of OR.
 
     Returns:
         A MATCH expression safe from FTS5 injection. Falls back to a quoted
@@ -202,8 +204,52 @@ def _sanitize_fts5_query(query: str) -> str:
         # Nothing meaningful left: fall back to a safe phrase match of raw input.
         escaped = query.replace('"', '""')
         return f'"{escaped}"'
-    # Quote each term individually to neutralize operators, then OR them.
-    return " OR ".join(f'"{t}"' for t in terms)
+    # Quote each term individually to neutralize operators, then join them
+    # with the requested fixed connector. The connector is code-controlled,
+    # never derived from user input.
+    operator = " AND " if require_all_terms else " OR "
+    return operator.join(f'"{t}"' for t in terms)
+
+
+def _sanitize_docstring_query(query: str) -> tuple[str, str]:
+    """Build a conservative FTS query for citable code documentation.
+
+    Code-doc results are eligible to become inline citations. Returning a
+    function whose docstring matches only one generic word from a natural
+    language question is therefore worse than returning no result: it can
+    attach a plausible-looking source to an unrelated claim. Require every
+    meaningful term for conceptual queries. When the caller includes an
+    identifier-style token (for example ``pop_runica`` or ``runamica15``),
+    search only those tokens so phrasing such as "how do I use" does not
+    prevent an exact function lookup.
+
+    Returns the safe FTS expression and the normalized query used for exact
+    symbol ranking.
+    """
+    tokens = re.findall(r"[A-Za-z0-9_]+", query.lower())
+    identifier_terms = [token for token in tokens if _is_identifier_token(token)]
+    search_input = " ".join(identifier_terms) if identifier_terms else query
+    return _sanitize_fts5_query(search_input, require_all_terms=True), search_input.strip().lower()
+
+
+def _is_identifier_token(token: str) -> bool:
+    """Return whether a token looks like a code symbol, not a plain number."""
+    return (
+        bool(token)
+        and any(char.isalpha() for char in token)
+        and ("_" in token or any(char.isdigit() for char in token))
+    )
+
+
+def _explicit_symbol_terms(query: str) -> list[str]:
+    """Extract symbols explicitly marked as code in a natural-language query."""
+    terms: list[str] = []
+    pattern = re.compile(r"`([A-Za-z][A-Za-z0-9_]*)`|(?<![A-Za-z0-9_])([A-Za-z][A-Za-z0-9_]*)\(")
+    for match in pattern.finditer(query):
+        term = (match.group(1) or match.group(2)).lower()
+        if term not in terms:
+            terms.append(term)
+    return terms
 
 
 @dataclass
@@ -635,10 +681,12 @@ def search_docstrings(
     language: str | None = None,
     repo: str | None = None,
 ) -> list[SearchResult]:
-    """Search code docstrings using phrase matching.
+    """Search code docstrings with conservative all-terms matching.
 
     Args:
-        query: Search phrase (treated as exact phrase, not FTS5 operators)
+        query: Function name or terms describing the requested code behavior.
+            Identifier-style tokens are searched directly; otherwise every
+            meaningful term must occur in the result.
         project: Assistant/project name for database isolation. Defaults to 'hed'.
         limit: Maximum number of results
         language: Filter by 'matlab' or 'python'
@@ -673,14 +721,43 @@ def search_docstrings(
 
     ranked: list[tuple[int, int, SearchResult]] = []
     results: list[SearchResult] = []
-    query_lower = query.strip().lower()
     try:
         with get_connection(project) as conn:
-            # Sanitize user query to prevent FTS5 injection
-            safe_query = _sanitize_fts5_query(query)
+            # Code-doc results may become inline citations. Require a
+            # complete conceptual match so a generic word from a natural
+            # language question cannot surface an unrelated function.
+            safe_query, query_lower = _sanitize_docstring_query(query)
             params[0] = safe_query
 
-            for idx, row in enumerate(conn.execute(sql, params)):
+            rows = list(conn.execute(sql, params))
+            exact_symbols: set[str] = set()
+            if not rows:
+                # Only fall back to exact symbol lookup when the query marks
+                # the token as code. Treating every ordinary word as a symbol
+                # would let a generic term such as "channels" become an
+                # unrelated citable function.
+                candidates = _explicit_symbol_terms(query)
+                if candidates:
+                    placeholders = ", ".join("?" for _ in candidates)
+                    exact_sql = f"""
+                        SELECT d.symbol_name, d.docstring, d.file_path, d.repo,
+                               d.language, d.symbol_type, d.line_number, d.branch
+                        FROM docstrings d
+                        WHERE lower(d.symbol_name) IN ({placeholders})
+                    """
+                    exact_params: list[str | int] = candidates.copy()
+                    if language:
+                        exact_sql += " AND d.language = ?"
+                        exact_params.append(language)
+                    if repo:
+                        exact_sql += " AND d.repo = ?"
+                        exact_params.append(repo)
+                    exact_sql += " ORDER BY lower(d.symbol_name) LIMIT ?"
+                    exact_params.append(fetch_limit)
+                    rows = list(conn.execute(exact_sql, exact_params))
+                    exact_symbols = set(candidates)
+
+            for idx, row in enumerate(rows):
                 snippet = _make_snippet(row["docstring"], max_length=DOCSTRING_SNIPPET_MAX_LENGTH)
 
                 # Build GitHub URL to the specific line
@@ -700,7 +777,11 @@ def search_docstrings(
                 title = f"{symbol_name} ({symbol_type}) - {file_path}"
 
                 # Rank: exact symbol_name match (0), then bm25 order (1)
-                priority = 0 if symbol_name.lower() == query_lower else 1
+                priority = (
+                    0
+                    if symbol_name.lower() == query_lower or symbol_name.lower() in exact_symbols
+                    else 1
+                )
 
                 ranked.append(
                     (

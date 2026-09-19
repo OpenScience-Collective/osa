@@ -33,6 +33,7 @@ tests/
 
 ## Frameworks
 - **Python:** `pytest` with real fixtures and `coverage`
+- **JavaScript:** `bun test` (no mocking libs) - see `frontend-tests` in `.rules/ci_cd.md`
 - **Database:** Use test DB with real migrations
 - **APIs:** Test against staging/local instances
 
@@ -48,6 +49,13 @@ def test_user_creation(real_db):
 # def test_user_creation(mock_db):
 #     mock_db.return_value = User()
 ```
+
+**Ask:** What am I actually testing? Would this catch real bugs?
+
+## CI Integration
+- `integration-tests` (in `test.yml`) checks for Anthropic credentials and
+  skips gracefully if unavailable, rather than failing or faking a response
+- See `.rules/ci_cd.md` for the full pipeline layout
 
 ## LLM and Prompt Testing
 

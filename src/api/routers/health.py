@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from src.api.security import RequireAuth
+from src.api.security import RequireAdminAuth
 from src.assistants import registry
 from src.core.config.community import CommunityConfig
 
@@ -22,8 +22,12 @@ def compute_community_health(config: CommunityConfig) -> dict[str, Any]:
     """
     warnings: list[str] = []
 
-    # API key status
-    api_key_env_var = config.openrouter_api_key_env_var
+    # API key status. Mirrors _resolve_provider's precedence exactly
+    # (src/api/routers/community.py): the Anthropic env var is checked
+    # before the OpenRouter one, then the platform key. A community that
+    # sets both is fully described by whichever one _resolve_provider would
+    # actually use, which is the Anthropic one.
+    api_key_env_var = config.anthropic_api_key_env_var or config.openrouter_api_key_env_var
     if api_key_env_var:
         if os.getenv(api_key_env_var):
             api_key_status = "configured"
@@ -68,7 +72,7 @@ def compute_community_health(config: CommunityConfig) -> dict[str, Any]:
 
 
 @router.get("/communities")
-def get_communities_health(_auth: RequireAuth) -> dict[str, Any]:
+def get_communities_health(_auth: RequireAdminAuth) -> dict[str, Any]:
     """Get health status for all communities.
 
     Returns status information for each community including:
@@ -78,6 +82,13 @@ def get_communities_health(_auth: RequireAuth) -> dict[str, Any]:
     - documents: number of documentation sources
     - sync_age_hours: hours since last sync (if applicable)
     - warnings: list of configuration issues
+
+    Uses RequireAdminAuth, not RequireAuth: this never spends a
+    caller-supplied BYOK credential against an LLM, so RequireAuth's BYOK
+    bypass (any syntactically-plausible key in X-Anthropic-API-Key or
+    X-OpenRouter-Key) would otherwise expose a full per-community
+    diagnostic dump (API key status, CORS origins, document counts,
+    warnings) to a request carrying a junk header.
 
     Returns:
         Dictionary mapping community IDs to their health status.

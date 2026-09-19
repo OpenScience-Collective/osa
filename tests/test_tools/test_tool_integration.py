@@ -8,10 +8,16 @@ These tests verify that the tool functions work correctly for:
 - Tool docstring generation
 """
 
+import logging
+
+import httpx
 import pytest
+import respx
 from langchain_core.language_models import FakeListChatModel
 
 from src.assistants import discover_assistants, registry
+from src.assistants.community import _create_retrieve_docs_tool
+from src.tools.base import DocPage, DocRegistry
 from src.tools.fetcher import DocumentFetcher
 
 # Ensure assistants are discovered
@@ -106,6 +112,139 @@ class TestRetrieveDocsTool:
         docs = info.community_config.documentation
         titles_found = sum(1 for d in docs[:5] if d.title in description)
         assert titles_found >= 1, "Expected at least 1 document title in description"
+
+
+class TestRetrieveDocsToolCitations:
+    """Tests for retrieve_docs when the assistant is built with citations=True.
+
+    Uses the same real-fetch pattern as TestRetrieveDocsTool (no mocked
+    business logic): a live document fetch, but asserting the
+    search_result block shape instead of the formatted string.
+    """
+
+    @pytest.fixture
+    def hed_assistant_citable(self):
+        """Create a HED assistant with native citations enabled."""
+        model = FakeListChatModel(responses=["Test response"])
+        return registry.create_assistant("hed", model=model, preload_docs=False, citations=True)
+
+    @pytest.fixture
+    def retrieve_tool_citable(self, hed_assistant_citable):
+        """Get the citable retrieve_hed_docs tool."""
+        tools = {t.name: t for t in hed_assistant_citable.tools}
+        return tools.get("retrieve_hed_docs")
+
+    def test_returns_search_result_block_on_success(self, retrieve_tool_citable) -> None:
+        """A successful fetch with citations=True returns one search_result block."""
+        info = registry.get("hed")
+        assert info is not None
+        assert info.community_config is not None
+        docs = info.community_config.documentation
+        assert len(docs) > 0
+
+        url = str(docs[0].url)
+        result = retrieve_tool_citable.invoke({"url": url})
+
+        if isinstance(result, str):
+            # Network fetch failed for this doc; not what this test targets,
+            # and covered separately by the plain-string error-path test.
+            pytest.skip(f"Live fetch did not succeed for {url}: {result[:200]}")
+
+        assert isinstance(result, list)
+        assert len(result) == 1
+        block = result[0]
+        assert block["type"] == "search_result"
+        assert block["source"] == url
+        assert block["citations"] == {"enabled": True}
+        assert block["content"][0]["type"] == "text"
+        assert len(block["content"][0]["text"]) > 0
+
+    def test_unknown_url_still_returns_plain_error_string(self, retrieve_tool_citable) -> None:
+        """A registry-lookup failure has nothing to cite, so it stays a string."""
+        result = retrieve_tool_citable.invoke({"url": "https://example.com/nonexistent.html"})
+
+        assert isinstance(result, str)
+        assert "not found" in result.lower()
+
+
+class TestRetrieveDocsCitationsWhenThePageHasNoText:
+    """A fetch that succeeds but yields no text must not fail the whole request.
+
+    ``RetrievedDoc.success`` is ``error is None``; it says nothing about
+    there being content. A page that is entirely navigation chrome reduces
+    to an empty string once the HTML is converted and cleaned, and arrives
+    here as a success. ``build_search_result`` refuses empty text, and that
+    ValueError escapes LangGraph's ToolNode into the router, which catches
+    ValueError as a malformed request and answers the user with a 400. So
+    the citable path has to notice the empty content itself and fall back
+    to the string the OpenRouter path already returns.
+
+    The HTTP layer is a respx fixture (allowed for exercising specific
+    responses), while the fetching, HTML conversion, markdown cleaning and
+    tool logic under test are all real.
+    """
+
+    PAGE_URL = "https://example.com/chrome-only.html"
+    CHROME_ONLY_HTML = '<!DOCTYPE html><html><body><nav><a href="/">Home</a></nav></body></html>'
+
+    def _tool(self, *, citations: bool, source_url: str):
+        doc_registry = DocRegistry(
+            name="test",
+            docs=[
+                DocPage(
+                    title="Chrome Only Page",
+                    url=self.PAGE_URL,
+                    source_url=source_url,
+                )
+            ],
+        )
+        return _create_retrieve_docs_tool("test", "Test", doc_registry, citations=citations)
+
+    @respx.mock
+    def test_falls_back_to_a_string_instead_of_raising(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # A distinct source_url per test: the fetcher is a process-wide
+        # singleton with a live cache, so sharing one would let the first
+        # test's body answer the second one's request.
+        source_url = "https://example.com/chrome-only-citable.md"
+        respx.get(source_url).mock(
+            return_value=httpx.Response(
+                200, text=self.CHROME_ONLY_HTML, headers={"content-type": "text/html"}
+            )
+        )
+        tool = self._tool(citations=True, source_url=source_url)
+
+        with caplog.at_level(logging.WARNING, logger="src.assistants.community"):
+            result = tool.invoke({"url": self.PAGE_URL})
+
+        assert isinstance(result, str), (
+            "An empty page cannot become a search_result block, so the "
+            "citable path must return the plain string rather than let "
+            "build_search_result's ValueError reach the router"
+        )
+        assert self.PAGE_URL in result
+        assert "cannot be cited" in caplog.text
+
+    @respx.mock
+    def test_both_provider_paths_return_a_string_naming_the_source(self) -> None:
+        """The fallback keeps the two paths comparable, which is the point of it."""
+        citable_url = "https://example.com/chrome-only-parity-citable.md"
+        plain_url = "https://example.com/chrome-only-parity-plain.md"
+        for url in (citable_url, plain_url):
+            respx.get(url).mock(
+                return_value=httpx.Response(
+                    200, text=self.CHROME_ONLY_HTML, headers={"content-type": "text/html"}
+                )
+            )
+
+        citable = self._tool(citations=True, source_url=citable_url).invoke({"url": self.PAGE_URL})
+        plain = self._tool(citations=False, source_url=plain_url).invoke({"url": self.PAGE_URL})
+
+        assert isinstance(citable, str) and isinstance(plain, str)
+        for result in (citable, plain):
+            assert "Chrome Only Page" in result
+            assert self.PAGE_URL in result
 
 
 class TestPreloadedContent:

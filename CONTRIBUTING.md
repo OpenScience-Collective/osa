@@ -43,7 +43,9 @@ uv run uvicorn src.api.main:app --reload --port 38528
 All development follows: **Issue → Feature Branch (from `develop`) → PR to `develop` → Review → Merge**
 
 **Branch strategy:**
-- `main` — production releases only (stable versions, auto-deploys to prod)
+- `main` — production releases only (stable versions). Merging here does NOT
+  deploy: production follows the `:latest` image, which is now written only by a
+  published, non-prerelease release (issue #379).
 - `develop` — integration branch (`.dev` versions, auto-deploys to dev)
 - `feature/*` — feature branches, created from and merged back into `develop`
 

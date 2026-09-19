@@ -44,7 +44,9 @@ uv run pre-commit install
 ### CLI Usage
 
 ```bash
-# Set up your API key (get one at https://openrouter.ai/keys)
+# Set up your API key
+# Anthropic (what the platform itself runs on): https://console.anthropic.com/settings/keys
+# OpenRouter (still supported for BYOK): https://openrouter.ai/keys
 osa init
 
 # Ask the HED assistant a question
@@ -76,7 +78,8 @@ uv run uvicorn src.api.main:app --reload --port 38528
 osa config show
 
 # Set API keys for BYOK (Bring Your Own Key)
-osa config set --openrouter-key YOUR_KEY
+osa config set --anthropic-key sk-ant-...
+osa config set --openrouter-key sk-or-v1-...
 
 # Override API URL per-command
 osa ask -a hed "What is HED?" --api-url https://api.osc.earth/osa-dev
@@ -90,7 +93,7 @@ OSA can be deployed via Docker:
 # Pull and run
 docker pull ghcr.io/openscience-collective/osa:latest
 docker run -d --name osa -p 38528:38528 \
-  -e OPENROUTER_API_KEY=your-key \
+  -e ANTHROPIC_API_KEY=your-key \
   ghcr.io/openscience-collective/osa:latest
 
 # Check health
@@ -120,9 +123,11 @@ name: My Tool
 description: A research tool for neuroscience
 status: available
 
-# Required: Per-community OpenRouter API key for cost attribution
-# Set the environment variable on your backend server
-openrouter_api_key_env_var: "OPENROUTER_API_KEY_MY_TOOL"
+# By default, every community runs on the shared Claude Platform key.
+# Optional: only set these if the community funds its own usage instead.
+# Set the named environment variable on your backend server.
+# anthropic_api_key_env_var: "ANTHROPIC_API_KEY_MY_TOOL"
+# openrouter_api_key_env_var: "OPENROUTER_API_KEY_MY_TOOL"
 
 system_prompt: |
   You are a technical assistant for {name}.
@@ -140,10 +145,12 @@ github:
     - org/my-tool
 ```
 
-2. Set the API key environment variable on your backend:
+2. (Optional) If you set either key env var, export it on your backend:
 
 ```bash
-export OPENROUTER_API_KEY_MY_TOOL="your-openrouter-key"
+export ANTHROPIC_API_KEY_MY_TOOL="sk-ant-..."
+# or, for a community that funds OpenRouter usage instead
+export OPENROUTER_API_KEY_MY_TOOL="sk-or-v1-..."
 ```
 
 3. Validate your configuration:

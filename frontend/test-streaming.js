@@ -8,9 +8,14 @@
  */
 
 // Test utilities
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+
 let testsPassed = 0;
 let testsFailed = 0;
 let currentTest = '';
+let testWidgetWindow = null;
 
 function assert(condition, message) {
   if (!condition) {
@@ -191,6 +196,138 @@ test('Event processing: done event after content', () => {
 
   assertEqual(accumulated, 'Test', 'Content should be accumulated');
   assertEqual(done, true, 'Done event should be received');
+});
+
+test('Event processing: done content replaces raw citation boundary', () => {
+  let accumulated = '';
+  const lines = [
+    'data: {"event": "content", "content": "Infomax in ru[1]nica.m"}',
+    'data: {"event": "done", "content": "Infomax in runica.m.[1]"}',
+  ];
+
+  for (const line of lines) {
+    const event = parseSSE(line);
+    if (event && event.event === 'content') {
+      accumulated += event.content;
+    } else if (event && event.event === 'done' && typeof event.content === 'string') {
+      accumulated = event.content;
+    }
+  }
+
+  assertEqual(
+    accumulated,
+    'Infomax in runica.m.[1]',
+    'Canonical done content should replace raw streamed markers'
+  );
+});
+
+test('Production done reducer preserves response metadata across replacement', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'osa-chat-widget.js'), 'utf8');
+  const window = {
+    __OSA_TEST__: true,
+    location: { hostname: 'localhost', origin: 'http://localhost', href: 'http://localhost/' },
+  };
+  const context = {
+    console,
+    document: {
+      currentScript: { hasAttribute: () => true },
+      readyState: 'loading',
+    },
+    window,
+  };
+  vm.runInNewContext(source, context);
+  testWidgetWindow = window;
+
+  const applyDoneEvent = window.OSAChatWidget.__applyDoneEvent;
+  assert(typeof applyDoneEvent === 'function', 'Production done reducer should be exposed in test mode');
+
+  const originalMessage = {
+    role: 'assistant',
+    content: 'raw[1]stream',
+    citations: [{ marker: 1, source: 'https://old.example' }],
+    feedback: 'up',
+    _feedbackCommitting: true,
+    _responseId: 'response-1',
+  };
+  const messages = [originalMessage];
+  const finalContent = applyDoneEvent(messages, 0, {
+    event: 'done',
+    request_id: 'request-1',
+    content: 'Canonical answer.[1]',
+    citations: [{ marker: 1, source: 'https://source.example', title: 'Source' }],
+  }, originalMessage.content);
+
+  assertEqual(finalContent, 'Canonical answer.[1]', 'Reducer should return canonical done content');
+  assert(messages[0] !== originalMessage, 'Reducer should replace the completed message state');
+  assertEqual(messages[0].content, 'Canonical answer.[1]', 'Reducer should replace raw streamed content');
+  assertEqual(messages[0].requestId, 'request-1', 'Reducer should preserve request metadata');
+  assertEqual(messages[0].citations[0].source, 'https://source.example', 'Reducer should use final citations');
+  assertEqual(messages[0].feedback, 'up', 'Reducer should preserve response feedback state');
+  assertEqual(messages[0]._responseId, 'response-1', 'Reducer should preserve the local response identity');
+});
+
+test('Feedback race keeps the same response after done-state replacement', () => {
+  const isSameResponseMessage = testWidgetWindow.OSAChatWidget.__isSameResponseMessage;
+  assert(typeof isSameResponseMessage === 'function', 'Response identity helper should be exposed in test mode');
+  assert(
+    isSameResponseMessage({ _responseId: 'response-1' }, { _responseId: 'response-1' }),
+    'A replacement with the same local response identity should be accepted'
+  );
+  assert(
+    !isSameResponseMessage({ _responseId: 'response-1' }, { _responseId: 'response-2' }),
+    'A different local response identity should be rejected'
+  );
+  assert(
+    isSameResponseMessage({ requestId: 'request-1' }, { requestId: 'request-1' }),
+    'A matching server request identity should be accepted'
+  );
+});
+
+test('Legacy citation migration repairs cached mid-word markers', () => {
+  const migrateLegacyCitationMarkers = testWidgetWindow.OSAChatWidget.__migrateLegacyCitationMarkers;
+  assert(typeof migrateLegacyCitationMarkers === 'function', 'Legacy citation migration should be exposed in test mode');
+
+  const citations = [{ marker: 1, source: 'https://source.example' }];
+  assertEqual(
+    migrateLegacyCitationMarkers('Infomax is ru[1]nica.m, a MATLAB version.', citations),
+    'Infomax is runica.m, a MATLAB version.[1]',
+    'Migration should move a mid-word marker to the sentence end'
+  );
+  assertEqual(
+    migrateLegacyCitationMarkers('[1]The cited claim.', citations),
+    'The cited claim.[1]',
+    'Migration should move a leading marker to the sentence end'
+  );
+  assertEqual(
+    migrateLegacyCitationMarkers('First claim.[1] Next claim.', citations),
+    'First claim.[1] Next claim.',
+    'Migration should leave an already-canonical marker unchanged'
+  );
+  assertEqual(
+    migrateLegacyCitationMarkers('The cited claim [1].', citations),
+    'The cited claim.[1]',
+    'Migration should remove the space before sentence punctuation'
+  );
+  assertEqual(
+    migrateLegacyCitationMarkers('- First claim [1]\n- Second claim.', citations),
+    '- First claim[1]\n- Second claim.',
+    'Migration should not move a list marker across list items'
+  );
+  assertEqual(
+    migrateLegacyCitationMarkers('`arr[1]` contains code.', citations),
+    '`arr[1]` contains code.',
+    'Migration should preserve a marker inside inline code'
+  );
+  assertEqual(
+    migrateLegacyCitationMarkers('arr[1] contains an index.', citations),
+    'arr contains an index.[1]',
+    'An unwrapped array-index-style marker is treated as a real citation; wrap it in backticks to preserve it as code'
+  );
+  assertEqual(
+    migrateLegacyCitationMarkers('The documentation[1] explains this in detail.', citations),
+    'The documentation explains this in detail.[1]',
+    'A word directly followed by a marker should still migrate to the sentence end'
+  );
 });
 
 test('Event processing: error event stops processing', () => {

@@ -40,13 +40,53 @@ from langchain_core.runnables import Runnable
 
 logger = logging.getLogger(__name__)
 
+# Default OpenRouter model/provider for callers that name neither. This is
+# the factory's own fallback, not a platform policy: since Phase 2 the
+# platform default is an Anthropic model, and a request funded by an
+# OpenRouter key resolves it through OPENROUTER_MODEL_IDS below.
+DEFAULT_MODEL = "openai/gpt-oss-120b"
+DEFAULT_PROVIDER = "Cerebras"
+
+# OpenRouter slugs for the models OSA offers. OpenRouter serves the same
+# Claude models under creator/model-name slugs, so a request funded by an
+# OpenRouter key (BYOK, or a community's own funded key) still runs the
+# community's chosen model rather than switching to a different model family
+# just because of which key paid for it. Bare first-party ids such as
+# "claude-haiku-4-5" are not valid OpenRouter slugs, hence the mapping.
+# tests/test_core/test_litellm_llm.py asserts these keys stay in step with
+# anthropic_llm.OFFERED_MODELS so adding a model cannot silently skip this.
+OPENROUTER_MODEL_IDS: dict[str, str] = {
+    "claude-haiku-4-5": "anthropic/claude-haiku-4.5",
+    "claude-sonnet-5": "anthropic/claude-sonnet-5",
+}
+
+
+def to_openrouter_model(model: str | None) -> str | None:
+    """Return the OpenRouter slug for a model id, or None if not mappable.
+
+    Args:
+        model: A first-party Anthropic id, an OpenRouter slug, or None.
+
+    Returns:
+        The OpenRouter slug for an offered first-party id, the input
+        unchanged when it already looks like an OpenRouter slug, or None
+        when there is nothing usable to route.
+    """
+    if not model:
+        return None
+    if model in OPENROUTER_MODEL_IDS:
+        return OPENROUTER_MODEL_IDS[model]
+    if "/" in model:
+        return model
+    return None
+
 
 def create_openrouter_llm(
-    model: str = "openai/gpt-oss-120b",
+    model: str = DEFAULT_MODEL,
     api_key: str | None = None,
     temperature: float = 0.1,
     max_tokens: int | None = None,
-    provider: str | None = "Cerebras",
+    provider: str | None = DEFAULT_PROVIDER,
     user_id: str | None = None,
     enable_caching: bool | None = None,
 ) -> BaseChatModel:
@@ -107,10 +147,21 @@ def create_openrouter_llm(
     if user_id:
         model_kwargs["user"] = user_id
 
+    # Falls back to the env var (documented above) rather than requiring
+    # every caller to read it themselves, but a request with neither fails
+    # loud here instead of constructing successfully and only surfacing an
+    # opaque auth error on the first real call -- matching
+    # create_anthropic_llm's server-mode key check.
+    resolved_api_key = api_key or os.getenv("OPENROUTER_API_KEY")
+    if not resolved_api_key:
+        raise RuntimeError(
+            "No OpenRouter API key available: pass api_key explicitly or set OPENROUTER_API_KEY"
+        )
+
     # Create base LLM with streaming enabled for proper event handling
     llm = ChatLiteLLM(
         model=litellm_model,
-        api_key=api_key or os.getenv("OPENROUTER_API_KEY"),
+        api_key=resolved_api_key,
         temperature=temperature,
         max_tokens=max_tokens,
         model_kwargs=model_kwargs,
