@@ -67,3 +67,43 @@ jobs:
         with:
           files: ./coverage.xml
           fail_ci_if_error: false
+
+  frontend-tests:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Run citation marker tests
+        run: bun frontend/test-citation-markers.js
+
+      - name: Run streaming tests
+        run: bun frontend/test-streaming.js
+
+      - name: Check widget syntax
+        run: node --check frontend/osa-chat-widget.js
+
+  all-tests:
+    name: All Tests Passed
+    needs: [lint, test, frontend-tests]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check results
+        run: |
+          if [ "${{ needs.lint.result }}" != "success" ] && [ "${{ needs.lint.result }}" != "skipped" ]; then
+            echo "Lint failed"
+            exit 1
+          fi
+          if [ "${{ needs.test.result }}" != "success" ] && [ "${{ needs.test.result }}" != "skipped" ]; then
+            echo "Python tests failed"
+            exit 1
+          fi
+          if [ "${{ needs.frontend-tests.result }}" != "success" ] && [ "${{ needs.frontend-tests.result }}" != "skipped" ]; then
+            echo "Frontend tests failed"
+            exit 1
+          fi
+          echo "All required tests passed"

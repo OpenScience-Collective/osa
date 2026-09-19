@@ -5,8 +5,7 @@ id: eeglab
 name: EEGLAB
 description: EEG signal processing and analysis toolbox
 status: available
-default_model: anthropic/claude-haiku-4.5
-default_model_provider: anthropic
+default_model: claude-haiku-4-5
 
 # External links for dashboard and discovery
 links:
@@ -471,18 +470,20 @@ docstrings:
 # Process: Eval agent scores all threads (cheap) → Summary agent creates FAQs for high-quality threads (quality)
 faq_generation:
   # Evaluation Agent: Scores thread quality (1000s of calls, optimized for speed/cost)
-  # Model: EEGLAB's default fast model via DeepInfra FP8 quantization
+  # Model: Claude Haiku 4.5, the cheapest offered model. This replaced a
+  # quantized Qwen on DeepInfra, which is no longer reachable now that FAQ
+  # generation runs on the Claude Platform instead of OpenRouter.
   evaluation_agent:
-    model: qwen/qwen3-235b-a22b-2507
-    provider: DeepInfra/FP8  # FP8 quantization for cost efficiency
+    model: claude-haiku-4-5
     temperature: 0.0         # Deterministic scoring
     enable_caching: true     # Prompt caching enabled for cost reduction
 
   # Summary Agent: Creates FAQ entries (100s of calls after filtering, optimized for quality)
-  # Model: Claude Haiku 4.5 via Anthropic for high-quality summaries
+  # Model: Claude Haiku 4.5. Sonnet 5 would be the quality upgrade, but it
+  # rejects `temperature`, which would silently discard the 0.0/0.1 split
+  # these two agents rely on.
   summary_agent:
-    model: anthropic/claude-haiku-4.5
-    provider: Anthropic      # Direct Anthropic provider for best performance
+    model: claude-haiku-4-5
     temperature: 0.1         # Slightly creative for natural FAQ phrasing
     enable_caching: true     # Prompt caching enabled for cost reduction
 

@@ -67,23 +67,52 @@
     console.log('[OSA] Using DEV backend:', CONFIG.apiEndpoint);
   }
 
-  // Default model options for settings dropdown
-  // Last updated: 2026-03
+  // Fallback model options for the settings dropdown, used only until
+  // fetchCommunityConfig's offered_models response arrives (or if a
+  // community config ever omits that field). The live list is the source
+  // of truth; see offeredModels below.
   const DEFAULT_MODELS = [
-    { value: 'anthropic/claude-sonnet-4.6', label: 'Claude Sonnet 4.6' },
-    { value: 'anthropic/claude-haiku-4.5', label: 'Claude Haiku 4.5' },
-    { value: 'openai/gpt-5.2-chat', label: 'GPT-5.2 Chat' },
-    { value: 'openai/gpt-5-mini', label: 'GPT-5 Mini' },
-    { value: 'google/gemini-3-flash-preview', label: 'Gemini 3 Flash' },
-    { value: 'google/gemini-3-pro-preview', label: 'Gemini 3 Pro' },
-    { value: 'deepseek/deepseek-v3.2', label: 'DeepSeek V3.2' },
-    { value: 'qwen/qwen3.5-397b-a17b', label: 'Qwen 3.5 397B' }
+    { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
+    { value: 'claude-sonnet-5', label: 'Claude Sonnet 5' }
   ];
+
+  // Models to show in the settings dropdown: the live offered_models list
+  // from the community config endpoint, falling back to DEFAULT_MODELS
+  // until that response arrives.
+  function getModelMenuOptions() {
+    return (offeredModels && offeredModels.length) ? offeredModels : DEFAULT_MODELS;
+  }
 
   // Helper to get human-readable label for a model
   function getModelLabel(modelId) {
-    const model = DEFAULT_MODELS.find(m => m.value === modelId);
+    const model = getModelMenuOptions().find(m => m.value === modelId);
     return model ? model.label : modelId;
+  }
+
+  // A valid model id is either a bare first-party id (e.g. "claude-haiku-4-5")
+  // or an OpenRouter-style "provider/model" id (e.g. "openai/gpt-5"), which
+  // the custom-model field still accepts for BYOK callers.
+  function isValidModelId(model) {
+    if (typeof model !== 'string' || !model) return false;
+    return /^[a-zA-Z0-9._-]+$/.test(model) || /^[a-zA-Z0-9_-]+\/[a-zA-Z0-9._-]+$/.test(model);
+  }
+
+  // BYOK key formats, matching the server-side redaction patterns in
+  // src/core/logging.py so widget-side validation stays in sync with what
+  // the backend actually accepts.
+  const ANTHROPIC_KEY_PATTERN = /^sk-ant-[a-zA-Z0-9_-]{80,}$/i;
+  const OPENROUTER_KEY_PATTERN = /^sk-or-v1-[0-9a-f]{64}$/i;
+
+  // Infer which provider a BYOK key belongs to from its prefix, so
+  // keyProvider never has to be stored as a separate user choice.
+  function inferKeyProvider(apiKey) {
+    if (ANTHROPIC_KEY_PATTERN.test(apiKey)) return 'anthropic';
+    if (OPENROUTER_KEY_PATTERN.test(apiKey)) return 'openrouter';
+    return null;
+  }
+
+  function isValidApiKey(apiKey) {
+    return ANTHROPIC_KEY_PATTERN.test(apiKey) || OPENROUTER_KEY_PATTERN.test(apiKey);
   }
 
   // Track which CONFIG keys were explicitly set by the embedder via setConfig,
@@ -93,6 +122,7 @@
   // State
   let isOpen = false;
   let isLoading = false;
+  let isThinking = false; // True once a 'thinking' SSE event arrives before any content chunk; swaps the loading label to "Thinking..."
   let messages = [];
   let turnstileToken = null;
   let turnstileWidgetId = null;
@@ -101,9 +131,40 @@
   let backendCommitSha = null; // Backend git commit SHA from health check
   let pageContextEnabled = true; // Runtime state for page context toggle
   let chatPopup = null; // Reference to pop-out window (prevents duplicates)
-  let userSettings = { apiKey: null, model: null }; // User settings (BYOK and model selection)
+  let userSettings = { apiKey: null, model: null, keyProvider: null }; // User settings (BYOK and model selection)
   let communityDefaultModel = null; // Community's default model from API
+  let offeredModels = null; // Live offered_models list from the community config API; null until loaded
   let sessionId = null; // Server-side session ID for multi-turn conversations
+  const CHAT_HISTORY_VERSION = 2;
+  let responseSequence = 0;
+
+  function createResponseId() {
+    responseSequence += 1;
+    return `response-${Date.now()}-${responseSequence}`;
+  }
+
+  // Notice queued by an init-time failure (corrupted/inaccessible settings,
+  // an invalid saved key or model, or corrupted history) that happened
+  // before the widget's DOM existed or before the user had opened it, so
+  // there was nowhere to show it yet. Flushed via showError the first time
+  // the widget is actually opened (see flushPendingNotice).
+  let pendingNotice = null;
+
+  // Queue a notice for display the next time the widget opens, instead of
+  // trying (and failing) to show it immediately at load time.
+  function queuePendingNotice(message) {
+    pendingNotice = pendingNotice ? `${pendingNotice} ${message}` : message;
+  }
+
+  // Show any notice queued by an init-time failure. Called once, the first
+  // time the widget is opened, so a user whose saved settings or history
+  // failed to load is not left silently switched to defaults.
+  function flushPendingNotice(container) {
+    if (pendingNotice) {
+      showError(container, pendingNotice);
+      pendingNotice = null;
+    }
+  }
 
   // Store script URL at load time for reliable pop-out
   const WIDGET_SCRIPT_URL = document.currentScript?.src || null;
@@ -504,6 +565,49 @@
 
     .osa-table tr:nth-child(even) {
       background: rgba(0,0,0,0.02);
+    }
+
+    /* Inline citation markers */
+    .osa-citation {
+      font-size: 0.75em;
+      line-height: 0;
+      margin-left: 1px;
+    }
+
+    .osa-citation a {
+      color: var(--osa-primary);
+      text-decoration: none;
+    }
+
+    .osa-citation a:hover {
+      text-decoration: underline;
+    }
+
+    /* Compact numbered source list under a cited answer */
+    .osa-message-sources {
+      margin: 8px 0 0;
+      padding-left: 0;
+      font-size: 12px;
+      color: var(--osa-text-light);
+      list-style: none;
+    }
+
+    .osa-message-sources li {
+      margin: 2px 0;
+    }
+
+    .osa-source-marker {
+      font-variant-numeric: tabular-nums;
+      margin-right: 2px;
+    }
+
+    .osa-message-sources a {
+      color: var(--osa-text-light);
+      text-decoration: underline;
+    }
+
+    .osa-message-sources a:hover {
+      color: var(--osa-primary);
     }
 
     /* Copy button styles */
@@ -1157,11 +1261,19 @@
     }
   `;
 
-  // Escape HTML for user messages
+  // Escape text for interpolation into HTML, including quoted attribute values.
+  // Serializing a text node escapes & < > but deliberately leaves both quote
+  // characters alone, so the textContent trick alone is not enough here: this
+  // helper's output is interpolated into href=""/title=""/value="" attributes,
+  // where an unescaped quote closes the attribute and everything after it is
+  // parsed as further attributes (an event handler, for instance). Citation
+  // hover text is a verbatim span of a retrieved document, so that input is not
+  // ours to trust. Escaped quotes still render as quotes in text and still copy
+  // as quotes from a code block, which reads textContent.
   function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
-    return div.innerHTML;
+    return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
   // Validate URL protocol to prevent javascript: XSS
@@ -1198,8 +1310,12 @@
     return 'osa-code-' + (++codeBlockId);
   }
 
-  // Render inline markdown (bold, italic, links, plain URLs)
-  function renderInlineMarkdown(text) {
+  // Render inline markdown (bold, italic, links, plain URLs, citation markers)
+  // citationsByMarker: optional {"1": {source, title, cited_text}, ...} map.
+  // When provided, a bare "[1]" (not followed by "(", so it never collides
+  // with a real markdown link) whose number is a known marker renders as a
+  // superscript link to its source; any other "[n]" is left as plain text.
+  function renderInlineMarkdown(text, citationsByMarker) {
     if (!text) return '';
 
     let result = '';
@@ -1210,13 +1326,28 @@
       const italicMatch = remaining.match(/(?<!\*)\*([^*]+)\*(?!\*)/);
       const linkMatch = remaining.match(/\[([^\]]+)\]\(([^)]+)\)/);
       const urlMatch = remaining.match(/(?<!\]\()(https?:\/\/[^\s\)]+)/);
+      let citationMatch = null;
+      if (citationsByMarker) {
+        // Scan every bracketed number, not just the first: prose of its own
+        // like "see item [42]" must not hide a real marker later in the same
+        // run. Matching only the first would leave that marker unlinked, and
+        // if nothing else matched either, the rest of the run would be
+        // emitted as plain text and the loop would exit.
+        for (const candidate of remaining.matchAll(/\[(\d+)\](?!\()/g)) {
+          if (citationsByMarker[candidate[1]]) {
+            citationMatch = candidate;
+            break;
+          }
+        }
+      }
 
       const boldIndex = boldMatch ? remaining.indexOf(boldMatch[0]) : -1;
       const italicIndex = italicMatch ? remaining.indexOf(italicMatch[0]) : -1;
       const linkIndex = linkMatch ? remaining.indexOf(linkMatch[0]) : -1;
       const urlIndex = urlMatch ? remaining.indexOf(urlMatch[0]) : -1;
+      const citationIndex = citationMatch ? citationMatch.index : -1;
 
-      const indices = [boldIndex, italicIndex, linkIndex, urlIndex].filter(i => i !== -1);
+      const indices = [boldIndex, italicIndex, linkIndex, urlIndex, citationIndex].filter(i => i !== -1);
       if (indices.length === 0) {
         result += escapeHtml(remaining);
         break;
@@ -1245,6 +1376,21 @@
         // Plain URLs are already validated by regex to start with https?://
         result += '<a href="' + escapeHtml(urlMatch[0]) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(urlMatch[0]) + '</a>';
         remaining = remaining.substring(urlIndex + urlMatch[0].length);
+      } else if (minIndex === citationIndex && citationMatch) {
+        if (citationIndex > 0) result += escapeHtml(remaining.substring(0, citationIndex));
+        const citation = citationsByMarker[citationMatch[1]];
+        const label = escapeHtml(citationMatch[1]);
+        if (isSafeUrl(citation.source)) {
+          // Every attribute value here is escaped inline rather than via a
+          // pre-escaped local, so the "attribute values go through escapeHtml"
+          // check in tests/test_frontend/test_widget_drift.py can stay literal.
+          result += '<sup class="osa-citation"><a href="' + escapeHtml(citation.source) +
+            '" target="_blank" rel="noopener noreferrer" title="' +
+            escapeHtml(citation.cited_text || citation.title || '') + '">[' + label + ']</a></sup>';
+        } else {
+          result += '<sup class="osa-citation">[' + label + ']</sup>';
+        }
+        remaining = remaining.substring(citationIndex + citationMatch[0].length);
       }
     }
 
@@ -1252,7 +1398,7 @@
   }
 
   // Full markdown to HTML converter
-  function markdownToHtml(text) {
+  function markdownToHtml(text, citationsByMarker) {
     if (!text) return '';
 
     const lines = text.split('\n');
@@ -1282,7 +1428,7 @@
           const tag = idx === 0 ? 'th' : 'td';
           tableHtml += '<tr>';
           cells.forEach(cell => {
-            tableHtml += '<' + tag + '>' + renderInlineMarkdown(cell.trim()) + '</' + tag + '>';
+            tableHtml += '<' + tag + '>' + renderInlineMarkdown(cell.trim(), citationsByMarker) + '</' + tag + '>';
           });
           tableHtml += '</tr>';
         });
@@ -1340,7 +1486,7 @@
       if (headerMatch) {
         flushList();
         const level = headerMatch[1].length;
-        result += '<h' + level + '>' + renderInlineMarkdown(headerMatch[2]) + '</h' + level + '>';
+        result += '<h' + level + '>' + renderInlineMarkdown(headerMatch[2], citationsByMarker) + '</h' + level + '>';
         continue;
       }
 
@@ -1349,7 +1495,7 @@
       if (bulletMatch) {
         if (currentListType !== 'ul') flushList();
         currentListType = 'ul';
-        currentList.push('<li>' + renderInlineMarkdown(bulletMatch[1]) + '</li>');
+        currentList.push('<li>' + renderInlineMarkdown(bulletMatch[1], citationsByMarker) + '</li>');
         continue;
       }
 
@@ -1358,7 +1504,7 @@
       if (numberedMatch) {
         if (currentListType !== 'ol') flushList();
         currentListType = 'ol';
-        currentList.push('<li>' + renderInlineMarkdown(numberedMatch[1]) + '</li>');
+        currentList.push('<li>' + renderInlineMarkdown(numberedMatch[1], citationsByMarker) + '</li>');
         continue;
       }
 
@@ -1372,7 +1518,7 @@
         // Process inline markdown for non-code parts
         processedLine = processedLine.replace(/(<code[^>]*>.*?<\/code>)|([^<]+)/g, function(match, codeTag, text) {
           if (codeTag) return codeTag;
-          if (text) return renderInlineMarkdown(text);
+          if (text) return renderInlineMarkdown(text, citationsByMarker);
           return match;
         });
 
@@ -1402,26 +1548,163 @@
       msg.content.length < 100000; // Prevent DoS
   }
 
+  // Older history entries may not have citations, and corrupted storage can
+  // contain a non-array value. Normalize the optional field before rendering
+  // so a malformed saved reply cannot crash widget initialization.
+  function normalizePersistedMessage(msg) {
+    if (!isValidMessage(msg)) return null;
+    if (msg.role !== 'assistant') return { ...msg };
+    return {
+      ...msg,
+      citations: Array.isArray(msg.citations)
+        ? msg.citations.filter((citation) => citation && typeof citation === 'object'
+          && !Array.isArray(citation)
+          && Number.isInteger(citation.marker)
+          && citation.marker > 0
+          && typeof citation.source === 'string')
+        : [],
+    };
+  }
+
+  // Older widget versions persisted citation markers at the stream delta
+  // boundary (for example, "ru[1]nica"). Move only markers that belong to a
+  // known citation, leaving unknown bracketed numbers and Markdown links
+  // alone. New responses are normalized by the backend before this code runs;
+  // this is a one-time repair for replies already in browser storage.
+  function migrateLegacyCitationMarkers(content, citations) {
+    if (typeof content !== 'string' || !content || !Array.isArray(citations) || !citations.length) {
+      return content;
+    }
+
+    const knownMarkers = new Set(
+      citations.map((citation) => String(citation.marker))
+    );
+    const markerPattern = /\[(\d+)\](?!\()/g;
+    const sentenceEndAtEnd = /[.!?](?:\]\([^\)\n]*\)|["'”’)\]`*_])*$/;
+    const sentenceEnd = /[.!?](?:\]\([^\)\n]*\)|["'”’)\]`*_])*(?=\s|$)/g;
+    const blockBoundary = /\n[ \t]*(?:(?:[-*+]\s+)|(?:\d+[.)]\s+)|(?:#{1,6}\s+)|(?:>\s+)|(?:```)|(?:\n))/g;
+    const markers = [];
+    let match;
+
+    const isInsideInlineCode = (position) => {
+      let backtickCount = 0;
+      let escaped = false;
+      for (const character of content.slice(0, position)) {
+        if (character === '`' && !escaped) backtickCount += 1;
+        escaped = character === '\\' && !escaped;
+        if (character !== '\\') escaped = false;
+      }
+      return backtickCount % 2 === 1;
+    };
+
+    while ((match = markerPattern.exec(content)) !== null) {
+      if (knownMarkers.has(match[1]) && !isInsideInlineCode(match.index)) {
+        markers.push({
+          start: match.index,
+          end: markerPattern.lastIndex,
+          marker: match[1],
+        });
+      }
+    }
+    if (!markers.length) return content;
+
+    const moves = [];
+    for (const marker of markers) {
+      const prefix = content.slice(0, marker.start).trimEnd();
+      if (sentenceEndAtEnd.test(prefix)) continue;
+
+      const precedingIdentifier = content.slice(0, marker.start).match(/[A-Za-z_$][\w$]*$/)?.[0];
+      const afterMarker = content.slice(marker.end);
+      if (precedingIdentifier && precedingIdentifier.length > 1
+          && (/^\s/.test(afterMarker) || /^[,.;:)]/.test(afterMarker))) {
+        // A known citation marker can share a number with an ordinary array
+        // index in legacy text. Do not rewrite an unambiguous identifier
+        // index such as arr[1] just because the reply also cites source [1].
+        continue;
+      }
+
+      sentenceEnd.lastIndex = marker.end;
+      const sentence = sentenceEnd.exec(content);
+      blockBoundary.lastIndex = marker.end;
+      const block = blockBoundary.exec(content);
+      const boundary = block && (!sentence || block.index < sentence.index) ? block : sentence;
+      moves.push({
+        marker: `[${marker.marker}]`,
+        start: marker.start,
+        end: marker.end,
+        target: boundary
+          ? (boundary === block ? boundary.index : boundary.index + boundary[0].length)
+          : content.length,
+      });
+    }
+    if (!moves.length) return content;
+
+    const insertions = new Map();
+    for (const move of moves) {
+      const atTarget = insertions.get(move.target) || [];
+      atTarget.push(move.marker);
+      insertions.set(move.target, atTarget);
+    }
+
+    // Rebuild against the original positions so multiple markers can share a
+    // sentence end without disturbing one another's offsets.
+    const removals = new Set(moves.flatMap((move) => {
+      const positions = [];
+      for (let index = move.start; index < move.end; index += 1) positions.push(index);
+      const lineStart = content.lastIndexOf('\n', move.start - 1) + 1;
+      const linePrefix = content.slice(lineStart, move.start);
+      const isListIndent = /^\s*(?:[-*+]\s+|\d+[.)]\s+)$/.test(linePrefix);
+      if (!isListIndent) {
+        for (let index = move.start - 1; index >= lineStart && /[ \t]/.test(content[index]); index -= 1) {
+          positions.push(index);
+        }
+      }
+      return positions;
+    }));
+    let cleaned = '';
+    for (let index = 0; index <= content.length; index += 1) {
+      const values = insertions.get(index);
+      if (values) cleaned += values.join('');
+      if (index < content.length && !removals.has(index)) cleaned += content[index];
+    }
+    return cleaned;
+  }
+
   // Load chat history from localStorage
   function loadHistory() {
     let historyLoadFailed = false;
+    let historyNeedsSave = false;
     try {
       const saved = localStorage.getItem(CONFIG.storageKey);
       if (saved) {
         const parsed = JSON.parse(saved);
         // Validate structure to prevent injection attacks
         let rawMessages;
+        let historyVersion = 0;
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Array.isArray(parsed.messages)) {
-          // New format: { messages, sessionId }
+          // Stored format: { version, messages, sessionId }
           rawMessages = parsed.messages;
           sessionId = parsed.sessionId || null;
+          historyVersion = Number.isInteger(parsed.version) ? parsed.version : 0;
         } else if (Array.isArray(parsed)) {
           // Legacy format: just messages array (backward compatible)
           rawMessages = parsed;
           sessionId = null;
         }
         if (rawMessages) {
-          messages = rawMessages.filter(isValidMessage);
+          messages = rawMessages.map(normalizePersistedMessage).filter(Boolean);
+          if (messages.length !== rawMessages.length || historyVersion < CHAT_HISTORY_VERSION) {
+            historyNeedsSave = true;
+          }
+          if (historyVersion < CHAT_HISTORY_VERSION) {
+            messages = messages.map((message) => {
+              if (message.role !== 'assistant' || !message.citations.length) return message;
+              const content = migrateLegacyCitationMarkers(message.content, message.citations);
+              if (content === message.content) return message;
+              historyNeedsSave = true;
+              return { ...message, content };
+            });
+          }
           if (messages.length !== rawMessages.length) {
             console.warn('Some chat messages were invalid and filtered out');
           }
@@ -1430,11 +1713,14 @@
     } catch (e) {
       console.error('Failed to load chat history:', e);
       historyLoadFailed = true;
+      queuePendingNotice('Saved chat history is corrupted and could not be loaded.');
     }
     if (messages.length === 0) {
       messages = [{ role: 'assistant', content: CONFIG.initialMessage }];
     }
-    return historyLoadFailed;
+    // A read/parse failure must never trigger a write: preserving the
+    // existing storage value is safer than replacing it with the greeting.
+    return !historyLoadFailed && historyNeedsSave;
   }
 
   // Save chat history to localStorage
@@ -1450,11 +1736,11 @@
       // in-progress draft, and never persist a vote that has not been confirmed
       // by the server (so a reload can't show a false "recorded" state).
       const persistable = messages.map((m) => {
-        const { _feedbackCommitting, _feedbackJustOpened, feedbackDraft, ...rest } = m;
+        const { _feedbackCommitting, _feedbackJustOpened, _responseId, feedbackDraft, ...rest } = m;
         if (rest.feedback && !rest.feedbackCommitted) delete rest.feedback;
         return rest;
       });
-      const data = JSON.stringify({ messages: persistable, sessionId });
+      const data = JSON.stringify({ version: CHAT_HISTORY_VERSION, messages: persistable, sessionId });
       localStorage.setItem(CONFIG.storageKey, data);
       saveErrorShown = false;
     } catch (e) {
@@ -1545,7 +1831,7 @@
     try {
       const saved = localStorage.getItem(storageKey);
       if (!saved) {
-        userSettings = { apiKey: null, model: null };
+        userSettings = { apiKey: null, model: null, keyProvider: null };
         return;
       }
 
@@ -1554,46 +1840,42 @@
         parsed = JSON.parse(saved);
       } catch (jsonErr) {
         console.error('[OSA] Saved settings contain invalid JSON:', jsonErr.message);
-        const container = document.querySelector('.osa-chat-widget');
-        if (container && isOpen) {
-          showError(container, 'Saved settings are corrupted. Using defaults.');
-        }
-        userSettings = { apiKey: null, model: null };
+        queuePendingNotice('Saved settings are corrupted. Using defaults.');
+        userSettings = { apiKey: null, model: null, keyProvider: null };
         // Clear corrupted data
         try { localStorage.removeItem(storageKey); } catch {}
         return;
       }
 
-      // Validate API key format if present
-      if (parsed.apiKey) {
-        // Basic format validation: sk-or-v1-[hex]
-        if (!/^sk-or-v1-[0-9a-f]{64}$/i.test(parsed.apiKey)) {
-          console.error('[OSA] Saved API key has invalid format, ignoring');
-          parsed.apiKey = null;
-        }
+      // Validate API key format if present: either an Anthropic or an
+      // OpenRouter key. keyProvider is never read from storage directly;
+      // it is always re-derived from the key itself below, so settings
+      // saved before this phase (with no keyProvider at all) still work.
+      if (parsed.apiKey && !isValidApiKey(parsed.apiKey)) {
+        console.error('[OSA] Saved API key has invalid format, ignoring');
+        queuePendingNotice('Your saved API key is invalid and was ignored.');
+        parsed.apiKey = null;
       }
 
       // Validate model format if present
       if (parsed.model && typeof parsed.model === 'string') {
-        // Validate model format: provider/model-name
-        if (!/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9._-]+$/.test(parsed.model)) {
+        if (!isValidModelId(parsed.model)) {
           console.error('[OSA] Saved model has invalid format, ignoring');
+          queuePendingNotice('Your saved model selection is invalid and was ignored.');
           parsed.model = null;
         }
       }
 
       userSettings = {
         apiKey: parsed.apiKey || null,
-        model: parsed.model || null
+        model: parsed.model || null,
+        keyProvider: inferKeyProvider(parsed.apiKey || '')
       };
     } catch (e) {
       // localStorage access error
       console.error('[OSA] Cannot access localStorage for settings:', e.message);
-      const container = document.querySelector('.osa-chat-widget');
-      if (container && isOpen) {
-        showError(container, 'Cannot access browser storage. Settings will not persist.');
-      }
-      userSettings = { apiKey: null, model: null };
+      queuePendingNotice('Cannot access browser storage. Settings will not persist.');
+      userSettings = { apiKey: null, model: null, keyProvider: null };
     }
   }
 
@@ -1671,6 +1953,17 @@
         if (container && isOpen) {
           disableWidget(container, 'Community configuration is incomplete. Please contact support.');
         }
+      }
+
+      // Offered models drive the settings model menu; DEFAULT_MODELS remains
+      // the fallback if this is missing (older backend) or empty.
+      if (data && Array.isArray(data.offered_models) && data.offered_models.length > 0) {
+        offeredModels = data.offered_models.map(m => ({ value: m.id, label: m.label }));
+      } else {
+        console.warn(
+          '[OSA] Community config response has no offered_models; falling back to DEFAULT_MODELS. ' +
+          'This is expected against an older backend during a rolling deploy, but should not persist.'
+        );
       }
 
       // Apply widget display config from API for fields not explicitly set by the embedder.
@@ -1800,7 +2093,7 @@
     // Update loading label if currently loading
     const loadingLabel = container.querySelector('.osa-loading-label');
     if (loadingLabel) {
-      loadingLabel.textContent = CONFIG.title;
+      loadingLabel.textContent = isThinking ? 'Thinking...' : CONFIG.title;
     }
   }
 
@@ -1815,6 +2108,18 @@
     const customModelField = container.querySelector('#osa-settings-custom-model-field');
     const customModelInput = container.querySelector('#osa-settings-custom-model');
     const modelHint = container.querySelector('#osa-settings-model-hint');
+
+    // Rebuild the model options from the live offered_models list (falls
+    // back to DEFAULT_MODELS until fetchCommunityConfig resolves), so a
+    // config that loads after the widget's initial render is still
+    // reflected the next time settings are opened.
+    if (modelSelect) {
+      const options = getModelMenuOptions()
+        .filter(m => m.value !== communityDefaultModel)
+        .map(m => `<option value="${escapeHtml(m.value)}">${escapeHtml(m.label)}</option>`)
+        .join('');
+      modelSelect.innerHTML = `<option value="default">Default (Community Setting)</option>${options}<option value="custom">Custom</option>`;
+    }
 
     // Update default option label with community default model
     if (modelSelect) {
@@ -1839,8 +2144,8 @@
       apiKeyInput.value = userSettings.apiKey || '';
     }
     if (modelSelect) {
-      // Check if current model is in the default list
-      const isDefaultModel = userSettings.model === null || DEFAULT_MODELS.some(m => m.value === userSettings.model);
+      // Check if current model is in the offered list
+      const isDefaultModel = userSettings.model === null || getModelMenuOptions().some(m => m.value === userSettings.model);
       if (isDefaultModel) {
         modelSelect.value = userSettings.model || 'default';
         if (customModelField) customModelField.style.display = 'none';
@@ -1887,9 +2192,10 @@
     const apiKey = apiKeyInput ? apiKeyInput.value.trim() : '';
     const modelSelection = modelSelect ? modelSelect.value : 'default';
 
-    // Validate API key format if provided
-    if (apiKey && !/^sk-or-v1-[0-9a-f]{64}$/i.test(apiKey)) {
-      showError(container, 'Invalid API key format. Expected: sk-or-v1-[64 hex chars]');
+    // Validate API key format if provided: either an Anthropic or an
+    // OpenRouter key.
+    if (apiKey && !isValidApiKey(apiKey)) {
+      showError(container, 'Invalid API key format. Expected an Anthropic key (sk-ant-...) or an OpenRouter key (sk-or-v1-[64 hex chars]).');
       return;
     }
 
@@ -1901,18 +2207,19 @@
         showError(container, 'Please enter a custom model name');
         return;
       }
-      // Validate custom model format: provider/model-name
-      if (!/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9._-]+$/.test(model)) {
-        showError(container, 'Invalid model format. Expected: provider/model-name');
+      if (!isValidModelId(model)) {
+        showError(container, 'Invalid model format. Expected a Claude model id or provider/model-name');
         return;
       }
     } else if (modelSelection !== 'default') {
       model = modelSelection;
     }
 
-    // Update settings
+    // Update settings. keyProvider is always re-derived from the key
+    // itself, never stored as an independent choice.
     userSettings.apiKey = apiKey || null;
     userSettings.model = model;
+    userSettings.keyProvider = inferKeyProvider(apiKey);
 
     // Save to localStorage
     try {
@@ -1972,6 +2279,12 @@
     }
   }
 
+  function isSameResponseMessage(original, current) {
+    return current === original
+      || (original?._responseId && current?._responseId === original._responseId)
+      || (original?.requestId && current?.requestId === original.requestId);
+  }
+
   // Post a per-response vote (with the optional down-vote comment) exactly once.
   // Confirm-then-commit: the "Thanks!" / committed state is only shown AFTER the
   // POST succeeds, so a failure never leaves a false success (in the UI or in
@@ -1995,12 +2308,20 @@
       session_id: sessionId || null,
       message_index: msgIndex,
     });
-    msg._feedbackCommitting = false;
+    // The streaming completion path may replace the assistant object while
+    // this request is in flight. Re-acquire the current object so the result
+    // is not applied only to the stale object captured before the await.
+    const currentMsg = messages[msgIndex];
+    const sameResponse = isSameResponseMessage(msg, currentMsg);
+    if (!currentMsg || currentMsg.role !== 'assistant' || !sameResponse) {
+      return;
+    }
+    currentMsg._feedbackCommitting = false;
 
     if (ok) {
-      msg.feedbackCommitted = true;
-      delete msg.feedbackDraft;
-      delete msg._feedbackJustOpened;
+      currentMsg.feedbackCommitted = true;
+      delete currentMsg.feedbackDraft;
+      delete currentMsg._feedbackJustOpened;
       // Reveal "Thanks!" (and replace any open box). Safe in every path: harmless
       // on a hidden window, and a no-op for a reply already removed by a reset.
       renderMessages(container);
@@ -2014,14 +2335,14 @@
 
     // Failed. An up-vote reverts to unvoted; a down-vote keeps its pending box
     // (and the typed comment) so it can be retried on the next Send or flush.
-    if (sentiment === 'up') delete msg.feedback;
+    if (sentiment === 'up') delete currentMsg.feedback;
     if (!interactive) {
       // Best-effort flush during teardown: do not touch the (possibly hidden or
       // already-reset) UI. A pending down stays pending and retries next flush.
       console.warn('[OSA] Feedback flush did not send; will retry on next attempt.');
       return;
     }
-    if (sentiment === 'down') msg._feedbackJustOpened = true; // refocus the box
+    if (sentiment === 'down') currentMsg._feedbackJustOpened = true; // refocus the box
     renderMessages(container);
     showError(container, 'Could not send feedback. Please try again.');
   }
@@ -2317,17 +2638,17 @@
           <div class="osa-settings-body">
             <div class="osa-settings-field">
               <label class="osa-settings-label" for="osa-settings-api-key">
-                OpenRouter API Key (Optional)
+                API Key (Optional)
               </label>
               <input
                 type="password"
                 id="osa-settings-api-key"
                 class="osa-settings-input"
-                placeholder="sk-or-v1-..."
+                placeholder="sk-ant-... or sk-or-v1-..."
                 autocomplete="off"
               />
               <span class="osa-settings-hint">
-                Use your own API key for testing. Stored locally in your browser.
+                Use your own Anthropic or OpenRouter API key for testing. Stored locally in your browser.
               </span>
             </div>
             <div class="osa-settings-field">
@@ -2336,7 +2657,7 @@
               </label>
               <select id="osa-settings-model" class="osa-settings-select">
                 <option value="default">Default (Community Setting)</option>
-                ${DEFAULT_MODELS.filter(m => m.value !== communityDefaultModel).map(m => `<option value="${escapeHtml(m.value)}">${escapeHtml(m.label)}</option>`).join('')}
+                ${getModelMenuOptions().filter(m => m.value !== communityDefaultModel).map(m => `<option value="${escapeHtml(m.value)}">${escapeHtml(m.label)}</option>`).join('')}
                 <option value="custom">Custom</option>
               </select>
               <span class="osa-settings-hint" id="osa-settings-model-hint">
@@ -2345,7 +2666,7 @@
             </div>
             <div class="osa-settings-field" id="osa-settings-custom-model-field" style="display: none;">
               <label class="osa-settings-label" for="osa-settings-custom-model">
-                Model name (<a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer" style="color: var(--osa-primary); text-decoration: underline;">from OpenRouter</a>)
+                Model name, requires your own <a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer" style="color: var(--osa-primary); text-decoration: underline;">OpenRouter</a> key
               </label>
               <input
                 type="text"
@@ -2421,11 +2742,43 @@
     messagesEl.innerHTML = '';
 
     messages.forEach((msg, msgIndex) => {
+      // The streaming handler keeps an empty assistant entry so the final
+      // response can update it in place. While the model is thinking, that
+      // state must stay invisible: the loading bubble below is the assistant
+      // response placeholder until the first answer text arrives.
+      if (isLoading && msg.role === 'assistant' && !msg.content && msgIndex === messages.length - 1) {
+        return;
+      }
+
       const msgEl = document.createElement('div');
       msgEl.className = `osa-message ${msg.role}`;
 
       const label = msg.role === 'user' ? 'You' : CONFIG.title;
-      const content = msg.role === 'assistant' ? markdownToHtml(msg.content) : escapeHtml(msg.content);
+
+      // Build a marker -> citation lookup for this message (empty for a
+      // message with no citations, e.g. every OpenRouter-answered reply).
+      const citationsByMarker = {};
+      const citations = Array.isArray(msg.citations) ? msg.citations : [];
+      citations.forEach((c) => {
+        if (c && typeof c.marker !== 'undefined') citationsByMarker[c.marker] = c;
+      });
+
+      const content = msg.role === 'assistant'
+        ? markdownToHtml(msg.content, citationsByMarker)
+        : escapeHtml(msg.content);
+
+      // Compact numbered source list under the answer, when anything was cited.
+      let sourcesRow = '';
+      if (msg.role === 'assistant' && citations.length) {
+        const items = citations.map((c) => {
+          const sourceLabel = escapeHtml(String(c.title || c.source || ''));
+          const inner = isSafeUrl(c.source)
+            ? '<a href="' + escapeHtml(c.source) + '" target="_blank" rel="noopener noreferrer">' + sourceLabel + '</a>'
+            : '<span>' + sourceLabel + '</span>';
+          return '<li><span class="osa-source-marker">[' + escapeHtml(String(c.marker)) + ']</span> ' + inner + '</li>';
+        }).join('');
+        sourcesRow = '<ul class="osa-message-sources">' + items + '</ul>';
+      }
 
       // Add copy button for assistant messages
       const copyBtn = msg.role === 'assistant'
@@ -2468,6 +2821,7 @@
           ${copyBtn}
         </div>
         <div class="osa-message-content">${content}</div>
+        ${sourcesRow}
         ${feedbackRow}
       `;
       messagesEl.appendChild(msgEl);
@@ -2541,8 +2895,9 @@
     if (isLoading) {
       const loadingEl = document.createElement('div');
       loadingEl.className = 'osa-loading';
+      const loadingLabelText = isThinking ? 'Thinking...' : CONFIG.title;
       loadingEl.innerHTML = `
-        <span class="osa-loading-label">${escapeHtml(CONFIG.title)}</span>
+        <span class="osa-loading-label">${escapeHtml(loadingLabelText)}</span>
         <div class="osa-loading-dots">
           <span class="osa-loading-dot"></span>
           <span class="osa-loading-dot"></span>
@@ -2606,12 +2961,42 @@
     }
   }
 
+  // Apply the authoritative completion payload to the active assistant
+  // message. Kept separate from the stream loop so the state transition can
+  // be tested without depending on a live model or browser network.
+  function applyDoneEvent(messageList, messageIndex, event, streamedContent) {
+    const message = messageList[messageIndex];
+    if (!message) return '';
+
+    if (event.request_id && typeof event.request_id === 'string') {
+      message.requestId = event.request_id;
+    }
+    if (Array.isArray(event.citations)) {
+      message.citations = event.citations;
+    }
+
+    const finalContent = typeof event.content === 'string'
+      ? event.content
+      : streamedContent;
+    if (finalContent) {
+      messageList[messageIndex] = {
+        ...message,
+        content: finalContent,
+      };
+    } else {
+      messageList.splice(messageIndex, 1);
+    }
+    return finalContent;
+  }
+
   // Handle streaming response from API
   // SSE Event formats:
   //   data: {"event": "content", "content": "text chunk"}
+  //   data: {"event": "thinking"}
   //   data: {"event": "tool_start", "name": "tool_name", "input": {...}}
   //   data: {"event": "tool_end", "name": "tool_name", "output": "result"}
-  //   data: {"event": "done"}
+  //   data: {"event": "citation", "marker": 1, "source": "...", "title": "...", "cited_text": "..."}
+  //   data: {"event": "done", "content": "final answer", "citations": [...]}
   //   data: {"event": "error", "message": "error description"}
   async function handleStreamingResponse(response, container) {
     const reader = response.body.getReader();
@@ -2626,7 +3011,7 @@
     let receivedFirstContent = false;
 
     // Create placeholder assistant message (not rendered yet - loading dots stay visible)
-    messages.push({ role: 'assistant', content: '' });
+    messages.push({ role: 'assistant', content: '', citations: [], _responseId: createResponseId() });
     const messageIndex = messages.length - 1;
 
     try {
@@ -2662,6 +3047,7 @@
             if (!receivedFirstContent) {
               receivedFirstContent = true;
               isLoading = false;
+              isThinking = false;
             }
 
             // Accumulate content
@@ -2674,12 +3060,35 @@
               renderMessages(container);
               lastUpdateTime = now;
             }
+          } else if (event.event === 'thinking') {
+            // Carries no reasoning text; only swaps the loading label to
+            // "Thinking...". Scoped to before the first content chunk so a
+            // thinking event arriving between tool calls mid-answer does not
+            // make the label flicker under already-rendered content.
+            if (!receivedFirstContent && !isThinking) {
+              isThinking = true;
+              renderMessages(container);
+            }
           } else if (event.event === 'tool_start') {
             // Log tool execution for debugging
             console.log('[OSA] Tool started:', event.name, event.input);
           } else if (event.event === 'tool_end') {
             // Log tool completion
             console.log('[OSA] Tool completed:', event.name);
+          } else if (event.event === 'citation') {
+            // A source was cited for the first time. The backend announces
+            // metadata before sending the marker as its own content chunk, so
+            // the next render can link it immediately. The final 'done' event
+            // replaces that raw stream with canonical sentence placement.
+            if (typeof event.marker !== 'undefined' && event.source) {
+              messages[messageIndex].citations = messages[messageIndex].citations || [];
+              messages[messageIndex].citations.push({
+                marker: event.marker,
+                source: event.source,
+                title: event.title || '',
+                cited_text: event.cited_text || '',
+              });
+            }
           } else if (event.event === 'session') {
             // Capture session ID early (sent at stream start). request_id is
             // intentionally NOT sent here; it arrives on the 'done' event so it
@@ -2698,10 +3107,15 @@
             if (event.session_id && typeof event.session_id === 'string') {
               sessionId = event.session_id;
             }
-            if (event.request_id && typeof event.request_id === 'string') {
-              messages[messageIndex].requestId = event.request_id;
-            }
-            messages[messageIndex].content = accumulatedContent;
+            // The backend's done.content is canonical and replaces any raw
+            // citation boundaries accumulated while streaming.
+            const finalContent = applyDoneEvent(
+              messages,
+              messageIndex,
+              event,
+              accumulatedContent,
+            );
+            accumulatedContent = finalContent;
             renderMessages(container);
             try {
               saveHistory();
@@ -2811,6 +3225,7 @@
     flushPendingResponseFeedback(container);
 
     isLoading = true;
+    isThinking = false;
 
     // Track message indices to avoid corruption on error
     const userMessageIndex = messages.length;
@@ -2865,9 +3280,19 @@
         'Content-Type': 'application/json',
       };
 
-      // Add BYOK API key if set
+      // Add BYOK API key if set, on the header matching its provider
+      // (inferred from the key's own prefix; see inferKeyProvider). The
+      // provider is checked explicitly rather than treating "not anthropic"
+      // as "openrouter", so an unrecognized provider never silently sends
+      // the wrong header.
       if (userSettings.apiKey) {
-        headers['X-OpenRouter-Key'] = userSettings.apiKey;
+        if (userSettings.keyProvider === 'anthropic') {
+          headers['X-Anthropic-API-Key'] = userSettings.apiKey;
+        } else if (userSettings.keyProvider === 'openrouter') {
+          headers['X-OpenRouter-Key'] = userSettings.apiKey;
+        } else {
+          console.error('[OSA] BYOK key has unknown provider; not sent with the request:', userSettings.keyProvider);
+        }
       }
 
       const response = await fetch(`${CONFIG.apiEndpoint}/${CONFIG.communityId}/chat`, {
@@ -2930,6 +3355,9 @@
         if (data && typeof data.request_id === 'string') {
           assistantMsg.requestId = data.request_id;
         }
+        if (data && Array.isArray(data.citations)) {
+          assistantMsg.citations = data.citations;
+        }
         messages.push(assistantMsg);
         try {
           saveHistory();
@@ -2989,6 +3417,7 @@
       updateStatusDisplay(false);
     } finally {
       isLoading = false;
+      isThinking = false;
       input.disabled = false;
       sendBtn.disabled = false;
       resetBtn.disabled = messages.length <= 1;
@@ -3067,6 +3496,8 @@
       container.querySelector('.osa-chat-input input').focus();
       // Hide tooltip when chat opens
       if (tooltip) tooltip.classList.remove('visible');
+      // Surface any notice queued by an init-time failure (see loadUserSettings/loadHistory).
+      flushPendingNotice(container);
     } else {
       // Commit any open thumbs-down comment box on close.
       flushPendingResponseFeedback(container);
@@ -3236,9 +3667,18 @@
 
     loadPageContextPreference();
     loadUserSettings();
-    loadHistory();
+    const historyNeedsSave = loadHistory();
     injectStyles();
     const container = createWidget();
+
+    if (historyNeedsSave) {
+      try {
+        saveHistory();
+      } catch (saveError) {
+        console.error('[OSA] Failed to persist migrated chat history:', saveError);
+        queuePendingNotice('Saved chat history was repaired but could not be persisted.');
+      }
+    }
 
     // Fetch community default model (async, non-blocking)
     fetchCommunityConfig();
@@ -3368,6 +3808,8 @@
       isOpen = true;
       const chatWindow = container.querySelector('.osa-chat-window');
       chatWindow?.classList.add('open');
+      // Surface any notice queued by an init-time failure (see loadUserSettings/loadHistory).
+      flushPendingNotice(container);
       setTimeout(() => {
         input?.focus();
       }, 100);
@@ -3409,6 +3851,13 @@
       }
     }
   };
+
+  // Keep the state reducer testable without exposing it in normal embeds.
+  if (window.__OSA_TEST__) {
+    window.OSAChatWidget.__applyDoneEvent = applyDoneEvent;
+    window.OSAChatWidget.__migrateLegacyCitationMarkers = migrateLegacyCitationMarkers;
+    window.OSAChatWidget.__isSameResponseMessage = isSameResponseMessage;
+  }
 
   // Auto-init unless the script tag has data-no-auto-init attribute
   let initialized = false;

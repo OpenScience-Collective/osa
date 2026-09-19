@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from langchain_core.messages import AIMessage, BaseMessage
 
@@ -363,21 +363,80 @@ def write_feedback(entry: FeedbackEntry, db_path: Path | None = None) -> None:
             conn.close()
 
 
-def extract_token_usage(result: dict) -> tuple[int, int, int]:
+class TokenUsage(NamedTuple):
+    """Token usage summed across an agent result's AIMessages.
+
+    ``input_tokens`` already includes ``cache_read_tokens`` and
+    ``cache_creation_tokens`` (Anthropic's own ``input_tokens`` excludes
+    cached tokens, but langchain-anthropic adds them back in so the
+    LangChain-level ``input_tokens`` is the true total -- see
+    ``_create_usage_metadata`` in langchain_anthropic.chat_models). The two
+    cache fields are broken out so callers can price them at their own
+    rates (see ``src.metrics.cost.estimate_cost``) instead of the flat
+    input rate.
+    """
+
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+
+
+def resolve_cache_creation_tokens(details: dict) -> int:
+    """Resolve the cache-write token count from an ``input_token_details`` dict.
+
+    ``langchain_anthropic.chat_models._create_usage_metadata`` reports
+    cache-write tokens two different ways depending on whether Anthropic
+    returned a per-TTL breakdown:
+
+    - When the API response includes a ``cache_creation`` breakdown (the
+      normal shape whenever a ``cache_control`` marker is sent -- which
+      ``CachingChatAnthropic`` always does), the real count is summed into
+      the TTL-specific keys ``ephemeral_5m_input_tokens`` /
+      ``ephemeral_1h_input_tokens``, and the generic ``cache_creation`` key
+      is deliberately zeroed there to avoid double-counting.
+    - Only when no per-TTL breakdown is present does the generic
+      ``cache_creation`` key hold the real count.
+
+    So the generic key cannot be trusted on its own: reading it first (or
+    only) silently reports 0 whenever caching is actually active, which is
+    the normal case for this platform, undercharging cache writes by pricing
+    them as ordinary input tokens instead of at the 1.25x write rate (see
+    ``src.metrics.cost.CACHE_WRITE_MULTIPLIER``). This mirrors langchain's
+    own precedence: TTL-specific sum first, generic key as a fallback for
+    providers/transports that never populate the TTL-specific keys.
+
+    Args:
+        details: An ``input_token_details`` dict (or a plain subset of one).
+
+    Returns:
+        The resolved cache-creation (cache-write) token count.
+    """
+    ttl_specific = (details.get("ephemeral_5m_input_tokens") or 0) + (
+        details.get("ephemeral_1h_input_tokens") or 0
+    )
+    return ttl_specific or (details.get("cache_creation") or 0)
+
+
+def extract_token_usage(result: dict) -> TokenUsage:
     """Extract token usage from agent result messages.
 
-    Sums usage_metadata from all AIMessages in result["messages"].
+    Sums usage_metadata from all AIMessages in result["messages"], including
+    the prompt-cache breakdown reported under ``input_token_details`` (only
+    present for providers that support prompt caching, e.g. Anthropic).
 
     Args:
         result: Agent result dict containing "messages" list.
 
     Returns:
-        Tuple of (input_tokens, output_tokens, total_tokens).
-        Returns (0, 0, 0) if no usage data is available.
+        A TokenUsage with all fields zeroed if no usage data is available.
     """
     input_tokens = 0
     output_tokens = 0
     total_tokens = 0
+    cache_read_tokens = 0
+    cache_creation_tokens = 0
 
     messages: list[BaseMessage] = result.get("messages", [])
     for msg in messages:
@@ -391,8 +450,14 @@ def extract_token_usage(result: dict) -> tuple[int, int, int]:
             input_tokens += usage.get("input_tokens", 0)
             output_tokens += usage.get("output_tokens", 0)
             total_tokens += usage.get("total_tokens", 0)
+            details = usage.get("input_token_details") or {}
+            if isinstance(details, dict):
+                cache_read_tokens += details.get("cache_read") or 0
+                cache_creation_tokens += resolve_cache_creation_tokens(details)
 
-    return input_tokens, output_tokens, total_tokens
+    return TokenUsage(
+        input_tokens, output_tokens, total_tokens, cache_read_tokens, cache_creation_tokens
+    )
 
 
 def extract_tool_names(result: dict) -> list[str]:

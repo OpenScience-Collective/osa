@@ -8,6 +8,7 @@ to fetch page content for context (e.g., when widget is embedded on a page).
 import ipaddress
 import logging
 import socket
+from dataclasses import dataclass
 from urllib.parse import urlparse
 
 import httpx
@@ -17,6 +18,26 @@ logger = logging.getLogger(__name__)
 
 # Maximum characters to return from fetched page content
 MAX_PAGE_CONTENT_LENGTH = 30000
+
+
+@dataclass(frozen=True)
+class PageFetchResult:
+    """The outcome of a page fetch, with success stated rather than implied.
+
+    ``content`` is what the model sees either way: page markdown when the
+    fetch succeeded, an error message when it did not. The flag exists for
+    callers that wrap the content in something else, such as a citable
+    ``search_result`` block, and so must not wrap an error message.
+    Sniffing the string for an error prefix is not good enough: the eight
+    failure branches below do not share one, and a ninth phrased differently
+    would silently start passing whatever check the caller had guessed at.
+    """
+
+    success: bool
+    """Whether ``content`` is page content rather than an error message."""
+
+    content: str
+    """Page markdown on success, an error message otherwise."""
 
 
 def is_safe_url(url: str) -> tuple[bool, str, str | None]:
@@ -82,7 +103,7 @@ def is_safe_url(url: str) -> tuple[bool, str, str | None]:
     return True, "", resolved_ip
 
 
-def fetch_page_content(url: str) -> str:
+def fetch_page(url: str) -> PageFetchResult:
     """Fetch page content with SSRF protection.
 
     Fetches HTML content from a URL, converts to markdown, and returns
@@ -92,15 +113,18 @@ def fetch_page_content(url: str) -> str:
         url: The URL to fetch content from.
 
     Returns:
-        The page content in markdown format, or an error message.
+        A PageFetchResult carrying the page content in markdown format, or
+        an error message with ``success`` false.
     """
     if not url or not url.startswith(("http://", "https://")):
         logger.warning("Page fetch blocked: invalid URL format: %s", url)
-        return f"Error: Invalid URL '{url}'. URL must start with http:// or https://"
+        return PageFetchResult(
+            False, f"Error: Invalid URL '{url}'. URL must start with http:// or https://"
+        )
 
     is_safe_result, error_msg, resolved_ip = is_safe_url(url)
     if not is_safe_result:
-        return f"Error: {error_msg}"
+        return PageFetchResult(False, f"Error: {error_msg}")
 
     logger.info("Fetching page content from %s (resolved to %s)", url, resolved_ip)
 
@@ -129,7 +153,9 @@ def fetch_page_content(url: str) -> str:
                         redirect_url,
                         redirect_error,
                     )
-                    return f"Error: Redirect to unsafe URL blocked: {redirect_error}"
+                    return PageFetchResult(
+                        False, f"Error: Redirect to unsafe URL blocked: {redirect_error}"
+                    )
 
                 logger.info("Following redirect to %s", redirect_url)
                 response = client.get(redirect_url)
@@ -137,14 +163,16 @@ def fetch_page_content(url: str) -> str:
 
             if response.is_redirect:
                 logger.warning("Too many redirects (>%d) from %s", max_redirects, url)
-                return f"Error: Too many redirects (exceeded {max_redirects})"
+                return PageFetchResult(
+                    False, f"Error: Too many redirects (exceeded {max_redirects})"
+                )
 
             response.raise_for_status()
 
         content_type = response.headers.get("content-type", "")
         if "text/html" not in content_type.lower():
             logger.warning("Non-HTML content type from %s: %s", url, content_type)
-            return f"Error: URL returned non-HTML content: {content_type}"
+            return PageFetchResult(False, f"Error: URL returned non-HTML content: {content_type}")
 
         content = markdownify(response.text, heading_style="ATX", strip=["script", "style"])
         lines = [line.strip() for line in content.split("\n")]
@@ -159,14 +187,30 @@ def fetch_page_content(url: str) -> str:
             )
             content = content[:MAX_PAGE_CONTENT_LENGTH] + "\n\n... [content truncated]"
 
-        return f"# Content from {url}\n\n{content}"
+        return PageFetchResult(True, f"# Content from {url}\n\n{content}")
 
     except httpx.HTTPStatusError as e:
         logger.warning("HTTP error fetching %s: %d", url, e.response.status_code)
-        return f"Error fetching {url}: HTTP {e.response.status_code}"
+        return PageFetchResult(False, f"Error fetching {url}: HTTP {e.response.status_code}")
     except httpx.TimeoutException:
         logger.warning("Timeout fetching %s", url)
-        return f"Error: Request timed out fetching {url}"
+        return PageFetchResult(False, f"Error: Request timed out fetching {url}")
     except httpx.RequestError as e:
         logger.warning("Request error fetching %s: %s", url, e)
-        return f"Error fetching {url}: {e}"
+        return PageFetchResult(False, f"Error fetching {url}: {e}")
+
+
+def fetch_page_content(url: str) -> str:
+    """Fetch page content with SSRF protection, as a plain string.
+
+    The string form for callers that only ever hand the result to a model,
+    where an error message reads as well as page content. A caller that
+    treats the two differently wants ``fetch_page`` instead.
+
+    Args:
+        url: The URL to fetch content from.
+
+    Returns:
+        The page content in markdown format, or an error message.
+    """
+    return fetch_page(url).content

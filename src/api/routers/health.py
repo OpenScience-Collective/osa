@@ -22,8 +22,12 @@ def compute_community_health(config: CommunityConfig) -> dict[str, Any]:
     """
     warnings: list[str] = []
 
-    # API key status
-    api_key_env_var = config.openrouter_api_key_env_var
+    # API key status. Mirrors _resolve_provider's precedence exactly
+    # (src/api/routers/community.py): the Anthropic env var is checked
+    # before the OpenRouter one, then the platform key. A community that
+    # sets both is fully described by whichever one _resolve_provider would
+    # actually use, which is the Anthropic one.
+    api_key_env_var = config.anthropic_api_key_env_var or config.openrouter_api_key_env_var
     if api_key_env_var:
         if os.getenv(api_key_env_var):
             api_key_status = "configured"

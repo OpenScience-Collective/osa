@@ -19,7 +19,12 @@ from rich.table import Table
 
 from src.cli import output
 from src.cli.client import APIError
-from src.cli.config import get_data_dir, get_effective_config, get_user_id
+from src.cli.config import (
+    get_data_dir,
+    get_effective_byok_keys,
+    get_effective_config,
+    get_user_id,
+)
 
 mirror_app = typer.Typer(
     help="Manage ephemeral database mirrors for development",
@@ -34,8 +39,9 @@ def _get_client(
     """Create an OSAClient with effective config. Returns (client, config)."""
     from src.cli.client import OSAClient
 
-    config, effective_key = get_effective_config(api_key=api_key, api_url=api_url)
-    if not effective_key:
+    config, _ = get_effective_config(api_url=api_url)
+    openrouter_key, anthropic_key = get_effective_byok_keys(api_key)
+    if not (openrouter_key or anthropic_key):
         output.print_error(
             "No API key configured.",
             hint="Run 'osa init' to set up your API key, or pass --api-key",
@@ -44,7 +50,8 @@ def _get_client(
 
     client = OSAClient(
         api_url=config.api.url,
-        openrouter_api_key=effective_key,
+        openrouter_api_key=openrouter_key,
+        anthropic_api_key=anthropic_key,
         user_id=get_user_id(),
     )
     return client, config
@@ -85,7 +92,7 @@ def create(
     ] = 48,
     api_key: Annotated[
         str | None,
-        typer.Option("--api-key", "-k", help="OpenRouter API key"),
+        typer.Option("--api-key", "-k", help="Anthropic or OpenRouter API key"),
     ] = None,
     api_url: Annotated[
         str | None,
@@ -122,7 +129,7 @@ def create(
 def list_cmd(
     api_key: Annotated[
         str | None,
-        typer.Option("--api-key", "-k", help="OpenRouter API key"),
+        typer.Option("--api-key", "-k", help="Anthropic or OpenRouter API key"),
     ] = None,
     api_url: Annotated[
         str | None,
@@ -163,7 +170,7 @@ def info(
     mirror_id: Annotated[str, typer.Argument(help="Mirror ID")],
     api_key: Annotated[
         str | None,
-        typer.Option("--api-key", "-k", help="OpenRouter API key"),
+        typer.Option("--api-key", "-k", help="Anthropic or OpenRouter API key"),
     ] = None,
     api_url: Annotated[
         str | None,
@@ -199,7 +206,7 @@ def delete(
     ] = False,
     api_key: Annotated[
         str | None,
-        typer.Option("--api-key", "-k", help="OpenRouter API key"),
+        typer.Option("--api-key", "-k", help="Anthropic or OpenRouter API key"),
     ] = None,
     api_url: Annotated[
         str | None,
@@ -229,7 +236,7 @@ def refresh(
     ] = None,
     api_key: Annotated[
         str | None,
-        typer.Option("--api-key", "-k", help="OpenRouter API key"),
+        typer.Option("--api-key", "-k", help="Anthropic or OpenRouter API key"),
     ] = None,
     api_url: Annotated[
         str | None,
@@ -262,7 +269,7 @@ def sync(
     ] = "all",
     api_key: Annotated[
         str | None,
-        typer.Option("--api-key", "-k", help="OpenRouter API key"),
+        typer.Option("--api-key", "-k", help="Anthropic or OpenRouter API key"),
     ] = None,
     api_url: Annotated[
         str | None,
@@ -303,7 +310,7 @@ def pull(
     ] = None,
     api_key: Annotated[
         str | None,
-        typer.Option("--api-key", "-k", help="OpenRouter API key"),
+        typer.Option("--api-key", "-k", help="Anthropic or OpenRouter API key"),
     ] = None,
     api_url: Annotated[
         str | None,

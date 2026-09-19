@@ -279,45 +279,130 @@ class TestComputeCommunityHealth:
         assert isinstance(result["documents"], int)
         assert isinstance(result["warnings"], list)
 
-    def test_missing_api_key_env_var_produces_warning(self) -> None:
-        """Should warn when env var is configured but not set."""
-        # Find a community that has openrouter_api_key_env_var configured
-        for assistant in registry.list_all():
-            config = assistant.community_config
-            if config and config.openrouter_api_key_env_var:
-                env_var = config.openrouter_api_key_env_var
-                original = os.environ.pop(env_var, None)
-                try:
-                    result = compute_community_health(config)
-                    assert result["api_key"] == "missing"
-                    assert result["status"] == "error"
-                    assert any(env_var in w for w in result["warnings"])
-                    assert any("not sustainable" in w for w in result["warnings"])
-                finally:
-                    if original is not None:
-                        os.environ[env_var] = original
-                return
+    def test_missing_openrouter_api_key_env_var_produces_warning(self, monkeypatch) -> None:
+        """Should warn when the OpenRouter env var is configured but not set.
 
-        pytest.skip("No community with openrouter_api_key_env_var configured")
+        No shipped community sets openrouter_api_key_env_var any more
+        (issue #363: the four that used to are now platform-funded by
+        default), but the field is still supported, so this monkeypatches
+        it onto a real, registered CommunityConfig rather than searching
+        the registry for a shipped one that no longer exists. Also clears
+        anthropic_api_key_env_var, which compute_community_health now
+        checks first, so the OpenRouter branch under test is actually
+        reached.
+        """
+        info = registry.get("hed")
+        assert info is not None and info.community_config is not None
+        config = info.community_config
+        env_var = "OPENROUTER_API_KEY_TEST_HED_HEALTH"
+        monkeypatch.setattr(config, "anthropic_api_key_env_var", None)
+        monkeypatch.setattr(config, "openrouter_api_key_env_var", env_var)
+        monkeypatch.delenv(env_var, raising=False)
 
-    def test_set_api_key_env_var_is_healthy(self) -> None:
-        """Should be healthy when env var is set and docs exist."""
-        for assistant in registry.list_all():
-            config = assistant.community_config
-            if config and config.openrouter_api_key_env_var and config.documentation:
-                env_var = config.openrouter_api_key_env_var
-                original = os.environ.get(env_var)
-                try:
-                    os.environ[env_var] = "sk-or-v1-test"
-                    result = compute_community_health(config)
-                    assert result["api_key"] == "configured"
-                    assert result["status"] == "healthy"
-                    assert not any(env_var in w for w in result["warnings"])
-                finally:
-                    if original is not None:
-                        os.environ[env_var] = original
-                    elif env_var in os.environ:
-                        del os.environ[env_var]
-                return
+        result = compute_community_health(config)
+        assert result["api_key"] == "missing"
+        assert result["status"] == "error"
+        assert any(env_var in w for w in result["warnings"])
+        assert any("not sustainable" in w for w in result["warnings"])
 
-        pytest.skip("No community with openrouter_api_key_env_var configured")
+    def test_set_openrouter_api_key_env_var_is_healthy(self, monkeypatch) -> None:
+        """Should be healthy when the OpenRouter env var is set and docs exist."""
+        info = registry.get("hed")
+        assert info is not None and info.community_config is not None
+        config = info.community_config
+        assert config.documentation, "hed is expected to have documentation configured"
+        env_var = "OPENROUTER_API_KEY_TEST_HED_HEALTH"
+        monkeypatch.setattr(config, "anthropic_api_key_env_var", None)
+        monkeypatch.setattr(config, "openrouter_api_key_env_var", env_var)
+        monkeypatch.setenv(env_var, "sk-or-v1-test")
+
+        result = compute_community_health(config)
+        assert result["api_key"] == "configured"
+        assert result["status"] == "healthy"
+        assert not any(env_var in w for w in result["warnings"])
+
+    def test_both_env_vars_configured_anthropic_wins(self, monkeypatch) -> None:
+        """Anthropic wins when both key env vars are configured on the same config.
+
+        Mirrors the same precedence gap fixed in test_authorization.py's
+        test_authorized_origin_uses_community_anthropic_key: setting only
+        the Anthropic field would not prove precedence, because hed's
+        openrouter_api_key_env_var defaults to None, and `A or B` picks A
+        regardless of check order whenever B is falsy.
+
+        The Anthropic env var is left unset (missing) while the OpenRouter
+        one is set to a real value. compute_community_health mirrors
+        _resolve_provider and commits to whichever env var name it selects
+        first, regardless of whether that var is actually set -- it never
+        falls through to the other one. So correct (Anthropic-first)
+        precedence reports "missing" here (Anthropic's name was selected,
+        and it is unset), even though a populated OpenRouter var was
+        available. An implementation that checked OpenRouter first would
+        select the OpenRouter name instead, find it set, and incorrectly
+        report "configured"/"healthy" -- which is exactly what this test
+        would catch.
+
+        Both underlying values are deliberately not "populated" in the
+        sense of both holding a truthy key: if they were, the two
+        precedence orders would produce identical output (either name
+        picked, either found configured), and the test would not be able
+        to tell them apart.
+        """
+        info = registry.get("hed")
+        assert info is not None and info.community_config is not None
+        config = info.community_config
+        anthropic_env_var = "ANTHROPIC_API_KEY_TEST_HED_HEALTH_BOTH"
+        openrouter_env_var = "OPENROUTER_API_KEY_TEST_HED_HEALTH_BOTH"
+        monkeypatch.setattr(config, "anthropic_api_key_env_var", anthropic_env_var)
+        monkeypatch.setattr(config, "openrouter_api_key_env_var", openrouter_env_var)
+        monkeypatch.delenv(anthropic_env_var, raising=False)
+        monkeypatch.setenv(openrouter_env_var, "sk-or-v1-test")
+
+        result = compute_community_health(config)
+        assert result["api_key"] == "missing"
+        assert result["status"] == "error"
+        assert any(anthropic_env_var in w for w in result["warnings"])
+        assert not any(openrouter_env_var in w for w in result["warnings"])
+
+    def test_missing_anthropic_api_key_env_var_produces_warning(self, monkeypatch) -> None:
+        """A configured but unset anthropic_api_key_env_var reports missing/error.
+
+        Regression coverage for the bug where compute_community_health
+        consulted only openrouter_api_key_env_var: _resolve_provider checks
+        the Anthropic env var first, so a community funded by Anthropic was
+        reporting api_key="using_platform"/status="degraded" and a
+        misleading "no community-specific key configured" warning even
+        though a key env var was genuinely configured (just unset).
+        """
+        info = registry.get("hed")
+        assert info is not None and info.community_config is not None
+        config = info.community_config
+        env_var = "ANTHROPIC_API_KEY_TEST_HED_HEALTH"
+        monkeypatch.setattr(config, "anthropic_api_key_env_var", env_var)
+        monkeypatch.delenv(env_var, raising=False)
+
+        result = compute_community_health(config)
+        assert result["api_key"] == "missing"
+        assert result["status"] == "error"
+        assert any(env_var in w for w in result["warnings"])
+        assert any("not sustainable" in w for w in result["warnings"])
+
+    def test_set_anthropic_api_key_env_var_is_healthy(self, monkeypatch) -> None:
+        """A configured and set anthropic_api_key_env_var reports configured/healthy.
+
+        Regression coverage for the same bug: before the fix this reported
+        api_key="using_platform" regardless of whether the Anthropic key
+        was actually configured and set.
+        """
+        info = registry.get("hed")
+        assert info is not None and info.community_config is not None
+        config = info.community_config
+        assert config.documentation, "hed is expected to have documentation configured"
+        env_var = "ANTHROPIC_API_KEY_TEST_HED_HEALTH"
+        monkeypatch.setattr(config, "anthropic_api_key_env_var", env_var)
+        monkeypatch.setenv(env_var, "sk-ant-test")
+
+        result = compute_community_health(config)
+        assert result["api_key"] == "configured"
+        assert result["status"] == "healthy"
+        assert not any(env_var in w for w in result["warnings"])

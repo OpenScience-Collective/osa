@@ -7,7 +7,8 @@ A precise, reliable AI assistant platform for researchers working with open scie
 **All development follows: Issue -> Feature Branch (from develop) -> PR to develop -> Review -> Merge**
 
 **Branch Strategy:**
-- `main` - Production releases only, auto-deploys to prod
+- `main` - Production releases only. Merging does NOT deploy; publishing a
+  stable release does (issue #379).
   - Always has stable versions (no `.dev` suffix)
   - CI automatically strips `.dev` suffix if merged accidentally
   - Releases tagged with `--latest` flag

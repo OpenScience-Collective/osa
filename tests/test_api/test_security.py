@@ -5,18 +5,46 @@ to verify authentication behavior.
 """
 
 import os
+import typing
+from collections.abc import Callable
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from src.api.config import Settings
-from src.api.security import (
-    BYOKHeaders,
-    GetBYOK,
-    RequireAuth,
-    get_llm_api_key,
-)
+from src.api import security
+from src.api.security import RequireAuth, api_key_header
+
+
+def _resolvable_byok_headers() -> set[str]:
+    """Header names that ``resolve_byok`` turns into a usable credential.
+
+    Derived from ``ByokCredential.provider``, the type that says what a
+    resolved BYOK credential can be, mapped back to header names through the
+    ``{provider}_key_header`` convention in src/api/security.py. Deriving it
+    means a provider added to ``resolve_byok`` cannot be left out of the
+    server-auth bypass, and a bypass header with no provider behind it cannot
+    be left in.
+    """
+    providers = typing.get_args(typing.get_type_hints(security.ByokCredential)["provider"])
+    return {getattr(security, f"{provider}_key_header").model.name for provider in providers}
+
+
+def _headers_read_by(dependency: Callable) -> set[str]:
+    """Names of every APIKeyHeader a FastAPI dependency declares in its signature.
+
+    Reads the ``Security(...)`` markers out of the annotations, which is where
+    a header parameter is actually wired up, so a parameter that is declared
+    but never used still counts. That is the shape of issue #393: the bypass
+    read a header nothing downstream could resolve.
+    """
+    names = set()
+    for annotation in typing.get_type_hints(dependency, include_extras=True).values():
+        for marker in getattr(annotation, "__metadata__", ()):
+            model = getattr(getattr(marker, "dependency", None), "model", None)
+            if getattr(model, "name", None):
+                names.add(model.name)
+    return names
 
 
 @pytest.fixture
@@ -36,14 +64,6 @@ def app_with_auth() -> FastAPI:
     @app.get("/protected")
     async def protected_route(auth: RequireAuth) -> dict:
         return {"message": "authenticated", "has_key": auth is not None}
-
-    @app.get("/byok")
-    async def byok_route(byok: GetBYOK) -> dict:
-        return {
-            "openai": byok.openai_key is not None,
-            "anthropic": byok.anthropic_key is not None,
-            "openrouter": byok.openrouter_key is not None,
-        }
 
     yield app
 
@@ -111,16 +131,23 @@ class TestAPIKeyAuthentication:
         assert data["message"] == "authenticated"
         assert data["has_key"] is False
 
-    def test_byok_bypasses_server_auth_openai(self, client_with_auth: TestClient) -> None:
-        """OpenAI BYOK header should bypass server API key requirement."""
+    def test_unresolvable_byok_header_does_not_bypass_server_auth(
+        self, client_with_auth: TestClient
+    ) -> None:
+        """A key header for a provider the server cannot use must not open the door.
+
+        X-OpenAI-API-Key used to bypass server auth, from back when there was
+        an OpenAI code path. There is not one now, and resolve_byok ignores the
+        header, so the request would have run on the community's key or the
+        platform's: free answers on our bill for anyone who sent the header
+        with any value at all (issue #393).
+        """
         response = client_with_auth.get(
             "/protected",
-            headers={"X-OpenAI-API-Key": "sk-openai-user-key"},
+            headers={"X-OpenAI-API-Key": "literally-anything"},
         )
-        assert response.status_code == 200
-        data = response.json()
-        assert data["message"] == "authenticated"
-        assert data["has_key"] is False
+        assert response.status_code == 401
+        assert "API key required" in response.json()["detail"]
 
     def test_byok_bypasses_server_auth_anthropic(self, client_with_auth: TestClient) -> None:
         """Anthropic BYOK header should bypass server API key requirement."""
@@ -156,105 +183,28 @@ class TestAPIKeyAuthentication:
         assert data["has_key"] is False
 
 
-class TestBYOKHeaders:
-    """Tests for BYOK (Bring Your Own Key) header extraction."""
+class TestByokBypassCoversExactlyTheResolvableProviders:
+    """The bypass and resolve_byok have to agree on which headers count.
 
-    def test_byok_extracts_openai_key(self, client_with_auth: TestClient) -> None:
-        """BYOK should extract OpenAI API key from header."""
-        response = client_with_auth.get(
-            "/byok",
-            headers={
-                "X-API-Key": "test-secret-key",
-                "X-OpenAI-API-Key": "sk-test",
-            },
-        )
+    The bypass is only safe because the header it accepts is the credential the
+    request then runs on: send junk and the call fails against your own
+    provider, so there is nothing to gain. A header that bypasses but is not
+    resolved breaks that argument, and a provider that resolves but does not
+    bypass would make BYOK callers hit an unnecessary 401.
+    """
+
+    def test_verify_api_key_reads_exactly_the_resolvable_byok_headers(self) -> None:
+        byok_headers = _headers_read_by(security.verify_api_key) - {api_key_header.model.name}
+        assert byok_headers == _resolvable_byok_headers()
+
+    @pytest.mark.parametrize("header_name", sorted(_resolvable_byok_headers()))
+    def test_each_resolvable_header_bypasses(
+        self, client_with_auth: TestClient, header_name: str
+    ) -> None:
+        response = client_with_auth.get("/protected", headers={header_name: "user-supplied-key"})
         assert response.status_code == 200
-        data = response.json()
-        assert data["openai"] is True
-        assert data["anthropic"] is False
-        assert data["openrouter"] is False
+        assert response.json()["has_key"] is False
 
-    def test_byok_extracts_anthropic_key(self, client_with_auth: TestClient) -> None:
-        """BYOK should extract Anthropic API key from header."""
-        response = client_with_auth.get(
-            "/byok",
-            headers={
-                "X-API-Key": "test-secret-key",
-                "X-Anthropic-API-Key": "sk-ant-test",
-            },
-        )
-        assert response.status_code == 200
-        data = response.json()
-        assert data["openai"] is False
-        assert data["anthropic"] is True
-        assert data["openrouter"] is False
-
-    def test_byok_extracts_openrouter_key(self, client_with_auth: TestClient) -> None:
-        """BYOK should extract OpenRouter API key from header."""
-        response = client_with_auth.get(
-            "/byok",
-            headers={
-                "X-API-Key": "test-secret-key",
-                "X-OpenRouter-Key": "sk-or-test",
-            },
-        )
-        assert response.status_code == 200
-        data = response.json()
-        assert data["openai"] is False
-        assert data["anthropic"] is False
-        assert data["openrouter"] is True
-
-    def test_byok_extracts_multiple_keys(self, client_with_auth: TestClient) -> None:
-        """BYOK should extract multiple API keys from headers."""
-        response = client_with_auth.get(
-            "/byok",
-            headers={
-                "X-API-Key": "test-secret-key",
-                "X-OpenAI-API-Key": "sk-test",
-                "X-Anthropic-API-Key": "sk-ant-test",
-            },
-        )
-        assert response.status_code == 200
-        data = response.json()
-        assert data["openai"] is True
-        assert data["anthropic"] is True
-        assert data["openrouter"] is False
-
-
-class TestGetLLMApiKey:
-    """Tests for LLM API key resolution."""
-
-    def test_byok_takes_priority_over_settings(self) -> None:
-        """BYOK key should override settings key."""
-        settings = Settings(openai_api_key="server-key")
-        byok = BYOKHeaders(openai_key="user-key")
-        result = get_llm_api_key("openai", byok, settings)
-        assert result == "user-key"
-
-    def test_falls_back_to_settings_when_no_byok(self) -> None:
-        """Should use settings key when no BYOK provided."""
-        settings = Settings(anthropic_api_key="server-key")
-        byok = BYOKHeaders()
-        result = get_llm_api_key("anthropic", byok, settings)
-        assert result == "server-key"
-
-    def test_returns_none_when_no_key_available(self) -> None:
-        """Should return None when no key is available."""
-        settings = Settings()
-        byok = BYOKHeaders()
-        result = get_llm_api_key("openai", byok, settings)
-        assert result is None
-
-    def test_returns_none_for_unknown_provider(self) -> None:
-        """Should return None for unknown provider."""
-        settings = Settings()
-        byok = BYOKHeaders()
-        result = get_llm_api_key("unknown", byok, settings)
-        assert result is None
-
-    def test_openrouter_key_resolution(self) -> None:
-        """Should resolve OpenRouter keys correctly."""
-        settings = Settings(openrouter_api_key="server-or-key")
-        byok = BYOKHeaders(openrouter_key="user-or-key")
-        result = get_llm_api_key("openrouter", byok, settings)
-        assert result == "user-or-key"
+    def test_admin_auth_reads_no_byok_headers_at_all(self) -> None:
+        """Admin endpoints spend server resources, so BYOK never bypasses them."""
+        assert _headers_read_by(security.verify_admin_api_key) == {api_key_header.model.name}

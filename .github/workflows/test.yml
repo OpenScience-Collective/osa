@@ -70,6 +70,24 @@ jobs:
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
+  frontend-tests:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Run citation marker tests
+        run: bun frontend/test-citation-markers.js
+
+      - name: Run streaming tests
+        run: bun frontend/test-streaming.js
+
+      - name: Check widget syntax
+        run: node --check frontend/osa-chat-widget.js
+
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-latest
@@ -92,19 +110,22 @@ jobs:
           pip install uv
           uv pip install --system ".[dev]"
 
-      - name: Check for API key
-        id: check-key
+      - name: Check for Anthropic credentials
+        id: check-anthropic-key
         run: |
-          if [ -n "${{ secrets.OPENROUTER_API_KEY }}" ]; then
-            echo "has_key=true" >> $GITHUB_OUTPUT
+          if [ -n "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
+            echo "has_anthropic_key=true" >> $GITHUB_OUTPUT
           else
-            echo "has_key=false" >> $GITHUB_OUTPUT
-            echo "::warning::OPENROUTER_API_KEY not set - skipping integration tests"
+            echo "has_anthropic_key=false" >> $GITHUB_OUTPUT
+            echo "::warning::ANTHROPIC_API_KEY not set - skipping integration tests"
           fi
 
       - name: Run integration tests
-        if: steps.check-key.outputs.has_key == 'true'
+        if: steps.check-anthropic-key.outputs.has_anthropic_key == 'true'
         env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+          ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
           pytest tests/ -v -m "integration or llm" --tb=short
@@ -118,7 +139,7 @@ jobs:
 
   all-tests:
     name: All Tests Passed
-    needs: [lint, unit-tests]
+    needs: [lint, unit-tests, frontend-tests]
     runs-on: ubuntu-latest
     if: always()
     steps:

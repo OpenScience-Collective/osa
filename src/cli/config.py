@@ -167,6 +167,63 @@ def get_effective_config(
     return config, effective_key
 
 
+def classify_api_key(key: str) -> Literal["anthropic", "openrouter"]:
+    """Infer which provider a BYOK key belongs to from the key's own prefix.
+
+    Same motivation as the widget's ``inferKeyProvider``: the user holds one
+    key and should not have to declare what kind it is, because the key
+    already says so. Anthropic keys start with ``sk-ant-``; OpenRouter's start
+    with ``sk-or-``.
+
+    The rule here is looser than the widget's on purpose. The widget validates
+    the full key shape (``/^sk-ant-[a-zA-Z0-9_-]{80,}$/i``) and returns null
+    for anything it does not recognize, because it is gating a text field a
+    person just typed. The CLI instead routes anything unrecognized to
+    OpenRouter: every key saved before the Claude Platform migration was an
+    OpenRouter key stored without a prefix check, so a stricter rule would
+    strand a working config. Rejecting malformed keys is the server's job
+    either way, and a wrong guess costs one clear 401 rather than a silently
+    dropped credential.
+
+    Args:
+        key: A non-empty API key.
+
+    Returns:
+        "anthropic" or "openrouter".
+    """
+    return "anthropic" if key.startswith("sk-ant-") else "openrouter"
+
+
+def get_effective_byok_keys(api_key: str | None = None) -> tuple[str | None, str | None]:
+    """Resolve the OpenRouter and Anthropic keys to use for one invocation.
+
+    An explicit ``-k/--api-key`` wins outright and selects its own provider by
+    prefix, so the other slot is left empty. That matters because
+    ``OSAClient`` prefers Anthropic whenever both are present: without this,
+    an exported ANTHROPIC_API_KEY would silently override the key the user
+    just typed on the command line.
+
+    With no flag, each provider resolves independently: its env var first,
+    then credentials.yaml.
+
+    Args:
+        api_key: Value of the ``-k/--api-key`` flag, if given. May be either
+            provider's key.
+
+    Returns:
+        Tuple of (openrouter_key, anthropic_key), either or both None.
+    """
+    if api_key:
+        if classify_api_key(api_key) == "anthropic":
+            return None, api_key
+        return api_key, None
+
+    creds = load_credentials()
+    openrouter_key = os.environ.get("OPENROUTER_API_KEY") or creds.openrouter_api_key
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY") or creds.anthropic_api_key
+    return openrouter_key, anthropic_key
+
+
 # --- Legacy migration ---
 
 

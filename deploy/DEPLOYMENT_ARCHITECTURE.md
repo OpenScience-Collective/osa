@@ -37,6 +37,43 @@ This document explains the deployment architecture for OSA (Open Science Assista
 | Production | `https://api.osc.earth/osa` | `ghcr.io/openscience-collective/osa:latest` | 38528 |
 | Development | `https://api.osc.earth/osa-dev` | `ghcr.io/openscience-collective/osa:dev` | 38529 |
 
+### What each image tag means
+
+| Tag | Moves when | Use it for |
+|-----|-----------|------------|
+| `latest` | a STABLE release is published | production; the most recent released version, not the head of `main`. Pre-releases never move it |
+| `X.Y.Z` | any release is published | pinning and rollback; immutable once written |
+| `X.Y` | a stable release is published | following a minor line; `type=semver` skips prereleases |
+| `main`, `develop` | every push to that branch | following a branch head deliberately |
+| `dev` | every push to `develop` | the development host |
+| `sha-<commit>` | every build | tracing an image back to a commit |
+
+`latest` followed the head of `main` until issue #379. That was two problems at
+once.
+
+Two pushes to `main` seconds apart both wrote the tag with no ordering between
+them; the v0.8.9 release lost that race, and production served `0.8.9.dev0`
+while `main` said `0.8.9`.
+
+And no versioned image existed between 0.6.2 and 0.8.9, because
+`docker-build.yml` was keyed only on `push`, while `tag-release.yml` pushes the
+release tag using the default `GITHUB_TOKEN` -- and GitHub does not start
+workflow runs from events that token created. The `gh release create` step in
+the same job runs under `CI_ADMIN_TOKEN`, a PAT, which is why the `release`
+event was seen and `Publish to PyPI` (already subscribed to it) was the only
+workflow that ran. Anything in this pipeline that needs to trigger another
+workflow has to be authored by the PAT, not the default token.
+
+Production now tracks stable releases. To follow the branch instead, point a
+host at `:main`.
+
+**Republishing images for an existing tag**, including releases that predate the
+fix:
+
+```bash
+gh workflow run docker-build.yml --ref v0.8.9
+```
+
 **Frontend:**
 - Production: `https://demo.osc.earth`
 - Development: `https://develop-demo.osc.earth`
@@ -53,16 +90,27 @@ Users can pass their own API keys via HTTP headers:
 
 | Header | Provider |
 |--------|----------|
-| `X-OpenAI-API-Key` | OpenAI |
-| `X-Anthropic-API-Key` | Anthropic |
+| `X-Anthropic-API-Key` | Anthropic (Claude Platform); wins if both are sent |
 | `X-OpenRouter-Key` | OpenRouter |
+
+Those two, and no others.
+A key header naming any other provider is ignored, and does not authenticate the request.
 
 ### Authentication Policy
 
-- **With BYOK**: Users providing any BYOK header bypass server API key requirement
+- **With BYOK**: Users providing either header above bypass the server API key requirement, because the key they send is the key their request runs on
 - **Without BYOK**: Users must provide server API key via `X-API-Key` header
 
 ### Example Request with BYOK
+
+```bash
+curl -X POST https://api.osc.earth/osa-dev/hed/chat \
+  -H "Content-Type: application/json" \
+  -H "X-Anthropic-API-Key: sk-ant-your-key" \
+  -d '{"message": "What is HED?", "stream": false}'
+```
+
+OpenRouter remains a supported BYOK alternative:
 
 ```bash
 curl -X POST https://api.osc.earth/osa-dev/hed/chat \
@@ -76,10 +124,11 @@ No `X-API-Key` required when using BYOK headers.
 ### CLI Configuration for BYOK
 
 ```bash
-# Set up your API key
-osa init --api-key "sk-or-your-key"
+# Set up your API key (the provider is read from the key's prefix)
+osa init --api-key "sk-ant-your-key"
 
-# Or set it directly
+# Or set it directly, per provider
+osa config set --anthropic-key "sk-ant-your-key"
 osa config set --openrouter-key "sk-or-your-key"
 
 # Ask a question (uses saved key via BYOK)
@@ -235,8 +284,8 @@ docker pull ghcr.io/openscience-collective/osa:latest
 docker run -d \
   --name osa \
   -p 38528:38528 \
-  -e API_KEY=your-api-token \
-  -e OPENROUTER_API_KEY=your-openrouter-key \
+  -e API_KEYS=your-api-token \
+  -e ANTHROPIC_API_KEY=your-anthropic-key \
   ghcr.io/openscience-collective/osa:latest
 
 # Verify health
@@ -301,10 +350,11 @@ PORT=38528
 HOST=0.0.0.0
 
 # Security
-API_KEY=your-backend-api-token
+API_KEYS=your-backend-api-token
 
-# LLM Provider
-OPENROUTER_API_KEY=your-openrouter-key
+# LLM Provider: Claude Platform on AWS (see .env.example for the full
+# ANTHROPIC_* set). OpenRouter remains a supported BYOK-only alternative.
+ANTHROPIC_API_KEY=your-anthropic-key
 ```
 
 **Worker (wrangler.toml secrets):**
@@ -367,9 +417,9 @@ docker logs -f osa
 - Turnstile: Unlimited verifications
 - Tunnel: Free
 
-### OpenRouter API
-- Varies by model (see .context/research.md)
-- Cerebras models: ~$0.0001/request
+### LLM API
+- Platform-funded traffic runs on the Claude Platform on AWS, billed to Open Science Collective
+- BYOK or community-funded OpenRouter requests: varies by model (see .context/research.md)
 
 **Estimated monthly cost for 10,000 requests: ~$1-5**
 
