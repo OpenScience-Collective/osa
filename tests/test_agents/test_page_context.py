@@ -159,7 +159,8 @@ class TestFetchPageContentImpl:
     def test_successful_fetch(self, mock_is_safe):
         """Should fetch and convert HTML to markdown."""
         mock_is_safe.return_value = (True, "", "93.184.216.34")
-        respx.get("https://example.com").mock(
+        # Anchored with a trailing slash: see test_handles_redirect_to_safe_url.
+        respx.get("https://example.com/").mock(
             return_value=httpx.Response(
                 200,
                 headers={"content-type": "text/html"},
@@ -220,7 +221,8 @@ class TestFetchPageContentImpl:
             (True, "", "93.184.216.34"),  # Original URL safe
             (False, "Access to private IP ranges is not allowed", None),  # Redirect unsafe
         ]
-        respx.get("https://example.com").mock(
+        # Anchored with a trailing slash: see test_handles_redirect_to_safe_url.
+        respx.get("https://example.com/").mock(
             return_value=httpx.Response(302, headers={"location": "http://192.168.1.1/internal"})
         )
 
@@ -275,7 +277,8 @@ class TestFetchPageContentImpl:
         """Should truncate content that exceeds MAX_PAGE_CONTENT_LENGTH."""
         mock_is_safe.return_value = (True, "", "93.184.216.34")
         large_content = "x" * (MAX_PAGE_CONTENT_LENGTH + 10000)
-        respx.get("https://example.com").mock(
+        # Anchored with a trailing slash: see test_handles_redirect_to_safe_url.
+        respx.get("https://example.com/").mock(
             return_value=httpx.Response(
                 200,
                 headers={"content-type": "text/html"},
@@ -304,7 +307,8 @@ class TestFetchPageContentImpl:
     def test_handles_timeout(self, mock_is_safe):
         """Should handle request timeouts gracefully."""
         mock_is_safe.return_value = (True, "", "93.184.216.34")
-        respx.get("https://example.com").mock(
+        # Anchored with a trailing slash: see test_handles_redirect_to_safe_url.
+        respx.get("https://example.com/").mock(
             side_effect=httpx.TimeoutException("Connection timed out")
         )
 
@@ -317,7 +321,8 @@ class TestFetchPageContentImpl:
     def test_handles_request_error(self, mock_is_safe):
         """Should handle generic request errors gracefully."""
         mock_is_safe.return_value = (True, "", "93.184.216.34")
-        respx.get("https://example.com").mock(side_effect=httpx.RequestError("Connection refused"))
+        # Anchored with a trailing slash: see test_handles_redirect_to_safe_url.
+        respx.get("https://example.com/").mock(side_effect=httpx.RequestError("Connection refused"))
 
         result = fetch_page_content("https://example.com")
         assert "Error" in result

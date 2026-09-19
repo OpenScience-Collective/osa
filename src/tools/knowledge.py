@@ -47,13 +47,14 @@ logger = logging.getLogger(__name__)
 # citation, but it is still bounded.
 _MAX_CITABLE_FAQ_ANSWER_CHARS = 2000
 
-# Cap on one get_full_docstring result's citable text. Unlike the search
-# snippet cap above, this tool's whole purpose is returning more than
-# DOCSTRING_SNIPPET_MAX_LENGTH, so it stays well above that -- but each
-# docstring is only capped at ingest (10K chars, src/knowledge/db.py), and
-# with the default FULL_DOCSTRING_DEFAULT_LIMIT=5 an uncapped citation
-# payload could put ~50K chars on the wire per call. This keeps the worst
-# case in the same order of magnitude as the FAQ path's 5 x 2000 = 10K.
+# Cap on one get_full_docstring result's citable text. Unlike
+# search_docstrings' DOCSTRING_SNIPPET_MAX_LENGTH cap, this tool's whole
+# purpose is returning more than that snippet cap, so it stays well above
+# it -- but each docstring is only capped at ingest (10K chars,
+# src/knowledge/db.py), and with the default FULL_DOCSTRING_DEFAULT_LIMIT=5
+# an uncapped citation payload could put ~50K chars on the wire per call.
+# This keeps the worst case in the same order of magnitude as the FAQ
+# path's 5 x 2000 = 10K.
 _MAX_CITABLE_DOCSTRING_CHARS = 4000
 
 
