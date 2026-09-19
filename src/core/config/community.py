@@ -1419,6 +1419,34 @@ class CommunityConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def validate_default_model_provider_has_effect(self) -> "CommunityConfig":
+        """Warn when default_model_provider is set but will be ignored.
+
+        ``_select_model`` (src/api/routers/community.py) only forwards
+        ``default_model_provider`` when ``default_model`` is itself an
+        OpenRouter creator/model-name id (contains "/") on a request that
+        goes through OpenRouter. A bare id is ignored on both paths: the
+        Anthropic path has no routing layer at all, and the OpenRouter path
+        maps a bare id to its own OpenRouter slug and always drops the
+        provider hint in that branch (see the "Phase 2" comment there).
+        This mirrors ``faq_summarizer._warn_if_provider_ignored``'s warning
+        for the analogous ``AgentConfig.provider`` field.
+        """
+        if self.default_model_provider and (
+            not self.default_model or "/" not in self.default_model
+        ):
+            warnings.warn(
+                f"default_model_provider={self.default_model_provider!r} is ignored: "
+                "it only has an effect when default_model is itself an OpenRouter "
+                "creator/model-name id (e.g. 'deepinfra/some-model'), not a bare id "
+                f"like {self.default_model!r}. Remove the field, or set default_model "
+                "to an OpenRouter-format id if routing control is needed.",
+                UserWarning,
+                stacklevel=2,
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_expensive_model_without_byok(self) -> "CommunityConfig":
         """Warn about expensive models without BYOK to prevent surprise billing.
 

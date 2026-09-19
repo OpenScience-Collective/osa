@@ -453,18 +453,23 @@ class TestSelectModelAnthropic:
         assert provider is None
 
     def test_default_model_provider_ignored(self):
-        """default_model_provider (OpenRouter-only routing) is ignored on this path."""
-        info = AssistantInfo(
-            id="legacy-test-2",
-            name="Legacy Test 2",
-            description="x",
-            community_config=CommunityConfig(
+        """default_model_provider (OpenRouter-only routing) is ignored on this path,
+        and CommunityConfig itself warns about that at load time (a bare
+        default_model discards the provider hint on every path -- see
+        validate_default_model_provider_has_effect)."""
+        with pytest.warns(UserWarning, match="default_model_provider.*is ignored"):
+            community_config = CommunityConfig(
                 id="legacy-test-2",
                 name="Legacy Test 2",
                 description="x",
                 default_model="claude-sonnet-5",
                 default_model_provider="Cerebras",
-            ),
+            )
+        info = AssistantInfo(
+            id="legacy-test-2",
+            name="Legacy Test 2",
+            description="x",
+            community_config=community_config,
         )
 
         model, provider = _select_model(info, None, provider="anthropic", has_byok=False)
