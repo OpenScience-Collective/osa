@@ -13,6 +13,8 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ## [Unreleased]
 
+## [0.8.10] - 2026-09-19
+
 ### Added
 
 - Migrated OSA's model routing to the Anthropic Claude Platform on AWS,
@@ -30,7 +32,10 @@ the version being released and start a new `[Unreleased]` section above it.
 
 - Citation quality, placement, and streaming presentation, including
   sentence-boundary placement and canonical citation content in the widget
-  handoff (#388, #400, #401)
+  handoff (#388, #399, #400, #401)
+- Conceptual code-document searches now require meaningful terms, reserving
+  exact identifier matching for function/symbol lookups and reducing
+  unrelated citations (#399)
 - A community's own Anthropic key is now validated, not just OpenRouter's
   (#391)
 - An unusable key header can no longer bypass server auth (#394)
