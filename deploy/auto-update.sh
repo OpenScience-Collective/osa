@@ -430,10 +430,17 @@ if [ "$DO_ROLLBACK" = true ]; then
     do_rollback "$ROLLBACK_STEPS"
     cleanup_old_images
     log "========================================="
-    log "Rollback completed successfully!"
-    log "========================================="
-    release_lock
-    exit 0
+    if [ "$DEPLOY_HEALTHY" = true ]; then
+        log "Rollback completed successfully!"
+        log "========================================="
+        release_lock
+        exit 0
+    else
+        log "Rollback deployed but the container is UNHEALTHY - see above."
+        log "========================================="
+        release_lock
+        exit 1
+    fi
 fi
 
 if [ -f "$ROLLBACK_LOCK_FILE" ]; then
