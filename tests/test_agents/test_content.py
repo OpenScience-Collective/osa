@@ -466,6 +466,26 @@ class TestNormalizeCitationMarkers:
 
         assert result == "- First claim[1]\n- Second claim."
 
+    def test_does_not_treat_a_title_abbreviation_as_a_sentence_end(self):
+        marks = [CitationMark(1, "https://a.example", "A", "claim")]
+
+        result = normalize_citation_markers(
+            "Dr." + encode_citation_markers("[1]") + " Smith conducted the study.",
+            marks,
+        )
+
+        assert result == "Dr. Smith conducted the study.[1]"
+
+    def test_does_not_treat_et_al_as_a_sentence_end(self):
+        marks = [CitationMark(1, "https://a.example", "A", "claim")]
+
+        result = normalize_citation_markers(
+            "As shown by Smith et al." + encode_citation_markers("[1]") + " in the trial.",
+            marks,
+        )
+
+        assert result == "As shown by Smith et al. in the trial.[1]"
+
     def test_places_marker_after_markdown_sentence_closers(self):
         marks = [CitationMark(1, "https://a.example", "A", "claim")]
 

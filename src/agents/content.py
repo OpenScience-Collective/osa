@@ -287,6 +287,35 @@ _MARKDOWN_BLOCK_BOUNDARY_PATTERN = re.compile(
 _OUTPUT_CITATION_TOKEN_PATTERN = re.compile(r"\x00osa-output-citation-(\d+)\x00")
 _OUTPUT_CITATION_TOKEN_TEXT = r"\x00osa-output-citation-\d+\x00"
 
+# Common abbreviations whose period is not a sentence end. Sentence-boundary
+# detection here is punctuation-only, so without this a citation marker gets
+# planted mid-title (e.g. "Dr.[1] Smith") instead of at the real sentence
+# end -- a real defect for this project's domains, where "et al." and title
+# abbreviations are common in cited documentation. This is a fixed exception
+# list, not general abbreviation detection: it covers the common cases, not
+# every abbreviation that could ever appear.
+_ABBREVIATION_WORDS = frozenset({"dr", "mr", "mrs", "ms", "prof", "vs", "etc", "al"})
+_ABBREVIATION_WORD_PATTERN = re.compile(r"(?:^|[\s(])([A-Za-z]+)\.$")
+_TWO_PART_ABBREVIATION_PATTERN = re.compile(r"(?:^|[\s(])(?:i\.e|e\.g)\.$", re.IGNORECASE)
+
+
+def _ends_with_abbreviation(prefix: str) -> bool:
+    """Return True when ``prefix`` ends in a known abbreviation, not a sentence."""
+    if _TWO_PART_ABBREVIATION_PATTERN.search(prefix):
+        return True
+    match = _ABBREVIATION_WORD_PATTERN.search(prefix)
+    return bool(match and match.group(1).lower() in _ABBREVIATION_WORDS)
+
+
+def _search_sentence_end(text: str, start: int) -> re.Match[str] | None:
+    """Find the next real sentence end at or after ``start``, skipping abbreviations."""
+    position = start
+    while True:
+        match = _SENTENCE_END_PATTERN.search(text, position)
+        if match is None or not _ends_with_abbreviation(text[: match.start() + 1]):
+            return match
+        position = match.end()
+
 
 def encode_citation_markers(marker_text: str) -> str:
     """Protect generated markers from being confused with answer text."""
@@ -301,7 +330,7 @@ def _remove_whitespace_before_sentence_punctuation(
     """Repair a marker delta that arrived immediately before punctuation."""
     removals: set[int] = set()
     for position, _marker in occurrences:
-        boundary = _SENTENCE_END_PATTERN.search(text, position)
+        boundary = _search_sentence_end(text, position)
         if boundary is None or text[position : boundary.start()].strip():
             continue
 
@@ -324,7 +353,7 @@ def _remove_whitespace_before_sentence_punctuation(
 
 def _next_citation_insertion_position(text: str, start: int) -> int:
     """Find a sentence end without crossing the next Markdown block."""
-    sentence_boundary = _SENTENCE_END_PATTERN.search(text, start)
+    sentence_boundary = _search_sentence_end(text, start)
     block_boundary = _MARKDOWN_BLOCK_BOUNDARY_PATTERN.search(text, start)
     if block_boundary and (
         sentence_boundary is None or block_boundary.start() < sentence_boundary.start()
@@ -337,6 +366,8 @@ def _completed_sentence_position(text: str, start: int) -> int | None:
     """Return the position after a completed Markdown sentence before a marker."""
     prefix = text[:start].rstrip()
     if not prefix or _SENTENCE_END_AT_END_PATTERN.search(prefix) is None:
+        return None
+    if _ends_with_abbreviation(prefix):
         return None
 
     closing = re.match(_SENTENCE_END_CLOSERS, text[len(prefix) :])
