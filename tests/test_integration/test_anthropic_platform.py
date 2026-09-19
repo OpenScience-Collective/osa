@@ -201,6 +201,14 @@ class TestToolResultImages:
     leaves as an Anthropic image block nested in the tool result. Only a real
     request can settle the other half, which is that the endpoint accepts that
     payload and the model looks at the picture.
+
+    The first live run answered it and caught a fixture flaw at the same time:
+    the reply was ``724`` for a figure drawn as ``734``. A wrong digit is proof
+    that the picture arrived, since the control below shows no number comes back
+    without it; what was wrong was the flat-topped "3" the font drew. So a
+    failure here that returns a near miss is a legibility problem in
+    ``tests/helpers/images.py``, and a failure that returns no number at all, or
+    a refusal, is the transport.
     """
 
     def _figure_round_trip(self, *, with_image: bool) -> str:

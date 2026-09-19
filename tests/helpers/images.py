@@ -15,11 +15,18 @@ import struct
 import zlib
 
 # 5x7 glyphs, one string per row, "1" meaning ink.
+#
+# Glyph shape is load-bearing, not decoration. A flat-topped "3" here (the
+# seven-segment shape: a full top bar, then a straight diagonal) was read back
+# by the model as a "2", failing the live test on a fixture flaw rather than on
+# the behavior under test. These are the rounded shapes, with a waist on the 3
+# and an open bowl on the 6 and 9, which is what keeps a digit legible once the
+# image has been downscaled on its way into the model.
 _GLYPHS: dict[str, tuple[str, ...]] = {
     "0": ("01110", "10001", "10001", "10001", "10001", "10001", "01110"),
     "1": ("00100", "01100", "00100", "00100", "00100", "00100", "01110"),
     "2": ("01110", "10001", "00001", "00010", "00100", "01000", "11111"),
-    "3": ("11111", "00010", "00100", "00010", "00001", "10001", "01110"),
+    "3": ("01110", "10001", "00001", "00110", "00001", "10001", "01110"),
     "4": ("00010", "00110", "01010", "10010", "11111", "00010", "00010"),
     "5": ("11111", "10000", "11110", "00001", "00001", "10001", "01110"),
     "6": ("00110", "01000", "10000", "11110", "10001", "10001", "01110"),
@@ -54,13 +61,14 @@ def _encode_grayscale_png(pixels: bytearray, width: int, height: int) -> bytes:
     )
 
 
-def digits_png(text: str, scale: int = 14, margin: int = 24) -> bytes:
+def digits_png(text: str, scale: int = 20, margin: int = 32) -> bytes:
     """Render `text` (digits only) as a black-on-white PNG.
 
     Args:
         text: the digits to draw; every character must have a glyph above.
-        scale: pixels per font cell. 14 puts a digit at 70x98 px, large
-            enough that no downscaling on the way to a model loses it.
+        scale: pixels per font cell. 20 puts a digit at 100x140 px, which
+            leaves the strokes thick enough to survive the downscaling an
+            image goes through on its way into a model.
         margin: white border in pixels, so the digits never touch an edge.
 
     Returns:
