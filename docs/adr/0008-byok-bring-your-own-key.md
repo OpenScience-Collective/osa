@@ -33,8 +33,10 @@ project subsidizing it.
   about three key sources - BYOK, community, platform - not one, which is a
   recurring source of subtle bugs when the three interact (see
   [0004](0004-anthropic-claude-platform-migration.md) and this repo's PR
-  #394, where an unusable key header was accepted but the request was
-  silently served - and billed - on the platform's own key instead).
+  #394, where a since-removed `X-OpenAI-API-Key` header was accepted for
+  the auth bypass decision and then dropped, silently falling through to
+  run - and bill - on the community's key or the platform's, per PR #394's
+  own account, rather than being rejected).
 - The security model for BYOK endpoints assumes "a junk value fails upstream
   against the caller's own provider" - true for endpoints that actually
   spend the credential against an LLM call, and worth re-checking before

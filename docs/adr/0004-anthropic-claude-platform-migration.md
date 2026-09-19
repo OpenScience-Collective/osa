@@ -69,8 +69,9 @@ platform-funded route.
 - Several follow-up fixes landed on the same epic branch rather than
   blocking it (CLI key handling, FAQ generation moving to the platform, a
   citable-text cap, an auth-header bug where an unusable key was accepted
-  but silently billed the platform's own key) - see PR #395's table of
-  linked issues/PRs for the full list.
+  and the request ran anyway on the community's or the platform's key
+  instead of being rejected) - see PR #395's table of linked issues/PRs for
+  the full list.
 - Two problems found during the epic were filed rather than fixed inline,
   deliberately, to keep the epic reviewable; check open issues linked from
   PR #395 before assuming they're resolved.
