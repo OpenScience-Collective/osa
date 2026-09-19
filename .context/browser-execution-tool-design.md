@@ -566,8 +566,22 @@ note and do not correspond to the global phases in `.context/plan.md`.
 - Parallel tool calls. The router returns one destination for a whole assistant message, so a batch mixing a
   server tool and a client tool cannot be split today. Constrain the model to one client-tool call per turn,
   or route with `Send`.
-- Whether the provider layer accepts image content blocks on a TOOL message. This decides whether plots reach
-  the model at all, and it is stated as settled earlier in this note without being verified.
+- ~~Whether the provider layer accepts image content blocks on a TOOL message.~~
+  **ANSWERED 2026-09-19: it does, and the producer is the only thing that validates the media type.**
+  Measured against the real payload `CachingChatAnthropic` builds, in
+  `tests/test_core/test_tool_result_image_transport.py`: an image block on a `ToolMessage` arrives nested in
+  the `tool_result`, and all four plausible spellings (Anthropic native, LangChain's v1 and v0 standard
+  blocks, and an OpenAI-style data URL) normalize to the same Anthropic image block, so a widget cannot pick
+  the wrong one and silently lose the figure. `tests/test_integration/test_anthropic_platform.py::TestToolResultImages`
+  settles the other half against the live endpoint: the model reports a number that is drawn in the picture
+  and written nowhere else, and a control round trip without the picture cannot produce it.
+  Two consequences for Phase 2. First, the client stack validates nothing: `image/svg+xml` passes every
+  layer here and comes back as a 400 from the endpoint, so a recipe calling `savefig(format="svg")` fails
+  after the analysis has already run. The accepted set is declared as `IMAGE_MEDIA_TYPES` in
+  `src/core/services/anthropic_models.py` and the widget has to gate on it. Second, an image can also be sent
+  as a URL rather than inline bytes, which would have the model's provider fetch from the data plane; inline
+  base64 is what keeps this design's "bytes never move through a third party" property, and it is what the
+  tests pin.
 - JupyterLite storage bridge versus a lighter notebook UI of our own. Note that sharing a live JupyterLite
   kernel with the chat worker is not an open tradeoff; it is unsupported, and belongs under non-goals.
   Pyodide's `mountOPFS` is also not in a released version yet, so Phase 4 should plan on IndexedDB plus an
