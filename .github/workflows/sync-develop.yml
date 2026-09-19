@@ -21,11 +21,28 @@ name: Sync develop with main and bump
 #     a stable version (.dev / a / b / rc are filtered out by the regex
 #     check inside the run).
 #   - Validates the version on main is a clean vX.Y.Z before merging.
+#   - Skips entirely if main is already merged into develop (see "Fetch
+#     main and validate version" below) - see the concurrency block for why
+#     this needs to be checked at all.
+#
+# Tag and Release fires TWICE per release (issue #417): once for the release
+# PR's merge commit into main (still .dev-suffixed, so Tag and Release no-ops
+# on it but still reports success), and once for ensure-stable-version.yml's
+# follow-up strip commit (which actually creates the tag). Both trigger this
+# workflow. `concurrency` below serializes the two runs so the second one
+# starts only after the first has fully finished, and the ancestry check in
+# "Fetch main and validate version" then sees the sync already happened and
+# exits cleanly instead of racing the first run's merge/push and opening a
+# second, conflicting pull request.
 
 on:
   workflow_run:
     workflows: ["Tag and Release"]
     types: [completed]
+
+concurrency:
+  group: sync-develop
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -73,7 +90,7 @@ jobs:
       - name: Fetch main and validate version
         id: main_version
         run: |
-          git fetch origin main
+          git fetch origin main develop
           MAIN_VERSION=$(git show origin/main:src/version.py | python -c "import sys; exec(sys.stdin.read()); print(__version__)")
           echo "main_version=$MAIN_VERSION" >> "$GITHUB_OUTPUT"
 
@@ -82,6 +99,18 @@ jobs:
           # strip it and this workflow will re-fire on that tag-release.
           if [[ ! "$MAIN_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::warning::main version $MAIN_VERSION is not a clean release; skipping develop sync."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Ground-truth check, not just "is there an open sync PR": Tag and
+          # Release fires twice per release (issue #417), and an open-PR check
+          # alone races when the first run already merged its PR by the time
+          # the second run looks. Re-fetching develop fresh here (this step,
+          # not the earlier checkout) and checking ancestry directly catches
+          # that case regardless of PR state or timing.
+          if git merge-base --is-ancestor origin/main origin/develop; then
+            echo "main is already merged into develop; a concurrent run already synced this release."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
