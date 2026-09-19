@@ -398,13 +398,17 @@ class TestDiscoveryToolsHaveNoCitationCapability:
 class TestCitablePayloadsAreBounded:
     """A citable tool must not put far more on the wire than its string path.
 
-    The other two citable tools pass search snippets that
-    src/knowledge/search.py has already truncated, but a FAQ answer comes
-    straight from the database, capped only at ingest (5000 chars,
-    src/knowledge/db.py). Uncapped, one search_faq call at the default
-    limit=5 would carry 25k chars on the Anthropic path against 2.5k on the
-    OpenRouter path for the identical query: a size and cost difference
-    visible only to whichever provider happens to be paying.
+    search_docstrings' citable snippets are already truncated by
+    src/knowledge/search.py (DOCSTRING_SNIPPET_MAX_LENGTH). The other two
+    citable tools -- search_faq and get_full_docstring -- pass content that
+    is only capped at ingest (5000 chars for a FAQ answer, 10K for a
+    docstring, both in src/knowledge/db.py), so each needs its own citable
+    cap here rather than inheriting one from search.py. Uncapped, one
+    search_faq call at the default limit=5 would carry 25k chars on the
+    Anthropic path against 2.5k on the OpenRouter path for the identical
+    query: a size and cost difference visible only to whichever provider
+    happens to be paying. get_full_docstring had the same gap (~50k chars
+    uncapped at limit=5) until it got its own cap below.
     """
 
     LONG_ANSWER_SENTENCE = "Reject the ICA component correlated with the EOG channel. "
@@ -488,6 +492,55 @@ class TestCitablePayloadsAreBounded:
         assert isinstance(result, list)
         assert result[0]["content"][0]["text"] == (
             "Use ICA decomposition and reject components correlated with EOG channels."
+        )
+
+    @staticmethod
+    def _seed_long_docstring(community_id: str) -> None:
+        """Seed one docstring row exceeding the citable cap but under the 10K ingest cap."""
+        long_docstring = "pop_select(EEG, ...)\n\n" + ("Select a subset of channels. " * 200)
+        with get_connection(community_id) as conn:
+            upsert_docstring(
+                conn,
+                repo="test-org/test-repo",
+                file_path="src/example.py",
+                language="python",
+                symbol_name="pop_select",
+                symbol_type="function",
+                docstring=long_docstring,
+            )
+            conn.commit()
+
+    def test_docstring_citation_blocks_cap_each_result(self, tmp_path: Path) -> None:
+        """One block's text stays within the citable cap, not the 10K-char ingest cap."""
+        from src.tools.citations import DEFAULT_TRUNCATION_SUFFIX
+        from src.tools.knowledge import _MAX_CITABLE_DOCSTRING_CHARS
+
+        db_path = tmp_path / "knowledge" / "test.db"
+        with patch("src.knowledge.db.get_db_path", return_value=db_path):
+            init_db("test")
+            self._seed_long_docstring("test")
+            with patch("src.tools.knowledge.get_db_path", return_value=db_path):
+                tool = create_get_full_docstring_tool("test", "Test Community", citations=True)
+                result = tool.invoke({"symbol_name": "pop_select"})
+
+        assert isinstance(result, list)
+        text = result[0]["content"][0]["text"]
+        assert len(text) == _MAX_CITABLE_DOCSTRING_CHARS + len(DEFAULT_TRUNCATION_SUFFIX)
+        assert text.endswith(DEFAULT_TRUNCATION_SUFFIX)
+
+    def test_short_docstrings_are_not_truncated(self, tmp_path: Path) -> None:
+        """The cap must not clip an ordinary docstring; most are well under it."""
+        db_path = tmp_path / "knowledge" / "test.db"
+        with patch("src.knowledge.db.get_db_path", return_value=db_path):
+            init_db("test")
+            seeded = _seed_docstring("test")
+            with patch("src.tools.knowledge.get_db_path", return_value=db_path):
+                tool = create_get_full_docstring_tool("test", "Test Community", citations=True)
+                result = tool.invoke({"symbol_name": seeded["symbol_name"]})
+
+        assert isinstance(result, list)
+        assert result[0]["content"][0]["text"] == (
+            "pop_select(EEG, ...)\n\nSelect a subset of channels or trials."
         )
 
 

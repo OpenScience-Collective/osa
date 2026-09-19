@@ -20,6 +20,7 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "docker-build.yml"
 
@@ -138,3 +139,38 @@ def test_workflow_subscribes_to_published_releases():
     """
     text = WORKFLOW.read_text()
     assert "types: [published]" in text
+
+
+def test_moving_tag_builds_share_one_concurrency_group():
+    """Two builds that can both write `:latest` must queue, not race.
+
+    The v0.8.9 incident: two commits landed on `main` ten seconds apart, both
+    builds ran, both wrote `:latest`, and the older commit's image won because it
+    finished last. The fix is a `concurrency.group` shared by every event that can
+    move a moving tag, keyed on `github.workflow` (constant) plus a fixed literal
+    for all tag/release builds and `github.ref` for branch builds -- so two tag
+    pushes land in the *same* group instead of one group per ref, which would just
+    narrow the race instead of closing it.
+    """
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    concurrency = workflow.get("concurrency")
+    assert concurrency, "docker-build.yml must define top-level `concurrency`"
+
+    group = concurrency.get("group", "")
+    assert "github.workflow" in group, "group must key on the workflow name"
+    assert "refs/tags/" in group, "group must collapse every tag/release build into one bucket"
+    assert "github.ref" in group, "branch builds must still get a per-ref group"
+
+
+def test_moving_tag_builds_are_not_cancelled_mid_push():
+    """Only pull_request runs may cancel in progress; every push/tag/release run must queue.
+
+    `build-and-test` alone (the pull_request path) never touches the registry, so
+    cancelling a stale run just wastes a runner. Every other event can be mid-push
+    to the registry when a new run starts, so cancelling it there -- rather than
+    queuing behind it -- is exactly the race this concurrency group exists to close.
+    """
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    cancel_in_progress = workflow["concurrency"].get("cancel-in-progress", "")
+    assert "github.event_name" in cancel_in_progress
+    assert "pull_request" in cancel_in_progress
