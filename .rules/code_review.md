@@ -58,9 +58,15 @@ When leaving review comments:
 ## Branch Protection
 
 `main` and `develop` both require at least one approving review before merge
-(GitHub rulesets `protect-main` / `protect-dev`; see `docs/adr/` for why).
-A PR author cannot approve their own PR — request review from another
-maintainer rather than relying on a self-approval or an admin bypass.
+(GitHub rulesets `protect-main` / `protect-dev`; see
+`docs/adr/0005-enforce-pr-approval-requirement.md` for why and for the exact
+current state). A PR author cannot approve their own PR — as a non-admin,
+request review from another maintainer rather than assuming a bypass is
+available to you. An Admin-role account can bypass the review requirement
+for a routine self-merge, but branch deletion is protected separately by a
+non-bypassable ruleset regardless of admin status — don't treat "I have
+admin" as license to force through a deletion or a review-less merge on a
+change that actually warrants review.
 
 ---
 *No technical debt carried forward. Review early, review often.*

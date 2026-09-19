@@ -16,11 +16,13 @@ A precise, reliable AI assistant platform for researchers working with open scie
   - Has `.dev` suffix on versions (e.g., `0.5.1.dev0`)
 - `feature/*` - Feature branches, created from and merged to `develop`
 
-**Branch Protection (GitHub rulesets `protect-main` / `protect-dev`):**
+**Branch Protection (GitHub rulesets `protect-main` / `protect-dev` / `prevent-branch-deletion`):**
 - Both `main` and `develop` require changes to go through a pull request; direct pushes are blocked
-- Both require at least 1 approving review before merge (no bypass for admins on `main`)
+- Both require at least 1 approving review before merge, from someone other than the PR author; an Admin-role account may bypass this review requirement for a self-merge (`bypass_actors` on both rulesets)
+- A separate, non-bypassable `prevent-branch-deletion` ruleset (no exempt actors) protects both branches from deletion regardless of the admin bypass above — see `docs/adr/0005-enforce-pr-approval-requirement.md` for why this needed its own ruleset
 - `main` only allows a regular merge commit (`allowed_merge_methods: ["merge"]`) — release PRs are not squashed, so the individual feature history survives on `main`
 - `develop` allows merge or squash; feature branches into `develop` are always squash-merged per the workflow below
+- This is live repository configuration, not code — re-verify current state with `gh api repos/OpenScience-Collective/osa/rulesets/<id>` (ids and the full re-verification procedure are in the ADR above) rather than trusting this bullet list if it's been a while
 
 **Version Management (Fully Automated — do not manually bump in release PRs):**
 - `develop` branch: Versions end with `.devN` suffix (e.g., `0.5.1.dev0`, `0.5.1.dev1`)

@@ -1,6 +1,7 @@
-# 0005. Require an approving review before merge, with no admin bypass
+# 0005. Require an approving review before merge, with a scoped admin bypass and unconditional deletion protection
 
-Date: 2026-09-19
+Date: 2026-09-19 (decision evolved through three revisions in one session -
+see History below; this record describes the state as of the last revision)
 
 ## Status
 
@@ -25,34 +26,78 @@ was mergeable with zero approvals, by the same account that opened it.
 
 ## Decision
 
-Both `protect-main` and `protect-dev` rulesets were updated:
+**Final state** (both `protect-main`, id `12110625`, and `protect-dev`, id
+`12110632`):
 
-- `required_approving_review_count` raised from `0` to `1` on both.
-- `protect-main`'s `Admin` bypass actor was removed
-  (`current_user_can_bypass` went from `exempt` to `never` on both
-  rulesets).
+- `required_approving_review_count: 1` on both. A PR author cannot approve
+  their own PR (verified directly against PR #403).
+- `bypass_actors: [{"actor_id": 5, "actor_type": "RepositoryRole",
+  "bypass_mode": "exempt"}]` on both - RepositoryRole `5` is `Admin`. An
+  admin/owner can bypass this ruleset's rules (including the review
+  requirement) for a routine self-merge, so the review gate does not block
+  the maintainer who is also the sole active admin from shipping small or
+  urgent changes alone.
+- Because `bypass_mode: "exempt"` exempts the actor from **every** rule in
+  that ruleset, not just the `pull_request` rule, an admin bypassing
+  `protect-main`/`protect-dev` would also bypass those rulesets' `deletion`
+  rule (`protect-main` and `protect-dev` originally each carried their own
+  `deletion` rule). That is not the intended scope of this decision, so:
+- A **separate** ruleset, `prevent-branch-deletion` (id `23707055`),
+  created 2026-09-19, covers both `~DEFAULT_BRANCH` and
+  `refs/heads/develop`, contains only a `deletion` rule, and has
+  `bypass_actors: []` / `current_user_can_bypass: "never"` - nobody,
+  including admins, can bypass it. This works because GitHub evaluates all
+  rulesets matching a ref cumulatively: an actor must satisfy every
+  non-bypassed rule across every matching ruleset, so this ruleset's
+  deletion protection holds regardless of what `protect-main`/`protect-dev`
+  independently allow an admin to bypass.
 
-This was applied directly via the GitHub API (`PUT
-/repos/{owner}/{repo}/rulesets/{id}`), not through a code change, since
-branch rulesets are repository configuration rather than repository
-content.
+Applied directly via the GitHub API (`PUT
+/repos/{owner}/{repo}/rulesets/{id}` for the two existing rulesets, `POST
+.../rulesets` for the new one), not through a code change, since branch
+rulesets are repository configuration rather than repository content.
+
+### History (this decision changed twice after its first version)
+
+1. **First version:** raised `required_approving_review_count` to 1 on both
+   rulesets and removed `protect-main`'s admin bypass entirely
+   (`bypass_actors: []`, `current_user_can_bypass: "never"` on both).
+2. **Second version:** the user asked for an admin/owner bypass to be
+   restored, so a routine self-merge by an admin doesn't require pulling in
+   another reviewer - `bypass_actors` on both rulesets was set back to the
+   `RepositoryRole 5 (Admin)` / `exempt` entry.
+3. **Third version (current):** the user pointed out that `bypass_mode:
+   "exempt"` on a ruleset exempts the actor from every rule in that
+   ruleset, not just the review requirement - meaning the restored admin
+   bypass also silently reopened the ability to delete `main`/`develop`.
+   `prevent-branch-deletion` was created as a second, non-bypassable
+   ruleset to close that gap without reintroducing the review-approval
+   friction the second revision was meant to relieve.
 
 ## Consequences
 
-- Every future PR into `main` or `develop`, including small or urgent ones,
-  needs a real approval from someone other than the author before it can
-  merge. With two collaborators besides the repository owner, this means
-  every merge now depends on one of them being available to review.
-- The author of a PR cannot approve their own PR (verified directly against
-  PR #403: the account that opened it could not be added as its own
-  reviewer). Plan reviewer availability accordingly, especially for release
-  PRs.
-- No bypass exists for anyone, including admins, on either branch. An
-  emergency fix has no faster path than a normal reviewed PR; if that turns
-  out to be too rigid in practice, revisit this ADR rather than quietly
-  re-adding a bypass actor.
+- Every future PR into `main` or `develop`, from a non-admin account, needs
+  a real approval from someone other than the author before it can merge.
+  An admin account can self-merge without another reviewer, by design.
+- `main` and `develop` cannot be deleted by anyone, admin or not, regardless
+  of future changes to `protect-main`/`protect-dev`'s bypass settings -
+  that guarantee now lives in a ruleset most people editing branch
+  protection will not think to check.
 - This is a repository-configuration decision, not a code change - it does
   not show up in `git log` or a diff of this repository's tracked files, so
-  this ADR is the only durable record of it. Check the live ruleset state
-  (`gh api repos/OpenScience-Collective/osa/rulesets/<id>`) rather than
-  assuming this document is still accurate if it's been a while.
+  this ADR is the only durable record of it, and it has already drifted
+  from what an earlier version of this same document claimed within a
+  single day. **Do not trust prose in this file over live state.**
+  Re-verify with:
+
+  ```bash
+  gh api repos/OpenScience-Collective/osa/rulesets/12110625   # protect-main
+  gh api repos/OpenScience-Collective/osa/rulesets/12110632   # protect-dev
+  gh api repos/OpenScience-Collective/osa/rulesets/23707055   # prevent-branch-deletion
+  ```
+
+  Check specifically: `required_approving_review_count`, `bypass_actors`,
+  and `current_user_can_bypass` on the first two; that `23707055` still
+  exists, still covers both `~DEFAULT_BRANCH` and `refs/heads/develop`, and
+  still has `bypass_actors: []`. If any of those don't match this document,
+  trust the API output and fix this document, not the other way around.

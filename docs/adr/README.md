@@ -18,7 +18,7 @@ letting the reasoning stay buried in a PR nobody will reread.
 | [0002](0002-sync-develop-to-main-via-pull-request.md) | Sync `develop` from `main` through a pull request, not a direct push |
 | [0003](0003-release-image-build-and-latest-tag-race.md) | Serialize release image builds; `:latest` follows releases, not `main` |
 | [0004](0004-anthropic-claude-platform-migration.md) | Serve platform-funded requests from the Claude Platform on AWS, not OpenRouter |
-| [0005](0005-enforce-pr-approval-requirement.md) | Require an approving review before merge, with no admin bypass |
+| [0005](0005-enforce-pr-approval-requirement.md) | Require an approving review before merge, with a scoped admin bypass and unconditional deletion protection |
 | [0006](0006-langgraph-for-agent-orchestration.md) | LangGraph for agent orchestration |
 | [0007](0007-simple-storage-no-external-database.md) | In-memory state, direct document fetching, SQLite+FTS5 - no PostgreSQL/Redis/vector DB |
 | [0008](0008-byok-bring-your-own-key.md) | Support BYOK (bring your own key) alongside platform-funded requests |
