@@ -8,12 +8,13 @@
 ## Actual Workflows in This Repo (`.github/workflows/`)
 
 ### Required status checks (enforced by branch rulesets)
-- `Lint` - `ruff check` / `ruff format --check`
-- `Test (3.11)`, `Test (3.12)` - `pytest` matrix (required on `main`; `develop` only requires 3.12)
+- `Lint` - `ruff check` / `ruff format --check` (both `test.yml` and `tests.yml` have a job literally named `Lint`, so either satisfies this)
+- `Test (3.11)`, `Test (3.12)` - required on `main`; `develop` only requires `Test (3.12)`. **These check names are produced only by `tests.yml`'s `test:` job** (`name: Test`, matrix `['3.11', '3.12']` → checks `Test (3.11)`/`Test (3.12)`). `test.yml`'s equivalent job is named `Unit Tests (Python ${{ matrix.python-version }})`, which produces differently-named checks (`Unit Tests (Python 3.11)` etc.) that do **not** match what the ruleset requires - verify against the live ruleset with `gh api repos/OpenScience-Collective/osa/rulesets/12110625` / `.../12110632` (`required_status_checks[].context`) rather than trusting this file if the workflows change.
 
 ### Testing
-- **`test.yml`** (name: "Tests") - `lint` -> `unit-tests` (Python 3.11/3.12 matrix, coverage to Codecov) -> `frontend-tests` (Bun: citation marker tests, streaming tests, widget syntax check) -> `integration-tests` (skips gracefully without Anthropic credentials) -> `all-tests` gate
-- **`tests.yml`** (also named "Tests") - a near-duplicate of `test.yml` without the `integration-tests` job. Unreconciled duplication - when editing test jobs, check both files, and consider consolidating them (see `self_improve.md`'s guidance on promoting recurring friction into a fix).
+- **`tests.yml`** (name: "Tests") - **this is the workflow branch protection actually enforces.** `lint` -> `test` (job name `Test`, Python 3.11/3.12 matrix, coverage upload) -> `frontend-tests` (Bun: citation marker tests, streaming tests, widget syntax check) -> `all-tests` gate. Triggers on push to `[main, develop]` and on `pull_request` with no branch restriction, so it's the only one of the two that runs on a PR into `develop`.
+- **`test.yml`** (also named "Tests" - confusingly, both workflows share the display name "Tests") - triggers only on push/PR to `main`, not `develop`. Runs `lint` -> `unit-tests` (job name `Unit Tests (Python ...)`, Python 3.11/3.12/3.13 matrix, coverage to Codecov) -> `frontend-tests` -> `integration-tests` (skips gracefully without Anthropic credentials) -> `all-tests`. Broader (extra Python version, an `integration-tests` job `tests.yml` lacks) but its checks don't match what branch protection requires and it never runs on a `develop` PR at all.
+- Unreconciled duplication between the two - when editing test jobs, check both files, and consider consolidating them (see `self_improve.md`'s guidance on promoting recurring friction into a fix). If you only fix one, fix `tests.yml` first - it's the one that actually gates a merge.
 
 ### Docker / Release Images
 - **`docker-build.yml`** - builds and pushes to GHCR. Uses a `concurrency` group keyed on `${{ github.workflow }}-<ref>` with `cancel-in-progress` only for `pull_request` events, specifically to stop two builds racing to write the `:latest` tag (see `docs/adr/` for the incident this fixed). Never remove the concurrency group without understanding that history.
@@ -37,7 +38,7 @@
 - **Pin versions:** `actions/checkout@v4` (reproducibility)
 - **Cache deps:** `astral-sh/setup-uv` and `oven-sh/setup-bun` have built-in caching
 - **Fail fast:** Lint -> Test -> Build -> Deploy (catch cheap failures first)
-- **Matrix testing:** Test all supported Python versions (3.11, 3.12)
+- **Matrix testing:** the gating workflow (`tests.yml`) tests Python 3.11 and 3.12; `test.yml` additionally covers 3.13 but isn't what branch protection checks against - see "Required status checks" above
 - **Secrets:** Never commit credentials; use GitHub Secrets
 - **Conditional:** Deploy only from protected branches (`main`, `develop`)
 - **Concurrency:** think about what races when a workflow can trigger twice in quick succession (see `docker-build.yml` above) before adding or removing a `concurrency` block
