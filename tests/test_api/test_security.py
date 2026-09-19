@@ -208,3 +208,42 @@ class TestByokBypassCoversExactlyTheResolvableProviders:
     def test_admin_auth_reads_no_byok_headers_at_all(self) -> None:
         """Admin endpoints spend server resources, so BYOK never bypasses them."""
         assert _headers_read_by(security.verify_admin_api_key) == {api_key_header.model.name}
+
+
+class TestEndpointsThatDoNotSpendByokRequireAdminAuth:
+    """An endpoint that never spends a BYOK credential against an LLM must
+    not accept one as a substitute for real auth (see the docstrings on
+    verify_api_key and src/api/routers/mirrors.py): a syntactically-plausible
+    header value would otherwise authorize it with no real credential at all.
+
+    Every route is discovered from the real, fully-wired app (real community
+    registry, real routers) rather than hardcoding a path list, so a new
+    mirror or session route inherits this check automatically.
+    """
+
+    @staticmethod
+    def _routes_by_dependency(path_predicate: Callable[[str], bool]) -> dict[str, set[str]]:
+        """Map each matching route's path to the names of its dependencies."""
+        from src.api.main import app
+
+        return {
+            f"{sorted(route.methods)} {route.path}": {
+                getattr(dep.call, "__name__", str(dep.call)) for dep in route.dependant.dependencies
+            }
+            for route in app.routes
+            if path_predicate(getattr(route, "path", ""))
+        }
+
+    def test_mirror_routes_use_admin_auth(self) -> None:
+        routes = self._routes_by_dependency(lambda path: path.startswith("/mirrors"))
+        assert routes, "expected at least one /mirrors route to be registered"
+        for route, deps in routes.items():
+            assert "verify_admin_api_key" in deps, f"{route} must depend on verify_admin_api_key"
+            assert "verify_api_key" not in deps, f"{route} must not accept a BYOK bypass"
+
+    def test_session_routes_use_admin_auth(self) -> None:
+        routes = self._routes_by_dependency(lambda path: "/sessions" in path)
+        assert routes, "expected at least one /sessions route to be registered"
+        for route, deps in routes.items():
+            assert "verify_admin_api_key" in deps, f"{route} must depend on verify_admin_api_key"
+            assert "verify_api_key" not in deps, f"{route} must not accept a BYOK bypass"

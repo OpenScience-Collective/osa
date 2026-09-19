@@ -408,6 +408,42 @@ class TestSessionEndpointBehavior:
             # Auth required
             assert response.status_code in (401, 403)
 
+    def test_session_endpoints_reject_byok_shaped_header(self) -> None:
+        """A BYOK header must not substitute for real auth on session
+        endpoints: nothing here ever spends the credential against an LLM,
+        so RequireAuth's bypass (any syntactically-plausible key) would
+        otherwise expose session data to an unauthenticated caller. These
+        endpoints use RequireAdminAuth instead, which has no BYOK bypass
+        (see tests/test_api/test_security.py's
+        TestEndpointsThatDoNotSpendByokRequireAdminAuth for the structural
+        version of this check across the whole app)."""
+        from src.api.config import get_settings
+
+        app = FastAPI()
+        router = create_community_router("hed")
+        app.include_router(router)
+        client = TestClient(app)
+
+        settings = get_settings()
+        byok_headers = {"X-Anthropic-API-Key": "byok-attempt"}
+        list_response = client.get("/hed/sessions", headers=byok_headers)
+        get_response = client.get("/hed/sessions/nonexistent-id", headers=byok_headers)
+        delete_response = client.delete("/hed/sessions/nonexistent-id", headers=byok_headers)
+
+        if settings.api_keys and settings.require_api_auth:
+            # Real admin auth is configured: a BYOK-shaped header must not
+            # be accepted in place of it.
+            assert list_response.status_code == 401
+            assert get_response.status_code == 401
+            assert delete_response.status_code == 401
+        else:
+            # Auth is disabled entirely in this environment, same as it
+            # would be with no header at all -- the BYOK header still made
+            # no difference, just not an observable one here.
+            assert list_response.status_code == 200
+            assert get_response.status_code == 404
+            assert delete_response.status_code == 404
+
 
 class TestCommunityConfigHealthStatus:
     """Tests for health status in community config and public metrics."""

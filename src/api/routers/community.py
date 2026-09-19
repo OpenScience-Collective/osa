@@ -34,7 +34,14 @@ from src.agents.content import (
 )
 from src.api.config import Settings, get_settings
 from src.api.routers.health import compute_community_health
-from src.api.security import AuthScope, ByokCredential, RequireAuth, RequireScopedAuth, resolve_byok
+from src.api.security import (
+    AuthScope,
+    ByokCredential,
+    RequireAdminAuth,
+    RequireAuth,
+    RequireScopedAuth,
+    resolve_byok,
+)
 from src.assistants import registry
 from src.assistants.community import CommunityAssistant
 from src.assistants.community import PageContext as AgentPageContext
@@ -613,6 +620,26 @@ class ProviderChoice:
     provider: Literal["anthropic", "openrouter"]
     api_key: str | None
     key_source: Literal["byok", "community", "platform"]
+
+    def __post_init__(self) -> None:
+        """Enforce the invariant every current construction site already
+        follows (_platform_choice, _resolve_provider): api_key is None only
+        for Anthropic server mode, and every other combination carries a
+        non-empty key. Nothing today constructs an out-of-line instance,
+        but a future call site that got this wrong would otherwise run on
+        the platform's own key with cost enforcement disabled
+        (_check_model_cost skips it whenever key_source == "byok", and
+        create_anthropic_llm / create_openrouter_llm both treat a falsy key
+        as "use server credentials instead")."""
+        if self.api_key is None:
+            if self.key_source != "platform" or self.provider != "anthropic":
+                raise ValueError(
+                    "api_key=None is only valid for provider='anthropic' with "
+                    f"key_source='platform' (server mode); got provider="
+                    f"{self.provider!r}, key_source={self.key_source!r}"
+                )
+        elif not self.api_key:
+            raise ValueError("api_key must not be an empty string; use None for server mode")
 
 
 def _platform_choice(settings: Settings) -> ProviderChoice:
@@ -1615,23 +1642,33 @@ def create_community_router(community_id: str) -> APIRouter:
             ) from e
 
     @router.get("/sessions/{session_id}", response_model=SessionInfo)
-    async def get_session_info(session_id: str, _auth: RequireAuth) -> SessionInfo:
-        """Get information about a chat session."""
+    async def get_session_info(session_id: str, _auth: RequireAdminAuth) -> SessionInfo:
+        """Get information about a chat session.
+
+        Uses RequireAdminAuth, not RequireAuth: this never spends a
+        caller-supplied BYOK credential against an LLM, so RequireAuth's
+        BYOK bypass (any syntactically-plausible key in X-Anthropic-API-Key
+        or X-OpenRouter-Key) would otherwise expose every session's
+        metadata to a request carrying a junk header.
+        """
         session = get_session(community_id, session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
         return session.to_info()
 
     @router.delete("/sessions/{session_id}")
-    async def delete_session_endpoint(session_id: str, _auth: RequireAuth) -> dict[str, str]:
-        """Delete a chat session."""
+    async def delete_session_endpoint(session_id: str, _auth: RequireAdminAuth) -> dict[str, str]:
+        """Delete a chat session. See get_session_info for why this requires
+        RequireAdminAuth rather than RequireAuth."""
         if not delete_session(community_id, session_id):
             raise HTTPException(status_code=404, detail="Session not found")
         return {"status": "deleted", "session_id": session_id}
 
     @router.get("/sessions", response_model=list[SessionInfo])
-    async def list_sessions_endpoint(_auth: RequireAuth) -> list[SessionInfo]:
-        """List all active chat sessions for this community."""
+    async def list_sessions_endpoint(_auth: RequireAdminAuth) -> list[SessionInfo]:
+        """List all active chat sessions for this community. See
+        get_session_info for why this requires RequireAdminAuth rather than
+        RequireAuth."""
         return [session.to_info() for session in list_sessions(community_id)]
 
     @router.get("", response_model=CommunityConfigResponse)
