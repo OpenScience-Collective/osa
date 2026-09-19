@@ -533,6 +533,13 @@ class TestCachingChatAnthropicCacheTtlValidation:
         )
         assert llm.cache_ttl == ttl
 
+    def test_assignment_after_construction_revalidates(self) -> None:
+        """model_config's validate_assignment=True means a post-construction
+        mutation is checked too, not just the initial value."""
+        llm = CachingChatAnthropic(model="claude-haiku-4-5", api_key="test-key", max_tokens=100)
+        with pytest.raises(ValidationError, match="Unsupported prompt cache TTL"):
+            llm.cache_ttl = "10m"
+
 
 class TestCachingChatAnthropicSystemListForm:
     """Tests for the list-form system content branch, previously uncovered."""
