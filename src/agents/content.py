@@ -287,24 +287,67 @@ _MARKDOWN_BLOCK_BOUNDARY_PATTERN = re.compile(
 _OUTPUT_CITATION_TOKEN_PATTERN = re.compile(r"\x00osa-output-citation-(\d+)\x00")
 _OUTPUT_CITATION_TOKEN_TEXT = r"\x00osa-output-citation-\d+\x00"
 
-# Common abbreviations whose period is not a sentence end. Sentence-boundary
-# detection here is punctuation-only, so without this a citation marker gets
-# planted mid-title (e.g. "Dr.[1] Smith") instead of at the real sentence
-# end -- a real defect for this project's domains, where "et al." and title
-# abbreviations are common in cited documentation. This is a fixed exception
-# list, not general abbreviation detection: it covers the common cases, not
-# every abbreviation that could ever appear.
-_ABBREVIATION_WORDS = frozenset({"dr", "mr", "mrs", "ms", "prof", "vs", "etc", "al"})
+# Common abbreviations whose period is not always a sentence end.
+# Sentence-boundary detection here is punctuation-only, so without this a
+# citation marker gets planted mid-title (e.g. "Dr.[1] Smith") instead of
+# at the real sentence end -- a real defect for this project's domains,
+# where "et al." and title abbreviations are common in cited documentation.
+# This is a fixed exception list, not general abbreviation detection: it
+# covers the common cases, not every abbreviation that could ever appear.
+#
+# Title abbreviations are (virtually) never sentence-final -- a period
+# after "Dr" is always followed by a name in the same sentence, so their
+# boundary is always skipped.
+_TITLE_ABBREVIATION_WORDS = frozenset({"dr", "mr", "mrs", "ms", "prof", "vs"})
+# These commonly END a sentence too (a list-final "etc.", a citation-final
+# "et al.", both frequent in HED/BIDS/EEGLAB documentation), so their
+# boundary is only skipped when the text right after it is lowercase --
+# the signal that the same sentence continues rather than a new one
+# starting. Capitalized (or end-of-text) is accepted as a real boundary.
+_AMBIGUOUS_ABBREVIATION_WORDS = frozenset({"etc", "al"})
 _ABBREVIATION_WORD_PATTERN = re.compile(r"(?:^|[\s(])([A-Za-z]+)\.$")
 _TWO_PART_ABBREVIATION_PATTERN = re.compile(r"(?:^|[\s(])(?:i\.e|e\.g)\.$", re.IGNORECASE)
 
 
-def _ends_with_abbreviation(prefix: str) -> bool:
-    """Return True when ``prefix`` ends in a known abbreviation, not a sentence."""
-    if _TWO_PART_ABBREVIATION_PATTERN.search(prefix):
+def _abbreviation_kind(period_prefix: str) -> Literal["always", "ambiguous"] | None:
+    """Classify the abbreviation, if any, that ``period_prefix`` ends with.
+
+    ``period_prefix`` must end exactly at the abbreviation's period (no
+    trailing closers).
+    """
+    if _TWO_PART_ABBREVIATION_PATTERN.search(period_prefix):
+        return "ambiguous"
+    match = _ABBREVIATION_WORD_PATTERN.search(period_prefix)
+    if not match:
+        return None
+    word = match.group(1).lower()
+    if word in _TITLE_ABBREVIATION_WORDS:
+        return "always"
+    if word in _AMBIGUOUS_ABBREVIATION_WORDS:
+        return "ambiguous"
+    return None
+
+
+def _continues_same_sentence(text: str, position: int) -> bool:
+    """True when the text after ``position`` starts with a lowercase letter."""
+    rest = text[position:].lstrip(" \t")
+    return bool(rest) and rest[0].islower()
+
+
+def _is_abbreviation_boundary(period_prefix: str, text: str, after: int) -> bool:
+    """True when a sentence-end-shaped boundary is really an abbreviation.
+
+    ``period_prefix`` locates and classifies the abbreviation (see
+    ``_abbreviation_kind``); ``text``/``after`` look at what follows the
+    boundary, since an "ambiguous" abbreviation (unlike a title) can
+    genuinely end a sentence.
+    """
+    kind = _abbreviation_kind(period_prefix)
+    if kind == "always":
         return True
-    match = _ABBREVIATION_WORD_PATTERN.search(prefix)
-    return bool(match and match.group(1).lower() in _ABBREVIATION_WORDS)
+    if kind == "ambiguous":
+        return _continues_same_sentence(text, after)
+    return False
 
 
 def _search_sentence_end(text: str, start: int) -> re.Match[str] | None:
@@ -312,7 +355,9 @@ def _search_sentence_end(text: str, start: int) -> re.Match[str] | None:
     position = start
     while True:
         match = _SENTENCE_END_PATTERN.search(text, position)
-        if match is None or not _ends_with_abbreviation(text[: match.start() + 1]):
+        if match is None or not _is_abbreviation_boundary(
+            text[: match.start() + 1], text, match.end()
+        ):
             return match
         position = match.end()
 
@@ -365,9 +410,12 @@ def _next_citation_insertion_position(text: str, start: int) -> int:
 def _completed_sentence_position(text: str, start: int) -> int | None:
     """Return the position after a completed Markdown sentence before a marker."""
     prefix = text[:start].rstrip()
-    if not prefix or _SENTENCE_END_AT_END_PATTERN.search(prefix) is None:
+    if not prefix:
         return None
-    if _ends_with_abbreviation(prefix):
+    end_match = _SENTENCE_END_AT_END_PATTERN.search(prefix)
+    if end_match is None:
+        return None
+    if _is_abbreviation_boundary(prefix[: end_match.start() + 1], text, start):
         return None
 
     closing = re.match(_SENTENCE_END_CLOSERS, text[len(prefix) :])

@@ -486,6 +486,61 @@ class TestNormalizeCitationMarkers:
 
         assert result == "As shown by Smith et al. in the trial.[1]"
 
+    def test_accepts_etc_as_a_real_sentence_end_when_a_new_sentence_follows(self):
+        marks = [CitationMark(1, "https://a.example", "A", "claim")]
+
+        result = normalize_citation_markers(
+            "The kit includes pens, paper, tape, etc."
+            + encode_citation_markers("[1]")
+            + " This was verified in the study.",
+            marks,
+        )
+
+        assert result == (
+            "The kit includes pens, paper, tape, etc.[1] This was verified in the study."
+        )
+
+    def test_accepts_etc_as_a_real_sentence_end_in_enumerative_technical_prose(self):
+        marks = [CitationMark(1, "https://a.example", "A", "claim")]
+
+        result = normalize_citation_markers(
+            "EEGLAB provides filtering, referencing, ICA decomposition, etc."
+            + encode_citation_markers("[1]")
+            + " These functions are documented in the plugin manager.",
+            marks,
+        )
+
+        assert result == (
+            "EEGLAB provides filtering, referencing, ICA decomposition, etc.[1] "
+            "These functions are documented in the plugin manager."
+        )
+
+    def test_accepts_eg_as_a_real_sentence_end_when_a_new_sentence_follows(self):
+        marks = [CitationMark(1, "https://a.example", "A", "claim")]
+
+        result = normalize_citation_markers(
+            "Use standard preprocessing steps, e.g."
+            + encode_citation_markers("[1]")
+            + " Filtering removes line noise.",
+            marks,
+        )
+
+        assert result == ("Use standard preprocessing steps, e.g.[1] Filtering removes line noise.")
+
+    def test_still_moves_etc_marker_past_the_abbreviation_mid_sentence(self):
+        marks = [CitationMark(1, "https://a.example", "A", "claim")]
+
+        result = normalize_citation_markers(
+            "The kit includes pens, paper, tape, etc."
+            + encode_citation_markers("[1]")
+            + " which were all counted before shipping.",
+            marks,
+        )
+
+        assert result == (
+            "The kit includes pens, paper, tape, etc. which were all counted before shipping.[1]"
+        )
+
     def test_places_marker_after_markdown_sentence_closers(self):
         marks = [CitationMark(1, "https://a.example", "A", "claim")]
 
