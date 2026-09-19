@@ -24,11 +24,11 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from src.api.config import Settings
 from src.core.services.anthropic_llm import create_anthropic_llm
 from src.core.services.anthropic_models import IMAGE_MEDIA_TYPES
-from tests.helpers.images import digits_png
+from tests.helpers.images import bar_chart_png
 
 TOOL_CALL_ID = "toolu_01aaaaaaaaaaaaaaaaaaaaaa"
 
-PNG_BASE64 = base64.b64encode(digits_png("734")).decode()
+PNG_BASE64 = base64.b64encode(bar_chart_png([0.45, 0.2, 0.7, 1.0, 0.35])).decode()
 
 # The spellings a producer could plausibly use for the same PNG: the Anthropic
 # native block, LangChain's v1 and v0 standard image blocks, and the OpenAI

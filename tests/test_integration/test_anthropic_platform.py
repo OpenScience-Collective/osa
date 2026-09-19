@@ -14,6 +14,7 @@ for "is server mode configured" and is used for the skip check instead.
 """
 
 import base64
+import re
 import uuid
 
 import pytest
@@ -22,7 +23,7 @@ from langchain_core.tools import tool
 
 from src.api.config import get_settings
 from src.core.services.anthropic_llm import create_anthropic_llm
-from tests.helpers.images import digits_png
+from tests.helpers.images import bar_chart_png
 
 pytestmark = [
     pytest.mark.integration,
@@ -182,9 +183,12 @@ def execute_code(code: str) -> str:
     return f"ran {code}"
 
 
-# The number the fixture figure draws. It appears nowhere in any text block, so
-# a reply containing it can only have come from the picture.
-FIGURE_NUMBER = "734"
+# The fixture figure: five bars, tallest fourth from the left, shortest second.
+# Neither position appears in any text block, so a reply naming them can only
+# have come from the picture.
+BAR_HEIGHTS = [0.45, 0.2, 0.7, 1.0, 0.35]
+TALLEST_POSITION = "4"
+SHORTEST_POSITION = "2"
 
 
 class TestToolResultImages:
@@ -202,17 +206,29 @@ class TestToolResultImages:
     request can settle the other half, which is that the endpoint accepts that
     payload and the model looks at the picture.
 
-    The first live run answered it and caught a fixture flaw at the same time:
-    the reply was ``724`` for a figure drawn as ``734``. A wrong digit is proof
-    that the picture arrived, since the control below shows no number comes back
-    without it; what was wrong was the flat-topped "3" the font drew. So a
-    failure here that returns a near miss is a legibility problem in
-    ``tests/helpers/images.py``, and a failure that returns no number at all, or
-    a refusal, is the transport.
+    The first two live runs answered it and rejected a fixture at the same
+    time. That fixture drew "734" in a 5x7 bitmap font; the replies were "724"
+    and then "704" after the glyph was redrawn. Both got the first and last
+    digit right, which is proof the picture was arriving and being read, so
+    what failed was the font: five-pixel-wide glyphs do not survive the
+    downscaling an image goes through on its way into a model. The fixture is
+    now a bar chart, which does not degrade that way and is closer to what this
+    runtime will really be asked about.
+
+    So a failure here that reports plausible but wrong bars is a fixture
+    problem in ``tests/helpers/images.py``; a failure that reports nothing, or
+    says no figure was provided, is the transport.
     """
 
-    def _figure_round_trip(self, *, with_image: bool) -> str:
-        """One browser tool round trip, with or without the figure attached."""
+    def _figure_round_trip(self, *, with_image: bool) -> list[str]:
+        """One browser tool round trip, with or without the figure attached.
+
+        Returns the digits of the reply, in order. The model is asked for two
+        bare numbers, but a sentence naming a bar twice ("the 4th bar (bar 4)")
+        would repeat a digit, so the assertions read the first digit and then
+        look for the second anywhere after it rather than expecting an exact
+        pair.
+        """
         llm = create_anthropic_llm(model="claude-haiku-4-5", thinking=None, max_tokens=64)
         bound = llm.bind_tools([execute_code])
 
@@ -222,7 +238,7 @@ class TestToolResultImages:
             tool_content.append(
                 {
                     "type": "image",
-                    "base64": base64.b64encode(digits_png(FIGURE_NUMBER)).decode(),
+                    "base64": base64.b64encode(bar_chart_png(BAR_HEIGHTS)).decode(),
                     "mime_type": "image/png",
                 }
             )
@@ -230,8 +246,10 @@ class TestToolResultImages:
         messages: list[AIMessage | HumanMessage | ToolMessage] = [
             HumanMessage(
                 content=(
-                    "Run the code, then reply with only the three-digit number "
-                    "printed in the figure."
+                    "Run the code, then look at the bar chart it produced and reply "
+                    "with two numbers and nothing else: the position of the tallest "
+                    "bar, then the position of the shortest bar, counting from the "
+                    "left starting at 1."
                 )
             ),
             AIMessage(
@@ -247,29 +265,32 @@ class TestToolResultImages:
             ),
             ToolMessage(content=tool_content, tool_call_id=call_id),
         ]
-        return _extract_text(bound.invoke(messages).content)
+        return re.findall(r"\d", _extract_text(bound.invoke(messages).content))
 
     def test_model_reads_a_figure_returned_on_a_tool_message(self) -> None:
-        text = self._figure_round_trip(with_image=True)
+        digits = self._figure_round_trip(with_image=True)
 
-        assert FIGURE_NUMBER in text, (
-            "The model did not report the number drawn in the figure attached to "
-            f"the tool result; it replied {text!r}. Either the endpoint dropped "
-            "the image block or the model did not receive it, and the browser "
-            "execution design cannot return plots on the tool result."
+        assert digits and digits[0] == TALLEST_POSITION, (
+            "The model did not name the tallest bar in the figure attached to the "
+            f"tool result; the digits in its reply were {digits!r}. Either the "
+            "endpoint dropped the image block or the model did not receive it, and "
+            "the browser execution design cannot return plots on the tool result."
+        )
+        assert SHORTEST_POSITION in digits[1:], (
+            f"The model named the tallest bar but not the shortest; digits {digits!r}."
         )
 
-    def test_the_same_round_trip_without_the_figure_cannot_report_the_number(self) -> None:
-        """The control: the number is in the picture and nowhere else.
+    def test_the_same_round_trip_without_the_figure_cannot_report_the_bars(self) -> None:
+        """The control: the bar positions are in the picture and nowhere else.
 
-        Without this, the test above would still pass if the number ever
-        leaked into a text block, into the tool arguments, or into the prompt,
-        and it would then be green while proving nothing about images.
+        Without this, the test above would still pass if the answer ever leaked
+        into a text block, into the tool arguments, or into the prompt, and it
+        would then be green while proving nothing about images.
         """
-        text = self._figure_round_trip(with_image=False)
+        digits = self._figure_round_trip(with_image=False)
 
-        assert FIGURE_NUMBER not in text, (
-            f"A round trip carrying no image still produced {FIGURE_NUMBER}: "
-            f"{text!r}. The number is reachable without the figure, so the "
-            "image test above proves nothing."
+        assert not (digits[:1] == [TALLEST_POSITION] and SHORTEST_POSITION in digits[1:]), (
+            f"A round trip carrying no image still produced {digits!r}, which is "
+            "the answer the figure holds. It is reachable without the picture, so "
+            "the image test above proves nothing."
         )

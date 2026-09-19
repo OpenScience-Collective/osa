@@ -1,43 +1,24 @@
-"""Generate a small PNG carrying readable digits, with no image dependency.
+"""Draw a small bar chart as a PNG, with no image dependency.
 
 Nothing in this repository draws images at runtime, so there is no matplotlib
-or Pillow to lean on, and pulling either in as a test dependency to draw three
-digits would be a poor trade. The glyphs below are a 5x7 bitmap font scaled up;
-the only property the tests need is that a vision model can read the number
-back, which the live test in tests/test_integration asserts for real.
+or Pillow to lean on, and pulling either in as a test dependency to draw five
+rectangles would be a poor trade. The encoder writes 8-bit grayscale (PNG color
+type 0), one byte per pixel, with filter type 0 on every row: the smallest
+thing the format allows that is still a valid PNG rather than a fixture that
+happens to work.
 
-The encoder writes 8-bit grayscale (PNG color type 0), one byte per pixel,
-with filter type 0 on every row: the smallest thing the format allows that is
-still a valid PNG rather than a fixture that happens to work.
+A bar chart rather than a number, because of what two live runs showed. The
+first fixture drew "734" in a 5x7 bitmap font; the model replied "724", then
+"704" after the glyph was redrawn. The first and last digits were right both
+times, so the picture was arriving and being read; five-pixel-wide glyphs are
+simply not a reliable channel once an image has been downscaled on its way into
+a model. Which bar is tallest does not degrade that way, and it is closer to
+what this runtime will really be asked about.
 """
 
 import struct
 import zlib
-
-# 5x7 glyphs, one string per row, "1" meaning ink.
-#
-# Glyph shape is load-bearing, not decoration. A flat-topped "3" here (the
-# seven-segment shape: a full top bar, then a straight diagonal) was read back
-# by the model as a "2", failing the live test on a fixture flaw rather than on
-# the behavior under test. These are the rounded shapes, with a waist on the 3
-# and an open bowl on the 6 and 9, which is what keeps a digit legible once the
-# image has been downscaled on its way into the model.
-_GLYPHS: dict[str, tuple[str, ...]] = {
-    "0": ("01110", "10001", "10001", "10001", "10001", "10001", "01110"),
-    "1": ("00100", "01100", "00100", "00100", "00100", "00100", "01110"),
-    "2": ("01110", "10001", "00001", "00010", "00100", "01000", "11111"),
-    "3": ("01110", "10001", "00001", "00110", "00001", "10001", "01110"),
-    "4": ("00010", "00110", "01010", "10010", "11111", "00010", "00010"),
-    "5": ("11111", "10000", "11110", "00001", "00001", "10001", "01110"),
-    "6": ("00110", "01000", "10000", "11110", "10001", "10001", "01110"),
-    "7": ("11111", "00001", "00010", "00100", "01000", "01000", "01000"),
-    "8": ("01110", "10001", "10001", "01110", "10001", "10001", "01110"),
-    "9": ("01110", "10001", "10001", "01111", "00001", "00010", "01100"),
-}
-
-_GLYPH_WIDTH = 5
-_GLYPH_HEIGHT = 7
-_GLYPH_GAP = 1  # in font cells, not pixels
+from collections.abc import Sequence
 
 INK = 0x00
 PAPER = 0xFF
@@ -61,39 +42,48 @@ def _encode_grayscale_png(pixels: bytearray, width: int, height: int) -> bytes:
     )
 
 
-def digits_png(text: str, scale: int = 20, margin: int = 32) -> bytes:
-    """Render `text` (digits only) as a black-on-white PNG.
+def _fill(pixels: bytearray, width: int, left: int, top: int, right: int, bottom: int) -> None:
+    for y in range(top, bottom):
+        pixels[y * width + left : y * width + right] = bytes([INK]) * (right - left)
+
+
+def bar_chart_png(
+    heights: Sequence[float],
+    *,
+    bar_width: int = 60,
+    gap: int = 40,
+    plot_height: int = 320,
+    margin: int = 40,
+) -> bytes:
+    """Draw `heights` as black bars on white, sitting on an axis line.
 
     Args:
-        text: the digits to draw; every character must have a glyph above.
-        scale: pixels per font cell. 20 puts a digit at 100x140 px, which
-            leaves the strokes thick enough to survive the downscaling an
-            image goes through on its way into a model.
-        margin: white border in pixels, so the digits never touch an edge.
+        heights: one value per bar, each in (0, 1], as a fraction of the plot
+            height. Distinct values keep "which bar is tallest" unambiguous.
+        bar_width: bar width in pixels.
+        gap: space between bars in pixels.
+        plot_height: height of the tallest possible bar, in pixels.
+        margin: white border in pixels.
 
     Returns:
         The PNG bytes.
     """
-    missing = sorted(set(text) - set(_GLYPHS))
-    if missing or not text:
-        msg = f"digits_png draws digits only; got {text!r} (unsupported: {missing})"
+    if not heights or any(not 0 < height <= 1 for height in heights):
+        msg = f"heights must be non-empty and each within (0, 1]; got {heights!r}"
         raise ValueError(msg)
 
-    cells_wide = len(text) * _GLYPH_WIDTH + (len(text) - 1) * _GLYPH_GAP
-    width = margin * 2 + cells_wide * scale
-    height = margin * 2 + _GLYPH_HEIGHT * scale
+    count = len(heights)
+    axis_thickness = 6
+    width = margin * 2 + count * bar_width + (count - 1) * gap
+    height = margin * 2 + plot_height + axis_thickness
     pixels = bytearray([PAPER]) * (width * height)
 
-    for index, char in enumerate(text):
-        left_cell = index * (_GLYPH_WIDTH + _GLYPH_GAP)
-        for row, bits in enumerate(_GLYPHS[char]):
-            for column, bit in enumerate(bits):
-                if bit != "1":
-                    continue
-                x0 = margin + (left_cell + column) * scale
-                y0 = margin + row * scale
-                for y in range(y0, y0 + scale):
-                    start = y * width + x0
-                    pixels[start : start + scale] = bytes([INK]) * scale
+    baseline = margin + plot_height
+    _fill(pixels, width, margin, baseline, width - margin, baseline + axis_thickness)
+
+    for index, value in enumerate(heights):
+        left = margin + index * (bar_width + gap)
+        bar_top = baseline - round(value * plot_height)
+        _fill(pixels, width, left, bar_top, left + bar_width, baseline)
 
     return _encode_grayscale_png(pixels, width, height)
