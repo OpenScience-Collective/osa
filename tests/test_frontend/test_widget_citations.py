@@ -1,17 +1,19 @@
 """Widget invariants for Phase 4 inline citations (issue #350 / #364).
 
-CI has no JS runtime (see CLAUDE.md / .rules), so these parse
-osa-chat-widget.js as text via regex, the same approach
-test_widget_drift.py uses. Where possible, expectations are derived from
-the real Python source (CitationInfo's own field names) rather than
-hardcoded, so a field rename on the backend is caught here instead of
-shipping a widget that silently stops rendering it.
+These parse osa-chat-widget.js as text via regex, the same approach
+test_widget_drift.py uses, so they run in the pytest job regardless of
+whether the separate frontend-tests (Bun) CI job also runs. Where possible,
+expectations are derived from the real Python source (CitationInfo's own
+field names) rather than hardcoded, so a field rename on the backend is
+caught here instead of shipping a widget that silently stops rendering it.
 
 Reading the source has a limit worth stating: it caught none of the
 marker-scanning bug that ``frontend/test-citation-markers.js`` was written
 for, because every regex involved looked correct on its own and only their
-combination was wrong. Run that file with ``bun`` for actual behavior; the
-checks here pin the shape it depends on, so a regression still fails in CI.
+combination was wrong. That file (and frontend/test-streaming.js) now run
+with Bun in the frontend-tests CI job; the checks here are a second,
+independent guard that still catches a regression even if that job is
+skipped or its runtime is unavailable.
 """
 
 import re

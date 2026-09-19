@@ -145,8 +145,12 @@ class TestWidgetAttributeEscaping:
     ``replace`` calls in ``escapeHtml``, a ``cited_text`` of
     ``'prefix" onmouseover="..."'`` produced an anchor with a live
     ``onmouseover`` attribute; after, the anchor carries exactly
-    href/target/rel/title. There is no JS harness in CI (issue #377), so what
-    is enforced here is the source-level invariant rather than the DOM result.
+    href/target/rel/title. CI now runs frontend/test-citation-markers.js and
+    frontend/test-streaming.js with Bun (see the frontend-tests job), but
+    against a minimal ``document`` stub, not a real DOM like happy-dom; the
+    happy-dom verification above was a one-time manual check. So what is
+    enforced here, continuously, is the source-level invariant rather than
+    an actual DOM result.
     """
 
     # Attribute values built from data the widget did not generate itself.
