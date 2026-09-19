@@ -3,7 +3,7 @@
 import logging
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from src.version import __version__
@@ -172,6 +172,26 @@ class Settings(BaseSettings):
     # Master switch only; per-community schedules are defined in each community's config.yaml
     # Empty databases are automatically seeded on startup when sync is enabled
     sync_enabled: bool = Field(default=True, description="Enable automated knowledge sync")
+
+    @model_validator(mode="after")
+    def validate_workspace_id_with_base_url(self) -> "Settings":
+        """Fail fast if ANTHROPIC_BASE_URL is set without ANTHROPIC_WORKSPACE_ID.
+
+        ``create_anthropic_llm`` (src/core/services/anthropic_llm.py) already
+        enforces this at request time on the server-key path, but only there
+        -- a misconfigured env var otherwise passes ``uv sync``, startup, and
+        ``/health``, and only surfaces as an opaque error on the first real
+        request that falls through to the platform key, which is the
+        majority of traffic for most communities. Checking it here moves the
+        failure to process startup instead.
+        """
+        if self.anthropic_base_url and not self.anthropic_workspace_id:
+            raise ValueError(
+                "ANTHROPIC_BASE_URL is set but ANTHROPIC_WORKSPACE_ID is not; the "
+                "Claude Platform on AWS endpoint rejects requests without the "
+                "anthropic-workspace-id header"
+            )
+        return self
 
     def parse_admin_keys(self) -> set[str]:
         """Parse API_KEYS into a set of valid admin keys.

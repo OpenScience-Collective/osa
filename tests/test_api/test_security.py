@@ -149,6 +149,24 @@ class TestAPIKeyAuthentication:
         assert response.status_code == 401
         assert "API key required" in response.json()["detail"]
 
+    def test_empty_string_byok_header_does_not_bypass_server_auth(
+        self, client_with_auth: TestClient
+    ) -> None:
+        """An empty-string BYOK header value must not bypass auth.
+
+        Believed correct today via Python truthiness (`"" or None` is
+        falsy), but previously untested -- and the exact shape that would
+        make ByokCredential's construction-time invariant (rejecting an
+        empty key) matter if this check were ever weakened to `is not
+        None` instead of a truthiness check.
+        """
+        response = client_with_auth.get(
+            "/protected",
+            headers={"X-Anthropic-API-Key": ""},
+        )
+        assert response.status_code == 401
+        assert "API key required" in response.json()["detail"]
+
     def test_byok_bypasses_server_auth_anthropic(self, client_with_auth: TestClient) -> None:
         """Anthropic BYOK header should bypass server API key requirement."""
         response = client_with_auth.get(
@@ -208,3 +226,85 @@ class TestByokBypassCoversExactlyTheResolvableProviders:
     def test_admin_auth_reads_no_byok_headers_at_all(self) -> None:
         """Admin endpoints spend server resources, so BYOK never bypasses them."""
         assert _headers_read_by(security.verify_admin_api_key) == {api_key_header.model.name}
+
+
+class TestEndpointsThatDoNotSpendByokRequireAdminAuth:
+    """An endpoint that never spends a BYOK credential against an LLM must
+    not accept one as a substitute for real auth (see the docstrings on
+    verify_api_key and src/api/routers/mirrors.py): a syntactically-plausible
+    header value would otherwise authorize it with no real credential at all.
+
+    Every route is discovered from the real, fully-wired app (real community
+    registry, real routers) rather than hardcoding a path list, so a new
+    mirror or session route inherits this check automatically.
+    """
+
+    @staticmethod
+    def _routes_by_dependency(path_predicate: Callable[[str], bool]) -> dict[str, set[str]]:
+        """Map each matching route's path to the names of its dependencies."""
+        from src.api.main import app
+
+        return {
+            f"{sorted(route.methods)} {route.path}": {
+                getattr(dep.call, "__name__", str(dep.call)) for dep in route.dependant.dependencies
+            }
+            for route in app.routes
+            if path_predicate(getattr(route, "path", ""))
+        }
+
+    def test_mirror_routes_use_admin_auth(self) -> None:
+        routes = self._routes_by_dependency(lambda path: path.startswith("/mirrors"))
+        assert routes, "expected at least one /mirrors route to be registered"
+        for route, deps in routes.items():
+            assert "verify_admin_api_key" in deps, f"{route} must depend on verify_admin_api_key"
+            assert "verify_api_key" not in deps, f"{route} must not accept a BYOK bypass"
+
+    def test_session_routes_use_admin_auth(self) -> None:
+        routes = self._routes_by_dependency(lambda path: "/sessions" in path)
+        assert routes, "expected at least one /sessions route to be registered"
+        for route, deps in routes.items():
+            assert "verify_admin_api_key" in deps, f"{route} must depend on verify_admin_api_key"
+            assert "verify_api_key" not in deps, f"{route} must not accept a BYOK bypass"
+
+    def test_health_communities_route_uses_admin_auth(self) -> None:
+        """GET /health/communities returns a full per-community diagnostic
+        dump (API key status, CORS origins, document counts, warnings) and
+        never spends a BYOK credential -- the same vulnerability class as
+        mirrors/sessions, just missed in the first pass at this fix."""
+        routes = self._routes_by_dependency(lambda path: path == "/health/communities")
+        assert routes, "expected /health/communities to be registered"
+        for route, deps in routes.items():
+            assert "verify_admin_api_key" in deps, f"{route} must depend on verify_admin_api_key"
+            assert "verify_api_key" not in deps, f"{route} must not accept a BYOK bypass"
+
+    def test_only_byok_spending_routes_use_verify_api_key(self) -> None:
+        """Generalized version of every case above: enumerate every route
+        that depends on verify_api_key (RequireAuth's BYOK bypass) and
+        assert it's exactly the set of routes that actually spend the
+        credential against an LLM (/ask, /chat). This is the check that
+        would have caught /health/communities automatically instead of
+        needing a dedicated case added after the fact -- a future route
+        added with RequireAuth by copy-paste, whatever its path, fails
+        here immediately rather than shipping a silent auth bypass.
+        """
+        from fastapi.routing import APIRoute
+
+        from src.api.main import app
+
+        routes_using_verify_api_key = {
+            route.path
+            for route in app.routes
+            if isinstance(route, APIRoute)
+            and any(
+                getattr(dep.call, "__name__", None) == "verify_api_key"
+                for dep in route.dependant.dependencies
+            )
+        }
+        assert routes_using_verify_api_key, "expected at least one route to use verify_api_key"
+        for path in routes_using_verify_api_key:
+            assert path.endswith(("/ask", "/chat")), (
+                f"{path} depends on verify_api_key (RequireAuth), whose BYOK bypass "
+                "is only safe for a route that actually spends the credential against "
+                "an LLM. If this route genuinely does, add it to this allowlist; "
+                "otherwise switch it to RequireAdminAuth."
+            )

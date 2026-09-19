@@ -227,6 +227,19 @@ class TestResolveByok:
         assert resolve_byok(None, None) is None
 
 
+class TestByokCredentialInvariant:
+    """ByokCredential.__post_init__ rejects an empty key on the type itself,
+    not just at resolve_byok's one call site (see security.py)."""
+
+    def test_empty_key_rejected(self):
+        with pytest.raises(ValueError, match="must not be empty"):
+            ByokCredential(key="", provider="anthropic")
+
+    def test_nonempty_key_accepted(self):
+        cred = ByokCredential(key="a-real-key", provider="anthropic")
+        assert cred.key == "a-real-key"
+
+
 class TestResolveProvider:
     """Tests for _resolve_provider authorization + provider selection logic."""
 
@@ -373,6 +386,40 @@ class TestResolveProvider:
         assert "No API key configured" in exc_info.value.detail
 
 
+class TestProviderChoiceInvariant:
+    """ProviderChoice.__post_init__ enforces the invariant every real
+    construction site (_platform_choice, _resolve_provider) already
+    follows: api_key=None only for Anthropic server mode, and every other
+    combination carries a non-empty key."""
+
+    def test_none_key_valid_for_anthropic_platform(self):
+        choice = ProviderChoice(provider="anthropic", api_key=None, key_source="platform")
+        assert choice.api_key is None
+
+    def test_none_key_invalid_for_openrouter(self):
+        with pytest.raises(ValueError, match="api_key=None is only valid"):
+            ProviderChoice(provider="openrouter", api_key=None, key_source="platform")
+
+    def test_none_key_invalid_for_byok(self):
+        with pytest.raises(ValueError, match="api_key=None is only valid"):
+            ProviderChoice(provider="anthropic", api_key=None, key_source="byok")
+
+    def test_none_key_invalid_for_community(self):
+        with pytest.raises(ValueError, match="api_key=None is only valid"):
+            ProviderChoice(provider="anthropic", api_key=None, key_source="community")
+
+    def test_empty_string_key_rejected(self):
+        with pytest.raises(ValueError, match="must not be an empty string"):
+            ProviderChoice(provider="anthropic", api_key="", key_source="byok")
+
+    def test_nonempty_key_accepted_for_every_source(self):
+        for key_source in ("byok", "community", "platform"):
+            choice = ProviderChoice(
+                provider="openrouter", api_key="a-real-key", key_source=key_source
+            )
+            assert choice.api_key == "a-real-key"
+
+
 class TestSelectModelAnthropic:
     """Tests for _select_model on the Anthropic path."""
 
@@ -453,18 +500,23 @@ class TestSelectModelAnthropic:
         assert provider is None
 
     def test_default_model_provider_ignored(self):
-        """default_model_provider (OpenRouter-only routing) is ignored on this path."""
-        info = AssistantInfo(
-            id="legacy-test-2",
-            name="Legacy Test 2",
-            description="x",
-            community_config=CommunityConfig(
+        """default_model_provider (OpenRouter-only routing) is ignored on this path,
+        and CommunityConfig itself warns about that at load time (a bare
+        default_model discards the provider hint on every path -- see
+        validate_default_model_provider_has_effect)."""
+        with pytest.warns(UserWarning, match="default_model_provider.*is ignored"):
+            community_config = CommunityConfig(
                 id="legacy-test-2",
                 name="Legacy Test 2",
                 description="x",
                 default_model="claude-sonnet-5",
                 default_model_provider="Cerebras",
-            ),
+            )
+        info = AssistantInfo(
+            id="legacy-test-2",
+            name="Legacy Test 2",
+            description="x",
+            community_config=community_config,
         )
 
         model, provider = _select_model(info, None, provider="anthropic", has_byok=False)

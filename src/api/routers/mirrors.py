@@ -4,6 +4,13 @@ Mirrors allow developers to create short-lived copies of community knowledge
 databases for development and testing. Authenticated users may pass an
 X-User-ID header; users with an owner identifier are subject to per-user
 mirror limits in addition to the global mirror cap.
+
+Every endpoint here uses ``RequireAdminAuth``, not ``RequireAuth``: mirror
+operations consume real server resources (disk, sync jobs) but never spend
+a caller-supplied BYOK credential against an LLM, so the BYOK bypass that
+``RequireAuth`` grants (a syntactically-plausible key in X-Anthropic-API-Key
+or X-OpenRouter-Key) would otherwise authorize mirror management with no
+real credential at all.
 """
 
 import asyncio
@@ -14,7 +21,7 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Header, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
 
-from src.api.security import RequireAuth
+from src.api.security import RequireAdminAuth
 from src.core.validation import is_safe_identifier
 from src.knowledge.db import active_mirror_context
 from src.knowledge.mirror import (
@@ -127,7 +134,7 @@ class MirrorSyncResponse(BaseModel):
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=MirrorResponse)
 async def create_mirror_endpoint(
     body: CreateMirrorRequest,
-    _auth: RequireAuth,
+    _auth: RequireAdminAuth,
     x_user_id: Annotated[str | None, Header()] = None,
 ) -> MirrorResponse:
     """Create a new ephemeral database mirror.
@@ -164,7 +171,7 @@ async def create_mirror_endpoint(
 
 @router.get("", response_model=list[MirrorResponse])
 async def list_mirrors_endpoint(
-    _auth: RequireAuth,
+    _auth: RequireAdminAuth,
 ) -> list[MirrorResponse]:
     """List all active (non-expired) mirrors."""
     mirrors = list_mirrors()
@@ -175,7 +182,7 @@ async def list_mirrors_endpoint(
 @router.get("/{mirror_id}", response_model=MirrorResponse)
 async def get_mirror_endpoint(
     mirror_id: str,
-    _auth: RequireAuth,
+    _auth: RequireAdminAuth,
 ) -> MirrorResponse:
     """Get metadata for a specific mirror."""
     try:
@@ -201,7 +208,7 @@ async def get_mirror_endpoint(
 @router.delete("/{mirror_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_mirror_endpoint(
     mirror_id: str,
-    _auth: RequireAuth,
+    _auth: RequireAdminAuth,
 ) -> None:
     """Delete a mirror and all its databases."""
     try:
@@ -228,7 +235,7 @@ async def delete_mirror_endpoint(
 async def refresh_mirror_endpoint(
     mirror_id: str,
     body: RefreshMirrorRequest,
-    _auth: RequireAuth,
+    _auth: RequireAdminAuth,
 ) -> MirrorResponse:
     """Re-copy production databases into an existing mirror.
 
@@ -252,7 +259,7 @@ async def refresh_mirror_endpoint(
 async def sync_mirror_endpoint(
     mirror_id: str,
     body: MirrorSyncRequest,
-    _auth: RequireAuth,
+    _auth: RequireAdminAuth,
 ) -> MirrorSyncResponse:
     """Run sync pipeline against a mirror's databases.
 
@@ -323,7 +330,7 @@ async def sync_mirror_endpoint(
 async def download_mirror_db(
     mirror_id: str,
     community_id: str,
-    _auth: RequireAuth,
+    _auth: RequireAdminAuth,
 ) -> Any:
     """Download a community database file from a mirror.
 

@@ -1383,6 +1383,70 @@ class CommunityConfig(BaseModel):
         return _validate_model_id(v, field_label="Model name")
 
     @model_validator(mode="after")
+    def validate_default_model_resolvable(self) -> "CommunityConfig":
+        """Warn when a bare default_model id won't resolve on either path.
+
+        Format is already checked by ``validate_default_model`` above; this
+        checks resolvability. A bare id (no "/") that ``normalize_model``
+        rejects is neither an offered Anthropic model nor a recognized
+        legacy alias. The Anthropic path fails safe (``_select_model``
+        raises an HTTPException 400), but an OpenRouter-funded request for
+        the same community silently falls back to a hardcoded default model
+        (logged as an error in ``_select_model``, not surfaced at
+        config-load time).
+
+        A creator/model-name id (containing "/") is assumed to be a genuine
+        OpenRouter slug and is not checked here: ``normalize_model`` only
+        resolves first-party Anthropic ids and their legacy aliases, so it
+        is not the right tool to validate an OpenRouter slug.
+        """
+        if not self.default_model or "/" in self.default_model:
+            return self
+        try:
+            normalize_model(self.default_model)
+        except ValueError:
+            warnings.warn(
+                f"default_model={self.default_model!r} is not an offered Anthropic "
+                "model or a recognized alias. A request funded by an Anthropic key "
+                "will get a clear 400; a request funded by an OpenRouter key will "
+                "silently fall back to a hardcoded default model instead of the one "
+                "configured here. Use one of "
+                "src.core.services.anthropic_llm.OFFERED_MODELS, or an OpenRouter "
+                "creator/model-name id if you intend to route there.",
+                UserWarning,
+                stacklevel=2,
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_default_model_provider_has_effect(self) -> "CommunityConfig":
+        """Warn when default_model_provider is set but will be ignored.
+
+        ``_select_model`` (src/api/routers/community.py) only forwards
+        ``default_model_provider`` when ``default_model`` is itself an
+        OpenRouter creator/model-name id (contains "/") on a request that
+        goes through OpenRouter. A bare id is ignored on both paths: the
+        Anthropic path has no routing layer at all, and the OpenRouter path
+        maps a bare id to its own OpenRouter slug and always drops the
+        provider hint in that branch (see the "Phase 2" comment there).
+        This mirrors ``faq_summarizer._warn_if_provider_ignored``'s warning
+        for the analogous ``AgentConfig.provider`` field.
+        """
+        if self.default_model_provider and (
+            not self.default_model or "/" not in self.default_model
+        ):
+            warnings.warn(
+                f"default_model_provider={self.default_model_provider!r} is ignored: "
+                "it only has an effect when default_model is itself an OpenRouter "
+                "creator/model-name id (e.g. 'deepinfra/some-model'), not a bare id "
+                f"like {self.default_model!r}. Remove the field, or set default_model "
+                "to an OpenRouter-format id if routing control is needed.",
+                UserWarning,
+                stacklevel=2,
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_expensive_model_without_byok(self) -> "CommunityConfig":
         """Warn about expensive models without BYOK to prevent surprise billing.
 

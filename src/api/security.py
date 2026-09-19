@@ -32,6 +32,19 @@ class ByokCredential:
     key: str
     provider: Literal["anthropic", "openrouter"]
 
+    def __post_init__(self) -> None:
+        if not self.key:
+            # An empty key would be indistinguishable from "no BYOK" to
+            # every downstream consumer (_check_model_cost skips cost
+            # enforcement whenever key_source == "byok"; create_anthropic_llm
+            # / create_openrouter_llm both treat a falsy key as "use server
+            # credentials instead"), so it would silently run on the
+            # platform's key with cost enforcement disabled. resolve_byok
+            # already only constructs this from a truthy header value; this
+            # enforces the invariant on the type itself, not just at that
+            # one call site.
+            raise ValueError("ByokCredential.key must not be empty")
+
 
 def resolve_byok(
     anthropic_key: str | None,
@@ -81,11 +94,19 @@ async def verify_api_key(
     without requiring server authentication.
 
     The two headers accepted here are exactly the two ``resolve_byok``
-    understands. That is the whole safety argument for the bypass: whatever
-    the caller sends is the credential the request runs on, so a junk value
-    fails upstream against their own provider. A header we accepted here but
-    dropped afterwards would instead fall through to the community's key or
-    the platform's, and hand out answers we pay for (issue #393).
+    understands. That is the whole safety argument for the bypass, and it
+    only holds for a caller that actually spends the credential against an
+    LLM (``/ask``, ``/chat``): whatever the caller sends is the credential
+    the request runs on, so a junk value fails upstream against their own
+    provider. A header we accepted here but dropped afterwards would
+    instead fall through to the community's key or the platform's, and hand
+    out answers we pay for (issue #393).
+
+    This dependency must NOT be reused on an endpoint that does not spend
+    the BYOK credential (mirror management, session list/delete, etc.): the
+    safety argument above does not apply there, since nothing downstream
+    ever validates the header against a real provider. Those endpoints use
+    ``RequireAdminAuth`` instead, which has no BYOK bypass.
     """
     # If auth is not required, skip verification
     if not settings.require_api_auth:

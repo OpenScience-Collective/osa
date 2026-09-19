@@ -20,10 +20,11 @@ A caller-supplied (BYOK) Anthropic key is not authorized on that AWS
 workspace, so BYOK requests go to the first-party API (api.anthropic.com)
 instead; see :func:`create_anthropic_llm` for how the two modes differ.
 
-This is Phase 1 of the Anthropic provider layer (issue #361): it adds the
-provider without changing request routing. ``src/api/config.py``'s
-``default_model`` / ``default_model_provider`` are untouched here; wiring
-this module into the agents and routers is Phase 2.
+This started as Phase 1 of the Anthropic provider layer (issue #361), adding
+the provider without changing request routing. Phases 2-4 have since wired
+it in: ``create_anthropic_llm`` is called from
+``src.api.routers.community`` and ``src.knowledge.faq_summarizer``, and it
+is the default path for platform/community-funded requests.
 """
 
 import logging
@@ -31,7 +32,7 @@ from typing import Any
 
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
-from pydantic import field_validator
+from pydantic import ConfigDict, field_validator
 
 from src.api.config import Settings, get_settings
 from src.core.services.anthropic_endpoints import FIRST_PARTY_BASE_URL
@@ -371,6 +372,8 @@ class CachingChatAnthropic(ChatAnthropic):
     request for Phase 2 to place its own breakpoints.
     """
 
+    model_config = ConfigDict(validate_assignment=True)
+
     cache_ttl: str = DEFAULT_CACHE_TTL
     """Prompt-cache lifetime for cache_control markers ("5m" or "1h")."""
 
@@ -405,9 +408,12 @@ class CachingChatAnthropic(ChatAnthropic):
     ) -> dict:
         """Build the request payload with cache_control breakpoints applied.
 
-        ``ChatAnthropic._get_request_payload`` already applies a caller-
-        supplied ``cache_control`` kwarg to the last eligible message block
-        (see langchain_anthropic.chat_models); defaulting it here means the
+        Against the direct Anthropic API this module uses, ``ChatAnthropic.
+        _get_request_payload`` forwards a caller-supplied ``cache_control``
+        kwarg as a top-level request parameter, and the Anthropic server
+        (not langchain) attaches the breakpoint to the last cacheable block
+        (see ``_conversation_cache_control_landed`` below for the other
+        transport's block-level shape). Defaulting the kwarg here means the
         trailing breakpoint lands there automatically, so the conversation
         prefix (system + history) stays cached across agentic tool-call
         iterations without every caller having to pass it explicitly.

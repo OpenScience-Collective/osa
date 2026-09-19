@@ -178,6 +178,28 @@ class TestCreateOpenRouterLLMConfiguration:
         assert llm.llm.streaming is True
 
 
+class TestCreateOpenRouterLLMKeyResolution:
+    """Tests that a missing API key fails loud instead of constructing an
+    LLM with no key that would only surface an opaque auth error later."""
+
+    def test_no_api_key_and_no_env_var_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        with pytest.raises(RuntimeError, match="No OpenRouter API key available"):
+            create_openrouter_llm(model="openai/gpt-oss-120b", api_key=None)
+
+    def test_env_var_used_when_api_key_not_passed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OPENROUTER_API_KEY", "env-key")
+        llm = create_openrouter_llm(model="openai/gpt-oss-120b", api_key=None)
+        assert llm.llm.api_key == "env-key"
+
+    def test_explicit_api_key_takes_precedence_over_env_var(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENROUTER_API_KEY", "env-key")
+        llm = create_openrouter_llm(model="openai/gpt-oss-120b", api_key="explicit-key")
+        assert llm.llm.api_key == "explicit-key"
+
+
 class TestCreateOpenRouterLLMCachingWrapper:
     """Tests for caching wrapper integration."""
 

@@ -232,7 +232,19 @@ class TestCreateAnthropicLLMCredentials:
         assert not llm.default_headers
 
     def test_base_url_without_workspace_id_raises(self) -> None:
-        settings = _settings(anthropic_workspace_id=None)
+        """Settings itself now rejects this combination at construction
+        time (see tests/test_api/test_config.py), so this exercises it via
+        _settings() rather than via create_anthropic_llm."""
+        with pytest.raises(ValidationError, match="ANTHROPIC_WORKSPACE_ID"):
+            _settings(anthropic_workspace_id=None)
+
+    def test_create_anthropic_llm_rechecks_settings_mutated_after_construction(self) -> None:
+        """Defense-in-depth: Settings.validate_workspace_id_with_base_url
+        only runs at construction time, and Settings is mutable, so a value
+        changed afterward (e.g. by a bug elsewhere) is not re-validated by
+        pydantic. create_anthropic_llm's own check still catches it."""
+        settings = _settings()
+        settings.anthropic_workspace_id = None
         with pytest.raises(RuntimeError, match="ANTHROPIC_WORKSPACE_ID"):
             create_anthropic_llm(settings=settings)
 
@@ -246,6 +258,10 @@ class TestCreateAnthropicLLMCredentials:
         llm = create_anthropic_llm(api_key="byok-key", settings=settings)
         assert llm.anthropic_api_url == "https://api.anthropic.com"
         assert not llm.default_headers
+        # URL and header shape alone would also be satisfied by a regression
+        # that silently falls back to the server key instead of the
+        # caller's -- the exact bug class #393/#394 already shipped once.
+        assert llm.anthropic_api_key.get_secret_value() == "byok-key"
 
 
 class TestCreateAnthropicLLMBehavior:
@@ -521,6 +537,13 @@ class TestCachingChatAnthropicCacheTtlValidation:
         )
         assert llm.cache_ttl == ttl
 
+    def test_assignment_after_construction_revalidates(self) -> None:
+        """model_config's validate_assignment=True means a post-construction
+        mutation is checked too, not just the initial value."""
+        llm = CachingChatAnthropic(model="claude-haiku-4-5", api_key="test-key", max_tokens=100)
+        with pytest.raises(ValidationError, match="Unsupported prompt cache TTL"):
+            llm.cache_ttl = "10m"
+
 
 class TestCachingChatAnthropicSystemListForm:
     """Tests for the list-form system content branch, previously uncovered."""
@@ -579,3 +602,26 @@ class TestCachingChatAnthropicSystemListForm:
 
         assert system_message.content == original_content
         assert "cache_control" not in system_message.content[-1]
+
+    def test_two_calls_with_same_system_message_do_not_leak_state(self) -> None:
+        """More directly mirrors the original bug report than the
+        single-call regression guard above: a second call built from the
+        same SystemMessage instance must not see a cache_control marker
+        left over from the first call's payload construction.
+        """
+        llm = self._llm()
+        system_message = SystemMessage(
+            content=[
+                {"type": "text", "text": "Block one."},
+                {"type": "text", "text": "Block two."},
+            ]
+        )
+
+        first_payload = llm._get_request_payload([system_message, HumanMessage(content="Hi")])
+        second_payload = llm._get_request_payload(
+            [system_message, HumanMessage(content="Hi again")]
+        )
+
+        assert "cache_control" not in system_message.content[-1]
+        assert first_payload["system"][-1]["cache_control"] == {"type": "ephemeral"}
+        assert second_payload["system"][-1]["cache_control"] == {"type": "ephemeral"}

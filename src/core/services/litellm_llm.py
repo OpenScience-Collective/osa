@@ -147,10 +147,21 @@ def create_openrouter_llm(
     if user_id:
         model_kwargs["user"] = user_id
 
+    # Falls back to the env var (documented above) rather than requiring
+    # every caller to read it themselves, but a request with neither fails
+    # loud here instead of constructing successfully and only surfacing an
+    # opaque auth error on the first real call -- matching
+    # create_anthropic_llm's server-mode key check.
+    resolved_api_key = api_key or os.getenv("OPENROUTER_API_KEY")
+    if not resolved_api_key:
+        raise RuntimeError(
+            "No OpenRouter API key available: pass api_key explicitly or set OPENROUTER_API_KEY"
+        )
+
     # Create base LLM with streaming enabled for proper event handling
     llm = ChatLiteLLM(
         model=litellm_model,
-        api_key=api_key or os.getenv("OPENROUTER_API_KEY"),
+        api_key=resolved_api_key,
         temperature=temperature,
         max_tokens=max_tokens,
         model_kwargs=model_kwargs,
