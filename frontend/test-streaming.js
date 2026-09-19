@@ -314,14 +314,19 @@ test('Legacy citation migration repairs cached mid-word markers', () => {
     'Migration should not move a list marker across list items'
   );
   assertEqual(
-    migrateLegacyCitationMarkers('arr[1] contains an index.', citations),
-    'arr[1] contains an index.',
-    'Migration should preserve an ordinary array index'
-  );
-  assertEqual(
     migrateLegacyCitationMarkers('`arr[1]` contains code.', citations),
     '`arr[1]` contains code.',
     'Migration should preserve a marker inside inline code'
+  );
+  assertEqual(
+    migrateLegacyCitationMarkers('arr[1] contains an index.', citations),
+    'arr contains an index.[1]',
+    'An unwrapped array-index-style marker is treated as a real citation; wrap it in backticks to preserve it as code'
+  );
+  assertEqual(
+    migrateLegacyCitationMarkers('The documentation[1] explains this in detail.', citations),
+    'The documentation explains this in detail.[1]',
+    'A word directly followed by a marker should still migrate to the sentence end'
   );
 });
 
