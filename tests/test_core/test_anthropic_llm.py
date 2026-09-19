@@ -602,3 +602,26 @@ class TestCachingChatAnthropicSystemListForm:
 
         assert system_message.content == original_content
         assert "cache_control" not in system_message.content[-1]
+
+    def test_two_calls_with_same_system_message_do_not_leak_state(self) -> None:
+        """More directly mirrors the original bug report than the
+        single-call regression guard above: a second call built from the
+        same SystemMessage instance must not see a cache_control marker
+        left over from the first call's payload construction.
+        """
+        llm = self._llm()
+        system_message = SystemMessage(
+            content=[
+                {"type": "text", "text": "Block one."},
+                {"type": "text", "text": "Block two."},
+            ]
+        )
+
+        first_payload = llm._get_request_payload([system_message, HumanMessage(content="Hi")])
+        second_payload = llm._get_request_payload(
+            [system_message, HumanMessage(content="Hi again")]
+        )
+
+        assert "cache_control" not in system_message.content[-1]
+        assert first_payload["system"][-1]["cache_control"] == {"type": "ephemeral"}
+        assert second_payload["system"][-1]["cache_control"] == {"type": "ephemeral"}

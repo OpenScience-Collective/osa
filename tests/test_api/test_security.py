@@ -149,6 +149,24 @@ class TestAPIKeyAuthentication:
         assert response.status_code == 401
         assert "API key required" in response.json()["detail"]
 
+    def test_empty_string_byok_header_does_not_bypass_server_auth(
+        self, client_with_auth: TestClient
+    ) -> None:
+        """An empty-string BYOK header value must not bypass auth.
+
+        Believed correct today via Python truthiness (`"" or None` is
+        falsy), but previously untested -- and the exact shape that would
+        make ByokCredential's construction-time invariant (rejecting an
+        empty key) matter if this check were ever weakened to `is not
+        None` instead of a truthiness check.
+        """
+        response = client_with_auth.get(
+            "/protected",
+            headers={"X-Anthropic-API-Key": ""},
+        )
+        assert response.status_code == 401
+        assert "API key required" in response.json()["detail"]
+
     def test_byok_bypasses_server_auth_anthropic(self, client_with_auth: TestClient) -> None:
         """Anthropic BYOK header should bypass server API key requirement."""
         response = client_with_auth.get(

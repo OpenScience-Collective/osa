@@ -40,6 +40,8 @@ from src.api.security import (
     RequireAdminAuth,
     RequireAuth,
     RequireScopedAuth,
+    anthropic_key_header,
+    openrouter_key_header,
     resolve_byok,
 )
 from src.assistants import registry
@@ -1438,8 +1440,12 @@ def create_community_router(community_id: str) -> APIRouter:
         body: AskRequest,
         http_request: Request,
         _auth: RequireAuth,
-        x_anthropic_key: Annotated[str | None, Header(alias="X-Anthropic-API-Key")] = None,
-        x_openrouter_key: Annotated[str | None, Header(alias="X-OpenRouter-Key")] = None,
+        x_anthropic_key: Annotated[
+            str | None, Header(alias=anthropic_key_header.model.name)
+        ] = None,
+        x_openrouter_key: Annotated[
+            str | None, Header(alias=openrouter_key_header.model.name)
+        ] = None,
         x_user_id: Annotated[str | None, Header(alias="X-User-ID")] = None,
     ) -> AskResponse | StreamingResponse:
         """Ask a single question to the community assistant.
@@ -1534,8 +1540,12 @@ def create_community_router(community_id: str) -> APIRouter:
         body: ChatRequest,
         http_request: Request,
         _auth: RequireAuth,
-        x_anthropic_key: Annotated[str | None, Header(alias="X-Anthropic-API-Key")] = None,
-        x_openrouter_key: Annotated[str | None, Header(alias="X-OpenRouter-Key")] = None,
+        x_anthropic_key: Annotated[
+            str | None, Header(alias=anthropic_key_header.model.name)
+        ] = None,
+        x_openrouter_key: Annotated[
+            str | None, Header(alias=openrouter_key_header.model.name)
+        ] = None,
         x_user_id: Annotated[str | None, Header(alias="X-User-ID")] = None,
     ) -> ChatResponse | StreamingResponse:
         """Chat with the community assistant.

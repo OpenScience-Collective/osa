@@ -21,6 +21,28 @@ mock_fetcher = MagicMock(return_value="fake content")
 # Should use real HTTP requests or real test fixtures
 ```
 
+## Mocking One Layer Above the HTTP Boundary
+
+**Preferred:** mock at the real HTTP boundary (`respx`, `pytest-httpx`, or -- for
+SDKs that vendor their own isolated HTTP stack, see
+`tests/test_api/test_byok_http.py`'s module docstring -- patching that SDK's
+own client-construction point directly). This exercises routing,
+authorization, and the full agent loop for real; only the outbound network
+call is faked.
+
+**Accepted exception:** patching one layer above the HTTP boundary (e.g.
+`create_community_assistant`) is acceptable specifically for LangGraph
+`astream_events`-shaped fixtures, where the real HTTP-level event stream
+shape is complex enough that hand-building it risks testing the fixture
+instead of the code. This is still not a business-logic mock -- it replaces
+the network boundary, not application logic -- but it is a step further
+from the wire than the preferred approach, so it needs a companion test
+closer to the real boundary (either a real HTTP-boundary test elsewhere in
+the suite, or a `@pytest.mark.llm` test against the live API) covering the
+same code path, so a drift between the hand-built fixture and what the real
+API actually emits doesn't go undetected. `tests/test_api/
+test_citation_streaming.py` uses this pattern; see its module docstring.
+
 ## Document Registry Tests
 
 ### DO: Query the registry dynamically
