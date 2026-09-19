@@ -918,7 +918,7 @@ def _select_model(
     return (default_model, default_provider)
 
 
-def _check_model_cost(model: str, key_source: str) -> None:
+def _check_model_cost(model: str, key_source: Literal["byok", "community", "platform"]) -> None:
     """Check if a model's cost exceeds platform thresholds.
 
     Only enforced when using platform or community API keys (not BYOK).
@@ -1026,7 +1026,7 @@ class AssistantWithMetrics:
 
     assistant: CommunityAssistant
     model: str
-    key_source: str
+    key_source: Literal["byok", "community", "platform"]
     langfuse_config: dict | None = None
     langfuse_trace_id: str | None = None
 
