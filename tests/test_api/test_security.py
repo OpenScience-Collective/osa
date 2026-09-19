@@ -265,3 +265,46 @@ class TestEndpointsThatDoNotSpendByokRequireAdminAuth:
         for route, deps in routes.items():
             assert "verify_admin_api_key" in deps, f"{route} must depend on verify_admin_api_key"
             assert "verify_api_key" not in deps, f"{route} must not accept a BYOK bypass"
+
+    def test_health_communities_route_uses_admin_auth(self) -> None:
+        """GET /health/communities returns a full per-community diagnostic
+        dump (API key status, CORS origins, document counts, warnings) and
+        never spends a BYOK credential -- the same vulnerability class as
+        mirrors/sessions, just missed in the first pass at this fix."""
+        routes = self._routes_by_dependency(lambda path: path == "/health/communities")
+        assert routes, "expected /health/communities to be registered"
+        for route, deps in routes.items():
+            assert "verify_admin_api_key" in deps, f"{route} must depend on verify_admin_api_key"
+            assert "verify_api_key" not in deps, f"{route} must not accept a BYOK bypass"
+
+    def test_only_byok_spending_routes_use_verify_api_key(self) -> None:
+        """Generalized version of every case above: enumerate every route
+        that depends on verify_api_key (RequireAuth's BYOK bypass) and
+        assert it's exactly the set of routes that actually spend the
+        credential against an LLM (/ask, /chat). This is the check that
+        would have caught /health/communities automatically instead of
+        needing a dedicated case added after the fact -- a future route
+        added with RequireAuth by copy-paste, whatever its path, fails
+        here immediately rather than shipping a silent auth bypass.
+        """
+        from fastapi.routing import APIRoute
+
+        from src.api.main import app
+
+        routes_using_verify_api_key = {
+            route.path
+            for route in app.routes
+            if isinstance(route, APIRoute)
+            and any(
+                getattr(dep.call, "__name__", None) == "verify_api_key"
+                for dep in route.dependant.dependencies
+            )
+        }
+        assert routes_using_verify_api_key, "expected at least one route to use verify_api_key"
+        for path in routes_using_verify_api_key:
+            assert path.endswith(("/ask", "/chat")), (
+                f"{path} depends on verify_api_key (RequireAuth), whose BYOK bypass "
+                "is only safe for a route that actually spends the credential against "
+                "an LLM. If this route genuinely does, add it to this allowlist; "
+                "otherwise switch it to RequireAdminAuth."
+            )
