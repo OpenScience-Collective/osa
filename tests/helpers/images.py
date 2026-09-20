@@ -26,12 +26,23 @@ PAPER = 0xFF
 # The two charts the live transport test asks a model about, identical in every
 # way except which bar is tallest and which is shortest. They live here, beside
 # the encoder, so the offline suite can check the one property that makes the
-# pair worth running (see BAR_FIXTURES's guard in
+# pair worth running (the guard in
 # tests/test_core/test_tool_result_image_transport.py) without importing a
 # module that is skipped whenever no API key is present.
+#
+# Four bars, not seven, because of what the third live run showed. On a
+# seven-bar chart claude-haiku-4-5 reported bar 4 as the tallest when bar 5 was
+# 1.0 and bar 4 was 0.30, while naming the shortest bar correctly and getting
+# BOTH answers right on the other chart. A model perceiving nothing cannot do
+# that, so the picture was arriving and being read; what it got wrong was the
+# index, counting to five across seven bars. This test exists to measure
+# whether a figure reaches the model, not how far the model can count, and a
+# fixture that fails for the second reason cannot answer the first question.
+# Four bars are counted reliably and the heights below are far apart, so a
+# wrong answer means a wrong picture.
 BAR_FIXTURES: dict[str, list[float]] = {
-    "tallest_fifth": [0.45, 0.15, 0.62, 0.30, 1.0, 0.52, 0.38],
-    "tallest_third": [0.52, 0.34, 1.0, 0.61, 0.45, 0.12, 0.70],
+    "tallest_third": [0.35, 0.60, 1.0, 0.12],
+    "tallest_first": [1.0, 0.45, 0.15, 0.70],
 }
 
 

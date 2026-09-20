@@ -213,14 +213,17 @@ class TestToolResultImages:
     person pick; a result that held only for one model would not support that,
     and driving the list means a third offered model cannot quietly skip it.
 
-    The first two live runs answered the question and rejected a fixture at the
-    same time. That fixture drew "734" in a 5x7 bitmap font; the replies were
-    "724" and then "704" after the glyph was redrawn. Both got the first and
-    last digit right, which is proof the picture was arriving and being read,
-    so what failed was the font: five-pixel-wide glyphs do not survive the
-    downscaling an image goes through on its way into a model. The fixture is
-    now a bar chart, which does not degrade that way and is closer to what this
-    runtime will really be asked about.
+    Three live runs answered the question and rejected a fixture each time, and
+    every rejection was the fixture's fault rather than the transport's. The
+    first drew "734" in a 5x7 bitmap font and drew back "724", then "704" after
+    the glyph was redrawn: first and last digit right both times, so the
+    picture was arriving, and five-pixel-wide glyphs simply do not survive the
+    downscaling an image goes through on its way into a model. The third asked
+    about seven bars and got the index wrong while reading the chart correctly.
+    Both failures shared a shape worth remembering: the model could see the
+    picture and the fixture could not carry the answer. What the fixture asks
+    is now as easy as the question allows, so that a wrong answer means a wrong
+    picture. See tests/helpers/images.py.
     """
 
     def _report_bars(self, model: str, heights: list[float] | None) -> dict:
