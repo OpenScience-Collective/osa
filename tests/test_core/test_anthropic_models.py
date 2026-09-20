@@ -7,10 +7,13 @@ question a config validator has to answer, and the guarantee that the two
 modules describe one set of models rather than two that can drift.
 """
 
+import typing
+
 import pytest
 
 from src.core.services import anthropic_llm, anthropic_models
 from src.core.services.anthropic_models import (
+    IMAGE_MEDIA_TYPES,
     MODEL_ALIASES,
     OFFERED_MODELS,
     SAMPLING_MODELS,
@@ -77,3 +80,27 @@ class TestReExportsAreTheSameObjects:
 
     def test_normalize_model_is_shared(self) -> None:
         assert anthropic_llm.normalize_model is normalize_model
+
+
+class TestImageMediaTypes:
+    """The accepted image media types are a hand-copy; hold them to their source.
+
+    ``anthropic_models`` stays free of third-party imports so a CLI-only
+    install can reach it, which is why the set is written out rather than read
+    from the anthropic SDK. Here, where the server extra is installed, the copy
+    is compared with the SDK's own declaration, in the same spirit as
+    ``TestReExportsAreTheSameObjects`` above: two statements of one fact, with
+    something that fails when they stop agreeing.
+
+    Why the set is declared at all, rather than left implicit: nothing in the
+    client stack validates a media type, so a producer that emits an unaccepted
+    one learns about it as a 400 from the endpoint. See
+    tests/test_core/test_tool_result_image_transport.py, which measures that.
+    """
+
+    def test_matches_the_anthropic_sdk(self) -> None:
+        from anthropic.types import Base64ImageSourceParam
+
+        declared = typing.get_type_hints(Base64ImageSourceParam)["media_type"]
+
+        assert set(typing.get_args(declared)) == set(IMAGE_MEDIA_TYPES)
