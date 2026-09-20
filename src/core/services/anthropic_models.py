@@ -47,8 +47,9 @@ SAMPLING_MODELS = {"claude-haiku-4-5"}
 # learns about it as a 400 from the endpoint, after the work that made the
 # picture has already been done. A client-executed tool that returns figures
 # (see .context/browser-execution-tool-design.md) has to gate on this set
-# itself, which is why it is declared rather than left implicit; SVG in
-# particular is matplotlib's natural vector output and is NOT accepted.
+# itself, which is why it is declared rather than left implicit. SVG is the
+# trap worth naming: `savefig` defaults to PNG, but SVG is the usual choice
+# when a figure is bound for a web page, and it is NOT accepted here.
 #
 # Declared here, next to the model tables and free of third-party imports, so
 # community config validation can reach it on a CLI-only install. The anthropic

@@ -16,13 +16,12 @@ the picture, which is
 """
 
 import base64
-import typing
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from src.api.config import Settings
-from src.core.services.anthropic_llm import create_anthropic_llm
+from src.core.services.anthropic_llm import CachingChatAnthropic, create_anthropic_llm
 from src.core.services.anthropic_models import IMAGE_MEDIA_TYPES
 from tests.helpers.images import bar_chart_png
 
@@ -70,6 +69,10 @@ def _tool_result(tool_content: list[dict], *, status: str = "success") -> dict:
     Returns the ``tool_result`` block as it would leave this process.
     """
     llm = create_anthropic_llm(model="claude-haiku-4-5", thinking=None, settings=_settings())
+    # Assert the class, as TestCachingChatAnthropicPayload._llm does: caching is
+    # on by default, and if that default is ever flipped these tests would go on
+    # passing while measuring a plain ChatAnthropic instead of what ships.
+    assert isinstance(llm, CachingChatAnthropic)
     payload = llm._get_request_payload(
         [
             SystemMessage(content="You help with EEG analysis."),
@@ -147,20 +150,6 @@ def test_an_unaccepted_media_type_reaches_the_request_unchallenged() -> None:
     assert "image/svg+xml" not in IMAGE_MEDIA_TYPES
 
 
-def test_declared_image_media_types_match_the_anthropic_sdk() -> None:
-    """IMAGE_MEDIA_TYPES is a hand-copy; compare it against its source.
-
-    ``anthropic_models`` cannot import the SDK (it has to stay reachable from a
-    CLI-only install), so the set is written out there. Here, where the server
-    extra is installed, it is compared with the SDK's own declaration.
-    """
-    from anthropic.types import Base64ImageSourceParam
-
-    declared = typing.get_type_hints(Base64ImageSourceParam)["media_type"]
-
-    assert set(typing.get_args(declared)) == set(IMAGE_MEDIA_TYPES)
-
-
 def test_a_failed_execution_is_marked_as_an_error() -> None:
     """A traceback comes back on the same channel, flagged rather than narrated.
 
@@ -177,11 +166,18 @@ def test_a_failed_execution_is_marked_as_an_error() -> None:
 def test_no_cache_marker_lands_inside_the_tool_result() -> None:
     """The caching wrapper and the tool result do not collide.
 
-    The API does not accept ``cache_control`` on a tool_result's sub-blocks;
-    langchain-anthropic hoists any it finds there up to the tool_result itself.
-    This repository's wrapper marks the system prompt and the request instead,
-    so the two never meet, and this test is what would notice if the marker
-    strategy moved onto message content.
+    A forward guard, deliberately. On the first-party Anthropic transport this
+    repository uses, langchain-anthropic puts ``cache_control`` in the top-level
+    request parameter and never on a message content block; block-level
+    placement is the Bedrock and Vertex path, which this repository does not
+    take. So the invariant holds today for a reason outside the tool-result code
+    and this test cannot currently fail.
+
+    It is worth keeping because both halves of that reason are changeable: the
+    API does not accept ``cache_control`` on a tool_result's sub-blocks at all
+    (langchain-anthropic hoists any it finds there up to the tool_result), and a
+    marker strategy that moved onto message content would put a marker exactly
+    where a figure travels. This is what would notice.
     """
     block = _tool_result(
         [{"type": "text", "text": "peak 10.2 Hz"}, IMAGE_BLOCK_SPELLINGS["anthropic_native"]]

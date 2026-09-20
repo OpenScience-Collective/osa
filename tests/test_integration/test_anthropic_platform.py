@@ -22,7 +22,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langchain_core.tools import tool
 
 from src.api.config import get_settings
-from src.core.services.anthropic_llm import create_anthropic_llm
+from src.core.services.anthropic_llm import OFFERED_MODELS, create_anthropic_llm
 from tests.helpers.images import bar_chart_png
 
 pytestmark = [
@@ -183,11 +183,17 @@ def execute_code(code: str) -> str:
     return f"ran {code}"
 
 
-# The fixture figure: five bars, tallest fourth from the left, shortest second.
+# The fixture figure: seven bars, tallest fifth from the left, shortest second.
 # Neither position appears in any text block, so a reply naming them can only
 # have come from the picture.
-BAR_HEIGHTS = [0.45, 0.2, 0.7, 1.0, 0.35]
-TALLEST_POSITION = "4"
+#
+# Seven rather than five bars for the control's sake. The control asserts that a
+# round trip WITHOUT the figure cannot produce this answer, and a model that
+# guesses confidently has a 1 in (n * (n - 1)) chance of naming both positions
+# by luck: 1 in 20 at five bars, 1 in 42 at seven. That is the control's own
+# false-failure rate, and it costs nothing to halve it.
+BAR_HEIGHTS = [0.45, 0.15, 0.62, 0.30, 1.0, 0.52, 0.38]
+TALLEST_POSITION = "5"
 SHORTEST_POSITION = "2"
 
 
@@ -206,30 +212,28 @@ class TestToolResultImages:
     request can settle the other half, which is that the endpoint accepts that
     payload and the model looks at the picture.
 
-    The first two live runs answered it and rejected a fixture at the same
-    time. That fixture drew "734" in a 5x7 bitmap font; the replies were "724"
-    and then "704" after the glyph was redrawn. Both got the first and last
-    digit right, which is proof the picture was arriving and being read, so
-    what failed was the font: five-pixel-wide glyphs do not survive the
+    Run against every offered model rather than the default one. The design
+    note's premise is that plots reach "the model", and a widget lets the
+    person pick; a result that held only for Haiku would not support that, and
+    driving the list means a third offered model cannot quietly skip it.
+
+    The first two live runs answered the question and rejected a fixture at the
+    same time. That fixture drew "734" in a 5x7 bitmap font; the replies were
+    "724" and then "704" after the glyph was redrawn. Both got the first and
+    last digit right, which is proof the picture was arriving and being read,
+    so what failed was the font: five-pixel-wide glyphs do not survive the
     downscaling an image goes through on its way into a model. The fixture is
     now a bar chart, which does not degrade that way and is closer to what this
     runtime will really be asked about.
-
-    So a failure here that reports plausible but wrong bars is a fixture
-    problem in ``tests/helpers/images.py``; a failure that reports nothing, or
-    says no figure was provided, is the transport.
     """
 
-    def _figure_round_trip(self, *, with_image: bool) -> list[str]:
+    def _figure_round_trip(self, model: str, *, with_image: bool) -> str:
         """One browser tool round trip, with or without the figure attached.
 
-        Returns the digits of the reply, in order. The model is asked for two
-        bare numbers, but a sentence naming a bar twice ("the 4th bar (bar 4)")
-        would repeat a digit, so the assertions read the first digit and then
-        look for the second anywhere after it rather than expecting an exact
-        pair.
+        Returns the model's reply text. Parsing is left to the caller so a
+        reply that carries no digits at all can be reported as what it is.
         """
-        llm = create_anthropic_llm(model="claude-haiku-4-5", thinking=None, max_tokens=64)
+        llm = create_anthropic_llm(model=model, thinking=None, max_tokens=64)
         bound = llm.bind_tools([execute_code])
 
         call_id = f"toolu_{uuid.uuid4().hex[:24]}"
@@ -246,10 +250,10 @@ class TestToolResultImages:
         messages: list[AIMessage | HumanMessage | ToolMessage] = [
             HumanMessage(
                 content=(
-                    "Run the code, then look at the bar chart it produced and reply "
-                    "with two numbers and nothing else: the position of the tallest "
-                    "bar, then the position of the shortest bar, counting from the "
-                    "left starting at 1."
+                    "Run the code, then look at the bar chart it produced. Answer with "
+                    "exactly two digits separated by a comma, and no other text: the "
+                    "position of the tallest bar, then the position of the shortest "
+                    "bar, counting from the left starting at 1."
                 )
             ),
             AIMessage(
@@ -265,32 +269,47 @@ class TestToolResultImages:
             ),
             ToolMessage(content=tool_content, tool_call_id=call_id),
         ]
-        return re.findall(r"\d", _extract_text(bound.invoke(messages).content))
+        return _extract_text(bound.invoke(messages).content)
 
-    def test_model_reads_a_figure_returned_on_a_tool_message(self) -> None:
-        digits = self._figure_round_trip(with_image=True)
+    @pytest.mark.parametrize("model", sorted(OFFERED_MODELS))
+    def test_model_reads_a_figure_returned_on_a_tool_message(self, model: str) -> None:
+        text = self._figure_round_trip(model, with_image=True)
+        digits = re.findall(r"\d", text)
 
-        assert digits and digits[0] == TALLEST_POSITION, (
-            "The model did not name the tallest bar in the figure attached to the "
-            f"tool result; the digits in its reply were {digits!r}. Either the "
-            "endpoint dropped the image block or the model did not receive it, and "
-            "the browser execution design cannot return plots on the tool result."
+        # Separated from the assertion below so a red run is triaged correctly:
+        # a reply with no digits at all is a model that answered in prose, which
+        # is an instruction-following slip, not a dropped image.
+        assert digits, (
+            f"{model} replied without any digit, so this test cannot tell whether it "
+            f"saw the figure. It said {text!r}. Tighten the instruction rather than "
+            "reading this as a transport failure."
+        )
+        assert digits[0] == TALLEST_POSITION, (
+            f"{model} did not name the tallest bar in the figure attached to the tool "
+            f"result; it replied {text!r}. Either the endpoint dropped the image block "
+            "or the model did not receive it, and the browser execution design cannot "
+            "return plots on the tool result."
         )
         assert SHORTEST_POSITION in digits[1:], (
-            f"The model named the tallest bar but not the shortest; digits {digits!r}."
+            f"{model} named the tallest bar but not the shortest; it replied {text!r}."
         )
 
-    def test_the_same_round_trip_without_the_figure_cannot_report_the_bars(self) -> None:
+    @pytest.mark.parametrize("model", sorted(OFFERED_MODELS))
+    def test_the_same_round_trip_without_the_figure_cannot_report_the_bars(
+        self, model: str
+    ) -> None:
         """The control: the bar positions are in the picture and nowhere else.
 
         Without this, the test above would still pass if the answer ever leaked
         into a text block, into the tool arguments, or into the prompt, and it
         would then be green while proving nothing about images.
         """
-        digits = self._figure_round_trip(with_image=False)
+        text = self._figure_round_trip(model, with_image=False)
+        digits = re.findall(r"\d", text)
 
         assert not (digits[:1] == [TALLEST_POSITION] and SHORTEST_POSITION in digits[1:]), (
-            f"A round trip carrying no image still produced {digits!r}, which is "
-            "the answer the figure holds. It is reachable without the picture, so "
-            "the image test above proves nothing."
+            f"A round trip carrying no image still produced the figure's answer: "
+            f"{model} replied {text!r}. Either it is reachable without the picture, in "
+            "which case the test above proves nothing, or the model guessed both "
+            "positions, which has about a 1 in 42 chance at seven bars."
         )
