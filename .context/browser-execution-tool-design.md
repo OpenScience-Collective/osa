@@ -573,8 +573,11 @@ note and do not correspond to the global phases in `.context/plan.md`.
   the `tool_result`, and all four plausible spellings (Anthropic native, LangChain's v1 and v0 standard
   blocks, and an OpenAI-style data URL) normalize to the same Anthropic image block, so a widget cannot pick
   the wrong one and silently lose the figure. `tests/test_integration/test_anthropic_platform.py::TestToolResultImages`
-  settles the other half against the live endpoint: the model reports a number that is drawn in the picture
-  and written nowhere else, and a control round trip without the picture cannot produce it.
+  settles the other half against the live endpoint, for BOTH offered models: the model reports which bar of a
+  chart is tallest and which is shortest, an answer carried in no text block anywhere, and a control round trip
+  without the picture cannot produce it. The answer comes back through a forced tool call rather than as prose,
+  because the first version asked for a formatted reply and `claude-haiku-4-5` answered with a numbered list
+  that read the figure correctly and parsed to the wrong bar.
   Two consequences for Phase 2. First, the client stack validates nothing: `image/svg+xml` passes every
   layer here and comes back as a 400 from the endpoint, so a recipe calling `savefig(format="svg")` fails
   after the analysis has already run. The accepted set is declared as `IMAGE_MEDIA_TYPES` in
