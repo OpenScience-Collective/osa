@@ -226,11 +226,19 @@ class TestToolResultImages:
     picture. See tests/helpers/images.py.
     """
 
-    def _report_bars(self, model: str, heights: list[float] | None) -> dict:
-        """One browser tool round trip. ``heights`` of None attaches no figure.
+    def _report_bars(self, model: str, heights: list[float]) -> dict:
+        """One browser tool round trip, with the figure on the tool result.
 
         The answer comes back as the arguments of a forced ``report_bars`` call
-        rather than as text. An earlier version asked for "two digits and
+        rather than as text, and the prompt states how many bars there are.
+        Stating the count leaks nothing, since which bar is tallest lives only
+        in the picture, and it removes the one thing the live runs kept failing
+        on: asked about a four-bar chart, claude-haiku-4-5 named the tallest
+        bar correctly and then reported the shortest as bar 5. The question is
+        whether the figure arrives, so every part of it that is not about the
+        figure is made as easy as it can be.
+
+        An earlier version asked for "two digits and
         nothing else" and parsed the reply; claude-haiku-4-5 answered with a
         numbered list instead ("1. Bar 1: Medium height ... 5. Bar 5:
         Tallest"), which reads the figure perfectly and parses to the wrong
@@ -242,21 +250,21 @@ class TestToolResultImages:
         bound = llm.bind_tools([execute_code, report_bars], tool_choice="report_bars")
 
         call_id = f"toolu_{uuid.uuid4().hex[:24]}"
-        tool_content: list[dict] = [{"type": "text", "text": "Figure rendered."}]
-        if heights is not None:
-            tool_content.append(
-                {
-                    "type": "image",
-                    "base64": base64.b64encode(bar_chart_png(heights)).decode(),
-                    "mime_type": "image/png",
-                }
-            )
+        tool_content: list[dict] = [
+            {"type": "text", "text": "Figure rendered."},
+            {
+                "type": "image",
+                "base64": base64.b64encode(bar_chart_png(heights)).decode(),
+                "mime_type": "image/png",
+            },
+        ]
 
         messages: list[AIMessage | HumanMessage | ToolMessage] = [
             HumanMessage(
                 content=(
-                    "Run the code, then look at the bar chart it produced and report "
-                    "which bar is tallest and which is shortest."
+                    "Run the code, then look at the bar chart it produced. It has "
+                    f"exactly {len(heights)} bars, numbered 1 to {len(heights)} from "
+                    "the left. Report which one is tallest and which one is shortest."
                 )
             ),
             AIMessage(
