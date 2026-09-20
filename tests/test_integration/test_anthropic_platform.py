@@ -22,7 +22,7 @@ from langchain_core.tools import tool
 
 from src.api.config import get_settings
 from src.core.services.anthropic_llm import OFFERED_MODELS, create_anthropic_llm
-from tests.helpers.images import bar_chart_png
+from tests.helpers.images import BAR_FIXTURES, bar_chart_png, tallest_and_shortest
 
 pytestmark = [
     pytest.mark.integration,
@@ -193,28 +193,14 @@ def report_bars(tallest_position: int, shortest_position: int) -> str:
     return f"tallest {tallest_position}, shortest {shortest_position}"
 
 
-# The fixture figure: seven bars, tallest fifth from the left, shortest second.
-# Neither position appears in any text block, so a reply naming them can only
-# have come from the picture.
-#
-# Seven rather than five bars for the control's sake. The control asserts that a
-# round trip WITHOUT the figure cannot produce this answer, and a model that
-# guesses confidently has a 1 in (n * (n - 1)) chance of naming both positions
-# by luck: 1 in 20 at five bars, 1 in 42 at seven. That is the control's own
-# false-failure rate, and it costs nothing to halve it.
-BAR_HEIGHTS = [0.45, 0.15, 0.62, 0.30, 1.0, 0.52, 0.38]
-TALLEST_POSITION = 5
-SHORTEST_POSITION = 2
-
-
 class TestToolResultImages:
     """Does a figure made in the browser actually reach the model?
 
-    The browser-execution design note plans for ``execute_code`` to run in the
-    user's browser and return its output as a tool result with the plots
-    included, and lists "whether the provider layer accepts image content
-    blocks on a TOOL message" as an open question, noted as asserted earlier in
-    that note without being verified.
+    The browser-execution design note has ``execute_code`` run in the user's
+    browser and return its output as a tool result with the plots included, and
+    lists "whether the provider layer accepts image content blocks on a TOOL
+    message" as an open question, noted as asserted earlier in that note
+    without being verified.
 
     ``tests/test_core/test_tool_result_image_transport.py`` settles the half
     that needs no network: the image survives every layer in this process and
@@ -224,8 +210,8 @@ class TestToolResultImages:
 
     Run against every offered model rather than the default one. The design
     note's premise is that plots reach "the model", and a widget lets the
-    person pick; a result that held only for Haiku would not support that, and
-    driving the list means a third offered model cannot quietly skip it.
+    person pick; a result that held only for one model would not support that,
+    and driving the list means a third offered model cannot quietly skip it.
 
     The first two live runs answered the question and rejected a fixture at the
     same time. That fixture drew "734" in a 5x7 bitmap font; the replies were
@@ -237,27 +223,28 @@ class TestToolResultImages:
     runtime will really be asked about.
     """
 
-    def _figure_round_trip(self, model: str, *, with_image: bool) -> dict:
-        """One browser tool round trip, with or without the figure attached.
+    def _report_bars(self, model: str, heights: list[float] | None) -> dict:
+        """One browser tool round trip. ``heights`` of None attaches no figure.
 
         The answer comes back as the arguments of a forced ``report_bars`` call
         rather than as text. An earlier version asked for "two digits and
         nothing else" and parsed the reply; claude-haiku-4-5 answered with a
-        numbered list instead ("1. Bar 1: Medium height ... 5. Bar 5: Tallest"),
-        which reads the figure perfectly and parses to the wrong answer, because
-        the first digit in the reply belongs to the list and not to a bar. A
-        prompt asking for a format is a request; a tool schema is a structure.
+        numbered list instead ("1. Bar 1: Medium height ... 5. Bar 5:
+        Tallest"), which reads the figure perfectly and parses to the wrong
+        answer, because the first digit in the reply belongs to the list and
+        not to a bar. A prompt asking for a format is a request; a tool schema
+        is a structure.
         """
         llm = create_anthropic_llm(model=model, thinking=None, max_tokens=256)
         bound = llm.bind_tools([execute_code, report_bars], tool_choice="report_bars")
 
         call_id = f"toolu_{uuid.uuid4().hex[:24]}"
         tool_content: list[dict] = [{"type": "text", "text": "Figure rendered."}]
-        if with_image:
+        if heights is not None:
             tool_content.append(
                 {
                     "type": "image",
-                    "base64": base64.b64encode(bar_chart_png(BAR_HEIGHTS)).decode(),
+                    "base64": base64.b64encode(bar_chart_png(heights)).decode(),
                     "mime_type": "image/png",
                 }
             )
@@ -291,38 +278,23 @@ class TestToolResultImages:
         )
         return reports[0]["args"]
 
+    @pytest.mark.parametrize("fixture", sorted(BAR_FIXTURES))
     @pytest.mark.parametrize("model", sorted(OFFERED_MODELS))
-    def test_model_reads_a_figure_returned_on_a_tool_message(self, model: str) -> None:
-        answer = self._figure_round_trip(model, with_image=True)
-
-        assert answer.get("tallest_position") == TALLEST_POSITION, (
-            f"{model} did not name the tallest bar in the figure attached to the tool "
-            f"result; it reported {answer!r}. Either the endpoint dropped the image "
-            "block or the model did not receive it, and the browser execution design "
-            "cannot return plots on the tool result."
-        )
-        assert answer.get("shortest_position") == SHORTEST_POSITION, (
-            f"{model} named the tallest bar but not the shortest; it reported {answer!r}."
-        )
-
-    @pytest.mark.parametrize("model", sorted(OFFERED_MODELS))
-    def test_the_same_round_trip_without_the_figure_cannot_report_the_bars(
-        self, model: str
+    def test_model_reads_the_figure_returned_on_a_tool_message(
+        self, model: str, fixture: str
     ) -> None:
-        """The control: the bar positions are in the picture and nowhere else.
+        heights = BAR_FIXTURES[fixture]
+        tallest, shortest = tallest_and_shortest(heights)
 
-        Without this, the test above would still pass if the answer ever leaked
-        into a text block, into the tool arguments, or into the prompt, and it
-        would then be green while proving nothing about images.
-        """
-        answer = self._figure_round_trip(model, with_image=False)
+        answer = self._report_bars(model, heights)
 
-        assert not (
-            answer.get("tallest_position") == TALLEST_POSITION
-            and answer.get("shortest_position") == SHORTEST_POSITION
+        assert (answer.get("tallest_position"), answer.get("shortest_position")) == (
+            tallest,
+            shortest,
         ), (
-            f"A round trip carrying no image still produced the figure's answer: "
-            f"{model} reported {answer!r}. Either it is reachable without the picture, "
-            "in which case the test above proves nothing, or the model guessed both "
-            "positions, which has about a 1 in 42 chance at seven bars."
+            f"{model} misreported the bars of fixture {fixture!r}: expected tallest "
+            f"{tallest} and shortest {shortest}, got {answer!r}. Every request in this "
+            "class carries identical text and differs only in the picture, so an answer "
+            "that does not track the picture means the image did not arrive, and the "
+            "browser execution design cannot return plots on the tool result."
         )

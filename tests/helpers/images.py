@@ -23,6 +23,27 @@ from collections.abc import Sequence
 INK = 0x00
 PAPER = 0xFF
 
+# The two charts the live transport test asks a model about, identical in every
+# way except which bar is tallest and which is shortest. They live here, beside
+# the encoder, so the offline suite can check the one property that makes the
+# pair worth running (see BAR_FIXTURES's guard in
+# tests/test_core/test_tool_result_image_transport.py) without importing a
+# module that is skipped whenever no API key is present.
+BAR_FIXTURES: dict[str, list[float]] = {
+    "tallest_fifth": [0.45, 0.15, 0.62, 0.30, 1.0, 0.52, 0.38],
+    "tallest_third": [0.52, 0.34, 1.0, 0.61, 0.45, 0.12, 0.70],
+}
+
+
+def tallest_and_shortest(heights: Sequence[float]) -> tuple[int, int]:
+    """The bar positions, counting from the left starting at 1.
+
+    Derived rather than written down beside the heights, so a fixture and the
+    answer it expects cannot drift apart.
+    """
+    values = list(heights)
+    return values.index(max(values)) + 1, values.index(min(values)) + 1
+
 
 def _chunk(kind: bytes, data: bytes) -> bytes:
     body = kind + data

@@ -23,7 +23,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from src.api.config import Settings
 from src.core.services.anthropic_llm import CachingChatAnthropic, create_anthropic_llm
 from src.core.services.anthropic_models import IMAGE_MEDIA_TYPES
-from tests.helpers.images import bar_chart_png
+from tests.helpers.images import BAR_FIXTURES, bar_chart_png, tallest_and_shortest
 
 TOOL_CALL_ID = "toolu_01aaaaaaaaaaaaaaaaaaaaaa"
 
@@ -185,3 +185,19 @@ def test_no_cache_marker_lands_inside_the_tool_result() -> None:
 
     assert "cache_control" not in block
     assert all("cache_control" not in sub_block for sub_block in block["content"])
+
+
+def test_the_two_bar_fixtures_have_different_answers() -> None:
+    """The live test's pair only discriminates if the two charts disagree.
+
+    ``TestToolResultImages`` proves a model is reading the picture by asking it
+    about two charts and requiring both answers: a model that emits a fixed
+    guess can match at most one. That argument collapses if the two fixtures
+    ever end up with the same tallest and shortest bar, which is a property of
+    the numbers and needs no network, so it is checked here rather than in the
+    module that is skipped whenever no API key is present.
+    """
+    answers = {name: tallest_and_shortest(heights) for name, heights in BAR_FIXTURES.items()}
+
+    assert len(answers) > 1, "a single fixture cannot discriminate anything"
+    assert len(set(answers.values())) == len(answers), answers
