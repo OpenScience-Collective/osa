@@ -14,7 +14,6 @@ for "is server mode configured" and is used for the skip check instead.
 """
 
 import base64
-import re
 import uuid
 
 import pytest
@@ -183,6 +182,17 @@ def execute_code(code: str) -> str:
     return f"ran {code}"
 
 
+@tool
+def report_bars(tallest_position: int, shortest_position: int) -> str:
+    """Report which bar is tallest and which is shortest.
+
+    Positions count from the left, starting at 1.
+    """
+    # The answer channel, not an action: the test reads the arguments off the
+    # tool call rather than out of prose, so this body never runs.
+    return f"tallest {tallest_position}, shortest {shortest_position}"
+
+
 # The fixture figure: seven bars, tallest fifth from the left, shortest second.
 # Neither position appears in any text block, so a reply naming them can only
 # have come from the picture.
@@ -193,8 +203,8 @@ def execute_code(code: str) -> str:
 # by luck: 1 in 20 at five bars, 1 in 42 at seven. That is the control's own
 # false-failure rate, and it costs nothing to halve it.
 BAR_HEIGHTS = [0.45, 0.15, 0.62, 0.30, 1.0, 0.52, 0.38]
-TALLEST_POSITION = "5"
-SHORTEST_POSITION = "2"
+TALLEST_POSITION = 5
+SHORTEST_POSITION = 2
 
 
 class TestToolResultImages:
@@ -227,14 +237,19 @@ class TestToolResultImages:
     runtime will really be asked about.
     """
 
-    def _figure_round_trip(self, model: str, *, with_image: bool) -> str:
+    def _figure_round_trip(self, model: str, *, with_image: bool) -> dict:
         """One browser tool round trip, with or without the figure attached.
 
-        Returns the model's reply text. Parsing is left to the caller so a
-        reply that carries no digits at all can be reported as what it is.
+        The answer comes back as the arguments of a forced ``report_bars`` call
+        rather than as text. An earlier version asked for "two digits and
+        nothing else" and parsed the reply; claude-haiku-4-5 answered with a
+        numbered list instead ("1. Bar 1: Medium height ... 5. Bar 5: Tallest"),
+        which reads the figure perfectly and parses to the wrong answer, because
+        the first digit in the reply belongs to the list and not to a bar. A
+        prompt asking for a format is a request; a tool schema is a structure.
         """
-        llm = create_anthropic_llm(model=model, thinking=None, max_tokens=64)
-        bound = llm.bind_tools([execute_code])
+        llm = create_anthropic_llm(model=model, thinking=None, max_tokens=256)
+        bound = llm.bind_tools([execute_code, report_bars], tool_choice="report_bars")
 
         call_id = f"toolu_{uuid.uuid4().hex[:24]}"
         tool_content: list[dict] = [{"type": "text", "text": "Figure rendered."}]
@@ -250,10 +265,8 @@ class TestToolResultImages:
         messages: list[AIMessage | HumanMessage | ToolMessage] = [
             HumanMessage(
                 content=(
-                    "Run the code, then look at the bar chart it produced. Answer with "
-                    "exactly two digits separated by a comma, and no other text: the "
-                    "position of the tallest bar, then the position of the shortest "
-                    "bar, counting from the left starting at 1."
+                    "Run the code, then look at the bar chart it produced and report "
+                    "which bar is tallest and which is shortest."
                 )
             ),
             AIMessage(
@@ -269,29 +282,27 @@ class TestToolResultImages:
             ),
             ToolMessage(content=tool_content, tool_call_id=call_id),
         ]
-        return _extract_text(bound.invoke(messages).content)
+        response = bound.invoke(messages)
+        reports = [call for call in response.tool_calls if call["name"] == "report_bars"]
+        assert reports, (
+            f"{model} did not call report_bars, which was the only tool offered to it; "
+            f"it replied {response.content!r}. Nothing can be concluded about the image "
+            "from this run."
+        )
+        return reports[0]["args"]
 
     @pytest.mark.parametrize("model", sorted(OFFERED_MODELS))
     def test_model_reads_a_figure_returned_on_a_tool_message(self, model: str) -> None:
-        text = self._figure_round_trip(model, with_image=True)
-        digits = re.findall(r"\d", text)
+        answer = self._figure_round_trip(model, with_image=True)
 
-        # Separated from the assertion below so a red run is triaged correctly:
-        # a reply with no digits at all is a model that answered in prose, which
-        # is an instruction-following slip, not a dropped image.
-        assert digits, (
-            f"{model} replied without any digit, so this test cannot tell whether it "
-            f"saw the figure. It said {text!r}. Tighten the instruction rather than "
-            "reading this as a transport failure."
-        )
-        assert digits[0] == TALLEST_POSITION, (
+        assert answer.get("tallest_position") == TALLEST_POSITION, (
             f"{model} did not name the tallest bar in the figure attached to the tool "
-            f"result; it replied {text!r}. Either the endpoint dropped the image block "
-            "or the model did not receive it, and the browser execution design cannot "
-            "return plots on the tool result."
+            f"result; it reported {answer!r}. Either the endpoint dropped the image "
+            "block or the model did not receive it, and the browser execution design "
+            "cannot return plots on the tool result."
         )
-        assert SHORTEST_POSITION in digits[1:], (
-            f"{model} named the tallest bar but not the shortest; it replied {text!r}."
+        assert answer.get("shortest_position") == SHORTEST_POSITION, (
+            f"{model} named the tallest bar but not the shortest; it reported {answer!r}."
         )
 
     @pytest.mark.parametrize("model", sorted(OFFERED_MODELS))
@@ -304,12 +315,14 @@ class TestToolResultImages:
         into a text block, into the tool arguments, or into the prompt, and it
         would then be green while proving nothing about images.
         """
-        text = self._figure_round_trip(model, with_image=False)
-        digits = re.findall(r"\d", text)
+        answer = self._figure_round_trip(model, with_image=False)
 
-        assert not (digits[:1] == [TALLEST_POSITION] and SHORTEST_POSITION in digits[1:]), (
+        assert not (
+            answer.get("tallest_position") == TALLEST_POSITION
+            and answer.get("shortest_position") == SHORTEST_POSITION
+        ), (
             f"A round trip carrying no image still produced the figure's answer: "
-            f"{model} replied {text!r}. Either it is reachable without the picture, in "
-            "which case the test above proves nothing, or the model guessed both "
+            f"{model} reported {answer!r}. Either it is reachable without the picture, "
+            "in which case the test above proves nothing, or the model guessed both "
             "positions, which has about a 1 in 42 chance at seven bars."
         )
