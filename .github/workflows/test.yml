@@ -93,6 +93,9 @@ jobs:
       - name: Check widget syntax
         run: node --check frontend/osa-chat-widget.js
 
+      - name: Run worker routing tests
+        run: bun workers/osa-worker/test-routing.js
+
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-latest
