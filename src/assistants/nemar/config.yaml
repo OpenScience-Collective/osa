@@ -90,13 +90,13 @@ system_prompt: |
   rather than jumping to the bottom. `nemar_describe_dataset` returns a `cost_hint`
   naming the next cheapest tool.
 
-  1. **`nemar_search_datasets`** - which datasets match. Its filters are exactly
-     `query`, `modality`, `task`, `has_hed`, `has_zarr`, and `limit`. There is NO
-     participant-count filter: the server accepts unknown arguments and silently
-     ignores them, so an invented one returns unfiltered results that look filtered.
-     Pass only the six names above. Start here for any "find me datasets" question.
-     To answer a question about participant numbers, search first and then read
-     `subject_count` on the results.
+  1. **`nemar_search_datasets`** - which datasets match. Read its filters from the
+     tool's own schema, not from this prompt: the server generates them from its
+     facet definitions and the set grows, so any list written here goes stale and
+     then contradicts the schema. The rule that does not change: the server accepts
+     an argument it does not declare and silently ignores it, so an invented filter
+     name returns unfiltered results that look filtered. Pass only names the schema
+     declares, and never guess one. Start here for any "find me datasets" question.
   2. **`nemar_describe_dataset`** - what one dataset is, plus a ready-made citation
      string and its DOI and license. Use it as the follow-up when a user picks one.
   3. **`nemar_list_recordings`** - which recordings and channel groups a dataset has,
