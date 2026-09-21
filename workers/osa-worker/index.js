@@ -10,7 +10,18 @@
  */
 
 // Path segments that are actual routes, never valid community IDs
-const RESERVED_PATHS = ['health', 'version', 'feedback', 'communities', 'metrics', 'sync'];
+export const RESERVED_PATHS = ['health', 'version', 'feedback', 'communities', 'metrics', 'sync'];
+
+// Route matchers used directly by fetch() below. Exported so tests exercise
+// the exact patterns that route real traffic, rather than a parallel copy
+// that could drift from them.
+export const ROUTE_PATTERNS = {
+  // /:communityId/ask and /:communityId/chat -- the two-segment action route.
+  communityAction: /^\/([^\/]+)\/(ask|chat)$/,
+  // /:communityId/chat/resume -- three segments, so it can never be matched
+  // by communityAction above (which is anchored to exactly two segments).
+  communityChatResume: /^\/([^\/]+)\/chat\/resume$/,
+};
 
 // Worker configuration
 function getConfig(env) {
@@ -81,13 +92,23 @@ async function verifyTurnstileToken(token, secretKey, ip) {
  * Known limitation:
  * - KV read-then-write is not atomic; concurrent requests from same IP
  *   may slightly exceed hourly limit. Per-minute guard constrains this.
+ *
+ * @param {object} [options]
+ * @param {boolean} [options.countHourly=true] - When false, skip both the
+ *   hourly KV gate and its increment. Used by /chat/resume: one conversational
+ *   turn with N client-executed tool calls is 1 + N HTTP requests (the
+ *   original /chat plus one /chat/resume per execution), so counting the
+ *   resume leg against the hourly cap would let two executions burn three of
+ *   a user's twenty hourly requests, shared across a NAT'd lab. The
+ *   per-minute limiter (bot protection) always runs regardless of this flag.
  */
-async function checkRateLimit(request, env, CONFIG) {
+async function checkRateLimit(request, env, CONFIG, options = {}) {
+  const { countHourly = true } = options;
   const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
 
   // Check hourly limit first (KV, read-only, no token consumed)
   // This prevents wasting per-minute tokens on already-rejected requests
-  if (env.RATE_LIMITER_KV) {
+  if (countHourly && env.RATE_LIMITER_KV) {
     try {
       const now = Math.floor(Date.now() / 1000);
       const hourKey = `rl:hour:${ip}:${Math.floor(now / 3600)}`;
@@ -104,7 +125,8 @@ async function checkRateLimit(request, env, CONFIG) {
   }
 
   // Check per-minute limit (built-in API, fast, consumes token)
-  // Only check this AFTER hourly passes to avoid wasting tokens
+  // Only check this AFTER hourly passes to avoid wasting tokens.
+  // This is the bot-protection path and always runs, regardless of countHourly.
   if (env.RATE_LIMITER_MINUTE) {
     try {
       const { success } = await env.RATE_LIMITER_MINUTE.limit({ key: ip });
@@ -118,8 +140,9 @@ async function checkRateLimit(request, env, CONFIG) {
   }
 
   // Increment hourly counter (1 write per request instead of 2)
-  // Done last, after both checks pass
-  if (env.RATE_LIMITER_KV) {
+  // Done last, after both checks pass. Skipped along with the gate above
+  // when countHourly is false.
+  if (countHourly && env.RATE_LIMITER_KV) {
     try {
       const now = Math.floor(Date.now() / 1000);
       const hourKey = `rl:hour:${ip}:${Math.floor(now / 3600)}`;
@@ -136,9 +159,12 @@ async function checkRateLimit(request, env, CONFIG) {
 
 /**
  * Check rate limit and return a 429 response if exceeded, or null if allowed.
+ *
+ * @param {object} [options] - Forwarded to checkRateLimit; see its doc for
+ *   countHourly.
  */
-async function rateLimitOrReject(request, env, corsHeaders, CONFIG) {
-  const rl = await checkRateLimit(request, env, CONFIG);
+async function rateLimitOrReject(request, env, corsHeaders, CONFIG, options = {}) {
+  const rl = await checkRateLimit(request, env, CONFIG, options);
   if (!rl.allowed) {
     return new Response(
       JSON.stringify({ error: 'Rate limit exceeded', details: rl.reason }),
@@ -211,7 +237,7 @@ function isAllowedOrigin(origin) {
 /**
  * Validate community ID format
  */
-function isValidCommunityId(id) {
+export function isValidCommunityId(id) {
   // Allow alphanumeric, hyphen, underscore, 1-50 chars
   return /^[a-zA-Z0-9_-]{1,50}$/.test(id);
 }
@@ -233,7 +259,7 @@ function getCorsHeaders(origin) {
 /**
  * Validate community ID and return error response if invalid, or null if valid.
  */
-function validateCommunityId(communityId, corsHeaders) {
+export function validateCommunityId(communityId, corsHeaders) {
   if (RESERVED_PATHS.includes(communityId)) {
     return new Response('Not Found', { status: 404, headers: corsHeaders });
   }
@@ -545,8 +571,23 @@ export default {
         }
       }
 
+      // Community endpoint: /:communityId/chat/resume (three segments).
+      // Matched ahead of the two-segment ask/chat route below purely for
+      // readability; the two patterns are anchored to different segment
+      // counts (communityChatResume always has a literal /chat/resume tail)
+      // so neither can shadow the other regardless of order.
+      const communityChatResumeMatch = url.pathname.match(ROUTE_PATTERNS.communityChatResume);
+      if (communityChatResumeMatch && request.method === 'POST') {
+        const [, communityId] = communityChatResumeMatch;
+
+        const invalid = validateCommunityId(communityId, corsHeaders);
+        if (invalid) return invalid;
+
+        return await handleChatResume(request, env, communityId, corsHeaders, CONFIG);
+      }
+
       // Community endpoints: /:communityId/ask and /:communityId/chat
-      const communityActionMatch = url.pathname.match(/^\/([^\/]+)\/(ask|chat)$/);
+      const communityActionMatch = url.pathname.match(ROUTE_PATTERNS.communityAction);
       if (communityActionMatch && request.method === 'POST') {
         const [, communityId, action] = communityActionMatch;
 
@@ -580,6 +621,7 @@ function handleRoot(corsHeaders, CONFIG) {
       'GET /:communityId/': 'Get community configuration',
       'POST /:communityId/ask': 'Ask a single question to a community',
       'POST /:communityId/chat': 'Multi-turn conversation with a community',
+      'POST /:communityId/chat/resume': 'Resume a conversation after a client-executed tool call',
       'GET /:communityId/metrics/public': 'Public community metrics',
       'GET /:communityId/sessions': 'List sessions (requires API key)',
       'GET /communities': 'List communities with widget configuration',
@@ -726,4 +768,46 @@ async function handleFeedback(request, env, corsHeaders, CONFIG) {
     });
   }
   return await proxyToBackend(request, env, '/feedback', body, corsHeaders, CONFIG);
+}
+
+/**
+ * Handle the chat resume endpoint: rate-limit-only, no Turnstile, and
+ * exempt from the hourly counter.
+ *
+ * Rate-limit-only, no Turnstile: protected POSTs (handleProtectedEndpoint)
+ * verify a single-use Turnstile token that the widget clears after each
+ * message it sends. A /chat/resume call follows a client-executed tool
+ * call, not a new widget-composed message, so it cannot carry a valid
+ * token. Routed the same way as /feedback (handleFeedback above), which the
+ * worker already treats as rate-limit-only. This is latent today because
+ * Turnstile verification is disabled (no TURNSTILE_SECRET_KEY configured),
+ * and would be fatal the day it is switched on: every resume call would be
+ * rejected as a failed bot check.
+ *
+ * Exempt from the hourly counter: production is 10/minute and 20/hour per
+ * IP. One conversational turn with N client-executed tool calls is 1 + N
+ * HTTP requests (the original /chat plus one /chat/resume per execution),
+ * so counting resume calls against the hourly cap would let two executions
+ * in one turn burn three of a user's twenty hourly requests -- a budget
+ * shared across an entire NAT'd lab. The per-minute limiter (bot
+ * protection) still applies via rateLimitOrReject's default behavior.
+ */
+async function handleChatResume(request, env, communityId, corsHeaders, CONFIG) {
+  const rejected = await rateLimitOrReject(request, env, corsHeaders, CONFIG, { countHourly: false });
+  if (rejected) return rejected;
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response(JSON.stringify({ error: 'Invalid JSON in request body' }), {
+      status: 400,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  }
+
+  // Correlation identifiers (session_id, call_id) travel in this JSON body,
+  // not as headers: the worker forwards only an allowlisted header set to
+  // the backend, and this route does not add to it.
+  return await proxyToBackend(request, env, `/${communityId}/chat/resume`, body, corsHeaders, CONFIG);
 }

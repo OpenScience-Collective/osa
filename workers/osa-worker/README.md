@@ -91,6 +91,7 @@ wrangler deploy --env dev
 | `/version` | GET | Backend version | None |
 | `/hed/ask` | POST | Single question | Turnstile + Rate limit |
 | `/hed/chat` | POST | Multi-turn chat | Turnstile + Rate limit |
+| `/hed/chat/resume` | POST | Resume chat after a client-executed tool call | Rate limit only (per-minute; exempt from the per-hour counter) |
 | `/feedback` | POST | Submit feedback | Rate limit only |
 
 ## Rate Limits
