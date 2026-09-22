@@ -32,6 +32,13 @@ from urllib.parse import urlparse
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
+from src.core.limits import (
+    MAX_IMAGE_EDGE_PX,
+    MAX_IMAGES,
+    MAX_STDERR_CHARS,
+    MAX_STDOUT_CHARS,
+)
+
 # Dependency-free by design, so importing it here keeps this module usable on a
 # CLI-only install (see src/core/services/anthropic_models.py). Importing
 # anthropic_llm instead would break `osa validate` for anyone without the
@@ -535,6 +542,135 @@ class McpServer(BaseModel):
         return v
 
 
+class ClientToolConfig(BaseModel):
+    """A tool the server binds to the model but never executes itself.
+
+    Named ``ClientToolConfig`` rather than ``ClientTool`` to avoid colliding
+    with ``src.tools.client_tools.ClientTool`` (the ``BaseTool`` subclass
+    built from this config entry): both would otherwise need to be imported
+    into the same module under the same name.
+
+    See ``RuntimeConfig`` / ``PythonRuntimeConfig`` for the execution
+    environment a ``runtime`` value refers to, and the model validator on
+    ``CommunityConfig`` that requires a matching ``runtime`` section to
+    exist whenever any ``client_tools`` entry is configured.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    """Tool name, as the model will see and call it (e.g. 'execute_code')."""
+
+    runtime: Literal["python"]
+    """Which configured runtime environment executes this tool's calls.
+
+    Selects the argument schema the tool is bound with; see
+    ``src.tools.client_tools.build_client_tools``. Only 'python' exists in
+    phase 1 (browser execution, see .context/browser-execution-tool-design.md).
+    """
+
+    requires_permission: bool = True
+    """Whether the browser must show a permission gate before running a call
+    to this tool. Carried through to the `client_tools` graph node's
+    `pending_client_call` so the enforcement point (phase 2's resume handler)
+    does not need a second lookup back into this config."""
+
+    description: str
+    """Tool description shown to the model: what it does and when to call it."""
+
+
+class RuntimeLimits(BaseModel):
+    """Resource caps a community declares for a client tool's execution environment.
+
+    These are what the community TELLS the browser it may produce. What the server
+    will actually accept is fixed in `src.api.tool_results`, and the two must not be
+    able to disagree, because a community cannot see the server's constants.
+
+    So the fields the server also enforces are bounded BY those constants rather than
+    written out again. Without the upper bounds, a community could validly declare
+    `stdout_bytes: 65536` or `images: 5`, the browser would honor its own config, and
+    every result it sent would be rejected whole with a 422 by a cap it was never told
+    about. The failure would look like the browser misbehaving; it would be the config
+    lying. The defaults are the server's caps, so the common case needs no thought.
+
+    Phase 1 defines these and enforces the server's own copy on the way in; it does not
+    implement the browser-side client that produces them (phase 2, #431).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    memory_mb: int = Field(default=1536, ge=64)
+    """Maximum memory, in megabytes, the runtime may use.
+
+    Not bounded against a server constant: the server never sees memory, and wasm32
+    tops out between 2 and 4 GB regardless of what is written here."""
+
+    stdout_bytes: int = Field(default=MAX_STDOUT_CHARS, ge=256, le=MAX_STDOUT_CHARS)
+    """Maximum captured stdout size, in bytes, per execution."""
+
+    stderr_bytes: int = Field(default=MAX_STDERR_CHARS, ge=256, le=MAX_STDERR_CHARS)
+    """Maximum captured stderr size, in bytes, per execution."""
+
+    images: int = Field(default=MAX_IMAGES, ge=0, le=MAX_IMAGES)
+    """Maximum number of images an execution may return. 0 disables images."""
+
+    image_px: int = Field(default=1024, ge=16, le=MAX_IMAGE_EDGE_PX)
+    """Maximum width or height, in pixels, of a returned image."""
+
+    exec_seconds: int = Field(default=120, ge=1)
+    """Maximum wall-clock time, in seconds, a single execution may run.
+
+    Not bounded against a server constant: this is the browser's own clock, and the
+    server neither measures nor enforces it."""
+
+
+class PythonRuntimeConfig(BaseModel):
+    """Configuration for the browser-side Python (Pyodide) runtime.
+
+    Describes the environment a ``runtime: python`` client tool executes
+    in: which Pyodide build and lockfile to load, what may be preloaded or
+    installed, and the resource caps in ``limits``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    pyodide_version: str
+    """Pyodide distribution version to load in the browser."""
+
+    lockfile: str
+    """Lockfile identifying the exact package set/versions to load."""
+
+    preload: list[str] = Field(default_factory=list)
+    """Package names to preload before the first execution."""
+
+    allow_install: list[str] = Field(default_factory=list)
+    """Package names the runtime may additionally install on demand."""
+
+    preload_on: Literal["first_run", "widget_open"] = "first_run"
+    """When to trigger preloading: at the first execution, or as soon as the
+    widget opens."""
+
+    fetch_allow: list[str] = Field(default_factory=list)
+    """URL prefixes the runtime is allowed to fetch from."""
+
+    index_urls: list[str] = Field(default_factory=list)
+    """Package index URLs the runtime may install from."""
+
+    limits: RuntimeLimits = Field(default_factory=RuntimeLimits)
+    """Resource caps for this runtime. Defaults to every ``RuntimeLimits``
+    field's own default, so a community that has no reason to deviate from
+    them can omit this key entirely rather than spelling out ``limits: {}``."""
+
+
+class RuntimeConfig(BaseModel):
+    """Top-level execution environments available to this community's client tools."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    python: PythonRuntimeConfig | None = None
+    """The browser-side Python (Pyodide) runtime, if configured."""
+
+
 class ExtensionsConfig(BaseModel):
     """Extension points for specialized tools."""
 
@@ -545,6 +681,14 @@ class ExtensionsConfig(BaseModel):
 
     mcp_servers: list[McpServer] = Field(default_factory=list)
     """MCP servers providing additional tools (Phase 2)."""
+
+    client_tools: list[ClientToolConfig] = Field(default_factory=list)
+    """Tools the server binds so the model can call them, but never executes
+    itself; the browser executes them instead (phase 1 plumbing, phase 2
+    execution: #431). Uniqueness of names, and the requirement that a
+    matching ``runtime`` section exists, are enforced on ``CommunityConfig``
+    (see its model validator), not here: this model cannot see the
+    top-level ``runtime`` sibling field."""
 
     @model_validator(mode="after")
     def validate_unique_extensions(self) -> "ExtensionsConfig":
@@ -1122,6 +1266,25 @@ class CommunityConfig(BaseModel):
     extensions: ExtensionsConfig | None = None
     """Extension points for specialized tools."""
 
+    runtime: RuntimeConfig | None = None
+    """Execution environments available to this community's client tools.
+
+    Required whenever ``extensions.client_tools`` is non-empty (see
+    ``validate_client_tools_have_runtime`` below): a client tool names a
+    ``runtime`` value, and this is where that value's environment is
+    actually configured. ``CommunityConfig`` is ``extra="forbid"``, so this
+    key is rejected by any config written before this field existed;
+    it and ``ClientToolConfig`` land together for that reason.
+
+    Example:
+        runtime:
+          python:
+            pyodide_version: "0.28.3"
+            lockfile: "pyodide-lock-2026-01.json"
+            limits:
+              memory_mb: 1536
+    """
+
     enable_page_context: bool = True
     """Enable page context tool for widget embedding (default: True).
 
@@ -1493,6 +1656,60 @@ class CommunityConfig(BaseModel):
                 f"'claude-haiku-4-5'), which are cost-capped and never require BYOK. "
                 f"Ultra-expensive models (>$15/1M tokens) cannot use the platform API key."
             )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_client_tools_have_runtime(self) -> "CommunityConfig":
+        """A configured client tool must name a runtime this community configures.
+
+        Runs on ``CommunityConfig`` rather than ``ExtensionsConfig`` because
+        ``runtime`` is this model's own field, not a sibling
+        ``ExtensionsConfig`` can see. Also enforces unique ``client_tools``
+        names here, for the same reason ``ExtensionsConfig.
+        validate_unique_extensions`` enforces uniqueness of plugin modules
+        and MCP server names on itself: one entry silently shadowing
+        another under the same name is exactly the kind of config mistake
+        that should fail at load time, not at the first tool call that
+        picks the wrong one.
+        """
+        client_tools = self.extensions.client_tools if self.extensions else []
+        if not client_tools:
+            return self
+
+        names = [entry.name for entry in client_tools]
+        seen: set[str] = set()
+        duplicates: list[str] = []
+        for name in names:
+            if name in seen:
+                duplicates.append(name)
+            seen.add(name)
+        if duplicates:
+            raise ValueError(f"Duplicate client_tools names: {', '.join(duplicates)}")
+
+        if self.runtime is None:
+            raise ValueError(
+                "extensions.client_tools is set but no top-level 'runtime' "
+                "section is configured. Add a 'runtime:' section describing "
+                "the execution environment(s) the declared client tools run in."
+            )
+
+        # Which `runtime` section each declared runtime requires. A mapping rather
+        # than a chain of `elif`s, because a chain has no else: adding a runtime to
+        # ClientToolConfig's Literal and forgetting a branch here would let a community
+        # declare a client tool whose execution environment was never configured. The
+        # tool would bind, the model would call it, the call would park, and nothing
+        # would ever answer it. A missing entry here is a KeyError at config load
+        # instead, which is loud and immediate.
+        required_section = {"python": "python"}
+
+        for entry in client_tools:
+            section = required_section[entry.runtime]
+            if getattr(self.runtime, section, None) is None:
+                raise ValueError(
+                    f"client_tools entry '{entry.name}' declares runtime: "
+                    f"{entry.runtime}, but runtime.{section} is not configured."
+                )
 
         return self
 
