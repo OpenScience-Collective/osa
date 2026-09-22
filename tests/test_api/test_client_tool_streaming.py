@@ -216,6 +216,72 @@ class TestRunOneEndsOnTheCall:
         )
 
 
+class TestTheStateCaptureCannotFailQuietly:
+    """What happens when langgraph changes the shape of its events.
+
+    The run reads the parked call out of the root graph's `on_chain_end`. That event is
+    a dependency bump away from changing at any time, and if it is ever missed the turn
+    looks completely normal from outside: the model's tool-calling message carries no
+    text, so nothing is persisted and the client receives an ordinary `done`. The
+    model's request to run code would be dropped permanently, platform wide, with every
+    metric green.
+
+    So the run cross-checks two independent signals: the node's own event says a call
+    was parked, the state says which one. Disagreement is an error.
+    """
+
+    @staticmethod
+    def _without_root_end(assistant: CommunityAssistant) -> CommunityAssistant:
+        """Drop the root graph's `on_chain_end`, exactly as an upstream change would."""
+        real_build = assistant.build_graph
+
+        class _Filtered:
+            def __init__(self, graph) -> None:
+                self._graph = graph
+
+            async def astream_events(self, *args, **kwargs):
+                async for event in self._graph.astream_events(*args, **kwargs):
+                    if event.get("event") == "on_chain_end" and not event.get("parent_ids"):
+                        continue
+                    yield event
+
+        assistant.build_graph = lambda: _Filtered(real_build())  # type: ignore[method-assign]
+        return assistant
+
+    @pytest.mark.asyncio
+    async def test_it_errors_rather_than_ending_the_turn_normally(self) -> None:
+        assistant, _ = _assistant([tool_call_response("execute_code", {"code": "x"}, CALL_ID)])
+
+        events = await _run(
+            _session(), self._without_root_end(assistant), declared_client_tools={"execute_code"}
+        )
+
+        assert "error" in _names(events), "a dropped state event ended the turn quietly"
+        assert "done" not in _names(events), "a failed browser turn must not look successful"
+        assert "tool_request" not in _names(events)
+
+    @pytest.mark.asyncio
+    async def test_the_error_carries_an_id_to_find_it_by(self) -> None:
+        assistant, _ = _assistant([tool_call_response("execute_code", {"code": "x"}, CALL_ID)])
+
+        events = await _run(
+            _session(), self._without_root_end(assistant), declared_client_tools={"execute_code"}
+        )
+
+        assert next(e for e in events if e["event"] == "error")["error_id"]
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_turn_is_unaffected_by_the_same_drift(self) -> None:
+        """The cross-check must not fire on a turn that never parked anything, or every
+        conversation in every community would break on the same dependency bump."""
+        assistant, _ = _assistant([AIMessage(content="No code needed.")], declared=set())
+
+        events = await _run(_session(), self._without_root_end(assistant))
+
+        assert "done" in _names(events)
+        assert "error" not in _names(events)
+
+
 class TestBatches:
     @pytest.mark.asyncio
     async def test_a_server_call_in_the_same_batch_is_answered(self) -> None:

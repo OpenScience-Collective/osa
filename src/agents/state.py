@@ -43,6 +43,38 @@ class AgentState:
     """Control flow indicator for the workflow."""
 
 
+class PendingClientCallPayload(TypedDict):
+    """The graph-state form of a parked browser call.
+
+    A `TypedDict` rather than `dict[str, Any]` because this crosses a boundary that is
+    otherwise invisible to both the type checker and the runtime: the `client_tools`
+    node writes it and `src.api.tool_results.PendingClientCall.from_state` reads it, and
+    LangGraph validates nothing in between.
+
+    Before this was typed, renaming a key here was silent. `from_state` reads `args`
+    with `.get(...) or {}`, so a renamed key produced a call parked with EMPTY
+    arguments: the browser would be asked to run nothing, with no exception, no log and
+    no failing test. Dropping `call_id` instead raised a `KeyError` from inside the SSE
+    generator, which truncates the stream with neither a `tool_request` nor an `error`
+    event. Both now fail at the type checker instead.
+
+    Still a plain dict at runtime, so LangGraph's serialization is unaffected.
+    """
+
+    call_id: str
+    """The provider-assigned `tool_call["id"]`, never a server-generated one, so
+    correlation with the model's own `tool_use` block is exact."""
+
+    tool: str
+    """The tool name the model called."""
+
+    args: dict[str, Any]
+    """The arguments the model passed."""
+
+    requires_permission: bool
+    """Whether the browser must show a permission gate before running this."""
+
+
 class BaseAgentState(TypedDict, total=False):
     """TypedDict state for LangGraph StateGraph.
 
@@ -70,7 +102,7 @@ class BaseAgentState(TypedDict, total=False):
     tool_calls: list[dict[str, Any]]
     """History of tool calls made during execution."""
 
-    pending_client_call: dict[str, Any] | None
+    pending_client_call: "PendingClientCallPayload | None"
     """The one browser-executed tool call still waiting on a result, if any.
 
     Set by the `client_tools` node (`src.agents.base.BaseAgent`) for the

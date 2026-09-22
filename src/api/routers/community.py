@@ -23,7 +23,11 @@ from fastapi.responses import FileResponse, StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from src.agents.base import DEFAULT_MAX_CONVERSATION_TOKENS, count_conversation_tokens
+from src.agents.base import (
+    CLIENT_TOOLS_NODE,
+    DEFAULT_MAX_CONVERSATION_TOKENS,
+    count_conversation_tokens,
+)
 from src.agents.content import (
     CitationAssembler,
     ContentBlock,
@@ -430,6 +434,7 @@ def _trim_preserving_tool_turns(messages: Sequence[BaseMessage], limit: int) -> 
             "boundary to cut at; keeping it whole rather than orphaning a tool call.",
             len(messages),
             limit,
+            extra={"reason": "no_turn_boundary", "message_count": len(messages), "limit": limit},
         )
         return list(messages)
 
@@ -514,6 +519,21 @@ class ChatSession:
         self.last_active = datetime.now(UTC)
 
     def set_pending_call(self, call: PendingClientCall) -> None:
+        """Park a browser call, refusing to silently replace an unanswered one.
+
+        A session holds at most one pending call, which the scalar field expresses.
+        What the field cannot express is that an occupied slot must not be overwritten,
+        and that is the dangerous half: clobbering leaves the first `call_id` referenced
+        by an assistant message in stored history with nothing that will ever answer it,
+        which the provider rejects on every later turn. There is no error today because
+        the only two callers happen to clear the slot first.
+
+        So the guard lives here rather than in the discipline of its call sites. A third
+        entry point is exactly the thing that would get this wrong, and it would get it
+        wrong silently.
+        """
+        if self.pending_call is not None and self.pending_call.call_id != call.call_id:
+            self.abandon_pending_call("it was replaced by a newer browser call")
         self.pending_call = call
         self.last_active = datetime.now(UTC)
 
@@ -535,14 +555,34 @@ class ChatSession:
         """
         pending = self.pending_call
         if pending is None:
+            logger.info(
+                "Browser result refused for session %s: no call is outstanding",
+                self.session_id,
+                extra={"session_id": self.session_id, "reason": "none_outstanding"},
+            )
             return None
         if pending.is_expired():
             # Repair rather than merely refuse. Leaving a stale call parked would keep
             # the unanswered tool_call in history, and that is what makes a session
             # unusable, so the expiry path has to clear it here too.
+            #
+            # Logged at warning because this is the reliability signal for a feature
+            # with no checkpointer: without it there is no way to measure how often
+            # browser calls are timing out rather than being answered.
+            logger.warning(
+                "Browser call %s on session %s expired before it was answered",
+                pending.call_id,
+                self.session_id,
+                extra={"session_id": self.session_id, "reason": "expired"},
+            )
             self.abandon_pending_call("it was not answered in time")
             return None
         if pending.call_id != call_id:
+            logger.info(
+                "Browser result refused for session %s: a different call is outstanding",
+                self.session_id,
+                extra={"session_id": self.session_id, "reason": "id_mismatch"},
+            )
             return None
         self.pending_call = None
         return pending
@@ -1870,8 +1910,25 @@ def create_community_router(community_id: str) -> APIRouter:
 
         # The live message list carries the images; the stored one never does. Both are
         # built from the same result so they cannot describe different runs.
-        live_messages = [*session.messages, build_live_tool_message(body.result)]
-        session.messages.append(build_history_tool_message(body.result))
+        #
+        # Claiming already cleared the parked call, so from here until the history is
+        # appended the session holds an assistant message with `tool_calls` and nothing
+        # answering it. Anything raising in that window would leave the session
+        # permanently unusable and unrepairable, because `abandon_pending_call` would
+        # have nothing left to abandon. Nothing in these two builders can raise today;
+        # the re-park is here so that stays true when someone adds something that can.
+        try:
+            live_messages = [*session.messages, build_live_tool_message(body.result)]
+            session.messages.append(build_history_tool_message(body.result))
+        except Exception:
+            session.set_pending_call(pending)
+            logger.exception(
+                "Failed to record browser result %s on session %s; the call was "
+                "re-parked so the session stays answerable",
+                pending.call_id,
+                session.session_id,
+            )
+            raise
 
         return StreamingResponse(
             _stream_chat_response(
@@ -1885,6 +1942,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 http_request=http_request,
                 declared_client_tools=set(body.client_tools),
                 initial_messages=live_messages,
+                endpoint=f"/{community_id}/chat/resume",
             ),
             media_type="text/event-stream",
             headers={
@@ -2699,8 +2757,13 @@ def _finish_with_tool_request(
     refusal for any second browser call. Rebuilding that from SSE events would be
     re-deriving what the graph already got right.
     """
-    session.replace_history(final_state.get("messages", []) if final_state else [])
+    # Validate BEFORE mutating. Reversed, a malformed payload would leave the session
+    # holding an assistant message with `tool_calls` and no parked call to answer it,
+    # which the provider rejects on every later turn: the session would be permanently
+    # dead with no way to repair it, because `abandon_pending_call` has nothing to
+    # abandon. Build the call first and let it raise while the session is untouched.
     pending = PendingClientCall.from_state(pending_payload)
+    session.replace_history(final_state.get("messages", []) if final_state else [])
     session.set_pending_call(pending)
     yield f"data: {json.dumps(pending.to_request_event(session.session_id))}\n\n"
 
@@ -2716,6 +2779,7 @@ async def _stream_chat_response(
     http_request: Request | None = None,
     declared_client_tools: set[str] | None = None,
     initial_messages: list[BaseMessage] | None = None,
+    endpoint: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream assistant response as JSON-encoded Server-Sent Events.
 
@@ -2757,6 +2821,13 @@ async def _stream_chat_response(
     # request_id. This also joins per-response feedback back to request_log.
     request_id = getattr(http_request.state, "request_id", None) if http_request else None
 
+    # The label this turn is recorded under. `_stream_chat_response` is shared by run 1
+    # (`/chat`) and run 2 (`/chat/resume`), and the metrics middleware skips its own
+    # logging once this path has logged, so what is written here is the ONLY record of
+    # the request. Hardcoding "/chat" folded every resume, the half that actually spends
+    # the credential, into `/chat`'s numbers and made a browser turn's cost unmeasurable.
+    metrics_endpoint = endpoint or f"/{community_id}/chat"
+
     # Send session_id immediately so the client captures it even if the
     # stream is truncated by a proxy timeout.
     sse_event = {"event": "session", "session_id": session.session_id}
@@ -2789,6 +2860,7 @@ async def _stream_chat_response(
         stream_config = awm.langfuse_config or {}
         full_response = ""
         final_state: dict[str, Any] | None = None
+        client_tools_node_ran = False
 
         async for event in graph.astream_events(state, version="v2", config=stream_config):
             kind = event.get("event")
@@ -2841,27 +2913,56 @@ async def _stream_chat_response(
                 }
                 yield f"data: {json.dumps(sse_event)}\n\n"
 
-            elif kind == "on_chain_end" and not event.get("parent_ids"):
-                # The root graph's own end event carries the complete final state:
-                # every message the run produced, plus `pending_client_call` when it
-                # ended on a browser call. Identified by an empty `parent_ids` rather
-                # than by the name "LangGraph", which is an implementation detail a
-                # rename would quietly change. Verified against the installed langgraph,
-                # and asserted in tests/test_api/test_client_tool_streaming.py, so an
-                # upstream change to the event shape fails a test rather than silently
-                # losing every browser turn.
-                output = event.get("data", {}).get("output")
-                if isinstance(output, dict) and "messages" in output:
-                    final_state = output
+            elif kind == "on_chain_end":
+                if not event.get("parent_ids"):
+                    # The root graph's own end event carries the complete final state:
+                    # every message the run produced, plus `pending_client_call` when
+                    # it ended on a browser call. Identified by an empty `parent_ids`
+                    # rather than by the name "LangGraph", which is an implementation
+                    # detail a rename would quietly change.
+                    output = event.get("data", {}).get("output")
+                    if isinstance(output, dict) and "messages" in output:
+                        final_state = output
+                elif event.get("name") == CLIENT_TOOLS_NODE:
+                    # Independent evidence that a browser call was parked, read from a
+                    # different event than the state is. If the node ran and the state
+                    # did not come back, the two disagree, and that is checked below
+                    # rather than left to fall through.
+                    client_tools_node_ran = True
 
         pending_payload = (final_state or {}).get("pending_client_call")
+
+        if client_tools_node_ran and not pending_payload:
+            # The node that parks a browser call ran, and the state that should carry
+            # the parked call did not come back. Almost certainly langgraph changed the
+            # shape of its events, which is a dependency bump away at any time.
+            #
+            # This is raised rather than allowed to fall through, and that is the whole
+            # point. Falling through produces a turn that looks completely normal: the
+            # model's tool-calling message has no text, so `final_response` is empty,
+            # nothing is persisted, and the client receives an ordinary `done`. The
+            # model's request to run code is dropped permanently, platform-wide, with
+            # every metric green and nothing to alert on.
+            error_id = str(uuid.uuid4())
+            logger.error(
+                "Browser call was parked but the graph state did not carry it "
+                "(ID: %s, session: %s, community: %s). The langgraph event shape has "
+                "probably changed; see _stream_chat_response's on_chain_end branch.",
+                error_id,
+                session.session_id,
+                community_id,
+                extra={"error_id": error_id, "community_id": community_id},
+            )
+            yield f"data: {json.dumps({'event': 'error', 'message': 'The assistant could not start a browser task.', 'error_id': error_id})}\n\n"
+            return
+
         if pending_payload:
             for sse_line in _finish_with_tool_request(session, pending_payload, final_state):
                 yield sse_line
             _log_streaming_metrics(
                 http_request=http_request,
                 community_id=community_id,
-                endpoint=f"/{community_id}/chat",
+                endpoint=metrics_endpoint,
                 awm=awm,
                 tools_called=tools_called,
                 start_time=start_time,
@@ -2919,7 +3020,7 @@ async def _stream_chat_response(
         _log_streaming_metrics(
             http_request=http_request,
             community_id=community_id,
-            endpoint=f"/{community_id}/chat",
+            endpoint=metrics_endpoint,
             awm=awm,
             tools_called=tools_called,
             start_time=start_time,
@@ -2945,7 +3046,7 @@ async def _stream_chat_response(
         _log_streaming_metrics(
             http_request=http_request,
             community_id=community_id,
-            endpoint=f"/{community_id}/chat",
+            endpoint=metrics_endpoint,
             awm=awm,
             tools_called=tools_called,
             start_time=start_time,
@@ -2963,7 +3064,7 @@ async def _stream_chat_response(
         _log_streaming_metrics(
             http_request=http_request,
             community_id=community_id,
-            endpoint=f"/{community_id}/chat",
+            endpoint=metrics_endpoint,
             awm=awm,
             tools_called=tools_called,
             start_time=start_time,
@@ -2997,7 +3098,7 @@ async def _stream_chat_response(
         _log_streaming_metrics(
             http_request=http_request,
             community_id=community_id,
-            endpoint=f"/{community_id}/chat",
+            endpoint=metrics_endpoint,
             awm=awm,
             tools_called=tools_called,
             start_time=start_time,

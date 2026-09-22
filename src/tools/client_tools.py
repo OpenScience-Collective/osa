@@ -18,6 +18,7 @@ to run against.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import TYPE_CHECKING, Any
 
@@ -26,6 +27,8 @@ from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     from src.core.config.community import CommunityConfig
+
+logger = logging.getLogger(__name__)
 
 CLIENT_TOOL_KILL_SWITCH_ENV = "OSA_CLIENT_TOOLS_DISABLED"
 """Environment variable name. Any truthy value (see `client_tools_disabled`)
@@ -182,17 +185,32 @@ def build_client_tools(config: CommunityConfig, declared: set[str] | None) -> li
         A `ClientTool` for every entry in `config.extensions.client_tools`
         whose name is also in `declared`, in that list's order.
     """
+    configured = list(config.extensions.client_tools) if config.extensions else []
+
     if client_tools_disabled():
+        # Logged only when the switch actually took something away. The kill switch is
+        # an incident-response control, so an operator who flips it during a rolling
+        # deploy needs server-side proof it reached every instance; a synthetic probe
+        # request is not proof. Guarding on `configured` keeps this silent for the
+        # communities that were never going to bind a client tool anyway.
+        if configured:
+            logger.warning(
+                "Client tools disabled by %s; stripped %d configured tool(s) from %s",
+                CLIENT_TOOL_KILL_SWITCH_ENV,
+                len(configured),
+                config.id,
+                extra={"community_id": config.id, "reason": "kill_switch"},
+            )
+        return []
+
+    if not configured:
         return []
 
     if not declared:
         return []
 
-    if config.extensions is None or not config.extensions.client_tools:
-        return []
-
     tools: list[ClientTool] = []
-    for entry in config.extensions.client_tools:
+    for entry in configured:
         if entry.name not in declared:
             continue
         args_schema = _args_schema_for_runtime(entry.runtime)
@@ -204,4 +222,18 @@ def build_client_tools(config: CommunityConfig, declared: set[str] | None) -> li
                 requires_permission=entry.requires_permission,
             )
         )
+    if configured and not tools:
+        # Every configured tool was filtered out by what the caller declared. That is
+        # the ordinary case for an old cached widget, and it is also what a renamed
+        # tool looks like, so it is worth seeing rather than guessing at. Widgets are
+        # pinned by SRI hash and persist indefinitely, which makes this drift long
+        # lived when it happens.
+        logger.info(
+            "No client tools bound for %s: configured %s, caller declared %s",
+            config.id,
+            sorted(entry.name for entry in configured),
+            sorted(declared),
+            extra={"community_id": config.id, "reason": "declaration_mismatch"},
+        )
+
     return tools

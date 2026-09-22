@@ -209,23 +209,28 @@ class TestUnansweredCall:
         assert "the conversation moved on" in _text(message)
 
 
+def _payload(**overrides) -> dict:
+    fields = {
+        "call_id": CALL_ID,
+        "tool": "execute_code",
+        "args": {"code": "1"},
+        "requires_permission": True,
+    }
+    fields.update(overrides)
+    return fields
+
+
 class TestPendingClientCall:
     def test_it_keeps_the_providers_own_call_id(self) -> None:
         """Minting a new id here would mean correlating two identifiers back to one
         assistant message."""
-        call = PendingClientCall.from_state(
-            {"call_id": CALL_ID, "tool": "execute_code", "args": {"code": "1"}}
-        )
+        assert PendingClientCall.from_state(_payload()).call_id == CALL_ID
 
-        assert call.call_id == CALL_ID
-
-    def test_permission_defaults_to_required(self) -> None:
-        call = PendingClientCall.from_state({"call_id": CALL_ID, "tool": "execute_code"})
-
-        assert call.requires_permission is True
+    def test_it_carries_the_args_the_model_passed(self) -> None:
+        assert PendingClientCall.from_state(_payload()).args == {"code": "1"}
 
     def test_expiry_is_measured_from_creation(self) -> None:
-        fresh = PendingClientCall.from_state({"call_id": CALL_ID, "tool": "execute_code"})
+        fresh = PendingClientCall.from_state(_payload())
 
         assert fresh.is_expired() is False
         assert fresh.is_expired(
@@ -235,10 +240,33 @@ class TestPendingClientCall:
     def test_the_request_event_carries_the_event_key(self) -> None:
         """The widget dispatches on it. The design note's own example of a sibling
         event omitted this key and would never have dispatched."""
-        call = PendingClientCall.from_state({"call_id": CALL_ID, "tool": "execute_code"})
-
-        event = call.to_request_event("sess-1")
+        event = PendingClientCall.from_state(_payload()).to_request_event("sess-1")
 
         assert event["event"] == "tool_request"
         assert event["call_id"] == CALL_ID
         assert event["session_id"] == "sess-1"
+
+    @pytest.mark.parametrize("missing", PendingClientCall.REQUIRED_KEYS)
+    def test_every_key_is_required(self, missing: str) -> None:
+        """Drift between the graph node and this reader must be loud.
+
+        It used to be silent in two different ways. A renamed `args` key parked a call
+        with empty arguments, so the browser was asked to run nothing with no error
+        anywhere. A missing `call_id` raised a KeyError from inside the SSE generator,
+        truncating the stream with neither a tool_request nor an error event.
+        """
+        payload = {k: v for k, v in _payload().items() if k != missing}
+
+        with pytest.raises(ValueError, match=missing):
+            PendingClientCall.from_state(payload)
+
+    def test_the_required_keys_are_the_ones_the_node_writes(self) -> None:
+        """Pins the contract from the reader's side.
+
+        `src.agents.state.PendingClientCallPayload` declares the same four keys; if the
+        node grows a fifth and this list is not updated, the two disagree silently
+        because nothing type checks in CI.
+        """
+        from src.agents.state import PendingClientCallPayload
+
+        assert set(PendingClientCall.REQUIRED_KEYS) == set(PendingClientCallPayload.__annotations__)

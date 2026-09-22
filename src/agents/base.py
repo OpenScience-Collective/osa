@@ -20,7 +20,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode
 
-from src.agents.state import BaseAgentState
+from src.agents.state import BaseAgentState, PendingClientCallPayload
 from src.tools.client_tools import ClientTool
 
 logger = logging.getLogger(__name__)
@@ -49,6 +49,16 @@ DEFAULT_MAX_CONVERSATION_TOKENS = 80000
 #: Requires langchain-core 1.6 or newer; before that the helper had no `tokens_per_image`
 #: parameter and stringified image payloads instead. pyproject floors it there.
 ANTHROPIC_TOKENS_PER_IMAGE = 1600
+
+#: Name of the graph node that parks a browser-executed tool call.
+#:
+#: Declared here rather than spelled as a literal at each use, because it is read from
+#: OUTSIDE this module too: `_stream_chat_response` watches for this node's own
+#: `on_chain_end` event as independent evidence that a call was parked, and compares it
+#: against the graph state. Two copies of the string would let a rename here make that
+#: check quietly stop firing, which would restore exactly the silent failure it exists
+#: to catch.
+CLIENT_TOOLS_NODE = "client_tools"
 
 
 def count_conversation_tokens(messages: Sequence[BaseMessage]) -> int:
@@ -159,9 +169,16 @@ class BaseAgent(ABC):
         # Add nodes
         graph.add_node("agent", self._agent_node)
         if self.tools:
-            graph.add_node("tools", ToolNode(self.tools))
+            # Server tools only. A ClientTool reaching a plain ToolNode would be
+            # executed, and its _run raises, so the backstop works today only because
+            # langgraph's default error handler re-raises anything that is not a
+            # ToolInvocationError. Passing handle_tool_errors=True, or a future change
+            # to that default, would turn a routing bug into a garbled ToolMessage and
+            # a 200 instead of a crash. Scoping the node makes the guarantee structural
+            # rather than borrowed: this node cannot see a client tool at all.
+            graph.add_node("tools", ToolNode(self._server_tools))
         if self.client_tool_names:
-            graph.add_node("client_tools", self._client_tools_node)
+            graph.add_node(CLIENT_TOOLS_NODE, self._client_tools_node)
 
         # Set entry point
         graph.set_entry_point("agent")
@@ -170,7 +187,7 @@ class BaseAgent(ABC):
         if self.tools:
             routes = {"tools": "tools", "end": END}
             if self.client_tool_names:
-                routes["client_tools"] = "client_tools"
+                routes[CLIENT_TOOLS_NODE] = CLIENT_TOOLS_NODE
             graph.add_conditional_edges(
                 "agent",
                 self._should_use_tools,
@@ -182,7 +199,7 @@ class BaseAgent(ABC):
                 # and a fresh run (resume) continues the turn. No edge back
                 # to "agent" here -- that is the whole point of the
                 # two-run continuation (see the phase 1 plan).
-                graph.add_edge("client_tools", END)
+                graph.add_edge(CLIENT_TOOLS_NODE, END)
         else:
             graph.add_edge("agent", END)
 
@@ -283,7 +300,7 @@ class BaseAgent(ABC):
         if self.client_tool_names:
             call_names = {tc["name"] for tc in last_message.tool_calls}
             if call_names & self.client_tool_names:
-                return "client_tools"
+                return CLIENT_TOOLS_NODE
 
         return "tools"
 
@@ -347,6 +364,20 @@ class BaseAgent(ABC):
             elif name in self.client_tool_names:
                 client_calls.append(tc)
             else:
+                # A data problem, not an exception: the model asked for something that
+                # does not exist, and telling it so in a ToolMessage is the answer.
+                # Logged because server-side this is invisible otherwise, and the two
+                # things that cause it, a stale widget declaring a renamed tool and a
+                # config typo, are exactly the drift the client-tool contract depends
+                # on not happening. Without this it surfaces only as a confusing model
+                # reply that a user might or might not report.
+                logger.warning(
+                    "Model called unknown tool %r; no server or client executor is "
+                    "registered for it. Known server tools: %s. Known client tools: %s.",
+                    name,
+                    sorted(server_tool_names),
+                    sorted(self.client_tool_names),
+                )
                 new_messages.append(
                     ToolMessage(
                         content=(
@@ -365,7 +396,7 @@ class BaseAgent(ABC):
             result = await self._server_tool_node.ainvoke({"messages": [synthetic]}, config)
             new_messages.extend(result.get("messages", []))
 
-        pending_client_call: dict[str, Any] | None = None
+        pending_client_call: PendingClientCallPayload | None = None
         for i, tc in enumerate(client_calls):
             if i == 0:
                 tool = self._client_tools_by_name.get(tc["name"])

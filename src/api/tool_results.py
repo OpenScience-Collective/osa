@@ -29,12 +29,13 @@ from __future__ import annotations
 
 import base64
 import binascii
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from langchain_core.messages import ToolMessage
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 from src.core.services.anthropic_models import IMAGE_MEDIA_TYPES
 
@@ -133,7 +134,16 @@ class ClientToolResult(BaseModel):
         ),
     )
     images: list[ToolResultImage] = Field(default_factory=list, max_length=MAX_IMAGES)
-    artifacts: list[str] = Field(default_factory=list, max_length=32)
+    artifacts: list[Annotated[str, StringConstraints(max_length=512)]] = Field(
+        default_factory=list,
+        max_length=32,
+        description=(
+            "Names of files the run wrote, not their contents. Bounded per item as "
+            "well as in count: capping only the list length would let 32 arbitrarily "
+            "long strings through, which is the one field on this model that was not "
+            "sized before use."
+        ),
+    )
     elapsed_ms: int = Field(default=0, ge=0)
 
     @property
@@ -231,14 +241,33 @@ class PendingClientCall:
     requires_permission: bool
     created_at: datetime
 
+    #: Keys the graph node must supply. Named here so a drift between the node and this
+    #: reader is one error naming the missing key, rather than the two different silent
+    #: failures it used to be.
+    REQUIRED_KEYS = ("call_id", "tool", "args", "requires_permission")
+
     @classmethod
-    def from_state(cls, payload: dict[str, Any]) -> PendingClientCall:
-        """Build from the `pending_client_call` the graph node put in its state."""
+    def from_state(cls, payload: Mapping[str, Any]) -> PendingClientCall:
+        """Build from the `pending_client_call` the graph node put in its state.
+
+        Every key is required, and that strictness is the point. Reading `args` with a
+        `.get(..., {})` default meant a renamed key parked a call with EMPTY arguments:
+        the browser was asked to run nothing, and there was no exception, no log line
+        and no failing test. `src.agents.state.PendingClientCallPayload` catches that
+        statically, but this project runs no type checker in CI (mypy is configured and
+        invoked nowhere; see issue #412), so the runtime check is what actually holds.
+        """
+        missing = [key for key in cls.REQUIRED_KEYS if key not in payload]
+        if missing:
+            raise ValueError(
+                f"pending_client_call is missing {', '.join(missing)}; the graph node "
+                "and PendingClientCall.from_state have drifted apart"
+            )
         return cls(
             call_id=str(payload["call_id"]),
             tool=str(payload["tool"]),
-            args=dict(payload.get("args") or {}),
-            requires_permission=bool(payload.get("requires_permission", True)),
+            args=dict(payload["args"] or {}),
+            requires_permission=bool(payload["requires_permission"]),
             created_at=datetime.now(UTC),
         )
 
