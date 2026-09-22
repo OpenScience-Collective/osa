@@ -12,6 +12,31 @@
 // Path segments that are actual routes, never valid community IDs
 const RESERVED_PATHS = ['health', 'version', 'feedback', 'communities', 'metrics', 'sync'];
 
+// This worker is reachable two ways: its default *.workers.dev hostname
+// (unprefixed), and the product-owned widget.osc.earth/osa/* path mount
+// (#437). A Cloudflare route of the form "widget.osc.earth/osa/*" delivers
+// the FULL path, prefix included, to the worker -- it sees "/osa/nemar/chat",
+// not "/nemar/chat". Strip the prefix once, here, before any route is
+// matched, rather than baking "/osa" into each route's own regex; a
+// per-route prefix rots the moment someone adds a route and forgets it.
+const MOUNT_PREFIX = '/osa';
+
+/**
+ * Strip a leading mount-prefix segment so every route matcher can be
+ * written once, unprefixed, and work under both hostnames. Anything not
+ * under the prefix (including the bare *.workers.dev / wrangler dev case)
+ * passes through unchanged.
+ */
+function stripMountPrefix(pathname) {
+  if (pathname === MOUNT_PREFIX) {
+    return '/';
+  }
+  if (pathname.startsWith(`${MOUNT_PREFIX}/`)) {
+    return pathname.slice(MOUNT_PREFIX.length);
+  }
+  return pathname;
+}
+
 // Worker configuration
 function getConfig(env) {
   const isDev = env.ENVIRONMENT === 'development';
@@ -408,15 +433,20 @@ export default {
 
     try {
       const url = new URL(request.url);
+      // Strip the widget.osc.earth/osa mount prefix (#437) once, up front.
+      // Every matcher below is written unprefixed and sees this pathname,
+      // never url.pathname directly, so it works the same reached via the
+      // path-mounted host or the bare *.workers.dev / wrangler dev host.
+      const pathname = stripMountPrefix(url.pathname);
 
       // Route requests
-      if (url.pathname === '/') {
+      if (pathname === '/') {
         return handleRoot(corsHeaders, CONFIG);
-      } else if (url.pathname === '/health') {
+      } else if (pathname === '/health') {
         return await handleHealth(env, corsHeaders, CONFIG);
-      } else if (url.pathname === '/version') {
+      } else if (pathname === '/version') {
         return await proxyToBackend(request, env, '/version', null, corsHeaders, CONFIG);
-      } else if (url.pathname === '/feedback' && request.method === 'POST') {
+      } else if (pathname === '/feedback' && request.method === 'POST') {
         // Feedback endpoint has lighter protection (rate limit only, no Turnstile)
         return await handleFeedback(request, env, corsHeaders, CONFIG);
       }
@@ -424,36 +454,36 @@ export default {
       // --- Public read-only endpoints (GET only, rate-limited) ---
 
       // Communities metadata (widget config)
-      if (url.pathname === '/communities' && request.method === 'GET') {
+      if (pathname === '/communities' && request.method === 'GET') {
         const rejected = await rateLimitOrReject(request, env, corsHeaders, CONFIG);
         if (rejected) return rejected;
         return await proxyToBackend(request, env, '/communities', null, corsHeaders, CONFIG);
       }
 
       // Global public metrics: /metrics/public/overview
-      if (url.pathname === '/metrics/public/overview' && request.method === 'GET') {
+      if (pathname === '/metrics/public/overview' && request.method === 'GET') {
         const rejected = await rateLimitOrReject(request, env, corsHeaders, CONFIG);
         if (rejected) return rejected;
         return await proxyToBackend(request, env, '/metrics/public/overview', null, corsHeaders, CONFIG);
       }
 
       // Admin metrics endpoints: client must provide their own API key
-      if (url.pathname.match(/^\/metrics\/(overview|tokens|quality)$/) && request.method === 'GET') {
+      if (pathname.match(/^\/metrics\/(overview|tokens|quality)$/) && request.method === 'GET') {
         const rejected = await rateLimitOrReject(request, env, corsHeaders, CONFIG);
         if (rejected) return rejected;
-        const path = url.pathname + url.search;
+        const path = pathname + url.search;
         return await proxyToBackendPassthrough(request, env, path, null, corsHeaders, CONFIG);
       }
 
       // Sync status endpoints (public, read-only)
-      if ((url.pathname === '/sync/status' || url.pathname === '/sync/health') && request.method === 'GET') {
+      if ((pathname === '/sync/status' || pathname === '/sync/health') && request.method === 'GET') {
         const rejected = await rateLimitOrReject(request, env, corsHeaders, CONFIG);
         if (rejected) return rejected;
-        return await proxyToBackend(request, env, url.pathname, null, corsHeaders, CONFIG);
+        return await proxyToBackend(request, env, pathname, null, corsHeaders, CONFIG);
       }
 
       // Community config endpoint: /:communityId/ (GET)
-      const communityConfigMatch = url.pathname.match(/^\/([^\/]+)\/?$/);
+      const communityConfigMatch = pathname.match(/^\/([^\/]+)\/?$/);
       if (communityConfigMatch && request.method === 'GET') {
         const communityId = communityConfigMatch[1];
 
@@ -467,7 +497,7 @@ export default {
       }
 
       // Community public metrics endpoints (GET)
-      const communityMetricsMatch = url.pathname.match(/^\/([^\/]+)\/(metrics\/public(?:\/usage)?)$/);
+      const communityMetricsMatch = pathname.match(/^\/([^\/]+)\/(metrics\/public(?:\/usage)?)$/);
       if (communityMetricsMatch && request.method === 'GET') {
         const communityId = communityMetricsMatch[1];
 
@@ -477,11 +507,11 @@ export default {
         const rejected = await rateLimitOrReject(request, env, corsHeaders, CONFIG);
         if (rejected) return rejected;
 
-        return await proxyToBackend(request, env, url.pathname, null, corsHeaders, CONFIG);
+        return await proxyToBackend(request, env, pathname, null, corsHeaders, CONFIG);
       }
 
       // Community sessions endpoint (GET, authenticated -- forward client key)
-      const communitySessionsMatch = url.pathname.match(/^\/([^\/]+)\/sessions$/);
+      const communitySessionsMatch = pathname.match(/^\/([^\/]+)\/sessions$/);
       if (communitySessionsMatch && request.method === 'GET') {
         const communityId = communitySessionsMatch[1];
 
@@ -491,11 +521,11 @@ export default {
         const rejected = await rateLimitOrReject(request, env, corsHeaders, CONFIG);
         if (rejected) return rejected;
 
-        return await proxyToBackendPassthrough(request, env, url.pathname, null, corsHeaders, CONFIG);
+        return await proxyToBackendPassthrough(request, env, pathname, null, corsHeaders, CONFIG);
       }
 
       // Community logo endpoint: /:communityId/logo (GET, returns image)
-      const communityLogoMatch = url.pathname.match(/^\/([^\/]+)\/logo$/);
+      const communityLogoMatch = pathname.match(/^\/([^\/]+)\/logo$/);
       if (communityLogoMatch && request.method === 'GET') {
         const communityId = communityLogoMatch[1];
 
@@ -546,7 +576,7 @@ export default {
       }
 
       // Community endpoints: /:communityId/ask and /:communityId/chat
-      const communityActionMatch = url.pathname.match(/^\/([^\/]+)\/(ask|chat)$/);
+      const communityActionMatch = pathname.match(/^\/([^\/]+)\/(ask|chat)$/);
       if (communityActionMatch && request.method === 'POST') {
         const [, communityId, action] = communityActionMatch;
 
