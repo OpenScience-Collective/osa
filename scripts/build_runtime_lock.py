@@ -9,8 +9,9 @@ its ``depends`` come from ``depends.toml`` beside the overlay, because a wheel's
 metadata names PyPI requirements and not the Pyodide lock entries that satisfy them.
 
 The overlay is reviewed in a pull request like any lockfile. ``--check`` exits non-zero
-when the committed overlay is not what the wheels and ``depends.toml`` produce, and a
-test runs it for every community.
+when the committed overlay is not what the wheels and ``depends.toml`` produce, and
+``tests/test_assistants/test_shipped_runtimes.py`` runs it for every community that
+names an overlay.
 
 A wheel whose name is already in the overlay with a different sha256 is refused, not
 rewritten: wheels are served as immutable for a year, so new bytes need a new version.
@@ -53,8 +54,15 @@ def _metadata(wheel: zipfile.ZipFile) -> tuple[str, str]:
         raise LockBuildError(
             f"{wheel.filename}: expected one .dist-info/METADATA, found {len(names)}"
         )
-    message = email.parser.Parser().parsestr(wheel.read(names[0]).decode("utf-8"))
-    return message["Name"], message["Version"]
+    try:
+        text = wheel.read(names[0]).decode("utf-8")
+    except UnicodeDecodeError as err:
+        raise LockBuildError(f"{wheel.filename}: METADATA is not UTF-8: {err}") from err
+    message = email.parser.Parser().parsestr(text)
+    name, version = message["Name"], message["Version"]
+    if not name or not version:
+        raise LockBuildError(f"{wheel.filename}: METADATA has no Name or no Version")
+    return name, version
 
 
 def _imports(wheel: zipfile.ZipFile) -> list[str]:
@@ -77,27 +85,42 @@ def build_overlay(overlay_path: Path) -> dict:
     depends_path = runtime_dir / DEPENDS_FILE_NAME
     try:
         depends = tomllib.loads(depends_path.read_text())
-    except OSError as err:
+    except (OSError, tomllib.TOMLDecodeError) as err:
         raise LockBuildError(f"{depends_path} cannot be read: {err}") from err
+    for key, names in depends.items():
+        # A bare string would sort into its characters and be written as depends.
+        if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+            raise LockBuildError(f"{DEPENDS_FILE_NAME}: {key} must be a list of package names")
 
-    committed: dict = {}
+    # What each committed wheel name was recorded as, so new bytes under an old name
+    # are caught. Read through the model, so a hand-mangled overlay is a clear error.
+    committed_sha256: dict[str, str] = {}
     if overlay_path.exists():
-        committed = json.loads(overlay_path.read_text()).get("packages", {})
-    committed_by_file = {entry["file_name"]: entry for entry in committed.values()}
+        try:
+            committed = RuntimeLockOverlay.model_validate_json(overlay_path.read_text())
+        except (OSError, ValidationError) as err:
+            raise LockBuildError(
+                f"the committed overlay {overlay_path} does not load, so the wheels cannot be "
+                f"checked against it: {err}"
+            ) from err
+        committed_sha256 = {e.file_name: e.sha256 for e in committed.packages.values()}
 
     packages: dict[str, dict] = {}
     for wheel_path in sorted((runtime_dir / WHEELS_DIR_NAME).glob("*.whl")):
-        with zipfile.ZipFile(wheel_path) as wheel:
-            name, version = _metadata(wheel)
-            imports = _imports(wheel)
+        try:
+            with zipfile.ZipFile(wheel_path) as wheel:
+                name, version = _metadata(wheel)
+                imports = _imports(wheel)
+        except (OSError, zipfile.BadZipFile) as err:
+            raise LockBuildError(f"{wheel_path.name} is not a readable wheel: {err}") from err
         key = canonical_name(name)
         if key in packages:
             raise LockBuildError(f"two wheels provide {key}")
         if key not in depends:
             raise LockBuildError(f"{wheel_path.name}: {DEPENDS_FILE_NAME} has no line for {key}")
         sha256 = hashlib.sha256(wheel_path.read_bytes()).hexdigest()
-        earlier = committed_by_file.get(wheel_path.name)
-        if earlier is not None and earlier["sha256"] != sha256:
+        earlier = committed_sha256.get(wheel_path.name)
+        if earlier is not None and earlier != sha256:
             raise LockBuildError(
                 f"{wheel_path.name} has new bytes under a name already in the overlay. Served "
                 "wheels are cached by name for a year, so build it as a new version instead."

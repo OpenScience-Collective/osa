@@ -8,31 +8,20 @@ Pyodide is `frontend/test-data-lane.js`; this is the server's side of the same f
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import json
 import shutil
+import zipfile
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
+from scripts import build_runtime_lock
 from src.core.config.community import CommunityConfig
 from src.core.config.runtime_lock import load_runtime_lock
 
 ROOT = Path(__file__).resolve().parents[2]
 NEMAR_DIR = ROOT / "src" / "assistants" / "nemar"
-
-
-def _load_script():
-    spec = importlib.util.spec_from_file_location(
-        "build_runtime_lock", ROOT / "scripts" / "build_runtime_lock.py"
-    )
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-build_runtime_lock = _load_script()
 
 
 @pytest.fixture(scope="module")
@@ -80,20 +69,13 @@ class TestTheShippedConfig:
 
 
 class TestTheLockOverlay:
-    def test_every_wheel_matches_its_entry(self, nemar: CommunityConfig) -> None:
-        """The same check the server makes before it will offer the tool at all."""
-        assert nemar.runtime is not None and nemar.runtime.python is not None
-        lockfile = nemar.runtime.python.lockfile
-        assert lockfile is not None
-        overlay = load_runtime_lock(NEMAR_DIR, lockfile)
-        assert set(overlay.packages) == {"zarr", "eegprep-lean"}
+    """NEMAR's own entries. That the overlay verifies and is what its wheels produce is
+    checked for every community in test_shipped_runtimes.py."""
 
-    def test_the_overlay_is_what_its_wheels_produce(self, nemar: CommunityConfig) -> None:
-        """A hand edit, a wheel swapped without regenerating, or a depends.toml change
-        not carried through all fail here."""
+    def test_it_adds_zarr_and_eegprep_lean(self, nemar: CommunityConfig) -> None:
         assert nemar.runtime is not None and nemar.runtime.python is not None
-        path = NEMAR_DIR / (nemar.runtime.python.lockfile or "")
-        assert build_runtime_lock.main(["--check", str(path)]) == 0
+        overlay = load_runtime_lock(NEMAR_DIR, nemar.runtime.python.lockfile or "")
+        assert set(overlay.packages) == {"zarr", "eegprep-lean"}
 
     def test_every_preload_package_is_one_the_lock_can_name(self, nemar: CommunityConfig) -> None:
         """The overlay's own; the distribution's are checked against Pyodide's lock in
@@ -102,6 +84,76 @@ class TestTheLockOverlay:
         overlay = load_runtime_lock(NEMAR_DIR, nemar.runtime.python.lockfile or "")
         assert {"zarr", "eegprep-lean"} <= set(nemar.runtime.python.preload)
         assert overlay.packages["eegprep-lean"].depends == ["matplotlib", "numpy", "zarr"]
+
+
+def _wheel(path: Path, name: str, version: str, metadata: str | None = None) -> None:
+    """A real, minimal wheel: one package and the METADATA the generator reads."""
+    if metadata is None:
+        metadata = f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n"
+    with zipfile.ZipFile(path, "w") as wheel:
+        wheel.writestr(f"{name}/__init__.py", "")
+        wheel.writestr(f"{name}-{version}.dist-info/METADATA", metadata)
+
+
+def _add_depends(runtime: Path, line: str) -> None:
+    depends = runtime / "depends.toml"
+    depends.write_text(depends.read_text() + line + "\n")
+
+
+# Each breaks a copy of NEMAR's runtime folder one way, and names what the error says.
+_BROKEN: dict[str, tuple[Callable[[Path], None], str]] = {
+    "two wheels for one package": (
+        lambda rt: _wheel(rt / "wheels" / "zarr-9.0-py3-none-any.whl", "zarr", "9.0"),
+        "two wheels provide zarr",
+    ),
+    "a depends line with no wheel": (
+        lambda rt: _add_depends(rt, "ghost = []"),
+        "names packages with no wheel: ghost",
+    ),
+    "depends that is not a list": (
+        lambda rt: (
+            _wheel(rt / "wheels" / "tiny-1.0-py3-none-any.whl", "tiny", "1.0"),
+            _add_depends(rt, 'tiny = "numpy"'),
+        ),
+        "tiny must be a list of package names",
+    ),
+    "no depends.toml": (
+        lambda rt: (rt / "depends.toml").unlink(),
+        "depends.toml cannot be read",
+    ),
+    "a depends.toml that is not TOML": (
+        lambda rt: (rt / "depends.toml").write_text("zarr = [\n"),
+        "depends.toml cannot be read",
+    ),
+    "a wheel that is not a zip": (
+        lambda rt: (rt / "wheels" / "broken-1.0-py3-none-any.whl").write_bytes(b"not a zip"),
+        "broken-1.0-py3-none-any.whl is not a readable wheel",
+    ),
+    "a wheel with no METADATA": (
+        lambda rt: zipfile.ZipFile(rt / "wheels" / "bare-1.0-py3-none-any.whl", "w").close(),
+        "expected one .dist-info/METADATA, found 0",
+    ),
+    "a wheel whose METADATA has no Name": (
+        lambda rt: _wheel(
+            rt / "wheels" / "nameless-1.0-py3-none-any.whl",
+            "nameless",
+            "1.0",
+            metadata="Metadata-Version: 2.1\nVersion: 1.0\n",
+        ),
+        "METADATA has no Name or no Version",
+    ),
+    "a wheel the browser cannot install": (
+        lambda rt: (
+            _wheel(rt / "wheels" / "native-1.0-cp313-cp313-linux_x86_64.whl", "native", "1.0"),
+            _add_depends(rt, "native = []"),
+        ),
+        "the overlay would not load",
+    ),
+    "a committed overlay that does not load": (
+        lambda rt: (rt / "nemar-pyodide-lock.json").write_text('{"packages": {}}'),
+        "the committed overlay",
+    ),
+}
 
 
 class TestTheGenerator:
@@ -146,6 +198,18 @@ class TestTheGenerator:
 
         assert build_runtime_lock.main([str(runtime_copy)]) == 1
         assert "has no line for eegprep-lean" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("case", list(_BROKEN))
+    def test_what_it_cannot_reconcile_it_names_and_does_not_write(
+        self, runtime_copy: Path, capsys: pytest.CaptureFixture[str], case: str
+    ) -> None:
+        breakage, message = _BROKEN[case]
+        breakage(runtime_copy.parent)
+        before = runtime_copy.read_text()
+
+        assert build_runtime_lock.main([str(runtime_copy)]) == 1
+        assert message in capsys.readouterr().err
+        assert runtime_copy.read_text() == before
 
     def test_check_fails_on_a_stale_overlay(self, runtime_copy: Path) -> None:
         overlay = json.loads(runtime_copy.read_text())
