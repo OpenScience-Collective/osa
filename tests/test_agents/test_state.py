@@ -91,6 +91,46 @@ class TestBaseAgentState:
         assert state["tool_calls"][0]["name"] == "retrieve_hed_docs"
 
 
+class TestBaseAgentStatePendingClientCall:
+    """Tests for BaseAgentState.pending_client_call."""
+
+    def test_state_without_pending_client_call(self) -> None:
+        """pending_client_call should be omittable (total=False)."""
+        state: BaseAgentState = {
+            "messages": [],
+            "retrieved_docs": [],
+            "tool_calls": [],
+        }
+        assert "pending_client_call" not in state
+
+    def test_state_with_pending_client_call(self) -> None:
+        """pending_client_call should hold the parked call's shape."""
+        state: BaseAgentState = {
+            "messages": [],
+            "retrieved_docs": [],
+            "tool_calls": [],
+            "pending_client_call": {
+                "call_id": "call_abc123",
+                "tool": "execute_code",
+                "args": {"code": "1 + 1", "description": "Add one and one."},
+                "requires_permission": True,
+            },
+        }
+        assert state["pending_client_call"] is not None
+        assert state["pending_client_call"]["call_id"] == "call_abc123"
+        assert state["pending_client_call"]["tool"] == "execute_code"
+
+    def test_state_with_pending_client_call_none(self) -> None:
+        """pending_client_call should also accept an explicit None."""
+        state: BaseAgentState = {
+            "messages": [],
+            "retrieved_docs": [],
+            "tool_calls": [],
+            "pending_client_call": None,
+        }
+        assert state["pending_client_call"] is None
+
+
 class TestRouterState:
     """Tests for RouterState TypedDict."""
 

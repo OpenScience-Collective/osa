@@ -70,6 +70,18 @@ class BaseAgentState(TypedDict, total=False):
     tool_calls: list[dict[str, Any]]
     """History of tool calls made during execution."""
 
+    pending_client_call: dict[str, Any] | None
+    """The one browser-executed tool call still waiting on a result, if any.
+
+    Set by the `client_tools` node (`src.agents.base.BaseAgent`) for the
+    FIRST client tool call in an assistant message's `tool_calls`; every
+    further client call in the same message gets an error `ToolMessage`
+    instead (only one browser execution runs per turn). A plain
+    JSON-serializable dict: `{"call_id", "tool", "args",
+    "requires_permission"}`. `call_id` is the provider-assigned
+    `tool_call["id"]`, never a server-generated one, so correlation with the
+    model's own `tool_use` block is exact."""
+
 
 class RouterState(TypedDict, total=False):
     """State for the router agent that dispatches to specialists."""

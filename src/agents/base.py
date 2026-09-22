@@ -14,12 +14,14 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.messages.utils import count_tokens_approximately, trim_messages
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode
 
 from src.agents.state import BaseAgentState
+from src.tools.client_tools import ClientTool
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +45,8 @@ class BaseAgent(ABC):
         tools: Sequence[BaseTool] | None = None,
         system_prompt: str | None = None,
         max_conversation_tokens: int = DEFAULT_MAX_CONVERSATION_TOKENS,
+        *,
+        client_tool_names: set[str] | None = None,
     ) -> None:
         """Initialize the agent.
 
@@ -53,11 +57,47 @@ class BaseAgent(ABC):
             max_conversation_tokens: Maximum tokens for conversation history.
                 This caps the accumulated messages to prevent unbounded growth.
                 Default is 80000 tokens. See DEFAULT_MAX_CONVERSATION_TOKENS.
+            client_tool_names: Names, among `tools`, that are client tools
+                (`src.tools.client_tools.ClientTool`) -- tools the graph
+                parks a call to in `pending_client_call` rather than
+                executes. Defaults to the subset of `tools` that are
+                `ClientTool` instances, derived rather than accepted as-is
+                so a caller cannot pass a set that has drifted out of step
+                with what `tools` actually contains.
         """
         self.model = model
         self.tools = list(tools) if tools else []
         self.system_prompt = system_prompt
         self.max_conversation_tokens = max_conversation_tokens
+
+        if client_tool_names is not None:
+            self.client_tool_names = set(client_tool_names)
+        else:
+            self.client_tool_names = {t.name for t in self.tools if isinstance(t, ClientTool)}
+
+        # Client tool instances by name, for their `requires_permission` flag
+        # when the client_tools node builds `pending_client_call`. Always
+        # derived from `self.tools` (not from `self.client_tool_names`,
+        # which a caller may have supplied independently of `tools`).
+        self._client_tools_by_name: dict[str, ClientTool] = {
+            t.name: t for t in self.tools if isinstance(t, ClientTool)
+        }
+
+        # Tools a plain ToolNode may execute: everything that is not a
+        # client tool call target. `build_graph` and `_client_tools_node`
+        # both use this, so the two agree on exactly what "server tools"
+        # means.
+        self._server_tools = [t for t in self.tools if t.name not in self.client_tool_names]
+
+        # Built lazily, on the first mixed batch that actually needs it (see
+        # _client_tools_node), not here. Some callers pass a test double
+        # (e.g. a MagicMock) as a tool that is never routed through a
+        # ToolNode in practice; ToolNode's constructor calls create_tool()
+        # on anything that is not a BaseTool instance, which rejects such a
+        # double immediately. Building it here would fail agent
+        # construction for those callers even when no client tool, and so
+        # no client_tools node, is ever involved.
+        self._server_tool_node: ToolNode | None = None
 
         # Bind tools to model if supported
         if self.tools:
@@ -79,6 +119,12 @@ class BaseAgent(ABC):
     def build_graph(self) -> CompiledStateGraph:
         """Build and compile the LangGraph workflow.
 
+        When this agent has no client tools, the graph is unchanged from
+        before client tools existed: an "agent" node, a "tools" node when
+        `self.tools` is non-empty, and the same two-way routing between
+        them. The "client_tools" node and its edge to END are added only
+        when `self.client_tool_names` is non-empty.
+
         Returns a compiled graph ready for invocation.
         """
         graph = StateGraph(BaseAgentState)
@@ -87,21 +133,29 @@ class BaseAgent(ABC):
         graph.add_node("agent", self._agent_node)
         if self.tools:
             graph.add_node("tools", ToolNode(self.tools))
+        if self.client_tool_names:
+            graph.add_node("client_tools", self._client_tools_node)
 
         # Set entry point
         graph.set_entry_point("agent")
 
         # Add edges
         if self.tools:
+            routes = {"tools": "tools", "end": END}
+            if self.client_tool_names:
+                routes["client_tools"] = "client_tools"
             graph.add_conditional_edges(
                 "agent",
                 self._should_use_tools,
-                {
-                    "tools": "tools",
-                    "end": END,
-                },
+                routes,
             )
             graph.add_edge("tools", "agent")
+            if self.client_tool_names:
+                # A client tool call ends the run; the browser executes it
+                # and a fresh run (resume) continues the turn. No edge back
+                # to "agent" here -- that is the whole point of the
+                # two-run continuation (see the phase 1 plan).
+                graph.add_edge("client_tools", END)
         else:
             graph.add_edge("agent", END)
 
@@ -181,15 +235,137 @@ class BaseAgent(ABC):
         return messages
 
     def _should_use_tools(self, state: BaseAgentState) -> str:
-        """Determine if the agent should use tools or end."""
+        """Determine if the agent should use tools, park a client call, or end.
+
+        Returns "client_tools" when the last AIMessage's tool_calls contain
+        ANY name in `self.client_tool_names` -- even if the same message
+        also calls a server tool. The router returns one destination per
+        message, so a mixed batch is resolved inside the "client_tools"
+        node rather than by splitting the route here; see
+        `_client_tools_node`. Otherwise, behavior is unchanged: "tools" when
+        there are tool_calls, "end" otherwise.
+        """
         messages = state.get("messages", [])
         if not messages:
             return "end"
 
         last_message = messages[-1]
-        if isinstance(last_message, AIMessage) and last_message.tool_calls:
-            return "tools"
-        return "end"
+        if not (isinstance(last_message, AIMessage) and last_message.tool_calls):
+            return "end"
+
+        if self.client_tool_names:
+            call_names = {tc["name"] for tc in last_message.tool_calls}
+            if call_names & self.client_tool_names:
+                return "client_tools"
+
+        return "tools"
+
+    async def _client_tools_node(
+        self, state: BaseAgentState, config: RunnableConfig
+    ) -> dict[str, Any]:
+        """Handle an assistant message whose tool_calls include a client tool.
+
+        Given the last AIMessage's tool_calls:
+
+        1. Partitions them into server calls (name matches a server tool),
+           client calls (name in `self.client_tool_names`), and unknown
+           calls (name matches neither) -- the last get an error
+           `ToolMessage` rather than an exception, since an unrecognized
+           name is a data problem (a stale or mismatched tool_call), not a
+           programming error.
+        2. Runs the server calls through a `ToolNode` scoped to server
+           tools only (`self._server_tool_node`), invoked with a synthetic
+           `AIMessage` carrying just those calls, and appends the real
+           `ToolMessage`s it returns.
+        3. Records the FIRST client call as `pending_client_call`, using
+           the provider-assigned `tool_call["id"]` as `call_id` -- never a
+           newly minted one -- so a later resume can correlate against the
+           model's own `tool_use` block exactly.
+        4. Gives every FURTHER client call in the same message an error
+           `ToolMessage`: only one browser execution runs per turn, and
+           that call was not run. Every `tool_use` needs a matching
+           `tool_result` or the provider rejects the next request outright,
+           so this is required, not just informative.
+
+        `build_graph` wires this node's only outgoing edge to END: parking
+        a client call ends the run, and the browser's result reaches the
+        model on a fresh run (resume) rather than by looping back to
+        "agent" here.
+
+        This node is async because it awaits `ToolNode.ainvoke` for the
+        server calls; it accepts `config` (unlike `_agent_node`) solely to
+        forward LangGraph's own runtime context into that nested
+        `ToolNode` invocation, which requires it to resolve the executor it
+        runs tools under.
+        """
+        messages = state.get("messages", [])
+        last_message = messages[-1] if messages else None
+
+        if not (isinstance(last_message, AIMessage) and last_message.tool_calls):
+            # _should_use_tools only routes here when this holds; defensive
+            # only, so a direct/test invocation on the wrong state is a
+            # no-op rather than an IndexError or AttributeError.
+            return {}
+
+        server_tool_names = {t.name for t in self._server_tools}
+
+        server_calls: list[dict[str, Any]] = []
+        client_calls: list[dict[str, Any]] = []
+        new_messages: list[BaseMessage] = []
+
+        for tc in last_message.tool_calls:
+            name = tc["name"]
+            if name in server_tool_names:
+                server_calls.append(tc)
+            elif name in self.client_tool_names:
+                client_calls.append(tc)
+            else:
+                new_messages.append(
+                    ToolMessage(
+                        content=(
+                            f"Unknown tool '{name}': no server or client "
+                            "executor is registered for it."
+                        ),
+                        tool_call_id=tc["id"],
+                        name=name,
+                    )
+                )
+
+        if server_calls:
+            if self._server_tool_node is None:
+                self._server_tool_node = ToolNode(self._server_tools)
+            synthetic = AIMessage(content="", tool_calls=server_calls)
+            result = await self._server_tool_node.ainvoke({"messages": [synthetic]}, config)
+            new_messages.extend(result.get("messages", []))
+
+        pending_client_call: dict[str, Any] | None = None
+        for i, tc in enumerate(client_calls):
+            if i == 0:
+                tool = self._client_tools_by_name.get(tc["name"])
+                pending_client_call = {
+                    "call_id": tc["id"],
+                    "tool": tc["name"],
+                    "args": tc.get("args", {}),
+                    "requires_permission": (tool.requires_permission if tool is not None else True),
+                }
+            else:
+                new_messages.append(
+                    ToolMessage(
+                        content=(
+                            "Only one browser-executed tool call runs per "
+                            "turn; this call was not run. Wait for the "
+                            "pending call to finish before requesting "
+                            "another."
+                        ),
+                        tool_call_id=tc["id"],
+                        name=tc["name"],
+                    )
+                )
+
+        update: dict[str, Any] = {"messages": new_messages}
+        if pending_client_call is not None:
+            update["pending_client_call"] = pending_client_call
+        return update
 
     async def ainvoke(
         self,
