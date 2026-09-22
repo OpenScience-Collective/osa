@@ -28,7 +28,7 @@
  * a community's own `fetch_allow` inside it.
  */
 
-import { buildEgressGuardSource } from './osa-egress.js';
+import { buildEgressGuardSource, buildNamespaceSealSource } from './osa-egress.js';
 
 /** Lifecycle states. A runtime is in exactly one at a time. */
 export const RUNTIME_STATE = Object.freeze({
@@ -83,6 +83,38 @@ export function buildWorkerSource(runtime) {
   const bootAllow = [indexURL].concat(runtime.index_urls || []);
   const guard = buildEgressGuardSource({ bootAllow });
   const fetchAllow = JSON.stringify(runtime.fetch_allow || []);
+  const allowInstall = JSON.stringify(runtime.allow_install || []);
+  const indexUrls = JSON.stringify(runtime.index_urls || []);
+
+  // The Python half of the boundary, run at the end of boot: it takes
+  // `micropip`, `js`, `pyodide` and `ctypes` away from the namespace executed
+  // code lives in, so install-time and bridge capability cannot be reacquired
+  // from inside a run.
+  const namespaceSeal = JSON.stringify(buildNamespaceSealSource());
+
+  // Built here rather than inside the template, because a template literal
+  // interprets escape sequences in its own source: an '\n' written in there
+  // becomes a real newline in the generated file and truncates the string
+  // literal it was part of. Anything carrying an escape is assembled in
+  // JavaScript and interpolated as JSON.
+  //
+  // This gate is defined before the namespace seal so it can close over
+  // pyodide.code, which the seal blocks a moment later, and it lives in a
+  // namespace executed code has no reference to: reachable, it could be
+  // redefined to approve the imports of the NEXT execution.
+  const importGate = [
+    'import importlib.util as _ilu',
+    'from pyodide.code import find_imports as _find_imports',
+    'def _unavailable_imports(code):',
+    '    missing = []',
+    '    for name in _find_imports(code):',
+    '        try:',
+    '            if _ilu.find_spec(name) is None:',
+    '                missing.append(name)',
+    '        except Exception:',
+    '            missing.append(name)',
+    '    return missing',
+  ].join('\n');
 
   // Assembled as a template so the config is baked in at build time rather than
   // posted after boot. A worker that has to ask for its own configuration has a
@@ -98,15 +130,19 @@ export function buildWorkerSource(runtime) {
     ${guard}
 
     let pyodide = null;
+    // Created once and reused, so variables survive across turns: a reader who
+    // computes something in one message and plots it in the next is the normal
+    // case, not an edge one. It is a namespace of its own rather than
+    // pyodide.globals so that the host helpers below are not reachable from
+    // executed code, which could otherwise redefine the import gate that
+    // decides whether the NEXT execution is allowed to run.
+    let userNamespace = null;
+    let internals = null;
+    let busy = false;
 
     const send = (msg) => self.postMessage(msg);
 
-    self.onmessage = async (event) => {
-      const data = event.data || {};
-      if (data.type !== 'boot') {
-        send({ type: 'error', kind: 'protocol', message: 'unexpected message before boot: ' + data.type });
-        return;
-      }
+    async function boot() {
       try {
         send({ type: 'progress', phase: 'loading_runtime' });
         importScripts(${JSON.stringify(indexURL)} + 'pyodide.js');
@@ -124,26 +160,123 @@ export function buildWorkerSource(runtime) {
           await pyodide.loadPackage(preload[i]);
         }
 
-        // Install-time capability ends HERE, before anything executable exists.
-        // Every package this runtime will ever have is installed during boot:
-        // \`preload\` plus, in step 3, the community's \`allow_install\` list, which
-        // is static config and so has no reason to be deferred. An import of
-        // anything else then yields \`denied_import\` rather than a silent
-        // install, which is the behavior #431 asks for, and it is what lets the
-        // allowlist narrow to \`fetch_allow\` before any user code runs.
+        // EVERY package this runtime will ever have is installed here, during
+        // boot. Installing on demand would mean the wheel index had to stay
+        // reachable from executed code, which is the opposite of sealing.
         //
-        // The seal is ONE-SHOT. Moving this call later is therefore a deliberate
-        // decision that widens what executed code can reach, not a refactor.
+        // deps is false for every entry, so \`allow_install\` is a complete,
+        // ordered list rather than a resolver seed. That is deliberate on two
+        // counts: zarr cannot resolve at all in Pyodide (its numcodecs>=0.14 pin
+        // is metadata and no emscripten wheel exists at any version), and a
+        // resolver that is allowed to pull transitive dependencies decides the
+        // package set at runtime, which breaks the byte-identical results the
+        // conversation's prompt cache depends on.
+        const allowInstall = ${allowInstall};
+        const indexUrls = ${indexUrls};
+        if (allowInstall.length > 0) {
+          await pyodide.loadPackage('micropip');
+          const micropip = pyodide.pyimport('micropip');
+          for (let i = 0; i < allowInstall.length; i++) {
+            send({ type: 'progress', phase: 'installing', package: allowInstall[i], index: i, total: allowInstall.length });
+            const options = { deps: false };
+            if (indexUrls.length > 0) options.index_urls = indexUrls;
+            await micropip.install.callKwargs(allowInstall[i], options);
+          }
+          micropip.destroy();
+        }
+
+        internals = pyodide.globals.get('dict')();
+        pyodide.runPython(${JSON.stringify(importGate)}, { globals: internals });
+
+        userNamespace = pyodide.globals.get('dict')();
+        userNamespace.set('__name__', '__main__');
+
+        // Python-side capability removal, then JS-side egress narrowing. Both
+        // happen before the first executable statement exists, and the egress
+        // seal is ONE-SHOT: moving either later widens what executed code can
+        // reach and is a decision, not a refactor.
+        pyodide.runPython(${namespaceSeal});
         __seal(${fetchAllow});
 
         send({ type: 'ready', version: pyodide.version });
       } catch (err) {
-        send({
-          type: 'error',
-          kind: 'runtime',
-          message: String((err && err.message) || err),
-        });
+        send({ type: 'error', kind: 'runtime', message: String((err && err.message) || err) });
       }
+    }
+
+    async function execute(data) {
+      const callId = data.call_id;
+      const started = Date.now();
+      const reply = (status, fields) => {
+        busy = false;
+        send(Object.assign(
+          { type: 'result', call_id: callId, status: status, stdout: '', stderr: '', summary: '', images: [], artifacts: [] },
+          fields,
+          { elapsed_ms: Date.now() - started }
+        ));
+      };
+
+      if (pyodide === null) {
+        reply('error', { stderr: 'the runtime is not booted' });
+        return;
+      }
+      // One execution at a time. Two concurrent runs would share userNamespace
+      // and interleave their output, and the second would report the first's.
+      if (busy) {
+        reply('error', { stderr: 'another execution is already running' });
+        return;
+      }
+      busy = true;
+
+      const code = typeof data.code === 'string' ? data.code : '';
+
+      // The import gate. loadPackagesFromImports is deliberately NOT used: it
+      // fetches from the CDN, which is unreachable once sealed, so it would turn
+      // an unavailable package into an egress error naming the wrong cause.
+      let missing;
+      try {
+        const unavailable = internals.get('_unavailable_imports');
+        const found = unavailable(code);
+        missing = found.toJs();
+        found.destroy();
+        unavailable.destroy();
+      } catch (err) {
+        // A syntax error reaches find_imports before it reaches the compiler.
+        reply('error', { stderr: String((err && err.message) || err) });
+        return;
+      }
+      if (missing.length > 0) {
+        // Phase 1's ResultStatus has no denied_import member, so the status is
+        // \`denied\` and the machine-readable reason travels in stderr. Adding a
+        // status would be a server contract change; this is the same
+        // information inside the contract that exists.
+        reply('denied', {
+          stderr: 'denied_import: ' + missing.join(', '),
+          summary: 'Not run. This runtime has no ' + missing.join(', ') +
+            '. Only packages the community installed at startup are available, and nothing is installed on demand.',
+        });
+        return;
+      }
+
+      try {
+        await pyodide.runPythonAsync(code, { globals: userNamespace });
+        reply('ok', {});
+      } catch (err) {
+        reply('error', { stderr: String((err && err.message) || err) });
+      }
+    }
+
+    self.onmessage = async (event) => {
+      const data = event.data || {};
+      if (data.type === 'boot') {
+        await boot();
+        return;
+      }
+      if (data.type === 'execute') {
+        await execute(data);
+        return;
+      }
+      send({ type: 'error', kind: 'protocol', message: 'unexpected message: ' + data.type });
     };
     })();
   `;
@@ -213,6 +346,10 @@ export class PyodideRuntime {
     this._bootPromise = null;
     this._bootTimer = null;
     this._settle = null;
+    // call_id -> {resolve, reject}. Executions are correlated by the id the
+    // server minted, so a result can never be attributed to the wrong call.
+    this._pending = new Map();
+    this._callSeq = 0;
   }
 
   /** True when the runtime can accept work. */
@@ -306,6 +443,18 @@ export class PyodideRuntime {
     if (this._settle === null && (msg.type === 'ready' || msg.type === 'error')) {
       return;
     }
+    if (msg.type === 'result') {
+      const waiting = this._pending.get(msg.call_id);
+      if (!waiting) {
+        // A result for a call nobody is waiting on: the execution was abandoned
+        // or already settled. Dropped rather than thrown, since there is no
+        // caller left to tell, but never silently attributed to another call.
+        return;
+      }
+      this._pending.delete(msg.call_id);
+      waiting.resolve(msg);
+      return;
+    }
     if (msg.type === 'progress') {
       this.onProgress(msg);
       return;
@@ -352,6 +501,23 @@ export class PyodideRuntime {
     }
   }
 
+  /**
+   * Fail every outstanding execution.
+   *
+   * A worker that goes away takes its in-flight executions with it, and a
+   * promise nobody ever settles is indistinguishable in the UI from code that
+   * is still running. Cancellation and boot failure both reach here.
+   *
+   * @param {string} reason
+   */
+  _failPending(reason) {
+    const waiting = Array.from(this._pending.values());
+    this._pending.clear();
+    for (const one of waiting) {
+      one.reject(new Error(reason));
+    }
+  }
+
   _disposeWorker() {
     if (this._worker) {
       this._worker.onmessage = null;
@@ -363,6 +529,7 @@ export class PyodideRuntime {
       }
       this._worker = null;
     }
+    this._failPending('the runtime was torn down before this execution finished');
   }
 
   /**
@@ -374,6 +541,54 @@ export class PyodideRuntime {
    * that embeds the widget. Terminating is decisive, needs nothing from the page,
    * and the measured cost is one cold boot.
    */
+  /**
+   * Run one block of Python and resolve with the result envelope.
+   *
+   * Boots on demand, because `preload_on: first_run` means the first execution
+   * is what triggers the boot at all, and a caller should not have to know which
+   * mode a community configured.
+   *
+   * The returned object is phase 1's `ClientToolResult` shape minus `call_id`
+   * handling: `{status, stdout, stderr, summary, images, artifacts, elapsed_ms}`.
+   * It resolves for a failed run as much as for a successful one; the status
+   * says which. It rejects only when no result can exist, such as the runtime
+   * being torn down mid-execution.
+   *
+   * @param {string} code - Python to run.
+   * @param {{callId?: string}} [options] - `callId` is the server-minted id this
+   *   result will be reported against; a local one is generated when absent.
+   * @returns {Promise<object>} The result envelope.
+   */
+  async execute(code, options = {}) {
+    if (typeof code !== 'string') {
+      throw new TypeError(`code must be a string, got ${typeof code}`);
+    }
+    await this.boot();
+
+    // Re-checked AFTER the await, not before it. `boot()` yields, so a
+    // terminate() can land between the call and the registration below; without
+    // this the execution would be registered against a worker that no longer
+    // exists and surface as a TypeError about null instead of as cancellation.
+    if (this.state !== RUNTIME_STATE.READY || this._worker === null) {
+      throw new Error('the runtime is not running; call reboot() to start a new one');
+    }
+
+    const callId = options.callId || `local-${++this._callSeq}`;
+    if (this._pending.has(callId)) {
+      throw new Error(`an execution is already in flight for call_id ${callId}`);
+    }
+
+    return new Promise((resolve, reject) => {
+      this._pending.set(callId, { resolve, reject });
+      try {
+        this._worker.postMessage({ type: 'execute', call_id: callId, code });
+      } catch (err) {
+        this._pending.delete(callId);
+        reject(err);
+      }
+    });
+  }
+
   terminate() {
     this._clearBootTimer();
     this._disposeWorker();

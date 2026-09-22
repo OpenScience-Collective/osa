@@ -339,6 +339,169 @@ console.log('\nthe deadline is the CONFIGURED one, not a constant that happens t
     `a longer deadline waits measurably longer (200ms -> ${shortWait}ms, 1200ms -> ${longWait}ms)`);
 }
 
+console.log('\nexecutions are correlated by call_id, not by arrival order');
+{
+  const rt = new PyodideRuntime({ runtime: RUNTIME, workerFactory: workerFrom('executing') });
+
+  // The slow one is sent FIRST and answers LAST. A host that paired results
+  // with calls positionally, or kept a single outstanding call, gives the first
+  // caller the second caller's result here, which no same-order test can see.
+  const slow = rt.execute('DELAY:250 slow', { callId: 'call-slow' });
+  const fast = rt.execute('fast', { callId: 'call-fast' });
+
+  // Bounded, so a host that mismatches results fails by NAME here rather than
+  // leaving a promise unsettled and reaching the suite watchdog, which reports
+  // only that something somewhere hung.
+  const withDeadline = (promise, label) =>
+    Promise.race([
+      promise,
+      new Promise((_, rej) => setTimeout(() => rej(new Error(`${label} never resolved`)), 5_000)),
+    ]);
+
+  let slowResult = null;
+  let fastResult = null;
+  let correlationError = null;
+  try {
+    [slowResult, fastResult] = await Promise.all([
+      withDeadline(slow, 'the slow call'),
+      withDeadline(fast, 'the fast call'),
+    ]);
+  } catch (err) {
+    correlationError = err;
+  }
+  assert(correlationError === null,
+    `both executions resolve${correlationError ? ': ' + correlationError.message : ''}`);
+  if (correlationError) {
+    rt.terminate();
+  } else {
+  assertEqual(slowResult.summary, 'DELAY:250 slow', 'the slow call got its OWN result back');
+  assertEqual(fastResult.summary, 'fast', 'the fast call got its OWN result back');
+  assertEqual(slowResult.call_id, 'call-slow', 'the result carries the call_id it was minted for');
+  assertEqual(fastResult.call_id, 'call-fast', 'and so does the other one');
+  rt.terminate();
+  }
+}
+
+console.log('\nexecute boots on demand, because preload_on: first_run means it has to');
+{
+  const rt = new PyodideRuntime({ runtime: RUNTIME, workerFactory: workerFrom('executing') });
+  assertEqual(rt.state, RUNTIME_STATE.IDLE, 'nothing has booted yet');
+  const result = await rt.execute('print(1)');
+  assertEqual(rt.state, RUNTIME_STATE.READY, 'the runtime booted itself to serve the execution');
+  assertEqual(result.status, 'ok', 'and the execution ran');
+  rt.terminate();
+}
+
+console.log('\nan execution in flight when the runtime is torn down REJECTS rather than hanging');
+{
+  const rt = new PyodideRuntime({ runtime: RUNTIME, workerFactory: workerFrom('executing') });
+  await rt.boot();
+
+  // A worker that goes away takes its in-flight work with it. A promise nobody
+  // settles looks exactly like code that is still running, which is the same
+  // failure the boot deadline exists for.
+  const pending = rt.execute('NEVER answers', { callId: 'call-lost' });
+  let settled = null;
+  pending.then(() => { settled = 'resolved'; }, (err) => { settled = err; });
+
+  // execute() awaits boot() before it registers, so the call is not actually in
+  // flight yet on the turn it was made. Terminating here instead would test the
+  // race, not the teardown, and would pass for the wrong reason.
+  await new Promise((r) => setTimeout(r, 20));
+  rt.terminate();
+  await new Promise((r) => setTimeout(r, 50));
+
+  assert(settled instanceof Error, `the abandoned execution rejects (got ${settled})`);
+  assert(/torn down/.test(settled.message), 'and says the runtime was torn down, rather than a generic failure');
+}
+
+console.log('\nthe same call_id cannot be in flight twice');
+{
+  const rt = new PyodideRuntime({ runtime: RUNTIME, workerFactory: workerFrom('executing') });
+  await rt.boot();
+  const first = rt.execute('NEVER answers', { callId: 'call-dup' });
+  await new Promise((r) => setTimeout(r, 20));
+  let threw = null;
+  try {
+    await rt.execute('also', { callId: 'call-dup' });
+  } catch (err) {
+    threw = err;
+  }
+  assert(threw !== null, 'a second execution reusing a live call_id is refused');
+  assert(/already in flight/.test(threw.message), 'and says why');
+  rt.terminate();
+  await first.catch(() => {});
+}
+
+console.log('\na result for a call nobody awaits is dropped, not misattributed');
+{
+  const rt = new PyodideRuntime({ runtime: RUNTIME, workerFactory: workerFrom('executing') });
+  await rt.boot();
+  const mine = rt.execute('mine', { callId: 'call-mine' });
+
+  // Injected through the same path the worker uses. Attributing this to the
+  // one call that IS waiting would hand a caller someone else's output.
+  rt._onWorkerMessage({ type: 'result', call_id: 'call-nobody', status: 'ok', summary: 'stray' });
+
+  const result = await mine;
+  assertEqual(result.summary, 'mine', 'the waiting call still got its own result');
+  rt.terminate();
+}
+
+console.log('\nexecute on a terminated runtime says so, rather than failing on a null worker');
+{
+  const rt = new PyodideRuntime({ runtime: RUNTIME, workerFactory: workerFrom('executing') });
+  await rt.boot();
+  rt.terminate();
+  let threw = null;
+  try {
+    await rt.execute('print(1)');
+  } catch (err) {
+    threw = err;
+  }
+  assert(threw !== null, 'executing on a terminated runtime rejects');
+  assert(!/null|undefined/.test(threw.message),
+    `the message is about the runtime, not about a null worker (got: ${threw.message})`);
+}
+
+console.log('\nterminate landing DURING the await inside execute is cancellation, not a null dereference');
+{
+  // The narrow race the post-await state check exists for, and the only place
+  // it is reachable. execute() awaits boot(); when the runtime is already READY
+  // that await still yields, so a terminate() on this very turn lands before
+  // the execution is registered. Booting first is what makes this different
+  // from the terminated-runtime case above, where boot() itself rejects and the
+  // check is never reached.
+  const rt = new PyodideRuntime({ runtime: RUNTIME, workerFactory: workerFrom('executing') });
+  await rt.boot();
+
+  const racing = rt.execute('print(1)');
+  rt.terminate();
+
+  let threw = null;
+  try {
+    await racing;
+  } catch (err) {
+    threw = err;
+  }
+  assert(threw !== null, 'the racing execution rejects');
+  assert(!/null|undefined|not an object/.test(threw.message),
+    `it reports the runtime state, not a dereference of the disposed worker (got: ${threw.message})`);
+}
+
+console.log('\nexecute refuses a non-string rather than shipping it to the worker');
+{
+  const rt = new PyodideRuntime({ runtime: RUNTIME, workerFactory: workerFrom('executing') });
+  let threw = null;
+  try {
+    await rt.execute({ code: 'print(1)' });
+  } catch (err) {
+    threw = err;
+  }
+  assert(threw instanceof TypeError, 'a non-string code argument is a TypeError');
+  rt.terminate();
+}
+
 console.log('\n' + '='.repeat(60));
 console.log(`Total: ${passed + failed}   Passed: ${passed}   Failed: ${failed}`);
 clearTimeout(watchdog);
