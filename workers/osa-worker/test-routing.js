@@ -19,11 +19,9 @@
  * ones the existing *.workers.dev hostnames and `wrangler dev` use --
  * still work unchanged.
  *
- * Note: this branch's index.js has no "/:communityId/chat/resume" route
- * (that route exists only on the still-unmerged
- * feature/issue-429-epic-browser-execution branch). It is intentionally
- * not tested here; testing a route this file doesn't define would not be
- * exercising real code. Every route this file DOES define is covered.
+ * Every route index.js defines is covered, including the two the browser
+ * execution epic (#429) added: /:communityId/chat/resume and
+ * /:communityId/runtime/:file.
  *
  * Run with: bun workers/osa-worker/test-routing.js
  */
@@ -128,6 +126,8 @@ const ROUTES = [
   // Phase 1's two-run continuation route (#430). Three segments, so it is a
   // separate matcher from the two-segment action route above.
   [`/${COMMUNITY}/chat/resume`, { method: 'POST', body: {} }],
+  // The browser runtime's wheels (#431).
+  [`/${COMMUNITY}/runtime/tinypkg-1.0-py3-none-any.whl`, {}],
 ];
 
 console.log('\nUnprefixed routes reach their handler (the *.workers.dev / wrangler dev baseline)');
@@ -174,6 +174,17 @@ assertEqual(
   await statusOf(`/${COMMUNITY}/chat/resume`, { method: 'GET', host: MOUNTED_HOST }),
   404,
   'GET on the resume route does not match; it is POST only'
+);
+
+console.log('\nthe runtime route takes a bare wheel name, and GET only');
+// No '..' case: URL parsing resolves it before any route sees the path.
+for (const name of ['config.yaml', 'lock.json', 'tinypkg.whl.txt', 'a/b.whl']) {
+  await assertNotFound(`/${COMMUNITY}/runtime/${name}`, {}, `GET /${COMMUNITY}/runtime/${name} matches no route`);
+}
+await assertNotFound(
+  `/${COMMUNITY}/runtime/tinypkg-1.0-py3-none-any.whl`,
+  { method: 'POST', body: {} },
+  'POST on the runtime route does not match'
 );
 
 console.log('\ncommunity-id validation still holds under the /osa prefix');
@@ -329,8 +340,63 @@ try {
     undefined,
     'the same path on the mounted host strips to /chat, matches no route, and forwards nothing'
   );
+  assertEqual(
+    await forwardedPathFor('/osa/hed/runtime/tinypkg-1.0-py3-none-any.whl', { host: MOUNTED_HOST }),
+    '/hed/runtime/tinypkg-1.0-py3-none-any.whl',
+    'GET /osa/hed/runtime/<wheel> forwards the stripped path upstream'
+  );
 } finally {
   backend.stop(true);
+}
+
+// What the runtime route sends back, against a real backend on a socket: the
+// bytes, immutable caching, the caller's CORS headers, and a backend failure
+// kept distinct from "no such file".
+console.log('\nthe runtime route returns the wheel as immutable bytes, and keeps failures distinct');
+const WHEEL_BYTES = new Uint8Array([80, 75, 3, 4, 1, 2, 3]);
+const wheelBackend = Bun.serve({
+  port: 0,
+  fetch(request) {
+    const { pathname } = new URL(request.url);
+    if (pathname === '/hed/runtime/tinypkg-1.0-py3-none-any.whl') return new Response(WHEEL_BYTES);
+    if (pathname === '/hed/runtime/broken-1.0-py3-none-any.whl') return new Response('boom', { status: 500 });
+    return new Response('Not Found', { status: 404 });
+  },
+});
+const wheelEnv = { BACKEND_URL: `http://localhost:${wheelBackend.port}` };
+try {
+  const origin = 'https://nemar.org';
+  const served = await worker.fetch(
+    new Request(`https://${MOUNTED_HOST}/osa/hed/runtime/tinypkg-1.0-py3-none-any.whl`, { headers: { Origin: origin } }),
+    stubEnv(wheelEnv),
+    {}
+  );
+  assertEqual(served.status, 200, 'a listed wheel is served');
+  assertEqual(
+    JSON.stringify([...new Uint8Array(await served.arrayBuffer())]),
+    JSON.stringify([...WHEEL_BYTES]),
+    'with the backend\'s bytes, unaltered'
+  );
+  assertEqual(served.headers.get('Cache-Control'), 'public, max-age=31536000, immutable', 'marked immutable');
+  assertEqual(served.headers.get('Access-Control-Allow-Origin'), origin, 'with CORS for the embedder that asked');
+
+  assertEqual(await statusOf('/hed/runtime/absent-1.0-py3-none-any.whl', { env: wheelEnv }), 404,
+    'a wheel the backend does not list is a 404');
+  assertEqual(await statusOf('/hed/runtime/broken-1.0-py3-none-any.whl', { env: wheelEnv }), 502,
+    'a backend failure is a 502, not a 404 that would read as "no such wheel"');
+
+  // The hourly budget is /chat's. A KV binding stands in for the platform's,
+  // holding this caller's hour already spent (no CF-Connecting-IP header, so the
+  // key is "unknown"; development allows 100 an hour).
+  const store = new Map([[`rl:hour:unknown:${Math.floor(Date.now() / 1000 / 3600)}`, '100']]);
+  const kv = { get: async (key) => store.get(key) ?? null, put: async (key, value) => { store.set(key, value); } };
+  const spentEnv = { ...wheelEnv, RATE_LIMITER_KV: kv };
+  assertEqual(await statusOf('/hed/', { env: spentEnv }), 429, 'with the hour spent, a counted route is refused');
+  assertEqual(await statusOf('/hed/runtime/tinypkg-1.0-py3-none-any.whl', { env: spentEnv }), 200,
+    'while a wheel is still served: loading the runtime spends none of the hourly chat budget');
+  assertEqual([...store.values()].join(), '100', 'and serving it did not add to the count');
+} finally {
+  wheelBackend.stop(true);
 }
 
 console.log('\n' + '='.repeat(60));

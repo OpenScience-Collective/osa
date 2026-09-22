@@ -21,6 +21,10 @@ export const ROUTE_PATTERNS = {
   // /:communityId/chat/resume -- three segments, so it can never be matched
   // by communityAction above (which is anchored to exactly two segments).
   communityChatResume: /^\/([^\/]+)\/chat\/resume$/,
+  // /:communityId/runtime/:file -- a wheel the browser runtime loads (#431).
+  // The name is checked here, so anything that is not a bare wheel name never
+  // reaches the backend, which serves only the names its lock overlay lists.
+  communityRuntimeFile: /^\/([^\/]+)\/runtime\/([A-Za-z0-9_.+-]+\.whl)$/,
 };
 
 // This worker is reachable two ways: its default *.workers.dev hostname
@@ -694,6 +698,17 @@ export default {
         }
       }
 
+      // Community runtime wheel: /:communityId/runtime/:file (GET, immutable bytes)
+      const communityRuntimeMatch = pathname.match(ROUTE_PATTERNS.communityRuntimeFile);
+      if (communityRuntimeMatch && request.method === 'GET') {
+        const [, communityId, fileName] = communityRuntimeMatch;
+
+        const invalid = validateCommunityId(communityId, corsHeaders);
+        if (invalid) return invalid;
+
+        return await handleRuntimeFile(request, env, ctx, communityId, fileName, corsHeaders, CONFIG);
+      }
+
       // Community endpoint: /:communityId/chat/resume (three segments).
       // Matched ahead of the two-segment ask/chat route below purely for
       // readability; the two patterns are anchored to different segment
@@ -759,6 +774,7 @@ function handleRoot(corsHeaders, CONFIG) {
       'POST /:communityId/ask': 'Ask a single question to a community',
       'POST /:communityId/chat': 'Multi-turn conversation with a community',
       'POST /:communityId/chat/resume': 'Resume a conversation after a client-executed tool call',
+      'GET /:communityId/runtime/:file': 'A wheel the community\'s browser runtime loads (immutable)',
       'GET /:communityId/metrics/public': 'Public community metrics',
       'GET /:communityId/sessions': 'List sessions (requires API key)',
       'GET /communities': 'List communities with widget configuration',
@@ -935,6 +951,76 @@ async function handleFeedback(request, env, corsHeaders, CONFIG) {
  * see checkResumeChainLimit for why an unbounded chain would otherwise
  * let this exemption be abused.
  */
+/** Wheels are named by version and verified by sha256, so a name never changes bytes. */
+const IMMUTABLE = 'public, max-age=31536000, immutable';
+
+/**
+ * Serve a wheel a community's browser runtime loads (#431).
+ *
+ * The edge cache answers repeats, so only a miss spends rate budget, and never
+ * the hourly budget /chat counts against: one cold start fetches a wheel or two
+ * per reader, and charging those as chats would spend a NAT'd lab's twenty
+ * hourly questions on downloads. The cache holds the bytes without CORS
+ * headers, because they are the same for every embedder and the headers are
+ * not; each response gets its own.
+ */
+async function handleRuntimeFile(request, env, ctx, communityId, fileName, corsHeaders, CONFIG) {
+  const path = `/${communityId}/runtime/${fileName}`;
+  // The Cache API exists in Workers and not in a test runtime; on a
+  // *.workers.dev host it exists and stores nothing, which is only a miss.
+  const cache = typeof caches !== 'undefined' ? caches.default : null;
+  const cacheKey = new Request(new URL(path, request.url).toString(), { method: 'GET' });
+  const respond = (body) => new Response(body, {
+    status: 200,
+    headers: { ...corsHeaders, 'Content-Type': 'application/octet-stream', 'Cache-Control': IMMUTABLE },
+  });
+
+  if (cache) {
+    const cached = await cache.match(cacheKey);
+    if (cached) return respond(cached.body);
+  }
+
+  const rejected = await rateLimitOrReject(request, env, corsHeaders, CONFIG, { countHourly: false });
+  if (rejected) return rejected;
+
+  if (!env.BACKEND_URL) {
+    return new Response(JSON.stringify({ error: 'Backend not configured' }), {
+      status: 503,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  }
+  const backendHeaders = {};
+  if (env.BACKEND_API_KEY) backendHeaders['X-API-Key'] = env.BACKEND_API_KEY;
+
+  let upstream;
+  try {
+    upstream = await fetch(`${env.BACKEND_URL}${path}`, {
+      method: 'GET',
+      headers: backendHeaders,
+      signal: AbortSignal.timeout(CONFIG.REQUEST_TIMEOUT),
+    });
+  } catch (error) {
+    console.error('Runtime file proxy error:', error.message);
+    return new Response('Bad Gateway', { status: 502, headers: corsHeaders });
+  }
+  // A 404 is the backend's answer (not a listed wheel) and passes through; any
+  // other failure is ours, is not cached, and must not read as "no such file".
+  if (upstream.status === 404) return new Response('Not Found', { status: 404, headers: corsHeaders });
+  if (!upstream.ok) {
+    console.error(`Runtime file ${path}: backend answered ${upstream.status}`);
+    return new Response('Bad Gateway', { status: 502, headers: corsHeaders });
+  }
+
+  const bytes = await upstream.arrayBuffer();
+  if (cache) {
+    const stored = new Response(bytes, {
+      headers: { 'Content-Type': 'application/octet-stream', 'Cache-Control': IMMUTABLE },
+    });
+    ctx.waitUntil(cache.put(cacheKey, stored));
+  }
+  return respond(bytes);
+}
+
 async function handleChatResume(request, env, communityId, corsHeaders, CONFIG) {
   const rejected = await rateLimitOrReject(request, env, corsHeaders, CONFIG, { countHourly: false });
   if (rejected) return rejected;
