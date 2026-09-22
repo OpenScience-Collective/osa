@@ -35,12 +35,15 @@
     // The worker sits in front of the FastAPI backend (api.osc.earth) as the
     // security proxy (Turnstile, rate limiting, CORS, backend API key), so
     // this always points at the worker's own custom domain, never directly
-    // at the backend. assistant.osc.earth / develop-assistant.osc.earth are
-    // stable, product-owned custom domains for the worker (see #437); the
-    // previous account-scoped Cloudflare subdomain is retired.
+    // at the backend. widget.osc.earth/osa (prod) and
+    // develop-widget.osc.earth/osa (dev) are a stable, product-owned host
+    // for widgets in general (see #437); "widget" is a generic host shared
+    // by future widgets, each under its own path, so this one lives at
+    // "/osa" rather than consuming a subdomain of its own. The previous
+    // account-scoped Cloudflare subdomain is retired.
     apiEndpoint: isDev
-      ? 'https://develop-assistant.osc.earth'
-      : 'https://assistant.osc.earth',
+      ? 'https://develop-widget.osc.earth/osa'
+      : 'https://widget.osc.earth/osa',
     storageKey: 'osa-chat-history-hed',
     // Turnstile: disabled for now (not set up yet)
     turnstileSiteKey: null,

@@ -46,8 +46,8 @@ function assertEqual(actual, expected, message) {
 const WIDGET_PATH = path.join(__dirname, 'osa-chat-widget.js');
 const widgetSource = fs.readFileSync(WIDGET_PATH, 'utf8');
 
-const PROD_ENDPOINT = 'https://assistant.osc.earth';
-const DEV_ENDPOINT = 'https://develop-assistant.osc.earth';
+const PROD_ENDPOINT = 'https://widget.osc.earth/osa';
+const DEV_ENDPOINT = 'https://develop-widget.osc.earth/osa';
 
 // Load the widget fresh for a given hostname and return its resolved
 // OSAChatWidget public API, the same way test-streaming.js's "Production
@@ -110,6 +110,10 @@ assert(
 assert(
   !widgetSource.includes('shirazi'),
   'widget source contains no reference to the retired account subdomain'
+);
+assert(
+  !widgetSource.includes('assistant.osc.earth'),
+  'widget source contains no reference to the retired assistant.osc.earth name'
 );
 
 console.log('\nThe resolved endpoints are the documented *.osc.earth custom domains');
