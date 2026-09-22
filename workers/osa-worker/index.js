@@ -15,19 +15,43 @@ const RESERVED_PATHS = ['health', 'version', 'feedback', 'communities', 'metrics
 // This worker is reachable two ways: its default *.workers.dev hostname
 // (unprefixed), and the product-owned widget.osc.earth/osa/* path mount
 // (#437). A Cloudflare route of the form "widget.osc.earth/osa/*" delivers
-// the FULL path, prefix included, to the worker -- it sees "/osa/nemar/chat",
+// the FULL path, prefix included, to the worker: it sees "/osa/nemar/chat",
 // not "/nemar/chat". Strip the prefix once, here, before any route is
 // matched, rather than baking "/osa" into each route's own regex; a
 // per-route prefix rots the moment someone adds a route and forgets it.
 const MOUNT_PREFIX = '/osa';
 
+// The hosts Cloudflare mounts this worker on at MOUNT_PREFIX. Must match the
+// `[[routes]]` / `[[env.dev.routes]]` patterns in wrangler.toml.
+//
+// Stripping has to be gated on the host, not on the path alone. The bare
+// *.workers.dev hostname stays live (wrangler.toml sets workers_dev = true),
+// and `wrangler dev` serves on localhost, and on BOTH of those the prefix is
+// not added by anyone, so a path-only strip would eat a real leading
+// segment. Concretely: a community whose ID is "osa" is valid today
+// (isValidCommunityId accepts it, RESERVED_PATHS does not list it), and a
+// path-only strip turns "/osa/chat" on workers.dev into "/chat", which 404s,
+// while "/osa/logo" silently becomes community "logo". The product is named
+// OSA, so that ID is a plausible thing for someone to create, and every
+// symptom of the collision looks like an unrelated bug.
+//
+// Adding a mount host without adding it here fails loudly and immediately
+// (every route 404s, and the fall-through below logs both paths), which is
+// the failure direction to prefer.
+const MOUNTED_HOSTS = new Set(['widget.osc.earth', 'develop-widget.osc.earth']);
+
 /**
  * Strip a leading mount-prefix segment so every route matcher can be
- * written once, unprefixed, and work under both hostnames. Anything not
- * under the prefix (including the bare *.workers.dev / wrangler dev case)
- * passes through unchanged.
+ * written once, unprefixed, and work under every hostname.
+ *
+ * Only strips on a host where Cloudflare actually mounts us at the prefix.
+ * On any other host the path is returned unchanged, including the bare
+ * *.workers.dev and `wrangler dev` cases.
  */
-function stripMountPrefix(pathname) {
+function stripMountPrefix(pathname, hostname) {
+  if (!MOUNTED_HOSTS.has(hostname)) {
+    return pathname;
+  }
   if (pathname === MOUNT_PREFIX) {
     return '/';
   }
@@ -437,7 +461,7 @@ export default {
       // Every matcher below is written unprefixed and sees this pathname,
       // never url.pathname directly, so it works the same reached via the
       // path-mounted host or the bare *.workers.dev / wrangler dev host.
-      const pathname = stripMountPrefix(url.pathname);
+      const pathname = stripMountPrefix(url.pathname, url.hostname);
 
       // Route requests
       if (pathname === '/') {
@@ -586,6 +610,20 @@ export default {
         return await handleProtectedEndpoint(request, env, ctx, `/${communityId}/${action}`, corsHeaders, CONFIG);
       }
 
+      // Log both paths, not just one. A 404 here has two very different
+      // causes that are indistinguishable from the response: the client asked
+      // for a route that does not exist, or MOUNT_PREFIX / MOUNTED_HOSTS and
+      // the deployed wrangler.toml route have drifted apart, in which case
+      // every request on the mounted host 404s while the deploy output looks
+      // clean. Printing raw and stripped side by side is what makes the second
+      // one greppable in `wrangler tail` instead of invisible.
+      console.warn('[osa-worker] no route matched', {
+        rawPath: url.pathname,
+        strippedPath: pathname,
+        host: url.hostname,
+        method: request.method,
+        mounted: MOUNTED_HOSTS.has(url.hostname),
+      });
       return new Response('Not Found', { status: 404, headers: corsHeaders });
     } catch (error) {
       console.error('Unhandled worker error:', error);
