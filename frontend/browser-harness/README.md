@@ -45,3 +45,8 @@ Recorded on #431, measured 2026-09-22 against Pyodide 0.28.3 in Chrome:
   the CSP verdict is identical for both URLs, so whatever refused it is ours
 - the boot CDN, reachable while the runtime was assembling itself, is
   unreachable once sealed
+- `print()` reaches the result, a matplotlib figure comes back as a real PNG
+  sized within the cap, and a figure left open by one run does not reappear in
+  the next
+- a failed run still returns the output it produced before it failed, which is
+  usually what explains the exception

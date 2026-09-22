@@ -102,6 +102,35 @@ console.log('\nbuildWorkerSource bakes the config in');
     `the assembled worker source is parseable JavaScript${parseError ? ': ' + parseError.message : ''}`);
 }
 
+console.log('\nthe worker template does not consume its own escape sequences');
+{
+  // A template literal interprets escapes in its OWN source, so a bare '\n'
+  // written inside the worker template becomes a real newline in the generated
+  // file and truncates the string literal it was part of, and a backtick ends
+  // the template early. Both have happened, more than once, and the symptom is
+  // always a parse error pointing at generated code rather than at this file.
+  //
+  // The new Function() check above catches these only when the result is
+  // INVALID syntax. A bare escape inside a longer string can produce valid
+  // JavaScript that is quietly wrong, which is why the source is scanned too.
+  const source = await Bun.file(new URL('./osa-runtime.js', import.meta.url)).text();
+  const opens = '  return `\n    (function () {';
+  const start = source.indexOf(opens);
+  assert(start !== -1, 'the worker template is where this test expects it');
+  const template = source.slice(start + opens.length, source.indexOf('`;\n}', start));
+
+  const bareEscapes = template.match(/(?<!\\)\\[nrt]/g) || [];
+  assert(bareEscapes.length === 0,
+    `no bare escape sequence in the worker template, write it doubled (found: ${JSON.stringify(bareEscapes)})`);
+
+  // Escaped ones are fine and are used in comments; an UNESCAPED one ends the
+  // template, and the code after it is then parsed as JavaScript rather than
+  // emitted as worker source.
+  const rawBackticks = (template.match(/(?<!\\)`/g) || []).length;
+  assert(rawBackticks === 0,
+    `no unescaped backtick inside the worker template, escape it as \\\` (found ${rawBackticks})`);
+}
+
 console.log('\nthe worker carries the egress guard, installed before anything is fetched');
 {
   const src = buildWorkerSource(RUNTIME);

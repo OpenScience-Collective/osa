@@ -29,6 +29,7 @@
  */
 
 import { buildDataClientSource, buildEgressGuardSource, buildNamespaceSealSource } from './osa-egress.js';
+import { buildOutputCaptureSource, resolveLimits } from './osa-output.js';
 
 /** Lifecycle states. A runtime is in exactly one at a time. */
 export const RUNTIME_STATE = Object.freeze({
@@ -92,6 +93,7 @@ export function buildWorkerSource(runtime) {
   // from inside a run.
   const namespaceSeal = JSON.stringify(buildNamespaceSealSource());
   const dataClient = JSON.stringify(buildDataClientSource());
+  const outputCapture = JSON.stringify(buildOutputCaptureSource(resolveLimits(runtime.limits)));
 
   // Built here rather than inside the template, because a template literal
   // interprets escape sequences in its own source: an '\n' written in there
@@ -188,6 +190,7 @@ export function buildWorkerSource(runtime) {
 
         internals = pyodide.globals.get('dict')();
         pyodide.runPython(${JSON.stringify(importGate)}, { globals: internals });
+        pyodide.runPython(${outputCapture}, { globals: internals });
 
         userNamespace = pyodide.globals.get('dict')();
         userNamespace.set('__name__', '__main__');
@@ -196,6 +199,14 @@ export function buildWorkerSource(runtime) {
         // the seal, because it needs the js bridge the seal is about to remove.
         // Sealing without it leaves executed code with no way to read anything.
         pyodide.runPython(${dataClient}, { globals: userNamespace });
+
+        // display() is the ONE capture helper executed code can reach. _begin and
+        // _end stay in the internal namespace: tampering with them would corrupt
+        // only the run's own result, but keeping the seam in one place is what
+        // makes that true rather than merely likely.
+        const display = internals.get('display');
+        userNamespace.set('display', display);
+        display.destroy();
 
         // Python-side capability removal, then JS-side egress narrowing. Both
         // happen before the first executable statement exists, and the egress
@@ -264,12 +275,44 @@ export function buildWorkerSource(runtime) {
         return;
       }
 
+      // Capture brackets the run, and _end is reached on BOTH paths: a run that
+      // raised still printed, and that output is usually what explains the
+      // exception. Leaving the streams swapped would also silently send every
+      // later run's output into a dead buffer.
+      const begin = internals.get('_begin');
+      begin();
+      begin.destroy();
+
+      let status = 'ok';
+      let errorText = '';
       try {
         await pyodide.runPythonAsync(code, { globals: userNamespace });
-        reply('ok', {});
       } catch (err) {
-        reply('error', { stderr: String((err && err.message) || err) });
+        status = 'error';
+        errorText = String((err && err.message) || err);
       }
+
+      let captured;
+      try {
+        const end = internals.get('_end');
+        captured = JSON.parse(end(errorText));
+        end.destroy();
+      } catch (err) {
+        // Capture itself failing must not swallow the run. Reported as an error
+        // naming the capture, so it is not mistaken for the code's own failure.
+        reply('error', {
+          stderr: '[runtime] output capture failed: ' + String((err && err.message) || err) +
+            (errorText ? '\\n' + errorText : ''),
+        });
+        return;
+      }
+
+      reply(status, {
+        stdout: captured.stdout,
+        stderr: captured.stderr,
+        images: captured.images,
+        artifacts: captured.artifacts,
+      });
     }
 
     self.onmessage = async (event) => {

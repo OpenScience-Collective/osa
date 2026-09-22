@@ -98,6 +98,9 @@ jobs:
       - name: Run runtime egress control tests
         run: bun frontend/test-egress.js
 
+      - name: Run runtime output capture tests
+        run: bun frontend/test-output.js
+
       - name: Check widget syntax
         run: node --check frontend/osa-chat-widget.js
 

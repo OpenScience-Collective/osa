@@ -22,7 +22,7 @@ function check(name, ok, detail) {
 const RUNTIME = {
   pyodide_version: '0.28.3',
   lockfile: 'harness',
-  preload: ['numpy'],
+  preload: ['numpy', 'matplotlib'],
   allow_install: [],
   preload_on: 'widget_open',
   fetch_allow: [new URL('.', location.href).href],
@@ -149,6 +149,42 @@ async function main() {
   // is the seal and nothing else.
   const afterSeal = await probe('the boot CDN after the seal', `osa.fetch_bytes(${JSON.stringify(crossOriginDenied)})`);
   check('the boot origin is unreachable once sealed', !/^OK:/.test(afterSeal), afterSeal);
+
+  // OUTPUT CAPTURE (step 4). matplotlib is the reason MPLBACKEND is set before
+  // anything can import it: Pyodide's default backend draws into the page's DOM,
+  // and a worker has no DOM, so the import succeeds and the first plot fails
+  // somewhere unrelated.
+  const printed = await rt.execute('print("captured stdout")\nprint(2 + 2)');
+  check('print() reaches the result', printed.stdout === 'captured stdout\n4\n',
+    `status=${printed.status} stdout=${JSON.stringify(printed.stdout)}`);
+
+  const plotted = await rt.execute(
+    'import matplotlib.pyplot as plt\n' +
+    'import numpy\n' +
+    'plt.plot(numpy.arange(10), numpy.arange(10) ** 2)\n' +
+    'plt.title("squares")\n'
+  );
+  const figure = (plotted.images || [])[0];
+  check('a matplotlib figure comes back as a PNG', Boolean(figure),
+    `status=${plotted.status} images=${(plotted.images || []).length} ${plotted.stderr.slice(-160)}`);
+  if (figure) {
+    check('and it is a real image, sized within the cap',
+      figure.mime === 'image/png' && figure.width > 0 && figure.height > 0 &&
+      figure.width <= 1024 && figure.height <= 1024,
+      `${figure.width}x${figure.height} ${figure.mime}, ${figure.data_base64.length} base64 chars`);
+  }
+
+  // A figure left open by one run must not reappear in the next. plt.close("all")
+  // after collection is what prevents a plot from being attributed to code that
+  // did not draw it.
+  const afterPlot = await rt.execute('x_after = 1');
+  check('a later run does not inherit the previous figure', (afterPlot.images || []).length === 0,
+    `images=${(afterPlot.images || []).length}`);
+
+  const failing = await rt.execute('print("before the failure")\nraise ValueError("boom")');
+  check('a failed run still returns the output it produced first',
+    failing.status === 'error' && failing.stdout.includes('before the failure'),
+    `status=${failing.status} stdout=${JSON.stringify(failing.stdout)}`);
 
   const failures = results.filter((r) => !r.ok).length;
   statusEl.textContent = failures === 0 ? `ALL ${results.length} CHECKS PASSED` : `${failures} of ${results.length} FAILED`;
