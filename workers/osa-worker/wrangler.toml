@@ -139,12 +139,12 @@ id = "6d46ef72877b4129b38ef2ca1e1cd5ea"
 # Trap 2: registering a route needs permission on the zone it lives in, not
 # just on the worker. A token that deployed this worker fine for months can
 # start failing the moment a route appears in this file, which reads as a
-# pipeline outage rather than a widget bug. Both identities here have
-# osc.earth access, so this one is satisfied: the dev rollout used the
-# `neuromechanist` account token, and `secrets.CLOUDFLARE_API_TOKEN`, which
-# CI deploys with, holds zone access too (confirmed by the maintainer,
-# 2026-09-21). Worth knowing before adding a route on a zone the deploying
-# identity does not already own.
+# pipeline outage rather than a widget bug. Not a concern on this zone:
+# `secrets.CLOUDFLARE_API_TOKEN` already provisions custom domains on
+# osc.earth for the status and branch deployments, so zone access was
+# established long before this route existed. The dev rollout used the
+# `neuromechanist` account token, which has it too. Worth checking before
+# adding a route on a zone the deploying identity does not already own.
 #
 # Neither route touches anything already published on osc.earth
 # (demo.osc.earth, develop-demo.osc.earth, api.osc.earth, or either
