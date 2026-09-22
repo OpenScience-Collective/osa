@@ -12,7 +12,7 @@ import re
 import sqlite3
 import time
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,9 +20,9 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, StreamingResponse
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.messages.utils import count_tokens_approximately
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src.agents.base import DEFAULT_MAX_CONVERSATION_TOKENS
 from src.agents.content import (
@@ -43,6 +43,13 @@ from src.api.security import (
     anthropic_key_header,
     openrouter_key_header,
     resolve_byok,
+)
+from src.api.tool_results import (
+    ClientToolResult,
+    PendingClientCall,
+    build_history_tool_message,
+    build_live_tool_message,
+    build_unanswered_tool_message,
 )
 from src.assistants import registry
 from src.assistants.community import CommunityAssistant
@@ -143,6 +150,30 @@ class ChatRequest(BaseModel):
         default=None,
         description="Optional context about the page where the widget is embedded",
     )
+    client_tools: list[str] = Field(
+        default_factory=list,
+        max_length=8,
+        description=(
+            "Names of client-executed tools this caller can actually run. The "
+            "assistant binds only tools that are both configured on the community and "
+            "declared here, so a caller that declares nothing gets the ordinary "
+            "server-only behavior. Declaring is what keeps an old cached widget from "
+            "being sent a tool_request it cannot answer, which would hang its reply "
+            "rather than fail it."
+        ),
+    )
+
+
+class ResumeRequest(BaseModel):
+    """Run 2 of a browser-execution turn: the result of a call run 1 asked for."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str = Field(min_length=1, max_length=256)
+    result: ClientToolResult
+    model: str | None = Field(default=None, description=MODEL_OVERRIDE_DESCRIPTION)
+    page_context: PageContext | None = None
+    client_tools: list[str] = Field(default_factory=list, max_length=8)
 
 
 class AskRequest(BaseModel):
@@ -362,25 +393,73 @@ def _faq_result_to_response(entry: FAQResult) -> FAQEntryResponse:
 # Session limits and constraints
 MAX_SESSIONS_PER_COMMUNITY = 1000  # Prevent memory exhaustion
 SESSION_TTL_HOURS = 24  # Auto-delete inactive sessions after 24h
-MAX_MESSAGES_PER_SESSION = 100  # Limit conversation length
-MAX_MESSAGE_LENGTH = 10000  # Max characters per message
+
+# A turn used to be two messages, one human and one assistant. A turn that runs code in
+# the browser is three or four: the human message, the assistant message carrying the
+# tool call, the tool result, and the assistant's reply to it. At the old cap of 100 a
+# session that used the browser reached the ceiling in roughly 25 real turns, which is
+# well inside a working session. Raised to keep the same conversational length available
+# whether or not a community runs code. The token budget in `_prepare_messages` is what
+# bounds context; this bounds memory.
+MAX_MESSAGES_PER_SESSION = 300
+
+MAX_MESSAGE_LENGTH = 10000  # Max characters per message a PERSON sends
+
+
+def _trim_preserving_tool_turns(messages: Sequence[BaseMessage], limit: int) -> list[BaseMessage]:
+    """Drop the oldest messages without ever orphaning a tool call or its result.
+
+    Cutting at an arbitrary index is what makes this subtle. An assistant message
+    carrying `tool_calls` and the tool results answering it are one indivisible unit to
+    the provider: a result whose call is gone, or a call whose result is gone, is
+    rejected outright rather than ignored. So the cut advances forward to the next human
+    message, which is the only index where no tool round trip is in flight.
+
+    If no such boundary exists after the naive cut, the whole list is kept. Exceeding a
+    memory cap is recoverable; sending a message list the provider refuses is not.
+    """
+    if len(messages) <= limit:
+        return list(messages)
+
+    start = len(messages) - limit
+    while start < len(messages) and not isinstance(messages[start], HumanMessage):
+        start += 1
+
+    if start >= len(messages):
+        logger.warning(
+            "Session history is %d messages, over the %d cap, but holds no turn "
+            "boundary to cut at; keeping it whole rather than orphaning a tool call.",
+            len(messages),
+            limit,
+        )
+        return list(messages)
+
+    return list(messages[start:])
 
 
 class ChatSession:
     """A chat session with message history.
 
     Enforces constraints:
-    - Max messages per session: 100
-    - Max message length: 10,000 characters
+    - Max messages per session: 300 (see MAX_MESSAGES_PER_SESSION)
+    - Max message length: 10,000 characters for human and assistant text
+    - Tool results are capped separately by MAX_TOOL_RESULT_LENGTH, because machine
+      output is not something a person typed and the smaller cap forbids every real
+      figure (issue #422)
     - TTL: 24 hours from last activity
+
+    A session also holds at most one `pending_call`: a browser execution that has been
+    requested and not yet answered. See `claim_pending_call` for why the claim is
+    deliberately synchronous.
     """
 
     def __init__(self, session_id: str, community_id: str) -> None:
         self.session_id = session_id
         self.community_id = community_id
-        self.messages: list[HumanMessage | AIMessage] = []
+        self.messages: list[BaseMessage] = []
         self.created_at = datetime.now(UTC)
         self.last_active = self.created_at
+        self.pending_call: PendingClientCall | None = None
 
     def add_user_message(self, content: str) -> None:
         """Add a user message to history.
@@ -413,6 +492,79 @@ class ChatSession:
             )
         self.messages.append(AIMessage(content=content))
         self.last_active = datetime.now(UTC)
+
+    # -- Browser-executed tool turns ---------------------------------------
+
+    def replace_history(self, messages: Sequence[BaseMessage]) -> None:
+        """Adopt the message list a graph run finished with.
+
+        A run that ends on a browser call produces more than a final string: the
+        assistant message carrying `tool_calls`, any server tool results from the same
+        batch, and a refusal for any second browser call. Re-deriving those from the
+        stream would mean reassembling what the graph already assembled correctly, so
+        the final state is taken whole.
+
+        The cap is enforced by trimming from the FRONT and never between an assistant
+        message and the tool results that answer it, because a tool result whose call is
+        gone, or a call whose result is gone, is rejected by the provider outright.
+        """
+        adopted = list(messages)
+        if len(adopted) > MAX_MESSAGES_PER_SESSION:
+            adopted = _trim_preserving_tool_turns(adopted, MAX_MESSAGES_PER_SESSION)
+        self.messages = adopted
+        self.last_active = datetime.now(UTC)
+
+    def set_pending_call(self, call: PendingClientCall) -> None:
+        self.pending_call = call
+        self.last_active = datetime.now(UTC)
+
+    def claim_pending_call(self, call_id: str) -> PendingClientCall | None:
+        """Take the outstanding call named by `call_id`, or return None.
+
+        DELIBERATELY SYNCHRONOUS, and it must stay that way. The session store is a
+        plain module-global dict with no locking anywhere, so the only thing keeping a
+        check-then-clear atomic is that no `await` appears between them: under asyncio a
+        coroutine cannot be preempted mid-body. Making this `async` for symmetry with
+        its callers would reintroduce a window in which the same result is accepted
+        twice, and accepting once is the whole of the idempotency this transport needs
+        in exchange for having no checkpointer.
+
+        Returning None covers all three refusals a caller must treat alike: no call is
+        outstanding, a different call is outstanding, or the call expired. The caller
+        answers 409 and does not say which, because the distinction is only useful to
+        someone guessing.
+        """
+        pending = self.pending_call
+        if pending is None:
+            return None
+        if pending.is_expired():
+            # Repair rather than merely refuse. Leaving a stale call parked would keep
+            # the unanswered tool_call in history, and that is what makes a session
+            # unusable, so the expiry path has to clear it here too.
+            self.abandon_pending_call("it was not answered in time")
+            return None
+        if pending.call_id != call_id:
+            return None
+        self.pending_call = None
+        return pending
+
+    def abandon_pending_call(self, reason: str) -> bool:
+        """Close out an unanswered browser call so the history stays valid.
+
+        Called when the person moves on instead of answering, and when the call ages
+        out. Without it the session holds an assistant message with `tool_calls` and no
+        matching result, which the provider rejects, so every later turn fails rather
+        than just the abandoned one.
+
+        Returns whether there was anything to abandon.
+        """
+        pending = self.pending_call
+        if pending is None:
+            return False
+        self.pending_call = None
+        self.messages.append(build_unanswered_tool_message(pending.call_id, reason))
+        self.last_active = datetime.now(UTC)
+        return True
 
     def is_expired(self) -> bool:
         """Check if session has exceeded TTL."""
@@ -1068,6 +1220,7 @@ def create_community_assistant(
     requested_model: str | None = None,
     preload_docs: bool = True,
     page_context: PageContext | None = None,
+    declared_client_tools: set[str] | None = None,
 ) -> AssistantWithMetrics:
     """Create a community assistant instance with authorization checks.
 
@@ -1176,6 +1329,10 @@ def create_community_assistant(
         # setting; the provider choice is already fixed per request, so
         # this satisfies that constraint for free.
         citations=provider_choice.provider == "anthropic",
+        # None on the /ask path, which has no session to park a browser call in and so
+        # binds no client-executed tools at all. That is decision 7 of the phase plan,
+        # enforced by the default rather than by a check.
+        declared_client_tools=declared_client_tools,
     )
 
     # Wire LangFuse tracing if configured
@@ -1573,6 +1730,12 @@ def create_community_router(community_id: str) -> APIRouter:
         session = get_or_create_session(community_id, body.session_id)
         user_id = x_user_id or session.session_id
 
+        # The person moved on instead of answering a browser call. Close it out before
+        # anything else: leaving an assistant message with tool_calls and no matching
+        # result makes the provider reject EVERY later turn, not just this one.
+        if session.abandon_pending_call("the conversation moved on before it was run"):
+            logger.info("Abandoned an unanswered browser call on session %s", session.session_id)
+
         # Add user message with constraint validation
         try:
             session.add_user_message(body.message)
@@ -1590,6 +1753,7 @@ def create_community_router(community_id: str) -> APIRouter:
                     body.model,
                     page_context=body.page_context,
                     http_request=http_request,
+                    declared_client_tools=set(body.client_tools),
                 ),
                 media_type="text/event-stream",
                 headers={
@@ -1650,6 +1814,86 @@ def create_community_router(community_id: str) -> APIRouter:
                 status_code=500,
                 detail="Internal server error. Please contact support if the issue persists.",
             ) from e
+
+    @router.post(
+        "/chat/resume",
+        responses={
+            200: {"description": "Run 2 of the turn, streamed"},
+            404: {"description": "No such session"},
+            409: {"description": "No such outstanding call for this session"},
+        },
+    )
+    async def chat_resume(
+        body: ResumeRequest,
+        http_request: Request,
+        _auth: RequireAuth,
+        x_anthropic_key: Annotated[
+            str | None, Header(alias=anthropic_key_header.model.name)
+        ] = None,
+        x_openrouter_key: Annotated[
+            str | None, Header(alias=openrouter_key_header.model.name)
+        ] = None,
+        x_user_id: Annotated[str | None, Header(alias="X-User-ID")] = None,
+    ) -> StreamingResponse:
+        """Continue a turn with the result of a tool the browser ran.
+
+        This is run 2 of the two-run continuation. Run 1 ended with the assistant
+        message carrying the tool call and a `tool_request` event; the browser executed
+        with no request open; this call appends the result and continues. Nothing is
+        resumed in the LangGraph sense, so there is no checkpointer and no parked
+        connection: a continuation is just a new run over a longer message list.
+
+        **Authorization is the `call_id`, not the session id.** A client may choose its
+        own `session_id` on the way in, so a session id is a routing key rather than a
+        credential. The `call_id` is the provider's own tool-call id, which a caller
+        only ever learns from a `tool_request` on its own stream, and it is accepted at
+        most once.
+        """
+        origin = http_request.headers.get("origin")
+        byok = resolve_byok(x_anthropic_key, x_openrouter_key)
+
+        session = get_session(community_id, body.session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="Session not found or expired.")
+
+        # Synchronous by construction; see ChatSession.claim_pending_call. One refusal
+        # for all three cases, because telling a caller WHICH of "no call outstanding",
+        # "a different call is outstanding" and "that call expired" applies is only
+        # useful to someone guessing.
+        pending = session.claim_pending_call(body.result.call_id)
+        if pending is None:
+            raise HTTPException(
+                status_code=409,
+                detail="No outstanding browser call with that id for this session.",
+            )
+
+        user_id = x_user_id or session.session_id
+
+        # The live message list carries the images; the stored one never does. Both are
+        # built from the same result so they cannot describe different runs.
+        live_messages = [*session.messages, build_live_tool_message(body.result)]
+        session.messages.append(build_history_tool_message(body.result))
+
+        return StreamingResponse(
+            _stream_chat_response(
+                community_id,
+                session,
+                byok,
+                origin,
+                user_id,
+                body.model,
+                page_context=body.page_context,
+                http_request=http_request,
+                declared_client_tools=set(body.client_tools),
+                initial_messages=live_messages,
+            ),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Session-ID": session.session_id,
+            },
+        )
 
     @router.get("/sessions/{session_id}", response_model=SessionInfo)
     async def get_session_info(session_id: str, _auth: RequireAdminAuth) -> SessionInfo:
@@ -2438,6 +2682,30 @@ async def _stream_ask_response(
         )
 
 
+def _finish_with_tool_request(
+    session: ChatSession,
+    pending_payload: dict[str, Any],
+    final_state: dict[str, Any] | None,
+) -> Iterator[str]:
+    """End run 1 on a browser call: adopt the history, park the call, ask the client to run it.
+
+    No `done` event follows, and that is deliberate. `done` means the assistant finished
+    its turn, and this turn is not finished; it is waiting on a browser. A client that
+    treated `tool_request` as a turn ending would render a reply that has not been
+    written yet.
+
+    The history is adopted whole from the graph's final state rather than reassembled
+    from the stream, because the run produced more than text: the assistant message
+    carrying `tool_calls`, results for any server tools called in the same batch, and a
+    refusal for any second browser call. Rebuilding that from SSE events would be
+    re-deriving what the graph already got right.
+    """
+    session.replace_history(final_state.get("messages", []) if final_state else [])
+    pending = PendingClientCall.from_state(pending_payload)
+    session.set_pending_call(pending)
+    yield f"data: {json.dumps(pending.to_request_event(session.session_id))}\n\n"
+
+
 async def _stream_chat_response(
     community_id: str,
     session: ChatSession,
@@ -2447,6 +2715,8 @@ async def _stream_chat_response(
     requested_model: str | None = None,
     page_context: PageContext | None = None,
     http_request: Request | None = None,
+    declared_client_tools: set[str] | None = None,
+    initial_messages: list[BaseMessage] | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream assistant response as JSON-encoded Server-Sent Events.
 
@@ -2502,17 +2772,24 @@ async def _stream_chat_response(
             requested_model=requested_model,
             preload_docs=True,
             page_context=page_context,
+            declared_client_tools=declared_client_tools,
         )
         graph = awm.assistant.build_graph()
 
+        # `initial_messages` is how run 2 of a browser-execution turn seeds the graph:
+        # the stored history plus the live tool result, whose images are attached here
+        # and deliberately never written back to the session.
         state = {
-            "messages": session.messages.copy(),
+            "messages": (
+                list(initial_messages) if initial_messages is not None else session.messages.copy()
+            ),
             "retrieved_docs": [],
             "tool_calls": [],
         }
 
         stream_config = awm.langfuse_config or {}
         full_response = ""
+        final_state: dict[str, Any] | None = None
 
         async for event in graph.astream_events(state, version="v2", config=stream_config):
             kind = event.get("event")
@@ -2564,6 +2841,38 @@ async def _stream_chat_response(
                     "output": str(tool_output) if tool_output else "",
                 }
                 yield f"data: {json.dumps(sse_event)}\n\n"
+
+            elif kind == "on_chain_end" and not event.get("parent_ids"):
+                # The root graph's own end event carries the complete final state:
+                # every message the run produced, plus `pending_client_call` when it
+                # ended on a browser call. Identified by an empty `parent_ids` rather
+                # than by the name "LangGraph", which is an implementation detail a
+                # rename would quietly change. Verified against the installed langgraph,
+                # and asserted in tests/test_api/test_client_tool_streaming.py, so an
+                # upstream change to the event shape fails a test rather than silently
+                # losing every browser turn.
+                output = event.get("data", {}).get("output")
+                if isinstance(output, dict) and "messages" in output:
+                    final_state = output
+
+        pending_payload = (final_state or {}).get("pending_client_call")
+        if pending_payload:
+            for sse_line in _finish_with_tool_request(session, pending_payload, final_state):
+                yield sse_line
+            _log_streaming_metrics(
+                http_request=http_request,
+                community_id=community_id,
+                endpoint=f"/{community_id}/chat",
+                awm=awm,
+                tools_called=tools_called,
+                start_time=start_time,
+                status_code=200,
+                input_tokens=total_input_tokens,
+                output_tokens=total_output_tokens,
+                cache_read_tokens=total_cache_read_tokens,
+                cache_creation_tokens=total_cache_creation_tokens,
+            )
+            return
 
         final_response = normalize_citation_markers(full_response, citation_assembler.marks)
         if final_response:

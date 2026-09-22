@@ -24,6 +24,7 @@ from src.agents.base import ToolAgent
 from src.core.config.community import CommunityConfig
 from src.tools.base import DocRegistry
 from src.tools.citations import build_search_result, truncate
+from src.tools.client_tools import build_client_tools
 from src.tools.fetcher import get_fetcher
 from src.tools.knowledge import create_knowledge_tools
 from src.utils.page_fetcher import fetch_page
@@ -239,8 +240,17 @@ class CommunityAssistant(ToolAgent):
         additional_tools: list[BaseTool] | None = None,
         additional_instructions: str = "",
         citations: bool = False,
+        declared_client_tools: set[str] | None = None,
     ) -> None:
-        """Initialize the community assistant."""
+        """Initialize the community assistant.
+
+        `declared_client_tools` names the client-executed tools the CALLER says it can
+        run. Only tools that are both configured on the community and declared here are
+        bound, which is what makes it structurally impossible to ask a client to run
+        something it has no executor for: the model never sees the tool, so it cannot
+        call it. A caller that declares nothing, which is every caller until the widget
+        ships its runtime, gets exactly the server-only behavior of before.
+        """
         self.config = config
         self.additional_instructions = additional_instructions
         self._preload_docs = preload_docs
@@ -285,6 +295,11 @@ class CommunityAssistant(ToolAgent):
         mcp_tools, self._degraded_mcp_servers = self._load_mcp_tools(config)
         tools.extend(mcp_tools)
 
+        # Tools this server binds but never executes; the browser does. Empty unless
+        # the community configures them AND the caller declares it can run them.
+        client_tools = build_client_tools(config, declared_client_tools)
+        tools.extend(client_tools)
+
         # Generate system prompt
         system_prompt = self._build_system_prompt(config, additional_instructions)
 
@@ -310,6 +325,7 @@ class CommunityAssistant(ToolAgent):
             model=model,
             tools=tools,
             system_prompt=system_prompt,
+            client_tool_names={tool.name for tool in client_tools},
         )
 
     def _fetch_preloaded_docs(self) -> dict[str, str]:
