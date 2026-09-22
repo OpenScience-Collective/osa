@@ -283,6 +283,21 @@ test('Feedback race keeps the same response after done-state replacement', () =>
   );
 });
 
+test('Done reducer keeps a reply that ran code even when it ends with no text', () => {
+  const applyDoneEvent = testWidgetWindow.OSAChatWidget.__applyDoneEvent;
+  // What ran, and any figure it drew, is part of the answer. Removing the
+  // message because the model added no words afterwards lost the record of
+  // the run entirely, which the browser end-to-end harness caught.
+  const ran = [{ role: 'assistant', content: '', executions: [{ status: 'ok', code: 'print(1)' }] }];
+  applyDoneEvent(ran, 0, { event: 'done', content: '' }, '');
+  assertEqual(ran.length, 1, 'A reply that ran code should be kept');
+  assertEqual(ran[0].executions.length, 1, 'And keep the record of what ran');
+
+  const empty = [{ role: 'assistant', content: '' }];
+  applyDoneEvent(empty, 0, { event: 'done', content: '' }, '');
+  assertEqual(empty.length, 0, 'An empty reply that ran nothing should still be removed');
+});
+
 test('Legacy citation migration repairs cached mid-word markers', () => {
   const migrateLegacyCitationMarkers = testWidgetWindow.OSAChatWidget.__migrateLegacyCitationMarkers;
   assert(typeof migrateLegacyCitationMarkers === 'function', 'Legacy citation migration should be exposed in test mode');
