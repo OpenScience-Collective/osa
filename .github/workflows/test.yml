@@ -90,6 +90,9 @@ jobs:
       - name: Run streaming tests
         run: bun frontend/test-streaming.js
 
+      - name: Run endpoint resolution tests
+        run: bun frontend/test-endpoint-resolution.js
+
       - name: Check widget syntax
         run: node --check frontend/osa-chat-widget.js
 
