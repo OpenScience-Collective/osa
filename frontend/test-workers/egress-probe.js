@@ -26,7 +26,15 @@ self.onmessage = async (event) => {
 
       for (const [name, url] of Object.entries(${JSON.stringify(probes)})) {
         try { await self.fetch(url); out[name] = 'reached_network'; }
-        catch (e) { out[name] = e && e.name === 'EgressDenied' ? 'DENIED:' + e.reason : 'network_error_after_guard'; }
+        // A TypeError is what a real network failure looks like once past the
+        // guard. Anything else is the guard itself failing, and is named: a
+        // ReferenceError inside the check was once filed here as a network
+        // error, which hid that the bundled guard could not check anything.
+        catch (e) {
+          if (e && e.name === 'EgressDenied') out[name] = 'DENIED:' + e.reason;
+          else if (e && e.name === 'TypeError') out[name] = 'network_error_after_guard';
+          else out[name] = 'GUARD_FAILED:' + (e && e.name) + ': ' + (e && e.message);
+        }
       }
 
       // Argument-shape confusion: an object whose .url is allowed but whose

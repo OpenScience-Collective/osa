@@ -51,23 +51,36 @@ export const DENY_REASON = Object.freeze({
  * @returns {{allowed: boolean, reason?: string}}
  */
 export function isUrlAllowed(rawUrl, prefixes, options = {}) {
+  // SELF-CONTAINED, like the worker core: this function is serialized into the
+  // worker with toString, so it loses its closure and may reference nothing at
+  // module level. It used to read the module's DENY_REASON, which worked only
+  // because the guard happens to declare a constant of the same name beside it.
+  // Minifying the widget's runtime bundle renamed that reference, and every
+  // allowlist check in the built bundle threw a ReferenceError. These values
+  // must equal DENY_REASON's, which test-egress.js checks.
+  const REASON = {
+    UNPARSEABLE: 'unparseable',
+    SCHEME: 'scheme_not_allowed',
+    CREDENTIALS_IN_URL: 'credentials_in_url',
+    NOT_ALLOWED: 'not_in_fetch_allow',
+  };
   let url;
   try {
     url = new URL(String(rawUrl), options.base);
   } catch {
-    return { allowed: false, reason: DENY_REASON.UNPARSEABLE };
+    return { allowed: false, reason: REASON.UNPARSEABLE };
   }
 
   // http(s) only. data: and blob: are same-origin-ish smuggling routes rather
   // than network egress, and are refused here so the surface stays one thing.
   if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-    return { allowed: false, reason: DENY_REASON.SCHEME };
+    return { allowed: false, reason: REASON.SCHEME };
   }
 
   // user:pass@host is a credential-smuggling vector and never legitimate for a
   // public data plane, so it is refused before the allowlist is even consulted.
   if (url.username || url.password) {
-    return { allowed: false, reason: DENY_REASON.CREDENTIALS_IN_URL };
+    return { allowed: false, reason: REASON.CREDENTIALS_IN_URL };
   }
 
   for (const prefix of prefixes || []) {
@@ -99,7 +112,7 @@ export function isUrlAllowed(rawUrl, prefixes, options = {}) {
     }
   }
 
-  return { allowed: false, reason: DENY_REASON.NOT_ALLOWED };
+  return { allowed: false, reason: REASON.NOT_ALLOWED };
 }
 
 /**

@@ -184,6 +184,37 @@ console.log('\ndot segments in the TARGET, which the prefix comparison must not 
     'climbing that stays INSIDE the prefix is still allowed');
 }
 
+console.log('\nisUrlAllowed is self-contained, because it is serialized into the worker');
+{
+  // Rebuilt from its own text, with no module around it: exactly what the worker
+  // receives. It once read the module's DENY_REASON, which only resolved because
+  // the guard declares a constant of the same name. Minification renamed the
+  // reference and every check in the built bundle threw a ReferenceError; this
+  // reproduces that without needing a bundle.
+  // eslint-disable-next-line no-new-func
+  const isolated = new Function(`return (${isUrlAllowed.toString()});`)();
+  let threw = null;
+  let verdicts = {};
+  try {
+    verdicts = {
+      unparseable: isolated('http://[bad', ['https://zarr.nemar.org/']).reason,
+      scheme: isolated('ftp://zarr.nemar.org/x', ['https://zarr.nemar.org/']).reason,
+      credentials: isolated('https://u:p@zarr.nemar.org/x', ['https://zarr.nemar.org/']).reason,
+      notAllowed: isolated('https://example.com/', ['https://zarr.nemar.org/']).reason,
+      allowed: isolated('https://zarr.nemar.org/x', ['https://zarr.nemar.org/']).allowed,
+    };
+  } catch (err) {
+    threw = err;
+  }
+  assert(threw === null, `it runs with no module around it${threw ? ': ' + threw.message : ''}`);
+  assert(verdicts.allowed === true, `${'and still allows what it should'} (got ${JSON.stringify(verdicts.allowed)})`);
+  // Its private reason table must say exactly what DENY_REASON says.
+  assert(verdicts.unparseable === DENY_REASON.UNPARSEABLE, `${'the unparseable reason matches DENY_REASON'} (got ${JSON.stringify(verdicts.unparseable)})`);
+  assert(verdicts.scheme === DENY_REASON.SCHEME, `${'the scheme reason matches'} (got ${JSON.stringify(verdicts.scheme)})`);
+  assert(verdicts.credentials === DENY_REASON.CREDENTIALS_IN_URL, `${'the credentials reason matches'} (got ${JSON.stringify(verdicts.credentials)})`);
+  assert(verdicts.notAllowed === DENY_REASON.NOT_ALLOWED, `${'the not-allowed reason matches'} (got ${JSON.stringify(verdicts.notAllowed)})`);
+}
+
 console.log('\nthe generated worker guard');
 {
   const src = buildEgressGuardSource({ bootAllow: ['https://cdn.jsdelivr.net/'] });
