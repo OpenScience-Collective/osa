@@ -33,7 +33,7 @@ from src.api.routers.community import (
 )
 from src.api.tool_results import ClientToolResult, ToolResultImage
 from src.assistants.community import CommunityAssistant
-from src.core.config.community import CommunityConfig
+from src.core.config.community import FULL_OUTPUT_TOOL_NAME, CommunityConfig
 from src.tools.client_tools import CLIENT_TOOL_KILL_SWITCH_ENV
 from tests.helpers.chat_models import (
     ScriptedChatModel,
@@ -520,3 +520,31 @@ def _pending():
         requires_permission=True,
         created_at=datetime.now(UTC),
     )
+
+
+class TestGetFullOutputReachesTheBrowser:
+    """The derived tool travels the same two-run path as execute_code, ungated."""
+
+    @pytest.mark.asyncio
+    async def test_it_parks_and_asks_the_browser_without_a_gate(self) -> None:
+        """requires_permission reaches the browser on the tool_request itself.
+
+        That field is the ONLY way the widget learns to skip the permission gate for
+        this call, so it is asserted where the widget reads it: on the wire.
+        """
+        args = {"call_id": CALL_ID, "stream": "stdout", "offset": 0}
+        assistant, _ = _assistant(
+            [tool_call_response(FULL_OUTPUT_TOOL_NAME, args, SECOND_CALL_ID)],
+            declared={"execute_code", FULL_OUTPUT_TOOL_NAME},
+        )
+
+        events = await _run(
+            _session(), assistant, declared_client_tools={"execute_code", FULL_OUTPUT_TOOL_NAME}
+        )
+
+        request = next(e for e in events if e["event"] == "tool_request")
+        assert request["tool"] == FULL_OUTPUT_TOOL_NAME
+        assert request["call_id"] == SECOND_CALL_ID
+        assert request["args"] == args
+        assert request["requires_permission"] is False
+        assert "done" not in _names(events)

@@ -542,6 +542,20 @@ class McpServer(BaseModel):
         return v
 
 
+FULL_OUTPUT_TOOL_NAME = "get_full_output"
+"""The client tool that reads back output a browser run kept locally.
+
+Derived rather than configured: ``src.tools.client_tools.build_client_tools``
+binds it whenever a python-runtime tool is bound and the caller declares it,
+so a community never lists it and cannot misconfigure it. Declared here rather
+than in ``src.tools.client_tools`` because this module must import without the
+``server`` extra, and the name has to be reserved at config load.
+"""
+
+RESERVED_CLIENT_TOOL_NAMES = frozenset({FULL_OUTPUT_TOOL_NAME})
+"""Names a community may not configure, because the server binds them itself."""
+
+
 class ClientToolConfig(BaseModel):
     """A tool the server binds to the model but never executes itself.
 
@@ -577,6 +591,23 @@ class ClientToolConfig(BaseModel):
 
     description: str
     """Tool description shown to the model: what it does and when to call it."""
+
+    @field_validator("name")
+    @classmethod
+    def _not_reserved(cls, value: str) -> str:
+        """Refuse a name the server binds itself.
+
+        A configured tool under a reserved name would be bound beside the derived
+        one, and the model would see two tools with one name and different
+        argument shapes. Refusing it at load is the only point where that is a
+        clear error rather than a confusing tool call.
+        """
+        if value in RESERVED_CLIENT_TOOL_NAMES:
+            raise ValueError(
+                f"'{value}' is reserved: the server binds it itself whenever a python "
+                "client tool is bound, so it must not be configured."
+            )
+        return value
 
 
 class RuntimeLimits(BaseModel):
