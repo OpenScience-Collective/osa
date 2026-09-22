@@ -61,6 +61,7 @@ from src.assistants.community import PageContext as AgentPageContext
 from src.assistants.registry import AssistantInfo
 from src.core.config.community import (
     MAX_DECLARED_CLIENT_TOOLS,
+    ClientToolConfig,
     ClientToolRuntime,
     CommunityConfig,
     RuntimeConfig,
@@ -70,7 +71,7 @@ from src.core.config.runtime_lock import (
     RuntimeLockError,
     RuntimeLockOverlay,
     load_runtime_lock,
-    runtime_wheel_path,
+    runtime_wheel,
 )
 from src.core.limits import MAX_BROWSER_RUNS_PER_REPLY
 from src.core.services.anthropic_llm import OFFERED_MODELS, create_anthropic_llm, normalize_model
@@ -1711,15 +1712,28 @@ def convention_logo_url(community_id: str, widget: WidgetConfig) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def _community_runtime_lock(config: CommunityConfig) -> RuntimeLockOverlay | None:
-    """The community's verified lock overlay, None when it names none.
+def _offered_client_tools(config: CommunityConfig | None) -> list[ClientToolConfig]:
+    """The client tools a community offers right now: none under the kill switch.
 
-    Raises RuntimeLockError when the overlay or a wheel it lists is unusable.
+    None, too, for an assistant registered without a YAML config, which configures
+    nothing.
     """
+    extensions = config.extensions if config is not None else None
+    if extensions is None or client_tools_disabled():
+        return []
+    return list(extensions.client_tools)
+
+
+def _runtime_lockfile(config: CommunityConfig) -> str | None:
+    """The lock overlay the community's Python runtime names, or None."""
     python = config.runtime.python if config.runtime is not None else None
-    if python is None or python.lockfile is None:
-        return None
-    return load_runtime_lock(_ASSISTANTS_DIR / config.id, python.lockfile)
+    return python.lockfile if python is not None else None
+
+
+def _log_unusable_lock(community_id: str, err: RuntimeLockError) -> None:
+    # Logged on every request that meets it: the verdict is cached, so this costs a
+    # line and not a re-hash, and a broken deployment keeps saying so.
+    logger.error("Community %s: its runtime lock overlay does not verify: %s", community_id, err)
 
 
 def _client_tool_config(config: CommunityConfig | None) -> dict[str, Any]:
@@ -1731,20 +1745,21 @@ def _client_tool_config(config: CommunityConfig | None) -> dict[str, Any]:
 
     Fails closed on a lock overlay that does not verify: no client tools, so the
     widget declares none and the model is never offered a tool whose runtime could
-    not start. A test loads every shipped overlay, so this is a deployment gone
-    wrong rather than a state a reviewed config can reach.
+    not start. A test verifies every shipped community's overlay, so this is a
+    deployment gone wrong rather than a state a reviewed config can reach.
     """
     none: dict[str, Any] = {"client_tools": [], "runtime": None, "runtime_lock": None}
-    # None for an assistant registered without a YAML config, which configures nothing.
-    extensions = config.extensions if config is not None else None
-    configured = list(extensions.client_tools) if extensions is not None else []
-    if config is None or not configured or client_tools_disabled():
+    configured = _offered_client_tools(config)
+    if config is None or not configured:
         return none
-    try:
-        runtime_lock = _community_runtime_lock(config)
-    except RuntimeLockError:
-        logger.exception("Community %s: its runtime lock overlay does not verify", config.id)
-        return none
+    lockfile = _runtime_lockfile(config)
+    runtime_lock = None
+    if lockfile is not None:
+        try:
+            runtime_lock = load_runtime_lock(_ASSISTANTS_DIR / config.id, lockfile)
+        except RuntimeLockError as err:
+            _log_unusable_lock(config.id, err)
+            return none
     return {
         "client_tools": [
             ClientToolInfo(
@@ -2245,30 +2260,38 @@ def create_community_router(community_id: str) -> APIRouter:
         )
 
     @router.get("/runtime/{file_name}")
-    async def get_runtime_wheel(file_name: str) -> FileResponse:
+    async def get_runtime_wheel(file_name: str) -> Response:
         """Serve one wheel the community's lock overlay lists, for the browser runtime.
 
         Only names the overlay lists are served, found by lookup rather than by
-        joining the request onto the disk. Immutable for a year: a wheel's name is
-        its identity, and the overlay's sha256, which Pyodide checks as it loads the
-        wheel, is verified against these bytes when the overlay is loaded.
+        joining the request onto the disk, and only while the community offers the
+        client tools that runtime is for, which is when /config sends the overlay.
+        The bytes are the ones hashed against the overlay's sha256, which Pyodide
+        checks again as it loads them. Immutable for a year: a wheel's name is its
+        identity.
+
+        A 404 means there is no such wheel. An overlay that does not verify is a 503
+        instead, so the edge neither caches it nor reports a broken deployment as a
+        missing file.
         """
         config = info.community_config
         not_found = HTTPException(status_code=404, detail="No such runtime file")
-        if config is None or client_tools_disabled():
+        if config is None or not _offered_client_tools(config):
             raise not_found
-        python = config.runtime.python if config.runtime is not None else None
-        if python is None or python.lockfile is None:
+        lockfile = _runtime_lockfile(config)
+        if lockfile is None:
             raise not_found
         try:
-            path = runtime_wheel_path(_ASSISTANTS_DIR / community_id, python.lockfile, file_name)
-        except RuntimeLockError:
-            logger.exception("Community %s: its runtime lock overlay does not verify", community_id)
-            raise not_found from None
-        if path is None:
+            wheel = runtime_wheel(_ASSISTANTS_DIR / config.id, lockfile, file_name)
+        except RuntimeLockError as err:
+            _log_unusable_lock(config.id, err)
+            raise HTTPException(
+                status_code=503, detail="This community's browser runtime is unavailable"
+            ) from None
+        if wheel is None:
             raise not_found
-        return FileResponse(
-            path,
+        return Response(
+            content=wheel,
             media_type="application/octet-stream",
             headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )

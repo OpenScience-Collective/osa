@@ -15,6 +15,8 @@ the two can never come from different releases.
 A wheel's file name is its identity. Wheels are served as immutable for a year, so a
 changed wheel must carry a new version, and a mismatch between a committed wheel and
 the sha256 its entry records fails here, at load, rather than in a reader's browser.
+The bytes the route serves are the bytes that were verified, held in memory, so a file
+changed on disk after the check cannot go out under the entry's name.
 """
 
 from __future__ import annotations
@@ -23,7 +25,10 @@ import functools
 import hashlib
 import json
 import re
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from types import MappingProxyType
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
@@ -45,7 +50,7 @@ def canonical_name(name: str) -> str:
 class RuntimeLockPackage(BaseModel):
     """One wheel, in the shape of a Pyodide lock entry, so it merges verbatim."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     name: str
     version: str
@@ -81,7 +86,7 @@ class RuntimeLockPackage(BaseModel):
 class RuntimeLockOverlay(BaseModel):
     """The entries a community adds to Pyodide's lock, keyed as Pyodide keys them."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     packages: dict[str, RuntimeLockPackage]
 
@@ -102,10 +107,6 @@ class RuntimeLockOverlay(BaseModel):
         if len(set(file_names)) != len(file_names):
             raise ValueError("two packages name the same wheel file")
         return self
-
-    def file_names(self) -> frozenset[str]:
-        """Every wheel this overlay lists: the only files the wheel route serves."""
-        return frozenset(entry.file_name for entry in self.packages.values())
 
 
 class RuntimeLockError(ValueError):
@@ -131,52 +132,86 @@ def lockfile_path_problem(lockfile: str) -> str | None:
     return None
 
 
-@functools.cache
-def load_runtime_lock(community_dir: Path, lockfile: str) -> RuntimeLockOverlay:
-    """Read a community's overlay and verify every wheel it lists against the disk.
+@dataclass(frozen=True)
+class _Verified:
+    overlay: RuntimeLockOverlay
+    wheels: Mapping[str, bytes]
+    """Each listed wheel's bytes, by file name, exactly as they were hashed."""
 
-    Cached for the life of the process: the files are part of the deployment and do
-    not change under it, and hashing every wheel per request would cost more than
-    serving it.
+
+@dataclass(frozen=True)
+class _Unusable:
+    reason: str
+
+
+@functools.cache
+def _verify(community_dir: Path, lockfile: str) -> _Verified | _Unusable:
+    """Read a community's overlay and check every wheel it lists against its sha256.
+
+    Cached for the life of the process, a failure as much as a success: the files
+    are part of the deployment and do not change under it, and a broken overlay is
+    asked about on every /config and every wheel request, so re-reading and
+    re-hashing every wheel each time would cost the most exactly when nothing can
+    come of it. The reason is cached rather than the exception, since raising one
+    exception object again and again grows its traceback each time.
+    """
+    problem = lockfile_path_problem(lockfile)
+    if problem is not None:
+        return _Unusable(f"lockfile {lockfile!r}: {problem}")
+    path = community_dir / lockfile
+    try:
+        overlay = RuntimeLockOverlay.model_validate(json.loads(path.read_text()))
+    except OSError as err:
+        return _Unusable(f"lock overlay {path} cannot be read: {err}")
+    except (json.JSONDecodeError, ValidationError) as err:
+        return _Unusable(f"lock overlay {path} is not a valid overlay: {err}")
+
+    wheels_dir = path.parent / WHEELS_DIR_NAME
+    wheels: dict[str, bytes] = {}
+    for key, entry in overlay.packages.items():
+        wheel = wheels_dir / entry.file_name
+        try:
+            data = wheel.read_bytes()
+        except OSError as err:
+            return _Unusable(f"{key}: wheel {wheel} cannot be read: {err}")
+        digest = hashlib.sha256(data).hexdigest()
+        if digest != entry.sha256:
+            return _Unusable(
+                f"{key}: wheel {wheel} has sha256 {digest}, not the {entry.sha256} its entry "
+                "records. A changed wheel needs a new version, because served wheels are "
+                "cached by name for a year."
+            )
+        wheels[entry.file_name] = data
+    return _Verified(overlay, MappingProxyType(wheels))
+
+
+def _verified(community_dir: Path, lockfile: str) -> _Verified:
+    outcome = _verify(community_dir, lockfile)
+    if isinstance(outcome, _Unusable):
+        raise RuntimeLockError(outcome.reason)
+    return outcome
+
+
+def load_runtime_lock(community_dir: Path, lockfile: str) -> RuntimeLockOverlay:
+    """A community's overlay, every wheel it lists verified against its sha256.
+
+    A copy, so nothing a caller does to it reaches the verified original the wheel
+    route serves from.
 
     Raises:
         RuntimeLockError: The overlay is missing, malformed, or lists a wheel that is
             absent or whose bytes do not match its sha256.
     """
-    problem = lockfile_path_problem(lockfile)
-    if problem is not None:
-        raise RuntimeLockError(f"lockfile {lockfile!r}: {problem}")
-    path = community_dir / lockfile
-    try:
-        overlay = RuntimeLockOverlay.model_validate(json.loads(path.read_text()))
-    except OSError as err:
-        raise RuntimeLockError(f"lock overlay {path} cannot be read: {err}") from err
-    except (json.JSONDecodeError, ValidationError) as err:
-        raise RuntimeLockError(f"lock overlay {path} is not a valid overlay: {err}") from err
-
-    wheels = path.parent / WHEELS_DIR_NAME
-    for key, entry in overlay.packages.items():
-        wheel = wheels / entry.file_name
-        try:
-            digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
-        except OSError as err:
-            raise RuntimeLockError(f"{key}: wheel {wheel} cannot be read: {err}") from err
-        if digest != entry.sha256:
-            raise RuntimeLockError(
-                f"{key}: wheel {wheel} has sha256 {digest}, not the {entry.sha256} its entry "
-                "records. A changed wheel needs a new version, because served wheels are "
-                "cached by name for a year."
-            )
-    return overlay
+    return _verified(community_dir, lockfile).overlay.model_copy(deep=True)
 
 
-def runtime_wheel_path(community_dir: Path, lockfile: str, file_name: str) -> Path | None:
-    """The file to serve for ``file_name``, or None when the overlay does not list it.
+def runtime_wheel(community_dir: Path, lockfile: str, file_name: str) -> bytes | None:
+    """The verified bytes to serve for ``file_name``, or None when the overlay does not list it.
 
     A lookup against the overlay, never a join of the request onto the disk: a name
     that is not an entry is refused before any path is built from it.
+
+    Raises:
+        RuntimeLockError: As ``load_runtime_lock``.
     """
-    overlay = load_runtime_lock(community_dir, lockfile)
-    if file_name not in overlay.file_names():
-        return None
-    return (community_dir / lockfile).parent / WHEELS_DIR_NAME / file_name
+    return _verified(community_dir, lockfile).wheels.get(file_name)

@@ -8,6 +8,8 @@ Tests cover:
 - Public health status in config and metrics endpoints
 """
 
+import hashlib
+import json
 import os
 import re
 
@@ -794,6 +796,11 @@ class TestCommunityConfigClientTools:
     def test_no_lockfile_means_no_overlay(self, client: TestClient) -> None:
         assert client.get(f"/{self.COMMUNITY}/").json()["runtime_lock"] is None
 
+    def test_no_lockfile_means_no_wheels_either(self, client: TestClient) -> None:
+        response = client.get(f"/{self.COMMUNITY}/runtime/anything-1.0-py3-none-any.whl")
+
+        assert response.status_code == 404
+
     def test_a_community_without_client_tools_exposes_none(self) -> None:
         os.environ["REQUIRE_API_AUTH"] = "false"
         from src.api.config import get_settings
@@ -818,9 +825,6 @@ def _write_overlay(
     ``recorded`` is what the entry's sha256 is computed from, so passing different
     bytes from ``wheel_bytes`` commits a wheel that does not match its entry.
     """
-    import hashlib
-    import json
-
     overlay = {
         "packages": {
             "tinypkg": {
@@ -852,22 +856,21 @@ class TestTheRuntimeLockOverlay:
 
     COMMUNITY = "runtimelocktest"
 
-    def _config(self):
+    def _config(self, offers_client_tools: bool = True):
         from src.core.config.community import CommunityConfig
 
+        tools = [
+            {
+                "name": "execute_code",
+                "runtime": "python",
+                "description": "Run Python in the browser.",
+            }
+        ]
         return CommunityConfig(
             id=self.COMMUNITY,
             name="Runtime Lock Test",
             description="A community whose runtime adds a wheel",
-            extensions={
-                "client_tools": [
-                    {
-                        "name": "execute_code",
-                        "runtime": "python",
-                        "description": "Run Python in the browser.",
-                    }
-                ]
-            },
+            extensions={"client_tools": tools if offers_client_tools else []},
             runtime={
                 "python": {
                     "pyodide_version": "0.29.5",
@@ -877,14 +880,16 @@ class TestTheRuntimeLockOverlay:
             },
         )
 
-    def _client(self, monkeypatch: pytest.MonkeyPatch, assistants_dir):
+    def _client(
+        self, monkeypatch: pytest.MonkeyPatch, assistants_dir, offers_client_tools: bool = True
+    ):
         from src.api.routers import community as community_router
         from src.assistants import registry
         from src.tools.client_tools import CLIENT_TOOL_KILL_SWITCH_ENV
 
         monkeypatch.delenv(CLIENT_TOOL_KILL_SWITCH_ENV, raising=False)
         monkeypatch.setattr(community_router, "_ASSISTANTS_DIR", assistants_dir)
-        registry.register_from_config(self._config())
+        registry.register_from_config(self._config(offers_client_tools))
         app = FastAPI()
         app.include_router(community_router.create_community_router(self.COMMUNITY))
         return TestClient(app)
@@ -943,6 +948,22 @@ class TestTheRuntimeLockOverlay:
         assert client.get(f"/{self.COMMUNITY}/").json()["runtime_lock"] is None
         assert client.get(f"/{self.COMMUNITY}/runtime/{WHEEL}").status_code == 404
 
+    def test_a_lockfile_without_client_tools_serves_nothing(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The wheels go out while /config sends the overlay, and no longer: a
+        community that offers no client tools has no runtime to download them for."""
+        from src.assistants import registry
+
+        _write_overlay(tmp_path / self.COMMUNITY)
+        try:
+            client = self._client(monkeypatch, tmp_path, offers_client_tools=False)
+
+            assert client.get(f"/{self.COMMUNITY}/").json()["runtime_lock"] is None
+            assert client.get(f"/{self.COMMUNITY}/runtime/{WHEEL}").status_code == 404
+        finally:
+            registry._assistants.pop(self.COMMUNITY, None)
+
     def test_a_wheel_that_does_not_match_its_entry_fails_closed(
         self, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -958,6 +979,10 @@ class TestTheRuntimeLockOverlay:
             assert data["client_tools"] == []
             assert data["runtime"] is None
             assert data["runtime_lock"] is None
-            assert client.get(f"/{self.COMMUNITY}/runtime/{WHEEL}").status_code == 404
+            # Unavailable rather than absent, so the edge neither caches the answer
+            # nor reports a broken deployment as a missing file.
+            response = client.get(f"/{self.COMMUNITY}/runtime/{WHEEL}")
+            assert response.status_code == 503
+            assert "immutable" not in response.headers.get("cache-control", "")
         finally:
             registry._assistants.pop(self.COMMUNITY, None)
