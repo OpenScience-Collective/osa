@@ -102,6 +102,9 @@ jobs:
       - name: Run browser runtime lifecycle tests
         run: bun frontend/test-runtime-lifecycle.js
 
+      - name: Run runtime egress control tests
+        run: bun frontend/test-egress.js
+
       - name: Check widget syntax
         run: node --check frontend/osa-chat-widget.js
 
