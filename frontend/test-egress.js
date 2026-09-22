@@ -371,10 +371,11 @@ console.log('\nthe data client is real Python, checked by a real compiler');
   assert(out === 'COMPILED',
     `the generated data client compiles (got: ${out || proc.stderr.toString().trim().split('\n').slice(-2).join(' | ')})`);
 
-  assert(/def fetch_bytes/.test(py) && /def fetch_text/.test(py), 'it offers both a bytes and a text read');
+  assert(/def fetch\(url, headers=None\)/.test(py) && /def fetch_bytes/.test(py) && /def fetch_text/.test(py),
+    'it offers a ranged read, a bytes read and a text read');
   assert(/module.__spec__ = _ilu.spec_from_loader/.test(py),
     'it carries a real __spec__, without which find_spec RAISES and the import gate denies `import osa`');
-  assert(/del _ilu, _sys, _types, _js, _build_osa_client/.test(py),
+  assert(/del _collections, _ilu, _sys, _types, _js, _to_js, _build_osa_client/.test(py),
     'the bridge it was built from is not left lying in the namespace');
 }
 

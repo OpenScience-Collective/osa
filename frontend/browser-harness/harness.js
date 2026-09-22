@@ -156,6 +156,25 @@ async function main() {
   const afterSeal = await probe('the boot CDN after the seal', `osa.fetch_bytes(${JSON.stringify(crossOriginDenied)})`);
   check('the boot origin is unreachable once sealed', !/^OK:/.test(afterSeal), afterSeal);
 
+  // osa.fetch, the call a host transport such as eegprep-lean's makes. This
+  // server ignores Range, so a 200 is the honest answer; what is checked is
+  // that the header passes the guard and the status comes back as a value.
+  const fetched = await rt.execute(
+    `import osa\nr = await osa.fetch(${JSON.stringify(allowedUrl)}, headers={"Range": "bytes=0-9"})\n` +
+      'print(r.status, len(r.body) > 0)'
+  );
+  check('osa.fetch reads inside fetch_allow with a Range header, returning the status',
+    /^(200|206) True\n$/.test(fetched.stdout), `status=${fetched.status} ${fetched.stdout}${fetched.stderr.slice(-160)}`);
+
+  // No response at all, which Bun cannot produce (see test-worker-core.js):
+  // here the guard refuses, and the refusal must arrive as a Python OSError.
+  const refusedFetch = await rt.execute(
+    `import osa\ntry:\n    await osa.fetch(${JSON.stringify(sameOriginDenied)})\n` +
+      'except OSError as e:\n    print("OSError", "EgressDenied" in str(e))'
+  );
+  check('a refused osa.fetch is an OSError that names the egress refusal',
+    refusedFetch.stdout === 'OSError True\n', `status=${refusedFetch.status} ${refusedFetch.stdout}${refusedFetch.stderr.slice(-160)}`);
+
   // OUTPUT CAPTURE (step 4). matplotlib is the reason MPLBACKEND is set before
   // anything can import it: Pyodide's default backend draws into the page's DOM,
   // and a worker has no DOM, so the import succeeds and the first plot fails

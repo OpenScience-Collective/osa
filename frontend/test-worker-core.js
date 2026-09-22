@@ -403,6 +403,71 @@ console.log('\nthe data client reads through fetch, inside the same interpreter'
   }
 }
 
+console.log('\nosa.fetch reads byte ranges, and reports a status rather than raising on it');
+{
+  // Honors Range the way the data plane does, and records what arrived, so a
+  // test can assert what was sent and not only what came back.
+  const body = new TextEncoder().encode('0123456789'.repeat(32));
+  const seen = [];
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      const range = request.headers.get('range');
+      seen.push({ path: new URL(request.url).pathname, range, other: request.headers.get('x-extra') });
+      if (new URL(request.url).pathname === '/missing') return new Response('gone', { status: 404 });
+      const suffix = range && /^bytes=-(\d+)$/.exec(range);
+      const closed = range && /^bytes=(\d+)-(\d+)$/.exec(range);
+      if (suffix) return new Response(body.slice(body.length - Number(suffix[1])), { status: 206 });
+      if (closed) return new Response(body.slice(Number(closed[1]), Number(closed[2]) + 1), { status: 206 });
+      return new Response(body);
+    },
+  });
+  const base = `http://127.0.0.1:${server.port}`;
+  try {
+    const ranged = await plain.run(
+      `r = await osa.fetch(${JSON.stringify(`${base}/data`)}, headers={"Range": "bytes=10-19"})\n` +
+        'print(r.status, r.body.decode(), isinstance(r, osa.Response))'
+    );
+    assertEqual(ranged.stdout, '206 0123456789 True\n', 'a closed range comes back as the 206 slice, as an osa.Response');
+    assertEqual(seen.at(-1) && seen.at(-1).range, 'bytes=10-19', 'and the Range header reached the server as given');
+
+    const tail = await plain.run(
+      `status, body = await osa.fetch(${JSON.stringify(`${base}/data`)}, headers={"range": "bytes=-16"})\nprint(status, len(body))`
+    );
+    assertEqual(tail.stdout, '206 16\n', 'the suffix form the sharding codec needs works, whatever the header name case');
+
+    const missing = await plain.run(`r = await osa.fetch(${JSON.stringify(`${base}/missing`)})\nprint(r.status, r.body)`);
+    assertEqual(missing.status, 'ok', 'an HTTP 404 is not an exception from osa.fetch');
+    assertEqual(missing.stdout, "404 b'gone'\n", 'it is a status for the caller to judge, with the body kept');
+
+    const strict = await plain.run(
+      `try:\n    await osa.fetch_bytes(${JSON.stringify(`${base}/missing`)})\nexcept OSError as e:\n    print("OSError", e)`
+    );
+    assertEqual(strict.stdout, `OSError HTTP 404 for ${base}/missing\n`, 'while fetch_bytes, built on it, still raises for one');
+
+    const before = seen.length;
+    const extra = await plain.run(
+      `try:\n    await osa.fetch(${JSON.stringify(`${base}/data`)}, headers={"X-Extra": "1"})\nexcept ValueError as e:\n    print("ValueError", e)`
+    );
+    assert(/^ValueError osa\.fetch sends a Range header and no other, not 'X-Extra'/.test(extra.stdout),
+      `any header but Range is refused by name (got ${JSON.stringify(extra.stdout)})`);
+    const typed = await plain.run(
+      `try:\n    await osa.fetch(${JSON.stringify(`${base}/data`)}, headers={"Range": 5})\nexcept TypeError as e:\n    print("TypeError", e)`
+    );
+    assertEqual(typed.stdout, 'TypeError the Range header must be a str, not int\n', 'a Range value that is not a string is refused');
+    assertEqual(seen.length, before, 'and neither refused call reached the network');
+
+    // No response at all (the OSError branch) is checked in the browser harness,
+    // through a URL the egress guard refuses, and cannot be checked here.
+    // Measured 2026-09-22 on Pyodide 0.29.5: Bun's own fetch rejects a refused
+    // connection with an error Pyodide's future helper will not accept
+    // ("invalid exception object"), so the await never settles. An ordinary
+    // TypeError converts, and a browser rejects with one.
+  } finally {
+    server.stop(true);
+  }
+}
+
 console.log('\n' + '='.repeat(60));
 console.log(`Total: ${passed + failed}   Passed: ${passed}   Failed: ${failed}`);
 console.log('='.repeat(60));
