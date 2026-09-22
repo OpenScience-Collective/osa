@@ -2200,7 +2200,14 @@
   // enforces: the run with no budget left refuses a further browser call in
   // writing. The widget stops at the same number so an older server cannot
   // make it loop either. test-widget-tools.js checks the two agree.
-  const MAX_BROWSER_RUNS_PER_REPLY = 10;
+  const MAX_BROWSER_RUNS_PER_REPLY = 20;
+
+  // How long to wait before each retry of a result the worker's per-minute
+  // limit refused. That limit counts every resume, and a reply that runs code
+  // quickly can reach it. The code has already run and the parked call stays
+  // answerable for 15 minutes, so the result is worth waiting for rather than
+  // dropping. The limiter's window is 60 seconds.
+  const RESUME_RATE_LIMIT_WAITS_MS = Object.freeze([30000, 35000]);
 
   // How much of each field of a run survives on the reply and in storage.
   // executionRecord writes with these and normalizePersistedExecutions reads
@@ -2551,7 +2558,9 @@
       if (error && typeof error.detail === 'string') {
         errorMessage = error.detail.substring(0, 500);
       } else if (error && typeof error.error === 'string') {
-        errorMessage = error.error.substring(0, 500);
+        // The worker says which limit in `details`, which is the useful half.
+        const details = typeof error.details === 'string' ? `: ${error.details}` : '';
+        errorMessage = `${error.error}${details}`.substring(0, 500);
       }
     } catch {
       // Response wasn't JSON - use status-based message
@@ -2566,8 +2575,19 @@
     return new Error(errorMessage);
   }
 
+  // Whether a 429 came from the worker's per-minute limit, the one worth
+  // waiting out. Its hourly budgets are not: they last the hour.
+  async function isPerMinuteLimit(response) {
+    try {
+      const body = await response.clone().json();
+      return typeof body.details === 'string' && /per minute/i.test(body.details);
+    } catch {
+      return false;
+    }
+  }
+
   // Send a browser run's result and return the stream that continues the reply.
-  async function postResume(request, result) {
+  async function postResume(request, result, waits = RESUME_RATE_LIMIT_WAITS_MS) {
     const body = {
       session_id: request.session_id || sessionId,
       result,
@@ -2576,18 +2596,28 @@
     const pageContext = getPageContext();
     if (pageContext) body.page_context = pageContext;
     if (userSettings.model) body.model = userSettings.model;
-    const response = await fetch(`${CONFIG.apiEndpoint}/${CONFIG.communityId}/chat/resume`, {
-      method: 'POST',
-      headers: chatRequestHeaders(),
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(120000),
-    });
-    if (!response.ok) throw await responseError(response);
-    const contentType = response.headers.get('content-type') || '';
-    if (!contentType.includes('text/event-stream')) {
-      throw new Error('Invalid response from server');
+    for (let attempt = 0; ; attempt += 1) {
+      const response = await fetch(`${CONFIG.apiEndpoint}/${CONFIG.communityId}/chat/resume`, {
+        method: 'POST',
+        headers: chatRequestHeaders(),
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(120000),
+      });
+      if (response.status === 429 && attempt < waits.length && await isPerMinuteLimit(response)) {
+        const container = document.querySelector('.osa-chat-widget');
+        if (container) {
+          showWarning(container, 'Many code runs in a short time: waiting briefly before continuing the reply.');
+        }
+        await new Promise((resolve) => setTimeout(resolve, waits[attempt]));
+        continue;
+      }
+      if (!response.ok) throw await responseError(response);
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.includes('text/event-stream')) {
+        throw new Error('Invalid response from server');
+      }
+      return response;
     }
-    return response;
   }
 
   // Model-written code as HTML: highlighted once the runtime has loaded,
@@ -4584,6 +4614,7 @@
       handleStreamingResponse,
       loadRuntimeBundle,
       normalizePersistedExecutions,
+      postResume,
       runtimeBundleUrl,
       toolPanelHtml,
       declaredClientTools,

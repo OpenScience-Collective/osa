@@ -286,6 +286,55 @@ console.log('\na refused resume is recorded once, by the loop; a failed stream i
   assertEqual(api.getMessages()[0].content, 'kept', 'a stream failure is not annotated twice');
 }
 
+console.log('\na result refused by the per-minute limit is waited out; an hourly refusal is not');
+{
+  const sent = [];
+  const replies = [];
+  const fetch = async (url, init) => {
+    sent.push({ url: String(url), body: init.body });
+    return replies.shift()();
+  };
+  const { api, widget } = loadWidget({ fetch });
+  widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test' });
+  const limited = (details) => () => new Response(JSON.stringify({ error: 'Rate limit exceeded', details }), {
+    status: 429,
+    headers: { 'content-type': 'application/json' },
+  });
+  const streaming = () => new Response('data: {}\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  const request = { session_id: 's', call_id: 'c1' };
+  const result = { call_id: 'c1', status: 'ok', stdout: 'computed' };
+
+  replies.push(limited('Too many requests per minute'), limited('Too many requests per minute'), streaming);
+  const response = await api.postResume(request, result, [5, 5]);
+  assertEqual(response.status, 200, 'after two per-minute refusals the third attempt continues the reply');
+  assertEqual(sent.length, 3, 'sending the result three times');
+  assert(sent.every((s) => s.url.endsWith('/test/chat/resume') && s.body === sent[0].body),
+    'the same result each time, to the resume route');
+  assertEqual(JSON.parse(sent[0].body).result, result, 'which is the result the browser produced');
+
+  sent.length = 0;
+  replies.push(limited('Too many resume requests per hour'));
+  let error = null;
+  try {
+    await api.postResume(request, result, [5, 5]);
+  } catch (err) {
+    error = err;
+  }
+  assertEqual(sent.length, 1, 'an hourly refusal is not retried');
+  assertEqual(error && error.message, 'Rate limit exceeded: Too many resume requests per hour', 'and says which limit');
+
+  sent.length = 0;
+  replies.push(...Array.from({ length: 3 }, () => limited('Too many requests per minute')));
+  error = null;
+  try {
+    await api.postResume(request, result, [5, 5]);
+  } catch (err) {
+    error = err;
+  }
+  assertEqual(sent.length, 3, 'a per-minute limit that outlasts the waits stops after them');
+  assert(error && /per minute/.test(error.message), 'and fails with the limit named');
+}
+
 console.log('\nthe first message waits one shared deadline, not one per wait');
 {
   const { api } = loadWidget();

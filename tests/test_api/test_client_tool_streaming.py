@@ -600,9 +600,10 @@ class TestARefusedCallStillReplies:
 class TestAReplyHasABudgetOfBrowserRuns:
     """One question cannot chain browser runs without end.
 
-    Each run is a request and a model call, and `/chat/resume` is exempt from the
-    worker's hourly limit, so the server is where the bound has to live. The widget
-    stops at the same number, which does not help against any other client.
+    Each run is a request and a model call. The worker bounds resume calls per IP per
+    hour, which says nothing about one reply, so the per-reply bound lives on the
+    server. The widget stops at the same number, which does not help against any
+    other client.
     """
 
     @pytest.mark.asyncio
