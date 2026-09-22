@@ -346,6 +346,9 @@ export class FullOutputStore {
 /** The streams get_full_output can read. */
 export const FULL_OUTPUT_STREAMS = Object.freeze(['stdout', 'stderr', 'traceback', 'figures']);
 
+/** What the model is told when the person stopped a run. Fixed text, so it caches. */
+export const CANCELLED_STDERR = '[runtime] the reader stopped this run before it finished.';
+
 /**
  * Owns one Pyodide worker: its boot, its warm lifetime, and its teardown.
  */
@@ -393,6 +396,9 @@ export class PyodideRuntime {
     // model's own tool_use block (phase 1 never mints one), so a result can
     // never be attributed to the wrong call.
     this._pending = new Map();
+    // call_id -> {cancelled, cancel}, for executions still waiting on the boot. They are
+    // not in _pending yet because no worker has been asked to run them.
+    this._starting = new Map();
     this._callSeq = 0;
     // Clamped the same way the worker clamps them, so the host's deadline and
     // the worker's output caps cannot come from two different readings of one
@@ -633,9 +639,9 @@ export class PyodideRuntime {
    *
    * The returned object is phase 1's `ClientToolResult` shape minus `call_id`
    * handling: `{status, stdout, stderr, summary, images, artifacts, elapsed_ms}`.
-   * It resolves for a failed run as much as for a successful one; the status
-   * says which. It rejects only when no result can exist, such as the runtime
-   * being torn down mid-execution.
+   * It resolves for a failed, timed-out or cancelled run as much as for a
+   * successful one; the status says which. It rejects only when no result can
+   * exist, such as the boot failing or the runtime being torn down mid-execution.
    *
    * @param {string} code - Python to run.
    * @param {{callId?: string}} [options] - `callId` is the call_id from the
@@ -648,7 +654,39 @@ export class PyodideRuntime {
     if (typeof code !== 'string') {
       throw new TypeError(`code must be a string, got ${typeof code}`);
     }
-    await this.boot();
+    const callId = options.callId || `local-${++this._callSeq}`;
+    if (this._pending.has(callId) || this._starting.has(callId)) {
+      throw new Error(`an execution is already in flight for call_id ${callId}`);
+    }
+
+    // Registered BEFORE the boot, because a cold boot takes seconds and Stop is
+    // most likely to be pressed during exactly those seconds. Without this a
+    // cancel() would find nothing to cancel, and the code would run anyway
+    // once the boot finished.
+    //
+    // The boot is raced rather than awaited, so Stop answers at once instead of
+    // when the boot ends. The boot itself carries on: it is shared, and the
+    // person stopped a run, not the runtime.
+    const requested = Date.now();
+    // The flag as well as the promise: a cancel() that lands after the boot won
+    // the race but before this function resumes must still stop the run.
+    const starting = { cancelled: false, cancel: null };
+    const cancelled = new Promise((resolve) => {
+      starting.cancel = () => {
+        starting.cancelled = true;
+        resolve(true);
+      };
+    });
+    this._starting.set(callId, starting);
+    let wasCancelled;
+    try {
+      wasCancelled = await Promise.race([this.boot().then(() => false), cancelled]);
+    } finally {
+      this._starting.delete(callId);
+    }
+    if (wasCancelled || starting.cancelled) {
+      return this._emptyResult(callId, 'cancelled', CANCELLED_STDERR, Date.now() - requested);
+    }
 
     // Re-checked AFTER the await, not before it. `boot()` yields, so a
     // terminate() can land between the call and the registration below; without
@@ -656,11 +694,6 @@ export class PyodideRuntime {
     // exists and surface as a TypeError about null instead of as cancellation.
     if (this.state !== RUNTIME_STATE.READY || this._worker === null) {
       throw new Error('the runtime is not running; call reboot() to start a new one');
-    }
-
-    const callId = options.callId || `local-${++this._callSeq}`;
-    if (this._pending.has(callId)) {
-      throw new Error(`an execution is already in flight for call_id ${callId}`);
     }
 
     // The deadline is enforced HERE, not in the worker, because the worker cannot
@@ -731,6 +764,34 @@ export class PyodideRuntime {
       );
     }
     this._recycle();
+  }
+
+  /**
+   * Stop one execution because the person asked to.
+   *
+   * Symmetric with a timeout: the call resolves with a result, status
+   * `cancelled`, because the server parked it and the model's tool_use needs a
+   * tool_result either way. A running call takes its instance with it, since
+   * terminating is the only way to stop Python here (see execute), and the next
+   * execution boots a fresh one. A call still waiting on the boot never starts,
+   * and the boot carries on, since the person stopped a run and not the runtime.
+   *
+   * @param {string} callId
+   * @returns {boolean} Whether there was anything to cancel.
+   */
+  cancel(callId) {
+    const starting = this._starting.get(callId);
+    if (starting) {
+      starting.cancel();
+      return true;
+    }
+    const waiting = this._pending.get(callId);
+    if (!waiting) {
+      return false;
+    }
+    this._settleExecution(callId, this._emptyResult(callId, 'cancelled', CANCELLED_STDERR, Date.now() - waiting.started));
+    this._recycle();
+    return true;
   }
 
   /**

@@ -13,6 +13,7 @@
 
 import {
   BOOT_FAILURE,
+  CANCELLED_STDERR,
   CLIENT_TOOL_RESULT_FIELDS,
   FullOutputStore,
   MAX_ARTIFACTS,
@@ -778,6 +779,10 @@ console.log('\nevery result a caller receives is exactly the server\'s shape');
   onlyServerFields(await rt.execute('fine', { callId: 'shape-ok' }), 'a worker result');
   onlyServerFields(await rt.execute('NEVER answers', { callId: 'shape-timeout' }), 'a timeout');
   onlyServerFields(await rt.execute('CRASH the instance', { callId: 'shape-oom' }), 'a dead worker');
+  const stopping = rt.execute('NEVER answers', { callId: 'shape-cancel' });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  rt.cancel('shape-cancel');
+  onlyServerFields(await stopping, 'a cancelled run');
   await rt.execute('LONG:10', { callId: 'shape-kept' });
   onlyServerFields(rt.getFullOutput({ call_id: 'shape-kept' }, { callId: 'shape-read' }), 'a get_full_output answer');
   onlyServerFields(rt.getFullOutput({ call_id: 'nothing-here' }, { callId: 'shape-miss' }), 'a get_full_output refusal');
@@ -859,6 +864,68 @@ console.log('\nget_full_output never re-attaches more figures than the cap');
   rt.outputs.remember('call-many', { stdout: '' }, [image, image, image, image, image]);
   const figures = rt.getFullOutput({ call_id: 'call-many', stream: 'figures' }, { callId: 'r' });
   assertEqual(figures.images.length, SERVER_LIMITS.MAX_IMAGES, 'a stored entry over the cap is cut to it');
+}
+
+console.log('\nStop settles a running call as cancelled and recycles the instance');
+{
+  // Symmetric with a timeout: the server parked the call, so it gets a result.
+  // Only terminating stops Python here, so the instance goes with it.
+  const rt = new PyodideRuntime({
+    runtime: { ...RUNTIME, limits: { exec_seconds: 60 } },
+    workerFactory: workerFrom('executing'),
+  });
+  await rt.execute('LONG:100', { callId: 'kept-before' });
+  const running = rt.execute('NEVER answers', { callId: 'call-stop' });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const started = Date.now();
+  assertEqual(rt.cancel('call-stop'), true, 'cancel() reports that it stopped something');
+  const result = await running;
+  assert(Date.now() - started < 1000, 'the call settles at once, not at its 60s deadline');
+  assertEqual(result.status, 'cancelled', 'with status cancelled');
+  assertEqual(result.call_id, 'call-stop', 'reported against the call that was stopped');
+  assertEqual(result.stderr, CANCELLED_STDERR, 'and the fixed explanation');
+  assertEqual(rt.state, RUNTIME_STATE.IDLE, 'the instance is recycled, not terminated');
+  assert(rt.outputs.get('kept-before') !== undefined, 'output an earlier run kept survives the stop');
+  const after = await rt.execute('fine now', { callId: 'call-after-stop' });
+  assertEqual(after.status, 'ok', 'and the next run boots a fresh instance');
+  assertEqual(rt.cancel('call-after-stop'), false, 'cancelling a finished call is a no-op that says so');
+  assertEqual(rt.cancel('never-existed'), false, 'as is cancelling an unknown one');
+  rt.terminate();
+}
+
+console.log('\nStop during a cold boot answers at once and the code never runs');
+{
+  const rt = new PyodideRuntime({ runtime: RUNTIME, workerFactory: workerFrom('slow-boot') });
+  const started = Date.now();
+  const waiting = rt.execute('should not run', { callId: 'call-boot-stop' });
+  assertEqual(rt.state, RUNTIME_STATE.BOOTING, 'the call is waiting on the boot');
+  assertEqual(rt.cancel('call-boot-stop'), true, 'cancel() finds the call although no worker has it yet');
+  const result = await waiting;
+  assert(Date.now() - started < 250, `it settles before the 300ms boot ends (took ${Date.now() - started}ms)`);
+  assertEqual(result.status, 'cancelled', 'as cancelled');
+  assertEqual(result.call_id, 'call-boot-stop', 'for the right call');
+  // The boot is shared and carries on: the person stopped a run, not the runtime.
+  await rt.boot();
+  assertEqual(rt.state, RUNTIME_STATE.READY, 'the boot carries on to READY');
+  const next = await rt.execute('this one runs', { callId: 'call-after-boot-stop' });
+  assertEqual(next.summary, 'run 1: this one runs',
+    'the next call is the FIRST the worker ever received: the cancelled code never reached it');
+  rt.terminate();
+}
+
+console.log('\nthe same call_id cannot be started twice while it waits on the boot');
+{
+  const rt = new PyodideRuntime({ runtime: RUNTIME, workerFactory: workerFrom('slow-boot') });
+  const first = rt.execute('one', { callId: 'dup' });
+  let refused = null;
+  try {
+    await rt.execute('two', { callId: 'dup' });
+  } catch (err) {
+    refused = err;
+  }
+  assert(refused !== null && /already in flight/.test(refused.message), 'the second is refused while the first waits on the boot');
+  assertEqual((await first).summary, 'run 1: one', 'and the first still runs, once');
+  rt.terminate();
 }
 
 console.log('\n' + '='.repeat(60));
