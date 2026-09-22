@@ -16,6 +16,9 @@ parts/
 sdist/
 var/
 wheels/
+# Except a community's browser-runtime wheels, which are committed and served
+# (src/core/config/runtime_lock.py).
+!src/assistants/*/runtime/wheels/
 *.egg-info/
 .installed.cfg
 *.egg

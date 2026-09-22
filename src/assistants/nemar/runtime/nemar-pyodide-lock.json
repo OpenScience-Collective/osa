@@ -1,0 +1,40 @@
+{
+  "packages": {
+    "eegprep-lean": {
+      "name": "eegprep-lean",
+      "version": "0.1.0.dev1",
+      "file_name": "eegprep_lean-0.1.0.dev1-py3-none-any.whl",
+      "package_type": "package",
+      "install_dir": "site",
+      "sha256": "64385eed4945896e71de5a5720c9d2d07472b8d3534c8dcf01f8a7f654210eb7",
+      "imports": [
+        "eegprep_lean"
+      ],
+      "depends": [
+        "matplotlib",
+        "numpy",
+        "zarr"
+      ]
+    },
+    "zarr": {
+      "name": "zarr",
+      "version": "3.4.0",
+      "file_name": "zarr-3.4.0-py3-none-any.whl",
+      "package_type": "package",
+      "install_dir": "site",
+      "sha256": "0a5e6c9b5c4139759e612556c7fb32c8ee4e4877a46b3556244093413eb72395",
+      "imports": [
+        "zarr"
+      ],
+      "depends": [
+        "donfig",
+        "google-crc32c",
+        "msgspec",
+        "numcodecs",
+        "numpy",
+        "packaging",
+        "typing-extensions"
+      ]
+    }
+  }
+}
