@@ -81,10 +81,13 @@ class TestThinkingPlaceholderRendering:
     def test_empty_streaming_assistant_is_skipped_while_loading(self) -> None:
         source = _widget_source()
         guard = (
-            "if (isLoading && msg.role === 'assistant' && !msg.content "
+            "if (isLoading && msg.role === 'assistant' && !msg.content && !ranCode "
             "&& msgIndex === messages.length - 1)"
         )
         assert guard in source
+        # A reply that ran code is never the hidden placeholder: the record of the
+        # run is visible while the rest of the reply is still coming.
+        assert "const ranCode = Array.isArray(msg.executions)" in source
         assert "loading bubble below is the assistant" in source
 
     def test_empty_completed_stream_is_removed(self) -> None:

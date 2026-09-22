@@ -4,7 +4,7 @@
  * These tests verify the streaming response handling, SSE parsing,
  * error handling, and timeout behavior.
  *
- * Run with: node frontend/test-streaming.js
+ * Run with: bun frontend/test-streaming.js
  */
 
 // Test utilities

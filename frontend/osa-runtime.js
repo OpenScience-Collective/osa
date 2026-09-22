@@ -445,10 +445,11 @@ export class PyodideRuntime {
       return this._bootPromise;
     }
     if (this.state === RUNTIME_STATE.TERMINATED) {
-      // A terminated runtime is deliberately not self-healing. Cancellation
-      // terminates, and a silent reboot here would turn "stop" into "stop, then
-      // quietly start again", which is the opposite of what the person asked for.
-      // Call reboot() to explicitly start a new one.
+      // A terminated runtime is deliberately not self-healing. terminate() is
+      // "stop the runtime", and a silent reboot here would turn that into "stop,
+      // then quietly start again", the opposite of what was asked. Call reboot()
+      // to explicitly start a new one. Stopping one RUN is cancel(), which does
+      // recycle, because the runtime itself was never asked to go.
       return Promise.reject(new Error('runtime is terminated; call reboot() to start a new one'));
     }
 
@@ -719,13 +720,20 @@ export class PyodideRuntime {
             Date.now() - started
           )
         );
-        // Recycled rather than terminated: the person asked for THIS run to stop,
-        // not for the runtime to be gone, and the next execution boots a fresh
-        // worker. terminate() stays reserved for explicit cancellation, which
-        // does not self-heal.
+        // Recycled rather than terminated: this RUN is over, not the runtime, and
+        // the next execution boots a fresh worker. cancel() does the same for a
+        // run the person stops. terminate() stays reserved for stopping the
+        // runtime itself, which does not self-heal.
         this._recycle();
       }, deadlineMs);
 
+      // A call waiting on the boot and a call running are never the same
+      // call; if they ever were, cancel() would stop the wrong one.
+      if (this._starting.has(callId)) {
+        clearTimeout(timer);
+        reject(new Error(`call_id ${callId} is both starting and running`));
+        return;
+      }
       this._pending.set(callId, { resolve, reject, timer, started });
       try {
         this._worker.postMessage({ type: 'execute', call_id: callId, code });
@@ -775,6 +783,10 @@ export class PyodideRuntime {
    * terminating is the only way to stop Python here (see execute), and the next
    * execution boots a fresh one. A call still waiting on the boot never starts,
    * and the boot carries on, since the person stopped a run and not the runtime.
+   *
+   * Unlike terminate(), this self-heals: terminate() stops the runtime and
+   * refuses to boot again until reboot(), while this stops one call and leaves
+   * the runtime able to serve the next.
    *
    * @param {string} callId
    * @returns {boolean} Whether there was anything to cancel.

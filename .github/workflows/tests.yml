@@ -133,6 +133,9 @@ jobs:
       - name: Run runtime bundle tests, as built
         run: bun frontend/test-runtime-bundle.js
 
+      - name: Run widget browser-execution tests on a real DOM
+        run: bun frontend/test-widget-tools.js
+
       - name: Check widget syntax
         run: node --check frontend/osa-chat-widget.js
 

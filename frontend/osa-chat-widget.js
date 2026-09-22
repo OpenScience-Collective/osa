@@ -152,11 +152,17 @@
   let offeredModels = null; // Live offered_models list from the community config API; null until loaded
   let sessionId = null; // Server-side session ID for multi-turn conversations
   let communityConfigReady = null; // Promise for the community config fetch, once started
-  // Browser code execution (#431). Set only for a community that configures it,
-  // and only once the runtime bundle has loaded and passed its integrity check.
+  // Browser code execution (#431). browserToolsReady is assigned, to a pending
+  // promise, as soon as the config says the community runs code; it resolves to
+  // the controller once the runtime bundle has loaded and passed its integrity
+  // check, or to null if either fails. The rest are set when it resolves.
   let browserToolsReady = null; // Promise resolving to the controller, or null
   let browserTools = null; // OSARuntime.ClientToolController
   let browserRuntime = null; // The OSARuntime.PyodideRuntime it drives
+  let runtimeApi = null; // The OSARuntime global itself, captured when it loaded
+  let browserToolsSetup = null; // {tools, python} from the config, kept for a retry
+  let browserToolsUnavailable = null; // {reason, detail} while code execution is off
+  let browserToolsRetried = false;
   // What the tool panel shows while a tool_request is answered:
   // {phase: 'asking', prompt, decide} while the person is asked,
   // {phase: 'running', prompt, progress} while code runs, else null.
@@ -202,7 +208,7 @@
   // browser before any of it runs. Written by scripts/build-runtime-bundle.js;
   // CI rebuilds and fails if the committed bundle or this line is stale.
   // BEGIN GENERATED: runtime bundle integrity
-  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-eE/G8VeW4pt2dpSMkMEsYgW9s9OBhCANczz6BzCJnjcHkO7ghjlztuzizC8hvhUW';
+  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-27/zS++1CaGs9UJ/XmF7//yKM/f9Y8VOjuD4TlyCGs5G0vdA3eNHTVv8GjQvvNSk';
   // END GENERATED: runtime bundle integrity
 
   // Icons (SVG)
@@ -1712,18 +1718,17 @@
   // strings, bounded, and never images (see executionRecord).
   function normalizePersistedExecutions(executions) {
     if (!Array.isArray(executions)) return [];
-    const text = (value, limit) => (typeof value === 'string' ? value.slice(0, limit) : '');
     return executions
       .filter((run) => run && typeof run === 'object' && !Array.isArray(run))
       .slice(0, MAX_BROWSER_RUNS_PER_REPLY)
       .map((run) => ({
-        callId: text(run.callId, 256),
-        tool: text(run.tool, 64),
-        description: text(run.description, 500),
-        code: text(run.code, 20000),
-        status: text(run.status, 32),
-        stdout: text(run.stdout, 4000),
-        stderr: text(run.stderr, 4000),
+        callId: clipField(run.callId, 'callId'),
+        tool: clipField(run.tool, 'tool'),
+        description: clipField(run.description, 'description'),
+        code: clipField(run.code, 'code'),
+        status: clipField(run.status, 'status'),
+        stdout: clipField(run.stdout, 'stdout'),
+        stderr: clipField(run.stderr, 'stderr'),
         images: [],
       }));
   }
@@ -2191,10 +2196,35 @@
   // once the runtime has loaded, so a page that blocks it never receives a
   // request to run code it cannot answer.
 
-  // How many times one reply may run code before the widget stops answering.
-  // A real analysis is a handful of runs (load, compute, plot, fix an error);
-  // a model looping on a failing call is not, and each run is a request.
+  // Mirrors MAX_BROWSER_RUNS_PER_REPLY in src/core/limits.py, which the server
+  // enforces: the run with no budget left refuses a further browser call in
+  // writing. The widget stops at the same number so an older server cannot
+  // make it loop either. test-widget-tools.js checks the two agree.
   const MAX_BROWSER_RUNS_PER_REPLY = 10;
+
+  // How much of each field of a run survives on the reply and in storage.
+  // executionRecord writes with these and normalizePersistedExecutions reads
+  // back with them; if they disagreed, a reload would quietly change what a
+  // run shows.
+  const EXECUTION_FIELD_LIMITS = Object.freeze({
+    callId: 256,
+    tool: 64,
+    description: 500,
+    code: 20000,
+    status: 32,
+    stdout: 4000,
+    stderr: 4000,
+  });
+
+  // The heading of a run's record, by result status.
+  const EXECUTION_LABELS = Object.freeze({
+    ok: 'Ran Python',
+    error: 'Python raised an error',
+    denied: 'Not run',
+    timeout: 'Stopped: took too long',
+    cancelled: 'Stopped',
+    oom: 'Stopped: out of memory',
+  });
 
   // Where the runtime bundle lives: next to this script. The pop-out window
   // runs this script inline, so it is handed the URL through its config.
@@ -2209,10 +2239,22 @@
     }
   }
 
+  // Code execution is off for this page. Logged in one fixed shape, so a
+  // systemic cause (a stale hash after a deploy, an embedder's policy) is
+  // recognizable in any report of it, and kept for getBrowserRuntimeStatus.
+  function markBrowserToolsUnavailable(reason, detail) {
+    browserToolsUnavailable = { reason, detail: detail || '' };
+    console.warn(
+      `[OSA] browser-runtime-unavailable reason=${reason}${detail ? `: ${detail}` : ''}. ` +
+      'Code execution is off; the assistant still answers.'
+    );
+  }
+
+  // Resolves with the OSARuntime global the bundle defines, or null.
   function loadRuntimeBundle() {
     const url = runtimeBundleUrl();
     if (!url) {
-      console.warn('[OSA] The widget script URL is unknown, so the browser runtime cannot be located. Code execution is off.');
+      markBrowserToolsUnavailable('no-script-url', 'the widget cannot tell where it was loaded from');
       return Promise.resolve(null);
     }
     return new Promise((resolve) => {
@@ -2222,12 +2264,17 @@
       script.integrity = RUNTIME_BUNDLE_INTEGRITY;
       script.crossOrigin = 'anonymous';
       script.async = true;
-      script.onload = () => resolve(window.OSARuntime || null);
+      script.onload = () => {
+        const api = window.OSARuntime || null;
+        // Loaded and verified, yet it defined nothing: it threw while running,
+        // or something on the page removed the global.
+        if (!api) markBrowserToolsUnavailable('bad-bundle', 'it loaded but did not define the runtime');
+        resolve(api);
+      };
       script.onerror = () => {
-        console.warn(
-          '[OSA] The browser runtime did not load: the page blocked it, it was unreachable, ' +
-          'or it did not match its integrity hash. Code execution is off; the assistant still answers.'
-        );
+        // The browser does not say which: blocked by the page's policy,
+        // unreachable, or not matching its integrity hash.
+        markBrowserToolsUnavailable('load-failed', url);
         resolve(null);
       };
       document.head.appendChild(script);
@@ -2237,26 +2284,51 @@
   function setUpBrowserTools(data) {
     const tools = data && Array.isArray(data.client_tools) ? data.client_tools : [];
     const python = data && data.runtime && data.runtime.python;
-    if (tools.length === 0 || !python || browserToolsReady) return;
+    if (tools.length === 0 || !python || browserToolsSetup) return;
+    browserToolsSetup = { tools, python };
+    startBrowserTools();
+  }
+
+  function startBrowserTools() {
+    const { tools, python } = browserToolsSetup;
+    browserToolsUnavailable = null;
     browserToolsReady = loadRuntimeBundle().then((api) => {
-      if (!api || typeof api.ClientToolController !== 'function' || typeof api.PyodideRuntime !== 'function') {
+      if (!api) return null;
+      if (typeof api.ClientToolController !== 'function' || typeof api.PyodideRuntime !== 'function'
+        || !api.GATE_DECISION) {
+        markBrowserToolsUnavailable('bad-bundle', 'the runtime it defined is incomplete');
         return null;
       }
       try {
-        browserRuntime = new api.PyodideRuntime({
-          runtime: python,
-          onProgress: onRuntimeProgress,
-        });
+        browserRuntime = new api.PyodideRuntime({ runtime: python, onProgress: onRuntimeProgress });
         browserTools = new api.ClientToolController({ runtime: browserRuntime, tools, gate: askToRunCode });
+        runtimeApi = api;
       } catch (err) {
-        console.error('[OSA] Could not set up the browser runtime:', err);
         browserRuntime = null;
         browserTools = null;
+        markBrowserToolsUnavailable('setup-failed', err && err.message);
         return null;
       }
       if (isOpen) preloadRuntime();
       return browserTools;
     });
+  }
+
+  // A failed load may have been a network blip rather than a block or a bad
+  // hash, which the browser does not tell apart, so it is retried once, the
+  // next time the chat is opened. Only once: a block or a bad hash fails the
+  // same way every time.
+  function retryBrowserToolsOnce() {
+    if (!browserToolsUnavailable || browserToolsUnavailable.reason !== 'load-failed' || browserToolsRetried) return;
+    browserToolsRetried = true;
+    startBrowserTools();
+  }
+
+  function browserRuntimeStatus() {
+    if (!browserToolsSetup) return { state: 'off', reason: null };
+    if (browserToolsUnavailable) return { state: 'unavailable', ...browserToolsUnavailable };
+    if (!browserTools) return { state: 'loading', reason: null };
+    return { state: 'ready', reason: null };
   }
 
   // Boot on open rather than on the first run, for a community that asks.
@@ -2272,12 +2344,61 @@
   // The client tools this page can run, once known. Waits briefly for the
   // config and the runtime, so a question typed the moment the page opens is
   // not sent without them; after that it resolves at once.
-  async function declaredClientTools() {
-    const deadline = new Promise((resolve) => setTimeout(() => resolve(null), 3000));
-    if (communityConfigReady) await Promise.race([communityConfigReady, deadline]);
-    if (!browserToolsReady) return [];
-    const tools = await Promise.race([browserToolsReady, deadline]);
-    return tools ? tools.declared : [];
+  function declaredClientTools() {
+    return declaredClientToolsWithin(communityConfigReady, () => browserToolsReady, 3000);
+  }
+
+  // ONE deadline covers both waits, deliberately: it bounds how long a first
+  // message can be held, and a deadline per wait would double that. The tools
+  // are read through a getter because they only exist once the config is in.
+  async function declaredClientToolsWithin(configReady, toolsReady, ms) {
+    let timer = null;
+    const deadline = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(null), ms);
+    });
+    try {
+      if (configReady) await Promise.race([configReady, deadline]);
+      const ready = toolsReady();
+      if (!ready) return [];
+      const tools = await Promise.race([ready, deadline]);
+      return tools ? tools.declared : [];
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // Re-render from outside a click handler, where no container is at hand.
+  // A render failure is logged rather than thrown: the callers are the gate
+  // and runtime progress, and neither may stop because the display failed.
+  // A gate that never resolves leaves the server's call parked with nobody to
+  // answer it and the widget frozen.
+  function renderIfMounted() {
+    const container = document.querySelector('.osa-chat-widget');
+    if (!container) return;
+    try {
+      renderMessages(container);
+    } catch (err) {
+      console.error('[OSA] Could not render the conversation:', err);
+    }
+  }
+
+  // The two shapes toolActivity takes, built only here.
+  function askingActivity(prompt, decide) {
+    return { phase: 'asking', prompt, decide };
+  }
+
+  function runningActivity(prompt) {
+    return { phase: 'running', prompt, progress: null };
+  }
+
+  // The code and description a tool_request carries, as strings. The request
+  // came from the model, so neither is assumed to be one.
+  function requestPrompt(request) {
+    const args = (request && request.args) || {};
+    return {
+      code: typeof args.code === 'string' ? args.code : '',
+      description: typeof args.description === 'string' ? args.description : '',
+    };
   }
 
   function onRuntimeProgress(event) {
@@ -2291,47 +2412,48 @@
     } else {
       return;
     }
-    const container = document.querySelector('.osa-chat-widget');
-    if (container) renderMessages(container);
+    renderIfMounted();
   }
 
-  // The gate the controller calls. Resolves with the person's decision.
+  // The gate the controller calls. Resolves with the person's decision, and
+  // always resolves: see renderIfMounted.
   function askToRunCode(prompt) {
     return new Promise((resolve) => {
-      toolActivity = {
-        phase: 'asking',
-        prompt,
-        decide: (decision, alwaysRun) => {
-          if (decision === 'run') {
+      toolActivity = askingActivity(prompt, (decision, alwaysRun) => {
+        try {
+          if (decision === runtimeApi.GATE_DECISION.RUN) {
             if (alwaysRun && browserTools) browserTools.autoRun = true;
-            toolActivity = { phase: 'running', prompt, progress: null };
+            toolActivity = runningActivity(prompt);
           } else {
             toolActivity = null;
           }
-          const container = document.querySelector('.osa-chat-widget');
-          if (container) renderMessages(container);
+          renderIfMounted();
+        } finally {
           resolve(decision);
-        },
-      };
-      const container = document.querySelector('.osa-chat-widget');
-      if (container) renderMessages(container);
+        }
+      });
+      renderIfMounted();
     });
+  }
+
+  function clipField(value, field) {
+    return typeof value === 'string' ? value.slice(0, EXECUTION_FIELD_LIMITS[field]) : '';
   }
 
   // What the reader is shown of a run, kept on the reply. The images are shown
   // now and never stored: three figures can be megabytes, and browser storage
   // for a whole conversation is a few.
   function executionRecord(request, result) {
-    const args = (request && request.args) || {};
+    const prompt = requestPrompt(request);
     return {
-      callId: String(request.call_id || ''),
-      tool: String(request.tool || ''),
-      description: typeof args.description === 'string' ? args.description.slice(0, 500) : '',
-      code: typeof args.code === 'string' ? args.code.slice(0, 20000) : '',
-      status: String(result.status || ''),
-      stdout: String(result.stdout || '').slice(0, 4000),
-      stderr: String(result.stderr || '').slice(0, 4000),
-      images: Array.isArray(result.images) ? result.images : [],
+      callId: clipField(request && request.call_id, 'callId'),
+      tool: clipField(request && request.tool, 'tool'),
+      description: clipField(prompt.description, 'description'),
+      code: clipField(prompt.code, 'code'),
+      status: clipField(result && result.status, 'status'),
+      stdout: clipField(result && result.stdout, 'stdout'),
+      stderr: clipField(result && result.stderr, 'stderr'),
+      images: result && Array.isArray(result.images) ? result.images : [],
     };
   }
 
@@ -2340,34 +2462,67 @@
     if (!browserTools) {
       // Tools are declared only once the controller exists, so the server
       // should never ask. If it does, the parked call is abandoned (and
-      // repaired) by the next message.
-      throw new Error('The assistant asked to run code, but this page has no browser runtime.');
+      // repaired) by the next message, which declares nothing.
+      throw new Error(
+        'Code execution is not available on this page, so the code could not run. ' +
+        'Send your message again and the assistant will answer without it.'
+      );
     }
-    const args = (request && request.args) || {};
-    if (request.tool !== 'get_full_output') {
-      toolActivity = {
-        phase: 'running',
-        prompt: {
-          code: typeof args.code === 'string' ? args.code : '',
-          description: typeof args.description === 'string' ? args.description : '',
-        },
-        progress: null,
-      };
-    }
-    isThinking = false;
-    renderMessages(container);
+    const runsCode = request.tool !== runtimeApi.FULL_OUTPUT_TOOL_NAME;
     let result;
     try {
+      if (runsCode) toolActivity = runningActivity(requestPrompt(request));
+      isThinking = false;
+      renderMessages(container);
       result = await browserTools.answer(request);
     } finally {
+      // Cleared however the answer ends, so the panel can never outlive it.
       toolActivity = null;
     }
     const message = messages[messageIndex];
-    if (message && request.tool !== 'get_full_output') {
+    if (message && runsCode) {
       message.executions = (message.executions || []).concat(executionRecord(request, result));
     }
     renderMessages(container);
     return result;
+  }
+
+  // Record on the reply itself that it stopped, since a reply that only ran
+  // code has no text to carry the error the banner shows for a few seconds.
+  function noteStoppedReply(messageIndex, error) {
+    const message = messages[messageIndex];
+    if (!message) return;
+    const reason = (error && error.message) || 'an error occurred';
+    message.content = `${message.content ? `${message.content}\n\n` : ''}_[The reply stopped: ${reason}]_`;
+  }
+
+  // Answer tool_requests until the reply finishes. Each run of a reply that
+  // runs code ends on one; its answer goes back on /chat/resume, whose stream
+  // continues the same message. `steps` answers, resumes and streams, and is a
+  // parameter so this loop, which owns the budget and the bookkeeping, can be
+  // tested without a network or a runtime.
+  async function continueBrowserReply(outcome, steps) {
+    let runs = 0;
+    let current = outcome;
+    while (current && current.toolRequest) {
+      const { toolRequest, messageIndex } = current;
+      runs += 1;
+      let resumed;
+      try {
+        if (runs > MAX_BROWSER_RUNS_PER_REPLY) {
+          // Left unanswered on purpose: the next message abandons the parked
+          // call, which the server repairs.
+          throw new Error(`it ran code ${MAX_BROWSER_RUNS_PER_REPLY} times, the most one reply may`);
+        }
+        const result = await steps.answer(toolRequest, messageIndex);
+        resumed = await steps.resume(toolRequest, result);
+      } catch (error) {
+        noteStoppedReply(messageIndex, error);
+        throw error;
+      }
+      // Streaming reports its own failures into the message.
+      current = await steps.stream(resumed, messageIndex);
+    }
   }
 
   // The request headers every chat call carries: content type and any BYOK key.
@@ -2435,21 +2590,25 @@
     return response;
   }
 
+  // Model-written code as HTML: highlighted once the runtime has loaded,
+  // escaped plainly before that. Either way every character is escaped.
+  function highlightOrEscape(code) {
+    return runtimeApi ? runtimeApi.highlightPython(code) : escapeHtml(code);
+  }
+
   // The panel shown while a tool_request is answered, as HTML.
-  function toolPanelHtml() {
-    if (!toolActivity) return '';
-    const prompt = toolActivity.prompt || {};
-    const highlight = window.OSARuntime && window.OSARuntime.highlightPython;
-    const codeHtml = highlight ? highlight(prompt.code || '') : escapeHtml(prompt.code || '');
+  function toolPanelHtml(activity) {
+    if (!activity) return '';
+    const prompt = activity.prompt || {};
     const description = prompt.description
       ? `<div class="osa-tool-panel-description">${escapeHtml(prompt.description)}</div>`
       : '';
-    if (toolActivity.phase === 'asking') {
+    if (activity.phase === 'asking') {
       return `
         <div class="osa-tool-panel" role="group" aria-label="Run code in your browser?">
           <div class="osa-tool-panel-title">Run this Python in your browser?</div>
           ${description}
-          <pre class="osa-tool-code"><code>${codeHtml}</code></pre>
+          <pre class="osa-tool-code"><code>${highlightOrEscape(prompt.code || '')}</code></pre>
           <div class="osa-tool-actions">
             <button type="button" class="osa-tool-run">Run</button>
             <button type="button" class="osa-tool-deny">Don't run</button>
@@ -2457,7 +2616,7 @@
           </div>
         </div>`;
     }
-    const status = toolActivity.progress || 'Running Python in your browser...';
+    const status = activity.progress || 'Running Python in your browser...';
     return `
       <div class="osa-tool-panel" role="status">
         <div class="osa-tool-panel-title">Running Python</div>
@@ -2469,30 +2628,32 @@
       </div>`;
   }
 
-  // What ran for a reply, as HTML: one collapsible entry per run.
+  // Only a PNG whose data is plain base64 reaches an <img src>: the data is
+  // interpolated into an attribute, so anything else could close it.
+  function isShowableImage(image) {
+    return !!image && image.mime === 'image/png' && typeof image.data_base64 === 'string'
+      && /^[A-Za-z0-9+/]+=*$/.test(image.data_base64);
+  }
+
+  // What ran for a reply, as HTML: one collapsible entry per run. Every field
+  // is escaped: the description is the model's, the output is whatever the
+  // code printed, and a stored record is whatever storage holds.
   function executionsHtml(executions) {
     if (!Array.isArray(executions) || executions.length === 0) return '';
-    const highlight = window.OSARuntime && window.OSARuntime.highlightPython;
-    const label = {
-      ok: 'Ran Python',
-      error: 'Python raised an error',
-      denied: 'Not run',
-      timeout: 'Stopped: took too long',
-      cancelled: 'Stopped',
-      oom: 'Stopped: out of memory',
-    };
     return executions.map((run) => {
-      const title = `${label[run.status] || 'Python'}${run.description ? ': ' + run.description : ''}`;
+      const label = Object.prototype.hasOwnProperty.call(EXECUTION_LABELS, run.status)
+        ? EXECUTION_LABELS[run.status]
+        : 'Python';
+      const title = `${label}${run.description ? `: ${run.description}` : ''}`;
       const code = run.code
-        ? `<pre class="osa-tool-code"><code>${highlight ? highlight(run.code) : escapeHtml(run.code)}</code></pre>`
+        ? `<pre class="osa-tool-code"><code>${highlightOrEscape(run.code)}</code></pre>`
         : '';
       const stdout = run.stdout ? `<pre class="osa-execution-output">${escapeHtml(run.stdout)}</pre>` : '';
       const stderr = run.stderr && run.status !== 'ok'
         ? `<pre class="osa-execution-output">${escapeHtml(run.stderr)}</pre>`
         : '';
       const images = (Array.isArray(run.images) ? run.images : [])
-        .filter((image) => image && image.mime === 'image/png' && typeof image.data_base64 === 'string'
-          && /^[A-Za-z0-9+/]+=*$/.test(image.data_base64))
+        .filter(isShowableImage)
         .map((image) => `<img alt="Figure produced by the code" src="data:image/png;base64,${image.data_base64}">`)
         .join('');
       // Figures open by default: they are the point of most runs.
@@ -3233,8 +3394,10 @@
       // response can update it in place. While the model is thinking, that
       // state must stay invisible: the loading bubble below is the assistant
       // response placeholder until the first answer text arrives.
-      if (isLoading && msg.role === 'assistant' && !msg.content && !(msg.executions && msg.executions.length)
-        && msgIndex === messages.length - 1) {
+      // A reply that has run code is shown even before it has text: the record
+      // of what ran is already part of it.
+      const ranCode = Array.isArray(msg.executions) && msg.executions.length > 0;
+      if (isLoading && msg.role === 'assistant' && !msg.content && !ranCode && msgIndex === messages.length - 1) {
         return;
       }
 
@@ -3385,7 +3548,7 @@
       // In place of the loading dots: nothing is loading, the reply is waiting
       // on the person or on code running in this page.
       const panelEl = document.createElement('div');
-      panelEl.innerHTML = toolPanelHtml();
+      panelEl.innerHTML = toolPanelHtml(toolActivity);
       messagesEl.appendChild(panelEl);
       const decide = (decision) => {
         const activity = toolActivity;
@@ -3393,8 +3556,8 @@
         const always = panelEl.querySelector('.osa-tool-autorun-input');
         activity.decide(decision, !!(always && always.checked));
       };
-      panelEl.querySelector('.osa-tool-run')?.addEventListener('click', () => decide('run'));
-      panelEl.querySelector('.osa-tool-deny')?.addEventListener('click', () => decide('deny'));
+      panelEl.querySelector('.osa-tool-run')?.addEventListener('click', () => decide(runtimeApi.GATE_DECISION.RUN));
+      panelEl.querySelector('.osa-tool-deny')?.addEventListener('click', () => decide(runtimeApi.GATE_DECISION.DENY));
       panelEl.querySelector('.osa-tool-stop')?.addEventListener('click', (e) => {
         e.currentTarget.disabled = true;
         if (browserTools) browserTools.cancel();
@@ -3499,6 +3662,11 @@
     return finalContent;
   }
 
+  // One reply's text across its runs: what earlier runs wrote, then this one's.
+  function composeReply(earlier, text) {
+    return earlier && text ? `${earlier}\n\n${text}` : earlier || text;
+  }
+
   // Handle streaming response from API
   // SSE Event formats:
   //   data: {"event": "content", "content": "text chunk"}
@@ -3539,7 +3707,7 @@
     }
     // What earlier runs of this reply already wrote. This run's text follows it.
     const earlier = continuation ? (messages[messageIndex].content || '') : '';
-    const compose = (text) => (earlier && text ? `${earlier}\n\n${text}` : earlier || text);
+    const compose = (text) => composeReply(earlier, text);
 
     try {
       while (true) {
@@ -3705,8 +3873,9 @@
       if (!receivedDoneEvent) {
         console.error('[OSA] Stream ended without done event');
 
-        if (compose(accumulatedContent)) {
-          messages[messageIndex].content = compose(accumulatedContent) +
+        const composed = compose(accumulatedContent);
+        if (composed) {
+          messages[messageIndex].content = composed +
             '\n\n_[Response may be incomplete - connection ended unexpectedly]_';
           renderMessages(container);
           try {
@@ -3825,6 +3994,10 @@
         body.stream = true;
       }
 
+      if (!isValidCommunityId(CONFIG.communityId)) {
+        throw new Error('Invalid community configuration. Please reload the page.');
+      }
+
       // The client tools this page can run. Only a streaming reply can carry a
       // tool_request, so they are declared only for one.
       if (CONFIG.streamingEnabled) {
@@ -3832,10 +4005,6 @@
         if (declared.length > 0) {
           body.client_tools = declared;
         }
-      }
-
-      if (!isValidCommunityId(CONFIG.communityId)) {
-        throw new Error('Invalid community configuration. Please reload the page.');
       }
 
       // BYOK keys ride on the header matching their provider (inferred from the
@@ -3862,23 +4031,15 @@
       if (CONFIG.streamingEnabled && contentType.includes('text/event-stream')) {
         // Handle streaming response
         assistantMessageCreated = true; // handleStreamingResponse creates assistant message
-        let outcome = await handleStreamingResponse(response, container);
-        // A reply that runs code in this page is several runs. Each ends on a
-        // tool_request; its answer goes back on /chat/resume, whose stream
-        // continues the same message. Each run is a new request, so the 2
-        // minute timeout above bounds one run, not the whole reply.
-        let runs = 0;
-        while (outcome && outcome.toolRequest) {
-          runs += 1;
-          if (runs > MAX_BROWSER_RUNS_PER_REPLY) {
-            // Left unanswered on purpose: the next message abandons the
-            // parked call, which the server repairs.
-            throw new Error(`Stopped after ${MAX_BROWSER_RUNS_PER_REPLY} code runs in one reply. Ask again to continue.`);
-          }
-          const result = await answerToolRequest(container, outcome.toolRequest, outcome.messageIndex);
-          const resumed = await postResume(outcome.toolRequest, result);
-          outcome = await handleStreamingResponse(resumed, container, { messageIndex: outcome.messageIndex });
-        }
+        const outcome = await handleStreamingResponse(response, container);
+        // A reply that runs code in this page is several runs. Each run is a
+        // new request, so the 2 minute timeout above bounds one run, not the
+        // whole reply.
+        await continueBrowserReply(outcome, {
+          answer: (request, index) => answerToolRequest(container, request, index),
+          resume: postResume,
+          stream: (resumed, index) => handleStreamingResponse(resumed, container, { messageIndex: index }),
+        });
       } else {
         // Non-streaming response (either streaming not enabled, or fallback)
         if (CONFIG.streamingEnabled) {
@@ -4041,6 +4202,7 @@
       if (tooltip) tooltip.classList.remove('visible');
       // Surface any notice queued by an init-time failure (see loadUserSettings/loadHistory).
       flushPendingNotice(container);
+      retryBrowserToolsOnce();
       preloadRuntime();
     } else {
       // Commit any open thumbs-down comment box on close.
@@ -4390,6 +4552,12 @@
     getConfig: function() {
       return { ...CONFIG };
     },
+    // Whether this page can run the assistant's code, and if not, why:
+    // {state: 'off' | 'loading' | 'ready' | 'unavailable', reason, detail?}.
+    // For an embedder checking their page's policy, and for support.
+    getBrowserRuntimeStatus: function() {
+      return browserRuntimeStatus();
+    },
     // Manually initialize the widget (use with data-no-auto-init on the script tag)
     init: function() {
       if (!initialized) {
@@ -4404,6 +4572,27 @@
     window.OSAChatWidget.__applyDoneEvent = applyDoneEvent;
     window.OSAChatWidget.__migrateLegacyCitationMarkers = migrateLegacyCitationMarkers;
     window.OSAChatWidget.__isSameResponseMessage = isSameResponseMessage;
+    window.OSAChatWidget.__browser = {
+      MAX_BROWSER_RUNS_PER_REPLY,
+      EXECUTION_FIELD_LIMITS,
+      answerToolRequest,
+      composeReply,
+      continueBrowserReply,
+      declaredClientToolsWithin,
+      executionRecord,
+      executionsHtml,
+      handleStreamingResponse,
+      loadRuntimeBundle,
+      normalizePersistedExecutions,
+      runtimeBundleUrl,
+      toolPanelHtml,
+      declaredClientTools,
+      setUpBrowserTools,
+      getBrowserTools: () => browserTools,
+      getToolActivity: () => toolActivity,
+      getMessages: () => messages,
+      setMessages: (list) => { messages = list; },
+    };
   }
 
   // Auto-init unless the script tag has data-no-auto-init attribute

@@ -1,10 +1,11 @@
 /**
- * Python syntax highlighting for the permission gate (epic #429, phase #431).
+ * Python syntax highlighting for model-written code shown to the person: in the
+ * permission gate, and in the record of each run on a reply (epic #429, phase
+ * #431). It is the one path that code takes into the page.
  *
  * WHY THIS EXISTS AND IS THIS SMALL
  *
- * The gate shows the person the code the model wants to run, and the code is
- * model-written, so it is untrusted text that ends up in innerHTML. A
+ * The code is model-written, so it is untrusted text that ends up in innerHTML. A
  * highlighting library would be a second dependency to pin and review for a
  * job whose safety property is one line: every character of the code is
  * escaped, and the only markup is ours. So the code is split into tokens FIRST,

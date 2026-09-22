@@ -4,6 +4,7 @@
   "description": "Development-only JavaScript tooling. Nothing here ships: frontend/ is deployed as-is by `wrangler pages deploy frontend`, and this file sits outside it on purpose. packageManager pins the Bun that builds frontend/osa-runtime.bundle.js, since a different Bun can minify differently.",
   "packageManager": "bun@1.4.2",
   "devDependencies": {
+    "happy-dom": "20.14.5",
     "pyodide": "0.28.3"
   }
 }

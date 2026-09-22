@@ -15,7 +15,10 @@
 
 import { toClientToolResult } from './osa-runtime.js';
 
-/** Bound by the server beside any python tool; see src/core/config/community.py. */
+/**
+ * Bound by the server beside any python tool the caller declares
+ * (src/tools/client_tools.py); the name is defined in src/core/config/community.py.
+ */
 export const FULL_OUTPUT_TOOL_NAME = 'get_full_output';
 
 /** The client tool runtimes this bundle can execute. */
@@ -206,6 +209,11 @@ export class ClientToolController {
   /** Ask the person, and let cancel() answer for them. */
   #ask(current, prompt) {
     return new Promise((resolve) => {
+      // Stopped before there was anything to ask: the person is not asked.
+      if (current.cancelled) {
+        resolve({ value: GATE_DECISION.DENY });
+        return;
+      }
       current.stop = () => resolve({ value: GATE_DECISION.DENY });
       let asking;
       try {
