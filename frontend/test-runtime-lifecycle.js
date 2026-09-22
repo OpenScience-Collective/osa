@@ -21,6 +21,7 @@ import {
   PyodideRuntime,
   RUNTIME_STATE,
   buildWorkerSource,
+  resolveLockPackages,
   toClientToolResult,
 } from './osa-runtime.js';
 import { resolveLimits, SERVER_LIMITS } from './osa-output.js';
@@ -107,6 +108,54 @@ console.log('\nbuildWorkerSource bakes the config in');
   }
   assert(parseError === null,
     `the assembled worker source is parseable JavaScript${parseError ? ': ' + parseError.message : ''}`);
+}
+
+console.log('\na lock overlay\'s wheels resolve on the API, and only they are opened at boot');
+{
+  const BASE = 'https://api.example/osa/nemar/runtime/';
+  const entry = {
+    name: 'zarr', version: '3.4.0', file_name: 'zarr-3.4.0-py3-none-any.whl', package_type: 'package',
+    install_dir: 'site', sha256: 'a'.repeat(64), imports: ['zarr'], depends: ['numpy'],
+  };
+  const lock = { packages: { zarr: entry }, baseUrl: BASE };
+
+  assertEqual(JSON.stringify(resolveLockPackages(null)), '{}', 'no lock resolves to no entries');
+  const resolved = resolveLockPackages(lock);
+  assertEqual(resolved.zarr.file_name, `${BASE}zarr-3.4.0-py3-none-any.whl`, 'a bare name becomes its URL on the API');
+  assertEqual(resolved.zarr.sha256, entry.sha256, 'and the rest of the entry, the hash included, is kept as sent');
+  assertEqual(entry.file_name, 'zarr-3.4.0-py3-none-any.whl', 'without changing the entry it was given');
+
+  for (const name of ['../zarr-3.4.0-py3-none-any.whl', 'https://evil.example/zarr.whl', 'zarr.tar.gz', 7]) {
+    let threw = null;
+    try {
+      resolveLockPackages({ packages: { zarr: { ...entry, file_name: name } }, baseUrl: BASE });
+    } catch (err) {
+      threw = err;
+    }
+    assert(threw instanceof TypeError, `a file name that is not a bare wheel name is refused: ${JSON.stringify(name)}`);
+  }
+  let noSlash = null;
+  try {
+    resolveLockPackages({ packages: lock.packages, baseUrl: BASE.slice(0, -1) });
+  } catch (err) {
+    noSlash = err;
+  }
+  assert(noSlash instanceof TypeError, 'a wheel base without its trailing slash is refused, since it would drop a segment');
+
+  const src = buildWorkerSource({ ...RUNTIME, prelude: 'import osa' }, lock);
+  const allow = JSON.parse((src.match(/const __egress = \{ allow: (\[.*?\]), sealed/) || [])[1] || 'null');
+  assert(Array.isArray(allow) && allow.includes(`${BASE}zarr-3.4.0-py3-none-any.whl`), 'the wheel is allowed at boot');
+  assert(Array.isArray(allow) && !allow.includes(BASE) && !allow.some((p) => p === 'https://api.example/'),
+    'by its exact URL: the rest of the API host stays closed to the boot');
+  assert(src.includes('"prelude":"import osa"'), 'and the prelude is baked in with the rest of the config');
+
+  let malformed = null;
+  try {
+    new PyodideRuntime({ runtime: RUNTIME, lock: { packages: { zarr: { ...entry, file_name: 'a/b.whl' } }, baseUrl: BASE } });
+  } catch (err) {
+    malformed = err;
+  }
+  assert(malformed instanceof TypeError, 'a malformed lock fails construction, where the widget reports it, not the boot');
 }
 
 console.log('\nthe worker template does not consume its own escape sequences');

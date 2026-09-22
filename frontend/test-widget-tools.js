@@ -415,6 +415,46 @@ console.log('\nthe real bundle, loaded into the page, answers through the widget
   assertEqual(api.getToolActivity(), null, 'and the panel is cleared');
 }
 
+console.log('\na community\'s lock overlay reaches the runtime, with its wheels served by the API that sent it');
+{
+  const { window, api } = loadWidget({ bundleLoads: true });
+  // eslint-disable-next-line no-new-func
+  new Function(readFileSync(new URL('./osa-runtime.bundle.js', import.meta.url), 'utf8'))();
+  window.OSARuntime = globalThis.OSARuntime;
+  const packages = {
+    zarr: {
+      name: 'zarr', version: '3.4.0', file_name: 'zarr-3.4.0-py3-none-any.whl', package_type: 'package',
+      install_dir: 'site', sha256: 'a'.repeat(64), imports: ['zarr'], depends: ['numpy'],
+    },
+  };
+  api.setUpBrowserTools({
+    client_tools: [{ name: 'execute_code', runtime: 'python', requires_permission: true }],
+    runtime: { python: { pyodide_version: '0.29.5', preload: ['zarr'], fetch_allow: [], limits: {} } },
+    runtime_lock: { packages },
+  });
+  await api.declaredClientTools();
+  const runtime = api.getBrowserRuntime();
+  const config = api.getConfig();
+  assertEqual(runtime && runtime.lock && runtime.lock.baseUrl, `${config.apiEndpoint}/${config.communityId}/runtime/`,
+    'the wheels are fetched from this community\'s runtime route on the API');
+  assertEqual(runtime && runtime.lock && runtime.lock.packages, packages, 'and the entries arrive as the server sent them');
+}
+
+console.log('\nwithout a lock overlay, the runtime gets none');
+{
+  const { window, api } = loadWidget({ bundleLoads: true });
+  // eslint-disable-next-line no-new-func
+  new Function(readFileSync(new URL('./osa-runtime.bundle.js', import.meta.url), 'utf8'))();
+  window.OSARuntime = globalThis.OSARuntime;
+  api.setUpBrowserTools({
+    client_tools: [{ name: 'execute_code', runtime: 'python', requires_permission: true }],
+    runtime: { python: { pyodide_version: '0.29.5', preload: [], fetch_allow: [], limits: {} } },
+    runtime_lock: null,
+  });
+  await api.declaredClientTools();
+  assertEqual(api.getBrowserRuntime() && api.getBrowserRuntime().lock, null, 'lock is null, and the stock lock is used as it is');
+}
+
 console.log('\na bundle that loads but defines nothing is reported, not ignored');
 {
   const { api, widget } = loadWidget({ bundleLoads: true });

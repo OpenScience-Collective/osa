@@ -58,6 +58,36 @@ export const BOOT_FAILURE = Object.freeze({
   RUNTIME_ERROR: 'runtime_error',
 });
 
+/** A wheel file name as the server's lock overlay may list one: bare, no path. */
+const WHEEL_FILE_NAME = /^[A-Za-z0-9_.+-]+\.whl$/;
+
+/**
+ * The community's lock entries, each wheel's file name made the URL it is served at.
+ *
+ * The server sends bare names and serves the wheels itself, so the host that
+ * sent the hashes is the host the bytes come from. A name that is not bare is
+ * refused rather than resolved, since resolving it could point outside that host.
+ *
+ * @param {{packages?: Object<string, object>, baseUrl?: string}|null} lock
+ *   `runtime_lock` from /config, and where its wheels are served, ending in `/`.
+ * @returns {Object<string, object>}
+ */
+export function resolveLockPackages(lock) {
+  if (!lock || !lock.packages) return {};
+  if (typeof lock.baseUrl !== 'string' || !lock.baseUrl.endsWith('/')) {
+    throw new TypeError(`the lock's wheel base must be a URL ending in "/", got ${lock.baseUrl}`);
+  }
+  const resolved = {};
+  for (const [key, entry] of Object.entries(lock.packages)) {
+    const name = entry && entry.file_name;
+    if (typeof name !== 'string' || !WHEEL_FILE_NAME.test(name)) {
+      throw new TypeError(`lock entry ${key} does not name a wheel: ${name}`);
+    }
+    resolved[key] = { ...entry, file_name: new URL(name, lock.baseUrl).href };
+  }
+  return resolved;
+}
+
 /**
  * The worker's configuration, as plain data: what createWorkerRuntime receives.
  *
@@ -65,15 +95,18 @@ export const BOOT_FAILURE = Object.freeze({
  * the core without parsing it back out of generated source.
  *
  * @param {object} runtime - A community's `runtime.python` config.
+ * @param {{packages?: Object<string, object>, baseUrl?: string}|null} [lock] - See resolveLockPackages.
  * @returns {object}
  */
-export function buildWorkerConfig(runtime) {
+export function buildWorkerConfig(runtime, lock = null) {
   return {
     indexURL: `https://cdn.jsdelivr.net/pyodide/v${runtime.pyodide_version}/full/`,
     preload: runtime.preload || [],
     allowInstall: runtime.allow_install || [],
     indexUrls: runtime.index_urls || [],
     fetchAllow: runtime.fetch_allow || [],
+    lockPackages: resolveLockPackages(lock),
+    prelude: typeof runtime.prelude === 'string' ? runtime.prelude : '',
     python: {
       helpers: buildHelpersSource(),
       outputCapture: buildOutputCaptureSource(resolveLimits(runtime.limits)),
@@ -91,25 +124,28 @@ export function buildWorkerConfig(runtime) {
  * could drift from the pinned one.
  *
  * @param {object} runtime - A community's `runtime.python` config.
+ * @param {{packages?: Object<string, object>, baseUrl?: string}|null} [lock] - See resolveLockPackages.
  * @returns {string} Worker source.
  */
-export function buildWorkerSource(runtime) {
+export function buildWorkerSource(runtime, lock = null) {
   // Everything the worker needs, decided here and baked in as data. A worker
   // that has to ask for its own configuration has a window where it is alive
   // but unconfigured, and that is exactly where a half-initialized runtime
   // would be reachable.
-  const config = buildWorkerConfig(runtime);
+  const config = buildWorkerConfig(runtime, lock);
 
   // The egress guard is installed as the worker's FIRST statement, before the
   // loader is even fetched, because importScripts is one of the transports it
   // shims and the boot itself goes through it. A guard installed after boot
   // would leave the whole download window unguarded.
   //
-  // Its boot allowlist is the Pyodide CDN plus any configured wheel index, and
-  // NOT the community's fetch_allow: those are the origins the runtime needs to
-  // assemble itself, a strictly different set from the origins executed code
-  // may reach.
-  const guard = buildEgressGuardSource({ bootAllow: [config.indexURL].concat(config.indexUrls) });
+  // Its boot allowlist is the Pyodide CDN, any configured wheel index and each
+  // lock-overlay wheel by its exact URL, and NOT the community's fetch_allow:
+  // those are what the runtime needs to assemble itself, a strictly different
+  // set from what executed code may reach. The wheels are listed one by one so
+  // that booting does not open the whole API host.
+  const lockWheels = Object.values(config.lockPackages).map((entry) => entry.file_name);
+  const guard = buildEgressGuardSource({ bootAllow: [config.indexURL].concat(config.indexUrls, lockWheels) });
 
   // The template is only glue now. The logic is createWorkerRuntime, embedded
   // by value: an interpolated value is inserted verbatim, so escapes inside it
@@ -125,9 +161,15 @@ export function buildWorkerSource(runtime) {
     ${guard}
 
     const runtime = (${createWorkerRuntime.toString()})(${JSON.stringify(config)}, {
-      load: function (indexURL) {
+      load: function (indexURL, options) {
         importScripts(indexURL + 'pyodide.js');
-        return loadPyodide({ indexURL: indexURL, stdout: function () {}, stderr: function () {} });
+        return loadPyodide(Object.assign({ indexURL: indexURL, stdout: function () {}, stderr: function () {} }, options));
+      },
+      stockLock: function (indexURL) {
+        return fetch(indexURL + 'pyodide-lock.json').then(function (response) {
+          if (!response.ok) throw new Error('HTTP ' + response.status + " for the Pyodide distribution's lock");
+          return response.json();
+        });
       },
       seal: __seal,
       send: function (message) { self.postMessage(message); },
@@ -356,6 +398,8 @@ export class PyodideRuntime {
   /**
    * @param {object} options
    * @param {object} options.runtime - A community's `runtime.python` config.
+   * @param {{packages?: Object<string, object>, baseUrl?: string}|null} [options.lock] - The
+   *   community's lock overlay and where its wheels are served; see resolveLockPackages.
    * @param {(event: object) => void} [options.onProgress] - Boot progress events.
    * @param {(state: string, detail?: object) => void} [options.onStateChange]
    * @param {(source: string) => Worker} [options.workerFactory]
@@ -363,6 +407,7 @@ export class PyodideRuntime {
    */
   constructor({
     runtime,
+    lock = null,
     onProgress = () => {},
     onStateChange = () => {},
     workerFactory = defaultWorkerFactory,
@@ -377,7 +422,11 @@ export class PyodideRuntime {
       // and is silently ignored, with no error in either case.
       throw new TypeError(`bootTimeoutMs must be a positive finite number, got ${bootTimeoutMs}`);
     }
+    // Resolved once, here, so a malformed lock fails the setup that can report
+    // it rather than a boot that would retry it.
+    resolveLockPackages(lock);
     this.runtime = runtime;
+    this.lock = lock;
     this.onProgress = onProgress;
     this.onStateChange = onStateChange;
     this.workerFactory = workerFactory;
@@ -461,7 +510,7 @@ export class PyodideRuntime {
 
       let worker;
       try {
-        worker = this.workerFactory(buildWorkerSource(this.runtime));
+        worker = this.workerFactory(buildWorkerSource(this.runtime, this.lock));
       } catch (err) {
         this._failBoot(BOOT_FAILURE.WORKER_ERROR, `worker could not be constructed: ${err && err.message}`);
         return;

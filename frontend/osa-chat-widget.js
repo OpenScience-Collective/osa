@@ -208,7 +208,7 @@
   // browser before any of it runs. Written by scripts/build-runtime-bundle.js;
   // CI rebuilds and fails if the committed bundle or this line is stale.
   // BEGIN GENERATED: runtime bundle integrity
-  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-XIRiO0MyhwzFH3YI6FI8wAREHNI6+lTcQf0GExQcHzQAr2sW3vvAsazmNY+Gt8rK';
+  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-LHNOwZhvtMyV4CFUP54fqOymdgxIMOkBr++PCnlgUiuZfZHlcxADV1mlLl499q0I';
   // END GENERATED: runtime bundle integrity
 
   // Icons (SVG)
@@ -2292,12 +2292,17 @@
     const tools = data && Array.isArray(data.client_tools) ? data.client_tools : [];
     const python = data && data.runtime && data.runtime.python;
     if (tools.length === 0 || !python || browserToolsSetup) return;
-    browserToolsSetup = { tools, python };
+    // The wheels the community adds to Pyodide, served by the same API that sent
+    // their hashes.
+    const lock = data.runtime_lock && data.runtime_lock.packages
+      ? { packages: data.runtime_lock.packages, baseUrl: `${CONFIG.apiEndpoint}/${CONFIG.communityId}/runtime/` }
+      : null;
+    browserToolsSetup = { tools, python, lock };
     startBrowserTools();
   }
 
   function startBrowserTools() {
-    const { tools, python } = browserToolsSetup;
+    const { tools, python, lock } = browserToolsSetup;
     browserToolsUnavailable = null;
     browserToolsReady = loadRuntimeBundle().then((api) => {
       if (!api) return null;
@@ -2307,7 +2312,7 @@
         return null;
       }
       try {
-        browserRuntime = new api.PyodideRuntime({ runtime: python, onProgress: onRuntimeProgress });
+        browserRuntime = new api.PyodideRuntime({ runtime: python, lock, onProgress: onRuntimeProgress });
         browserTools = new api.ClientToolController({ runtime: browserRuntime, tools, gate: askToRunCode });
         runtimeApi = api;
       } catch (err) {
@@ -2416,6 +2421,8 @@
     } else if ((phase === 'loading_package' || phase === 'installing') && event.package) {
       const count = Number.isInteger(event.total) ? ` (${event.index + 1} of ${event.total})` : '';
       toolActivity.progress = `Loading ${event.package}${count}...`;
+    } else if (phase === 'prelude') {
+      toolActivity.progress = 'Setting up the Python environment...';
     } else {
       return;
     }
@@ -4620,6 +4627,8 @@
       declaredClientTools,
       setUpBrowserTools,
       getBrowserTools: () => browserTools,
+      getBrowserRuntime: () => browserRuntime,
+      getConfig: () => CONFIG,
       getToolActivity: () => toolActivity,
       getMessages: () => messages,
       setMessages: (list) => { messages = list; },

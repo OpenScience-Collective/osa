@@ -2,9 +2,9 @@
 //
 // Everything here used to be verifiable only in a browser, by hand. Pyodide
 // boots under Bun in well under a second from its npm package (0.29.5 in about
-// 620 ms, measured 2026-09-22), so the Python half of the runtime (the import gate, the namespace seal, the data
-// client, the execution harness and its summary) now runs in CI against the
-// interpreter that ships, not a stand-in.
+// 620 ms, measured 2026-09-22), so the Python half of the runtime (the import
+// gate, the namespace seal, the data client, the execution harness and its
+// summary) now runs in CI against the interpreter that ships, not a stand-in.
 //
 // Two things stay out of reach here and are covered elsewhere. The egress
 // guard is a worker-global shim and would replace this process's own fetch, so
@@ -16,6 +16,7 @@
 // even if it reached for a module-level name, which inside the worker is a
 // ReferenceError and nowhere else.
 import { loadPyodide } from 'pyodide';
+import stockLock from 'pyodide/pyodide-lock.json';
 import pyodidePackage from 'pyodide/package.json';
 import { buildDataClientSource, buildNamespaceSealSource } from './osa-egress.js';
 import { buildHelpersSource, buildOutputCaptureSource, resolveLimits } from './osa-output.js';
@@ -57,15 +58,25 @@ const createFromSource = new Function(`return (${createWorkerRuntime.toString()}
 /**
  * Boot a runtime exactly as the worker does, recording what it sends and seals.
  */
-async function bootRuntime({ preload = [], fetchAllow = ['http://127.0.0.1/allowed/'], limits = {} } = {}) {
+async function bootRuntime({
+  preload = [],
+  fetchAllow = ['http://127.0.0.1/allowed/'],
+  limits = {},
+  lockPackages = {},
+  prelude = '',
+} = {}) {
   const messages = [];
   const sealed = [];
   const config = {
-    indexURL: 'unused-under-npm',
+    // The interpreter comes from npm here; the index is where the core points
+    // Pyodide for the distribution's own wheels when it is handed a lock.
+    indexURL: `https://cdn.jsdelivr.net/pyodide/v${pyodidePackage.version}/full/`,
     preload,
     allowInstall: [],
     indexUrls: [],
     fetchAllow,
+    lockPackages,
+    prelude,
     python: {
       helpers: buildHelpersSource(),
       outputCapture: buildOutputCaptureSource(resolveLimits(limits)),
@@ -74,7 +85,10 @@ async function bootRuntime({ preload = [], fetchAllow = ['http://127.0.0.1/allow
     },
   };
   const runtime = createFromSource(config, {
-    load: () => loadPyodide({ packageCacheDir: PACKAGE_CACHE, stdout: () => {}, stderr: () => {} }),
+    load: (indexURL, options) =>
+      loadPyodide({ packageCacheDir: PACKAGE_CACHE, stdout: () => {}, stderr: () => {}, ...options }),
+    // The lock the installed package ships, which is the one its version serves.
+    stockLock: async () => stockLock,
     seal: (prefixes) => sealed.push({ prefixes, sentBefore: messages.length }),
     send: (message) => messages.push(message),
   });
@@ -109,6 +123,8 @@ console.log('\na malformed configuration is named, not discovered deep inside th
     allowInstall: [],
     indexUrls: [],
     fetchAllow: [],
+    lockPackages: {},
+    prelude: '',
     python: { helpers: 'a', outputCapture: 'b', dataClient: 'c', namespaceSeal: 'd' },
   };
   const env = { load: () => { throw new Error('must not be reached'); }, seal: () => {}, send: (m) => messages.push(m) };
@@ -121,6 +137,15 @@ console.log('\na malformed configuration is named, not discovered deep inside th
   await createFromSource({ ...good, python: { ...good.python, namespaceSeal: '' } }, env).handle({ type: 'boot' });
   assert(/config\.python\.namespaceSeal/.test(messages[0] && messages[0].message),
     'an empty generated source is caught too, since running nothing is not sealing');
+
+  messages.length = 0;
+  await createFromSource({ ...good, lockPackages: { zarr: {} } }, env).handle({ type: 'boot' });
+  assert(/env\.stockLock is not a function/.test(messages[0] && messages[0].message),
+    'lock packages with no way to read the stock lock are named before loading anything');
+
+  messages.length = 0;
+  await createFromSource({ ...good, prelude: null }, env).handle({ type: 'boot' });
+  assert(/config\.prelude is not a string/.test(messages[0] && messages[0].message), 'so is a prelude that is not a string');
 
   let threw = null;
   try {
@@ -388,6 +413,37 @@ console.log('\nthe import gate tells a refusal from its own failure');
   assert(/import check failed/.test(failing.stderr) && !/denied_import/.test(failing.stderr),
     `and is reported as the check failing, not as a missing package (got ${JSON.stringify(failing.stderr)})`);
   await plain.run('sys.meta_path.remove(_faulty)');
+}
+
+console.log('\na prelude runs after the seal, as executed code, and a failing one fails the boot');
+{
+  const primed = await bootRuntime({ prelude: 'import asyncio\nawait asyncio.sleep(0)\nprimed = True\n' });
+  assert(primed.ready !== undefined, 'a prelude that runs cleanly lets the runtime come up');
+  assert(primed.messages.some((m) => m.type === 'progress' && m.phase === 'prelude'), 'and reports that it ran');
+  const later = await primed.run('print(primed)');
+  assertEqual(later.stdout, 'True\n', 'what it defines is there for the first execution, top-level await included');
+  const readyAt = primed.messages.findIndex((m) => m.type === 'ready');
+  const preludeAt = primed.messages.findIndex((m) => m.phase === 'prelude');
+  assert(primed.sealed[0].sentBefore <= preludeAt && preludeAt < readyAt,
+    'it runs after the seal and before ready, never with more reach than executed code');
+
+  const sealedOut = await bootRuntime({ prelude: 'import js\n' });
+  assert(sealedOut.ready === undefined, 'a prelude reaching for a sealed module does not get a runtime');
+  const refusal = sealedOut.messages.find((m) => m.type === 'error');
+  assert(refusal && /^the community's prelude failed: /.test(refusal.message) && /'js' is not available/.test(refusal.message),
+    `and the boot fails saying so (got ${JSON.stringify(refusal && refusal.message)})`);
+  assertEqual(refusal && refusal.kind, 'prelude', 'as a prelude failure, not a runtime one');
+}
+
+console.log('\na lock overlay may add packages and never replace one');
+{
+  const shadowed = await bootRuntime({
+    lockPackages: { numpy: { ...stockLock.packages.numpy, file_name: 'http://127.0.0.1:1/numpy-0-py3-none-any.whl' } },
+  });
+  assert(shadowed.ready === undefined, 'an entry that would replace a distribution package does not boot');
+  const failure = shadowed.messages.find((m) => m.type === 'error');
+  assert(failure && /lock entry numpy would replace the Pyodide distribution's own/.test(failure.message),
+    `and the refusal names the entry (got ${JSON.stringify(failure && failure.message)})`);
 }
 
 console.log('\nthe data client reads through fetch, inside the same interpreter');

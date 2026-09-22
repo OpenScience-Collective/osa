@@ -29,10 +29,16 @@
  * @param {string[]} config.allowInstall - Wheels installed at boot, deps false.
  * @param {string[]} config.indexUrls - Package indexes micropip may use at boot.
  * @param {string[]} config.fetchAllow - What executed code may reach once sealed.
+ * @param {Object<string, object>} config.lockPackages - Lock entries the community adds
+ *   to Pyodide's own lock, each file_name already an absolute URL. Often empty.
+ * @param {string} config.prelude - The community's Python, run after the seal; '' for none.
  * @param {{helpers: string, outputCapture: string, dataClient: string, namespaceSeal: string}} config.python
  *   Generated Python sources, run in the order boot() documents.
  * @param {object} env - The platform, which differs between a browser worker and a test.
- * @param {(indexURL: string) => Promise<object>} env.load - Load Pyodide.
+ * @param {(indexURL: string, options?: object) => Promise<object>} env.load - Load Pyodide,
+ *   with extra loadPyodide options when there is a lock to hand it.
+ * @param {(indexURL: string) => Promise<object>} [env.stockLock] - Read the Pyodide
+ *   distribution's own lock. Needed only when there are lock packages to merge into it.
  * @param {(prefixes: string[]) => void} env.seal - Narrow the JS egress allowlist.
  * @param {(message: object) => void} env.send - Post a protocol message to the host.
  * @returns {{boot: () => Promise<void>, execute: (data: object) => Promise<void>, handle: (data: object) => Promise<void>}}
@@ -62,6 +68,12 @@ export function createWorkerRuntime(config, env) {
     for (const key of ['preload', 'allowInstall', 'indexUrls', 'fetchAllow']) {
       if (!isStringList(config[key])) return `config.${key} is not a list of strings`;
     }
+    const lock = config.lockPackages;
+    if (!lock || typeof lock !== 'object' || Array.isArray(lock)) return 'config.lockPackages is not an object';
+    if (Object.keys(lock).length > 0 && typeof env.stockLock !== 'function') {
+      return 'env.stockLock is not a function, and there are lock packages to merge';
+    }
+    if (typeof config.prelude !== 'string') return 'config.prelude is not a string';
     for (const key of ['helpers', 'outputCapture', 'dataClient', 'namespaceSeal']) {
       if (!config.python || typeof config.python[key] !== 'string' || config.python[key] === '') {
         return `config.python.${key} is not a non-empty string`;
@@ -92,6 +104,25 @@ export function createWorkerRuntime(config, env) {
     }
   }
 
+  // The community's entries go INTO Pyodide's own lock rather than beside it, so
+  // one loadPackage resolves an overlay package and the distribution packages it
+  // depends on, and Pyodide checks every wheel's sha256 as it loads it. An entry
+  // may add a package and never replace one: a replaced entry would swap out a
+  // compiled package the distribution built for its own ABI.
+  function mergeLock(stock, overlay) {
+    if (!stock || typeof stock.packages !== 'object' || stock.packages === null) {
+      throw new Error("the Pyodide distribution's lock has no packages");
+    }
+    const packages = Object.assign({}, stock.packages);
+    for (const name of Object.keys(overlay)) {
+      if (Object.prototype.hasOwnProperty.call(packages, name)) {
+        throw new Error(`the community's lock entry ${name} would replace the Pyodide distribution's own`);
+      }
+      packages[name] = overlay[name];
+    }
+    return { info: stock.info, packages };
+  }
+
   async function loadPackages(names, phase) {
     // loadPackage throws for an unknown name, but a failure partway through a
     // download is reported through errorCallback and the promise can still
@@ -119,7 +150,15 @@ export function createWorkerRuntime(config, env) {
     }
     try {
       env.send({ type: 'progress', phase: 'loading_runtime' });
-      pyodide = await env.load(config.indexURL);
+      let loadOptions;
+      if (Object.keys(config.lockPackages).length > 0) {
+        // packageBaseUrl because the stock entries name their wheels relative
+        // to the distribution, and Pyodide stops inferring it once it is handed
+        // a lock rather than a URL to one.
+        const stock = await env.stockLock(config.indexURL);
+        loadOptions = { lockFileContents: mergeLock(stock, config.lockPackages), packageBaseUrl: config.indexURL };
+      }
+      pyodide = await env.load(config.indexURL, loadOptions);
       env.send({ type: 'progress', phase: 'runtime_loaded' });
 
       await loadPackages(config.preload, 'loading_package');
@@ -129,10 +168,11 @@ export function createWorkerRuntime(config, env) {
       // reachable from executed code, which is the opposite of sealing.
       //
       // deps is false for every entry, so allow_install is a complete, ordered
-      // list rather than a resolver seed. zarr cannot resolve in Pyodide at all
-      // (its numcodecs>=0.14 pin is metadata and no emscripten wheel exists at
-      // any version), and a resolver that picks the package set at runtime
-      // breaks the byte-identical results the prompt cache depends on.
+      // list rather than a resolver seed: a resolver that picks the package set
+      // at runtime breaks the byte-identical results the prompt cache depends
+      // on. A pinned wheel with its sha256 belongs in the lock overlay instead,
+      // which preload resolves above; that is how NEMAR ships zarr, whose
+      // numcodecs>=0.14 pin micropip cannot satisfy from PyPI.
       if (config.allowInstall.length > 0) {
         await loadPackages(['micropip'], 'loading_package');
         const micropip = pyodide.pyimport('micropip');
@@ -179,6 +219,20 @@ export function createWorkerRuntime(config, env) {
       // a decision, not a refactor.
       pyodide.runPython(config.python.namespaceSeal);
       env.seal(config.fetchAllow);
+
+      // The community's own setup, AFTER the seal, so it has exactly the
+      // privileges executed code has and no more. A prelude that fails leaves a
+      // runtime every later execution would fail in, for a reason naming the
+      // wrong cause, so the boot fails instead and says so.
+      if (config.prelude !== '') {
+        env.send({ type: 'progress', phase: 'prelude' });
+        try {
+          await pyodide.runPythonAsync(config.prelude, { globals: userNamespace });
+        } catch (err) {
+          env.send({ type: 'error', kind: 'prelude', message: `the community's prelude failed: ${describe(err).slice(-1500)}` });
+          return;
+        }
+      }
 
       env.send({ type: 'ready', version: pyodide.version });
     } catch (err) {
