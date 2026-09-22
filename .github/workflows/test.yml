@@ -96,6 +96,9 @@ jobs:
       - name: Run worker routing tests
         run: bun workers/osa-worker/test-routing.js
 
+      - name: Run worker mounted-hosts agreement test
+        run: bun workers/osa-worker/test-mounted-hosts.js
+
       - name: Check widget syntax
         run: node --check frontend/osa-chat-widget.js
 
