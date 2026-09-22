@@ -154,29 +154,33 @@ id = "6d46ef72877b4129b38ef2ca1e1cd5ea"
 #   widget.osc.earth           AAAA  100::  proxied
 #
 # Trap 2: registering a route needs permission on the ZONE it lives in, not
-# just on the worker, and it is a different grant from the ones that look
-# like they already cover it. This is OPEN on this zone; see issue #439.
+# just on the worker, and the permission alone is not enough. RESOLVED, see
+# issue #439; recorded because the failure is easy to misread twice.
 #
-# `secrets.CLOUDFLARE_API_TOKEN` provisions Pages custom domains and DNS
-# records on osc.earth for the status and branch deployments, and this
-# comment previously concluded from that that Workers Routes were covered
-# too. They are not. The first deploy after #438 merged failed with:
+# The first deploy after #438 merged failed with:
 #
 #   Trigger configuration for "osa-worker-dev" was only partially updated:
 #     Routes:
 #       - A request to the Cloudflare API (.../routes) failed.
 #         - No access to the specified resource.
 #
-# The script upload succeeds, so the code goes live and only the route
-# reconciliation fails. Note that pre-registering a route by hand does NOT
-# make the job pass: wrangler fails reconciling a route that already
-# matches, which is why dev still fails even though its route works.
+# Three things made this slow to diagnose, all worth knowing:
 #
-# Until the token gains Zone:Workers Routes:Edit on osc.earth, every push
-# touching this directory shows a red sync-cors job, and the production
-# route has never been registered, so widget.osc.earth/osa answers 522.
-# The dev route exists only because #437's rollout registered it with the
-# `neuromechanist` account token, which does hold the permission.
+#   1. The script upload SUCCEEDS and only route reconciliation fails, so the
+#      code goes live and the job still exits 1. A red job here does not mean
+#      the worker is stale.
+#   2. Pre-registering the route by hand does not help. Wrangler fails
+#      reconciling a route that already matches, which is why dev kept failing
+#      while develop-widget.osc.earth/osa was serving 200 the whole time.
+#   3. The fix was NOT adding a missing permission. "Workers Routes" is a ZONE
+#      permission, so it does not appear beside the account-level ones like
+#      Workers Scripts or D1, and the token already had it. It was scoped to a
+#      specific zone that did not include osc.earth. The permission row and the
+#      zone-resource scope are two separate settings, and the API reports the
+#      same "No access to the specified resource" for either.
+#
+# CLOUDFLARE_API_TOKEN now carries it for this zone, and CI attaches both
+# triggers: the workers.dev name and develop-widget.osc.earth/osa/*.
 #
 # Neither route touches anything already published on osc.earth
 # (demo.osc.earth, develop-demo.osc.earth, api.osc.earth, or either
