@@ -1,0 +1,166 @@
+name: Widget Route Health
+
+# Watches the worker's PUBLIC mounted hosts, which nothing else does (#442).
+#
+# The status dashboard resolves straight to api.osc.earth/osa, the FastAPI
+# backend, so it never traverses the Cloudflare Worker or widget.osc.earth at
+# all. That means the dashboard stays green through a total worker-route
+# outage, which is precisely the failure this release makes possible: a zone
+# route can be detached, a DNS record can change, or a future wrangler default
+# can flip workers_dev, and every one of those is invisible to a backend
+# health check.
+#
+# This probe exists because a third party's Content-Security-Policy now points
+# at widget.osc.earth (nemarOrg/website ADR 0017). A host other people have
+# pinned needs something watching it.
+
+on:
+  schedule:
+    # Every 15 minutes. Frequent enough to catch an outage inside a working
+    # session, infrequent enough not to spend the Actions budget on a check
+    # that is almost always green.
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  probe:
+    name: Probe the mounted widget hosts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Probe
+        id: probe
+        run: |
+          set +e
+          failures=""
+
+          # /health is the worker's own handler and does not need the backend
+          # to be healthy to answer, so a failure here is a ROUTE problem.
+          # /communities proxies, so it additionally covers the worker being
+          # able to reach the backend at all.
+          check() {
+            local url="$1"
+            local want="$2"
+            local got
+            got=$(curl -s -o /dev/null -w '%{http_code}' --max-time 25 "$url")
+            if [ "$got" != "$want" ]; then
+              echo "FAIL  $url  expected $want, got $got"
+              failures="${failures}\n- \`$url\` expected $want, got **$got**"
+            else
+              echo "ok    $url  $got"
+            fi
+          }
+
+          check https://widget.osc.earth/osa/health 200
+          check https://widget.osc.earth/osa/communities 200
+          check https://develop-widget.osc.earth/osa/health 200
+
+          # The legacy hostnames must keep serving while cached, SRI-pinned
+          # widget builds still call them (nemarOrg/website#343).
+          check https://osa-worker.shirazi-10f.workers.dev/health 200
+
+          # The host gate: /osa is a real path segment on an unmounted host and
+          # must NOT be stripped there. A 200 here means the strip went
+          # host-blind again, which silently swallows a community named "osa".
+          check https://osa-worker.shirazi-10f.workers.dev/osa/health 404
+
+          if [ -n "$failures" ]; then
+            {
+              echo "failed=true"
+              echo "report<<EOF"
+              echo -e "$failures"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "failed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open or update an issue on failure
+        if: steps.probe.outputs.failed == 'true'
+        uses: actions/github-script@v7
+        env:
+          # Passed through env rather than interpolated into the script body.
+          # The values here are hardcoded URLs and curl status codes, so this
+          # is not currently attacker-controlled, but interpolating anything
+          # into a github-script body is the wrong habit to establish in a
+          # workflow that holds issues:write.
+          PROBE_REPORT: ${{ steps.probe.outputs.report }}
+        with:
+          script: |
+            const title = 'Widget route health check failing';
+            const report = process.env.PROBE_REPORT || '';
+            const body = [
+              'The scheduled probe of the widget worker hosts is failing.',
+              '',
+              report,
+              '',
+              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              '',
+              'Likely causes, cheapest first:',
+              '',
+              '- The Cloudflare zone route was detached, so the hostname resolves but nothing serves it (522).',
+              '- A deploy flipped `workers_dev` off, taking the `workers.dev` hostname down.',
+              '- `MOUNTED_HOSTS` and the `[[routes]]` patterns drifted, so the worker is never invoked.',
+              '- The backend itself is down, which shows as `/osa/communities` failing while `/osa/health` still answers.',
+              '',
+              'This closes itself on the next green run.',
+            ].join('\n');
+
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'widget-route-health',
+            });
+
+            if (existing.data.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.data[0].number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['widget-route-health'],
+              });
+            }
+
+      - name: Close the tracking issue on recovery
+        if: steps.probe.outputs.failed == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'widget-route-health',
+            });
+            for (const issue of existing.data) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `Recovered: all probes green as of ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed',
+              });
+            }
+
+      - name: Fail the run so the schedule surfaces it
+        if: steps.probe.outputs.failed == 'true'
+        run: exit 1
