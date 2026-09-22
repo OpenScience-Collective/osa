@@ -168,6 +168,50 @@ docker run -d --name osa-dev \
   ghcr.io/openscience-collective/osa:sha-<PREVIOUS_SHA>
 ```
 
+### Rolling back a release, and what cannot be rolled back
+
+The block above covers the Docker backend only. A `develop` to `main` release
+also cuts a tag, publishes to PyPI, pushes images and reconfigures Cloudflare,
+and those do not all reverse (#442).
+
+**Irreversible, and it happens within seconds of the merge.** `tag-release.yml`
+creates the tag and the GitHub release immediately, and `publish.yml` publishes
+to PyPI on `release: published`. PyPI never allows re-uploading a deleted
+version, so once `X.Y.Z` is on PyPI that number is spent whether or not the
+release was good. Do not try to delete and reuse it.
+
+**The way back is forward.** Open a revert pull request against `main` and let
+the same automated chain cut the next patch version with the change undone.
+Deleting the tag by hand desynchronizes the tag, the version and the npm
+release, which ADR 0016's reasoning covers and which CI will not repair.
+
+**Recoverable by hand.** GHCR tags can be moved:
+
+```bash
+gh workflow run docker-build.yml --ref v<PREVIOUS_VERSION>   # forces :latest back
+```
+
+**The Cloudflare route needs its own check.** A revert redeploys the worker
+without the `[[routes]]` block, which detaches the route. Script upload and
+route reconciliation are two separate API calls that can fail independently,
+proven during #437's rollout, so a green-looking revert can leave a route
+attached to a worker whose code no longer strips the mount prefix. That state
+404s uniformly and is indistinguishable from the route never existing.
+
+After any revert that touches `workers/osa-worker/**`, verify by hand:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://widget.osc.earth/osa/health
+curl -s -o /dev/null -w '%{http_code}\n' https://osa-worker.shirazi-10f.workers.dev/health
+```
+
+**Check the consumer, not only the worker.** `/health` answers from the worker
+itself, so it looks fine even when the deployed widget script points somewhere
+else entirely. Load `demo.osc.earth` and send an actual chat message. The
+frontend and the worker deploy through two independent workflows with no
+ordering between them, so they can disagree, and only a real round trip shows
+it.
+
 ## Known Issues & Workarounds
 
 ### Issue: Database Locked

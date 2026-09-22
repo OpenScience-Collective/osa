@@ -98,25 +98,40 @@ jobs:
           git pull --rebase origin ${{ github.ref_name }}
           git push
 
+      - name: Set up Bun
+        if: steps.check_changes.outputs.changed == 'true' && github.event_name == 'push'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
       - name: Deploy to Cloudflare Workers (production)
         if: steps.check_changes.outputs.changed == 'true' && github.ref == 'refs/heads/main' && github.event_name == 'push'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          npm install -g wrangler
+          # Use the wrangler pinned exactly in workers/osa-worker/package.json,
+          # not a floating global install. JS lockfiles are gitignored in this
+          # repository, so that exact version is the only real pin available. wrangler's defaults are version
+          # dependent: a [[routes]] table flips workers_dev to false, and
+          # that already took the workers.dev hostname down once during #437.
+          # An unpinned install reintroduces that class of silent regression
+          # on some future date with no code change at all, and the deploy
+          # output looks clean either way.
           cd workers/osa-worker
-          wrangler deploy
-          echo "✅ Deployed to production worker"
+          bun install
+          bunx wrangler deploy
+          echo "Deployed to production worker"
 
       - name: Deploy to Cloudflare Workers (dev)
         if: steps.check_changes.outputs.changed == 'true' && github.ref == 'refs/heads/develop' && github.event_name == 'push'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          npm install -g wrangler
+          # Pinned for the same reason as the production step above (#437).
           cd workers/osa-worker
-          wrangler deploy --env=dev
-          echo "✅ Deployed to dev worker"
+          bun install
+          bunx wrangler deploy --env=dev
+          echo "Deployed to dev worker"
 
       - name: Comment on PR
         if: steps.check_changes.outputs.changed == 'true' && github.event_name == 'pull_request'
