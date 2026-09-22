@@ -21,10 +21,9 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from langchain_core.messages.utils import count_tokens_approximately
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from src.agents.base import DEFAULT_MAX_CONVERSATION_TOKENS
+from src.agents.base import DEFAULT_MAX_CONVERSATION_TOKENS, count_conversation_tokens
 from src.agents.content import (
     CitationAssembler,
     ContentBlock,
@@ -2887,7 +2886,10 @@ async def _stream_chat_response(
 
         # Warn if conversation is approaching the token budget (87.5% of 80K).
         warning_threshold = int(DEFAULT_MAX_CONVERSATION_TOKENS * 0.875)
-        approx_tokens = count_tokens_approximately(session.messages)
+        # The same counter the agent budgets with, so the warning fires on the same
+        # arithmetic the trimmer acts on. Two counters would mean warning at one
+        # threshold and trimming at another.
+        approx_tokens = count_conversation_tokens(session.messages)
         if approx_tokens > warning_threshold:
             sse_event = {
                 "event": "warning",

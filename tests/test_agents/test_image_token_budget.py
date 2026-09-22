@@ -22,7 +22,11 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.messages.utils import count_tokens_approximately
 
-from src.agents.base import DEFAULT_MAX_CONVERSATION_TOKENS
+from src.agents.base import (
+    ANTHROPIC_TOKENS_PER_IMAGE,
+    DEFAULT_MAX_CONVERSATION_TOKENS,
+    count_conversation_tokens,
+)
 from src.api.tool_results import MAX_IMAGES, ClientToolResult, ToolResultImage
 from src.api.tool_results import build_live_tool_message as live_message
 
@@ -33,12 +37,8 @@ CALL_ID = "toolu_01aaaaaaaaaaaaaaaaaaaaaa"
 # plot will either.
 HUGE_B64 = base64.b64encode(b"\x89PNG\r\n" + b"\x00" * 600_000).decode()
 
-#: What Anthropic actually charges for a largest-allowed image, give or take: it bills
-#: about `width * height / 750` tokens and caps near this. Passed explicitly because the
-#: upstream default of 85 is OpenAI's LOW-RESOLUTION cost, and under-counting is the
-#: dangerous direction. Over-counting spends a little headroom; under-counting means
-#: believing a request fits when it does not.
-ANTHROPIC_TOKENS_PER_IMAGE = 1600
+# Imported rather than restated, so the tests measure the rate the code actually uses.
+# A copy here would keep passing after someone changed the real one.
 
 
 def _image(data: str = HUGE_B64) -> ToolResultImage:
@@ -148,6 +148,30 @@ class TestUpstreamCountsImagesAsImages:
         )
 
         assert with_text - image_only == pytest.approx(len(summary) / 4, rel=0.1)
+
+
+class TestTheProjectsCounter:
+    """`count_conversation_tokens` is the one the agent and the API both budget with."""
+
+    def test_it_charges_the_anthropic_rate_not_upstreams_default(self) -> None:
+        """85 is OpenAI's low-resolution cost. Anthropic bills roughly
+        `width * height / 750`, so the default under-counts a real plot by more than an
+        order of magnitude, and under-counting is the direction that fails."""
+        message = ToolMessage(
+            content=[{"type": "image", "source": {"data": HUGE_B64}}], tool_call_id="c"
+        )
+        empty = ToolMessage(content=[], tool_call_id="c")
+
+        charged = count_conversation_tokens([message]) - count_conversation_tokens([empty])
+
+        assert charged == ANTHROPIC_TOKENS_PER_IMAGE
+        assert charged != 85, "the upstream default leaked through"
+
+    def test_the_api_warning_and_the_agent_trimmer_share_it(self) -> None:
+        """Two counters would mean warning at one threshold and trimming at another."""
+        import src.api.routers.community as community_router
+
+        assert community_router.count_conversation_tokens is count_conversation_tokens
 
 
 class TestTheBudgetHolds:

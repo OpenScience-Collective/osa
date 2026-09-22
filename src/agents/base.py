@@ -32,6 +32,33 @@ logger = logging.getLogger(__name__)
 # pairs must stay together).
 DEFAULT_MAX_CONVERSATION_TOKENS = 80000
 
+#: Tokens charged per image block when measuring a conversation.
+#:
+#: `count_tokens_approximately` defaults to 85, which is OpenAI's LOW-RESOLUTION image
+#: cost. Anthropic bills roughly `width * height / 750` and caps near this figure, so the
+#: default under-counts a real plot by more than an order of magnitude. Under-counting is
+#: the direction that fails: it means believing a conversation fits when it does not.
+#: Over-counting only spends headroom.
+#:
+#: Note this is a flat rate, not a measurement. The image block carries base64 and a
+#: media type but no dimensions, so the exact cost is not recoverable from the message,
+#: and a flat rate has the further virtue of being deterministic, which matters because
+#: prompt caching is a byte-exact prefix match and a counter that varied per call would
+#: make trimming vary per call.
+#:
+#: Requires langchain-core 1.6 or newer; before that the helper had no `tokens_per_image`
+#: parameter and stringified image payloads instead. pyproject floors it there.
+ANTHROPIC_TOKENS_PER_IMAGE = 1600
+
+
+def count_conversation_tokens(messages: Sequence[BaseMessage]) -> int:
+    """Approximate tokens for a conversation that may carry images.
+
+    One call site's worth of behavior, named so the budget check, the trimmer and the
+    post-trim log cannot drift apart by one of them forgetting the image rate.
+    """
+    return count_tokens_approximately(messages, tokens_per_image=ANTHROPIC_TOKENS_PER_IMAGE)
+
 
 class BaseAgent(ABC):
     """Abstract base class for OSA agents.
@@ -202,7 +229,7 @@ class BaseAgent(ABC):
         # (AIMessage + ToolMessage pairs must stay together).
         state_messages = state.get("messages", [])
         if state_messages:
-            pre_trim_tokens = count_tokens_approximately(state_messages)
+            pre_trim_tokens = count_conversation_tokens(state_messages)
 
             if pre_trim_tokens <= self.max_conversation_tokens:
                 # Under budget: pass all messages through unchanged
@@ -214,7 +241,7 @@ class BaseAgent(ABC):
                     state_messages,
                     max_tokens=self.max_conversation_tokens,
                     strategy="last",
-                    token_counter=count_tokens_approximately,
+                    token_counter=count_conversation_tokens,
                     include_system=False,
                 )
 
@@ -224,7 +251,7 @@ class BaseAgent(ABC):
                 while trimmed and isinstance(trimmed[0], ToolMessage):
                     trimmed = trimmed[1:]
 
-                post_trim_tokens = count_tokens_approximately(trimmed)
+                post_trim_tokens = count_conversation_tokens(trimmed)
                 logger.debug(
                     "Trimmed conversation from %d to %d tokens",
                     pre_trim_tokens,
