@@ -134,6 +134,11 @@ jobs:
       - name: Run worker core tests against real Pyodide
         run: bun frontend/test-worker-core.js
 
+      # NEMAR's runtime as it ships: its config, its lock overlay and the wheels
+      # beside it, loaded by the real core and reading a sharded store over HTTP.
+      - name: Run the NEMAR data lane against real Pyodide
+        run: bun frontend/test-data-lane.js
+
       - name: Check the runtime bundle and its hash are current
         run: bun scripts/build-runtime-bundle.js --check
 
