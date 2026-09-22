@@ -59,35 +59,17 @@ export const BOOT_FAILURE = Object.freeze({
 });
 
 /**
- * Build the worker's source as a string, for a blob URL.
+ * The worker's configuration, as plain data: what createWorkerRuntime receives.
  *
- * Returned as source rather than shipped as a file because embedders pin this
- * widget by SRI hash; a second fetched file would be a second thing to pin and
- * could drift from the pinned one.
+ * Separate from buildWorkerSource so a test can hand the SAME configuration to
+ * the core without parsing it back out of generated source.
  *
  * @param {object} runtime - A community's `runtime.python` config.
- * @returns {string} Worker source.
+ * @returns {object}
  */
-export function buildWorkerSource(runtime) {
-  const indexURL = `https://cdn.jsdelivr.net/pyodide/v${runtime.pyodide_version}/full/`;
-
-  // The egress guard is installed as the worker's FIRST statement, before the
-  // loader is even fetched, because importScripts is one of the transports it
-  // shims and the boot itself goes through it. A guard installed after boot
-  // would leave the whole download window unguarded.
-  //
-  // Its boot allowlist is the Pyodide CDN plus any configured wheel index, and
-  // NOT the community's fetch_allow: those are the origins the runtime needs to
-  // assemble itself, a strictly different set from the origins executed code
-  // may reach.
-  const guard = buildEgressGuardSource({ bootAllow: [indexURL].concat(runtime.index_urls || []) });
-
-  // Everything the worker needs, decided here and baked in as data. A worker
-  // that has to ask for its own configuration has a window where it is alive
-  // but unconfigured, and that is exactly where a half-initialized runtime
-  // would be reachable.
-  const config = {
-    indexURL,
+export function buildWorkerConfig(runtime) {
+  return {
+    indexURL: `https://cdn.jsdelivr.net/pyodide/v${runtime.pyodide_version}/full/`,
     preload: runtime.preload || [],
     allowInstall: runtime.allow_install || [],
     indexUrls: runtime.index_urls || [],
@@ -99,6 +81,35 @@ export function buildWorkerSource(runtime) {
       namespaceSeal: buildNamespaceSealSource(),
     },
   };
+}
+
+/**
+ * Build the worker's source as a string, for a blob URL.
+ *
+ * Returned as source rather than shipped as a file because embedders pin this
+ * widget by SRI hash; a second fetched file would be a second thing to pin and
+ * could drift from the pinned one.
+ *
+ * @param {object} runtime - A community's `runtime.python` config.
+ * @returns {string} Worker source.
+ */
+export function buildWorkerSource(runtime) {
+  // Everything the worker needs, decided here and baked in as data. A worker
+  // that has to ask for its own configuration has a window where it is alive
+  // but unconfigured, and that is exactly where a half-initialized runtime
+  // would be reachable.
+  const config = buildWorkerConfig(runtime);
+
+  // The egress guard is installed as the worker's FIRST statement, before the
+  // loader is even fetched, because importScripts is one of the transports it
+  // shims and the boot itself goes through it. A guard installed after boot
+  // would leave the whole download window unguarded.
+  //
+  // Its boot allowlist is the Pyodide CDN plus any configured wheel index, and
+  // NOT the community's fetch_allow: those are the origins the runtime needs to
+  // assemble itself, a strictly different set from the origins executed code
+  // may reach.
+  const guard = buildEgressGuardSource({ bootAllow: [config.indexURL].concat(config.indexUrls) });
 
   // The template is only glue now. The logic is createWorkerRuntime, embedded
   // by value: an interpolated value is inserted verbatim, so escapes inside it

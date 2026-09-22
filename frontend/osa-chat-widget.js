@@ -182,6 +182,16 @@
   // Store script URL at load time for reliable pop-out
   const WIDGET_SCRIPT_URL = document.currentScript?.src || null;
 
+  // The browser Python runtime ships as a separate file, loaded only for a
+  // community that configures client tools, and verified against this hash.
+  // The versioned embed pins THIS file by SRI, so the hash here extends that
+  // pin to the runtime: a runtime that does not match is refused by the
+  // browser before any of it runs. Written by scripts/build-runtime-bundle.js;
+  // CI rebuilds and fails if the committed bundle or this line is stale.
+  // BEGIN GENERATED: runtime bundle integrity
+  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-F6i6Kysgt6shK5yo+3u8I3ydFBxcLKtGwkSVA+Dlh57hYaZYF5hsJ1Z8G7ZDCLZV';
+  // END GENERATED: runtime bundle integrity
+
   // Icons (SVG)
   const ICONS = {
     chat: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>',

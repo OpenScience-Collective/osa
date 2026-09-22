@@ -83,6 +83,11 @@ jobs:
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
+        with:
+          # The Bun that builds frontend/osa-runtime.bundle.js. The staleness
+          # check below rebuilds and compares bytes, which only means something
+          # if CI minifies exactly as the machine that built the bundle did.
+          bun-version-file: package.json
 
       - name: Run citation marker tests
         run: bun frontend/test-citation-markers.js
@@ -125,6 +130,12 @@ jobs:
 
       - name: Run worker core tests against real Pyodide
         run: bun frontend/test-worker-core.js
+
+      - name: Check the runtime bundle and its hash are current
+        run: bun scripts/build-runtime-bundle.js --check
+
+      - name: Run runtime bundle tests, as built
+        run: bun frontend/test-runtime-bundle.js
 
       - name: Check widget syntax
         run: node --check frontend/osa-chat-widget.js
