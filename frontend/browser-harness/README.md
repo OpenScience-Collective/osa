@@ -102,3 +102,37 @@ Measured 2026-09-22 in Chrome:
   forgets it; the stored conversation keeps every run, and no figure
 - **negative control**: with one byte appended to the served bundle, the browser
   refuses it, nothing is declared, and the assistant still answers
+
+### NEMAR's data lane
+
+```bash
+uv run python frontend/browser-harness/widget_e2e.py 8791 --nemar [--tamper-wheel] [--widget-open]
+```
+
+Serves NEMAR's shipped config through the real router: its runtime, its lock
+overlay in `/config`, and the wheels its own route serves. The MCP servers are
+dropped, since the scripted model never calls them. Ask it to "read" (eegprep-lean's
+`read_window` and a plot of nm000103) or for the "recipe" (the `python_browser`
+shape, `open_array` on the live array URL). The policy adds `https://zarr.nemar.org`
+to `connect-src`, as nemar.org's `*.nemar.org` does.
+
+Measured 2026-09-22 in Chrome, against the live archive:
+
+- "read" returns a (4, 500) window in uV at 250 Hz, labeled E1 to E4, and the
+  figure, titled from the group, reaches both the page and the model; under 10 s
+  from Run to result, with numpy and matplotlib already in the HTTP cache
+- "recipe" reads (129, 500) int16 through `open_array`, with no transport argument,
+  because NEMAR's prelude made the runtime's own client eegprep-lean's default
+- the overlay wheels load from the API's wheel route with their `sha256` as
+  `fetch` integrity, through the egress guard; nothing is refused and the console
+  is clean
+- **negative control**, `--tamper-wheel`: every wheel arrives one byte long, and
+  the run fails with "package zarr did not load ... Failed to fetch". From the same
+  page, that URL fetches fine without a digest and is refused with the entry's, so
+  the refusal is the browser's integrity check and nothing else
+- `--widget-open`: the runtime stays `idle` until the chat opens, then boots with
+  nothing sent, `ready` 2.5 s later
+
+The Bun test for this lane is `frontend/test-data-lane.js`, which cannot load a
+wheel by URL or check its digest (Pyodide's Node loader does neither); those two
+are what this page is for.
