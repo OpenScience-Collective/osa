@@ -261,8 +261,8 @@ The mental model is a `uv` project per community, mapped onto what Pyodide alrea
 | uv concept | Pyodide mechanism | Where it lives |
 |---|---|---|
 | `pyproject` dependencies | `runtime.python.preload` and `allow_install` | community `config.yaml` |
-| `uv.lock` | `micropip.freeze()` output, loaded through `loadPyodide({ lockFileURL })` | `runtime/<community>-pyodide-lock.json`, committed |
-| `uv sync` | `loadPackagesFromImports` plus `micropip.install` on demand | worker, at run time |
+| `uv.lock` | a lock **overlay** merged into the stock lock and passed as `loadPyodide({ lockFileContents })` | `src/assistants/<community>/runtime/<community>-pyodide-lock.json`, committed with its wheels |
+| `uv sync` | `loadPackage` of `preload` at boot, resolving overlay and stock entries together | worker, at boot only |
 | package index | Pyodide CDN for built packages, PyPI for pure wheels, optional community index | `runtime.python.index_urls` |
 | interpreter pin | `runtime.python.pyodide_version` | community `config.yaml` |
 | cache | browser Cache API; wheels are immutable | user's browser |
@@ -277,6 +277,33 @@ Rules:
 - `preload` is the small set worth paying for on widget open; `allow_install` is what the model may pull in;
   anything else is denied and reported.
 - Cache invalidation is by URL: a new lockfile means new URLs, old wheels expire on their own.
+
+**As built (phase 2, step 8, #431).** The lockfile is an overlay, not a full lock: the
+entries a community adds to the Pyodide distribution of its pinned version, in Pyodide's
+own lock-entry shape (`src/core/config/runtime_lock.py`).
+The wheels sit in `wheels/` beside it, the server verifies each against its `sha256`
+when it loads the overlay, sends the entries in `/config` as `runtime_lock`, and serves
+the wheels itself at `GET /{community}/runtime/{file_name}`, immutable, so the host
+that sent the hashes is the host the bytes come from and the two cannot come from
+different releases. The worker merges the overlay into the stock lock (an entry may add
+a package, never replace one), hands the result to `loadPyodide`, and `preload` then
+resolves overlay packages and their distribution dependencies in one pass, with the
+browser enforcing each digest through `fetch`'s `integrity`. There is no micropip in
+this path; `allow_install` remains for installs from `index_urls` at boot.
+`scripts/build_runtime_lock.py` regenerates an overlay from its wheels and a
+`depends.toml`, and refuses new bytes under a committed wheel name.
+
+Measured on Pyodide 0.29.5: under Node, `loadPackage` resolves a lock `file_name` with
+`path.resolve` against its package cache, so an absolute URL does not load there, and
+Node ignores the digest entirely. Both work in a browser, which is where they are
+verified (`frontend/browser-harness/widget_e2e.py`); the Bun test names the committed
+wheels by path (`frontend/test-data-lane.js`).
+
+A community can also run a **prelude**, `runtime.python.prelude`: Python run once after
+the seal and before the first execution, with exactly executed code's privileges,
+compiled at config load. NEMAR's registers eegprep-lean's transport over `osa.fetch`
+(the ranged, non-raising client), because eegprep-lean's default reads through
+`pyodide.http`, which the seal removes.
 
 ## Configuration
 
@@ -589,7 +616,10 @@ note and do not correspond to the global phases in `.context/plan.md`.
   kernel with the chat worker is not an open tradeoff; it is unsupported, and belongs under non-goals.
   Pyodide's `mountOPFS` is also not in a released version yet, so Phase 4 should plan on IndexedDB plus an
   import step; the stable `mountNativeFS` is the File System Access API and is Chromium-only.
-- Where community lockfiles live: in this repo next to the config, or in a community-owned repo referenced by URL.
+- ~~Where community lockfiles live.~~ **DECIDED 2026-09-22 (#431, step 8): in the community's own folder
+  in this repo, served by this API.** An eegprep-lean bump is then a server deploy, with no widget release
+  and no nemar.org re-pin. Hosting them beside the widget was rejected because the server's config and a
+  pinned widget's wheels would then drift; a community-owned repository by URL stays open for phase 5.
 - Image cost in the model context; whether to downscale further by default.
 - The SSE event vocabulary listed earlier in this note is incomplete: the live stream also emits `session`
   and `warning`, and the widget handles both. Anyone adding an event needs the true list.
