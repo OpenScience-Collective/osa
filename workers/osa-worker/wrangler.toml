@@ -153,15 +153,30 @@ id = "6d46ef72877b4129b38ef2ca1e1cd5ea"
 #   develop-widget.osc.earth   AAAA  100::  proxied
 #   widget.osc.earth           AAAA  100::  proxied
 #
-# Trap 2: registering a route needs permission on the zone it lives in, not
-# just on the worker. A token that deployed this worker fine for months can
-# start failing the moment a route appears in this file, which reads as a
-# pipeline outage rather than a widget bug. Not a concern on this zone:
-# `secrets.CLOUDFLARE_API_TOKEN` already provisions custom domains on
-# osc.earth for the status and branch deployments, so zone access was
-# established long before this route existed. The dev rollout used the
-# `neuromechanist` account token, which has it too. Worth checking before
-# adding a route on a zone the deploying identity does not already own.
+# Trap 2: registering a route needs permission on the ZONE it lives in, not
+# just on the worker, and it is a different grant from the ones that look
+# like they already cover it. This is OPEN on this zone; see issue #439.
+#
+# `secrets.CLOUDFLARE_API_TOKEN` provisions Pages custom domains and DNS
+# records on osc.earth for the status and branch deployments, and this
+# comment previously concluded from that that Workers Routes were covered
+# too. They are not. The first deploy after #438 merged failed with:
+#
+#   Trigger configuration for "osa-worker-dev" was only partially updated:
+#     Routes:
+#       - A request to the Cloudflare API (.../routes) failed.
+#         - No access to the specified resource.
+#
+# The script upload succeeds, so the code goes live and only the route
+# reconciliation fails. Note that pre-registering a route by hand does NOT
+# make the job pass: wrangler fails reconciling a route that already
+# matches, which is why dev still fails even though its route works.
+#
+# Until the token gains Zone:Workers Routes:Edit on osc.earth, every push
+# touching this directory shows a red sync-cors job, and the production
+# route has never been registered, so widget.osc.earth/osa answers 522.
+# The dev route exists only because #437's rollout registered it with the
+# `neuromechanist` account token, which does hold the permission.
 #
 # Neither route touches anything already published on osc.earth
 # (demo.osc.earth, develop-demo.osc.earth, api.osc.earth, or either
