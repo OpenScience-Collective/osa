@@ -67,3 +67,34 @@ Recorded on #431, measured 2026-09-22 against Pyodide 0.28.3 in Chrome:
   would require cross-origin isolation on every embedding page, so terminating
   the worker from the host is the only way to stop a runaway loop and this is
   the only place it can be checked
+
+## The widget, end to end
+
+`widget_e2e.py` serves the chat widget and the real community router side by side,
+under the same production policy, for a synthetic community that runs Python:
+
+```bash
+uv run python frontend/browser-harness/widget_e2e.py 8791
+# then open http://127.0.0.1:8791/browser-harness/widget-e2e.html
+```
+
+Everything is real except the language model, which needs a key the harness does
+not have. It is scripted: it asks for code by keyword ("plot", "loop", "error")
+and, once the browser answers, replies with the result it was sent, so the page
+shows the round trip rather than asserting it. Unlike the unit-test stand-in, it
+streams, because the router assembles the reply text from streamed chunks.
+
+Measured 2026-09-22 in Chrome:
+
+- the runtime bundle loads with its integrity attribute under the policy, and
+  the widget declares `execute_code` and `get_full_output` only after it has
+- the gate shows the description and the highlighted code; Run executes it, and
+  run 2 streams into the same reply, which records what ran, what it printed and
+  the figure it drew
+- Stop on an infinite loop returns `cancelled`; Don't run returns `denied`; a
+  Python exception returns `error` with its type, line and a pointer to the full
+  traceback; each reaches the server as the result for the right call
+- "Run without asking" skips the gate for the rest of the page, and a reload
+  forgets it; the stored conversation keeps every run, and no figure
+- **negative control**: with one byte appended to the served bundle, the browser
+  refuses it, nothing is declared, and the assistant still answers
