@@ -34,6 +34,7 @@ from src.api.routers.community import (
 from src.api.tool_results import ClientToolResult, ToolResultImage
 from src.assistants.community import CommunityAssistant
 from src.core.config.community import CommunityConfig
+from src.tools.client_tools import CLIENT_TOOL_KILL_SWITCH_ENV
 from tests.helpers.chat_models import (
     ScriptedChatModel,
     multi_tool_call_response,
@@ -141,6 +142,39 @@ class TestTheToolReachesTheModel:
         _, model = _assistant([AIMessage(content="hi")], declared={"render_html"})
 
         assert "execute_code" not in model.bound_tool_names
+
+    def test_the_kill_switch_strips_the_tool_from_a_willing_caller(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The switch has to win over a correctly configured community AND a caller
+        that declared the capability, because that is the only situation in which it
+        would ever be reached. A switch tested only against a config that binds nothing
+        anyway would pass while doing nothing.
+
+        `develop` auto-deploys, and a client tool with no executor parks every stream,
+        so this is what makes the phase safe to merge before phase 2 exists.
+        """
+        monkeypatch.setenv(CLIENT_TOOL_KILL_SWITCH_ENV, "1")
+
+        _, model = _assistant([AIMessage(content="hi")], declared={"execute_code"})
+
+        assert "execute_code" not in model.bound_tool_names
+
+    @pytest.mark.asyncio
+    async def test_a_killed_turn_ends_in_done_not_tool_request(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Stripping the binding is only half of it; the run must also complete
+        normally rather than ending on a call nothing can answer."""
+        monkeypatch.setenv(CLIENT_TOOL_KILL_SWITCH_ENV, "1")
+        session = _session()
+        assistant, _ = _assistant([AIMessage(content="I cannot run code right now.")])
+
+        events = await _run(session, assistant, declared_client_tools={"execute_code"})
+
+        assert "done" in _names(events)
+        assert "tool_request" not in _names(events)
+        assert session.pending_call is None
 
 
 class TestRunOneEndsOnTheCall:
