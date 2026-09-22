@@ -45,7 +45,14 @@ server = [
     "uvicorn[standard]>=0.38.0",
     # LangChain/LangGraph
     "langchain>=1.2.0",
-    "langchain-core>=1.2.0",
+    # 1.6 is the floor because `count_tokens_approximately` only learned to count
+    # image blocks by a fixed penalty there. Before it, any non-string content was
+    # `repr()`-ed whole and divided by four, so one 400 KB figure measured about
+    # 100,000 tokens against an 80,000 budget and `trim_messages` silently discarded
+    # the conversation. Measured on 1.2.6 versus 1.6.3. This floor is load-bearing
+    # for browser execution, where a tool result carries plots, and it matters more
+    # than usual because CI resolves without the lockfile (issue #374).
+    "langchain-core>=1.6.0",
     "langchain-openai>=1.1.0",
     "langchain-anthropic>=1.7.2",
     "langchain-community>=0.4.0",
