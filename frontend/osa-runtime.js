@@ -288,8 +288,14 @@ export function buildWorkerSource(runtime) {
       try {
         await pyodide.runPythonAsync(code, { globals: userNamespace });
       } catch (err) {
-        status = 'error';
         errorText = String((err && err.message) || err);
+        // A wasm out-of-memory is NOT the same failure as a raised exception and
+        // is not a timeout either: the instance aborts without any deadline
+        // firing, so #431 gives it its own status. The instance is unusable
+        // afterwards, which the host handles by recycling.
+        status = /out of memory|Cannot enlarge memory|memory access out of bounds|Aborted\(OOM\)|RangeError: Array buffer allocation failed/i.test(errorText)
+          ? 'oom'
+          : 'error';
       }
 
       let captured;
@@ -399,6 +405,10 @@ export class PyodideRuntime {
     // server minted, so a result can never be attributed to the wrong call.
     this._pending = new Map();
     this._callSeq = 0;
+    // Clamped the same way the worker clamps them, so the host's deadline and
+    // the worker's output caps cannot come from two different readings of one
+    // config.
+    this.limits = resolveLimits(runtime.limits);
   }
 
   /** True when the runtime can accept work. */
@@ -460,6 +470,15 @@ export class PyodideRuntime {
 
       worker.onmessage = (event) => this._onWorkerMessage(event.data || {});
       worker.onerror = (event) => {
+        const message = (event && event.message) || '';
+        // After a successful boot this is no longer a boot failure. The usual
+        // cause is the wasm instance aborting, which takes the whole worker with
+        // it and would otherwise leave the execution pending forever: a promise
+        // nobody settles is indistinguishable from code still running.
+        if (this.state === RUNTIME_STATE.READY) {
+          this._failRunningExecutions(message);
+          return;
+        }
         // A CSP refusal of the worker script itself surfaces here with an empty
         // message, which is why the text below does not rely on one.
         this._failBoot(
@@ -493,15 +512,17 @@ export class PyodideRuntime {
       return;
     }
     if (msg.type === 'result') {
-      const waiting = this._pending.get(msg.call_id);
-      if (!waiting) {
-        // A result for a call nobody is waiting on: the execution was abandoned
-        // or already settled. Dropped rather than thrown, since there is no
-        // caller left to tell, but never silently attributed to another call.
-        return;
+      // A result for a call nobody is waiting on is dropped rather than thrown:
+      // the execution was abandoned, or its deadline already settled it. Never
+      // silently attributed to another call.
+      const settled = this._settleExecution(msg.call_id, msg);
+      // An instance that reported its own out-of-memory is still the instance
+      // that ran out. Keeping it would let the next execution start against a
+      // heap that is already exhausted, and fail for a reason belonging to the
+      // previous run.
+      if (settled && msg.status === 'oom') {
+        this._recycle();
       }
-      this._pending.delete(msg.call_id);
-      waiting.resolve(msg);
       return;
     }
     if (msg.type === 'progress') {
@@ -627,15 +648,118 @@ export class PyodideRuntime {
       throw new Error(`an execution is already in flight for call_id ${callId}`);
     }
 
+    // The deadline is enforced HERE, not in the worker, because the worker cannot
+    // interrupt its own Python. Cooperative interruption needs setInterruptBuffer,
+    // which needs a SharedArrayBuffer, which needs cross-origin isolation on every
+    // embedding page. #431 rules that out, so terminating is the only way to stop
+    // a runaway loop, and only the host can terminate.
+    const deadlineMs = Math.max(1, this.limits.exec_seconds) * 1000;
+    const started = Date.now();
+
     return new Promise((resolve, reject) => {
-      this._pending.set(callId, { resolve, reject });
+      const timer = setTimeout(() => {
+        // Resolved, not rejected: the server expects a ClientToolResult for every
+        // call_id it minted, and a timeout is a result with a status. Rejecting
+        // would leave the model with no tool_result for its tool_use, which the
+        // provider refuses outright.
+        this._settleExecution(callId, {
+          type: 'result',
+          call_id: callId,
+          status: 'timeout',
+          stdout: '',
+          stderr: `[runtime] the code ran longer than ${this.limits.exec_seconds}s and was stopped.`,
+          summary: '',
+          images: [],
+          artifacts: [],
+          elapsed_ms: Date.now() - started,
+        });
+        // Recycled rather than terminated: the person asked for THIS run to stop,
+        // not for the runtime to be gone, and the next execution boots a fresh
+        // worker. terminate() stays reserved for explicit cancellation, which
+        // does not self-heal.
+        this._recycle();
+      }, deadlineMs);
+
+      this._pending.set(callId, { resolve, reject, timer, started });
       try {
         this._worker.postMessage({ type: 'execute', call_id: callId, code });
       } catch (err) {
         this._pending.delete(callId);
+        clearTimeout(timer);
         reject(err);
       }
     });
+  }
+
+  /**
+   * Settle one outstanding execution and stop its deadline.
+   *
+   * One place, so a result arriving and a deadline firing cannot both settle the
+   * same call: whichever gets here first removes it from `_pending`.
+   *
+   * @param {string} callId
+   * @param {object} result
+   * @returns {boolean} Whether anything was waiting.
+   */
+  /**
+   * Settle every in-flight execution after the worker itself died.
+   *
+   * Reported as `oom` rather than `error`: a worker that dies mid-execution in
+   * this runtime is overwhelmingly a wasm memory abort, which takes the instance
+   * down with no exception to catch and no deadline fired. Calling that a
+   * generic error would send the model off rewriting correct code, when the
+   * useful advice is to work on less data at a time.
+   *
+   * @param {string} message - Whatever the worker managed to report, often empty.
+   */
+  _failRunningExecutions(message) {
+    const entries = Array.from(this._pending.entries());
+    for (const [callId, waiting] of entries) {
+      this._pending.delete(callId);
+      clearTimeout(waiting.timer);
+      waiting.resolve({
+        type: 'result',
+        call_id: callId,
+        status: 'oom',
+        stdout: '',
+        stderr:
+          '[runtime] the Python runtime ran out of memory and was restarted. ' +
+          'Try working on less data at a time.' + (message ? ' (' + message + ')' : ''),
+        summary: '',
+        images: [],
+        artifacts: [],
+        elapsed_ms: Date.now() - waiting.started,
+      });
+    }
+    this._recycle();
+  }
+
+  _settleExecution(callId, result) {
+    const waiting = this._pending.get(callId);
+    if (!waiting) {
+      return false;
+    }
+    this._pending.delete(callId);
+    clearTimeout(waiting.timer);
+    waiting.resolve(result);
+    return true;
+  }
+
+  /**
+   * Discard the worker and return to IDLE, so the next execution boots a fresh one.
+   *
+   * Distinct from terminate(), which is a person saying stop and deliberately does
+   * NOT self-heal. This is the runtime discarding an instance it can no longer
+   * trust: a timed-out run whose Python is still spinning, or an out-of-memory
+   * abort. Both leave the instance unusable while the runtime itself is fine.
+   */
+  _recycle() {
+    this._clearBootTimer();
+    this._disposeWorker();
+    this.version = null;
+    this._settle = null;
+    this._bootPromise = null;
+    this._setState(RUNTIME_STATE.IDLE);
   }
 
   terminate() {

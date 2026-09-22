@@ -531,6 +531,92 @@ console.log('\nexecute refuses a non-string rather than shipping it to the worke
   rt.terminate();
 }
 
+console.log('\na run over its deadline is a RESULT with a status, not a rejection');
+{
+  // The server expects a ClientToolResult for every call_id it minted. A
+  // rejection would leave the model with a tool_use and no tool_result, which
+  // the provider refuses outright and which breaks the session rather than the
+  // run.
+  const rt = new PyodideRuntime({
+    runtime: { ...RUNTIME, limits: { exec_seconds: 1 } },
+    workerFactory: workerFrom('executing'),
+  });
+
+  const started = Date.now();
+  const result = await rt.execute('NEVER answers', { callId: 'call-slow-loop' });
+  const took = Date.now() - started;
+
+  assertEqual(result.status, 'timeout', 'the status says it timed out');
+  assertEqual(result.call_id, 'call-slow-loop', 'and it is reported against the right call');
+  assert(/1s/.test(result.stderr), `the message names the limit (got ${JSON.stringify(result.stderr)})`);
+  assert(took >= 900 && took < 4000, `it waited roughly the configured second (took ${took}ms)`);
+  assert(typeof result.elapsed_ms === 'number', 'and carries an elapsed time');
+
+  // Recycled, not terminated. The person asked for this RUN to stop; a
+  // terminated runtime refuses to boot again and would make one runaway loop
+  // cost the rest of the conversation.
+  assertEqual(rt.state, RUNTIME_STATE.IDLE, 'the runtime returns to IDLE rather than TERMINATED');
+  const after = await rt.execute('fine now', { callId: 'call-after-timeout' });
+  assertEqual(after.status, 'ok', 'and the next execution boots a fresh worker and runs');
+  rt.terminate();
+}
+
+console.log('\na worker that dies mid-execution reports oom rather than hanging');
+{
+  const rt = new PyodideRuntime({
+    runtime: { ...RUNTIME, limits: { exec_seconds: 60 } },
+    workerFactory: workerFrom('executing'),
+  });
+  await rt.boot();
+
+  // A wasm memory abort takes the whole instance down: no exception to catch,
+  // no deadline fired, and previously a promise nobody would ever settle.
+  // Caught, so a regression that REJECTS instead fails by name here rather than
+  // crashing the run with an unhandled rejection and taking every later test
+  // with it.
+  let result = null;
+  let rejection = null;
+  try {
+    result = await rt.execute('CRASH the instance', { callId: 'call-crash' });
+  } catch (err) {
+    rejection = err;
+  }
+  assert(rejection === null,
+    `a dead worker RESOLVES with a status rather than rejecting${rejection ? ': ' + rejection.message : ''}`);
+  assertEqual(result && result.status, 'oom', 'the dead worker settles its call as oom');
+  assert(result !== null && /less data at a time/.test(result.stderr),
+    'and says something actionable, rather than repeating an empty error message');
+  assertEqual(rt.state, RUNTIME_STATE.IDLE, 'the spent instance is discarded');
+}
+
+console.log('\nan instance that reports its own oom is not reused');
+{
+  const rt = new PyodideRuntime({ runtime: RUNTIME, workerFactory: workerFrom('executing') });
+  await rt.boot();
+  const result = await rt.execute('OOM here', { callId: 'call-oom' });
+  assertEqual(result.status, 'oom', 'the worker-reported oom reaches the caller');
+  // Keeping it would let the next execution start against a heap that is
+  // already exhausted and fail for the previous run's reason.
+  assertEqual(rt.state, RUNTIME_STATE.IDLE, 'and the instance is recycled rather than reused');
+}
+
+console.log('\na deadline and a late result cannot both settle one call');
+{
+  const rt = new PyodideRuntime({
+    runtime: { ...RUNTIME, limits: { exec_seconds: 1 } },
+    workerFactory: workerFrom('executing'),
+  });
+  const result = await rt.execute('DELAY:2000 late', { callId: 'call-late' });
+  assertEqual(result.status, 'timeout', 'the deadline settled it first');
+
+  // The worker's answer arrives after the deadline already resolved the
+  // promise. Settling twice is invisible in JavaScript, so the assertion is
+  // that nothing is left behind to be attributed to a later call.
+  await new Promise((r) => setTimeout(r, 1800));
+  assertEqual(rt._pending.size, 0, 'nothing is left pending for the late result to land on');
+  rt.terminate();
+}
+
 console.log('\n' + '='.repeat(60));
 console.log(`Total: ${passed + failed}   Passed: ${passed}   Failed: ${failed}`);
 clearTimeout(watchdog);

@@ -26,6 +26,30 @@ self.onmessage = (event) => {
       return; // Answers nothing, which is what a hung execution looks like.
     }
 
+    if (code.startsWith('CRASH')) {
+      // Dies without answering, which is what a wasm memory abort looks like:
+      // the instance goes down and there is no exception for anyone to catch.
+      setTimeout(() => {
+        throw new Error('simulated worker abort');
+      }, 0);
+      return;
+    }
+
+    if (code.startsWith('OOM')) {
+      self.postMessage({
+        type: 'result',
+        call_id: data.call_id,
+        status: 'oom',
+        stdout: '',
+        stderr: 'out of memory',
+        summary: '',
+        images: [],
+        artifacts: [],
+        elapsed_ms: 1,
+      });
+      return;
+    }
+
     const delayMatch = code.match(/^DELAY:(\d+)/);
     const delay = delayMatch ? Number(delayMatch[1]) : 0;
 

@@ -50,3 +50,9 @@ Recorded on #431, measured 2026-09-22 against Pyodide 0.28.3 in Chrome:
   the next
 - a failed run still returns the output it produced before it failed, which is
   usually what explains the exception
+- **an infinite loop is stopped on the deadline**, measured at 3009 ms against a
+  3-second limit, and the runtime then reboots and runs the next execution.
+  Pyodide cannot interrupt its own Python without a `SharedArrayBuffer`, which
+  would require cross-origin isolation on every embedding page, so terminating
+  the worker from the host is the only way to stop a runaway loop and this is
+  the only place it can be checked

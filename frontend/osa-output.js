@@ -51,6 +51,8 @@ export const SERVER_LIMITS = Object.freeze({
  * @returns {{stdout_chars: number, stderr_chars: number, images: number, image_px: number, image_bytes: number}}
  */
 export function resolveLimits(limits = {}) {
+  const positive = (value, fallback) =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
   const bounded = (value, fallback, max) => {
     const n = typeof value === 'number' && Number.isFinite(value) ? Math.floor(value) : fallback;
     return Math.max(0, Math.min(n, max));
@@ -61,6 +63,16 @@ export function resolveLimits(limits = {}) {
     images: bounded(limits.images, SERVER_LIMITS.MAX_IMAGES, SERVER_LIMITS.MAX_IMAGES),
     image_px: bounded(limits.image_px, 1024, SERVER_LIMITS.MAX_IMAGE_EDGE_PX),
     image_bytes: SERVER_LIMITS.MAX_IMAGE_BYTES,
+    // Not bounded against a server constant, because the server neither measures
+    // nor enforces either one. `exec_seconds` is the host's own clock; see the
+    // deadline in `execute`, which is where it is applied.
+    exec_seconds: Math.max(1, positive(limits.exec_seconds, 120)),
+    // Carried for reporting only. wasm32 cannot be told to stop at a byte count:
+    // memory is grown by the instance itself and an exhaustion aborts it, so
+    // there is no point at which this number could be checked and enforced. What
+    // the runtime does instead is recognize the abort and report `oom` rather
+    // than a generic error, which is why `oom` is its own status.
+    memory_mb: Math.max(64, positive(limits.memory_mb, 1536)),
   };
 }
 

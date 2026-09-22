@@ -97,6 +97,20 @@ console.log('\na community cannot declare a cap the server will refuse');
   assertEqual(resolveLimits({ images: 0 }).images, 0, 'zero images is a real setting, not a missing one');
   assertEqual(resolveLimits({ stdout_bytes: 'lots' }).stdout_chars, SERVER_LIMITS.MAX_STDOUT_CHARS,
     'a non-numeric value falls back rather than producing NaN');
+
+  // exec_seconds and memory_mb are NOT clamped against a server constant,
+  // because the server neither measures nor enforces either. exec_seconds is
+  // the host's own deadline; memory_mb is carried for reporting only, since
+  // wasm32 grows memory from inside the instance and an exhaustion aborts it,
+  // so there is no moment at which a byte count could be checked.
+  assertEqual(resolveLimits({}).exec_seconds, 120, 'exec_seconds defaults to the RuntimeLimits default');
+  assertEqual(resolveLimits({}).memory_mb, 1536, 'and so does memory_mb');
+  assertEqual(resolveLimits({ exec_seconds: 900 }).exec_seconds, 900,
+    'a LONG deadline is honored, since no server constant bounds it');
+  assertEqual(resolveLimits({ exec_seconds: 0 }).exec_seconds, 120,
+    'a zero deadline falls back rather than making every run time out instantly');
+  assertEqual(resolveLimits({ exec_seconds: -5 }).exec_seconds, 120, 'and so does a negative one');
+  assertEqual(resolveLimits({ memory_mb: 8 }).memory_mb, 64, 'memory_mb keeps RuntimeLimits\' own floor');
 }
 
 console.log('\nstdout and stderr are captured, and restored afterwards');

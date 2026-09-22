@@ -27,7 +27,7 @@ const RUNTIME = {
   preload_on: 'widget_open',
   fetch_allow: [new URL('.', location.href).href],
   index_urls: [],
-  limits: {},
+  limits: { exec_seconds: 3 },
 };
 
 async function main() {
@@ -185,6 +185,25 @@ async function main() {
   check('a failed run still returns the output it produced first',
     failing.status === 'error' && failing.stdout.includes('before the failure'),
     `status=${failing.status} stdout=${JSON.stringify(failing.stdout)}`);
+
+  // THE DEADLINE, against a genuinely runaway loop. This is the one thing that
+  // cannot be checked without a real runtime: Pyodide cannot interrupt its own
+  // Python without a SharedArrayBuffer, so the only way to stop this is for the
+  // host to terminate the worker.
+  const loopStarted = performance.now();
+  const runaway = await rt.execute('while True:\n    pass\n');
+  const loopTook = Math.round(performance.now() - loopStarted);
+  check('an infinite loop is stopped on the deadline', runaway.status === 'timeout',
+    `status=${runaway.status} after ${loopTook}ms`);
+  check('and it waited about the configured 3 seconds, not the boot deadline',
+    loopTook >= 2500 && loopTook < 12000, `${loopTook}ms`);
+
+  // Recycled, not terminated: one runaway loop must not cost the rest of the
+  // conversation. This reboots a whole Pyodide instance, so it is also the
+  // check that a cold reboot actually works.
+  const afterTimeout = await rt.execute('recovered = 1 + 1\nprint(recovered)');
+  check('the runtime recovers and runs the next execution', afterTimeout.status === 'ok',
+    `status=${afterTimeout.status} stdout=${JSON.stringify(afterTimeout.stdout)} ${afterTimeout.stderr.slice(-120)}`);
 
   const failures = results.filter((r) => !r.ok).length;
   statusEl.textContent = failures === 0 ? `ALL ${results.length} CHECKS PASSED` : `${failures} of ${results.length} FAILED`;
