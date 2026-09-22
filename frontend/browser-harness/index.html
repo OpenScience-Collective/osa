@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>OSA browser runtime harness</title>
+  <style>
+    body { font-family: -apple-system, system-ui, sans-serif; margin: 2rem; line-height: 1.5; }
+    #status { font-size: 1.1rem; font-weight: 600; margin: 1rem 0; }
+    pre { background: #f4f4f5; padding: 1rem; border-radius: 6px; white-space: pre-wrap; }
+    .pass { color: #15803d; } .fail { color: #b91c1c; }
+  </style>
+</head>
+<body>
+  <h1>OSA browser runtime harness</h1>
+  <p>Boots the REAL generated worker against real Pyodide, under a real
+     Content-Security-Policy, and exercises the parts no Bun test can reach:
+     the boot-time install, the namespace seal, the import gate and the
+     post-seal egress boundary.</p>
+  <div id="status">running...</div>
+  <pre id="log"></pre>
+  <script type="module" src="harness.js"></script>
+</body>
+</html>

@@ -9,10 +9,11 @@
  */
 
 import {
-  isUrlAllowed,
   DENY_REASON,
+  buildDataClientSource,
   buildEgressGuardSource,
   buildNamespaceSealSource,
+  isUrlAllowed,
 } from './osa-egress.js';
 
 let passed = 0;
@@ -260,6 +261,10 @@ console.log('\nTHE GUARD RUNNING IN A REAL WORKER, not inspected as a string');
 
   assert(String(r.__WebSocket).startsWith('DENIED'), 'WebSocket construction is refused at runtime');
   assert(String(r.__EventSource).startsWith('DENIED'), 'EventSource construction is refused at runtime');
+  // A nested worker would get a fresh global with the native fetch intact, so
+  // it is the one transport that defeats every shim above at once.
+  assert(String(r.__Worker).startsWith('DENIED'), 'a nested Worker cannot be spawned to obtain an unshimmed global');
+  assert(String(r.__SharedWorker).startsWith('DENIED'), 'nor a SharedWorker');
 }
 
 console.log('\nTOCTOU, decided by what the SERVER received, not by which coercion won');
@@ -315,6 +320,31 @@ console.log('\nTOCTOU, decided by what the SERVER received, not by which coercio
   } finally {
     server.stop(true);
   }
+}
+
+console.log('\nthe data client is real Python, checked by a real compiler');
+{
+  // A malformed multi-line f-string in the namespace seal passed every regex
+  // assertion and only failed when the generated source was executed. This one
+  // cannot be executed outside Pyodide, since it imports the js bridge, so it
+  // is handed to a compiler instead. That is the strongest check available
+  // here, and strictly stronger than matching substrings.
+  const py = buildDataClientSource();
+  // Fed on stdin rather than embedded in -c, because it must be COMPILED and
+  // not run: it imports the js bridge, which exists only inside Pyodide.
+  const proc = Bun.spawnSync(
+    ['python3', '-c', 'import sys; compile(sys.stdin.read(), "osa-data-client", "exec"); print("COMPILED")'],
+    { stdin: new TextEncoder().encode(py) }
+  );
+  const out = proc.stdout.toString().trim();
+  assert(out === 'COMPILED',
+    `the generated data client compiles (got: ${out || proc.stderr.toString().trim().split('\n').slice(-2).join(' | ')})`);
+
+  assert(/def fetch_bytes/.test(py) && /def fetch_text/.test(py), 'it offers both a bytes and a text read');
+  assert(/module.__spec__ = _ilu.spec_from_loader/.test(py),
+    'it carries a real __spec__, without which find_spec RAISES and the import gate denies `import osa`');
+  assert(/del _ilu, _sys, _types, _js, _build_osa_client/.test(py),
+    'the bridge it was built from is not left lying in the namespace');
 }
 
 console.log('\nthe namespace seal, EXECUTED rather than regex-matched');

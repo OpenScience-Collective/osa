@@ -28,7 +28,7 @@
  * a community's own `fetch_allow` inside it.
  */
 
-import { buildEgressGuardSource, buildNamespaceSealSource } from './osa-egress.js';
+import { buildDataClientSource, buildEgressGuardSource, buildNamespaceSealSource } from './osa-egress.js';
 
 /** Lifecycle states. A runtime is in exactly one at a time. */
 export const RUNTIME_STATE = Object.freeze({
@@ -91,6 +91,7 @@ export function buildWorkerSource(runtime) {
   // code lives in, so install-time and bridge capability cannot be reacquired
   // from inside a run.
   const namespaceSeal = JSON.stringify(buildNamespaceSealSource());
+  const dataClient = JSON.stringify(buildDataClientSource());
 
   // Built here rather than inside the template, because a template literal
   // interprets escape sequences in its own source: an '\n' written in there
@@ -190,6 +191,11 @@ export function buildWorkerSource(runtime) {
 
         userNamespace = pyodide.globals.get('dict')();
         userNamespace.set('__name__', '__main__');
+
+        // The sanctioned network route, installed in the user namespace BEFORE
+        // the seal, because it needs the js bridge the seal is about to remove.
+        // Sealing without it leaves executed code with no way to read anything.
+        pyodide.runPython(${dataClient}, { globals: userNamespace });
 
         // Python-side capability removal, then JS-side egress narrowing. Both
         // happen before the first executable statement exists, and the egress

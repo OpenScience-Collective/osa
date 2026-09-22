@@ -241,6 +241,29 @@ export function buildEgressGuardSource({ bootAllow = [] } = {}) {
   // vacuously.
   __install('WebSocket', function () { throw __denied('websocket', DENY_REASON.TRANSPORT); });
   __install('EventSource', function () { throw __denied('eventsource', DENY_REASON.TRANSPORT); });
+
+  // A NESTED WORKER IS A FRESH, UNSHIMMED GLOBAL. Everything above is installed
+  // on this worker's own global object, and a worker spawned from here gets its
+  // own, with the native fetch intact. It would still be under the page's CSP,
+  // but connect-src is the embedder's ceiling, not this community's
+  // fetch_allow, so a permissive embedder would leave no boundary at all.
+  // Nothing in the runtime spawns one.
+  __install('Worker', function () { throw __denied('worker', DENY_REASON.TRANSPORT); });
+  __install('SharedWorker', function () { throw __denied('sharedworker', DENY_REASON.TRANSPORT); });
+
+  // sendBeacon is a fire-and-forget POST that returns a boolean and reports
+  // nothing, which makes it the transport a leak would prefer. It is not on
+  // WorkerNavigator in current browsers, so this is a guard against gaining it
+  // rather than against having it.
+  if (self.navigator && typeof self.navigator.sendBeacon === 'function') {
+    try {
+      Object.defineProperty(self.navigator, 'sendBeacon', {
+        value: function () { throw __denied('sendbeacon', DENY_REASON.TRANSPORT); },
+        writable: false,
+        configurable: false,
+      });
+    } catch (e) { /* not redefinable in this environment */ }
+  }
   `;
 }
 
@@ -256,12 +279,16 @@ export function buildEgressGuardSource({ bootAllow = [] } = {}) {
  * @returns {string}
  */
 export function buildNamespaceSealSource() {
-  // NOTE: this has NOT been executed against a real Pyodide runtime. The JS test
-  // harness has no Python interpreter, so it is verified by inspection only and
-  // must be re-checked in the browser against the pinned Pyodide version before
-  // it is relied on. Said plainly because the previous version was verified by
-  // regex over its own source text, which cannot tell a working seal from a
-  // comment mentioning the right words.
+  // Verified against real Pyodide 0.28.3 in Chrome on 2026-09-22, under
+  // nemar.org's production Content-Security-Policy, and recorded on #431: every
+  // blocked root is refused through the import statement, through
+  // importlib.import_module and as a submodule, while unblocked imports still
+  // work. It is also compiled by a real Python in the test suite, because a
+  // malformed f-string in an earlier version passed every regex assertion.
+  //
+  // Reading this source for the right words is NOT verification; that is how
+  // the earlier version was checked, and it could not tell a working seal from
+  // a comment mentioning one.
   return [
     'import builtins as _b, sys as _sys',
     '',
@@ -277,6 +304,24 @@ export function buildNamespaceSealSource() {
     '    "micropip", "js", "pyodide", "pyodide_js", "pyodide_http", "ctypes",',
     '})',
     '',
+    '# One reason per root. A single shared sentence said "network access goes',
+    '# through the runtime\'s own client" for ctypes too, which is not why ctypes',
+    '# is blocked and reads as a bug in the person\'s own code.',
+    '_NETWORK = (',
+    '    "Read data with osa.fetch_bytes(url) or osa.fetch_text(url), which "',
+    '    "enforces this community\'s fetch_allow."',
+    ')',
+    '_WHY = {',
+    '    "micropip": ("Packages are installed when the runtime starts, from this "',
+    '                 "community\'s allow_install list, and nothing is installed "',
+    '                 "on demand."),',
+    '    "js": _NETWORK,',
+    '    "pyodide": _NETWORK,',
+    '    "pyodide_js": _NETWORK,',
+    '    "pyodide_http": _NETWORK,',
+    '    "ctypes": ("Foreign function calls are not available in this runtime."),',
+    '}',
+    '',
     '',
     'class _ImportBlocker:',
     '    """Refuse blocked modules at the FINDER level, not the cache level.',
@@ -290,12 +335,9 @@ export function buildNamespaceSealSource() {
     '    """',
     '',
     '    def find_spec(self, fullname, path=None, target=None):',
-    '        if fullname.partition(".")[0] in _BLOCKED_ROOTS:',
-    '            raise ImportError(',
-    '                f"{fullname!r} is not available to executed code. "',
-    '                "Network access goes through the runtime\'s own client, "',
-    '                "which enforces this community\'s fetch_allow."',
-    '            )',
+    '        root = fullname.partition(".")[0]',
+    '        if root in _BLOCKED_ROOTS:',
+    '            raise ImportError(f"{fullname!r} is not available to executed code. " + _WHY[root])',
     '        return None',
     '',
     '',
@@ -324,5 +366,78 @@ export function buildNamespaceSealSource() {
     '_b.__import__ = _install_import_guard(_b.__import__)',
     '',
     'del _b, _sys, _install_import_guard',
+  ].join('\n');
+}
+
+/**
+ * Build the Python that gives executed code its ONE sanctioned network route.
+ *
+ * Measured in Chrome on 2026-09-22, against real Pyodide under nemar.org's
+ * production policy: once `buildNamespaceSealSource` has run, executed code has
+ * no way to reach the network at all. `js`, `pyodide` and `micropip` are gone,
+ * and `urllib` fails with "unknown url type: https" because Pyodide ships no
+ * socket transport. A runtime that cannot read the archive cannot do the one
+ * thing this feature exists for, so the seal has to be paired with a client
+ * rather than left to stand alone.
+ *
+ * WHAT THIS IS AND IS NOT A BOUNDARY AGAINST
+ *
+ * It is not a Python/JavaScript boundary, and nothing in Pyodide could be. A
+ * function handed to executed code exposes its `__closure__` and `__globals__`,
+ * and any JsProxy reaches the whole JavaScript world through its own
+ * `constructor`. Hiding the reference harder buys nothing.
+ *
+ * The boundary is the fetch shim itself, which is why decision 1 of the phase
+ * plan puts it there: the native fetch is deleted from the prototype chain and
+ * the shim installed non-writable and non-configurable, so code that reaches
+ * JavaScript still finds only the guarded function. That is also why nested
+ * workers are blocked, since a fresh global is the one way to get an unshimmed
+ * one. What the namespace seal buys is that the obvious routes are gone and a
+ * model does not stumble onto one, not that a determined escape is impossible.
+ *
+ * @returns {string} Python source, run in the user namespace before the seal.
+ */
+export function buildDataClientSource() {
+  return [
+    'import importlib.util as _ilu',
+    'import sys as _sys',
+    'import types as _types',
+    'import js as _js',
+    '',
+    'def _build_osa_client(_fetch):',
+    '    """Close over the SHIMMED fetch, which is the enforcement point."""',
+    '',
+    '    async def fetch_bytes(url):',
+    '        """Read a URL inside this community\'s fetch_allow and return bytes."""',
+    '        response = await _fetch(url)',
+    '        if not response.ok:',
+    '            raise OSError("HTTP %s for %s" % (response.status, url))',
+    '        buffer = await response.arrayBuffer()',
+    '        return bytes(buffer.to_py())',
+    '',
+    '    async def fetch_text(url, encoding="utf-8"):',
+    '        """The same, decoded."""',
+    '        return (await fetch_bytes(url)).decode(encoding)',
+    '',
+    '    module = _types.ModuleType("osa")',
+    '    module.__doc__ = (',
+    '        "Network access for code running in the browser runtime. "',
+    '        "Both calls are async and must be awaited: zarr\'s synchronous API "',
+    '        "starts an IO thread, which Pyodide\'s main thread cannot do, and the "',
+    '        "RuntimeError it raises names neither zarr nor the browser."',
+    '    )',
+    '    module.fetch_bytes = fetch_bytes',
+    '    module.fetch_text = fetch_text',
+    '    # Given a real spec and registered, so `import osa` works and so the',
+    '    # static import gate can resolve it. A ModuleType built by hand has',
+    '    # __spec__ of None, and find_spec RAISES on that rather than returning',
+    '    # None, which the gate would read as unavailable and deny.',
+    '    module.__spec__ = _ilu.spec_from_loader("osa", loader=None)',
+    '    return module',
+    '',
+    '_sys.modules["osa"] = _build_osa_client(_js.fetch)',
+    'osa = _sys.modules["osa"]',
+    '',
+    'del _ilu, _sys, _types, _js, _build_osa_client',
   ].join('\n');
 }

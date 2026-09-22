@@ -82,7 +82,7 @@ self.onmessage = async (event) => {
         catch (e) { out.__importScripts = e && e.name === 'EgressDenied' ? 'DENIED:' + e.reason : 'other'; }
       } else { out.__importScripts = 'NO_IMPORTSCRIPTS_IN_ENV'; }
 
-      for (const t of ['WebSocket', 'EventSource']) {
+      for (const t of ['WebSocket', 'EventSource', 'Worker', 'SharedWorker']) {
         try { new self[t]('https://zarr.nemar.org/x'); out['__' + t] = 'CONSTRUCTED'; }
         catch (e) { out['__' + t] = e && e.name === 'EgressDenied' ? 'DENIED:' + e.reason : 'other'; }
       }
