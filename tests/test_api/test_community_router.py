@@ -683,3 +683,95 @@ class TestModelOverrideDescription:
 
         for model_cls in (AskRequest, ChatRequest):
             assert model_cls.model_fields["model"].description == MODEL_OVERRIDE_DESCRIPTION
+
+
+class TestCommunityConfigClientTools:
+    """The widget learns from this response whether a community runs code at all.
+
+    Before these fields, it had no way to know: a community could configure
+    client tools and the widget would never load a runtime or declare them.
+    """
+
+    COMMUNITY = "clienttoolsconfigtest"
+
+    def _config(self):
+        from src.core.config.community import CommunityConfig
+
+        return CommunityConfig(
+            id=self.COMMUNITY,
+            name="Client Tools Config Test",
+            description="A community that runs code in the browser",
+            extensions={
+                "client_tools": [
+                    {
+                        "name": "execute_code",
+                        "runtime": "python",
+                        "requires_permission": True,
+                        "description": "Run Python in the browser.",
+                    }
+                ]
+            },
+            runtime={
+                "python": {
+                    "pyodide_version": "0.28.3",
+                    "lockfile": "runtime/test-lock.json",
+                    "preload": ["numpy"],
+                    "fetch_allow": ["https://zarr.nemar.org/"],
+                    "limits": {"stdout_chars": 4096},
+                }
+            },
+        )
+
+    @pytest.fixture
+    def client(self, monkeypatch: pytest.MonkeyPatch):
+        from fastapi import FastAPI
+
+        from src.api.routers.community import create_community_router
+        from src.assistants import registry
+        from src.tools.client_tools import CLIENT_TOOL_KILL_SWITCH_ENV
+
+        monkeypatch.delenv(CLIENT_TOOL_KILL_SWITCH_ENV, raising=False)
+        registry.register_from_config(self._config())
+        app = FastAPI()
+        app.include_router(create_community_router(self.COMMUNITY))
+        try:
+            yield TestClient(app)
+        finally:
+            registry._assistants.pop(self.COMMUNITY, None)
+
+    def test_exposes_the_tools_and_the_runtime_they_need(self, client: TestClient) -> None:
+        data = client.get(f"/{self.COMMUNITY}/").json()
+
+        assert data["client_tools"] == [{"name": "execute_code", "requires_permission": True}]
+        python = data["runtime"]["python"]
+        assert python["pyodide_version"] == "0.28.3"
+        assert python["preload"] == ["numpy"]
+        assert python["fetch_allow"] == ["https://zarr.nemar.org/"]
+        # The configured limit comes through, and the unset ones carry their defaults,
+        # so the widget and the server read one set of numbers.
+        assert python["limits"]["stdout_chars"] == 4096
+        assert python["limits"]["exec_seconds"] == 120
+
+    def test_the_kill_switch_hides_them(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The widget decides from this response whether to download a runtime, so a
+        switched-off feature must not still cost every visitor that download."""
+        from src.tools.client_tools import CLIENT_TOOL_KILL_SWITCH_ENV
+
+        monkeypatch.setenv(CLIENT_TOOL_KILL_SWITCH_ENV, "1")
+        data = client.get(f"/{self.COMMUNITY}/").json()
+
+        assert data["client_tools"] == []
+        assert data["runtime"] is None
+
+    def test_a_community_without_client_tools_exposes_none(self) -> None:
+        os.environ["REQUIRE_API_AUTH"] = "false"
+        from src.api.config import get_settings
+
+        get_settings.cache_clear()
+        from src.api.main import app
+
+        data = TestClient(app).get("/hed/").json()
+        assert data["client_tools"] == []
+        assert data["runtime"] is None

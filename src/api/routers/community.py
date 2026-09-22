@@ -58,7 +58,7 @@ from src.assistants import registry
 from src.assistants.community import CommunityAssistant
 from src.assistants.community import PageContext as AgentPageContext
 from src.assistants.registry import AssistantInfo
-from src.core.config.community import WidgetConfig
+from src.core.config.community import RuntimeConfig, WidgetConfig
 from src.core.services.anthropic_llm import OFFERED_MODELS, create_anthropic_llm, normalize_model
 from src.core.services.litellm_llm import DEFAULT_MODEL as OPENROUTER_DEFAULT_MODEL
 from src.core.services.litellm_llm import DEFAULT_PROVIDER as OPENROUTER_DEFAULT_PROVIDER
@@ -82,6 +82,7 @@ from src.metrics.queries import (
     get_quality_summary,
     get_usage_stats,
 )
+from src.tools.client_tools import client_tools_disabled
 
 logger = logging.getLogger(__name__)
 
@@ -297,6 +298,13 @@ class OfferedModelResponse(BaseModel):
     label: str = Field(..., description="Human-readable display label")
 
 
+class ClientToolInfo(BaseModel):
+    """A client tool the widget may be asked to run, as the widget needs to know it."""
+
+    name: str
+    requires_permission: bool
+
+
 class CommunityConfigResponse(BaseModel):
     """Community configuration information."""
 
@@ -314,6 +322,22 @@ class CommunityConfigResponse(BaseModel):
         ..., description="Widget display configuration (title, placeholder, etc.)"
     )
     status: str = Field(..., description="Health status: healthy, degraded, or error")
+    client_tools: list[ClientToolInfo] = Field(
+        default_factory=list,
+        description=(
+            "Client tools this community configures, which the widget can offer to run. "
+            "Empty when none are configured or the server's kill switch is set, and the "
+            "widget loads no runtime at all in that case. get_full_output is not listed: "
+            "it is derived, not configured, and bound beside any python tool."
+        ),
+    )
+    runtime: RuntimeConfig | None = Field(
+        default=None,
+        description=(
+            "The execution environment those tools run in, exactly as configured. None "
+            "whenever client_tools is empty."
+        ),
+    )
 
 
 class FAQEntryResponse(BaseModel):
@@ -1656,6 +1680,26 @@ def convention_logo_url(community_id: str, widget: WidgetConfig) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _client_tool_config(config: Any) -> dict[str, Any]:
+    """The client-tool part of the public config: what the widget needs to run them.
+
+    Honors the kill switch here as well as at bind time. The widget decides from
+    this response whether to download a Python runtime at all, so a switched-off
+    feature must not still cost every visitor that download.
+    """
+    extensions = getattr(config, "extensions", None)
+    configured = list(extensions.client_tools) if extensions is not None else []
+    if not configured or client_tools_disabled():
+        return {"client_tools": [], "runtime": None}
+    return {
+        "client_tools": [
+            ClientToolInfo(name=entry.name, requires_permission=entry.requires_permission)
+            for entry in configured
+        ],
+        "runtime": config.runtime,
+    }
+
+
 def create_community_router(community_id: str) -> APIRouter:
     """Create an API router for a community.
 
@@ -2105,6 +2149,7 @@ def create_community_router(community_id: str) -> APIRouter:
             ],
             widget=WidgetConfigResponse(**widget_cfg.resolve(info.name, logo_url=conv_logo)),
             status=health_status,
+            **_client_tool_config(info.community_config),
         )
 
     @router.get("/logo")
