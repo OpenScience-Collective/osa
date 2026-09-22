@@ -21,6 +21,7 @@ Example config.yaml:
         - "Hierarchical Event Descriptors"
 """
 
+import ast
 import ipaddress
 import logging
 import re
@@ -32,6 +33,7 @@ from urllib.parse import urlparse
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
+from src.core.config.runtime_lock import lockfile_path_problem
 from src.core.limits import (
     MAX_IMAGE_EDGE_PX,
     MAX_IMAGES,
@@ -678,12 +680,17 @@ class RuntimeLimits(BaseModel):
     server neither measures nor enforces it."""
 
 
+#: A prelude is a few lines of setup, not a program; this bounds what every reader's
+#: browser runs before anything they asked for.
+MAX_PRELUDE_CHARS = 4000
+
+
 class PythonRuntimeConfig(BaseModel):
     """Configuration for the browser-side Python (Pyodide) runtime.
 
     Describes the environment a ``runtime: python`` client tool executes
-    in: which Pyodide build and lockfile to load, what may be preloaded or
-    installed, and the resource caps in ``limits``.
+    in: which Pyodide build to load, the wheels it adds to that build, what
+    is loaded at startup, a prelude, and the resource caps in ``limits``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -691,14 +698,33 @@ class PythonRuntimeConfig(BaseModel):
     pyodide_version: str
     """Pyodide distribution version to load in the browser."""
 
-    lockfile: str
-    """Lockfile identifying the exact package set/versions to load."""
+    lockfile: str | None = None
+    """A Pyodide lock overlay, relative to the community's folder: the pure-Python
+    wheels this runtime adds to the Pyodide distribution, each with its sha256, in
+    ``wheels/`` beside it. Omit it when the distribution alone is enough.
+
+    The server verifies every wheel against its entry when it loads the overlay,
+    sends the entries in ``/config``, and serves the wheels itself, so a package named
+    in ``preload`` resolves from here or from Pyodide's own lock. See
+    ``src/core/config/runtime_lock.py``."""
 
     preload: list[str] = Field(default_factory=list)
-    """Package names to preload before the first execution."""
+    """Packages loaded when the runtime starts, from the Pyodide distribution or the
+    lock overlay, with the dependencies their lock entries name."""
 
     allow_install: list[str] = Field(default_factory=list)
-    """Package names the runtime may additionally install on demand."""
+    """Requirements micropip installs from ``index_urls`` when the runtime starts, each
+    with ``deps=False``. Nothing is installed after startup."""
+
+    prelude: str | None = Field(default=None, max_length=MAX_PRELUDE_CHARS)
+    """Python run once in the reader's browser after the runtime is sealed and before
+    the first execution, with exactly the privileges executed code has.
+
+    For setup every execution needs, such as registering a library's transport over
+    ``osa.fetch``. It runs without the permission gate, which exists for code a model
+    wrote; this is code the community wrote and reviewed. Top-level ``await`` is
+    allowed. If it raises, the runtime fails to start, because every later execution
+    would otherwise fail in a way that names the wrong cause."""
 
     preload_on: Literal["first_run", "widget_open"] = "first_run"
     """When to trigger preloading: at the first execution, or as soon as the
@@ -714,6 +740,28 @@ class PythonRuntimeConfig(BaseModel):
     """Resource caps for this runtime. Defaults to every ``RuntimeLimits``
     field's own default, so a community that has no reason to deviate from
     them can omit this key entirely rather than spelling out ``limits: {}``."""
+
+    @field_validator("lockfile")
+    @classmethod
+    def _lockfile_stays_in_the_community_folder(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        problem = lockfile_path_problem(value)
+        if problem is not None:
+            raise ValueError(f"lockfile {value!r}: {problem}")
+        return value
+
+    @field_validator("prelude")
+    @classmethod
+    def _prelude_compiles(cls, value: str | None) -> str | None:
+        """Compiled here so a syntax error fails a config check, not a reader's boot."""
+        if value is None:
+            return None
+        try:
+            compile(value, "<prelude>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+        except SyntaxError as err:
+            raise ValueError(f"prelude does not compile: {err}") from err
+        return value
 
 
 class RuntimeConfig(BaseModel):
@@ -1336,7 +1384,7 @@ class CommunityConfig(BaseModel):
         runtime:
           python:
             pyodide_version: "0.29.5"
-            lockfile: "pyodide-lock-2026-01.json"
+            lockfile: "runtime/pyodide-lock.json"
             limits:
               memory_mb: 1536
     """

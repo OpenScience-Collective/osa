@@ -66,6 +66,12 @@ from src.core.config.community import (
     RuntimeConfig,
     WidgetConfig,
 )
+from src.core.config.runtime_lock import (
+    RuntimeLockError,
+    RuntimeLockOverlay,
+    load_runtime_lock,
+    runtime_wheel_path,
+)
 from src.core.limits import MAX_BROWSER_RUNS_PER_REPLY
 from src.core.services.anthropic_llm import OFFERED_MODELS, create_anthropic_llm, normalize_model
 from src.core.services.litellm_llm import DEFAULT_MODEL as OPENROUTER_DEFAULT_MODEL
@@ -351,6 +357,14 @@ class CommunityConfigResponse(BaseModel):
         description=(
             "The execution environment those tools run in, exactly as configured. None "
             "whenever client_tools is empty."
+        ),
+    )
+    runtime_lock: RuntimeLockOverlay | None = Field(
+        default=None,
+        description=(
+            "The Pyodide lock entries the runtime adds to its Pyodide version's own lock, "
+            "verified against the wheels this server serves at runtime/{file_name}. None "
+            "when the runtime names no lockfile, and whenever client_tools is empty."
         ),
     )
 
@@ -1697,18 +1711,40 @@ def convention_logo_url(community_id: str, widget: WidgetConfig) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _community_runtime_lock(config: CommunityConfig) -> RuntimeLockOverlay | None:
+    """The community's verified lock overlay, None when it names none.
+
+    Raises RuntimeLockError when the overlay or a wheel it lists is unusable.
+    """
+    python = config.runtime.python if config.runtime is not None else None
+    if python is None or python.lockfile is None:
+        return None
+    return load_runtime_lock(_ASSISTANTS_DIR / config.id, python.lockfile)
+
+
 def _client_tool_config(config: CommunityConfig | None) -> dict[str, Any]:
     """The client-tool part of the public config: what the widget needs to run them.
 
     Honors the kill switch here as well as at bind time. The widget decides from
     this response whether to download a Python runtime at all, so a switched-off
     feature must not still cost every visitor that download.
+
+    Fails closed on a lock overlay that does not verify: no client tools, so the
+    widget declares none and the model is never offered a tool whose runtime could
+    not start. A test loads every shipped overlay, so this is a deployment gone
+    wrong rather than a state a reviewed config can reach.
     """
+    none: dict[str, Any] = {"client_tools": [], "runtime": None, "runtime_lock": None}
     # None for an assistant registered without a YAML config, which configures nothing.
     extensions = config.extensions if config is not None else None
     configured = list(extensions.client_tools) if extensions is not None else []
     if config is None or not configured or client_tools_disabled():
-        return {"client_tools": [], "runtime": None}
+        return none
+    try:
+        runtime_lock = _community_runtime_lock(config)
+    except RuntimeLockError:
+        logger.exception("Community %s: its runtime lock overlay does not verify", config.id)
+        return none
     return {
         "client_tools": [
             ClientToolInfo(
@@ -1719,6 +1755,7 @@ def _client_tool_config(config: CommunityConfig | None) -> dict[str, Any]:
             for entry in configured
         ],
         "runtime": config.runtime,
+        "runtime_lock": runtime_lock,
     }
 
 
@@ -2205,6 +2242,35 @@ def create_community_router(community_id: str) -> APIRouter:
             media_type=media_type,
             filename=f"{community_id}-logo{logo_path.suffix}",
             headers=headers,
+        )
+
+    @router.get("/runtime/{file_name}")
+    async def get_runtime_wheel(file_name: str) -> FileResponse:
+        """Serve one wheel the community's lock overlay lists, for the browser runtime.
+
+        Only names the overlay lists are served, found by lookup rather than by
+        joining the request onto the disk. Immutable for a year: a wheel's name is
+        its identity, and the overlay's sha256, which Pyodide checks as it loads the
+        wheel, is verified against these bytes when the overlay is loaded.
+        """
+        config = info.community_config
+        not_found = HTTPException(status_code=404, detail="No such runtime file")
+        if config is None or client_tools_disabled():
+            raise not_found
+        python = config.runtime.python if config.runtime is not None else None
+        if python is None or python.lockfile is None:
+            raise not_found
+        try:
+            path = runtime_wheel_path(_ASSISTANTS_DIR / community_id, python.lockfile, file_name)
+        except RuntimeLockError:
+            logger.exception("Community %s: its runtime lock overlay does not verify", community_id)
+            raise not_found from None
+        if path is None:
+            raise not_found
+        return FileResponse(
+            path,
+            media_type="application/octet-stream",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
 
     # -----------------------------------------------------------------------

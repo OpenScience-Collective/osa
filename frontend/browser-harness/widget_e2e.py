@@ -98,7 +98,6 @@ def _config() -> CommunityConfig:
         runtime={
             "python": {
                 "pyodide_version": "0.29.5",
-                "lockfile": "runtime/browsertest-pyodide-lock.json",
                 "preload": ["numpy", "matplotlib"],
                 "preload_on": "first_run",
                 "limits": {"exec_seconds": 20},

@@ -2126,6 +2126,42 @@ class TestPythonRuntimeConfig:
                 unexpected="nope",
             )
 
+    def test_lockfile_and_prelude_are_optional(self) -> None:
+        """A runtime the Pyodide distribution alone satisfies needs neither."""
+        config = PythonRuntimeConfig(pyodide_version="0.29.5")
+        assert config.lockfile is None
+        assert config.prelude is None
+
+    @pytest.mark.parametrize(
+        "lockfile",
+        [
+            "/etc/lock.json",
+            "../other/lock.json",
+            "runtime/../../lock.json",
+            "./lock.json",
+            "runtime\\lock.json",
+            "runtime/lock.yaml",
+        ],
+    )
+    def test_a_lockfile_must_stay_in_the_community_folder(self, lockfile: str) -> None:
+        """It is joined onto a folder on the server, so it must not be able to leave it."""
+        with pytest.raises(ValidationError, match="lockfile"):
+            PythonRuntimeConfig(pyodide_version="0.29.5", lockfile=lockfile)
+
+    def test_a_prelude_that_awaits_at_top_level_is_accepted(self) -> None:
+        """It runs where executed code runs, and top-level await works there."""
+        prelude = "import osa\nstatus, body = await osa.fetch('https://zarr.nemar.org/x')\n"
+        assert PythonRuntimeConfig(pyodide_version="0.29.5", prelude=prelude).prelude == prelude
+
+    def test_a_prelude_that_does_not_compile_is_refused_here(self) -> None:
+        """Here, at config load, rather than as a failed boot in every reader's browser."""
+        with pytest.raises(ValidationError, match="prelude does not compile"):
+            PythonRuntimeConfig(pyodide_version="0.29.5", prelude="import osa\nif True\n")
+
+    def test_a_prelude_is_bounded(self) -> None:
+        with pytest.raises(ValidationError):
+            PythonRuntimeConfig(pyodide_version="0.29.5", prelude="x = 1\n" * 1000)
+
 
 class TestRuntimeConfig:
     """Tests for RuntimeConfig model."""

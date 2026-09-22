@@ -738,7 +738,6 @@ class TestCommunityConfigClientTools:
             runtime={
                 "python": {
                     "pyodide_version": "0.29.5",
-                    "lockfile": "runtime/test-lock.json",
                     "preload": ["numpy"],
                     "fetch_allow": ["https://zarr.nemar.org/"],
                     "limits": {"stdout_chars": 4096},
@@ -790,6 +789,10 @@ class TestCommunityConfigClientTools:
 
         assert data["client_tools"] == []
         assert data["runtime"] is None
+        assert data["runtime_lock"] is None
+
+    def test_no_lockfile_means_no_overlay(self, client: TestClient) -> None:
+        assert client.get(f"/{self.COMMUNITY}/").json()["runtime_lock"] is None
 
     def test_a_community_without_client_tools_exposes_none(self) -> None:
         os.environ["REQUIRE_API_AUTH"] = "false"
@@ -801,3 +804,160 @@ class TestCommunityConfigClientTools:
         data = TestClient(app).get("/hed/").json()
         assert data["client_tools"] == []
         assert data["runtime"] is None
+
+
+WHEEL = "tinypkg-1.0-py3-none-any.whl"
+WHEEL_BYTES = b"PK\x03\x04 a wheel is a zip, and these bytes stand for one"
+
+
+def _write_overlay(
+    community_dir, wheel_bytes: bytes = WHEEL_BYTES, recorded: bytes = WHEEL_BYTES
+) -> dict:
+    """A community folder holding a lock overlay and its one wheel, as committed.
+
+    ``recorded`` is what the entry's sha256 is computed from, so passing different
+    bytes from ``wheel_bytes`` commits a wheel that does not match its entry.
+    """
+    import hashlib
+    import json
+
+    overlay = {
+        "packages": {
+            "tinypkg": {
+                "name": "tinypkg",
+                "version": "1.0",
+                "file_name": WHEEL,
+                "package_type": "package",
+                "install_dir": "site",
+                "sha256": hashlib.sha256(recorded).hexdigest(),
+                "imports": ["tinypkg"],
+                "depends": ["numpy"],
+            }
+        }
+    }
+    wheels = community_dir / "runtime" / "wheels"
+    wheels.mkdir(parents=True)
+    (community_dir / "runtime" / "lock.json").write_text(json.dumps(overlay))
+    (wheels / WHEEL).write_bytes(wheel_bytes)
+    (community_dir / "config.yaml").write_text("not served: the overlay does not list it\n")
+    return overlay
+
+
+class TestTheRuntimeLockOverlay:
+    """The wheels a community adds to Pyodide: sent as entries in /config, served as bytes.
+
+    The community folder is a real one on disk, in tmp_path; the router is pointed at
+    it in place of src/assistants, and everything it does there runs for real.
+    """
+
+    COMMUNITY = "runtimelocktest"
+
+    def _config(self):
+        from src.core.config.community import CommunityConfig
+
+        return CommunityConfig(
+            id=self.COMMUNITY,
+            name="Runtime Lock Test",
+            description="A community whose runtime adds a wheel",
+            extensions={
+                "client_tools": [
+                    {
+                        "name": "execute_code",
+                        "runtime": "python",
+                        "description": "Run Python in the browser.",
+                    }
+                ]
+            },
+            runtime={
+                "python": {
+                    "pyodide_version": "0.29.5",
+                    "lockfile": "runtime/lock.json",
+                    "preload": ["tinypkg"],
+                }
+            },
+        )
+
+    def _client(self, monkeypatch: pytest.MonkeyPatch, assistants_dir):
+        from src.api.routers import community as community_router
+        from src.assistants import registry
+        from src.tools.client_tools import CLIENT_TOOL_KILL_SWITCH_ENV
+
+        monkeypatch.delenv(CLIENT_TOOL_KILL_SWITCH_ENV, raising=False)
+        monkeypatch.setattr(community_router, "_ASSISTANTS_DIR", assistants_dir)
+        registry.register_from_config(self._config())
+        app = FastAPI()
+        app.include_router(community_router.create_community_router(self.COMMUNITY))
+        return TestClient(app)
+
+    @pytest.fixture
+    def committed(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
+        from src.assistants import registry
+
+        overlay = _write_overlay(tmp_path / self.COMMUNITY)
+        try:
+            yield self._client(monkeypatch, tmp_path), overlay
+        finally:
+            registry._assistants.pop(self.COMMUNITY, None)
+
+    def test_config_carries_the_verified_entries(self, committed) -> None:
+        client, overlay = committed
+
+        data = client.get(f"/{self.COMMUNITY}/").json()
+
+        assert data["runtime_lock"] == overlay
+        assert data["runtime"]["python"]["lockfile"] == "runtime/lock.json"
+        assert data["client_tools"], "a verified overlay leaves the tools offered"
+
+    def test_a_listed_wheel_is_served_as_immutable_bytes(self, committed) -> None:
+        client, _ = committed
+
+        response = client.get(f"/{self.COMMUNITY}/runtime/{WHEEL}")
+
+        assert response.status_code == 200
+        assert response.content == WHEEL_BYTES
+        assert response.headers["cache-control"] == "public, max-age=31536000, immutable"
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "config.yaml",  # a real file in the folder, which the overlay does not list
+            "lock.json",  # the overlay itself
+            "other-1.0-py3-none-any.whl",
+            "..%2Fconfig.yaml",
+            "%2E%2E%2F%2E%2E%2Fconfig.yaml",
+        ],
+    )
+    def test_nothing_the_overlay_does_not_list_is_served(self, committed, name: str) -> None:
+        client, _ = committed
+
+        assert client.get(f"/{self.COMMUNITY}/runtime/{name}").status_code == 404
+
+    def test_the_kill_switch_hides_the_entries_and_the_wheels(
+        self, committed, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from src.tools.client_tools import CLIENT_TOOL_KILL_SWITCH_ENV
+
+        client, _ = committed
+        monkeypatch.setenv(CLIENT_TOOL_KILL_SWITCH_ENV, "1")
+
+        assert client.get(f"/{self.COMMUNITY}/").json()["runtime_lock"] is None
+        assert client.get(f"/{self.COMMUNITY}/runtime/{WHEEL}").status_code == 404
+
+    def test_a_wheel_that_does_not_match_its_entry_fails_closed(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Offering the tool with a runtime that cannot start would park every turn
+        that calls it, so the community offers no client tools at all instead."""
+        from src.assistants import registry
+
+        _write_overlay(tmp_path / self.COMMUNITY, wheel_bytes=b"tampered", recorded=WHEEL_BYTES)
+        try:
+            client = self._client(monkeypatch, tmp_path)
+            data = client.get(f"/{self.COMMUNITY}/").json()
+
+            assert data["client_tools"] == []
+            assert data["runtime"] is None
+            assert data["runtime_lock"] is None
+            assert client.get(f"/{self.COMMUNITY}/runtime/{WHEEL}").status_code == 404
+        finally:
+            registry._assistants.pop(self.COMMUNITY, None)
