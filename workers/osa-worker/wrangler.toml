@@ -14,6 +14,18 @@ account_id = "10f166f3ec8395ff4a219f581c5f359d"
 # Keep both reachable.
 workers_dev = true
 
+# Workers Logs (#442). Without this, console.warn and console.error in the
+# worker are visible only to someone running `wrangler tail` at the exact
+# moment a request arrives, which means the 404 fall-through log added in
+# #438 satisfies "we added logging" in review while behaving as silent in
+# production: it cannot explain an outage after the fact.
+#
+# head_sampling_rate stays at 1.0 because this worker's traffic is chat
+# requests and health probes, not a high-volume edge. Revisit if that changes.
+[observability]
+enabled = true
+head_sampling_rate = 1.0
+
 # Production environment (default)
 [vars]
 BACKEND_URL = "https://api.osc.earth/osa"
@@ -72,6 +84,11 @@ name = "osa-worker-dev"
 # the top of the file.
 workers_dev = true
 vars = { BACKEND_URL = "https://api.osc.earth/osa-dev", ENVIRONMENT = "development" }
+
+# Same reasoning as production (#442).
+[env.dev.observability]
+enabled = true
+head_sampling_rate = 1.0
 
 # Path-mounted route for dev (#437). Single-level subdomain
 # (develop-widget, not develop.widget) to avoid SSL certificate issues,
