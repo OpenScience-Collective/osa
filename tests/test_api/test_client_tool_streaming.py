@@ -80,7 +80,11 @@ def _config(**overrides: Any) -> CommunityConfig:
 
 
 def _assistant(
-    responses: list, *, declared: set[str] | None = None, server_tools: list | None = None
+    responses: list,
+    *,
+    declared: set[str] | None = None,
+    server_tools: list | None = None,
+    browser_runs_left: int | None = None,
 ) -> tuple[CommunityAssistant, ScriptedChatModel]:
     model = ScriptedChatModel(responses=responses)
     assistant = CommunityAssistant(
@@ -89,6 +93,7 @@ def _assistant(
         preload_docs=False,
         additional_tools=server_tools or [],
         declared_client_tools={"execute_code"} if declared is None else declared,
+        browser_runs_left=browser_runs_left,
     )
     return assistant, model
 
@@ -590,3 +595,73 @@ class TestARefusedCallStillReplies:
         # the scripted model does not stream, which is true of every turn in this
         # file, so the second call is the observable proof the run went back.
         assert model.calls == 2
+
+
+class TestAReplyHasABudgetOfBrowserRuns:
+    """One question cannot chain browser runs without end.
+
+    Each run is a request and a model call, and `/chat/resume` is exempt from the
+    worker's hourly limit, so the server is where the bound has to live. The widget
+    stops at the same number, which does not help against any other client.
+    """
+
+    @pytest.mark.asyncio
+    async def test_with_no_runs_left_the_call_is_refused_and_the_model_answers(self) -> None:
+        assistant, model = _assistant(
+            [
+                tool_call_response("execute_code", {"code": "x", "description": "d"}, CALL_ID),
+                AIMessage(content="Here is what the earlier runs showed."),
+            ],
+            browser_runs_left=0,
+        )
+        session = _session()
+
+        events = await _run(session, assistant, declared_client_tools={"execute_code"})
+
+        assert "tool_request" not in _names(events)
+        assert "done" in _names(events)
+        assert session.pending_call is None
+        refusal = next(m for m in model.seen_message_lists[-1] if isinstance(m, ToolMessage))
+        assert refusal.tool_call_id == CALL_ID
+        assert "most times one reply may" in str(refusal.content)
+        assert model.calls == 2, "the run went back to the model with the refusal"
+
+    @pytest.mark.asyncio
+    async def test_the_last_run_in_budget_still_parks(self) -> None:
+        assistant, _ = _assistant(
+            [tool_call_response("execute_code", {"code": "x", "description": "d"}, CALL_ID)],
+            browser_runs_left=1,
+        )
+
+        events = await _run(_session(), assistant, declared_client_tools={"execute_code"})
+
+        assert "tool_request" in _names(events)
+
+    @pytest.mark.asyncio
+    async def test_the_parked_call_records_how_many_runs_came_before(self) -> None:
+        assistant, _ = _assistant(
+            [tool_call_response("execute_code", {"code": "x", "description": "d"}, CALL_ID)]
+        )
+        session = _session()
+
+        with patch(
+            "src.api.routers.community.create_community_assistant",
+            return_value=_awm(assistant),
+        ) as created:
+            await _collect(
+                _stream_chat_response(
+                    COMMUNITY,
+                    session,
+                    None,
+                    None,
+                    None,
+                    declared_client_tools={"execute_code"},
+                    browser_runs_answered=3,
+                )
+            )
+
+        assert session.pending_call.runs_before == 3
+        # And the budget the assistant was built with is what is left of the cap.
+        from src.core.limits import MAX_BROWSER_RUNS_PER_REPLY
+
+        assert created.call_args.kwargs["browser_runs_left"] == MAX_BROWSER_RUNS_PER_REPLY - 3

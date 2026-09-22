@@ -13,7 +13,7 @@ import sqlite3
 import time
 import uuid
 from collections.abc import AsyncGenerator, Iterator, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -59,7 +59,14 @@ from src.assistants import registry
 from src.assistants.community import CommunityAssistant
 from src.assistants.community import PageContext as AgentPageContext
 from src.assistants.registry import AssistantInfo
-from src.core.config.community import MAX_DECLARED_CLIENT_TOOLS, RuntimeConfig, WidgetConfig
+from src.core.config.community import (
+    MAX_DECLARED_CLIENT_TOOLS,
+    ClientToolRuntime,
+    CommunityConfig,
+    RuntimeConfig,
+    WidgetConfig,
+)
+from src.core.limits import MAX_BROWSER_RUNS_PER_REPLY
 from src.core.services.anthropic_llm import OFFERED_MODELS, create_anthropic_llm, normalize_model
 from src.core.services.litellm_llm import DEFAULT_MODEL as OPENROUTER_DEFAULT_MODEL
 from src.core.services.litellm_llm import DEFAULT_PROVIDER as OPENROUTER_DEFAULT_PROVIDER
@@ -309,7 +316,7 @@ class ClientToolInfo(BaseModel):
     """
 
     name: str
-    runtime: str
+    runtime: ClientToolRuntime
     requires_permission: bool
 
 
@@ -1349,6 +1356,7 @@ def create_community_assistant(
     preload_docs: bool = True,
     page_context: PageContext | None = None,
     declared_client_tools: set[str] | None = None,
+    browser_runs_left: int | None = None,
 ) -> AssistantWithMetrics:
     """Create a community assistant instance with authorization checks.
 
@@ -1461,6 +1469,7 @@ def create_community_assistant(
         # binds no client-executed tools at all. That is decision 7 of the phase plan,
         # enforced by the default rather than by a check.
         declared_client_tools=declared_client_tools,
+        browser_runs_left=browser_runs_left,
     )
 
     # Wire LangFuse tracing if configured
@@ -1688,16 +1697,17 @@ def convention_logo_url(community_id: str, widget: WidgetConfig) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def _client_tool_config(config: Any) -> dict[str, Any]:
+def _client_tool_config(config: CommunityConfig | None) -> dict[str, Any]:
     """The client-tool part of the public config: what the widget needs to run them.
 
     Honors the kill switch here as well as at bind time. The widget decides from
     this response whether to download a Python runtime at all, so a switched-off
     feature must not still cost every visitor that download.
     """
-    extensions = getattr(config, "extensions", None)
+    # None for an assistant registered without a YAML config, which configures nothing.
+    extensions = config.extensions if config is not None else None
     configured = list(extensions.client_tools) if extensions is not None else []
-    if not configured or client_tools_disabled():
+    if config is None or not configured or client_tools_disabled():
         return {"client_tools": [], "runtime": None}
     return {
         "client_tools": [
@@ -2057,6 +2067,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 initial_messages=live_messages,
                 endpoint=f"/{community_id}/chat/resume",
                 carried_citations=pending.carried_citations,
+                browser_runs_answered=pending.runs_before + 1,
             ),
             media_type="text/event-stream",
             headers={
@@ -2861,6 +2872,7 @@ def _finish_with_tool_request(
     *,
     content: str = "",
     citations: Sequence[CitationMark] = (),
+    runs_before: int = 0,
 ) -> Iterator[str]:
     """End run 1 on a browser call: adopt the history, park the call, ask the client to run it.
 
@@ -2881,11 +2893,12 @@ def _finish_with_tool_request(
     # dead with no way to repair it, because `abandon_pending_call` has nothing to
     # abandon. Build the call first and let it raise while the session is untouched.
     #
-    # The citations travel with the parked call so run 2 continues their numbering;
-    # `content` is run 1's text with its markers normalized, which the reader would
+    # The citations and the run count travel with the parked call, so the run that
+    # answers it continues the reply's numbering and knows its remaining budget.
+    # `content` is this run's text with its markers normalized, which the reader would
     # otherwise only ever have in its raw streamed form.
-    pending = replace(
-        PendingClientCall.from_state(pending_payload), carried_citations=tuple(citations)
+    pending = PendingClientCall.from_state(
+        pending_payload, carried_citations=citations, runs_before=runs_before
     )
     session.replace_history(final_state.get("messages", []) if final_state else [])
     session.set_pending_call(pending)
@@ -2905,6 +2918,7 @@ async def _stream_chat_response(
     initial_messages: list[BaseMessage] | None = None,
     endpoint: str | None = None,
     carried_citations: Sequence[CitationMark] = (),
+    browser_runs_answered: int = 0,
 ) -> AsyncGenerator[str, None]:
     """Stream assistant response as JSON-encoded Server-Sent Events.
 
@@ -2930,11 +2944,15 @@ async def _stream_chat_response(
     answer that is persisted in session history, while `done.citations`
     repeats the full citation list.
 
-    A run that ends on a browser call sends `tool_request` instead of `done`, with
-    run 1's normalized `content` and its `citations`. Run 2 (`/chat/resume`) passes
-    those citations back as `carried_citations`, so the two runs number their
-    sources as the one reply the reader sees: `done.citations` then lists both
-    runs' sources and `done.content` carries run 2's text.
+    A run that ends on a browser call sends `tool_request` instead of `done`,
+    carrying that run's normalized `content` and every citation the reply has so
+    far. The next run (`/chat/resume`) passes those back as `carried_citations` and
+    continues the numbering, so a reply of several runs numbers its sources as the
+    one reply the reader sees: the final `done.citations` lists every run's sources,
+    and `done.content` carries only the final run's text.
+
+    `browser_runs_answered` is how many browser results this reply has already sent
+    back; the run may request at most `MAX_BROWSER_RUNS_PER_REPLY` in total.
     """
     start_time = time.monotonic()
     tools_called: list[str] = []
@@ -2943,7 +2961,6 @@ async def _stream_chat_response(
     total_output_tokens = 0
     total_cache_read_tokens = 0
     total_cache_creation_tokens = 0
-    citation_assembler = CitationAssembler(carried_citations)
 
     # The metrics middleware assigns a per-request UUID; expose it only on the
     # final `done` event (below) so the widget attaches it only to a reply that
@@ -2989,6 +3006,17 @@ async def _stream_chat_response(
         return
 
     try:
+        # Built inside the handlers, not above them: the response headers went out
+        # with the `session` event, so anything raised before this `try` would end
+        # the stream with no error event and nothing logged.
+        try:
+            citation_assembler = CitationAssembler(carried_citations)
+        except ValueError as e:
+            # Not a limit the reader hit, which is what the ValueError handler below
+            # reports verbatim: the parked call carried malformed citations, which is
+            # a server fault and goes to the generic handler with an error id.
+            raise RuntimeError(f"the parked call's citations are malformed: {e}") from e
+
         awm = create_community_assistant(
             community_id,
             byok=byok,
@@ -2998,6 +3026,7 @@ async def _stream_chat_response(
             preload_docs=True,
             page_context=page_context,
             declared_client_tools=declared_client_tools,
+            browser_runs_left=MAX_BROWSER_RUNS_PER_REPLY - browser_runs_answered,
         )
         graph = awm.assistant.build_graph()
 
@@ -3134,6 +3163,7 @@ async def _stream_chat_response(
                 final_state,
                 content=normalize_citation_markers(full_response, citation_assembler.marks),
                 citations=citation_assembler.marks,
+                runs_before=browser_runs_answered,
             ):
                 yield sse_line
             _log_streaming_metrics(

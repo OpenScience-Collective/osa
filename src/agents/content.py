@@ -212,10 +212,11 @@ class CitationTracker:
 
         Args:
             carried: Marks an earlier run of the SAME turn already assigned, in
-                marker order. A browser-execution turn is two runs that the reader
-                sees as one reply, so run 2 continues run 1's numbering: a source
-                run 1 cited keeps its marker, and a new one takes the next number.
-                Starting again at [1] would give one reply two different [1]s.
+                marker order. A browser-execution reply is several runs the reader
+                sees as one, so each run continues the numbering of the runs before
+                it: a source already cited keeps its marker, and a new one takes the
+                next number. Starting again at [1] would give one reply two
+                different [1]s.
         """
         self._marker_by_source: dict[str, int] = {}
         self._marks: list[CitationMark] = []

@@ -568,6 +568,11 @@ on every message, from a config that loaded without complaint.
 """
 
 
+ClientToolRuntime = Literal["python"]
+"""The runtimes a client tool may run in. One definition, read by the config and by
+the public config response, so the widget is told exactly the set it switches on."""
+
+
 class ClientToolConfig(BaseModel):
     """A tool the server binds to the model but never executes itself.
 
@@ -587,7 +592,7 @@ class ClientToolConfig(BaseModel):
     name: str
     """Tool name, as the model will see and call it (e.g. 'execute_code')."""
 
-    runtime: Literal["python"]
+    runtime: ClientToolRuntime
     """Which configured runtime environment executes this tool's calls.
 
     Selects the argument schema the tool is bound with; see

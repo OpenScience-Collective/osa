@@ -124,6 +124,7 @@ class BaseAgent(ABC):
         max_conversation_tokens: int = DEFAULT_MAX_CONVERSATION_TOKENS,
         *,
         client_tool_names: set[str] | None = None,
+        browser_runs_left: int | None = None,
     ) -> None:
         """Initialize the agent.
 
@@ -141,8 +142,14 @@ class BaseAgent(ABC):
                 `ClientTool` instances, derived rather than accepted as-is
                 so a caller cannot pass a set that has drifted out of step
                 with what `tools` actually contains.
+            browser_runs_left: How many more browser executions this reply may
+                request, or None for no limit. At zero, the client_tools node
+                refuses every client call in writing instead of parking one, so
+                the model finishes the reply with what the earlier runs showed.
+                See `MAX_BROWSER_RUNS_PER_REPLY` in `src.core.limits`.
         """
         self.model = model
+        self.browser_runs_left = browser_runs_left
         self.tools = list(tools) if tools else []
         self.system_prompt = system_prompt
         self.max_conversation_tokens = max_conversation_tokens
@@ -447,6 +454,7 @@ class BaseAgent(ABC):
             new_messages.extend(result.get("messages", []))
 
         pending_client_call: PendingClientCallPayload | None = None
+        out_of_runs = self.browser_runs_left is not None and self.browser_runs_left <= 0
         for tc in client_calls:
             tool = self._client_tools_by_name.get(tc["name"])
             # Validated HERE, before anything reaches a browser. The provider does
@@ -462,6 +470,22 @@ class BaseAgent(ABC):
                         content=(
                             f"Invalid arguments for {tc['name']}: {problem}. Nothing "
                             "was run; call it again with valid arguments."
+                        ),
+                        tool_call_id=tc["id"],
+                        name=tc["name"],
+                        status="error",
+                    )
+                )
+            elif out_of_runs:
+                # The reply has used its budget of browser runs. Answered like any
+                # refused call, so the run returns to the model instead of parking
+                # one more; fixed text, so the cached prefix survives it.
+                new_messages.append(
+                    ToolMessage(
+                        content=(
+                            "This reply has already run code in the browser the most "
+                            "times one reply may; this call was not run. Answer with "
+                            "what the earlier runs showed."
                         ),
                         tool_call_id=tc["id"],
                         name=tc["name"],

@@ -424,7 +424,7 @@ def _parked_run_end() -> list[dict]:
 
 
 class TestCitationsAcrossABrowserTurn:
-    """A browser turn is two runs that the reader sees as ONE reply.
+    """A browser reply is several runs that the reader sees as ONE reply.
 
     Each run used to number its sources from [1], so a reply whose first half cited
     one source and whose second half cited another showed two different [1]s.
@@ -492,6 +492,63 @@ class TestCitationsAcrossABrowserTurn:
         events = await self._stream(session, [_text_event("Welch estimates it."), _cite(SOURCE_B)])
         done = next(e for e in events if e["event"] == "done")
         assert [(c["marker"], c["source"]) for c in done["citations"]] == [(1, SOURCE_B)]
+
+
+class TestAThirdRunContinuesBoth:
+    @pytest.mark.asyncio
+    async def test_a_run_that_parks_again_carries_every_source_so_far(self) -> None:
+        stream = TestCitationsAcrossABrowserTurn()._stream
+        session = ChatSession(session_id="browser-turn-4", community_id="hed")
+        session.add_user_message("Plot alpha power.")
+        await stream(session, [_text_event("Alpha."), _cite(SOURCE_A), *_parked_run_end()])
+        first = session.claim_pending_call(BROWSER_CALL_ID)
+
+        events = await stream(
+            session,
+            [_text_event("Welch."), _cite(SOURCE_B), *_parked_run_end()],
+            carried_citations=first.carried_citations,
+            browser_runs_answered=first.runs_before + 1,
+        )
+        request = next(e for e in events if e["event"] == "tool_request")
+        assert [(c["marker"], c["source"]) for c in request["citations"]] == [
+            (1, SOURCE_A),
+            (2, SOURCE_B),
+        ]
+        second = session.claim_pending_call(BROWSER_CALL_ID)
+        assert second.runs_before == 1
+
+        events = await stream(
+            session,
+            [_text_event("Theta."), _cite("https://doc.example/theta"), _cite(SOURCE_A)],
+            carried_citations=second.carried_citations,
+            browser_runs_answered=second.runs_before + 1,
+        )
+        done = next(e for e in events if e["event"] == "done")
+        assert [c["marker"] for c in done["citations"]] == [1, 2, 3]
+        assert done["content"] == "Theta.[3][1]"
+
+
+class TestMalformedCarriedCitationsAreReported:
+    @pytest.mark.asyncio
+    async def test_the_stream_ends_in_an_error_event_with_an_id(self) -> None:
+        """The headers are already sent when the stream starts, so a fault raised
+        outside the handlers ended the stream with nothing: no error event, no log
+        line, and a reader told the connection dropped."""
+        from src.agents.content import CitationMark
+
+        session = ChatSession(session_id="browser-turn-5", community_id="hed")
+        session.add_user_message("Plot alpha power.")
+        broken = [CitationMark(marker=2, source=SOURCE_A, title="", cited_text="")]
+
+        events = await TestCitationsAcrossABrowserTurn()._stream(
+            session, [_text_event("never streamed")], carried_citations=broken
+        )
+
+        assert [e["event"] for e in events] == ["session", "error"]
+        assert events[1]["error_id"]
+        # The generic message, not the internal one the ValueError carries.
+        assert "numbered" not in events[1]["message"]
+        assert session.begin_turn(), "the turn was released"
 
 
 class TestCarriedCitationsAreValidated:

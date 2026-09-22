@@ -42,3 +42,10 @@ MAX_SUMMARY_CHARS = 8_192
 #: cap that applies to something a person typed. Machine output is not a message, and
 #: the smaller cap forbids every realistic figure (issue #422).
 MAX_TOOL_RESULT_LENGTH = 65_536
+
+#: Most browser executions one reply may chain. Each ends a run on a `tool_request` and
+#: the result starts the next (`/chat/resume`), so this bounds the requests and model
+#: calls a single question can cost. Enforced on the server, where the run that has no
+#: budget left refuses a further browser call in writing; the widget stops at the same
+#: number, so an old server cannot make it loop either.
+MAX_BROWSER_RUNS_PER_REPLY = 10
