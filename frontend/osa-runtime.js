@@ -596,6 +596,24 @@ export class PyodideRuntime {
   }
 
   /**
+   * The result of a call that produced no output of its own: it was stopped
+   * (timeout, cancellation) or its instance died (oom). Only the status, the
+   * explanation and the elapsed time differ between them.
+   *
+   * @param {string} callId
+   * @param {string} status
+   * @param {string} stderr
+   * @param {number} elapsedMs
+   * @returns {object}
+   */
+  _emptyResult(callId, status, stderr, elapsedMs) {
+    return toClientToolResult(
+      { call_id: callId, status, stdout: '', stderr, summary: '', images: [], artifacts: [], elapsed_ms: elapsedMs },
+      this.limits
+    );
+  }
+
+  /**
    * Run one block of Python and resolve with the result envelope.
    *
    * Boots on demand, because `preload_on: first_run` means the first execution
@@ -648,16 +666,15 @@ export class PyodideRuntime {
         // call it parked, and a timeout is a result with a status. Rejecting
         // would leave the model with no tool_result for its tool_use, which the
         // provider refuses outright.
-        this._settleExecution(callId, toClientToolResult({
-          call_id: callId,
-          status: 'timeout',
-          stdout: '',
-          stderr: `[runtime] the code ran longer than ${this.limits.exec_seconds}s and was stopped.`,
-          summary: '',
-          images: [],
-          artifacts: [],
-          elapsed_ms: Date.now() - started,
-        }, this.limits));
+        this._settleExecution(
+          callId,
+          this._emptyResult(
+            callId,
+            'timeout',
+            `[runtime] the code ran longer than ${this.limits.exec_seconds}s and was stopped.`,
+            Date.now() - started
+          )
+        );
         // Recycled rather than terminated: the person asked for THIS run to stop,
         // not for the runtime to be gone, and the next execution boots a fresh
         // worker. terminate() stays reserved for explicit cancellation, which
@@ -692,18 +709,15 @@ export class PyodideRuntime {
     for (const [callId, waiting] of entries) {
       this._pending.delete(callId);
       clearTimeout(waiting.timer);
-      waiting.resolve(toClientToolResult({
-        call_id: callId,
-        status: 'oom',
-        stdout: '',
-        stderr:
+      waiting.resolve(
+        this._emptyResult(
+          callId,
+          'oom',
           '[runtime] the Python runtime ran out of memory and was restarted. ' +
-          'Try working on less data at a time.' + (message ? ' (' + message + ')' : ''),
-        summary: '',
-        images: [],
-        artifacts: [],
-        elapsed_ms: Date.now() - waiting.started,
-      }, this.limits));
+            'Try working on less data at a time.' + (message ? ' (' + message + ')' : ''),
+          Date.now() - waiting.started
+        )
+      );
     }
     this._recycle();
   }
