@@ -1,15 +1,33 @@
 /**
- * Tests for OSA Worker Routing
+ * Routing tests for the OSA Cloudflare Worker (#437).
  *
- * These tests exercise the route matchers the worker's fetch() handler
- * actually uses (ROUTE_PATTERNS, exported from index.js) plus the community
- * ID guard (validateCommunityId), rather than a parallel copy of the
- * patterns that could drift from what routes real traffic.
+ * widget.osc.earth/osa/* is a path-mounted Cloudflare route: unlike a
+ * whole-hostname Custom Domain, Cloudflare delivers the FULL path, "/osa"
+ * prefix included, to the worker: it sees "/osa/hed/chat", not
+ * "/hed/chat". Every route matcher in index.js is anchored and counts path
+ * segments, so an unstripped prefix makes every one of them miss and the
+ * request falls through to the router's own 404 default. Nothing throws;
+ * it just answers 404 uniformly, which reads like a DNS or route
+ * misconfiguration rather than a prefix bug.
+ *
+ * index.js fixes this with stripMountPrefix(), applied once at the top of
+ * fetch() before any route is matched. This file drives the REAL exported
+ * `fetch(request, env, ctx)` handler with a real Request and a stub env
+ * (no framework, following frontend/test-endpoint-resolution.js's
+ * precedent) and asserts that every "/osa"-prefixed path reaches the same
+ * handler as its unprefixed form, and that the unprefixed forms, the
+ * ones the existing *.workers.dev hostnames and `wrangler dev` use --
+ * still work unchanged.
+ *
+ * Note: this branch's index.js has no "/:communityId/chat/resume" route
+ * (that route exists only on the still-unmerged
+ * feature/issue-429-epic-browser-execution branch). It is intentionally
+ * not tested here; testing a route this file doesn't define would not be
+ * exercising real code. Every route this file DOES define is covered.
  *
  * Run with: bun workers/osa-worker/test-routing.js
  */
 
-import { ROUTE_PATTERNS, RESERVED_PATHS, isValidCommunityId, validateCommunityId } from './index.js';
 import worker from './index.js';
 
 let testsPassed = 0;
@@ -17,455 +35,315 @@ let testsFailed = 0;
 
 function assert(condition, message) {
   if (!condition) {
-    console.error(`  ✗ FAIL: ${message}`);
+    console.error(`  x FAIL: ${message}`);
     testsFailed++;
-    throw new Error(message);
   } else {
-    console.log(`  ✓ PASS: ${message}`);
+    console.log(`  ok ${message}`);
     testsPassed++;
   }
 }
 
 function assertEqual(actual, expected, message) {
-  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-    console.error(`  ✗ FAIL: ${message}`);
-    console.error(`    Expected:`, expected);
-    console.error(`    Actual:`, actual);
+  if (actual !== expected) {
+    console.error(`  x FAIL: ${message}`);
+    console.error(`    Expected: ${expected}`);
+    console.error(`    Actual:   ${actual}`);
     testsFailed++;
-    throw new Error(message);
   } else {
-    console.log(`  ✓ PASS: ${message}`);
+    console.log(`  ok ${message}`);
     testsPassed++;
   }
 }
 
-function test(name, fn) {
-  console.log(`\n${name}`);
-  try {
-    fn();
-  } catch (error) {
-    console.error(`  Test failed:`, error.message);
+// A stub env with no BACKEND_URL, no rate-limit bindings, and no Turnstile
+// secret. index.js is written to fail OPEN for all three when they are
+// absent (see checkRateLimit and verifyTurnstileToken), and every proxying
+// route returns a 503 "Backend not configured" the moment it sees
+// BACKEND_URL is unset, before ever calling the real network fetch(). That
+// is what makes it possible to observe ROUTING here, which handler a
+// path reaches, without a live backend or any network access: a 404
+// means the router's matchers never fired at all, which is categorically
+// different from the 503/400/403 a route that DID match can legitimately
+// return.
+function stubEnv(overrides = {}) {
+  return { ENVIRONMENT: 'development', ...overrides };
+}
+
+// The host matters: stripMountPrefix only strips on a host Cloudflare
+// actually mounts the worker on at /osa. MOUNTED_HOST is the default here
+// because that is where the prefix behavior lives; UNMOUNTED_HOST is the
+// bare workers.dev name, which stays live and must keep seeing raw paths.
+const MOUNTED_HOST = 'widget.osc.earth';
+const UNMOUNTED_HOST = 'osa-worker.shirazi-10f.workers.dev';
+
+async function call(pathname, { method = 'GET', body, host = MOUNTED_HOST, env } = {}) {
+  const init = { method };
+  if (body !== undefined) {
+    init.body = JSON.stringify(body);
+    init.headers = { 'Content-Type': 'application/json' };
   }
+  const request = new Request(`https://${host}${pathname}`, init);
+  return worker.fetch(request, stubEnv(env), {});
 }
 
-async function testAsync(name, fn) {
-  console.log(`\n${name}`);
-  try {
-    await fn();
-  } catch (error) {
-    console.error(`  Test failed:`, error.message);
-  }
+async function statusOf(pathname, opts) {
+  const response = await call(pathname, opts);
+  return response.status;
 }
 
-// ---------------------------------------------------------------------------
-// Dispatch-level test helpers
-//
-// The suites below drive the real, default-exported fetch() handler with a
-// real Request and a stub env, instead of re-implementing routing or rate
-// limiting logic in the test. The doubles here are boundary stand-ins for
-// the Cloudflare bindings the worker actually calls (KV, the built-in
-// per-minute limiter, and the outbound fetch to the backend) -- never a
-// stand-in for handleChatResume, checkRateLimit, or any other function
-// under test.
-// ---------------------------------------------------------------------------
-
-/**
- * Minimal KV namespace stand-in backed by a plain Map. Records every
- * get/put call and keeps real key -> value state, so tests can assert on
- * both the final counts and which keys were touched.
- */
-function createFakeKv(initial = {}) {
-  const store = new Map(Object.entries(initial));
-  const calls = { get: [], put: [] };
-  return {
-    async get(key) {
-      calls.get.push(key);
-      return store.has(key) ? store.get(key) : null;
-    },
-    async put(key, value, options) {
-      calls.put.push({ key, value, options });
-      store.set(key, value);
-    },
-    _store: store,
-    _calls: calls,
-  };
+async function assertReachesHandler(pathname, opts, message) {
+  const status = await statusOf(pathname, opts);
+  assert(status !== 404, `${message} (got ${status}, not the 404 fall-through)`);
 }
 
-/**
- * Minimal stand-in for the built-in per-minute rate limiter binding
- * (env.RATE_LIMITER_MINUTE), whose real shape is
- * `{ limit({ key }) => Promise<{ success }> }`. Records every key it was
- * asked to check.
- */
-function createFakeMinuteLimiter(succeed) {
-  const calls = [];
-  return {
-    async limit({ key }) {
-      calls.push(key);
-      return { success: succeed };
-    },
-    _calls: calls,
-  };
-}
-
-function buildEnv({ kv, minuteLimiter, turnstileSecretKey, environment = 'production' }) {
-  const env = {
-    ENVIRONMENT: environment,
-    BACKEND_URL: 'https://backend.example.test',
-    BACKEND_API_KEY: 'test-backend-key',
-    RATE_LIMITER_KV: kv,
-    RATE_LIMITER_MINUTE: minuteLimiter,
-  };
-  if (turnstileSecretKey) {
-    env.TURNSTILE_SECRET_KEY = turnstileSecretKey;
-  }
-  return env;
-}
-
-function buildRequest(path, { method = 'POST', ip = '203.0.113.5', body } = {}) {
-  const headers = { 'Content-Type': 'application/json' };
-  if (ip) headers['CF-Connecting-IP'] = ip;
-  return new Request(`https://osa-worker.example.test${path}`, {
-    method,
-    headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-}
-
-/**
- * Runs fn with globalThis.fetch replaced by a stand-in that never makes a
- * real network call -- a boundary stand-in for the backend the real worker
- * would proxy to, not a mock of the worker's own routing or rate-limiting
- * logic. Restores the original fetch afterward even if fn throws.
- */
-async function withStubBackend(fn) {
-  const original = globalThis.fetch;
-  const calls = [];
-  globalThis.fetch = async (url, init) => {
-    calls.push({ url: String(url), init });
-    return new Response(JSON.stringify({ ok: true }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  };
-  try {
-    return await fn(calls);
-  } finally {
-    globalThis.fetch = original;
-  }
-}
-
-/**
- * Builds the same per-IP, per-hour KV key the worker computes internally,
- * so tests can pre-seed or read back a counter under its real key.
- */
-function hourBucketKey(prefix, ip) {
-  const now = Math.floor(Date.now() / 1000);
-  return `${prefix}:${ip}:${Math.floor(now / 3600)}`;
+async function assertNotFound(pathname, opts, message) {
+  const status = await statusOf(pathname, opts);
+  assertEqual(status, 404, message);
 }
 
 console.log('='.repeat(60));
 console.log('OSA Worker Routing Tests');
 console.log('='.repeat(60));
 
-// Test Suite 1: /:communityId/chat/resume matches the resume route
-console.log('\n' + '='.repeat(60));
-console.log('Test Suite 1: /:communityId/chat/resume routing');
-console.log('='.repeat(60));
+const COMMUNITY = 'hed';
 
-test('/nemar/chat/resume matches the resume route pattern', () => {
-  const match = '/nemar/chat/resume'.match(ROUTE_PATTERNS.communityChatResume);
-  assert(match !== null, 'Path should match communityChatResume');
-  assertEqual(match[1], 'nemar', 'Captured community id should be "nemar"');
-});
+// Every route this worker defines, unprefixed, with the request options
+// needed to reach its handler.
+const ROUTES = [
+  ['/health', {}],
+  ['/version', {}],
+  ['/communities', {}],
+  ['/metrics/public/overview', {}],
+  ['/metrics/overview', {}],
+  ['/metrics/tokens', {}],
+  ['/metrics/quality', {}],
+  ['/sync/status', {}],
+  ['/sync/health', {}],
+  [`/${COMMUNITY}/`, {}],
+  [`/${COMMUNITY}/logo`, {}],
+  [`/${COMMUNITY}/sessions`, {}],
+  [`/${COMMUNITY}/metrics/public`, {}],
+  [`/${COMMUNITY}/ask`, { method: 'POST', body: {} }],
+  [`/${COMMUNITY}/chat`, { method: 'POST', body: {} }],
+  // Phase 1's two-run continuation route (#430). Three segments, so it is a
+  // separate matcher from the two-segment action route above.
+  [`/${COMMUNITY}/chat/resume`, { method: 'POST', body: {} }],
+];
 
-test('/nemar/chat/resume does NOT match the ask|chat action route', () => {
-  const match = '/nemar/chat/resume'.match(ROUTE_PATTERNS.communityAction);
-  assertEqual(match, null, 'Resume path must not match the two-segment action route');
-});
+console.log('\nUnprefixed routes reach their handler (the *.workers.dev / wrangler dev baseline)');
+for (const [path, opts] of ROUTES) {
+  await assertReachesHandler(path, opts, `${opts.method || 'GET'} ${path} reaches its handler`);
+}
 
-// Test Suite 2: existing /:communityId/ask and /:communityId/chat are unaffected
-console.log('\n' + '='.repeat(60));
-console.log('Test Suite 2: existing (ask|chat) route is preserved');
-console.log('='.repeat(60));
+console.log('\n/osa-prefixed routes (widget.osc.earth/osa/*) reach the SAME handler as their unprefixed form');
+for (const [path, opts] of ROUTES) {
+  const unprefixedStatus = await statusOf(path, opts);
+  const prefixedStatus = await statusOf(`/osa${path}`, opts);
+  assertEqual(prefixedStatus, unprefixedStatus, `/osa${path} status matches unprefixed ${path} (both ${prefixedStatus})`);
+  assert(prefixedStatus !== 404, `/osa${path} does not fall through to the 404 default`);
+}
 
-test('/nemar/chat matches the action route with action "chat"', () => {
-  const match = '/nemar/chat'.match(ROUTE_PATTERNS.communityAction);
-  assert(match !== null, 'Path should match communityAction');
-  assertEqual(match[1], 'nemar', 'Captured community id should be "nemar"');
-  assertEqual(match[2], 'chat', 'Captured action should be "chat"');
-});
+console.log('\nThe bare mount root and root-level absolute routes behave the same prefixed and not');
+assertEqual(await statusOf('/osa'), await statusOf('/'), '/osa (bare) matches / (root)');
+await assertReachesHandler('/osa/feedback', { method: 'POST', body: {} }, 'POST /osa/feedback reaches the feedback handler');
 
-test('/nemar/ask matches the action route with action "ask"', () => {
-  const match = '/nemar/ask'.match(ROUTE_PATTERNS.communityAction);
-  assert(match !== null, 'Path should match communityAction');
-  assertEqual(match[1], 'nemar', 'Captured community id should be "nemar"');
-  assertEqual(match[2], 'ask', 'Captured action should be "ask"');
-});
-
-test('/nemar/chat does NOT match the resume route', () => {
-  const match = '/nemar/chat'.match(ROUTE_PATTERNS.communityChatResume);
-  assertEqual(match, null, '/nemar/chat must not match communityChatResume');
-});
-
-test('/nemar/ask does NOT match the resume route', () => {
-  const match = '/nemar/ask'.match(ROUTE_PATTERNS.communityChatResume);
-  assertEqual(match, null, '/nemar/ask must not match communityChatResume');
-});
-
-// Test Suite 3: an extra trailing segment matches nothing
-console.log('\n' + '='.repeat(60));
-console.log('Test Suite 3: over-long paths fall through to 404');
-console.log('='.repeat(60));
-
-test('/nemar/chat/resume/extra matches neither route', () => {
-  const resumeMatch = '/nemar/chat/resume/extra'.match(ROUTE_PATTERNS.communityChatResume);
-  const actionMatch = '/nemar/chat/resume/extra'.match(ROUTE_PATTERNS.communityAction);
-  assertEqual(resumeMatch, null, 'Extra trailing segment must not match communityChatResume');
-  assertEqual(actionMatch, null, 'Extra trailing segment must not match communityAction');
-});
-
-// Test Suite 4: community ID validation applies on the resume path too
-console.log('\n' + '='.repeat(60));
-console.log('Test Suite 4: community ID validation on the resume path');
-console.log('='.repeat(60));
-
-test('A community id validateCommunityId accepts is accepted on the resume path', () => {
-  const match = '/nemar/chat/resume'.match(ROUTE_PATTERNS.communityChatResume);
-  const communityId = match[1];
-  assert(isValidCommunityId(communityId), 'nemar should be a valid community id format');
-  const rejection = validateCommunityId(communityId, {});
-  assertEqual(rejection, null, 'A valid, non-reserved community id should not be rejected');
-});
-
-test('A community id validateCommunityId rejects on the resume path is rejected the same way', () => {
-  // "bad id!" contains a space and punctuation, so it fails the community id
-  // format check, but it still matches the resume route's capturing group
-  // (which only excludes literal slashes).
-  const path = '/bad id!/chat/resume';
-  const match = path.match(ROUTE_PATTERNS.communityChatResume);
-  assert(match !== null, 'The resume route pattern should still capture a malformed id');
-  const communityId = match[1];
-  assertEqual(communityId, 'bad id!', 'Captured community id should be the malformed segment');
-  assert(!isValidCommunityId(communityId), 'Malformed community id should fail the format check');
-
-  const rejection = validateCommunityId(communityId, {});
-  assert(rejection !== null, 'validateCommunityId should reject a malformed community id');
-  assertEqual(rejection.status, 400, 'A malformed community id should be rejected with 400');
-});
-
-// Test Suite 5: reserved paths are still handled before community matching
-console.log('\n' + '='.repeat(60));
-console.log('Test Suite 5: reserved paths stay ahead of community matching');
-console.log('='.repeat(60));
-
-test('RESERVED_PATHS still lists exactly the six reserved top-level routes', () => {
-  assertEqual(
-    [...RESERVED_PATHS].sort(),
-    ['communities', 'feedback', 'health', 'metrics', 'sync', 'version'],
-    'RESERVED_PATHS should be unchanged by the resume route addition'
+// The resume route is where the epic branch and the widget branch collided:
+// phase 1 added it matching on the RAW path, which on a mounted host would have
+// made every continuation 404 while ordinary chat worked. The two matchers also
+// have to stay distinguishable from each other, since a two-segment action
+// pattern that accidentally matched three segments would swallow resumes.
+console.log('\nthe resume route is distinct from the action route, prefixed and not');
+for (const host of [MOUNTED_HOST, UNMOUNTED_HOST]) {
+  await assertReachesHandler(
+    `/${COMMUNITY}/chat/resume`,
+    { method: 'POST', body: {}, host },
+    `POST /${COMMUNITY}/chat/resume reaches the resume handler on ${host}`
   );
-});
+}
+await assertReachesHandler(
+  `/osa/${COMMUNITY}/chat/resume`,
+  { method: 'POST', body: {}, host: MOUNTED_HOST },
+  `POST /osa/${COMMUNITY}/chat/resume reaches the resume handler through the mount`
+);
+assertEqual(
+  await statusOf(`/osa/${COMMUNITY}/chat/resume`, { method: 'POST', body: {}, host: MOUNTED_HOST }),
+  await statusOf(`/${COMMUNITY}/chat/resume`, { method: 'POST', body: {}, host: MOUNTED_HOST }),
+  'the prefixed resume route reaches the same handler as its unprefixed form'
+);
+assertEqual(
+  await statusOf(`/${COMMUNITY}/chat/resume`, { method: 'GET', host: MOUNTED_HOST }),
+  404,
+  'GET on the resume route does not match; it is POST only'
+);
 
-for (const reserved of RESERVED_PATHS) {
-  test(`Bare reserved path /${reserved} matches neither community route`, () => {
-    const bare = `/${reserved}`;
-    assertEqual(
-      bare.match(ROUTE_PATTERNS.communityAction),
-      null,
-      `/${reserved} alone must not match the ask|chat action route`
-    );
-    assertEqual(
-      bare.match(ROUTE_PATTERNS.communityChatResume),
-      null,
-      `/${reserved} alone must not match the resume route`
-    );
-  });
+console.log('\ncommunity-id validation still holds under the /osa prefix');
+await assertNotFound('/osa/health/chat', { method: 'POST', body: {} }, '/osa/health/chat is rejected (community id "health" is reserved)');
+await assertNotFound('/health/chat', { method: 'POST', body: {} }, '/health/chat is rejected unprefixed too (same reserved-path check)');
+assertEqual(
+  await statusOf('/osa/invalid!id/chat', { method: 'POST', body: {} }),
+  400,
+  '/osa/<invalid community id>/chat is rejected as a 400 (matched, then validated), not a 404 (unmatched)'
+);
+assertEqual(
+  await statusOf('/invalid!id/chat', { method: 'POST', body: {} }),
+  400,
+  '/invalid!id/chat is rejected as a 400 unprefixed too'
+);
 
-  test(`Reserved word "${reserved}" used as a community id is rejected on /chat, /ask and /chat/resume`, () => {
-    for (const path of [`/${reserved}/chat`, `/${reserved}/ask`, `/${reserved}/chat/resume`]) {
-      const match =
-        path.match(ROUTE_PATTERNS.communityChatResume) || path.match(ROUTE_PATTERNS.communityAction);
-      assert(match !== null, `${path} should still match a community route pattern`);
-      const communityId = match[1];
-      assertEqual(communityId, reserved, `Captured community id should be "${reserved}"`);
-
-      const rejection = validateCommunityId(communityId, {});
-      assert(rejection !== null, `"${reserved}" as a community id should be rejected on ${path}`);
-      assertEqual(rejection.status, 404, `A reserved word used as a community id should 404 on ${path}`);
-    }
-  });
+console.log('\nreserved paths are still reserved, and still not community ids, under the /osa prefix');
+for (const reserved of ['health', 'version', 'feedback', 'communities', 'metrics', 'sync']) {
+  await assertNotFound(`/osa/${reserved}/`, {}, `/osa/${reserved}/ is rejected (reserved path, not a community)`);
+  await assertNotFound(`/${reserved}/`, {}, `/${reserved}/ is rejected unprefixed too`);
 }
 
-// Test Suites 6-9: dispatch-level behavior of the real fetch() handler.
-//
-// These do not exist to re-check the regex work Suites 1-5 already cover.
-// They drive worker.fetch() itself, so a regression in *wiring* (the wrong
-// handler attached to a route) or in the *rate-limiting behavior*
-// (handleChatResume calling rateLimitOrReject with the wrong options, or
-// skipping the resume-chain budget) fails a test here even though every
-// regex in ROUTE_PATTERNS is still correct.
-async function runDispatchTests() {
-  console.log('\n' + '='.repeat(60));
-  console.log('Test Suite 6: dispatch -- Turnstile applies to /chat, not /chat/resume');
-  console.log('='.repeat(60));
+console.log('\na path that merely starts with the letters "osa" is not misread as the mount prefix');
+await assertReachesHandler(
+  '/osafoo/chat',
+  { method: 'POST', body: {} },
+  '/osafoo/chat is read as community "osafoo" (stripMountPrefix requires "/osa/" or exactly "/osa")'
+);
 
-  await testAsync('POST /nemar/chat is rejected with 403 when no Turnstile token is supplied', async () => {
-    await withStubBackend(async () => {
-      const env = buildEnv({
-        kv: createFakeKv(),
-        minuteLimiter: createFakeMinuteLimiter(true),
-        turnstileSecretKey: 'test-turnstile-secret',
-      });
-      const request = buildRequest('/nemar/chat', { ip: '203.0.113.10', body: { message: 'hi' } });
-      const response = await worker.fetch(request, env, {});
-      assertEqual(response.status, 403, '/chat without a Turnstile token should be rejected with 403');
-      const payload = await response.json();
-      assertEqual(payload.error, 'Bot verification failed', '/chat 403 body should name bot verification as the cause');
-    });
-  });
+// The bare *.workers.dev hostname stays live (wrangler.toml sets
+// workers_dev = true) and Cloudflare adds no prefix there, so a path-only
+// strip would eat a real leading segment. "osa" is a valid community id
+// today, isValidCommunityId accepts it and RESERVED_PATHS does not list
+// it, and the product is called OSA, so it is a plausible id for someone
+// to create. Without host gating every one of these is silently wrong:
+// /osa/ answers the API root instead of the community, /osa/chat 404s, and
+// /osa/logo is re-read as community "logo" and fails for an unrelated
+// reason, which in production reads as "the backend is down".
+console.log('\non an UNMOUNTED host, /osa is a real path segment and must NOT be stripped');
+for (const [path, opts] of ROUTES) {
+  const mountedPrefixed = await statusOf(`/osa${path}`, { ...opts, host: MOUNTED_HOST });
+  const unmountedPrefixed = await statusOf(`/osa${path}`, { ...opts, host: UNMOUNTED_HOST });
+  assert(
+    unmountedPrefixed === 404 || unmountedPrefixed !== mountedPrefixed,
+    `/osa${path} on ${UNMOUNTED_HOST} is not treated as the mount prefix (got ${unmountedPrefixed}, mounted host gives ${mountedPrefixed})`
+  );
+}
+assertEqual(
+  await statusOf('/osa/', { host: UNMOUNTED_HOST }),
+  await statusOf('/hed/', { host: UNMOUNTED_HOST }),
+  '/osa/ on the unmounted host is read as community "osa", matching any other community route'
+);
+// On the mounted host a bare /osa IS the mount root and answers the API root
+// (200). On the unmounted host the same path is community "osa", so it
+// proxies and returns 503 here only because this env has no BACKEND_URL. The
+// point is that the two hosts must NOT agree: agreement would mean the strip
+// fired where no prefix exists.
+assertEqual(
+  await statusOf('/osa', { host: MOUNTED_HOST }),
+  await statusOf('/', { host: MOUNTED_HOST }),
+  '/osa (bare) on the mounted host is the API root'
+);
+assert(
+  (await statusOf('/osa', { host: UNMOUNTED_HOST })) !== (await statusOf('/', { host: UNMOUNTED_HOST })),
+  '/osa (bare) on the unmounted host is community "osa", NOT silently rewritten to the API root'
+);
+assertEqual(
+  await statusOf('/osa', { host: UNMOUNTED_HOST }),
+  await statusOf('/hed', { host: UNMOUNTED_HOST }),
+  '/osa (bare) on the unmounted host behaves like any other community route'
+);
+assertEqual(
+  await statusOf('/health', { host: UNMOUNTED_HOST }),
+  await statusOf('/health', { host: MOUNTED_HOST }),
+  'unprefixed routes are identical on both hosts'
+);
 
-  await testAsync('POST /nemar/chat/resume succeeds with no Turnstile token even when TURNSTILE_SECRET_KEY is set', async () => {
-    await withStubBackend(async () => {
-      const env = buildEnv({
-        kv: createFakeKv(),
-        minuteLimiter: createFakeMinuteLimiter(true),
-        turnstileSecretKey: 'test-turnstile-secret',
-      });
-      const request = buildRequest('/nemar/chat/resume', {
-        ip: '203.0.113.11',
-        body: { session_id: 's1', call_id: 'c1', result: 'ok' },
-      });
-      const response = await worker.fetch(request, env, {});
-      assertEqual(response.status, 200, '/chat/resume with no Turnstile token should still succeed');
-    });
-  });
+console.log('\nquery strings survive the strip on the route that forwards them');
+for (const host of [MOUNTED_HOST, UNMOUNTED_HOST]) {
+  assertEqual(
+    await statusOf('/metrics/overview?range=7d', { host }),
+    await statusOf('/metrics/overview', { host }),
+    `a query string does not change which handler /metrics/overview reaches on ${host}`
+  );
+}
+assertEqual(
+  await statusOf('/osa/metrics/overview?range=7d', { host: MOUNTED_HOST }),
+  await statusOf('/metrics/overview?range=7d', { host: MOUNTED_HOST }),
+  '/osa/metrics/overview?range=7d reaches the same handler as its unprefixed form'
+);
 
-  console.log('\n' + '='.repeat(60));
-  console.log('Test Suite 7: dispatch -- /chat/resume is exempt from the /chat hourly KV counter');
-  console.log('='.repeat(60));
+// Everything above observes a STATUS CODE, which proves which handler ran
+// but not what that handler sent upstream. A route could match correctly and
+// still forward "/osa/hed/chat" verbatim to the backend, and every assertion
+// above would stay green. So: stand up a real HTTP server, point BACKEND_URL
+// at it, and read the path it actually receives. This is an HTTP-boundary
+// fixture, not a mock: the worker's real routing, real prefix stripping and
+// real fetch all run; only the far side of the socket is ours.
+console.log('\nthe path FORWARDED to the backend is the stripped one, not the raw one');
+const receivedPaths = [];
+const backend = Bun.serve({
+  port: 0,
+  fetch(request) {
+    const url = new URL(request.url);
+    receivedPaths.push(url.pathname + url.search);
+    return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+  },
+});
+const backendEnv = { BACKEND_URL: `http://localhost:${backend.port}`, BACKEND_API_KEY: 'test-key' };
 
-  await testAsync('POST /nemar/chat is blocked once the shared hourly KV counter is at its cap', async () => {
-    await withStubBackend(async () => {
-      const ip = '203.0.113.20';
-      const kv = createFakeKv({ [hourBucketKey('rl:hour', ip)]: '20' }); // production RATE_LIMIT_PER_HOUR is 20
-      const env = buildEnv({ kv, minuteLimiter: createFakeMinuteLimiter(true) });
-      const request = buildRequest('/nemar/chat', { ip, body: { message: 'hi' } });
-      const response = await worker.fetch(request, env, {});
-      assertEqual(response.status, 429, '/chat at the hourly cap should be rejected with 429');
-      const payload = await response.json();
-      assertEqual(payload.details, 'Too many requests per hour', '/chat 429 should name the chat hourly counter');
-    });
-  });
-
-  await testAsync('POST /nemar/chat/resume succeeds even when that same IP is at the /chat hourly cap', async () => {
-    await withStubBackend(async () => {
-      const ip = '203.0.113.20'; // same IP, same key the /chat test above hit its cap on
-      const kv = createFakeKv({ [hourBucketKey('rl:hour', ip)]: '20' });
-      const env = buildEnv({ kv, minuteLimiter: createFakeMinuteLimiter(true) });
-      const request = buildRequest('/nemar/chat/resume', {
-        ip,
-        body: { session_id: 's1', call_id: 'c1', result: 'ok' },
-      });
-      const response = await worker.fetch(request, env, {});
-      assertEqual(response.status, 200, '/chat/resume must not be blocked by the /chat hourly counter');
-    });
-  });
-
-  console.log('\n' + '='.repeat(60));
-  console.log('Test Suite 8: dispatch -- the per-minute limiter still guards /chat/resume');
-  console.log('='.repeat(60));
-
-  await testAsync('The per-minute limiter is consulted exactly once for a successful /chat/resume call', async () => {
-    await withStubBackend(async () => {
-      const ip = '203.0.113.30';
-      const minuteLimiter = createFakeMinuteLimiter(true);
-      const env = buildEnv({ kv: createFakeKv(), minuteLimiter });
-      const request = buildRequest('/nemar/chat/resume', {
-        ip,
-        body: { session_id: 's1', call_id: 'c1', result: 'ok' },
-      });
-      const response = await worker.fetch(request, env, {});
-      assertEqual(response.status, 200, 'a within-budget resume call should succeed');
-      assertEqual(minuteLimiter._calls, [ip], 'the per-minute limiter should have been consulted exactly once, for this IP');
-    });
-  });
-
-  await testAsync('A 429 is still returned when the per-minute limiter rejects a /chat/resume call', async () => {
-    await withStubBackend(async () => {
-      const ip = '203.0.113.31';
-      const env = buildEnv({ kv: createFakeKv(), minuteLimiter: createFakeMinuteLimiter(false) });
-      const request = buildRequest('/nemar/chat/resume', {
-        ip,
-        body: { session_id: 's1', call_id: 'c1', result: 'ok' },
-      });
-      const response = await worker.fetch(request, env, {});
-      assertEqual(response.status, 429, 'a per-minute rejection must still 429 on the resume path');
-      const payload = await response.json();
-      assertEqual(payload.details, 'Too many requests per minute', '429 should name the per-minute limiter as the cause');
-    });
-  });
-
-  console.log('\n' + '='.repeat(60));
-  console.log('Test Suite 9: dispatch -- the resume-chain hourly budget bounds unbounded chains');
-  console.log('='.repeat(60));
-
-  await testAsync('A resume call one under the resume-chain budget succeeds and increments its own counter', async () => {
-    await withStubBackend(async () => {
-      const ip = '203.0.113.40';
-      const key = hourBucketKey('rl:resume:hour', ip);
-      const kv = createFakeKv({ [key]: '99' }); // production RESUME_LIMIT_PER_HOUR is 100
-      const env = buildEnv({ kv, minuteLimiter: createFakeMinuteLimiter(true) });
-      const request = buildRequest('/nemar/chat/resume', {
-        ip,
-        body: { session_id: 's1', call_id: 'c1', result: 'ok' },
-      });
-      const response = await worker.fetch(request, env, {});
-      assertEqual(response.status, 200, 'one under the resume-chain cap should still succeed');
-      assertEqual(kv._store.get(key), '100', 'the resume-chain counter should have been incremented to the cap');
-    });
-  });
-
-  await testAsync('A resume call at the resume-chain budget gets 429, distinct from the /chat hourly counter', async () => {
-    await withStubBackend(async () => {
-      const ip = '203.0.113.41';
-      const kv = createFakeKv({ [hourBucketKey('rl:resume:hour', ip)]: '100' }); // at production RESUME_LIMIT_PER_HOUR
-      const env = buildEnv({ kv, minuteLimiter: createFakeMinuteLimiter(true) });
-      const request = buildRequest('/nemar/chat/resume', {
-        ip,
-        body: { session_id: 's1', call_id: 'c1', result: 'ok' },
-      });
-      const response = await worker.fetch(request, env, {});
-      assertEqual(response.status, 429, 'a resume call at the resume-chain cap should be rejected with 429');
-      const payload = await response.json();
-      assertEqual(
-        payload.details,
-        'Too many resume requests per hour',
-        'the resume-chain 429 reason must be distinct from the /chat hourly reason'
-      );
-      assertEqual(
-        kv._store.get(hourBucketKey('rl:hour', ip)) || '0',
-        '0',
-        'a rejected resume call must not touch the unrelated /chat hourly counter'
-      );
-    });
-  });
+async function forwardedPathFor(pathname, opts = {}) {
+  receivedPaths.length = 0;
+  await call(pathname, { ...opts, env: backendEnv });
+  return receivedPaths[0];
 }
 
-runDispatchTests().then(() => {
-  // Print summary
-  console.log('\n' + '='.repeat(60));
-  console.log('Test Summary');
-  console.log('='.repeat(60));
-  console.log(`Total: ${testsPassed + testsFailed} tests`);
-  console.log(`✓ Passed: ${testsPassed}`);
-  console.log(`✗ Failed: ${testsFailed}`);
+try {
+  assertEqual(
+    await forwardedPathFor('/osa/hed/chat', { method: 'POST', body: {}, host: MOUNTED_HOST }),
+    '/hed/chat',
+    'POST /osa/hed/chat forwards /hed/chat upstream, with the mount prefix removed'
+  );
+  assertEqual(
+    await forwardedPathFor('/hed/chat', { method: 'POST', body: {}, host: MOUNTED_HOST }),
+    '/hed/chat',
+    'POST /hed/chat forwards the same path, so prefixed and unprefixed agree upstream'
+  );
+  assertEqual(
+    await forwardedPathFor('/osa/communities', { host: MOUNTED_HOST }),
+    '/communities',
+    'GET /osa/communities forwards /communities upstream'
+  );
+  assertEqual(
+    await forwardedPathFor('/osa/metrics/overview?range=7d', { host: MOUNTED_HOST }),
+    '/metrics/overview?range=7d',
+    'the query string reaches the backend intact alongside the stripped path'
+  );
+  // Two segments, because that is what the community-action matcher takes.
+  // On the unmounted host this is community "osa" asking for /chat, and the
+  // whole point of the host gate is that it survives to the backend intact
+  // rather than being eaten down to "/chat".
+  assertEqual(
+    await forwardedPathFor('/osa/chat', { method: 'POST', body: {}, host: UNMOUNTED_HOST }),
+    '/osa/chat',
+    'on the unmounted host /osa/chat forwards intact, "osa" treated as a community id'
+  );
+  // The same path on the mounted host is the prefix plus "/chat", which is a
+  // single segment and matches no route, so nothing is forwarded at all. The
+  // contrast is the assertion: identical bytes on the wire, two different
+  // meanings, decided solely by the host.
+  assertEqual(
+    await forwardedPathFor('/osa/chat', { method: 'POST', body: {}, host: MOUNTED_HOST }),
+    undefined,
+    'the same path on the mounted host strips to /chat, matches no route, and forwards nothing'
+  );
+} finally {
+  backend.stop(true);
+}
 
-  if (testsFailed === 0) {
-    console.log('\nAll tests passed!');
-    process.exit(0);
-  } else {
-    console.log(`\n${testsFailed} test(s) failed`);
-    process.exit(1);
-  }
-});
+console.log('\n' + '='.repeat(60));
+console.log('Test Summary');
+console.log('='.repeat(60));
+console.log(`Total: ${testsPassed + testsFailed} tests`);
+console.log(`Passed: ${testsPassed}`);
+console.log(`Failed: ${testsFailed}`);
+
+if (testsFailed === 0) {
+  console.log('\nAll tests passed!');
+  process.exit(0);
+} else {
+  console.log(`\n${testsFailed} test(s) failed`);
+  process.exit(1);
+}

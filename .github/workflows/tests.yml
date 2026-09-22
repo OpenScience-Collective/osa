@@ -83,11 +83,20 @@ jobs:
       - name: Run streaming tests
         run: bun frontend/test-streaming.js
 
-      - name: Check widget syntax
-        run: node --check frontend/osa-chat-widget.js
+      - name: Run endpoint resolution tests
+        run: bun frontend/test-endpoint-resolution.js
 
       - name: Run worker routing tests
         run: bun workers/osa-worker/test-routing.js
+
+      - name: Run worker mounted-hosts agreement test
+        run: bun workers/osa-worker/test-mounted-hosts.js
+
+      - name: Check widget syntax
+        run: node --check frontend/osa-chat-widget.js
+
+      - name: Check worker syntax
+        run: node --check workers/osa-worker/index.js
 
   all-tests:
     name: All Tests Passed

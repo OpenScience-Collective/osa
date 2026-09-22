@@ -23,6 +23,55 @@ export const ROUTE_PATTERNS = {
   communityChatResume: /^\/([^\/]+)\/chat\/resume$/,
 };
 
+// This worker is reachable two ways: its default *.workers.dev hostname
+// (unprefixed), and the product-owned widget.osc.earth/osa/* path mount
+// (#437). A Cloudflare route of the form "widget.osc.earth/osa/*" delivers
+// the FULL path, prefix included, to the worker: it sees "/osa/nemar/chat",
+// not "/nemar/chat". Strip the prefix once, here, before any route is
+// matched, rather than baking "/osa" into each route's own regex; a
+// per-route prefix rots the moment someone adds a route and forgets it.
+const MOUNT_PREFIX = '/osa';
+
+// The hosts Cloudflare mounts this worker on at MOUNT_PREFIX. Must match the
+// `[[routes]]` / `[[env.dev.routes]]` patterns in wrangler.toml.
+//
+// Stripping has to be gated on the host, not on the path alone. The bare
+// *.workers.dev hostname stays live (wrangler.toml sets workers_dev = true),
+// and `wrangler dev` serves on localhost, and on BOTH of those the prefix is
+// not added by anyone, so a path-only strip would eat a real leading
+// segment. Concretely: a community whose ID is "osa" is valid today
+// (isValidCommunityId accepts it, RESERVED_PATHS does not list it), and a
+// path-only strip turns "/osa/chat" on workers.dev into "/chat", which 404s,
+// while "/osa/logo" silently becomes community "logo". The product is named
+// OSA, so that ID is a plausible thing for someone to create, and every
+// symptom of the collision looks like an unrelated bug.
+//
+// Adding a mount host without adding it here fails loudly and immediately
+// (every route 404s, and the fall-through below logs both paths), which is
+// the failure direction to prefer.
+const MOUNTED_HOSTS = new Set(['widget.osc.earth', 'develop-widget.osc.earth']);
+
+/**
+ * Strip a leading mount-prefix segment so every route matcher can be
+ * written once, unprefixed, and work under every hostname.
+ *
+ * Only strips on a host where Cloudflare actually mounts us at the prefix.
+ * On any other host the path is returned unchanged, including the bare
+ * *.workers.dev and `wrangler dev` cases.
+ */
+function stripMountPrefix(pathname, hostname) {
+  if (!MOUNTED_HOSTS.has(hostname)) {
+    return pathname;
+  }
+  if (pathname === MOUNT_PREFIX) {
+    return '/';
+  }
+  if (pathname.startsWith(`${MOUNT_PREFIX}/`)) {
+    return pathname.slice(MOUNT_PREFIX.length);
+  }
+  return pathname;
+}
+
 // Worker configuration
 function getConfig(env) {
   const isDev = env.ENVIRONMENT === 'development';
@@ -503,15 +552,20 @@ export default {
 
     try {
       const url = new URL(request.url);
+      // Strip the widget.osc.earth/osa mount prefix (#437) once, up front.
+      // Every matcher below is written unprefixed and sees this pathname,
+      // never url.pathname directly, so it works the same reached via the
+      // path-mounted host or the bare *.workers.dev / wrangler dev host.
+      const pathname = stripMountPrefix(url.pathname, url.hostname);
 
       // Route requests
-      if (url.pathname === '/') {
+      if (pathname === '/') {
         return handleRoot(corsHeaders, CONFIG);
-      } else if (url.pathname === '/health') {
+      } else if (pathname === '/health') {
         return await handleHealth(env, corsHeaders, CONFIG);
-      } else if (url.pathname === '/version') {
+      } else if (pathname === '/version') {
         return await proxyToBackend(request, env, '/version', null, corsHeaders, CONFIG);
-      } else if (url.pathname === '/feedback' && request.method === 'POST') {
+      } else if (pathname === '/feedback' && request.method === 'POST') {
         // Feedback endpoint has lighter protection (rate limit only, no Turnstile)
         return await handleFeedback(request, env, corsHeaders, CONFIG);
       }
@@ -519,36 +573,36 @@ export default {
       // --- Public read-only endpoints (GET only, rate-limited) ---
 
       // Communities metadata (widget config)
-      if (url.pathname === '/communities' && request.method === 'GET') {
+      if (pathname === '/communities' && request.method === 'GET') {
         const rejected = await rateLimitOrReject(request, env, corsHeaders, CONFIG);
         if (rejected) return rejected;
         return await proxyToBackend(request, env, '/communities', null, corsHeaders, CONFIG);
       }
 
       // Global public metrics: /metrics/public/overview
-      if (url.pathname === '/metrics/public/overview' && request.method === 'GET') {
+      if (pathname === '/metrics/public/overview' && request.method === 'GET') {
         const rejected = await rateLimitOrReject(request, env, corsHeaders, CONFIG);
         if (rejected) return rejected;
         return await proxyToBackend(request, env, '/metrics/public/overview', null, corsHeaders, CONFIG);
       }
 
       // Admin metrics endpoints: client must provide their own API key
-      if (url.pathname.match(/^\/metrics\/(overview|tokens|quality)$/) && request.method === 'GET') {
+      if (pathname.match(/^\/metrics\/(overview|tokens|quality)$/) && request.method === 'GET') {
         const rejected = await rateLimitOrReject(request, env, corsHeaders, CONFIG);
         if (rejected) return rejected;
-        const path = url.pathname + url.search;
+        const path = pathname + url.search;
         return await proxyToBackendPassthrough(request, env, path, null, corsHeaders, CONFIG);
       }
 
       // Sync status endpoints (public, read-only)
-      if ((url.pathname === '/sync/status' || url.pathname === '/sync/health') && request.method === 'GET') {
+      if ((pathname === '/sync/status' || pathname === '/sync/health') && request.method === 'GET') {
         const rejected = await rateLimitOrReject(request, env, corsHeaders, CONFIG);
         if (rejected) return rejected;
-        return await proxyToBackend(request, env, url.pathname, null, corsHeaders, CONFIG);
+        return await proxyToBackend(request, env, pathname, null, corsHeaders, CONFIG);
       }
 
       // Community config endpoint: /:communityId/ (GET)
-      const communityConfigMatch = url.pathname.match(/^\/([^\/]+)\/?$/);
+      const communityConfigMatch = pathname.match(/^\/([^\/]+)\/?$/);
       if (communityConfigMatch && request.method === 'GET') {
         const communityId = communityConfigMatch[1];
 
@@ -562,7 +616,7 @@ export default {
       }
 
       // Community public metrics endpoints (GET)
-      const communityMetricsMatch = url.pathname.match(/^\/([^\/]+)\/(metrics\/public(?:\/usage)?)$/);
+      const communityMetricsMatch = pathname.match(/^\/([^\/]+)\/(metrics\/public(?:\/usage)?)$/);
       if (communityMetricsMatch && request.method === 'GET') {
         const communityId = communityMetricsMatch[1];
 
@@ -572,11 +626,11 @@ export default {
         const rejected = await rateLimitOrReject(request, env, corsHeaders, CONFIG);
         if (rejected) return rejected;
 
-        return await proxyToBackend(request, env, url.pathname, null, corsHeaders, CONFIG);
+        return await proxyToBackend(request, env, pathname, null, corsHeaders, CONFIG);
       }
 
       // Community sessions endpoint (GET, authenticated -- forward client key)
-      const communitySessionsMatch = url.pathname.match(/^\/([^\/]+)\/sessions$/);
+      const communitySessionsMatch = pathname.match(/^\/([^\/]+)\/sessions$/);
       if (communitySessionsMatch && request.method === 'GET') {
         const communityId = communitySessionsMatch[1];
 
@@ -586,11 +640,11 @@ export default {
         const rejected = await rateLimitOrReject(request, env, corsHeaders, CONFIG);
         if (rejected) return rejected;
 
-        return await proxyToBackendPassthrough(request, env, url.pathname, null, corsHeaders, CONFIG);
+        return await proxyToBackendPassthrough(request, env, pathname, null, corsHeaders, CONFIG);
       }
 
       // Community logo endpoint: /:communityId/logo (GET, returns image)
-      const communityLogoMatch = url.pathname.match(/^\/([^\/]+)\/logo$/);
+      const communityLogoMatch = pathname.match(/^\/([^\/]+)\/logo$/);
       if (communityLogoMatch && request.method === 'GET') {
         const communityId = communityLogoMatch[1];
 
@@ -645,7 +699,7 @@ export default {
       // readability; the two patterns are anchored to different segment
       // counts (communityChatResume always has a literal /chat/resume tail)
       // so neither can shadow the other regardless of order.
-      const communityChatResumeMatch = url.pathname.match(ROUTE_PATTERNS.communityChatResume);
+      const communityChatResumeMatch = pathname.match(ROUTE_PATTERNS.communityChatResume);
       if (communityChatResumeMatch && request.method === 'POST') {
         const [, communityId] = communityChatResumeMatch;
 
@@ -656,7 +710,7 @@ export default {
       }
 
       // Community endpoints: /:communityId/ask and /:communityId/chat
-      const communityActionMatch = url.pathname.match(ROUTE_PATTERNS.communityAction);
+      const communityActionMatch = pathname.match(ROUTE_PATTERNS.communityAction);
       if (communityActionMatch && request.method === 'POST') {
         const [, communityId, action] = communityActionMatch;
 
@@ -666,6 +720,20 @@ export default {
         return await handleProtectedEndpoint(request, env, ctx, `/${communityId}/${action}`, corsHeaders, CONFIG);
       }
 
+      // Log both paths, not just one. A 404 here has two very different
+      // causes that are indistinguishable from the response: the client asked
+      // for a route that does not exist, or MOUNT_PREFIX / MOUNTED_HOSTS and
+      // the deployed wrangler.toml route have drifted apart, in which case
+      // every request on the mounted host 404s while the deploy output looks
+      // clean. Printing raw and stripped side by side is what makes the second
+      // one greppable in `wrangler tail` instead of invisible.
+      console.warn('[osa-worker] no route matched', {
+        rawPath: url.pathname,
+        strippedPath: pathname,
+        host: url.hostname,
+        method: request.method,
+        mounted: MOUNTED_HOSTS.has(url.hostname),
+      });
       return new Response('Not Found', { status: 404, headers: corsHeaders });
     } catch (error) {
       console.error('Unhandled worker error:', error);

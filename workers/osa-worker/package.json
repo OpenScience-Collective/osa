@@ -9,7 +9,8 @@
     "dev": "wrangler dev",
     "tail": "wrangler tail"
   },
+  "_comment_wrangler": "Pinned exactly, not a caret range (#442). This repository ignores JS lockfiles by design, so package.json is the only place a version can actually be fixed. wrangler's defaults are version dependent: a [[routes]] table flips workers_dev to false, and that already took the workers.dev hostname down once during #437, with clean deploy output. A floating range reintroduces that class of silent regression on some future date with no code change. Bump deliberately, and redeploy dev first.",
   "devDependencies": {
-    "wrangler": "^4.58.0"
+    "wrangler": "4.136.2"
   }
 }

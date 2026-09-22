@@ -1,9 +1,37 @@
 name: Create GitHub Release
 
+# DEAD SINCE FEBRUARY 2026, repaired here (#442).
+#
+# The only trigger used to be `push: tags`. tag-release.yml pushes the tag
+# through a checkout with no `token:` override, so that push is authored by the
+# default GITHUB_TOKEN, and GitHub deliberately does not start workflow runs
+# from those pushes. This workflow therefore stopped running the moment tag
+# creation moved into CI: zero runs of any kind for v0.8.9 through v0.8.12, the
+# last being v0.6.2, back when a real token pushed tags.
+#
+# The visible symptom was that published release notes carried tag-release.yml's
+# plain commit log and never the "Widget Embedding" section below, which is the
+# only place the SRI hash for a version-pinned embed is published. Consumers
+# were being pointed at a section that did not exist.
+#
+# `release: types: [published]` is how publish.yml already survives the same
+# limitation: `gh release create` runs under CI_ADMIN_TOKEN, a real PAT, which
+# does emit downstream events. The tag push is kept for a hand-pushed tag.
+# Updating a release emits `edited`, not `published`, so this cannot loop.
+#
+# Takes effect on the release AFTER the one that merges it, because GitHub reads
+# a workflow's triggers from the default branch.
 on:
   push:
     tags:
       - 'v*'
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build release notes for, such as v0.8.13'
+        required: true
 
 permissions:
   contents: write
@@ -21,7 +49,14 @@ jobs:
       - name: Get version from tag
         id: version
         run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
+          # GITHUB_REF is the tag ref for both `push: tags` and `release`,
+          # but not for a manual dispatch, which supplies the tag directly.
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            VERSION="${{ github.event.inputs.tag }}"
+            VERSION=${VERSION#v}
+          else
+            VERSION=${GITHUB_REF#refs/tags/v}
+          fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "tag=v$VERSION" >> $GITHUB_OUTPUT
 
