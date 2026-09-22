@@ -56,12 +56,38 @@ console.log('\nthe bundle loads as a classic script and exposes one global');
   const api = globalThis.OSARuntime;
   assert(api !== undefined, 'it defines OSARuntime');
   assert(Object.isFrozen(api), 'and freezes it, so the page cannot swap a piece out');
-  for (const name of ['PyodideRuntime', 'buildWorkerSource', 'buildWorkerConfig', 'createWorkerRuntime', 'RUNTIME_STATE']) {
+  for (const name of [
+    'PyodideRuntime',
+    'buildWorkerSource',
+    'buildWorkerConfig',
+    'createWorkerRuntime',
+    'RUNTIME_STATE',
+    'ClientToolController',
+    'GATE_DECISION',
+    'highlightPython',
+  ]) {
     assert(api && api[name] !== undefined, `it exposes ${name}`);
   }
 }
 
 const api = globalThis.OSARuntime;
+
+console.log('\nthe gate pieces the BUNDLE carries work as built');
+{
+  const html = api.highlightPython('x = "<img onerror=alert(1)>"  # ok');
+  assert(!html.includes('<img'), 'the bundled highlighter escapes markup in the code');
+  assert(html.includes('<span class="osa-py-str">'), 'and still highlights');
+  // A private field or a renamed method would fail here and nowhere else.
+  const rt = new api.PyodideRuntime({ runtime: { pyodide_version: '0.28.3' } });
+  const controller = new api.ClientToolController({
+    runtime: rt,
+    tools: [{ name: 'execute_code', runtime: 'python', requires_permission: true }],
+    gate: async () => api.GATE_DECISION.DENY,
+  });
+  assert(JSON.stringify(controller.declared) === '["execute_code","get_full_output"]', 'the bundled controller declares its tools');
+  const denied = await controller.answer({ call_id: 'b-deny', tool: 'execute_code', args: { code: 'x', description: 'd' } });
+  assert(denied.status === 'denied' && denied.call_id === 'b-deny', 'and answers a declined request');
+}
 
 console.log('\nthe worker source the BUNDLE builds is real JavaScript');
 {

@@ -7,7 +7,7 @@
 // WHY THE RUNTIME IS A SEPARATE, HASHED FILE
 //
 // The widget is one classic script, and the versioned embed pins it by SRI.
-// The runtime is 48 KB minified and most pages that embed the widget will never
+// The runtime is about 60 KB minified and most pages that embed the widget never
 // run code, so it is loaded lazily, only for a community that configures client
 // tools. Loading it as a plain second file would leave an SRI-pinned embed
 // running code nothing verified. So the widget carries this file's sha384 and

@@ -106,6 +106,9 @@ jobs:
       - name: Run runtime output capture tests
         run: bun frontend/test-output.js
 
+      - name: Run tool_request controller and highlighter tests
+        run: bun frontend/test-controller.js
+
       # The worker core runs against the REAL Pyodide from npm, so the Python half
       # of the runtime is tested in CI rather than only by hand in a browser. The
       # npm package carries the interpreter; numpy and matplotlib are fetched from
