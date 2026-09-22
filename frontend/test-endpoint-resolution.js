@@ -76,11 +76,11 @@ console.log('='.repeat(60));
 console.log('OSA Widget Endpoint Resolution Tests');
 console.log('='.repeat(60));
 
-console.log('\nProduction hostnames resolve to the production custom domain');
+console.log('\nProduction hostnames resolve to the production mount');
 assertEqual(resolvedEndpoint('demo.osc.earth'), PROD_ENDPOINT, 'demo.osc.earth -> production endpoint');
 assertEqual(resolvedEndpoint('osa-demo.pages.dev'), PROD_ENDPOINT, 'osa-demo.pages.dev -> production endpoint');
 
-console.log('\nDev hostnames resolve to the dev custom domain');
+console.log('\nDev hostnames resolve to the dev mount');
 assertEqual(resolvedEndpoint('develop-demo.osc.earth'), DEV_ENDPOINT, 'develop-demo.osc.earth -> dev endpoint');
 assertEqual(
   resolvedEndpoint('feature-123-demo.osc.earth'),
@@ -116,7 +116,7 @@ assert(
   'widget source contains no reference to the retired assistant.osc.earth name'
 );
 
-console.log('\nThe resolved endpoints are the documented *.osc.earth custom domains');
+console.log('\nThe resolved endpoints are the documented *.osc.earth path mounts');
 assert(widgetSource.includes(`'${PROD_ENDPOINT}'`), `widget source contains the literal ${PROD_ENDPOINT}`);
 assert(widgetSource.includes(`'${DEV_ENDPOINT}'`), `widget source contains the literal ${DEV_ENDPOINT}`);
 

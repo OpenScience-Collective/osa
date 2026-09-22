@@ -34,7 +34,7 @@
     // or production worker for demo.osc.earth (production only).
     // The worker sits in front of the FastAPI backend (api.osc.earth) as the
     // security proxy (Turnstile, rate limiting, CORS, backend API key), so
-    // this always points at the worker's own custom domain, never directly
+    // this always points at the worker's own product-owned host, never directly
     // at the backend. widget.osc.earth/osa (prod) and
     // develop-widget.osc.earth/osa (dev) are a stable, product-owned host
     // for widgets in general (see #437); "widget" is a generic host shared

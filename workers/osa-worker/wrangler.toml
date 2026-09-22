@@ -9,7 +9,9 @@ account_id = "10f166f3ec8395ff4a219f581c5f359d"
 # Explicit (#437): once a [[routes]] table is present, wrangler defaults
 # workers_dev to false on deploy unless this is set, which would silently
 # take down the existing osa-worker*.workers.dev hostname the moment the
-# route-mounted deploy above ships. Keep both reachable.
+# route-mounted deploy below ships. Confirmed the hard way during #437's dev
+# rollout: the deploy output looked clean and workers.dev started 404ing.
+# Keep both reachable.
 workers_dev = true
 
 # Production environment (default)
@@ -18,8 +20,9 @@ BACKEND_URL = "https://api.osc.earth/osa"
 ENVIRONMENT = "production"
 
 # Path-mounted route (#437): a stable, product-owned host for this worker,
-# so the frontend widget (and anyone else's CSP allowlist, e.g.
-# nemarOrg/website ADR 0017) never has to be updated again just because the
+# so the frontend widget (and anyone else's Content-Security-Policy (CSP)
+# allowlist, e.g. nemarOrg/website Architecture Decision Record (ADR) 0017)
+# never has to be updated again just because the
 # account running the edge changes. This is the worker's OWN public
 # hostname, distinct from BACKEND_URL above, which is the FastAPI backend
 # the worker proxies to. The existing osa-worker.<account>.workers.dev name
@@ -32,7 +35,7 @@ ENVIRONMENT = "production"
 # subdomain of its own. That rules out `custom_domain = true`: a Custom
 # Domain maps one whole hostname 1:1 to one worker and cannot carry a path,
 # which would foreclose exactly that. This is instead an ordinary zone
-# route with a path pattern -- `custom_domain` is intentionally omitted.
+# route with a path pattern; `custom_domain` is intentionally omitted.
 # Cloudflare delivers the FULL path, "/osa/..." prefix included, to the
 # worker for a route like this; index.js strips it once at the top of
 # fetch() (stripMountPrefix) before any route is matched.
@@ -58,8 +61,15 @@ id = "8f8506b1a7fb400680a00014312c124d"
 # Development environment
 [env.dev]
 name = "osa-worker-dev"
-# workers_dev is not inherited from the top level per-environment; set it
-# again here for the same reason (#437).
+# Restated here deliberately, for the same reason as the top-level
+# declaration (#437). This is redundancy, not necessity: `workers_dev` IS
+# marked inheritable in Wrangler 4, and reading this config back through
+# wrangler's own `unstable_readConfig` with this line deleted still reports
+# `workers_dev: true` for [env.dev]. An earlier version of this comment
+# claimed the opposite, which was Wrangler 1 behavior. It is kept because the
+# value flips to false on its own once routes are present, and someone
+# editing this environment block should see what it is without scrolling to
+# the top of the file.
 workers_dev = true
 vars = { BACKEND_URL = "https://api.osc.earth/osa-dev", ENVIRONMENT = "development" }
 
@@ -67,7 +77,7 @@ vars = { BACKEND_URL = "https://api.osc.earth/osa-dev", ENVIRONMENT = "developme
 # (develop-widget, not develop.widget) to avoid SSL certificate issues,
 # matching the develop-demo.osc.earth convention the frontend already
 # uses; "/osa" is the same per-widget path as production, under dev's own
-# host. Ordinary route, not a Custom Domain -- see the production
+# host. Ordinary route, not a Custom Domain; see the production
 # [[routes]] comment above for why.
 [[env.dev.routes]]
 pattern = "develop-widget.osc.earth/osa/*"
@@ -110,7 +120,7 @@ id = "6d46ef72877b4129b38ef2ca1e1cd5ea"
 #    curl https://osa-worker.<your-subdomain>.workers.dev/health
 #
 # =============================================================================
-# Route Provisioning (#437) -- DONE, recorded here because the next person to
+# Route Provisioning (#437), DONE. Recorded because the next person to
 # add a route on a zone will hit both of these traps
 # =============================================================================
 #
@@ -122,7 +132,14 @@ id = "6d46ef72877b4129b38ef2ca1e1cd5ea"
 #
 # So the route attaches when the branch lands, and a hand-run
 # `wrangler deploy` would push a local worktree straight to production,
-# outside that flow. Do not run one.
+# outside that flow. Prefer the pipeline.
+#
+# That same workflow posts a bot comment on any pull request touching this
+# directory, listing the manual `wrangler deploy` commands. The two are not
+# in conflict, but the bot comment has no room for the caveat: those commands
+# are for a genuine pipeline outage, or for a deliberate one-off rollout like
+# #437's dev route, not for routine deployment. Run one and you are shipping
+# whatever is in your working tree, reviewed or not.
 #
 # Trap 1: an ordinary zone route does NOT provision DNS. Unlike
 # `custom_domain = true`, it attaches a pattern and nothing else, so the
