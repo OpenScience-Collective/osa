@@ -10,6 +10,7 @@
  */
 
 import { ROUTE_PATTERNS, RESERVED_PATHS, isValidCommunityId, validateCommunityId } from './index.js';
+import worker from './index.js';
 
 let testsPassed = 0;
 let testsFailed = 0;
@@ -45,6 +46,122 @@ function test(name, fn) {
   } catch (error) {
     console.error(`  Test failed:`, error.message);
   }
+}
+
+async function testAsync(name, fn) {
+  console.log(`\n${name}`);
+  try {
+    await fn();
+  } catch (error) {
+    console.error(`  Test failed:`, error.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch-level test helpers
+//
+// The suites below drive the real, default-exported fetch() handler with a
+// real Request and a stub env, instead of re-implementing routing or rate
+// limiting logic in the test. The doubles here are boundary stand-ins for
+// the Cloudflare bindings the worker actually calls (KV, the built-in
+// per-minute limiter, and the outbound fetch to the backend) -- never a
+// stand-in for handleChatResume, checkRateLimit, or any other function
+// under test.
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal KV namespace stand-in backed by a plain Map. Records every
+ * get/put call and keeps real key -> value state, so tests can assert on
+ * both the final counts and which keys were touched.
+ */
+function createFakeKv(initial = {}) {
+  const store = new Map(Object.entries(initial));
+  const calls = { get: [], put: [] };
+  return {
+    async get(key) {
+      calls.get.push(key);
+      return store.has(key) ? store.get(key) : null;
+    },
+    async put(key, value, options) {
+      calls.put.push({ key, value, options });
+      store.set(key, value);
+    },
+    _store: store,
+    _calls: calls,
+  };
+}
+
+/**
+ * Minimal stand-in for the built-in per-minute rate limiter binding
+ * (env.RATE_LIMITER_MINUTE), whose real shape is
+ * `{ limit({ key }) => Promise<{ success }> }`. Records every key it was
+ * asked to check.
+ */
+function createFakeMinuteLimiter(succeed) {
+  const calls = [];
+  return {
+    async limit({ key }) {
+      calls.push(key);
+      return { success: succeed };
+    },
+    _calls: calls,
+  };
+}
+
+function buildEnv({ kv, minuteLimiter, turnstileSecretKey, environment = 'production' }) {
+  const env = {
+    ENVIRONMENT: environment,
+    BACKEND_URL: 'https://backend.example.test',
+    BACKEND_API_KEY: 'test-backend-key',
+    RATE_LIMITER_KV: kv,
+    RATE_LIMITER_MINUTE: minuteLimiter,
+  };
+  if (turnstileSecretKey) {
+    env.TURNSTILE_SECRET_KEY = turnstileSecretKey;
+  }
+  return env;
+}
+
+function buildRequest(path, { method = 'POST', ip = '203.0.113.5', body } = {}) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (ip) headers['CF-Connecting-IP'] = ip;
+  return new Request(`https://osa-worker.example.test${path}`, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+
+/**
+ * Runs fn with globalThis.fetch replaced by a stand-in that never makes a
+ * real network call -- a boundary stand-in for the backend the real worker
+ * would proxy to, not a mock of the worker's own routing or rate-limiting
+ * logic. Restores the original fetch afterward even if fn throws.
+ */
+async function withStubBackend(fn) {
+  const original = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), init });
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  try {
+    return await fn(calls);
+  } finally {
+    globalThis.fetch = original;
+  }
+}
+
+/**
+ * Builds the same per-IP, per-hour KV key the worker computes internally,
+ * so tests can pre-seed or read back a counter under its real key.
+ */
+function hourBucketKey(prefix, ip) {
+  const now = Math.floor(Date.now() / 1000);
+  return `${prefix}:${ip}:${Math.floor(now / 3600)}`;
 }
 
 console.log('='.repeat(60));
@@ -180,18 +297,130 @@ for (const reserved of RESERVED_PATHS) {
   });
 }
 
-// Print summary
-console.log('\n' + '='.repeat(60));
-console.log('Test Summary');
-console.log('='.repeat(60));
-console.log(`Total: ${testsPassed + testsFailed} tests`);
-console.log(`✓ Passed: ${testsPassed}`);
-console.log(`✗ Failed: ${testsFailed}`);
+// Test Suites 6-9: dispatch-level behavior of the real fetch() handler.
+//
+// These do not exist to re-check the regex work Suites 1-5 already cover.
+// They drive worker.fetch() itself, so a regression in *wiring* (the wrong
+// handler attached to a route) or in the *rate-limiting behavior*
+// (handleChatResume calling rateLimitOrReject with the wrong options, or
+// skipping the resume-chain budget) fails a test here even though every
+// regex in ROUTE_PATTERNS is still correct.
+async function runDispatchTests() {
+  console.log('\n' + '='.repeat(60));
+  console.log('Test Suite 6: dispatch -- Turnstile applies to /chat, not /chat/resume');
+  console.log('='.repeat(60));
 
-if (testsFailed === 0) {
-  console.log('\nAll tests passed!');
-  process.exit(0);
-} else {
-  console.log(`\n${testsFailed} test(s) failed`);
-  process.exit(1);
+  await testAsync('POST /nemar/chat is rejected with 403 when no Turnstile token is supplied', async () => {
+    await withStubBackend(async () => {
+      const env = buildEnv({
+        kv: createFakeKv(),
+        minuteLimiter: createFakeMinuteLimiter(true),
+        turnstileSecretKey: 'test-turnstile-secret',
+      });
+      const request = buildRequest('/nemar/chat', { ip: '203.0.113.10', body: { message: 'hi' } });
+      const response = await worker.fetch(request, env, {});
+      assertEqual(response.status, 403, '/chat without a Turnstile token should be rejected with 403');
+      const payload = await response.json();
+      assertEqual(payload.error, 'Bot verification failed', '/chat 403 body should name bot verification as the cause');
+    });
+  });
+
+  await testAsync('POST /nemar/chat/resume succeeds with no Turnstile token even when TURNSTILE_SECRET_KEY is set', async () => {
+    await withStubBackend(async () => {
+      const env = buildEnv({
+        kv: createFakeKv(),
+        minuteLimiter: createFakeMinuteLimiter(true),
+        turnstileSecretKey: 'test-turnstile-secret',
+      });
+      const request = buildRequest('/nemar/chat/resume', {
+        ip: '203.0.113.11',
+        body: { session_id: 's1', call_id: 'c1', result: 'ok' },
+      });
+      const response = await worker.fetch(request, env, {});
+      assertEqual(response.status, 200, '/chat/resume with no Turnstile token should still succeed');
+    });
+  });
+
+  console.log('\n' + '='.repeat(60));
+  console.log('Test Suite 7: dispatch -- /chat/resume is exempt from the /chat hourly KV counter');
+  console.log('='.repeat(60));
+
+  await testAsync('POST /nemar/chat is blocked once the shared hourly KV counter is at its cap', async () => {
+    await withStubBackend(async () => {
+      const ip = '203.0.113.20';
+      const kv = createFakeKv({ [hourBucketKey('rl:hour', ip)]: '20' }); // production RATE_LIMIT_PER_HOUR is 20
+      const env = buildEnv({ kv, minuteLimiter: createFakeMinuteLimiter(true) });
+      const request = buildRequest('/nemar/chat', { ip, body: { message: 'hi' } });
+      const response = await worker.fetch(request, env, {});
+      assertEqual(response.status, 429, '/chat at the hourly cap should be rejected with 429');
+      const payload = await response.json();
+      assertEqual(payload.details, 'Too many requests per hour', '/chat 429 should name the chat hourly counter');
+    });
+  });
+
+  await testAsync('POST /nemar/chat/resume succeeds even when that same IP is at the /chat hourly cap', async () => {
+    await withStubBackend(async () => {
+      const ip = '203.0.113.20'; // same IP, same key the /chat test above hit its cap on
+      const kv = createFakeKv({ [hourBucketKey('rl:hour', ip)]: '20' });
+      const env = buildEnv({ kv, minuteLimiter: createFakeMinuteLimiter(true) });
+      const request = buildRequest('/nemar/chat/resume', {
+        ip,
+        body: { session_id: 's1', call_id: 'c1', result: 'ok' },
+      });
+      const response = await worker.fetch(request, env, {});
+      assertEqual(response.status, 200, '/chat/resume must not be blocked by the /chat hourly counter');
+    });
+  });
+
+  console.log('\n' + '='.repeat(60));
+  console.log('Test Suite 8: dispatch -- the per-minute limiter still guards /chat/resume');
+  console.log('='.repeat(60));
+
+  await testAsync('The per-minute limiter is consulted exactly once for a successful /chat/resume call', async () => {
+    await withStubBackend(async () => {
+      const ip = '203.0.113.30';
+      const minuteLimiter = createFakeMinuteLimiter(true);
+      const env = buildEnv({ kv: createFakeKv(), minuteLimiter });
+      const request = buildRequest('/nemar/chat/resume', {
+        ip,
+        body: { session_id: 's1', call_id: 'c1', result: 'ok' },
+      });
+      const response = await worker.fetch(request, env, {});
+      assertEqual(response.status, 200, 'a within-budget resume call should succeed');
+      assertEqual(minuteLimiter._calls, [ip], 'the per-minute limiter should have been consulted exactly once, for this IP');
+    });
+  });
+
+  await testAsync('A 429 is still returned when the per-minute limiter rejects a /chat/resume call', async () => {
+    await withStubBackend(async () => {
+      const ip = '203.0.113.31';
+      const env = buildEnv({ kv: createFakeKv(), minuteLimiter: createFakeMinuteLimiter(false) });
+      const request = buildRequest('/nemar/chat/resume', {
+        ip,
+        body: { session_id: 's1', call_id: 'c1', result: 'ok' },
+      });
+      const response = await worker.fetch(request, env, {});
+      assertEqual(response.status, 429, 'a per-minute rejection must still 429 on the resume path');
+      const payload = await response.json();
+      assertEqual(payload.details, 'Too many requests per minute', '429 should name the per-minute limiter as the cause');
+    });
+  });
 }
+
+runDispatchTests().then(() => {
+  // Print summary
+  console.log('\n' + '='.repeat(60));
+  console.log('Test Summary');
+  console.log('='.repeat(60));
+  console.log(`Total: ${testsPassed + testsFailed} tests`);
+  console.log(`✓ Passed: ${testsPassed}`);
+  console.log(`✗ Failed: ${testsFailed}`);
+
+  if (testsFailed === 0) {
+    console.log('\nAll tests passed!');
+    process.exit(0);
+  } else {
+    console.log(`\n${testsFailed} test(s) failed`);
+    process.exit(1);
+  }
+});
