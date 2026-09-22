@@ -170,4 +170,13 @@ jobs:
             echo "Unit tests failed"
             exit 1
           fi
+          # frontend-tests was listed in `needs` but never checked here, so a
+          # red frontend job still reported "All Tests Passed" (#437). That is
+          # where the worker routing tests live, and this workflow is the one
+          # that runs on a develop -> main release PR, so the gap was worst
+          # exactly when it mattered most. tests.yml already checks this.
+          if [ "${{ needs.frontend-tests.result }}" != "success" ] && [ "${{ needs.frontend-tests.result }}" != "skipped" ]; then
+            echo "Frontend tests failed"
+            exit 1
+          fi
           echo "All required tests passed"
