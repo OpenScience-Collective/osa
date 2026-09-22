@@ -11,6 +11,18 @@ account_id = "10f166f3ec8395ff4a219f581c5f359d"
 BACKEND_URL = "https://api.osc.earth/osa"
 ENVIRONMENT = "production"
 
+# Custom domain (#437): a stable, product-owned name for this worker, so the
+# frontend widget (and anyone else's CSP allowlist, e.g. nemarOrg/website
+# ADR 0017) never has to be updated again just because the account running
+# the edge changes. This is the worker's OWN public hostname, distinct from
+# BACKEND_URL above, which is the FastAPI backend the worker proxies to.
+# The existing osa-worker.<account>.workers.dev name keeps working once this
+# is added; a route does not remove the workers.dev default.
+[[routes]]
+pattern = "assistant.osc.earth"
+custom_domain = true
+zone_name = "osc.earth"
+
 # Hybrid rate limiting approach:
 # - Per-minute (bot protection): Built-in API (fast, in-memory)
 # - Per-hour (human abuse): KV (global consistency)
@@ -30,6 +42,14 @@ id = "8f8506b1a7fb400680a00014312c124d"
 [env.dev]
 name = "osa-worker-dev"
 vars = { BACKEND_URL = "https://api.osc.earth/osa-dev", ENVIRONMENT = "development" }
+
+# Custom domain for dev (#437). Single-level subdomain (develop-assistant,
+# not develop.assistant) to avoid SSL certificate issues, matching the
+# develop-demo.osc.earth convention the frontend already uses.
+[[env.dev.routes]]
+pattern = "develop-assistant.osc.earth"
+custom_domain = true
+zone_name = "osc.earth"
 
 # Per-minute rate limiter (dev has higher limit: 60/min)
 [[env.dev.ratelimits]]
@@ -66,6 +86,26 @@ id = "6d46ef72877b4129b38ef2ca1e1cd5ea"
 #
 # 6. Verify:
 #    curl https://osa-worker.<your-subdomain>.workers.dev/health
+#
+# =============================================================================
+# Custom Domain Provisioning (#437, one-time, needs zone-level Cloudflare
+# access to the osc.earth account -- deploying with `[[routes]]` above
+# registers the route but this repo's CI account may not have permission to
+# create the Custom Domain / DNS record itself)
+# =============================================================================
+#
+# The `[[routes]]` / `[[env.dev.routes]]` blocks above declare the mapping;
+# someone with access to the osc.earth Cloudflare account still needs to run:
+#
+#   bunx wrangler deploy                 # production: registers assistant.osc.earth
+#   bunx wrangler deploy --env dev       # dev: registers develop-assistant.osc.earth
+#
+# `custom_domain = true` makes wrangler create the Custom Domain (and its
+# DNS record) in the osc.earth zone as part of that deploy -- no separate
+# `dns_records` API call or dashboard step is required, since the whole
+# osc.earth zone is already on Cloudflare. Deploy dev first and verify it
+# (curl /health and /version on develop-assistant.osc.earth) before
+# deploying production; see PR for #437 for the full checklist.
 #
 # =============================================================================
 # Turnstile Setup

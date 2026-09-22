@@ -33,6 +33,15 @@ Web Frontend                    CLI / Programmatic
 └─────────────────────────────────────────────────┘
 ```
 
+This worker's public hostnames are `assistant.osc.earth` (production) and
+`develop-assistant.osc.earth` (dev) -- see `wrangler.toml`'s `[[routes]]` /
+`[[env.dev.routes]]` and issue #437. These are stable, product-owned custom
+domains rather than the account-scoped `*.workers.dev` default, so moving
+the worker to a different Cloudflare account is a DNS change, not a change
+every consumer (the widget, `nemarOrg/website`'s CSP) has to make too. The
+`your-subdomain.workers.dev` examples below are generic placeholders for
+anyone deploying their own fork of this worker under their own account.
+
 ## Setup
 
 ### 1. Install wrangler
