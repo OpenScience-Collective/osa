@@ -19,6 +19,7 @@ import base64
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.tools import tool
 
 from src.api.config import get_settings
 from src.api.tool_results import (
@@ -44,8 +45,28 @@ CALL_ID = "toolu_01aaaaaaaaaaaaaaaaaaaaaa"
 SECOND_CALL_ID = "toolu_01bbbbbbbbbbbbbbbbbbbbbb"
 
 
+@tool
+def execute_code(code: str) -> str:
+    """Run Python in the user's browser and return what it printed."""
+    # Declared for its schema only: these tests synthesize the tool result the
+    # browser would have returned, so nothing here ever runs the code.
+    return f"ran {code}"
+
+
 def _llm():
-    return create_anthropic_llm(model="claude-haiku-4-5", thinking=None, settings=get_settings())
+    """The bound model every test in this module invokes.
+
+    Every message list built below carries a `tool_use` block naming
+    `execute_code` (via `_call`), so the model actually invoking it must be
+    bound to a matching tool -- exactly as
+    `tests/test_integration/test_anthropic_platform.py:87` and
+    `TestToolResultImages._report_bars` do for the same shape. An unbound
+    model sending a `tool_use`/`tool_result` history the provider does not
+    recognize as declared risks a 400 on the one thing this module exists to
+    prove, rather than testing it.
+    """
+    llm = create_anthropic_llm(model="claude-haiku-4-5", thinking=None, settings=get_settings())
+    return llm.bind_tools([execute_code])
 
 
 def _call(call_id: str = CALL_ID, code: str = "print(1)") -> AIMessage:
