@@ -137,6 +137,29 @@ class TestShouldUseTools:
         )
         assert agent._should_use_tools({"messages": [ai]}) == "client_tools"
 
+    def test_tools_for_a_pure_server_batch_when_client_tools_are_also_bound(self) -> None:
+        """An agent bound to both a server AND a client tool must still route
+        a server-only batch to "tools", never to "client_tools".
+
+        Every other case in this class either binds no client tool at all
+        (`test_tools_for_pure_server_batch`, where `self.client_tool_names`
+        is empty and the `call_names & self.client_tool_names` check is never
+        reached) or already includes a client call (where `&` and a mutated
+        `|` agree). Neither would catch `&` becoming `|` in
+        `BaseAgent._should_use_tools`, which would route every ordinary tool
+        call into the client-tools parking flow for any community that also
+        configures a client tool such as `execute_code`. This is the one
+        case where the two operators disagree: `call_names` is `{"add"}` and
+        `self.client_tool_names` is `{"execute_code"}`, so `&` is empty
+        (falsy, routes to "tools") while `|` is non-empty (truthy, would
+        wrongly route to "client_tools").
+        """
+        agent = self._agent([add, _client_tool()])
+        ai = AIMessage(
+            content="", tool_calls=[{"id": "1", "name": "add", "args": {"a": 1, "b": 2}}]
+        )
+        assert agent._should_use_tools({"messages": [ai]}) == "tools"
+
 
 class TestClientToolsNodeDirect:
     """Direct tests of _client_tools_node for client-only and unknown-name batches.
