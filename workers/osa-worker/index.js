@@ -29,6 +29,9 @@ function getConfig(env) {
   return {
     RATE_LIMIT_PER_MINUTE: isDev ? 60 : 10,
     RATE_LIMIT_PER_HOUR: isDev ? 100 : 20,
+    // Separate, more generous hourly budget for /chat/resume chains. See
+    // checkResumeChainLimit for why a distinct counter exists and why 5x.
+    RESUME_LIMIT_PER_HOUR: isDev ? 500 : 100,
     REQUEST_TIMEOUT: 120000, // 2 minutes for LLM responses
     IS_DEV: isDev,
   };
@@ -165,6 +168,72 @@ async function checkRateLimit(request, env, CONFIG, options = {}) {
  */
 async function rateLimitOrReject(request, env, corsHeaders, CONFIG, options = {}) {
   const rl = await checkRateLimit(request, env, CONFIG, options);
+  if (!rl.allowed) {
+    return new Response(
+      JSON.stringify({ error: 'Rate limit exceeded', details: rl.reason }),
+      { status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
+  }
+  return null;
+}
+
+/**
+ * Cap the number of /chat/resume calls a single IP can make per hour.
+ *
+ * This is deliberately a separate counter from the /chat hourly budget
+ * above, not a reuse of it. handleChatResume exempts resume calls from the
+ * /chat hourly counter (countHourly: false) because one legitimate
+ * conversational turn with N client-executed tool calls costs 1 + N HTTP
+ * requests, and counting each resume against the /chat cap would punish a
+ * multi-step analysis as if every execution were its own chat turn.
+ *
+ * But a resume call can itself end in another tool_request, whose resume is
+ * also exempt, and so on -- nothing before this function bounds how many
+ * times that repeats. Left unchecked, a single hourly-counted /chat call
+ * could chain resume calls up to the per-minute limiter's ceiling alone:
+ * 10/min * 60 = 600/hour in production, roughly 30x the 20/hour /chat
+ * budget. The tool's own stdout is an explicit prompt-injection channel
+ * (see src/api/tool_results.py), so a successful injection could drive that
+ * chain without the user's cooperation.
+ *
+ * RESUME_LIMIT_PER_HOUR is 5x the /chat hourly cap in both environments
+ * (100/hour in production, 500/hour in dev): generous enough that a
+ * legitimate multi-step analysis, several tool executions spread across
+ * many of the hour's 20 (or 100 in dev) /chat turns, is not throttled, while
+ * still capping the worst-case amplification at 5x instead of the
+ * unbounded ~30x the per-minute limiter alone would allow.
+ */
+async function checkResumeChainLimit(request, env, CONFIG) {
+  if (!env.RATE_LIMITER_KV) {
+    return { allowed: true };
+  }
+
+  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const hourKey = `rl:resume:hour:${ip}:${Math.floor(now / 3600)}`;
+
+    const count = parseInt(await env.RATE_LIMITER_KV.get(hourKey) || '0', 10);
+    if (count >= CONFIG.RESUME_LIMIT_PER_HOUR) {
+      return { allowed: false, reason: 'Too many resume requests per hour' };
+    }
+
+    await env.RATE_LIMITER_KV.put(hourKey, (count + 1).toString(), { expirationTtl: 7200 });
+  } catch (error) {
+    console.error('Resume chain limit check error:', error);
+    // Fail open for KV errors, consistent with checkRateLimit above.
+  }
+
+  return { allowed: true };
+}
+
+/**
+ * Check the resume-chain limit and return a 429 response if exceeded, or
+ * null if allowed. Mirrors rateLimitOrReject's shape for handleChatResume.
+ */
+async function resumeChainLimitOrReject(request, env, corsHeaders, CONFIG) {
+  const rl = await checkResumeChainLimit(request, env, CONFIG);
   if (!rl.allowed) {
     return new Response(
       JSON.stringify({ error: 'Rate limit exceeded', details: rl.reason }),
@@ -636,6 +705,7 @@ function handleRoot(corsHeaders, CONFIG) {
       turnstile: 'visible (required for web clients)',
       byok: 'Bring Your Own Key mode for CLI/programmatic access',
       rate_limit: `${CONFIG.RATE_LIMIT_PER_MINUTE}/min, ${CONFIG.RATE_LIMIT_PER_HOUR}/hour`,
+      resume_rate_limit: `${CONFIG.RATE_LIMIT_PER_MINUTE}/min (shared per-minute limiter), ${CONFIG.RESUME_LIMIT_PER_HOUR}/hour (separate resume-chain cap; /chat/resume is exempt from the rate_limit hourly figure above)`,
     },
     notes: {
       communities: 'Available communities: hed, bids, eeglab, nemar (check /communities endpoint for full list)',
@@ -791,10 +861,20 @@ async function handleFeedback(request, env, corsHeaders, CONFIG) {
  * in one turn burn three of a user's twenty hourly requests -- a budget
  * shared across an entire NAT'd lab. The per-minute limiter (bot
  * protection) still applies via rateLimitOrReject's default behavior.
+ *
+ * That exemption is only safe because resumeChainLimitOrReject, below,
+ * bounds the chain itself against a separate, generous hourly budget --
+ * see checkResumeChainLimit for why an unbounded chain would otherwise
+ * let this exemption be abused.
  */
 async function handleChatResume(request, env, communityId, corsHeaders, CONFIG) {
   const rejected = await rateLimitOrReject(request, env, corsHeaders, CONFIG, { countHourly: false });
   if (rejected) return rejected;
+
+  // Separate, generous cap on resume chains themselves; see
+  // checkResumeChainLimit for why this exists alongside the exemption above.
+  const chainRejected = await resumeChainLimitOrReject(request, env, corsHeaders, CONFIG);
+  if (chainRejected) return chainRejected;
 
   let body;
   try {

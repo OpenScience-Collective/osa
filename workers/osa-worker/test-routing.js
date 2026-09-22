@@ -405,6 +405,51 @@ async function runDispatchTests() {
       assertEqual(payload.details, 'Too many requests per minute', '429 should name the per-minute limiter as the cause');
     });
   });
+
+  console.log('\n' + '='.repeat(60));
+  console.log('Test Suite 9: dispatch -- the resume-chain hourly budget bounds unbounded chains');
+  console.log('='.repeat(60));
+
+  await testAsync('A resume call one under the resume-chain budget succeeds and increments its own counter', async () => {
+    await withStubBackend(async () => {
+      const ip = '203.0.113.40';
+      const key = hourBucketKey('rl:resume:hour', ip);
+      const kv = createFakeKv({ [key]: '99' }); // production RESUME_LIMIT_PER_HOUR is 100
+      const env = buildEnv({ kv, minuteLimiter: createFakeMinuteLimiter(true) });
+      const request = buildRequest('/nemar/chat/resume', {
+        ip,
+        body: { session_id: 's1', call_id: 'c1', result: 'ok' },
+      });
+      const response = await worker.fetch(request, env, {});
+      assertEqual(response.status, 200, 'one under the resume-chain cap should still succeed');
+      assertEqual(kv._store.get(key), '100', 'the resume-chain counter should have been incremented to the cap');
+    });
+  });
+
+  await testAsync('A resume call at the resume-chain budget gets 429, distinct from the /chat hourly counter', async () => {
+    await withStubBackend(async () => {
+      const ip = '203.0.113.41';
+      const kv = createFakeKv({ [hourBucketKey('rl:resume:hour', ip)]: '100' }); // at production RESUME_LIMIT_PER_HOUR
+      const env = buildEnv({ kv, minuteLimiter: createFakeMinuteLimiter(true) });
+      const request = buildRequest('/nemar/chat/resume', {
+        ip,
+        body: { session_id: 's1', call_id: 'c1', result: 'ok' },
+      });
+      const response = await worker.fetch(request, env, {});
+      assertEqual(response.status, 429, 'a resume call at the resume-chain cap should be rejected with 429');
+      const payload = await response.json();
+      assertEqual(
+        payload.details,
+        'Too many resume requests per hour',
+        'the resume-chain 429 reason must be distinct from the /chat hourly reason'
+      );
+      assertEqual(
+        kv._store.get(hourBucketKey('rl:hour', ip)) || '0',
+        '0',
+        'a rejected resume call must not touch the unrelated /chat hourly counter'
+      );
+    });
+  });
 }
 
 runDispatchTests().then(() => {
