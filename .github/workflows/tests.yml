@@ -92,6 +92,9 @@ jobs:
       - name: Run worker mounted-hosts agreement test
         run: bun workers/osa-worker/test-mounted-hosts.js
 
+      - name: Run browser runtime lifecycle tests
+        run: bun frontend/test-runtime-lifecycle.js
+
       - name: Check widget syntax
         run: node --check frontend/osa-chat-widget.js
 
