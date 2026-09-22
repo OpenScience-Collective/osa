@@ -110,36 +110,44 @@ id = "6d46ef72877b4129b38ef2ca1e1cd5ea"
 #    curl https://osa-worker.<your-subdomain>.workers.dev/health
 #
 # =============================================================================
-# Route Provisioning (#437, one-time, needs zone-level Cloudflare access to
-# the osc.earth zone on the account that owns it -- deploying with
-# `[[routes]]` above registers the route, but only an account with access
-# to that zone can do so)
+# Route Provisioning (#437) -- DONE, recorded here because the next person to
+# add a route on a zone will hit both of these traps
 # =============================================================================
 #
-# The `[[routes]]` / `[[env.dev.routes]]` blocks above declare the mapping;
-# someone with zone access to osc.earth still needs to run:
+# Deployment is NOT manual. `.github/workflows/sync-worker-cors.yml` deploys
+# this worker on a push touching `workers/osa-worker/**`:
 #
-#   bunx cfman wrangler --account neuromechanist deploy --env dev   # dev: widget.osc.earth/osa via develop-widget.osc.earth
-#   bunx cfman wrangler --account neuromechanist deploy              # production: registers widget.osc.earth/osa/*
+#   push to develop  ->  wrangler deploy --env=dev
+#   push to main     ->  wrangler deploy
 #
-# This is an ordinary zone route (no `custom_domain`), so it attaches the
-# pattern to this worker within the osc.earth zone -- it does not create or
-# touch any DNS record, and it does not affect any other route already
-# published on osc.earth (demo.osc.earth, develop-demo.osc.earth,
-# api.osc.earth, or either osa-worker*.workers.dev name). Deploy dev first
-# and verify it (curl /health and /version on develop-widget.osc.earth/osa)
-# before deploying production; see PR for #437 for the full checklist.
+# So the route attaches when the branch lands, and a hand-run
+# `wrangler deploy` would push a local worktree straight to production,
+# outside that flow. Do not run one.
 #
-# IMPORTANT, confirmed during #437's dev rollout: unlike `custom_domain =
-# true`, an ordinary route does NOT provision a DNS record, and the route
-# is unreachable from the public internet until one exists. Both
-# widget.osc.earth and develop-widget.osc.earth need a NEW proxied
-# (orange-cloud) DNS record in the osc.earth zone -- any target works, the
-# same way demo.osc.earth / develop-demo.osc.earth already have one -- so
-# that Cloudflare's edge accepts the hostname before it ever evaluates the
-# route pattern above. `wrangler deploy` reporting the route as "Deployed"
-# does not mean this record exists; verify with a plain `curl` against the
-# public hostname, not just against the deploy output.
+# Trap 1: an ordinary zone route does NOT provision DNS. Unlike
+# `custom_domain = true`, it attaches a pattern and nothing else, so the
+# hostname stays unresolvable and the route is dead from the public internet
+# no matter how many times `wrangler deploy` reports it as "Deployed".
+# Verify with a plain `curl` against the public hostname, never against the
+# deploy output. Both records now exist in the osc.earth zone, created
+# 2026-09-21, proxied AAAA to 100:: (the IPv6 discard prefix, Cloudflare's
+# target for a name that only carries a route and has no real origin):
+#
+#   develop-widget.osc.earth   AAAA  100::  proxied
+#   widget.osc.earth           AAAA  100::  proxied
+#
+# Trap 2: registering a route needs permission on the zone it lives in, not
+# just on the worker. The dev rollout used the `neuromechanist` account
+# token, which has osc.earth access. CI deploys with
+# `secrets.CLOUDFLARE_API_TOKEN`, and if that token cannot edit this zone the
+# deploy step fails on every merge touching this directory -- a pipeline
+# outage, not a widget bug. The previously deployed worker keeps serving, so
+# it is recoverable: grant that token Zone:Workers Routes edit on osc.earth,
+# or point the secret at one that has it.
+#
+# Neither route touches anything already published on osc.earth
+# (demo.osc.earth, develop-demo.osc.earth, api.osc.earth, or either
+# osa-worker*.workers.dev name); all were re-verified after the dev rollout.
 #
 # =============================================================================
 # Turnstile Setup
