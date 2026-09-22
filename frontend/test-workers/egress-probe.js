@@ -5,13 +5,16 @@
 // test therefore evaluates guard + probes together in ONE function scope, which
 // is also the only way the probes can reach the sealing function at all.
 self.onmessage = async (event) => {
-  const { guardSource, sealTo, probes, toctou } = event.data;
+  const { guardSource, sealTo, probes, toctou, sabotage } = event.data;
   const results = {};
 
   // Assembled so the guard's own bindings are local to this function, never
   // global. If a future change leaks one, the `globalReachable` probe below
   // catches it.
+  // `sabotage` runs BEFORE the guard, to put the global in a state the guard
+  // cannot lock, so the fail-closed path can be observed in a real worker.
   const body = `
+    ${sabotage || ''}
     ${guardSource}
     return (async () => {
       const out = {};

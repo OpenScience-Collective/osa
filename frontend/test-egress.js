@@ -347,6 +347,39 @@ console.log('\nthe data client is real Python, checked by a real compiler');
     'the bridge it was built from is not left lying in the namespace');
 }
 
+console.log('\nthe guard FAILS CLOSED when it cannot lock a transport');
+{
+  // An earlier version swallowed both of these and started anyway: a native
+  // member it could not delete stayed reachable through the prototype, and a
+  // defineProperty that threw fell back to plain assignment, leaving a shim
+  // executed code could reassign. A partial seal with nothing saying so is the
+  // failure this module exists to prevent, so the guard must refuse to start.
+  const runSabotaged = (sabotage) => new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('./test-workers/egress-probe.js', import.meta.url).href);
+    worker.onmessage = (e) => { worker.terminate(); resolve(e.data); };
+    worker.onerror = (e) => { worker.terminate(); resolve({ fatal: String(e.message || e) }); };
+    setTimeout(() => { worker.terminate(); reject(new Error('sabotaged probe timed out')); }, 20_000);
+    worker.postMessage({
+      guardSource: buildEgressGuardSource({ bootAllow: ['https://cdn.jsdelivr.net/'] }),
+      sealTo: ['https://zarr.nemar.org/'],
+      probes: {},
+      sabotage,
+    });
+  });
+
+  const stuckOnPrototype = await runSabotaged(
+    "Object.defineProperty(Object.getPrototypeOf(self), 'EventSource', { value: function () {}, configurable: false });"
+  );
+  assert(/could not be removed from the prototype chain/.test(String(stuckOnPrototype.fatal)),
+    `a native member that cannot be removed stops the guard (got ${JSON.stringify(stuckOnPrototype.fatal || 'it started')})`);
+
+  const lockedAlready = await runSabotaged(
+    "Object.defineProperty(self, 'Worker', { value: self.Worker, writable: false, configurable: false });"
+  );
+  assert(lockedAlready.fatal !== undefined && lockedAlready.results === undefined,
+    `a member that cannot be relocked stops the guard rather than being skipped (got ${JSON.stringify(lockedAlready.fatal || 'it started')})`);
+}
+
 console.log('\nthe namespace seal, EXECUTED rather than regex-matched');
 {
   const py = buildNamespaceSealSource();

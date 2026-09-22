@@ -157,26 +157,40 @@ export function buildEgressGuardSource({ bootAllow = [] } = {}) {
     return true;
   };
 
-  // Replace a global so the original is unreachable and the shim cannot be
-  // swapped back out. WebIDL members usually live on the global's PROTOTYPE, so
-  // assigning an own property alone can leave the pristine native one reachable
-  // via Object.getPrototypeOf(self).
-  const __install = (name, value) => {
-    let proto = Object.getPrototypeOf(self);
-    while (proto && proto !== Object.prototype) {
+  // Replace a property so the original is unreachable and the replacement
+  // cannot be swapped back out. WebIDL members usually live on the PROTOTYPE, so
+  // defining an own property alone would leave the pristine native one reachable
+  // as Object.getPrototypeOf(self).fetch.
+  //
+  // FAILS CLOSED. An earlier version swallowed both failures: a prototype member
+  // that would not delete stayed reachable, and a defineProperty that threw fell
+  // back to plain assignment, leaving a shim executed code could reassign. Both
+  // were silent, so the seal could be partial with nothing anywhere saying so.
+  // Throwing here happens at the worker's top level, before it answers anything,
+  // so the host sees a worker error and the boot fails visibly instead.
+  const __lock = (target, name, descriptor) => {
+    // The WHOLE chain, Object.prototype included. Stopping short of it skipped
+    // the one prototype a Bun worker global has, where a transport defined there
+    // stayed reachable from any plain object. Only these transport names are
+    // ever deleted, and none of them belongs on Object.prototype.
+    let proto = Object.getPrototypeOf(target);
+    while (proto) {
       if (Object.getOwnPropertyDescriptor(proto, name)) {
-        try { delete proto[name]; } catch (e) { /* non-configurable; own property still shadows */ }
+        try { delete proto[name]; } catch (e) { /* checked on the next line */ }
+        if (Object.getOwnPropertyDescriptor(proto, name)) {
+          throw new Error('egress guard: the native ' + name + ' could not be removed from the prototype chain, so it would stay reachable');
+        }
       }
       proto = Object.getPrototypeOf(proto);
     }
-    try {
-      Object.defineProperty(self, name, {
-        value, writable: false, configurable: false, enumerable: true,
-      });
-    } catch (e) {
-      self[name] = value;
+    Object.defineProperty(target, name, Object.assign({ configurable: false, enumerable: true }, descriptor));
+    const locked = Object.getOwnPropertyDescriptor(target, name);
+    const valueHeld = !('value' in descriptor) || (locked && locked.value === descriptor.value && !locked.writable);
+    if (!locked || locked.configurable || !valueHeld) {
+      throw new Error('egress guard: ' + name + ' could not be locked');
     }
   };
+  const __install = (name, value) => __lock(self, name, { value: value, writable: false });
 
   const __nativeFetch = self.fetch.bind(self);
 
@@ -224,14 +238,11 @@ export function buildEgressGuardSource({ bootAllow = [] } = {}) {
   }
 
   // CacheStorage performs real network requests through Cache.add/addAll, which
-  // never touch the fetch shim. Nothing in the runtime needs it.
+  // never touch the fetch shim. Nothing in the runtime needs it. Removed from the
+  // prototype as well: an own getter alone left the native one reachable through
+  // Object.getPrototypeOf(self).
   if ('caches' in self) {
-    try {
-      Object.defineProperty(self, 'caches', {
-        get() { throw __denied('caches', DENY_REASON.TRANSPORT); },
-        configurable: false,
-      });
-    } catch (e) { /* not redefinable in this environment */ }
+    __lock(self, 'caches', { get: function () { throw __denied('caches', DENY_REASON.TRANSPORT); } });
   }
 
   // Defined UNCONDITIONALLY, not guarded by an existence check. An earlier
@@ -256,13 +267,10 @@ export function buildEgressGuardSource({ bootAllow = [] } = {}) {
   // WorkerNavigator in current browsers, so this is a guard against gaining it
   // rather than against having it.
   if (self.navigator && typeof self.navigator.sendBeacon === 'function') {
-    try {
-      Object.defineProperty(self.navigator, 'sendBeacon', {
-        value: function () { throw __denied('sendbeacon', DENY_REASON.TRANSPORT); },
-        writable: false,
-        configurable: false,
-      });
-    } catch (e) { /* not redefinable in this environment */ }
+    __lock(self.navigator, 'sendBeacon', {
+      value: function () { throw __denied('sendbeacon', DENY_REASON.TRANSPORT); },
+      writable: false,
+    });
   }
   `;
 }
