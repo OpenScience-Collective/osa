@@ -8,6 +8,7 @@ covered separately in tests/test_agents/test_base.py.
 """
 
 import pytest
+from pydantic import ValidationError
 
 from src.core.config.community import (
     ClientToolConfig,
@@ -125,11 +126,11 @@ class TestExecuteCodeArgs:
     """Tests for the shared runtime: python args schema."""
 
     def test_code_is_required(self) -> None:
-        with pytest.raises(Exception, match="code"):
+        with pytest.raises(ValidationError, match="code"):
             ExecuteCodeArgs(description="Adds one and one.")  # type: ignore[call-arg]
 
     def test_description_is_required(self) -> None:
-        with pytest.raises(Exception, match="description"):
+        with pytest.raises(ValidationError, match="description"):
             ExecuteCodeArgs(code="1 + 1")  # type: ignore[call-arg]
 
     def test_accepts_both_fields(self) -> None:
