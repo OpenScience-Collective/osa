@@ -263,3 +263,41 @@ class TestTheHappyPath:
         assert any(
             isinstance(m, ToolMessage) and m.tool_call_id == CALL_ID for m in session.messages
         ), "the browser result was not recorded, so the next turn would be rejected"
+
+    def test_run_ones_citations_reach_the_reply(self, client: TestClient, monkeypatch) -> None:
+        """The endpoint hands the parked call's citations to run 2.
+
+        Checked here rather than below the endpoint, because dropping the argument at
+        this call site is exactly the slip the module docstring describes: run 2 would
+        number from [1] again and every test one layer down would stay green.
+        """
+        from dataclasses import replace
+
+        from src.agents.content import CitationMark
+
+        session = _parked_session()
+        mark = CitationMark(
+            marker=1, source="https://doc.example/alpha", title="Alpha", cited_text="x"
+        )
+        session.set_pending_call(replace(session.pending_call, carried_citations=(mark,)))
+        monkeypatch.setattr(
+            "src.api.routers.community.create_community_assistant",
+            lambda *_a, **_k: _assistant(),
+        )
+
+        response = client.post(f"/{COMMUNITY}/chat/resume", json=_body())
+
+        events = [
+            json.loads(line[len("data: ") :])
+            for line in response.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        done = next(e for e in events if e["event"] == "done")
+        assert done["citations"] == [
+            {
+                "marker": 1,
+                "source": "https://doc.example/alpha",
+                "title": "Alpha",
+                "cited_text": "x",
+            }
+        ]

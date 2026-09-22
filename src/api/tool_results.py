@@ -38,6 +38,8 @@ from typing import Annotated, Any, Literal
 from langchain_core.messages import ToolMessage
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
+from src.agents.content import CitationMark
+
 # The caps live in `src.core.limits`, which imports nothing but the standard library,
 # because `src.core.config.community` bounds `RuntimeLimits` by the same numbers and
 # must import cleanly without the `server` extra. Re-exported here so callers that think
@@ -241,6 +243,9 @@ class PendingClientCall:
     args: dict[str, Any]
     requires_permission: bool
     created_at: datetime
+    #: The citations run 1 attached to its text, so run 2 continues the same
+    #: numbering. The reader sees the two runs as one reply; see `CitationTracker`.
+    carried_citations: tuple[CitationMark, ...] = ()
 
     #: Keys the graph node must supply. Named here so a drift between the node and this
     #: reader is one error naming the missing key, rather than the two different silent
@@ -276,11 +281,16 @@ class PendingClientCall:
         moment = now or datetime.now(UTC)
         return moment - self.created_at > timedelta(seconds=PENDING_CALL_TTL_SECONDS)
 
-    def to_request_event(self, session_id: str) -> dict[str, Any]:
+    def to_request_event(self, session_id: str, content: str = "") -> dict[str, Any]:
         """The `tool_request` SSE payload.
 
         Carries `event`, which the widget's dispatcher requires; the design note's own
         example of a sibling event omitted it and would not have dispatched.
+
+        `content` and `citations` do for run 1 what `done` does for a finished run:
+        the text run 1 streamed, with its markers normalized, and the citations behind
+        them. Run 1 never sends `done`, so without these the reader would keep the raw
+        streamed text, whose markers can sit mid-word.
         """
         return {
             "event": "tool_request",
@@ -289,4 +299,14 @@ class PendingClientCall:
             "tool": self.tool,
             "args": self.args,
             "requires_permission": self.requires_permission,
+            "content": content,
+            "citations": [
+                {
+                    "marker": mark.marker,
+                    "source": mark.source,
+                    "title": mark.title,
+                    "cited_text": mark.cited_text,
+                }
+                for mark in self.carried_citations
+            ],
         }

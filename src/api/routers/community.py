@@ -13,7 +13,7 @@ import sqlite3
 import time
 import uuid
 from collections.abc import AsyncGenerator, Iterator, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -30,6 +30,7 @@ from src.agents.base import (
 )
 from src.agents.content import (
     CitationAssembler,
+    CitationMark,
     ContentBlock,
     classify_content_blocks_with_indices,
     encode_citation_markers,
@@ -2055,6 +2056,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 declared_client_tools=set(body.client_tools),
                 initial_messages=live_messages,
                 endpoint=f"/{community_id}/chat/resume",
+                carried_citations=pending.carried_citations,
             ),
             media_type="text/event-stream",
             headers={
@@ -2856,6 +2858,9 @@ def _finish_with_tool_request(
     session: ChatSession,
     pending_payload: dict[str, Any],
     final_state: dict[str, Any] | None,
+    *,
+    content: str = "",
+    citations: Sequence[CitationMark] = (),
 ) -> Iterator[str]:
     """End run 1 on a browser call: adopt the history, park the call, ask the client to run it.
 
@@ -2875,10 +2880,16 @@ def _finish_with_tool_request(
     # which the provider rejects on every later turn: the session would be permanently
     # dead with no way to repair it, because `abandon_pending_call` has nothing to
     # abandon. Build the call first and let it raise while the session is untouched.
-    pending = PendingClientCall.from_state(pending_payload)
+    #
+    # The citations travel with the parked call so run 2 continues their numbering;
+    # `content` is run 1's text with its markers normalized, which the reader would
+    # otherwise only ever have in its raw streamed form.
+    pending = replace(
+        PendingClientCall.from_state(pending_payload), carried_citations=tuple(citations)
+    )
     session.replace_history(final_state.get("messages", []) if final_state else [])
     session.set_pending_call(pending)
-    yield f"data: {json.dumps(pending.to_request_event(session.session_id))}\n\n"
+    yield f"data: {json.dumps(pending.to_request_event(session.session_id, content))}\n\n"
 
 
 async def _stream_chat_response(
@@ -2893,6 +2904,7 @@ async def _stream_chat_response(
     declared_client_tools: set[str] | None = None,
     initial_messages: list[BaseMessage] | None = None,
     endpoint: str | None = None,
+    carried_citations: Sequence[CitationMark] = (),
 ) -> AsyncGenerator[str, None]:
     """Stream assistant response as JSON-encoded Server-Sent Events.
 
@@ -2917,6 +2929,12 @@ async def _stream_chat_response(
     rationale). `done.content` is authoritative and contains the normalized
     answer that is persisted in session history, while `done.citations`
     repeats the full citation list.
+
+    A run that ends on a browser call sends `tool_request` instead of `done`, with
+    run 1's normalized `content` and its `citations`. Run 2 (`/chat/resume`) passes
+    those citations back as `carried_citations`, so the two runs number their
+    sources as the one reply the reader sees: `done.citations` then lists both
+    runs' sources and `done.content` carries run 2's text.
     """
     start_time = time.monotonic()
     tools_called: list[str] = []
@@ -2925,7 +2943,7 @@ async def _stream_chat_response(
     total_output_tokens = 0
     total_cache_read_tokens = 0
     total_cache_creation_tokens = 0
-    citation_assembler = CitationAssembler()
+    citation_assembler = CitationAssembler(carried_citations)
 
     # The metrics middleware assigns a per-request UUID; expose it only on the
     # final `done` event (below) so the widget attaches it only to a reply that
@@ -3110,7 +3128,13 @@ async def _stream_chat_response(
             # the number someone would later build a "which tools get used" dashboard
             # on and believe.
             tools_called.append(str(pending_payload.get("tool", "")))
-            for sse_line in _finish_with_tool_request(session, pending_payload, final_state):
+            for sse_line in _finish_with_tool_request(
+                session,
+                pending_payload,
+                final_state,
+                content=normalize_citation_markers(full_response, citation_assembler.marks),
+                citations=citation_assembler.marks,
+            ):
                 yield sse_line
             _log_streaming_metrics(
                 http_request=http_request,
