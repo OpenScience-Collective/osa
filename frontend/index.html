@@ -267,21 +267,33 @@
     // Community configurations fetched from the API
     let COMMUNITIES = {};
 
-    // Determine API endpoint (matches widget environment detection)
-    const hostname = window.location.hostname;
-    const isProduction = hostname === 'demo.osc.earth' || hostname === 'osa-demo.pages.dev';
-    const isDev = !isProduction && (
-                  hostname.endsWith('-demo.osc.earth') ||
-                  hostname.endsWith('.osa-demo.pages.dev') ||
-                  hostname.includes('localhost') ||
-                  hostname.includes('127.0.0.1'));
-    const API_BASE = isDev
-      ? 'https://osa-worker-dev.shirazi-10f.workers.dev'
-      : 'https://osa-worker.shirazi-10f.workers.dev';
+    // API endpoint: the widget script above (loaded synchronously, before
+    // this block runs) already resolved hostname -> environment -> endpoint
+    // once. Reuse that instead of re-deriving it here (#437).
+    //
+    // Resolved inside loadCommunities() rather than at the top level of this
+    // block, deliberately. Reusing the widget's resolution turns a soft
+    // dependency into a hard one: if osa-chat-widget.js fails to load at all
+    // (CDN trouble, an ad blocker, a CSP refusal, or the route being live
+    // while DNS is not, all of which happened during #437's own rollout),
+    // window.OSAChatWidget is undefined. A top-level read would throw there,
+    // uncaught, and every later top-level statement in this block, including
+    // the loadCommunities() call itself, would never run. The page would show
+    // an empty div rather than the "Could not load communities" box below.
+    // Throwing inside the try routes that failure into the same UI as any
+    // other backend failure.
+    function resolveApiBase() {
+      const widget = window.OSAChatWidget;
+      if (!widget || typeof widget.getConfig !== 'function') {
+        throw new Error('osa-chat-widget.js did not load, so the API endpoint is unknown');
+      }
+      return widget.getConfig().apiEndpoint;
+    }
 
     // Fetch community configs from the backend
     async function loadCommunities() {
       try {
+        const API_BASE = resolveApiBase();
         const response = await fetch(`${API_BASE}/communities`);
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
