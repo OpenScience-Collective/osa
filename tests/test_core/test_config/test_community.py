@@ -21,6 +21,7 @@ from src.api.tool_results import (
 )
 from src.core.config.community import (
     MAX_CONFIGURED_CLIENT_TOOLS,
+    MAX_PRELUDE_CHARS,
     BudgetConfig,
     CitationConfig,
     ClientToolConfig,
@@ -2132,6 +2133,12 @@ class TestPythonRuntimeConfig:
         assert config.lockfile is None
         assert config.prelude is None
 
+    def test_lockfile_and_prelude_may_be_given_as_null(self) -> None:
+        """A YAML key left empty arrives as None, which means the same as omitting it."""
+        config = PythonRuntimeConfig(pyodide_version="0.29.5", lockfile=None, prelude=None)
+        assert config.lockfile is None
+        assert config.prelude is None
+
     @pytest.mark.parametrize(
         "lockfile",
         [
@@ -2159,8 +2166,12 @@ class TestPythonRuntimeConfig:
             PythonRuntimeConfig(pyodide_version="0.29.5", prelude="import osa\nif True\n")
 
     def test_a_prelude_is_bounded(self) -> None:
-        with pytest.raises(ValidationError):
-            PythonRuntimeConfig(pyodide_version="0.29.5", prelude="x = 1\n" * 1000)
+        at_the_cap = "x = 1\n" + "#" * (MAX_PRELUDE_CHARS - 7) + "\n"
+        assert len(at_the_cap) == MAX_PRELUDE_CHARS
+        assert PythonRuntimeConfig(pyodide_version="0.29.5", prelude=at_the_cap).prelude
+
+        with pytest.raises(ValidationError, match="at most"):
+            PythonRuntimeConfig(pyodide_version="0.29.5", prelude=at_the_cap + "\n")
 
 
 class TestRuntimeConfig:

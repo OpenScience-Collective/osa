@@ -9,11 +9,10 @@ in a second run, rather than to LangGraph's `ToolNode`. This module owns the
 tool class and the two functions that decide, at bind time, which client
 tools a given request is even allowed to see.
 
-Phase 1 ships with no community enabling this (no shipped config.yaml
-declares `extensions.client_tools`), so `build_client_tools` returns `[]`
-for every real request today. It exists so phase 2 (#431), which builds the
-browser-side executor and the permission gate, has a tested server contract
-to run against.
+The browser side is phase 2 (#431): the widget's sealed Pyodide runtime and
+its permission gate. NEMAR is the first community to declare a client tool
+(`execute_code`), so `build_client_tools` returns a live tool for its
+requests unless the kill switch below is set.
 """
 
 from __future__ import annotations
@@ -37,10 +36,11 @@ CLIENT_TOOL_KILL_SWITCH_ENV = "OSA_CLIENT_TOOLS_DISABLED"
 strips every client tool regardless of what a community's config.yaml
 declares.
 
-`develop` auto-deploys on every push, and a client tool with no executor
-parks every stream that calls it -- this switch is what makes it safe to
-merge the graph plumbing before phase 2 (#431) exists to answer a
-`pending_client_call`.
+It made it safe to merge phase 1's graph plumbing before any browser could
+answer a `pending_client_call`. Now that NEMAR offers `execute_code`, it is
+the incident control: setting it withdraws every client tool, the runtime
+config and the lock overlay from `/config`, and the wheel route, through the
+server's environment rather than any community's config.
 """
 
 _TRUTHY = {"1", "true", "yes", "on"}

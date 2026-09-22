@@ -713,8 +713,10 @@ class PythonRuntimeConfig(BaseModel):
     lock overlay, with the dependencies their lock entries name."""
 
     allow_install: list[str] = Field(default_factory=list)
-    """Requirements micropip installs from ``index_urls`` when the runtime starts, each
-    with ``deps=False``. Nothing is installed after startup."""
+    """Requirements micropip installs when the runtime starts, each with ``deps=False``:
+    from ``index_urls`` when the community gives any, and otherwise from micropip's own
+    default index, PyPI. Nothing is installed after startup. A wheel pinned by sha256
+    belongs in the lock overlay instead."""
 
     prelude: str | None = Field(default=None, max_length=MAX_PRELUDE_CHARS)
     """Python run once in the reader's browser after the runtime is sealed and before
