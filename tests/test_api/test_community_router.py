@@ -16,7 +16,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.api.routers.community import (
+    ChatRequest,
     ChatSession,
+    ResumeRequest,
     SessionInfo,
     create_community_router,
     delete_session,
@@ -24,7 +26,9 @@ from src.api.routers.community import (
     get_session,
     list_sessions,
 )
+from src.api.tool_results import ClientToolResult
 from src.assistants import discover_assistants
+from src.core.config.community import MAX_CONFIGURED_CLIENT_TOOLS, RESERVED_CLIENT_TOOL_NAMES
 
 # Discover assistants to populate registry
 discover_assistants()
@@ -685,6 +689,26 @@ class TestModelOverrideDescription:
             assert model_cls.model_fields["model"].description == MODEL_OVERRIDE_DESCRIPTION
 
 
+class TestDeclaredClientToolsFitOneRequest:
+    """The widget declares every configured tool plus the reserved ones.
+
+    A community at the configured cap must still produce a declaration both
+    routes accept. If the two limits drifted apart, every message from that
+    community's widget would be refused with a 422, from a config that loaded
+    without complaint.
+    """
+
+    def test_a_community_at_the_cap_can_still_chat_and_resume(self) -> None:
+        declared = [f"tool_{i}" for i in range(MAX_CONFIGURED_CLIENT_TOOLS)]
+        declared += sorted(RESERVED_CLIENT_TOOL_NAMES)
+        ChatRequest(message="hi", client_tools=declared)
+        ResumeRequest(
+            session_id="s",
+            result=ClientToolResult(call_id="c"),
+            client_tools=declared,
+        )
+
+
 class TestCommunityConfigClientTools:
     """The widget learns from this response whether a community runs code at all.
 
@@ -742,7 +766,9 @@ class TestCommunityConfigClientTools:
     def test_exposes_the_tools_and_the_runtime_they_need(self, client: TestClient) -> None:
         data = client.get(f"/{self.COMMUNITY}/").json()
 
-        assert data["client_tools"] == [{"name": "execute_code", "requires_permission": True}]
+        assert data["client_tools"] == [
+            {"name": "execute_code", "runtime": "python", "requires_permission": True}
+        ]
         python = data["runtime"]["python"]
         assert python["pyodide_version"] == "0.28.3"
         assert python["preload"] == ["numpy"]

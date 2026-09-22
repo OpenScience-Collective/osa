@@ -58,7 +58,7 @@ from src.assistants import registry
 from src.assistants.community import CommunityAssistant
 from src.assistants.community import PageContext as AgentPageContext
 from src.assistants.registry import AssistantInfo
-from src.core.config.community import RuntimeConfig, WidgetConfig
+from src.core.config.community import MAX_DECLARED_CLIENT_TOOLS, RuntimeConfig, WidgetConfig
 from src.core.services.anthropic_llm import OFFERED_MODELS, create_anthropic_llm, normalize_model
 from src.core.services.litellm_llm import DEFAULT_MODEL as OPENROUTER_DEFAULT_MODEL
 from src.core.services.litellm_llm import DEFAULT_PROVIDER as OPENROUTER_DEFAULT_PROVIDER
@@ -156,7 +156,7 @@ class ChatRequest(BaseModel):
     )
     client_tools: list[str] = Field(
         default_factory=list,
-        max_length=8,
+        max_length=MAX_DECLARED_CLIENT_TOOLS,
         description=(
             "Names of client-executed tools this caller can actually run. The "
             "assistant binds only tools that are both configured on the community and "
@@ -177,7 +177,7 @@ class ResumeRequest(BaseModel):
     result: ClientToolResult
     model: str | None = Field(default=None, description=MODEL_OVERRIDE_DESCRIPTION)
     page_context: PageContext | None = None
-    client_tools: list[str] = Field(default_factory=list, max_length=8)
+    client_tools: list[str] = Field(default_factory=list, max_length=MAX_DECLARED_CLIENT_TOOLS)
 
 
 class AskRequest(BaseModel):
@@ -299,9 +299,16 @@ class OfferedModelResponse(BaseModel):
 
 
 class ClientToolInfo(BaseModel):
-    """A client tool the widget may be asked to run, as the widget needs to know it."""
+    """A client tool the widget may be asked to run, as the widget needs to know it.
+
+    `runtime` is carried so the widget declares only the tools it has a runtime
+    for. Phase 1's rule is that a caller declares what it can execute; a widget
+    that declared every listed name would break that the day a second runtime
+    kind is added.
+    """
 
     name: str
+    runtime: str
     requires_permission: bool
 
 
@@ -1693,7 +1700,11 @@ def _client_tool_config(config: Any) -> dict[str, Any]:
         return {"client_tools": [], "runtime": None}
     return {
         "client_tools": [
-            ClientToolInfo(name=entry.name, requires_permission=entry.requires_permission)
+            ClientToolInfo(
+                name=entry.name,
+                runtime=entry.runtime,
+                requires_permission=entry.requires_permission,
+            )
             for entry in configured
         ],
         "runtime": config.runtime,

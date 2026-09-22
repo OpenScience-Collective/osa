@@ -20,6 +20,7 @@ from src.api.tool_results import (
     MAX_STDOUT_CHARS,
 )
 from src.core.config.community import (
+    MAX_CONFIGURED_CLIENT_TOOLS,
     BudgetConfig,
     CitationConfig,
     ClientToolConfig,
@@ -2182,6 +2183,16 @@ class TestExtensionsConfigClientTools:
             ]
         )
         assert len(config.client_tools) == 2
+
+    def test_refuses_more_tools_than_a_request_can_declare(self) -> None:
+        """One tool past the cap is refused at load, where an operator sees it,
+        rather than as a 422 on every message the widget then sends."""
+        tools = [
+            ClientToolConfig(name=f"tool_{i}", runtime="python", description="Run.")
+            for i in range(MAX_CONFIGURED_CLIENT_TOOLS + 1)
+        ]
+        with pytest.raises(ValidationError, match="at most"):
+            ExtensionsConfig(client_tools=tools)
 
 
 def _python_runtime_config() -> RuntimeConfig:

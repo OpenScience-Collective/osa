@@ -555,6 +555,18 @@ than in ``src.tools.client_tools`` because this module must import without the
 RESERVED_CLIENT_TOOL_NAMES = frozenset({FULL_OUTPUT_TOOL_NAME})
 """Names a community may not configure, because the server binds them itself."""
 
+MAX_DECLARED_CLIENT_TOOLS = 8
+"""How many client tool names one chat or resume request may declare."""
+
+MAX_CONFIGURED_CLIENT_TOOLS = MAX_DECLARED_CLIENT_TOOLS - len(RESERVED_CLIENT_TOOL_NAMES)
+"""How many client tools a community may configure.
+
+Derived, not chosen: the widget declares every configured tool plus the
+reserved ones, and a request declaring more than ``MAX_DECLARED_CLIENT_TOOLS``
+is refused whole. A community allowed one more tool than this would get a 422
+on every message, from a config that loaded without complaint.
+"""
+
 
 class ClientToolConfig(BaseModel):
     """A tool the server binds to the model but never executes itself.
@@ -719,7 +731,9 @@ class ExtensionsConfig(BaseModel):
     mcp_servers: list[McpServer] = Field(default_factory=list)
     """MCP servers providing additional tools (Phase 2)."""
 
-    client_tools: list[ClientToolConfig] = Field(default_factory=list)
+    client_tools: list[ClientToolConfig] = Field(
+        default_factory=list, max_length=MAX_CONFIGURED_CLIENT_TOOLS
+    )
     """Tools the server binds so the model can call them, but never executes
     itself; the browser executes them instead (phase 1 plumbing, phase 2
     execution: #431). Uniqueness of names, and the requirement that a
