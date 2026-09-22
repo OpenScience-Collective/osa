@@ -8,12 +8,13 @@ tests/test_tools/test_client_tools.py for the tool class and
 `build_client_tools` itself.
 """
 
+import pytest
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
-from src.agents.base import ToolAgent
-from src.tools.client_tools import ClientTool, ExecuteCodeArgs
+from src.agents.base import ToolAgent, _after_client_tools
+from src.tools.client_tools import ClientTool, ExecuteCodeArgs, GetFullOutputArgs
 
 
 @tool
@@ -89,8 +90,10 @@ class TestGraphStructure:
         edges = {(e.source, e.target) for e in g.edges}
         assert ("agent", "client_tools") in edges
         assert ("client_tools", "__end__") in edges
-        # A client call ends the run; there is no loop back to "agent".
-        assert ("client_tools", "agent") not in edges
+        # A PARKED call ends the run. The edge back to "agent" is taken only when
+        # nothing was parked, which `_after_client_tools` decides and which
+        # TestAfterClientTools pins.
+        assert ("client_tools", "agent") in edges
 
 
 class TestShouldUseTools:
@@ -348,3 +351,152 @@ class TestFullTurnRouting:
             "args": {"code": "1 + 1", "description": "add"},
             "requires_permission": True,
         }
+
+
+def _full_output_tool() -> ClientTool:
+    return ClientTool(
+        name="get_full_output",
+        description="Read back browser output.",
+        args_schema=GetFullOutputArgs,
+        requires_permission=False,
+    )
+
+
+class TestAfterClientTools:
+    """The client_tools node's exit: END only when a call was parked."""
+
+    def test_a_parked_call_ends_the_run(self) -> None:
+        state = {"messages": [], "pending_client_call": {"call_id": "c"}}
+        assert _after_client_tools(state) == "end"
+
+    def test_nothing_parked_goes_back_to_the_model(self) -> None:
+        assert _after_client_tools({"messages": [], "pending_client_call": None}) == "agent"
+        assert _after_client_tools({"messages": []}) == "agent"
+
+
+class TestClientCallArgumentsAreValidated:
+    """The provider does not enforce a tool's input schema; the node does.
+
+    Before this, the model's arguments were parked as they came. A call missing
+    `description` rendered a blank permission gate, and a get_full_output call
+    with a negative offset or an oversized call_id reached the browser, which
+    then had to defend against it.
+    """
+
+    async def test_an_invalid_call_is_answered_and_not_parked(self) -> None:
+        agent = ToolAgent(model=_fake_model(AIMessage(content="x")), tools=[_client_tool()])
+        ai = AIMessage(
+            content="",
+            tool_calls=[{"id": "call_bad", "name": "execute_code", "args": {"code": "1"}}],
+        )
+
+        result = await agent._client_tools_node({"messages": [ai]}, {})
+
+        assert "pending_client_call" not in result
+        [message] = result["messages"]
+        assert isinstance(message, ToolMessage)
+        assert message.tool_call_id == "call_bad"
+        assert message.status == "error"
+        assert "description" in message.content
+        assert "Nothing was run" in message.content
+
+    async def test_a_valid_call_after_an_invalid_one_is_the_one_parked(self) -> None:
+        """Refusing the first call must not cost the turn its one browser run."""
+        agent = ToolAgent(model=_fake_model(AIMessage(content="x")), tools=[_client_tool()])
+        ai = AIMessage(
+            content="",
+            tool_calls=[
+                {"id": "call_bad", "name": "execute_code", "args": {"code": "1"}},
+                {
+                    "id": "call_good",
+                    "name": "execute_code",
+                    "args": {"code": "2", "description": "two"},
+                },
+            ],
+        )
+
+        result = await agent._client_tools_node({"messages": [ai]}, {})
+
+        assert result["pending_client_call"]["call_id"] == "call_good"
+        assert [m.tool_call_id for m in result["messages"]] == ["call_bad"]
+
+    async def test_parked_arguments_carry_their_defaults(self) -> None:
+        """The browser receives the validated arguments, defaults filled in, so it
+        never re-derives what the server's schema already decided."""
+        agent = ToolAgent(
+            model=_fake_model(AIMessage(content="x")), tools=[_client_tool(), _full_output_tool()]
+        )
+        ai = AIMessage(
+            content="",
+            tool_calls=[{"id": "call_read", "name": "get_full_output", "args": {"call_id": "c1"}}],
+        )
+
+        result = await agent._client_tools_node({"messages": [ai]}, {})
+
+        assert result["pending_client_call"]["args"] == {
+            "call_id": "c1",
+            "stream": "stdout",
+            "offset": 0,
+        }
+        assert result["pending_client_call"]["requires_permission"] is False
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            {"call_id": "c1", "offset": -1},
+            {"call_id": "c1", "stream": "everything"},
+            {"call_id": "x" * 257},
+            {},
+        ],
+    )
+    async def test_get_full_output_bounds_are_enforced_on_the_way_in(self, args: dict) -> None:
+        agent = ToolAgent(
+            model=_fake_model(AIMessage(content="x")), tools=[_client_tool(), _full_output_tool()]
+        )
+        ai = AIMessage(
+            content="", tool_calls=[{"id": "call_read", "name": "get_full_output", "args": args}]
+        )
+
+        result = await agent._client_tools_node({"messages": [ai]}, {})
+
+        assert "pending_client_call" not in result
+        assert result["messages"][0].status == "error"
+        # Bounded, because it stays in stored history.
+        assert len(result["messages"][0].content) < 700
+
+
+class TestARefusedClientCallStillGetsAReply:
+    """When nothing is parked, the model reads the refusal and answers.
+
+    The unconditional edge to END that this replaces ended these turns on an
+    error ToolMessage with no reply at all, which applied to an unknown tool
+    name as well as to invalid arguments.
+    """
+
+    async def test_invalid_arguments_go_back_to_the_model(self) -> None:
+        bad = AIMessage(
+            content="",
+            tool_calls=[{"id": "call_bad", "name": "execute_code", "args": {"code": "1"}}],
+        )
+        reply = AIMessage(content="Sorry, I will describe the code first.")
+        agent = ToolAgent(model=_fake_model(bad, reply), tools=[_client_tool()])
+
+        result = await agent.ainvoke([HumanMessage(content="run something")])
+
+        assert result["messages"][-1].content == "Sorry, I will describe the code first."
+        assert not result.get("pending_client_call")
+
+    async def test_an_unknown_client_name_goes_back_to_the_model(self) -> None:
+        confused = AIMessage(
+            content="",
+            tool_calls=[
+                {"id": "call_x", "name": "mystery_tool", "args": {}},
+                {"id": "call_bad", "name": "execute_code", "args": {}},
+            ],
+        )
+        reply = AIMessage(content="That tool does not exist.")
+        agent = ToolAgent(model=_fake_model(confused, reply), tools=[_client_tool()])
+
+        result = await agent.ainvoke([HumanMessage(content="do the thing")])
+
+        assert result["messages"][-1].content == "That tool does not exist."

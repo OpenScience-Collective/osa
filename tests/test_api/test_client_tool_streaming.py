@@ -181,7 +181,9 @@ class TestRunOneEndsOnTheCall:
     async def test_it_emits_tool_request_and_no_done(self) -> None:
         """`done` means the turn finished. This turn is waiting on a browser, so a
         client that saw `done` would render a reply that has not been written."""
-        assistant, _ = _assistant([tool_call_response("execute_code", {"code": "x"}, CALL_ID)])
+        assistant, _ = _assistant(
+            [tool_call_response("execute_code", {"code": "x", "description": "run x"}, CALL_ID)]
+        )
 
         events = await _run(_session(), assistant, declared_client_tools={"execute_code"})
 
@@ -190,14 +192,16 @@ class TestRunOneEndsOnTheCall:
 
     @pytest.mark.asyncio
     async def test_the_request_carries_the_providers_own_call_id(self) -> None:
-        assistant, _ = _assistant([tool_call_response("execute_code", {"code": "x"}, CALL_ID)])
+        assistant, _ = _assistant(
+            [tool_call_response("execute_code", {"code": "x", "description": "run x"}, CALL_ID)]
+        )
 
         events = await _run(_session(), assistant, declared_client_tools={"execute_code"})
 
         request = next(e for e in events if e["event"] == "tool_request")
         assert request["call_id"] == CALL_ID
         assert request["tool"] == "execute_code"
-        assert request["args"] == {"code": "x"}
+        assert request["args"] == {"code": "x", "description": "run x"}
         assert request["requires_permission"] is True
 
     @pytest.mark.asyncio
@@ -205,7 +209,9 @@ class TestRunOneEndsOnTheCall:
         """The assistant message carrying tool_calls has to survive the turn boundary,
         or run 2 has nothing to send."""
         session = _session()
-        assistant, _ = _assistant([tool_call_response("execute_code", {"code": "x"}, CALL_ID)])
+        assistant, _ = _assistant(
+            [tool_call_response("execute_code", {"code": "x", "description": "run x"}, CALL_ID)]
+        )
 
         await _run(session, assistant, declared_client_tools={"execute_code"})
 
@@ -250,7 +256,9 @@ class TestTheStateCaptureCannotFailQuietly:
 
     @pytest.mark.asyncio
     async def test_it_errors_rather_than_ending_the_turn_normally(self) -> None:
-        assistant, _ = _assistant([tool_call_response("execute_code", {"code": "x"}, CALL_ID)])
+        assistant, _ = _assistant(
+            [tool_call_response("execute_code", {"code": "x", "description": "run x"}, CALL_ID)]
+        )
 
         events = await _run(
             _session(), self._without_root_end(assistant), declared_client_tools={"execute_code"}
@@ -262,7 +270,9 @@ class TestTheStateCaptureCannotFailQuietly:
 
     @pytest.mark.asyncio
     async def test_the_error_carries_an_id_to_find_it_by(self) -> None:
-        assistant, _ = _assistant([tool_call_response("execute_code", {"code": "x"}, CALL_ID)])
+        assistant, _ = _assistant(
+            [tool_call_response("execute_code", {"code": "x", "description": "run x"}, CALL_ID)]
+        )
 
         events = await _run(
             _session(), self._without_root_end(assistant), declared_client_tools={"execute_code"}
@@ -293,7 +303,7 @@ class TestBatches:
                 multi_tool_call_response(
                     [
                         ("lookup_docs", {"query": "alpha"}, "call_server"),
-                        ("execute_code", {"code": "x"}, CALL_ID),
+                        ("execute_code", {"code": "x", "description": "run x"}, CALL_ID),
                     ]
                 )
             ],
@@ -315,8 +325,12 @@ class TestBatches:
             [
                 multi_tool_call_response(
                     [
-                        ("execute_code", {"code": "first"}, CALL_ID),
-                        ("execute_code", {"code": "second"}, SECOND_CALL_ID),
+                        ("execute_code", {"code": "first", "description": "run first"}, CALL_ID),
+                        (
+                            "execute_code",
+                            {"code": "second", "description": "run second"},
+                            SECOND_CALL_ID,
+                        ),
                     ]
                 )
             ]
@@ -343,8 +357,8 @@ class TestBatches:
                 multi_tool_call_response(
                     [
                         ("lookup_docs", {"query": "a"}, "call_server"),
-                        ("execute_code", {"code": "x"}, CALL_ID),
-                        ("execute_code", {"code": "y"}, SECOND_CALL_ID),
+                        ("execute_code", {"code": "x", "description": "run x"}, CALL_ID),
+                        ("execute_code", {"code": "y", "description": "run y"}, SECOND_CALL_ID),
                     ]
                 )
             ],
@@ -548,3 +562,31 @@ class TestGetFullOutputReachesTheBrowser:
         assert request["args"] == args
         assert request["requires_permission"] is False
         assert "done" not in _names(events)
+
+
+class TestARefusedCallStillReplies:
+    """An invalid client call is answered by the model, on the same stream."""
+
+    @pytest.mark.asyncio
+    async def test_invalid_arguments_stream_a_reply_not_a_tool_request(self) -> None:
+        """Missing `description` would have rendered a blank permission gate. Now
+        the model is told, and its reply is what the person sees."""
+        assistant, model = _assistant(
+            [
+                tool_call_response("execute_code", {"code": "x"}, CALL_ID),
+                AIMessage(content="Let me describe the code before running it."),
+            ]
+        )
+
+        events = await _run(_session(), assistant, declared_client_tools={"execute_code"})
+
+        assert "tool_request" not in _names(events)
+        # Not an error: this is the path that used to trip the event-shape guard,
+        # which read "the client_tools node ran" as "a call was parked".
+        assert "error" not in _names(events)
+        assert "done" in _names(events)
+        # The model was asked AGAIN, with the refusal in front of it. The reply's
+        # text cannot be asserted here: the router streams content from chunks and
+        # the scripted model does not stream, which is true of every turn in this
+        # file, so the second call is the observable proof the run went back.
+        assert model.calls == 2

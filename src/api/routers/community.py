@@ -2941,7 +2941,12 @@ async def _stream_chat_response(
         stream_config = awm.langfuse_config or {}
         full_response = ""
         final_state: dict[str, Any] | None = None
-        client_tools_node_ran = False
+        # Whether the run ENDED on the client_tools node, tracked as the last graph
+        # node to finish. A parked call ends the run there; a node that refused
+        # every client call hands back to the agent, which then finishes after
+        # it. "The node ran" stopped implying "a call was parked" once refused
+        # calls started going back to the model.
+        ended_on_client_tools_node = False
 
         async for event in graph.astream_events(state, version="v2", config=stream_config):
             kind = event.get("event")
@@ -3006,16 +3011,20 @@ async def _stream_chat_response(
                         final_state = output
                 elif event.get("name") == CLIENT_TOOLS_NODE:
                     # Independent evidence that a browser call was parked, read from a
-                    # different event than the state is. If the node ran and the state
-                    # did not come back, the two disagree, and that is checked below
-                    # rather than left to fall through.
-                    client_tools_node_ran = True
+                    # different event than the state is. If the run ended on this node
+                    # and the state did not come back, the two disagree, and that is
+                    # checked below rather than left to fall through.
+                    ended_on_client_tools_node = True
+                elif event.get("name") in ("agent", "tools"):
+                    # A node after client_tools means the run continued past it,
+                    # so nothing was parked there.
+                    ended_on_client_tools_node = False
 
         pending_payload = (final_state or {}).get("pending_client_call")
 
-        if client_tools_node_ran and not pending_payload:
-            # The node that parks a browser call ran, and the state that should carry
-            # the parked call did not come back. Almost certainly langgraph changed the
+        if ended_on_client_tools_node and not pending_payload:
+            # The run ended on the node that parks a browser call, and the state that
+            # should carry the parked call did not come back. Almost certainly langgraph changed the
             # shape of its events, which is a dependency bump away at any time.
             #
             # This is raised rather than allowed to fall through, and that is the whole
