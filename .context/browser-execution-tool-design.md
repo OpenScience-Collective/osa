@@ -313,8 +313,8 @@ runtime:
       # 2 and 4 GB and an out-of-memory condition aborts the instance, which a seconds-based
       # deadline does not catch. Budget it explicitly and define an `oom` result status.
       memory_mb: 1536
-      stdout_bytes: 16384
-      stderr_bytes: 8192
+      stdout_chars: 16384
+      stderr_chars: 8192
       images: 3
       image_px: 1024
       exec_seconds: 120

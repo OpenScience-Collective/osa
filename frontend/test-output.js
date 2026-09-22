@@ -3,7 +3,7 @@
 // The Python here is EXECUTED by a real interpreter rather than matched with a
 // regex. A malformed f-string in an earlier generated module passed every regex
 // assertion in this repository and only failed when something ran it.
-import { buildOutputCaptureSource, resolveLimits, SERVER_LIMITS } from './osa-output.js';
+import { buildOutputCaptureSource, RUNTIME_LIMITS, resolveLimits, SERVER_LIMITS } from './osa-output.js';
 
 let passed = 0;
 let failed = 0;
@@ -75,6 +75,26 @@ console.log('\nthe mirrored caps have not drifted from the server');
   }
 }
 
+console.log('\nthe mirrored defaults and floors have not drifted from RuntimeLimits');
+{
+  const config = await Bun.file(new URL('../src/core/config/community.py', import.meta.url)).text();
+  const limitsPy = await Bun.file(new URL('../src/core/limits.py', import.meta.url)).text();
+  const body = config.split('class RuntimeLimits(BaseModel):')[1].split('\nclass ')[0];
+  const constant = (name) => {
+    const match = limitsPy.match(new RegExp(`^${name}\\s*=\\s*([0-9_]+)`, 'm'));
+    return match ? Number(match[1].replace(/_/g, '')) : NaN;
+  };
+  const declared = {};
+  for (const m of body.matchAll(/^ {4}(\w+): int = Field\(default=(\w+), ge=(\d+)/gm)) {
+    declared[m[1]] = { default: /^\d+$/.test(m[2]) ? Number(m[2]) : constant(m[2]), min: Number(m[3]) };
+  }
+  assertEqual(JSON.stringify(Object.keys(declared).sort()), JSON.stringify(Object.keys(RUNTIME_LIMITS).sort()),
+    'every RuntimeLimits field is mirrored, and nothing else is');
+  for (const [field, bounds] of Object.entries(declared)) {
+    assertEqual(JSON.stringify(RUNTIME_LIMITS[field]), JSON.stringify(bounds), `${field}'s default and floor match the Python`);
+  }
+}
+
 console.log('\na community cannot declare a cap the server will refuse');
 {
   const defaults = resolveLimits({});
@@ -84,18 +104,18 @@ console.log('\na community cannot declare a cap the server will refuse');
   // The direction that actually costs something. A config promising more than
   // the server accepts makes every result a 422 refused WHOLE, which reads as
   // the browser misbehaving when it was the config lying.
-  const greedy = resolveLimits({ stdout_bytes: 1_000_000, images: 99, image_px: 99_999, stderr_bytes: 1_000_000 });
+  const greedy = resolveLimits({ stdout_chars: 1_000_000, images: 99, image_px: 99_999, stderr_chars: 1_000_000 });
   assertEqual(greedy.stdout_chars, SERVER_LIMITS.MAX_STDOUT_CHARS, 'an over-large stdout cap is clamped down');
   assertEqual(greedy.stderr_chars, SERVER_LIMITS.MAX_STDERR_CHARS, 'so is stderr');
   assertEqual(greedy.images, SERVER_LIMITS.MAX_IMAGES, 'so is the image count');
   assertEqual(greedy.image_px, SERVER_LIMITS.MAX_IMAGE_EDGE_PX, 'so is the pixel edge');
 
-  const modest = resolveLimits({ stdout_bytes: 512, images: 1 });
+  const modest = resolveLimits({ stdout_chars: 512, images: 1 });
   assertEqual(modest.stdout_chars, 512, 'a SMALLER declared cap is honored, not raised to the server maximum');
   assertEqual(modest.images, 1, 'and so is a smaller image count');
 
   assertEqual(resolveLimits({ images: 0 }).images, 0, 'zero images is a real setting, not a missing one');
-  assertEqual(resolveLimits({ stdout_bytes: 'lots' }).stdout_chars, SERVER_LIMITS.MAX_STDOUT_CHARS,
+  assertEqual(resolveLimits({ stdout_chars: 'lots' }).stdout_chars, SERVER_LIMITS.MAX_STDOUT_CHARS,
     'a non-numeric value falls back rather than producing NaN');
 
   // exec_seconds and memory_mb are NOT clamped against a server constant,
@@ -110,7 +130,17 @@ console.log('\na community cannot declare a cap the server will refuse');
   assertEqual(resolveLimits({ exec_seconds: 0 }).exec_seconds, 120,
     'a zero deadline falls back rather than making every run time out instantly');
   assertEqual(resolveLimits({ exec_seconds: -5 }).exec_seconds, 120, 'and so does a negative one');
-  assertEqual(resolveLimits({ memory_mb: 8 }).memory_mb, 64, 'memory_mb keeps RuntimeLimits\' own floor');
+  assertEqual(resolveLimits({ memory_mb: 8 }).memory_mb, 1536,
+    'a memory_mb below RuntimeLimits\' floor is invalid and falls back to the default');
+
+  // The floor on the streams is what keeps clipping honest: below it there is
+  // no room for the omission marker, and _clip could not say what it dropped.
+  assertEqual(resolveLimits({ stdout_chars: 10 }).stdout_chars, SERVER_LIMITS.MAX_STDOUT_CHARS,
+    'a stdout cap below the floor is invalid and falls back to the default');
+  assertEqual(resolveLimits({ stderr_chars: 255 }).stderr_chars, SERVER_LIMITS.MAX_STDERR_CHARS,
+    'one below the floor is still below it');
+  assertEqual(resolveLimits({ stdout_chars: 256 }).stdout_chars, 256, 'the floor itself is valid');
+  assertEqual(resolveLimits({ image_px: 4 }).image_px, 1024, 'so is image_px, whose floor is 16');
 }
 
 console.log('\nstdout and stderr are captured, and restored afterwards');
@@ -148,7 +178,7 @@ print(json.dumps(captured))
 
 console.log('\nclipping keeps BOTH ends and says what it dropped');
 {
-  const { out } = runPython(resolveLimits({ stdout_bytes: 600 }), `
+  const { out } = runPython(resolveLimits({ stdout_chars: 600 }), `
 import json
 _begin()
 print("HEAD" + "x" * 5000 + "TAIL")
@@ -160,6 +190,49 @@ print(json.dumps(captured))
   assert(result.stdout.startsWith('HEAD'), 'the head is kept');
   assert(result.stdout.trimEnd().endsWith('TAIL'), 'and so is the tail, which a head-only clip would lose');
   assert(/characters omitted/.test(result.stdout), 'and the gap says something was dropped rather than hiding it');
+}
+
+console.log('\n_clip never exceeds its limit, including limits too small for the marker');
+{
+  // resolveLimits keeps real configs above the floor, but _clip is a general
+  // function and the branch for tiny limits had no test at all: deleting it let
+  // head and tail go negative and returned text many times over the cap.
+  const { out } = runPython(resolveLimits({}), `
+worst = 0
+for limit in range(1, 90):
+    for length in (0, 1, limit - 1, limit, limit + 1, 200, 5000):
+        if length < 0:
+            continue
+        clipped = _clip("y" * length, limit)
+        worst = max(worst, len(clipped) - limit)
+print(worst)
+`);
+  assertEqual(out, '0', 'across every limit from 1 to 89 and a spread of lengths, nothing is ever over the cap');
+}
+
+console.log('\nthe image BYTE cap is enforced separately from the pixel cap');
+{
+  // A plot can be well inside the pixel limit and still too heavy, which is the
+  // one image refusal a real figure is likely to hit. Noise defeats compression,
+  // so the PNG is large while only 32 pixels on a side.
+  const limits = { ...resolveLimits({}), image_bytes: 500 };
+  const { out } = runPython(limits, `
+import json, os, struct, zlib
+def noise_png(w, h):
+    def chunk(tag, data):
+        body = tag + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xffffffff)
+    raw = b"".join(b"\\x00" + os.urandom(3 * w) for _ in range(h))
+    return (b"\\x89PNG\\r\\n\\x1a\\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+_begin()
+display(noise_png(32, 32))
+print(json.dumps(json.loads(_end())))
+`);
+  const result = JSON.parse(out);
+  assertEqual(result.images.length, 0, 'an image over the byte cap is not returned');
+  assert(/over the 500-byte limit/.test(result.stderr) && !/px limit/.test(result.stderr),
+    `and the note names the byte limit, not the pixel one (got ${JSON.stringify(result.stderr)})`);
 }
 
 console.log('\noutput is deterministic, because the prompt cache is a byte-exact prefix match');

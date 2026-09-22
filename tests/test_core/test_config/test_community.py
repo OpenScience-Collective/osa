@@ -1968,8 +1968,8 @@ class TestRuntimeLimits:
         """Should default to the documented resource caps."""
         limits = RuntimeLimits()
         assert limits.memory_mb == 1536
-        assert limits.stdout_bytes == 16384
-        assert limits.stderr_bytes == 8192
+        assert limits.stdout_chars == 16384
+        assert limits.stderr_chars == 8192
         assert limits.images == 3
         assert limits.image_px == 1024
         assert limits.exec_seconds == 120
@@ -1978,8 +1978,8 @@ class TestRuntimeLimits:
         """Should accept explicit values for every field, within the server's caps."""
         limits = RuntimeLimits(
             memory_mb=2048,
-            stdout_bytes=8192,
-            stderr_bytes=4096,
+            stdout_chars=8192,
+            stderr_chars=4096,
             images=2,
             image_px=2048,
             exec_seconds=60,
@@ -1990,8 +1990,8 @@ class TestRuntimeLimits:
     @pytest.mark.parametrize(
         ("field", "over_cap"),
         [
-            ("stdout_bytes", MAX_STDOUT_CHARS + 1),
-            ("stderr_bytes", MAX_STDERR_CHARS + 1),
+            ("stdout_chars", MAX_STDOUT_CHARS + 1),
+            ("stderr_chars", MAX_STDERR_CHARS + 1),
             ("images", MAX_IMAGES + 1),
             ("image_px", MAX_IMAGE_EDGE_PX + 1),
         ],
@@ -2014,8 +2014,8 @@ class TestRuntimeLimits:
         """So the common case needs no thought and cannot drift."""
         limits = RuntimeLimits()
 
-        assert limits.stdout_bytes == MAX_STDOUT_CHARS
-        assert limits.stderr_bytes == MAX_STDERR_CHARS
+        assert limits.stdout_chars == MAX_STDOUT_CHARS
+        assert limits.stderr_chars == MAX_STDERR_CHARS
         assert limits.images == MAX_IMAGES
 
     def test_memory_and_time_are_deliberately_unbounded_here(self) -> None:
@@ -2036,8 +2036,8 @@ class TestRuntimeLimits:
         "field,bad_value",
         [
             ("memory_mb", 0),
-            ("stdout_bytes", 0),
-            ("stderr_bytes", 0),
+            ("stdout_chars", 0),
+            ("stderr_chars", 0),
             ("images", -1),
             ("image_px", 0),
             ("exec_seconds", 0),

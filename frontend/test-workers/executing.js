@@ -58,6 +58,11 @@ self.onmessage = (event) => {
     // one image, so the store's handling of figures is exercised.
     const longMatch = code.match(/^LONG:(\d+)/);
     const fullStdout = longMatch ? 'x'.repeat(Number(longMatch[1])) : `stdout of ${code}`;
+    // ERR:<n> puts n characters in the full stderr and a traceback beside it, so
+    // get_full_output's handling of those streams can be exercised.
+    const errMatch = code.match(/^ERR:(\d+)/);
+    const fullStderr = errMatch ? 'e'.repeat(Number(errMatch[1])) : '';
+    const fullTraceback = errMatch ? 'Traceback (most recent call last):\n  File "<cell>", line 1\nValueError: boom' : '';
     const images = code.startsWith('IMAGE')
       ? [{ mime: 'image/png', data_base64: 'iVBORw0KGgo=', width: 1, height: 1 }]
       : [];
@@ -74,7 +79,7 @@ self.onmessage = (event) => {
         images,
         artifacts: [],
         elapsed_ms: delay,
-        full: { stdout: fullStdout, stderr: '', traceback: '' },
+        full: { stdout: fullStdout, stderr: fullStderr, traceback: fullTraceback },
       });
     };
 

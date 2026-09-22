@@ -207,7 +207,7 @@ async function main() {
 
   const traceback = rt.getFullOutput({ call_id: 'call-erred', stream: 'traceback' }, { callId: 'call-read' });
   check('the full traceback stays in the browser and is readable by call_id',
-    traceback.status === 'ok' && /ZeroDivisionError/.test(traceback.stdout),
+    traceback.status === 'ok' && /ZeroDivisionError/.test(traceback.stderr) && traceback.stdout === '',
     `status=${traceback.status} ${traceback.summary}`);
   check('and never rode along on the result itself', !('full' in erred), Object.keys(erred).join(','));
 

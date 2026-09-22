@@ -99,6 +99,38 @@ console.log('\nthe stringified core is self-contained');
   assert(typeof createFromSource === 'function', 'the core rebuilds from its own source text');
 }
 
+console.log('\na malformed configuration is named, not discovered deep inside the boot');
+{
+  const messages = [];
+  const good = {
+    indexURL: 'x',
+    preload: [],
+    allowInstall: [],
+    indexUrls: [],
+    fetchAllow: [],
+    python: { helpers: 'a', outputCapture: 'b', dataClient: 'c', namespaceSeal: 'd' },
+  };
+  const env = { load: () => { throw new Error('must not be reached'); }, seal: () => {}, send: (m) => messages.push(m) };
+
+  await createFromSource({ ...good, fetchAllow: 'https://zarr.nemar.org/' }, env).handle({ type: 'boot' });
+  assert(messages.length === 1 && messages[0].kind === 'config' && /config\.fetchAllow is not a list of strings/.test(messages[0].message),
+    `a wrong type is reported by the field's name, before loading anything (got ${JSON.stringify(messages[0])})`);
+
+  messages.length = 0;
+  await createFromSource({ ...good, python: { ...good.python, namespaceSeal: '' } }, env).handle({ type: 'boot' });
+  assert(/config\.python\.namespaceSeal/.test(messages[0] && messages[0].message),
+    'an empty generated source is caught too, since running nothing is not sealing');
+
+  let threw = null;
+  try {
+    createFromSource(good, { load: () => {}, seal: () => {} });
+  } catch (err) {
+    threw = err;
+  }
+  assert(threw instanceof TypeError && /env\.send/.test(threw.message),
+    'without a way to report, construction itself refuses');
+}
+
 const plain = await bootRuntime();
 
 console.log('\nboot, and the order the seal happens in');
@@ -143,6 +175,15 @@ console.log('\nthe import gate');
   const dynamic = await plain.run('import importlib\nimportlib.import_module("js")');
   assertEqual(dynamic.status, 'error', 'a dynamic import is invisible to the static gate and fails at runtime instead');
   assert(/ImportError: 'js' is not available/.test(dynamic.stderr), 'with the seal naming what was blocked');
+}
+
+console.log('\na denied-import list is bounded, since the names come from the code');
+{
+  const code = Array.from({ length: 30 }, (_, i) => `import fake_package_${String(i).padStart(2, '0')}`).join('\n');
+  const r = await plain.run(code);
+  assertEqual(r.status, 'denied', 'thirty unknown packages are denied');
+  assert(/fake_package_19, and 10 more$/.test(r.stderr), `the list stops at twenty and counts the rest (got ${JSON.stringify(r.stderr.slice(-60))})`);
+  assert(!/fake_package_20/.test(r.stderr + r.summary), 'the rest are not named');
 }
 
 console.log('\nsyntax errors are reported like any other error');
@@ -207,7 +248,7 @@ console.log('\nthe value of a trailing expression is shown, as a notebook would'
 
 console.log('\nstreams that overflow are clipped here and kept whole in the browser');
 {
-  const small = await bootRuntime({ limits: { stdout_bytes: 512 } });
+  const small = await bootRuntime({ limits: { stdout_chars: 512 } });
   const r = await small.run('print("x" * 5000)', 'call-long');
   assert(r.stdout.length <= 512, `what the conversation carries is bounded (got ${r.stdout.length})`);
   assertEqual(r.full.stdout.length, 5001, 'the browser keeps all of it, newline included');
@@ -282,6 +323,70 @@ console.log('\nfigures: attached once, and described in words that outlive the i
 
   const next = await scientific.run('z = 1');
   assertEqual(next.images.length, 0, 'a later run does not inherit an earlier figure');
+}
+
+console.log('\nthe summary sees an update made in place, which identity alone cannot');
+{
+  // signal[3] = nan and signal -= 1 keep the array's id, so a summary built only
+  // on identity said nothing about the most common update in data code.
+  await scientific.run('import numpy as np\nwave = np.arange(5.0)');
+  const subscript = await scientific.run('wave[0] = np.nan');
+  assert(/wave: ndarray float64 shape=\(5,\) min=1 max=4 mean=2\.5 nan=1/.test(subscript.summary),
+    `a subscript assignment is reported with the new facts (got ${JSON.stringify(subscript.summary)})`);
+  const augmented = await scientific.run('wave -= 1');
+  assert(/wave: .* min=0 max=3/.test(augmented.summary), 'an augmented assignment in place is reported');
+
+  // A name bound inside a function is local to it. Walking into the body would
+  // list the module-level variable of the same name as changed when it was not.
+  await plain.run('shadowed = 1');
+  const local = await plain.run('def f():\n    shadowed = 2\n    return shadowed\nresult = f()');
+  assert(/result: int = 2/.test(local.summary), 'the variable the run did create is listed');
+  assert(!/shadowed/.test(local.summary), 'a name assigned only inside a function body is not');
+
+  // Pinned rather than fixed: from syntax alone a mutating method call cannot be
+  // told apart from one that reads, so items.append(x) is not detected.
+  await plain.run('items = [1]');
+  const appended = await plain.run('items.append(2)');
+  assert(!/items/.test(appended.summary), 'a mutating method call is not detected (a known limit, pinned here)');
+}
+
+console.log('\nfigures that cannot even be enumerated are reported, not dropped');
+{
+  // The figure is drawn BEFORE enumeration breaks, so the run itself succeeds
+  // with a figure open. Breaking it first would fail the run instead: plt.plot
+  // on an empty registry calls get_fignums to number the new figure.
+  const r = await scientific.run(
+    'import matplotlib.pyplot as plt\nplt.plot([4, 5, 6])\n_real_fignums = plt.get_fignums\n' +
+      'def _broken():\n    raise RuntimeError("registry unavailable")\n' +
+      'plt.get_fignums = _broken'
+  );
+  assertEqual(r.status, 'ok', 'the run itself succeeded, which is what made the loss silent');
+  assert(/\[runtime\] figures could not be collected: RuntimeError/.test(r.stderr),
+    `a run that plotted does not come back looking like one that did not (got ${JSON.stringify(r.stderr)})`);
+  await scientific.run('plt.get_fignums = _real_fignums\nplt.close("all")');
+}
+
+console.log('\nthe import gate tells a refusal from its own failure');
+{
+  // A module in sys.modules with no __spec__ makes find_spec RAISE ValueError.
+  // It is importable, since import returns it from the cache, so it must not be
+  // reported as missing.
+  await plain.run('import sys, types\nsys.modules["no_spec_module"] = types.ModuleType("no_spec_module")');
+  const cached = await plain.run('import no_spec_module');
+  assertEqual(cached.status, 'ok', 'a cached module without a spec is importable, not denied');
+
+  // Anything else is an internal failure. Catching it as a refusal would tell
+  // the model "this runtime has no weird", confident and wrong.
+  await plain.run(
+    'import sys\nclass _Faulty:\n    def find_spec(self, name, path=None, target=None):\n' +
+      '        if name == "weird":\n            raise RuntimeError("finder bug")\n        return None\n' +
+      '_faulty = _Faulty()\nsys.meta_path.insert(0, _faulty)'
+  );
+  const failing = await plain.run('import weird');
+  assertEqual(failing.status, 'error', 'a finder that fails is an error');
+  assert(/import check failed/.test(failing.stderr) && !/denied_import/.test(failing.stderr),
+    `and is reported as the check failing, not as a missing package (got ${JSON.stringify(failing.stderr)})`);
+  await plain.run('sys.meta_path.remove(_faulty)');
 }
 
 console.log('\nthe data client reads through fetch, inside the same interpreter');

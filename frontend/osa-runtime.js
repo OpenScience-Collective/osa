@@ -152,6 +152,14 @@ export function defaultWorkerFactory(source) {
 }
 
 /**
+ * `ClientToolResult.artifacts` is at most 32 names of at most 512 characters.
+ * Not in `src/core/limits.py`, so mirrored here from the model's own Field
+ * declarations, which `test-runtime-lifecycle.js` reads back.
+ */
+export const MAX_ARTIFACTS = 32;
+export const MAX_ARTIFACT_NAME_CHARS = 512;
+
+/**
  * The fields of phase 1's `ClientToolResult`, and nothing else.
  *
  * That model is `extra="forbid"`, so a result carrying one extra key, such as
@@ -172,15 +180,58 @@ export const CLIENT_TOOL_RESULT_FIELDS = Object.freeze([
 ]);
 
 /**
- * Cut a worker message or a synthesized result down to exactly the server's shape.
+ * Bound a string the same way the Python harness does: both ends kept, and the
+ * gap says how much was dropped. Mirrors `_clip` in osa-output.js.
+ *
+ * @param {unknown} text
+ * @param {number} limit
+ * @returns {string}
+ */
+export function clipText(text, limit) {
+  const value = typeof text === 'string' ? text : text == null ? '' : String(text);
+  if (limit <= 0) return '';
+  if (value.length <= limit) return value;
+  const markerBudget = 64;
+  if (limit <= markerBudget) return value.slice(0, limit);
+  const head = Math.floor(((limit - markerBudget) * 3) / 5);
+  const tail = limit - markerBudget - head;
+  const dropped = value.length - head - tail;
+  return `${value.slice(0, head)}\n... ${dropped} characters omitted ...\n${value.slice(value.length - tail)}`;
+}
+
+/**
+ * Cut a worker message or a synthesized result to exactly the server's shape,
+ * with every field inside the size the server enforces on it.
+ *
+ * The ONE choke point every result passes through before a caller sees it. The
+ * worker's harness sizes its own output, but several results are built here on
+ * the host from values the model chose: a get_full_output call_id or stream
+ * name, the names in a denied import, a worker's error text. Each of those was
+ * once reflected unbounded, and ClientToolResult refuses a result WHOLE on one
+ * oversized field, so sizing them at each call site was one forgotten site away
+ * from a 422. Enforcing it here makes that impossible by construction.
  *
  * @param {object} message
+ * @param {ReturnType<typeof resolveLimits>} limits
  * @returns {object}
  */
-export function toClientToolResult(message) {
+export function toClientToolResult(message, limits) {
   const result = {};
   for (const field of CLIENT_TOOL_RESULT_FIELDS) {
     if (message[field] !== undefined) result[field] = message[field];
+  }
+  if ('stdout' in result) result.stdout = clipText(result.stdout, limits.stdout_chars);
+  if ('stderr' in result) result.stderr = clipText(result.stderr, limits.stderr_chars);
+  if ('summary' in result) result.summary = clipText(result.summary, limits.summary_chars);
+  if ('images' in result) result.images = Array.isArray(result.images) ? result.images.slice(0, limits.images) : [];
+  if ('artifacts' in result) {
+    result.artifacts = Array.isArray(result.artifacts)
+      ? result.artifacts.slice(0, MAX_ARTIFACTS).map((name) => clipText(name, MAX_ARTIFACT_NAME_CHARS))
+      : [];
+  }
+  if ('elapsed_ms' in result) {
+    const ms = Number(result.elapsed_ms);
+    result.elapsed_ms = Number.isFinite(ms) && ms > 0 ? Math.round(ms) : 0;
   }
   return result;
 }
@@ -208,15 +259,20 @@ export const FULL_OUTPUT_MAX_CHARS = 16_000_000;
  * without bound.
  */
 export class FullOutputStore {
+  // Private, because the size accounting is only correct if every change goes
+  // through remember() and forget(). With plain fields, one direct write to the
+  // map or the counter would desynchronize them with nothing to notice.
+  #entries = new Map(); // insertion order is the LRU order
+  #chars = 0;
+  #maxCalls;
+  #maxChars;
+
   constructor({ maxCalls = FULL_OUTPUT_MAX_CALLS, maxChars = FULL_OUTPUT_MAX_CHARS } = {}) {
-    this.maxCalls = maxCalls;
-    this.maxChars = maxChars;
-    // Map iteration order is insertion order, which makes it the LRU list.
-    this._entries = new Map();
-    this._chars = 0;
+    this.#maxCalls = maxCalls;
+    this.#maxChars = maxChars;
   }
 
-  static _sizeOf(entry) {
+  static #sizeOf(entry) {
     let n = entry.stdout.length + entry.stderr.length + entry.traceback.length;
     for (const image of entry.images) n += image.data_base64.length;
     return n;
@@ -235,37 +291,44 @@ export class FullOutputStore {
       images: Array.isArray(images) ? images : [],
     };
     this.forget(callId);
-    this._entries.set(callId, entry);
-    this._chars += FullOutputStore._sizeOf(entry);
-    while (this._entries.size > 1 && (this._entries.size > this.maxCalls || this._chars > this.maxChars)) {
-      this.forget(this._entries.keys().next().value);
+    this.#entries.set(callId, entry);
+    this.#chars += FullOutputStore.#sizeOf(entry);
+    // The newest entry is never evicted, even alone over budget: the worker
+    // bounds each stream, so one run cannot exceed the budget by itself, and a
+    // store that drops what was just produced would answer nothing.
+    while (this.#entries.size > 1 && (this.#entries.size > this.#maxCalls || this.#chars > this.#maxChars)) {
+      this.forget(this.#entries.keys().next().value);
     }
   }
 
   /** The entry, refreshed as most recently used, or undefined. */
   get(callId) {
-    const entry = this._entries.get(callId);
+    const entry = this.#entries.get(callId);
     if (entry !== undefined) {
-      this._entries.delete(callId);
-      this._entries.set(callId, entry);
+      this.#entries.delete(callId);
+      this.#entries.set(callId, entry);
     }
     return entry;
   }
 
   forget(callId) {
-    const entry = this._entries.get(callId);
+    const entry = this.#entries.get(callId);
     if (entry !== undefined) {
-      this._chars -= FullOutputStore._sizeOf(entry);
-      this._entries.delete(callId);
+      this.#chars -= FullOutputStore.#sizeOf(entry);
+      this.#entries.delete(callId);
     }
   }
 
   get size() {
-    return this._entries.size;
+    return this.#entries.size;
   }
 
   get chars() {
-    return this._chars;
+    return this.#chars;
+  }
+
+  get maxCalls() {
+    return this.#maxCalls;
   }
 }
 
@@ -436,7 +499,7 @@ export class PyodideRuntime {
       // server by accident: ClientToolResult is extra="forbid" and would refuse
       // the whole result, and the point is that bulk output never leaves.
       const full = msg.full;
-      const result = toClientToolResult(msg);
+      const result = toClientToolResult(msg, this.limits);
       // A result for a call nobody is waiting on is dropped rather than thrown:
       // the execution was abandoned, or its deadline already settled it. Never
       // silently attributed to another call, and not kept either, since nobody
@@ -533,15 +596,6 @@ export class PyodideRuntime {
   }
 
   /**
-   * Terminate the worker.
-   *
-   * This is also cancellation. Cooperative interruption through
-   * `setInterruptBuffer` needs a SharedArrayBuffer, which needs cross-origin
-   * isolation on the embedding page, and requiring that would constrain every page
-   * that embeds the widget. Terminating is decisive, needs nothing from the page,
-   * and the measured cost is one cold boot.
-   */
-  /**
    * Run one block of Python and resolve with the result envelope.
    *
    * Boots on demand, because `preload_on: first_run` means the first execution
@@ -603,7 +657,7 @@ export class PyodideRuntime {
           images: [],
           artifacts: [],
           elapsed_ms: Date.now() - started,
-        }));
+        }, this.limits));
         // Recycled rather than terminated: the person asked for THIS run to stop,
         // not for the runtime to be gone, and the next execution boots a fresh
         // worker. terminate() stays reserved for explicit cancellation, which
@@ -622,16 +676,6 @@ export class PyodideRuntime {
     });
   }
 
-  /**
-   * Settle one outstanding execution and stop its deadline.
-   *
-   * One place, so a result arriving and a deadline firing cannot both settle the
-   * same call: whichever gets here first removes it from `_pending`.
-   *
-   * @param {string} callId
-   * @param {object} result
-   * @returns {boolean} Whether anything was waiting.
-   */
   /**
    * Settle every in-flight execution after the worker itself died.
    *
@@ -659,11 +703,21 @@ export class PyodideRuntime {
         images: [],
         artifacts: [],
         elapsed_ms: Date.now() - waiting.started,
-      }));
+      }, this.limits));
     }
     this._recycle();
   }
 
+  /**
+   * Settle one outstanding execution and stop its deadline.
+   *
+   * One place, so a result arriving and a deadline firing cannot both settle the
+   * same call: whichever gets here first removes it from `_pending`.
+   *
+   * @param {string} callId
+   * @param {object} result
+   * @returns {boolean} Whether anything was waiting.
+   */
   _settleExecution(callId, result) {
     const waiting = this._pending.get(callId);
     if (!waiting) {
@@ -711,38 +765,43 @@ export class PyodideRuntime {
     const stream = (args && args.stream) || 'stdout';
     const rawOffset = args && args.offset;
     const offset = Number.isInteger(rawOffset) && rawOffset > 0 ? rawOffset : 0;
-    const base = {
-      call_id: options.callId || `local-${++this._callSeq}`,
-      status: 'ok',
-      stdout: '',
-      stderr: '',
-      summary: '',
-      images: [],
-      artifacts: [],
-      // Zero rather than a measured duration: nothing ran, and a varying number
-      // here would be the one nondeterministic byte in an otherwise stable result.
-      elapsed_ms: 0,
-    };
-    const quoted = JSON.stringify(requested);
+    // Model-chosen values, echoed back in messages. Bounded for readability here;
+    // toClientToolResult bounds the fields they land in regardless.
+    const quoted = JSON.stringify(requested.length > 256 ? `${requested.slice(0, 256)}...` : requested);
+    const answer = (fields) =>
+      toClientToolResult(
+        {
+          call_id: options.callId || `local-${++this._callSeq}`,
+          status: 'ok',
+          stdout: '',
+          stderr: '',
+          summary: '',
+          images: [],
+          artifacts: [],
+          // Zero rather than a measured duration: nothing ran, and a varying
+          // number would be the one nondeterministic byte in a stable result.
+          elapsed_ms: 0,
+          ...fields,
+        },
+        this.limits
+      );
 
     if (!FULL_OUTPUT_STREAMS.includes(stream)) {
-      return {
-        ...base,
+      return answer({
         status: 'error',
-        stderr: `[runtime] unknown stream ${JSON.stringify(stream)}; use one of ${FULL_OUTPUT_STREAMS.join(', ')}.`,
-      };
+        stderr: `[runtime] unknown stream ${JSON.stringify(String(stream).slice(0, 64))}; use one of ${FULL_OUTPUT_STREAMS.join(', ')}.`,
+      });
     }
 
     const entry = this.outputs.get(requested);
     if (entry === undefined) {
-      return {
-        ...base,
+      return answer({
         status: 'error',
         stderr:
           `[runtime] no output is kept for call_id ${quoted} in this browser. Output stays in the ` +
           `tab that ran the code: it is gone after a reload, and only the last ${this.outputs.maxCalls} ` +
           'runs are kept.',
-      };
+      });
     }
 
     if (stream === 'figures') {
@@ -750,38 +809,47 @@ export class PyodideRuntime {
       // the model sees them again even though stored history carries only a
       // placeholder for the original.
       const images = entry.images.slice(0, this.limits.images);
-      return {
-        ...base,
+      return answer({
         images,
         summary:
           images.length === 0
             ? `get_full_output: call_id ${quoted} returned no figures.`
             : `get_full_output: ${images.length} figure(s) from call_id ${quoted}, attached.`,
-      };
+      });
     }
 
+    // A stream is returned in the field it came from, so the fence labels it
+    // the way the original result did: stdout as stdout, and stderr and the
+    // traceback (which has no field of its own) as stderr. Each page is sized by
+    // THAT field's cap, since the server enforces the cap per field.
+    const field = stream === 'stdout' ? 'stdout' : 'stderr';
+    const pageSize = field === 'stdout' ? this.limits.stdout_chars : this.limits.stderr_chars;
     const text = entry[stream];
     if (offset >= text.length && text.length > 0) {
-      return {
-        ...base,
+      return answer({
         summary: `get_full_output: offset ${offset} is past the end of ${stream} for call_id ${quoted}, which has ${text.length} characters.`,
-      };
+      });
     }
-    const end = Math.min(text.length, offset + this.limits.stdout_chars);
-    const more =
-      end < text.length
-        ? ` More remains: call again with offset=${end}.`
-        : ' This is the end of the stream.';
-    return {
-      ...base,
-      stdout: text.slice(offset, end),
+    const end = Math.min(text.length, offset + pageSize);
+    const more = end < text.length ? ` More remains: call again with offset=${end}.` : ' This is the end of the stream.';
+    return answer({
+      [field]: text.slice(offset, end),
       summary:
         text.length === 0
           ? `get_full_output: ${stream} of call_id ${quoted} is empty.`
           : `get_full_output: ${stream} of call_id ${quoted}, characters ${offset} to ${end} of ${text.length}.${more}`,
-    };
+    });
   }
 
+  /**
+   * Terminate the worker.
+   *
+   * This is also cancellation. Cooperative interruption through
+   * `setInterruptBuffer` needs a SharedArrayBuffer, which needs cross-origin
+   * isolation on the embedding page, and requiring that would constrain every page
+   * that embeds the widget. Terminating is decisive, needs nothing from the page,
+   * and the measured cost is one cold boot.
+   */
   terminate() {
     this._clearBootTimer();
     this._disposeWorker();

@@ -52,40 +52,65 @@ export const SERVER_LIMITS = Object.freeze({
 });
 
 /**
+ * Each `RuntimeLimits` field's default and floor, mirrored from
+ * `src/core/config/community.py`.
+ *
+ * The ceilings come from `SERVER_LIMITS`. Like those, these are read back out of
+ * the Python by `test-output.js`, which fails if a default or a `ge=` bound moves
+ * on one side only.
+ */
+export const RUNTIME_LIMITS = Object.freeze({
+  memory_mb: Object.freeze({ default: 1536, min: 64 }),
+  stdout_chars: Object.freeze({ default: SERVER_LIMITS.MAX_STDOUT_CHARS, min: 256 }),
+  stderr_chars: Object.freeze({ default: SERVER_LIMITS.MAX_STDERR_CHARS, min: 256 }),
+  images: Object.freeze({ default: SERVER_LIMITS.MAX_IMAGES, min: 0 }),
+  image_px: Object.freeze({ default: 1024, min: 16 }),
+  exec_seconds: Object.freeze({ default: 120, min: 1 }),
+});
+
+/**
  * Resolve a community's declared limits against what the server will accept.
  *
  * A community cannot see the server's constants, so `RuntimeLimits` bounds its
- * fields by them. This clamps anyway: the config is validated by a different
- * process than the one running here, and honoring a limit the server will reject
- * produces a 422 that reads as the browser misbehaving when it was the config.
+ * fields by them. This clamps anyway, in BOTH directions: the config is
+ * validated by a different process than the one running here, and a limit the
+ * server will reject costs a 422 that reads as the browser misbehaving when it
+ * was the config. The floor matters as much as the ceiling: below it, clipping a
+ * stream leaves no room for its own omission marker.
  *
  * @param {object} [limits] - A community's `runtime.python.limits`.
- * @returns {{stdout_chars: number, stderr_chars: number, images: number, image_px: number, image_bytes: number}}
+ * @returns {{stdout_chars: number, stderr_chars: number, images: number, image_px: number,
+ *   image_bytes: number, summary_chars: number, exec_seconds: number, memory_mb: number}}
  */
 export function resolveLimits(limits = {}) {
-  const positive = (value, fallback) =>
-    typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
-  const bounded = (value, fallback, max) => {
-    const n = typeof value === 'number' && Number.isFinite(value) ? Math.floor(value) : fallback;
-    return Math.max(0, Math.min(n, max));
+  // One rule for every field. Below the floor, the value can only have come from
+  // a config that skipped validation, so the known-good default is used rather
+  // than the floor itself: clamping a zero deadline up to one second would time
+  // out every run. Above the ceiling, the community asked for more than the
+  // server accepts, so it gets the most the server accepts.
+  const pick = (field, max = Number.POSITIVE_INFINITY) => {
+    const { default: fallback, min } = RUNTIME_LIMITS[field];
+    const value = limits[field];
+    const valid = typeof value === 'number' && Number.isFinite(value) && Math.floor(value) >= min;
+    return Math.min(valid ? Math.floor(value) : fallback, max);
   };
   return {
-    stdout_chars: bounded(limits.stdout_bytes, SERVER_LIMITS.MAX_STDOUT_CHARS, SERVER_LIMITS.MAX_STDOUT_CHARS),
-    stderr_chars: bounded(limits.stderr_bytes, SERVER_LIMITS.MAX_STDERR_CHARS, SERVER_LIMITS.MAX_STDERR_CHARS),
-    images: bounded(limits.images, SERVER_LIMITS.MAX_IMAGES, SERVER_LIMITS.MAX_IMAGES),
-    image_px: bounded(limits.image_px, 1024, SERVER_LIMITS.MAX_IMAGE_EDGE_PX),
+    stdout_chars: pick('stdout_chars', SERVER_LIMITS.MAX_STDOUT_CHARS),
+    stderr_chars: pick('stderr_chars', SERVER_LIMITS.MAX_STDERR_CHARS),
+    images: pick('images', SERVER_LIMITS.MAX_IMAGES),
+    image_px: pick('image_px', SERVER_LIMITS.MAX_IMAGE_EDGE_PX),
     image_bytes: SERVER_LIMITS.MAX_IMAGE_BYTES,
     summary_chars: SERVER_LIMITS.MAX_SUMMARY_CHARS,
     // Not bounded against a server constant, because the server neither measures
-    // nor enforces either one. `exec_seconds` is the host's own clock; see the
-    // deadline in `execute`, which is where it is applied.
-    exec_seconds: Math.max(1, positive(limits.exec_seconds, 120)),
+    // nor enforces it: this is the host's own clock, applied as the deadline in
+    // `execute`.
+    exec_seconds: pick('exec_seconds'),
     // Carried for reporting only. wasm32 cannot be told to stop at a byte count:
     // memory is grown by the instance itself and an exhaustion aborts it, so
     // there is no point at which this number could be checked and enforced. What
     // the runtime does instead is recognize the abort and report `oom` rather
     // than a generic error, which is why `oom` is its own status.
-    memory_mb: Math.max(64, positive(limits.memory_mb, 1536)),
+    memory_mb: pick('memory_mb'),
   };
 }
 
@@ -126,10 +151,18 @@ def _unavailable_imports(code):
         try:
             if _ilu.find_spec(root) is None:
                 missing.append(root)
-        except Exception:
+        except ImportError:
             # The namespace seal's finder RAISES for a blocked root rather than
             # returning None, so a blocked import lands here and is denied.
             missing.append(root)
+        except ValueError:
+            # find_spec raises this for a module already in sys.modules whose
+            # __spec__ is None. Such a module is importable, since the import
+            # statement returns it from the cache, so it is not missing.
+            pass
+        # Anything else propagates. Catching it here would report an internal
+        # failure as "this runtime has no <package>", a confident and wrong
+        # answer the model would act on.
     return missing
 `;
 }
@@ -152,6 +185,7 @@ export function buildOutputCaptureSource(limits) {
   // A JSON string literal is also a valid Python string literal.
   const limitsLiteral = JSON.stringify(JSON.stringify(limits));
   return String.raw`
+import ast as _ast
 import base64 as _b64
 import io as _io
 import json as _json
@@ -371,7 +405,11 @@ def _collect_figures():
         return
     try:
         numbers = list(plt.get_fignums())
-    except Exception:
+    except Exception as exc:
+        # Returning quietly here made a run that plotted look exactly like one
+        # that did not: ok, no images, no stderr. Said out loud instead, like a
+        # figure that fails to render one line below.
+        _note("[runtime] figures could not be collected: %s" % type(exc).__name__)
         return
     for number in numbers:
         figure = plt.figure(number)
@@ -625,6 +663,52 @@ def _summary(changed, namespace, truncated):
     return _clip("\n".join(lines), _LIMITS["summary_chars"])
 
 
+def _assigned_names(code):
+    """Module-level names the code assigns to, including through a subscript or
+    an attribute.
+
+    Identity alone misses the most common update in data code: signal[3] = nan,
+    signal -= signal.mean(), frame["z"] = ... all change a value in place and
+    keep its id, so a summary built on identity reported nothing about them.
+    Read from the code, so it is cheap and never touches the data.
+
+    Function and class bodies, lambdas and comprehensions are not entered: a
+    name bound there is local to that scope. A mutating method call such as
+    items.append(x) is not detected, since from the syntax alone it cannot be
+    told apart from a call that reads.
+    """
+    try:
+        tree = _ast.parse(code)
+    except SyntaxError:
+        return set()
+    names = set()
+    scopes = (
+        _ast.FunctionDef,
+        _ast.AsyncFunctionDef,
+        _ast.ClassDef,
+        _ast.Lambda,
+        _ast.ListComp,
+        _ast.SetComp,
+        _ast.DictComp,
+        _ast.GeneratorExp,
+    )
+    pending = list(_ast.iter_child_nodes(tree))
+    while pending:
+        node = pending.pop()
+        if isinstance(node, scopes):
+            continue
+        if isinstance(node, _ast.Name) and isinstance(node.ctx, _ast.Store):
+            names.add(node.id)
+        elif isinstance(node, (_ast.Subscript, _ast.Attribute)) and isinstance(node.ctx, _ast.Store):
+            base = node.value
+            while isinstance(base, (_ast.Subscript, _ast.Attribute)):
+                base = base.value
+            if isinstance(base, _ast.Name):
+                names.add(base.id)
+        pending.extend(_ast.iter_child_nodes(node))
+    return names
+
+
 def _begin(call_id="", code=""):
     _state["saved"] = (_sys.stdout, _sys.stderr)
     _state["stdout"] = _io.StringIO()
@@ -728,7 +812,15 @@ async def _execute(call_id, code, namespace):
     except BaseException as exc:
         status = "error"
         _record(exc)
-    changed = sorted(name for name, value in namespace.items() if before.get(name) != id(value))
+    # Rebound or new (by identity), or assigned to in place (by the code). A name
+    # the code assigned but that no longer exists, because the run failed first
+    # or deleted it, is not listed.
+    touched = _assigned_names(code)
+    changed = sorted(
+        name
+        for name, value in namespace.items()
+        if before.get(name) != id(value) or name in touched
+    )
     return _end(status=status, changed=changed, namespace=namespace)
 `;
 }

@@ -15,10 +15,14 @@ import {
   BOOT_FAILURE,
   CLIENT_TOOL_RESULT_FIELDS,
   FullOutputStore,
+  MAX_ARTIFACTS,
+  MAX_ARTIFACT_NAME_CHARS,
   PyodideRuntime,
   RUNTIME_STATE,
   buildWorkerSource,
+  toClientToolResult,
 } from './osa-runtime.js';
+import { resolveLimits, SERVER_LIMITS } from './osa-output.js';
 
 let passed = 0;
 let failed = 0;
@@ -627,7 +631,7 @@ console.log('\na deadline and a late result cannot both settle one call');
 console.log('\nfull output stays in the browser, and never rides along to the caller');
 {
   const rt = new PyodideRuntime({
-    runtime: { ...RUNTIME, limits: { stdout_bytes: 256 } },
+    runtime: { ...RUNTIME, limits: { stdout_chars: 256 } },
     workerFactory: workerFrom('executing'),
   });
   const result = await rt.execute('LONG:1000', { callId: 'call-long' });
@@ -778,6 +782,83 @@ console.log('\nevery result a caller receives is exactly the server\'s shape');
   onlyServerFields(rt.getFullOutput({ call_id: 'shape-kept' }, { callId: 'shape-read' }), 'a get_full_output answer');
   onlyServerFields(rt.getFullOutput({ call_id: 'nothing-here' }, { callId: 'shape-miss' }), 'a get_full_output refusal');
   rt.terminate();
+}
+
+console.log('\nevery result is sized to what the server accepts, at one choke point');
+{
+  // Several results are built on the host from values the model chose, and one
+  // oversized field refuses the WHOLE result. Sizing at each call site was one
+  // forgotten site away from a 422, so toClientToolResult enforces it for all.
+  const limits = resolveLimits({});
+  const huge = 'z'.repeat(100_000);
+  const bounded = toClientToolResult({
+    type: 'result',
+    call_id: 'c',
+    status: 'error',
+    stdout: huge,
+    stderr: huge,
+    summary: huge,
+    images: new Array(10).fill({ mime: 'image/png', data_base64: 'iVBORw0KGgo=', width: 1, height: 1 }),
+    artifacts: new Array(50).fill('a'.repeat(1000)),
+    elapsed_ms: -3.7,
+  }, limits);
+  assert(bounded.stdout.length <= SERVER_LIMITS.MAX_STDOUT_CHARS, `stdout within the server cap (${bounded.stdout.length})`);
+  assert(bounded.stderr.length <= SERVER_LIMITS.MAX_STDERR_CHARS, `stderr within the server cap (${bounded.stderr.length})`);
+  assert(bounded.summary.length <= SERVER_LIMITS.MAX_SUMMARY_CHARS, `summary within the server cap (${bounded.summary.length})`);
+  assertEqual(bounded.images.length, SERVER_LIMITS.MAX_IMAGES, 'images within the server cap');
+  assert(bounded.artifacts.length === MAX_ARTIFACTS && bounded.artifacts.every((a) => a.length <= MAX_ARTIFACT_NAME_CHARS),
+    'artifacts within both the count and the per-name cap');
+  assertEqual(bounded.elapsed_ms, 0, 'elapsed_ms is a non-negative integer, as the server requires');
+  assert(!('type' in bounded), 'and the protocol field is gone');
+
+  // The artifact bounds are not in src/core/limits.py, so they are read from
+  // the model's own Field declarations.
+  const python = await Bun.file(new URL('../src/api/tool_results.py', import.meta.url)).text();
+  const artifacts = python.split('artifacts:')[1].split('elapsed_ms')[0];
+  assert(new RegExp(`StringConstraints\\(max_length=${MAX_ARTIFACT_NAME_CHARS}\\)`).test(artifacts),
+    'the per-artifact name cap matches ClientToolResult');
+  assert(new RegExp(`max_length=${MAX_ARTIFACTS},`).test(artifacts), 'and so does the artifact count cap');
+}
+
+console.log('\nget_full_output bounds what it echoes back');
+{
+  const rt = new PyodideRuntime({ runtime: RUNTIME, workerFactory: workerFrom('executing') });
+  const longId = 'k'.repeat(10_000);
+  const miss = rt.getFullOutput({ call_id: longId }, { callId: 'r1' });
+  assert(miss.stderr.length <= SERVER_LIMITS.MAX_STDERR_CHARS && /k{256}\.\.\."/.test(miss.stderr),
+    `an enormous call_id is shortened in the message, not reflected whole (${miss.stderr.length} characters)`);
+  const badStream = rt.getFullOutput({ call_id: 'x', stream: 's'.repeat(10_000) }, { callId: 'r2' });
+  assert(badStream.stderr.length < 200, `so is an enormous stream name (${badStream.stderr.length} characters)`);
+}
+
+console.log('\nget_full_output returns each stream in the field it came from');
+{
+  const rt = new PyodideRuntime({
+    runtime: { ...RUNTIME, limits: { stderr_chars: 300 } },
+    workerFactory: workerFrom('executing'),
+  });
+  await rt.execute('ERR:1000', { callId: 'call-err' });
+
+  // The fence labels a field by its name, so a traceback returned as stdout was
+  // labelled as ordinary output.
+  const stderr = rt.getFullOutput({ call_id: 'call-err', stream: 'stderr' }, { callId: 'r1' });
+  assertEqual(stderr.stdout, '', 'stderr is not returned as stdout');
+  assertEqual(stderr.stderr.length, 300, 'it comes back in stderr, one page sized by the STDERR cap');
+  assert(/More remains: call again with offset=300\./.test(stderr.summary), 'with the next offset');
+
+  const traceback = rt.getFullOutput({ call_id: 'call-err', stream: 'traceback' }, { callId: 'r2' });
+  assert(traceback.stdout === '' && /ValueError: boom/.test(traceback.stderr),
+    'the traceback, which has no field of its own, comes back in stderr');
+  rt.terminate();
+}
+
+console.log('\nget_full_output never re-attaches more figures than the cap');
+{
+  const rt = new PyodideRuntime({ runtime: RUNTIME, workerFactory: workerFrom('executing') });
+  const image = { mime: 'image/png', data_base64: 'iVBORw0KGgo=', width: 1, height: 1 };
+  rt.outputs.remember('call-many', { stdout: '' }, [image, image, image, image, image]);
+  const figures = rt.getFullOutput({ call_id: 'call-many', stream: 'figures' }, { callId: 'r' });
+  assertEqual(figures.images.length, SERVER_LIMITS.MAX_IMAGES, 'a stored entry over the cap is cut to it');
 }
 
 console.log('\n' + '='.repeat(60));

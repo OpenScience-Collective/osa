@@ -619,7 +619,7 @@ class RuntimeLimits(BaseModel):
 
     So the fields the server also enforces are bounded BY those constants rather than
     written out again. Without the upper bounds, a community could validly declare
-    `stdout_bytes: 65536` or `images: 5`, the browser would honor its own config, and
+    `stdout_chars: 65536` or `images: 5`, the browser would honor its own config, and
     every result it sent would be rejected whole with a 422 by a cap it was never told
     about. The failure would look like the browser misbehaving; it would be the config
     lying. The defaults are the server's caps, so the common case needs no thought.
@@ -636,11 +636,17 @@ class RuntimeLimits(BaseModel):
     Not bounded against a server constant: the server never sees memory, and wasm32
     tops out between 2 and 4 GB regardless of what is written here."""
 
-    stdout_bytes: int = Field(default=MAX_STDOUT_CHARS, ge=256, le=MAX_STDOUT_CHARS)
-    """Maximum captured stdout size, in bytes, per execution."""
+    stdout_chars: int = Field(default=MAX_STDOUT_CHARS, ge=256, le=MAX_STDOUT_CHARS)
+    """Maximum captured stdout, in characters, per execution.
 
-    stderr_bytes: int = Field(default=MAX_STDERR_CHARS, ge=256, le=MAX_STDERR_CHARS)
-    """Maximum captured stderr size, in bytes, per execution."""
+    Characters, not bytes, because that is what everything downstream counts:
+    `ClientToolResult` bounds the field with `max_length`, and both the browser
+    and the Python harness clip by string length. These fields were first named
+    `*_bytes`, which told a community author that multibyte output costs more of
+    the budget than it does."""
+
+    stderr_chars: int = Field(default=MAX_STDERR_CHARS, ge=256, le=MAX_STDERR_CHARS)
+    """Maximum captured stderr, in characters, per execution."""
 
     images: int = Field(default=MAX_IMAGES, ge=0, le=MAX_IMAGES)
     """Maximum number of images an execution may return. 0 disables images."""

@@ -44,6 +44,32 @@ export function createWorkerRuntime(config, env) {
   const OOM_PATTERN =
     /out of memory|Cannot enlarge memory|memory access out of bounds|Aborted\(OOM\)|RangeError: Array buffer allocation failed/i;
 
+  // send is checked before anything else, because it is how every other problem
+  // is reported. Without it the only signal left is an exception at startup.
+  if (!env || typeof env.send !== 'function') {
+    throw new TypeError('createWorkerRuntime needs env.send to report anything');
+  }
+
+  // The rest of the shape, checked by name before boot touches any of it. A
+  // missing piece used to surface as a generic runtime error from somewhere
+  // inside loadPyodide or runPython, indistinguishable from a real failure.
+  function configProblem() {
+    const isStringList = (value) => Array.isArray(value) && value.every((item) => typeof item === 'string');
+    if (typeof env.load !== 'function') return 'env.load is not a function';
+    if (typeof env.seal !== 'function') return 'env.seal is not a function';
+    if (!config || typeof config !== 'object') return 'config is missing';
+    if (typeof config.indexURL !== 'string' || config.indexURL === '') return 'config.indexURL is not a non-empty string';
+    for (const key of ['preload', 'allowInstall', 'indexUrls', 'fetchAllow']) {
+      if (!isStringList(config[key])) return `config.${key} is not a list of strings`;
+    }
+    for (const key of ['helpers', 'outputCapture', 'dataClient', 'namespaceSeal']) {
+      if (!config.python || typeof config.python[key] !== 'string' || config.python[key] === '') {
+        return `config.python.${key} is not a non-empty string`;
+      }
+    }
+    return null;
+  }
+
   let pyodide = null;
   // Created once and reused, so variables survive across turns: a reader who
   // computes something in one message and plots it in the next is the normal
@@ -86,6 +112,11 @@ export function createWorkerRuntime(config, env) {
   }
 
   async function boot() {
+    const problem = configProblem();
+    if (problem !== null) {
+      env.send({ type: 'error', kind: 'config', message: `the runtime was built with an invalid configuration: ${problem}` });
+      return;
+    }
     try {
       env.send({ type: 'progress', phase: 'loading_runtime' });
       pyodide = await env.load(config.indexURL);
@@ -208,11 +239,17 @@ export function createWorkerRuntime(config, env) {
       // Phase 1's ResultStatus has no denied_import member, so the status is
       // `denied` and the machine-readable reason travels in stderr. Adding a
       // status would be a server contract change.
+      //
+      // The names come from the code, which the model wrote and which fetched
+      // content can steer, so the list is bounded: at most 20 names of at most
+      // 100 characters, then a count. The host bounds the whole field as well.
+      const shown = missing.slice(0, 20).map((name) => (name.length > 100 ? `${name.slice(0, 100)}...` : name));
+      const listed = shown.join(', ') + (missing.length > 20 ? `, and ${missing.length - 20} more` : '');
       reply('denied', {
-        stderr: `denied_import: ${missing.join(', ')}`,
+        stderr: `denied_import: ${listed}`,
         summary:
-          `Not run. This runtime has no ${missing.join(', ')}. Only packages the ` +
-          'community installed at startup are available, and nothing is installed on demand.',
+          `Not run. This runtime has no ${listed}. Only packages the community ` +
+          'installed at startup are available, and nothing is installed on demand.',
       });
       return;
     }
