@@ -21,8 +21,9 @@ no matter who is at the keyboard. Labeling it does not make it safe; it makes it
 untrusted.
 
 **Every field is sized before use.** The caps are a containment control, not a formatting
-rule. They are declared here and enforced on the way in, and the browser enforces its own
-copy, because a client-side cap bounds nothing on the server.
+rule. They are declared here and enforced on the way in. The browser is meant to enforce
+its own copy, but that client does not exist yet (phase 2, issue #431), and it would not
+change anything here if it did: a client-side cap bounds nothing on the server.
 """
 
 from __future__ import annotations
@@ -37,20 +38,20 @@ from typing import Annotated, Any, Literal
 from langchain_core.messages import ToolMessage
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
+# The caps live in `src.core.limits`, which imports nothing but the standard library,
+# because `src.core.config.community` bounds `RuntimeLimits` by the same numbers and
+# must import cleanly without the `server` extra. Re-exported here so callers that think
+# of them as properties of a tool result keep reading them from one place.
+from src.core.limits import (  # noqa: E402
+    MAX_IMAGE_BYTES,
+    MAX_IMAGE_EDGE_PX,
+    MAX_IMAGES,
+    MAX_STDERR_CHARS,
+    MAX_STDOUT_CHARS,
+    MAX_SUMMARY_CHARS,
+    MAX_TOOL_RESULT_LENGTH,
+)
 from src.core.services.anthropic_models import IMAGE_MEDIA_TYPES
-
-# Caps. The browser applies its own copy of these; these are the ones that decide.
-MAX_STDOUT_CHARS = 16_384
-MAX_STDERR_CHARS = 8_192
-MAX_IMAGES = 3
-MAX_IMAGE_BYTES = 2_000_000
-MAX_SUMMARY_CHARS = 8_192
-
-#: Cap on the TEXT of a persisted tool result, separate from `MAX_MESSAGE_LENGTH`.
-#: A tool result is machine output rather than something a person typed, so the
-#: 10,000-character message cap does not apply to it; see issue #422, where the
-#: smallest realistic figure measured 8x that cap.
-MAX_TOOL_RESULT_LENGTH = 65_536
 
 #: How long an unanswered browser call stays claimable. Generous, because it covers a
 #: person reading code before approving it, and unrelated to any HTTP timeout.
@@ -69,8 +70,8 @@ class ToolResultImage(BaseModel):
 
     mime: str = Field(description="Image media type, e.g. image/png")
     data_base64: str = Field(description="Base64-encoded image bytes")
-    width: int = Field(ge=1, le=8192)
-    height: int = Field(ge=1, le=8192)
+    width: int = Field(ge=1, le=MAX_IMAGE_EDGE_PX)
+    height: int = Field(ge=1, le=MAX_IMAGE_EDGE_PX)
 
     @field_validator("mime")
     @classmethod

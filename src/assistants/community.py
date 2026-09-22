@@ -298,6 +298,23 @@ class CommunityAssistant(ToolAgent):
         # Tools this server binds but never executes; the browser does. Empty unless
         # the community configures them AND the caller declares it can run them.
         client_tools = build_client_tools(config, declared_client_tools)
+
+        # A client tool sharing a name with a real server tool is the one configuration
+        # mistake here with no symptom. `BaseAgent` partitions by name, so the server
+        # tool would be dropped from the node that executes it and the model's calls to
+        # it would be parked for a browser that has no executor for that name: the turn
+        # would simply hang. Config validation cannot see this, because the colliding
+        # name comes from a doc, knowledge or MCP tool assembled at runtime rather than
+        # from the same YAML block.
+        collisions = sorted({t.name for t in tools} & {t.name for t in client_tools})
+        if collisions:
+            raise ValueError(
+                f"Community '{config.id}' declares client tool(s) {collisions} whose "
+                "name(s) already belong to server-executed tools. Rename the client "
+                "tool: a shared name would route the server tool's calls to a browser "
+                "that cannot run them."
+            )
+
         tools.extend(client_tools)
 
         # Generate system prompt

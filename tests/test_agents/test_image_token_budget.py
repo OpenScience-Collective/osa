@@ -7,9 +7,12 @@ budget, and conclude that this repository needs its own image-aware counter.
 
 That was true, and is not true of the version this project runs. langchain-core grew a
 `tokens_per_image` penalty, so the helper now walks content blocks and charges a flat
-rate per image instead of stringifying base64. Measured here rather than asserted:
-1.2.6 has no such parameter, 1.6.3 does, and `pyproject.toml` now floors the dependency
-at 1.6 for exactly this reason.
+rate per image instead of stringifying base64.
+
+Bisected rather than inferred: 1.2.6 and 1.2.7 have the `repr()` fallback, and **1.2.8**
+onward has the parameter. `pyproject.toml` floors the dependency at 1.6.0, which is a
+safety margin above that boundary rather than the boundary itself. An earlier version of
+this file said the feature landed in 1.6; that was guessed from two endpoints.
 
 So there is no custom counter. What there is instead is a floor and these tests, which
 fail if the floor ever slips or upstream reverts, because the failure mode is silent:

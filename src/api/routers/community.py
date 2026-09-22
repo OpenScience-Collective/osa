@@ -408,6 +408,11 @@ MAX_MESSAGES_PER_SESSION = 300
 
 MAX_MESSAGE_LENGTH = 10000  # Max characters per message a PERSON sends
 
+#: How long one turn may hold a session before a later turn assumes it was abandoned.
+#: Generous, because a turn spans a model response and any server tool calls it makes,
+#: and the cost of being wrong in the strict direction is refusing a legitimate turn.
+TURN_CLAIM_TTL_SECONDS = 300
+
 
 def _trim_preserving_tool_turns(messages: Sequence[BaseMessage], limit: int) -> list[BaseMessage]:
     """Drop the oldest messages without ever orphaning a tool call or its result.
@@ -464,6 +469,7 @@ class ChatSession:
         self.created_at = datetime.now(UTC)
         self.last_active = self.created_at
         self.pending_call: PendingClientCall | None = None
+        self.turn_started_at: datetime | None = None
 
     def add_user_message(self, content: str) -> None:
         """Add a user message to history.
@@ -517,6 +523,39 @@ class ChatSession:
             adopted = _trim_preserving_tool_turns(adopted, MAX_MESSAGES_PER_SESSION)
         self.messages = adopted
         self.last_active = datetime.now(UTC)
+
+    def begin_turn(self) -> bool:
+        """Claim this session for one turn, or report that another already holds it.
+
+        Two turns on one session interleave badly and silently. Each copies the message
+        list, runs, and writes the whole list back, so whichever finishes last discards
+        the other's messages entirely, along with any browser call the discarded turn
+        had parked. Nothing raises; the conversation just loses a turn.
+
+        Synchronous for the same reason `claim_pending_call` is: the session store has
+        no locking, and a check-then-set with no `await` between the two cannot
+        interleave under asyncio.
+
+        The claim goes stale on its own. A generator that is never closed, which a
+        dropped connection can cause, would otherwise wedge the session until its
+        24-hour TTL, trading a rare lost turn for a permanently broken conversation.
+        """
+        now = datetime.now(UTC)
+        if self.turn_started_at is not None:
+            age = (now - self.turn_started_at).total_seconds()
+            if age < TURN_CLAIM_TTL_SECONDS:
+                return False
+            logger.warning(
+                "Session %s held a turn claim for %.0fs; treating it as abandoned",
+                self.session_id,
+                age,
+                extra={"session_id": self.session_id, "reason": "stale_turn_claim"},
+            )
+        self.turn_started_at = now
+        return True
+
+    def end_turn(self) -> None:
+        self.turn_started_at = None
 
     def set_pending_call(self, call: PendingClientCall) -> None:
         """Park a browser call, refusing to silently replace an unanswered one.
@@ -644,19 +683,37 @@ def _evict_expired_sessions(community_id: str) -> int:
 
 
 def _evict_lru_session(community_id: str) -> None:
-    """Remove least-recently-used session when limit is reached."""
+    """Remove the least-recently-used session, preferring one with nothing in flight.
+
+    A session waiting on a browser call is mid-turn, and evicting it destroys work that
+    is running on someone's machine right now: their `/chat/resume` then gets a bare 404
+    with no way back, and the code they were shown is simply gone. The pending-call TTL
+    is deliberately generous precisely because a person may take minutes to read code
+    before approving it, and `last_active` does not move while they read, so a parked
+    session is exactly the one a naive least-recently-used rule picks first.
+
+    So parked sessions are evicted only when every session in the store is parked. That
+    is a real possibility rather than a theoretical one, so it has to remain possible;
+    it is just the last resort rather than the first choice. The design note lists this
+    as a Phase 0 prerequisite ("session eviction can drop a parked call").
+    """
     store = _get_session_store(community_id)
     if not store:
         return
 
-    # Find session with oldest last_active timestamp
-    lru_id = min(store.keys(), key=lambda sid: store[sid].last_active)
+    idle = [sid for sid, session in store.items() if session.pending_call is None]
+    candidates = idle or list(store.keys())
+    lru_id = min(candidates, key=lambda sid: store[sid].last_active)
+    had_pending = store[lru_id].pending_call is not None
     del store[lru_id]
+
     logger.warning(
-        "Evicted LRU session %s from community %s (limit: %d)",
+        "Evicted LRU session %s from community %s (limit: %d, had a parked browser call: %s)",
         lru_id,
         community_id,
         MAX_SESSIONS_PER_COMMUNITY,
+        had_pending,
+        extra={"community_id": community_id, "evicted_with_pending_call": had_pending},
     )
 
 
@@ -2833,6 +2890,30 @@ async def _stream_chat_response(
     sse_event = {"event": "session", "session_id": session.session_id}
     yield f"data: {json.dumps(sse_event)}\n\n"
 
+    if not session.begin_turn():
+        # Refusing is the honest answer. Running anyway means both turns write the
+        # whole message list back and the later one silently discards the earlier,
+        # including any browser call it had parked.
+        logger.info(
+            "Refused an overlapping turn on session %s",
+            session.session_id,
+            extra={"session_id": session.session_id, "reason": "turn_in_flight"},
+        )
+        yield (
+            "data: "
+            + json.dumps(
+                {
+                    "event": "error",
+                    "message": (
+                        "This conversation is already working on a reply. Wait for it "
+                        "to finish before sending another message."
+                    ),
+                }
+            )
+            + "\n\n"
+        )
+        return
+
     try:
         awm = create_community_assistant(
             community_id,
@@ -2957,6 +3038,13 @@ async def _stream_chat_response(
             return
 
         if pending_payload:
+            # Recorded like any other tool use. `on_tool_start` never fires for a
+            # client tool, on either run: run 1 parks it instead of invoking it, and
+            # run 2 already has the result in the message list. Without this, per-tool
+            # usage metrics read zero for browser execution forever, which is exactly
+            # the number someone would later build a "which tools get used" dashboard
+            # on and believe.
+            tools_called.append(str(pending_payload.get("tool", "")))
             for sse_line in _finish_with_tool_request(session, pending_payload, final_state):
                 yield sse_line
             _log_streaming_metrics(
@@ -3108,3 +3196,7 @@ async def _stream_chat_response(
             cache_read_tokens=total_cache_read_tokens,
             cache_creation_tokens=total_cache_creation_tokens,
         )
+    finally:
+        # Released however this generator ends: normal return, error, or the client
+        # dropping the connection, which closes the generator and runs this.
+        session.end_turn()

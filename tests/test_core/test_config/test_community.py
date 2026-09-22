@@ -13,6 +13,12 @@ from tempfile import NamedTemporaryFile
 import pytest
 from pydantic import ValidationError
 
+from src.api.tool_results import (
+    MAX_IMAGE_EDGE_PX,
+    MAX_IMAGES,
+    MAX_STDERR_CHARS,
+    MAX_STDOUT_CHARS,
+)
 from src.core.config.community import (
     BudgetConfig,
     CitationConfig,
@@ -1969,17 +1975,57 @@ class TestRuntimeLimits:
         assert limits.exec_seconds == 120
 
     def test_accepts_overrides(self) -> None:
-        """Should accept explicit values for every field."""
+        """Should accept explicit values for every field, within the server's caps."""
         limits = RuntimeLimits(
             memory_mb=2048,
-            stdout_bytes=32768,
-            stderr_bytes=16384,
-            images=5,
+            stdout_bytes=8192,
+            stderr_bytes=4096,
+            images=2,
             image_px=2048,
             exec_seconds=60,
         )
         assert limits.memory_mb == 2048
-        assert limits.images == 5
+        assert limits.images == 2
+
+    @pytest.mark.parametrize(
+        ("field", "over_cap"),
+        [
+            ("stdout_bytes", MAX_STDOUT_CHARS + 1),
+            ("stderr_bytes", MAX_STDERR_CHARS + 1),
+            ("images", MAX_IMAGES + 1),
+            ("image_px", MAX_IMAGE_EDGE_PX + 1),
+        ],
+    )
+    def test_a_limit_the_server_would_reject_is_refused_at_config_load(
+        self, field: str, over_cap: int
+    ) -> None:
+        """A community must not be able to promise the browser more than the server
+        accepts.
+
+        Otherwise the browser honors its own config, sends a result the server rejects
+        whole with a 422, and the failure looks like the browser misbehaving when it is
+        the config lying. Bounding the config against the same constants makes that
+        state unrepresentable rather than merely unlikely.
+        """
+        with pytest.raises(ValidationError):
+            RuntimeLimits(**{field: over_cap})
+
+    def test_the_defaults_are_the_servers_caps(self) -> None:
+        """So the common case needs no thought and cannot drift."""
+        limits = RuntimeLimits()
+
+        assert limits.stdout_bytes == MAX_STDOUT_CHARS
+        assert limits.stderr_bytes == MAX_STDERR_CHARS
+        assert limits.images == MAX_IMAGES
+
+    def test_memory_and_time_are_deliberately_unbounded_here(self) -> None:
+        """Neither is a server-side cap: the server never sees memory usage, and
+        `exec_seconds` is the browser's own clock. Bounding them against a server
+        constant would invent a limit that nothing enforces."""
+        limits = RuntimeLimits(memory_mb=99_999, exec_seconds=99_999)
+
+        assert limits.memory_mb == 99_999
+        assert limits.exec_seconds == 99_999
 
     def test_images_can_be_zero(self) -> None:
         """images=0 (no images allowed) should be a valid, explicit choice."""

@@ -32,6 +32,13 @@ from urllib.parse import urlparse
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
+from src.core.limits import (
+    MAX_IMAGE_EDGE_PX,
+    MAX_IMAGES,
+    MAX_STDERR_CHARS,
+    MAX_STDOUT_CHARS,
+)
+
 # Dependency-free by design, so importing it here keeps this module usable on a
 # CLI-only install (see src/core/services/anthropic_models.py). Importing
 # anthropic_llm instead would break `osa validate` for anyone without the
@@ -573,32 +580,48 @@ class ClientToolConfig(BaseModel):
 
 
 class RuntimeLimits(BaseModel):
-    """Resource caps enforced on a client tool's execution environment.
+    """Resource caps a community declares for a client tool's execution environment.
 
-    Phase 1 defines these caps and re-checks them server-side (see the
-    phase plan); it does not implement the browser-side client that
-    produces them (phase 2, #431).
+    These are what the community TELLS the browser it may produce. What the server
+    will actually accept is fixed in `src.api.tool_results`, and the two must not be
+    able to disagree, because a community cannot see the server's constants.
+
+    So the fields the server also enforces are bounded BY those constants rather than
+    written out again. Without the upper bounds, a community could validly declare
+    `stdout_bytes: 65536` or `images: 5`, the browser would honor its own config, and
+    every result it sent would be rejected whole with a 422 by a cap it was never told
+    about. The failure would look like the browser misbehaving; it would be the config
+    lying. The defaults are the server's caps, so the common case needs no thought.
+
+    Phase 1 defines these and enforces the server's own copy on the way in; it does not
+    implement the browser-side client that produces them (phase 2, #431).
     """
 
     model_config = ConfigDict(extra="forbid")
 
     memory_mb: int = Field(default=1536, ge=64)
-    """Maximum memory, in megabytes, the runtime may use."""
+    """Maximum memory, in megabytes, the runtime may use.
 
-    stdout_bytes: int = Field(default=16384, ge=256)
+    Not bounded against a server constant: the server never sees memory, and wasm32
+    tops out between 2 and 4 GB regardless of what is written here."""
+
+    stdout_bytes: int = Field(default=MAX_STDOUT_CHARS, ge=256, le=MAX_STDOUT_CHARS)
     """Maximum captured stdout size, in bytes, per execution."""
 
-    stderr_bytes: int = Field(default=8192, ge=256)
+    stderr_bytes: int = Field(default=MAX_STDERR_CHARS, ge=256, le=MAX_STDERR_CHARS)
     """Maximum captured stderr size, in bytes, per execution."""
 
-    images: int = Field(default=3, ge=0)
+    images: int = Field(default=MAX_IMAGES, ge=0, le=MAX_IMAGES)
     """Maximum number of images an execution may return. 0 disables images."""
 
-    image_px: int = Field(default=1024, ge=16)
+    image_px: int = Field(default=1024, ge=16, le=MAX_IMAGE_EDGE_PX)
     """Maximum width or height, in pixels, of a returned image."""
 
     exec_seconds: int = Field(default=120, ge=1)
-    """Maximum wall-clock time, in seconds, a single execution may run."""
+    """Maximum wall-clock time, in seconds, a single execution may run.
+
+    Not bounded against a server constant: this is the browser's own clock, and the
+    server neither measures nor enforces it."""
 
 
 class PythonRuntimeConfig(BaseModel):
@@ -1671,11 +1694,21 @@ class CommunityConfig(BaseModel):
                 "the execution environment(s) the declared client tools run in."
             )
 
+        # Which `runtime` section each declared runtime requires. A mapping rather
+        # than a chain of `elif`s, because a chain has no else: adding a runtime to
+        # ClientToolConfig's Literal and forgetting a branch here would let a community
+        # declare a client tool whose execution environment was never configured. The
+        # tool would bind, the model would call it, the call would park, and nothing
+        # would ever answer it. A missing entry here is a KeyError at config load
+        # instead, which is loud and immediate.
+        required_section = {"python": "python"}
+
         for entry in client_tools:
-            if entry.runtime == "python" and self.runtime.python is None:
+            section = required_section[entry.runtime]
+            if getattr(self.runtime, section, None) is None:
                 raise ValueError(
                     f"client_tools entry '{entry.name}' declares runtime: "
-                    "python, but runtime.python is not configured."
+                    f"{entry.runtime}, but runtime.{section} is not configured."
                 )
 
         return self
