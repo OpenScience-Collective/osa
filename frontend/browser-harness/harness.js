@@ -19,15 +19,21 @@ function check(name, ok, detail) {
   log(`${ok ? 'ok  ' : 'FAIL'}  ${name}${detail ? '  -- ' + detail : ''}`);
 }
 
+// Above the cold cost of a first figure, and no more. Measured in Chrome on
+// 2026-09-22 against Pyodide 0.29.5: `import matplotlib` then pyplot takes about
+// 4.3 s in a fresh instance (under Bun, 0.9 s), so a 3-second limit timed out
+// every first plot, and the deadline check below would then wait needlessly long.
+const EXEC_SECONDS = 10;
+
 const RUNTIME = {
-  pyodide_version: '0.28.3',
+  pyodide_version: '0.29.5',
   lockfile: 'harness',
   preload: ['numpy', 'matplotlib'],
   allow_install: [],
   preload_on: 'widget_open',
   fetch_allow: [new URL('.', location.href).href],
   index_urls: [],
-  limits: { exec_seconds: 3 },
+  limits: { exec_seconds: EXEC_SECONDS },
 };
 
 async function main() {
@@ -134,7 +140,7 @@ async function main() {
 
   const allowedUrl = new URL('./harness.js', location.href).href;
   const sameOriginDenied = new URL('../osa-egress.js', location.href).href;
-  const crossOriginDenied = 'https://cdn.jsdelivr.net/pyodide/v0.28.3/full/pyodide.js';
+  const crossOriginDenied = 'https://cdn.jsdelivr.net/pyodide/v0.29.5/full/pyodide.js';
 
   const okRead = await probe('osa.fetch_bytes inside fetch_allow', `osa.fetch_bytes(${JSON.stringify(allowedUrl)})`);
   check('executed code CAN read a URL inside fetch_allow', /^OK:\d+ bytes/.test(okRead), okRead);
@@ -228,8 +234,8 @@ async function main() {
   const loopTook = Math.round(performance.now() - loopStarted);
   check('an infinite loop is stopped on the deadline', runaway.status === 'timeout',
     `status=${runaway.status} after ${loopTook}ms`);
-  check('and it waited about the configured 3 seconds, not the boot deadline',
-    loopTook >= 2500 && loopTook < 12000, `${loopTook}ms`);
+  check(`and it waited about the configured ${EXEC_SECONDS} seconds, not the boot deadline`,
+    loopTook >= EXEC_SECONDS * 1000 - 500 && loopTook < EXEC_SECONDS * 1000 + 9000, `${loopTook}ms`);
 
   // Recycled, not terminated: one runaway loop must not cost the rest of the
   // conversation. This reboots a whole Pyodide instance, so it is also the

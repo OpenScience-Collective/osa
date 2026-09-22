@@ -5,5 +5,5 @@ self.onmessage = (event) => {
   if ((event.data || {}).type !== 'boot') return;
   self.postMessage({ type: 'progress', phase: 'loading_runtime' });
   self.postMessage({ type: 'progress', phase: 'loading_package', package: 'numpy', index: 0, total: 1 });
-  self.postMessage({ type: 'ready', version: '0.28.3' });
+  self.postMessage({ type: 'ready', version: '0.29.5' });
 };

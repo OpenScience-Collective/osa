@@ -737,7 +737,7 @@ class TestCommunityConfigClientTools:
             },
             runtime={
                 "python": {
-                    "pyodide_version": "0.28.3",
+                    "pyodide_version": "0.29.5",
                     "lockfile": "runtime/test-lock.json",
                     "preload": ["numpy"],
                     "fetch_allow": ["https://zarr.nemar.org/"],
@@ -770,7 +770,7 @@ class TestCommunityConfigClientTools:
             {"name": "execute_code", "runtime": "python", "requires_permission": True}
         ]
         python = data["runtime"]["python"]
-        assert python["pyodide_version"] == "0.28.3"
+        assert python["pyodide_version"] == "0.29.5"
         assert python["preload"] == ["numpy"]
         assert python["fetch_allow"] == ["https://zarr.nemar.org/"]
         # The configured limit comes through, and the unset ones carry their defaults,

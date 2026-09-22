@@ -67,7 +67,7 @@ function assertEqual(actual, expected, msg) {
 }
 
 const RUNTIME = {
-  pyodide_version: '0.28.3',
+  pyodide_version: '0.29.5',
   lockfile: 'nemar-v1',
   preload: ['numpy'],
   allow_install: ['zarr'],
@@ -87,7 +87,7 @@ console.log('='.repeat(60));
 console.log('\nbuildWorkerSource bakes the config in');
 {
   const src = buildWorkerSource(RUNTIME);
-  assert(src.includes('pyodide/v0.28.3/full/'), 'the configured Pyodide version reaches the indexURL');
+  assert(src.includes('pyodide/v0.29.5/full/'), 'the configured Pyodide version reaches the indexURL');
   assert(src.includes('"numpy"'), 'preload packages are baked into the source');
   assert(
     !src.includes('undefined'),
@@ -175,7 +175,7 @@ console.log('\na successful boot reaches READY and reports its version');
   assertEqual(rt.state, RUNTIME_STATE.IDLE, 'starts IDLE');
   const result = await rt.boot();
   assertEqual(rt.state, RUNTIME_STATE.READY, 'ends READY');
-  assertEqual(result.version, '0.28.3', 'resolves with the runtime version');
+  assertEqual(result.version, '0.29.5', 'resolves with the runtime version');
   assert(rt.isReady, 'isReady is true');
   assertEqual(states.join(','), 'booting,ready', 'transitions IDLE -> BOOTING -> READY');
   assert(progress.includes('loading_runtime'), 'reports runtime-loading progress');
@@ -197,7 +197,7 @@ console.log('\nboot is idempotent, because widget_open and a first tool call bot
   assertEqual(constructed, 1, 'two concurrent boots construct ONE worker, not an orphaned second');
   assertEqual(a.version, b.version, 'both callers get the same result');
   const c = await rt.boot();
-  assertEqual(c.version, '0.28.3', 'a boot after READY resolves immediately');
+  assertEqual(c.version, '0.29.5', 'a boot after READY resolves immediately');
   assertEqual(constructed, 1, 'and still constructs no further worker');
   rt.terminate();
 }
@@ -283,7 +283,7 @@ console.log('\nterminate is cancellation, and does not silently self-heal');
   assert(rejected, 'boot() after terminate() rejects rather than quietly restarting');
 
   const again = await rt.reboot();
-  assertEqual(again.version, '0.28.3', 'reboot() explicitly starts a new runtime');
+  assertEqual(again.version, '0.29.5', 'reboot() explicitly starts a new runtime');
   assertEqual(rt.state, RUNTIME_STATE.READY, 'and reaches READY');
   rt.terminate();
 }

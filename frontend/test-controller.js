@@ -46,7 +46,7 @@ function assertEqual(actual, expected, msg) {
 }
 
 const RUNTIME = {
-  pyodide_version: '0.28.3',
+  pyodide_version: '0.29.5',
   preload: [],
   preload_on: 'first_run',
   fetch_allow: [],

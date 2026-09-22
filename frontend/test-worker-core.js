@@ -1,8 +1,8 @@
 // The worker core, run against the REAL Pyodide from npm.
 //
 // Everything here used to be verifiable only in a browser, by hand. Pyodide
-// 0.28.3 boots under Bun in well under a second from its npm package, so the
-// Python half of the runtime (the import gate, the namespace seal, the data
+// boots under Bun in well under a second from its npm package (0.29.5 in about
+// 620 ms, measured 2026-09-22), so the Python half of the runtime (the import gate, the namespace seal, the data
 // client, the execution harness and its summary) now runs in CI against the
 // interpreter that ships, not a stand-in.
 //
@@ -16,6 +16,7 @@
 // even if it reached for a module-level name, which inside the worker is a
 // ReferenceError and nowhere else.
 import { loadPyodide } from 'pyodide';
+import pyodidePackage from 'pyodide/package.json';
 import { buildDataClientSource, buildNamespaceSealSource } from './osa-egress.js';
 import { buildHelpersSource, buildOutputCaptureSource, resolveLimits } from './osa-output.js';
 import { createWorkerRuntime } from './osa-worker-core.js';
@@ -136,7 +137,7 @@ const plain = await bootRuntime();
 console.log('\nboot, and the order the seal happens in');
 {
   assert(plain.ready !== undefined, `the core boots real Pyodide (got ${JSON.stringify(plain.messages.at(-1))})`);
-  assertEqual(plain.ready && plain.ready.version, '0.28.3', 'and reports the version it booted');
+  assertEqual(plain.ready && plain.ready.version, pyodidePackage.version, 'and reports the version it booted');
   assertEqual(plain.sealed.length, 1, 'the egress allowlist is narrowed exactly once');
   assertEqual(JSON.stringify(plain.sealed[0] && plain.sealed[0].prefixes), JSON.stringify(['http://127.0.0.1/allowed/']),
     "and narrowed to the community's fetch_allow, not the boot allowlist");

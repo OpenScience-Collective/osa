@@ -391,7 +391,7 @@ console.log('\nthe real bundle, loaded into the page, answers through the widget
   window.OSARuntime = globalThis.OSARuntime;
   api.setUpBrowserTools({
     client_tools: [{ name: 'execute_code', runtime: 'python', requires_permission: true }],
-    runtime: { python: { pyodide_version: '0.28.3', preload: [], fetch_allow: [], limits: {} } },
+    runtime: { python: { pyodide_version: '0.29.5', preload: [], fetch_allow: [], limits: {} } },
   });
   assertEqual(widget.getBrowserRuntimeStatus().state, 'loading', 'loading while the bundle is fetched');
   const tools = await api.declaredClientTools();
@@ -420,7 +420,7 @@ console.log('\na bundle that loads but defines nothing is reported, not ignored'
   const { api, widget } = loadWidget({ bundleLoads: true });
   api.setUpBrowserTools({
     client_tools: [{ name: 'execute_code', runtime: 'python', requires_permission: true }],
-    runtime: { python: { pyodide_version: '0.28.3' } },
+    runtime: { python: { pyodide_version: '0.29.5' } },
   });
   assertEqual(await api.declaredClientTools(), [], 'nothing is declared');
   const status = widget.getBrowserRuntimeStatus();

@@ -37,9 +37,11 @@ so the page's own inline script never ran and that read as "Pyodide failed".
 
 ## What it measures
 
-Recorded on #431, measured 2026-09-22 against Pyodide 0.28.3 in Chrome:
+Recorded on #431, first against Pyodide 0.28.3 and then, on the same day
+(2026-09-22), against 0.29.5 in Chrome, with every check passing on both:
 
-- the generated worker boots under the production policy, in well under a second
+- the generated worker boots under the production policy: 7.9 s on 0.29.5 with
+  numpy and matplotlib preloaded, served from the browser's HTTP cache
 - `micropip`, `js`, `pyodide`, `pyodide_js` and `ctypes` are gone from the
   execution namespace, through the import statement and through
   `importlib.import_module`, and each says why it specifically is blocked
@@ -61,8 +63,10 @@ Recorded on #431, measured 2026-09-22 against Pyodide 0.28.3 in Chrome:
   integer is a C long); an error carries its type, message and offending line
   while the full traceback stays in the browser, readable by `call_id`; and a
   figure is described in words that outlive the image
-- **an infinite loop is stopped on the deadline**, measured at 3009 ms against a
-  3-second limit, and the runtime then reboots and runs the next execution.
+- **an infinite loop is stopped on the deadline**, measured at 10670 ms against
+  a 10-second limit, and the runtime then reboots and runs the next execution.
+  The limit was 3 seconds until 0.29.5, where a fresh instance spends about
+  4.3 s importing matplotlib and pyplot, so every first figure timed out.
   Pyodide cannot interrupt its own Python without a `SharedArrayBuffer`, which
   would require cross-origin isolation on every embedding page, so terminating
   the worker from the host is the only way to stop a runaway loop and this is

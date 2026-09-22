@@ -78,7 +78,7 @@ console.log('\nthe gate pieces the BUNDLE carries work as built');
   assert(!html.includes('<img'), 'the bundled highlighter escapes markup in the code');
   assert(html.includes('<span class="osa-py-str">'), 'and still highlights');
   // A private field or a renamed method would fail here and nowhere else.
-  const rt = new api.PyodideRuntime({ runtime: { pyodide_version: '0.28.3' } });
+  const rt = new api.PyodideRuntime({ runtime: { pyodide_version: '0.29.5' } });
   const controller = new api.ClientToolController({
     runtime: rt,
     tools: [{ name: 'execute_code', runtime: 'python', requires_permission: true }],
@@ -92,7 +92,7 @@ console.log('\nthe gate pieces the BUNDLE carries work as built');
 console.log('\nthe worker source the BUNDLE builds is real JavaScript');
 {
   const source = api.buildWorkerSource({
-    pyodide_version: '0.28.3',
+    pyodide_version: '0.29.5',
     preload: ['numpy'],
     fetch_allow: ['https://zarr.nemar.org/'],
     limits: {},
@@ -112,7 +112,7 @@ console.log('\nthe egress guard the BUNDLE builds runs in a real worker');
   // The guard serializes the allowlist check into the worker by value. If
   // minification renamed it while the guard still called it by its source name,
   // the worker would throw a ReferenceError on its first request.
-  const source = api.buildWorkerSource({ pyodide_version: '0.28.3', fetch_allow: ['https://zarr.nemar.org/'], limits: {} });
+  const source = api.buildWorkerSource({ pyodide_version: '0.29.5', fetch_allow: ['https://zarr.nemar.org/'], limits: {} });
   const guard = source.slice(source.indexOf('(function () {') + '(function () {'.length, source.indexOf('const runtime ='));
   const reply = await new Promise((resolve, reject) => {
     const worker = new Worker(new URL('./test-workers/egress-probe.js', import.meta.url).href);
@@ -140,7 +140,7 @@ console.log('\nthe worker core the BUNDLE carries runs on real Pyodide');
   // eslint-disable-next-line no-new-func
   const core = new Function(`return (${api.createWorkerRuntime.toString()});`)();
   // The configuration the BUNDLE builds, generated Python included.
-  const config = api.buildWorkerConfig({ pyodide_version: '0.28.3', fetch_allow: ['http://127.0.0.1/allowed/'], limits: {} });
+  const config = api.buildWorkerConfig({ pyodide_version: '0.29.5', fetch_allow: ['http://127.0.0.1/allowed/'], limits: {} });
 
   const messages = [];
   const sealed = [];

@@ -2061,11 +2061,11 @@ class TestPythonRuntimeConfig:
     def test_valid_config_with_explicit_limits(self) -> None:
         """An explicit limits section should be honored."""
         config = PythonRuntimeConfig(
-            pyodide_version="0.28.3",
+            pyodide_version="0.29.5",
             lockfile="pyodide-lock-2026-01.json",
             limits=RuntimeLimits(),
         )
-        assert config.pyodide_version == "0.28.3"
+        assert config.pyodide_version == "0.29.5"
         assert config.limits.memory_mb == 1536
 
     def test_omitted_limits_defaults_to_runtime_limits_defaults(self) -> None:
@@ -2076,7 +2076,7 @@ class TestPythonRuntimeConfig:
         spell out an empty `limits: {}`.
         """
         config = PythonRuntimeConfig(
-            pyodide_version="0.28.3",
+            pyodide_version="0.29.5",
             lockfile="pyodide-lock-2026-01.json",
         )
         assert config.limits == RuntimeLimits()
@@ -2086,7 +2086,7 @@ class TestPythonRuntimeConfig:
     def test_optional_fields_default_empty(self) -> None:
         """preload/allow_install/fetch_allow/index_urls should default to empty lists."""
         config = PythonRuntimeConfig(
-            pyodide_version="0.28.3",
+            pyodide_version="0.29.5",
             lockfile="pyodide-lock-2026-01.json",
             limits=RuntimeLimits(),
         )
@@ -2099,7 +2099,7 @@ class TestPythonRuntimeConfig:
     def test_preload_on_accepts_widget_open(self) -> None:
         """preload_on should accept 'widget_open' as well as the default."""
         config = PythonRuntimeConfig(
-            pyodide_version="0.28.3",
+            pyodide_version="0.29.5",
             lockfile="pyodide-lock-2026-01.json",
             preload_on="widget_open",
             limits=RuntimeLimits(),
@@ -2110,7 +2110,7 @@ class TestPythonRuntimeConfig:
         """Should reject a preload_on value outside the known literal set."""
         with pytest.raises(ValidationError):
             PythonRuntimeConfig(
-                pyodide_version="0.28.3",
+                pyodide_version="0.29.5",
                 lockfile="pyodide-lock-2026-01.json",
                 preload_on="on_click",
                 limits=RuntimeLimits(),
@@ -2120,7 +2120,7 @@ class TestPythonRuntimeConfig:
         """Should reject unknown fields, matching every sibling model."""
         with pytest.raises(ValidationError):
             PythonRuntimeConfig(
-                pyodide_version="0.28.3",
+                pyodide_version="0.29.5",
                 lockfile="pyodide-lock-2026-01.json",
                 limits=RuntimeLimits(),
                 unexpected="nope",
@@ -2139,13 +2139,13 @@ class TestRuntimeConfig:
         """Should accept a configured python runtime."""
         config = RuntimeConfig(
             python=PythonRuntimeConfig(
-                pyodide_version="0.28.3",
+                pyodide_version="0.29.5",
                 lockfile="pyodide-lock-2026-01.json",
                 limits=RuntimeLimits(),
             )
         )
         assert config.python is not None
-        assert config.python.pyodide_version == "0.28.3"
+        assert config.python.pyodide_version == "0.29.5"
 
     def test_rejects_extra_fields(self) -> None:
         """Should reject unknown fields, matching every sibling model."""
@@ -2199,7 +2199,7 @@ def _python_runtime_config() -> RuntimeConfig:
     """A minimal valid RuntimeConfig with a python runtime, for reuse below."""
     return RuntimeConfig(
         python=PythonRuntimeConfig(
-            pyodide_version="0.28.3",
+            pyodide_version="0.29.5",
             lockfile="pyodide-lock-2026-01.json",
             limits=RuntimeLimits(),
         )

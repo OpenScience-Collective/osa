@@ -6,7 +6,7 @@ let executions = 0;
 self.onmessage = (event) => {
   const data = event.data || {};
   if (data.type === 'boot') {
-    setTimeout(() => self.postMessage({ type: 'ready', version: '0.28.3' }), 300);
+    setTimeout(() => self.postMessage({ type: 'ready', version: '0.29.5' }), 300);
     return;
   }
   if (data.type === 'execute') {

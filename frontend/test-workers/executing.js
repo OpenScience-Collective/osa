@@ -15,7 +15,7 @@ self.onmessage = (event) => {
   const data = event.data || {};
 
   if (data.type === 'boot') {
-    self.postMessage({ type: 'ready', version: '0.28.3' });
+    self.postMessage({ type: 'ready', version: '0.29.5' });
     return;
   }
 

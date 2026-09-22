@@ -55,7 +55,7 @@ def _community_with_client_tools(
         ),
         runtime=RuntimeConfig(
             python=PythonRuntimeConfig(
-                pyodide_version="0.28.3",
+                pyodide_version="0.29.5",
                 lockfile="pyodide-lock-2026-01.json",
                 limits=RuntimeLimits(),
             )

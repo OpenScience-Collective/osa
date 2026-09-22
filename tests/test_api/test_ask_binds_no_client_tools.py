@@ -64,7 +64,7 @@ def _config_with_a_client_tool() -> CommunityConfig:
         },
         runtime={
             "python": {
-                "pyodide_version": "0.28.3",
+                "pyodide_version": "0.29.5",
                 "lockfile": "runtime/asktest-pyodide-lock.json",
             }
         },

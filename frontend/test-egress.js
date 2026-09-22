@@ -254,7 +254,7 @@ console.log('\nTHE GUARD RUNNING IN A REAL WORKER, not inspected as a string');
       sealTo: ['https://zarr.nemar.org/'],
       probes: {
         allowedDataPlane: 'https://zarr.nemar.org/nm000103/zarr/index.json',
-        bootOriginAfterSeal: 'https://cdn.jsdelivr.net/pyodide/v0.28.3/full/pyodide.js',
+        bootOriginAfterSeal: 'https://cdn.jsdelivr.net/pyodide/v0.29.5/full/pyodide.js',
         lookalikeHost: 'https://zarr.nemar.org.evil.com/steal',
         arbitrary: 'https://example.com/',
         credentialsInUrl: 'https://user:pass@zarr.nemar.org/x',

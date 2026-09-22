@@ -300,11 +300,11 @@ export function buildEgressGuardSource({ bootAllow = [] } = {}) {
  * @returns {string}
  */
 export function buildNamespaceSealSource() {
-  // Verified against real Pyodide 0.28.3 in Chrome on 2026-09-22, under
-  // nemar.org's production Content-Security-Policy, and recorded on #431: every
-  // blocked root is refused through the import statement, through
-  // importlib.import_module and as a submodule, while unblocked imports still
-  // work. It is also compiled by a real Python in the test suite, because a
+  // Verified against real Pyodide 0.28.3 and again against 0.29.5, in Chrome on
+  // 2026-09-22, under nemar.org's production Content-Security-Policy, and
+  // recorded on #431: every blocked root is refused through the import
+  // statement, through importlib.import_module and as a submodule, while
+  // unblocked imports still work. It is also compiled by a real Python in the test suite, because a
   // malformed f-string in an earlier version passed every regex assertion.
   //
   // Reading this source for the right words is NOT verification; that is how
