@@ -6,10 +6,54 @@ main = "index.js"
 compatibility_date = "2024-01-01"
 account_id = "10f166f3ec8395ff4a219f581c5f359d"
 
+# Explicit (#437): once a [[routes]] table is present, wrangler defaults
+# workers_dev to false on deploy unless this is set, which would silently
+# take down the existing osa-worker*.workers.dev hostname the moment the
+# route-mounted deploy below ships. Confirmed the hard way during #437's dev
+# rollout: the deploy output looked clean and workers.dev started 404ing.
+# Keep both reachable.
+workers_dev = true
+
+# Workers Logs (#442). Without this, console.warn and console.error in the
+# worker are visible only to someone running `wrangler tail` at the exact
+# moment a request arrives, which means the 404 fall-through log added in
+# #438 satisfies "we added logging" in review while behaving as silent in
+# production: it cannot explain an outage after the fact.
+#
+# head_sampling_rate stays at 1.0 because this worker's traffic is chat
+# requests and health probes, not a high-volume edge. Revisit if that changes.
+[observability]
+enabled = true
+head_sampling_rate = 1.0
+
 # Production environment (default)
 [vars]
 BACKEND_URL = "https://api.osc.earth/osa"
 ENVIRONMENT = "production"
+
+# Path-mounted route (#437): a stable, product-owned host for this worker,
+# so the frontend widget (and anyone else's Content-Security-Policy (CSP)
+# allowlist, e.g. nemarOrg/website Architecture Decision Record (ADR) 0017)
+# never has to be updated again just because the
+# account running the edge changes. This is the worker's OWN public
+# hostname, distinct from BACKEND_URL above, which is the FastAPI backend
+# the worker proxies to. The existing osa-worker.<account>.workers.dev name
+# keeps working once this is added; a route does not remove the
+# workers.dev default.
+#
+# widget.osc.earth is a GENERIC host reserved for widgets in general;
+# "/osa" is this widget's own path under it, so a later widget can be added
+# at, say, "widget.osc.earth/some-other-widget/*" without consuming a
+# subdomain of its own. That rules out `custom_domain = true`: a Custom
+# Domain maps one whole hostname 1:1 to one worker and cannot carry a path,
+# which would foreclose exactly that. This is instead an ordinary zone
+# route with a path pattern; `custom_domain` is intentionally omitted.
+# Cloudflare delivers the FULL path, "/osa/..." prefix included, to the
+# worker for a route like this; index.js strips it once at the top of
+# fetch() (stripMountPrefix) before any route is matched.
+[[routes]]
+pattern = "widget.osc.earth/osa/*"
+zone_name = "osc.earth"
 
 # Hybrid rate limiting approach:
 # - Per-minute (bot protection): Built-in API (fast, in-memory)
@@ -29,7 +73,32 @@ id = "8f8506b1a7fb400680a00014312c124d"
 # Development environment
 [env.dev]
 name = "osa-worker-dev"
+# Restated here deliberately, for the same reason as the top-level
+# declaration (#437). This is redundancy, not necessity: `workers_dev` IS
+# marked inheritable in Wrangler 4, and reading this config back through
+# wrangler's own `unstable_readConfig` with this line deleted still reports
+# `workers_dev: true` for [env.dev]. An earlier version of this comment
+# claimed the opposite, which was Wrangler 1 behavior. It is kept because the
+# value flips to false on its own once routes are present, and someone
+# editing this environment block should see what it is without scrolling to
+# the top of the file.
+workers_dev = true
 vars = { BACKEND_URL = "https://api.osc.earth/osa-dev", ENVIRONMENT = "development" }
+
+# Same reasoning as production (#442).
+[env.dev.observability]
+enabled = true
+head_sampling_rate = 1.0
+
+# Path-mounted route for dev (#437). Single-level subdomain
+# (develop-widget, not develop.widget) to avoid SSL certificate issues,
+# matching the develop-demo.osc.earth convention the frontend already
+# uses; "/osa" is the same per-widget path as production, under dev's own
+# host. Ordinary route, not a Custom Domain; see the production
+# [[routes]] comment above for why.
+[[env.dev.routes]]
+pattern = "develop-widget.osc.earth/osa/*"
+zone_name = "osc.earth"
 
 # Per-minute rate limiter (dev has higher limit: 60/min)
 [[env.dev.ratelimits]]
@@ -66,6 +135,73 @@ id = "6d46ef72877b4129b38ef2ca1e1cd5ea"
 #
 # 6. Verify:
 #    curl https://osa-worker.<your-subdomain>.workers.dev/health
+#
+# =============================================================================
+# Route Provisioning (#437), DONE. Recorded because the next person to
+# add a route on a zone will hit both of these traps
+# =============================================================================
+#
+# Deployment is NOT manual. `.github/workflows/sync-worker-cors.yml` deploys
+# this worker on a push touching `workers/osa-worker/**`:
+#
+#   push to develop  ->  wrangler deploy --env=dev
+#   push to main     ->  wrangler deploy
+#
+# So the route attaches when the branch lands, and a hand-run
+# `wrangler deploy` would push a local worktree straight to production,
+# outside that flow. Prefer the pipeline.
+#
+# That same workflow posts a bot comment on any pull request touching this
+# directory, listing the manual `wrangler deploy` commands. The two are not
+# in conflict, but the bot comment has no room for the caveat: those commands
+# are for a genuine pipeline outage, or for a deliberate one-off rollout like
+# #437's dev route, not for routine deployment. Run one and you are shipping
+# whatever is in your working tree, reviewed or not.
+#
+# Trap 1: an ordinary zone route does NOT provision DNS. Unlike
+# `custom_domain = true`, it attaches a pattern and nothing else, so the
+# hostname stays unresolvable and the route is dead from the public internet
+# no matter how many times `wrangler deploy` reports it as "Deployed".
+# Verify with a plain `curl` against the public hostname, never against the
+# deploy output. Both records now exist in the osc.earth zone, created
+# 2026-09-21, proxied AAAA to 100:: (the IPv6 discard prefix, Cloudflare's
+# target for a name that only carries a route and has no real origin):
+#
+#   develop-widget.osc.earth   AAAA  100::  proxied
+#   widget.osc.earth           AAAA  100::  proxied
+#
+# Trap 2: registering a route needs permission on the ZONE it lives in, not
+# just on the worker, and the permission alone is not enough. RESOLVED, see
+# issue #439; recorded because the failure is easy to misread twice.
+#
+# The first deploy after #438 merged failed with:
+#
+#   Trigger configuration for "osa-worker-dev" was only partially updated:
+#     Routes:
+#       - A request to the Cloudflare API (.../routes) failed.
+#         - No access to the specified resource.
+#
+# Three things made this slow to diagnose, all worth knowing:
+#
+#   1. The script upload SUCCEEDS and only route reconciliation fails, so the
+#      code goes live and the job still exits 1. A red job here does not mean
+#      the worker is stale.
+#   2. Pre-registering the route by hand does not help. Wrangler fails
+#      reconciling a route that already matches, which is why dev kept failing
+#      while develop-widget.osc.earth/osa was serving 200 the whole time.
+#   3. The fix was NOT adding a missing permission. "Workers Routes" is a ZONE
+#      permission, so it does not appear beside the account-level ones like
+#      Workers Scripts or D1, and the token already had it. It was scoped to a
+#      specific zone that did not include osc.earth. The permission row and the
+#      zone-resource scope are two separate settings, and the API reports the
+#      same "No access to the specified resource" for either.
+#
+# CLOUDFLARE_API_TOKEN now carries it for this zone, and CI attaches both
+# triggers: the workers.dev name and develop-widget.osc.earth/osa/*.
+#
+# Neither route touches anything already published on osc.earth
+# (demo.osc.earth, develop-demo.osc.earth, api.osc.earth, or either
+# osa-worker*.workers.dev name); all were re-verified after the dev rollout.
 #
 # =============================================================================
 # Turnstile Setup

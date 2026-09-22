@@ -13,6 +13,10 @@
   // Development: develop-demo.osc.earth and other *-demo.osc.earth subdomains
   //              route to dev API for testing without affecting production data
   // Single-level subdomains (develop-demo vs develop.demo) avoid SSL cert issues
+  //
+  // This is the ONE place hostname -> environment -> API endpoint is resolved.
+  // frontend/index.html reuses it via OSAChatWidget.getConfig().apiEndpoint
+  // instead of re-deriving it; do not duplicate this logic elsewhere (#437).
   const hostname = window.location.hostname;
   const isProduction = hostname === 'demo.osc.earth' || hostname === 'osa-demo.pages.dev';
   const isDev = !isProduction && (
@@ -27,10 +31,19 @@
     // Endpoints will be: /${communityId}/ask, /${communityId}/chat
     communityId: 'hed',
     // Route to dev worker for all non-production deployments (preview branches, localhost)
-    // or production worker for demo.osc.earth (production only)
+    // or production worker for demo.osc.earth (production only).
+    // The worker sits in front of the FastAPI backend (api.osc.earth) as the
+    // security proxy (Turnstile, rate limiting, CORS, backend API key), so
+    // this always points at the worker's own product-owned host, never directly
+    // at the backend. widget.osc.earth/osa (prod) and
+    // develop-widget.osc.earth/osa (dev) are a stable, product-owned host
+    // for widgets in general (see #437); "widget" is a generic host shared
+    // by future widgets, each under its own path, so this one lives at
+    // "/osa" rather than consuming a subdomain of its own. The previous
+    // account-scoped Cloudflare subdomain is retired.
     apiEndpoint: isDev
-      ? 'https://osa-worker-dev.shirazi-10f.workers.dev'
-      : 'https://osa-worker.shirazi-10f.workers.dev',
+      ? 'https://develop-widget.osc.earth/osa'
+      : 'https://widget.osc.earth/osa',
     storageKey: 'osa-chat-history-hed',
     // Turnstile: disabled for now (not set up yet)
     turnstileSiteKey: null,
