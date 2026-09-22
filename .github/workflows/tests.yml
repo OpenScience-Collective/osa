@@ -101,6 +101,24 @@ jobs:
       - name: Run runtime output capture tests
         run: bun frontend/test-output.js
 
+      # The worker core runs against the REAL Pyodide from npm, so the Python half
+      # of the runtime is tested in CI rather than only by hand in a browser. The
+      # npm package carries the interpreter; numpy and matplotlib are fetched from
+      # the CDN on the first run and cached between runs.
+      - name: Install frontend test dependencies
+        run: bun install
+
+      - name: Cache Pyodide packages
+        uses: actions/cache@v4
+        with:
+          path: .cache/pyodide-packages
+          # Keyed on the manifest that pins Pyodide, so a version bump starts a
+          # fresh cache instead of relying on someone to edit a second copy here.
+          key: pyodide-packages-${{ hashFiles('package.json') }}
+
+      - name: Run worker core tests against real Pyodide
+        run: bun frontend/test-worker-core.js
+
       - name: Check widget syntax
         run: node --check frontend/osa-chat-widget.js
 

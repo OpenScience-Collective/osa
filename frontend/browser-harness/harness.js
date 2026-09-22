@@ -186,6 +186,39 @@ async function main() {
     failing.status === 'error' && failing.stdout.includes('before the failure'),
     `status=${failing.status} stdout=${JSON.stringify(failing.stdout)}`);
 
+  // THE SUMMARY (step 6): structured facts, which is what the model reasons over.
+  const described = await rt.execute(
+    'import numpy as np\nsignal = np.arange(10.0)\nsignal[3] = np.nan\ncounts = np.arange(3)',
+    { callId: 'call-described' }
+  );
+  check('the summary describes arrays by facts, never by contents',
+    /signal: ndarray float64 shape=\(10,\) min=0 max=9 mean=4\.66667 nan=1/.test(described.summary),
+    JSON.stringify(described.summary));
+  // numpy's default integer is a C long, 32 bits on wasm32. The summary is the
+  // one place the model can see which platform its integers are on.
+  check('and shows the wasm32 default integer width', /counts: ndarray int32/.test(described.summary),
+    JSON.stringify(described.summary));
+
+  const erred = await rt.execute('def f():\n    return 1 / 0\nf()', { callId: 'call-erred' });
+  check('an error carries its type, message and the offending line, not a traceback',
+    /^ZeroDivisionError: division by zero\n {2}line 2: return 1 \/ 0$/m.test(erred.stderr) &&
+      !/_pyodide/.test(erred.stderr),
+    JSON.stringify(erred.stderr));
+
+  const traceback = rt.getFullOutput({ call_id: 'call-erred', stream: 'traceback' }, { callId: 'call-read' });
+  check('the full traceback stays in the browser and is readable by call_id',
+    traceback.status === 'ok' && /ZeroDivisionError/.test(traceback.stdout),
+    `status=${traceback.status} ${traceback.summary}`);
+  check('and never rode along on the result itself', !('full' in erred), Object.keys(erred).join(','));
+
+  const figured = await rt.execute(
+    'import matplotlib.pyplot as plt\nplt.plot([0, 1, 2], [0, 1, 4], label="quad")\nplt.title("growth")\nplt.legend()\nplt.show()',
+    { callId: 'call-figured' }
+  );
+  check('a figure is described in words that outlive the image',
+    /axes 1: title='growth' lines=1 series=\['quad'\] data x=\[0, 2\] y=\[0, 4\]/.test(figured.summary),
+    JSON.stringify(figured.summary));
+
   // THE DEADLINE, against a genuinely runaway loop. This is the one thing that
   // cannot be checked without a real runtime: Pyodide cannot interrupt its own
   // Python without a SharedArrayBuffer, so the only way to stop this is for the

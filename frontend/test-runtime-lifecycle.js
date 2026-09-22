@@ -12,9 +12,11 @@
  */
 
 import {
+  BOOT_FAILURE,
+  CLIENT_TOOL_RESULT_FIELDS,
+  FullOutputStore,
   PyodideRuntime,
   RUNTIME_STATE,
-  BOOT_FAILURE,
   buildWorkerSource,
 } from './osa-runtime.js';
 
@@ -138,16 +140,21 @@ console.log('\nthe worker carries the egress guard, installed before anything is
   assert(src.includes('__install'), 'the egress guard is actually in the worker source, not merely exported');
   assert(src.indexOf('__install') < src.indexOf('pyodide.js'),
     'the guard is installed BEFORE the loader is fetched, since importScripts is one of the transports it shims');
-  assert(src.includes('__seal(["https://zarr.nemar.org/"])'),
-    "the boot ends by sealing the allowlist down to the community's fetch_allow");
+  // WHEN the seal happens, and with what, is asserted by running the real core
+  // against the real interpreter (test-worker-core.js), which records the call.
+  // What is checkable here is that the runtime is handed the sealing function
+  // at all, since a worker built without it would boot and never narrow.
+  assert(/seal:\s*__seal/.test(src), 'the runtime is handed the guard\'s own sealing function');
 
   // The distinction the two allowlists exist for: during boot the runtime may
   // reach the CDN it is assembled from, and executed code may reach the data
-  // plane. Neither set may quietly become the other.
-  const beforeSeal = src.slice(0, src.indexOf('__seal('));
-  assert(!beforeSeal.includes('zarr.nemar.org'),
-    'fetch_allow is NOT reachable during boot: the data plane appears nowhere before the seal');
-  assert(beforeSeal.includes('cdn.jsdelivr.net'), 'the boot allowlist does carry the CDN the loader comes from');
+  // plane. Neither set may quietly become the other. The guard is everything
+  // before the runtime is constructed, so the data plane must not appear there.
+  const guardPart = src.slice(0, src.indexOf('const runtime ='));
+  assert(guardPart.length > 0 && guardPart.includes('__install'), 'the guard is located where this test expects it');
+  assert(!guardPart.includes('zarr.nemar.org'),
+    'fetch_allow is NOT in the boot allowlist: the data plane appears nowhere in the guard');
+  assert(guardPart.includes('cdn.jsdelivr.net'), 'the boot allowlist does carry the CDN the loader comes from');
 }
 
 console.log('\na successful boot reaches READY and reports its version');
@@ -405,7 +412,7 @@ console.log('\nexecutions are correlated by call_id, not by arrival order');
   } else {
   assertEqual(slowResult.summary, 'DELAY:250 slow', 'the slow call got its OWN result back');
   assertEqual(fastResult.summary, 'fast', 'the fast call got its OWN result back');
-  assertEqual(slowResult.call_id, 'call-slow', 'the result carries the call_id it was minted for');
+  assertEqual(slowResult.call_id, 'call-slow', 'the result carries the call_id it was requested under');
   assertEqual(fastResult.call_id, 'call-fast', 'and so does the other one');
   rt.terminate();
   }
@@ -533,7 +540,7 @@ console.log('\nexecute refuses a non-string rather than shipping it to the worke
 
 console.log('\na run over its deadline is a RESULT with a status, not a rejection');
 {
-  // The server expects a ClientToolResult for every call_id it minted. A
+  // The server expects a ClientToolResult for every call it parked. A
   // rejection would leave the model with a tool_use and no tool_result, which
   // the provider refuses outright and which breaks the session rather than the
   // run.
@@ -614,6 +621,162 @@ console.log('\na deadline and a late result cannot both settle one call');
   // that nothing is left behind to be attributed to a later call.
   await new Promise((r) => setTimeout(r, 1800));
   assertEqual(rt._pending.size, 0, 'nothing is left pending for the late result to land on');
+  rt.terminate();
+}
+
+console.log('\nfull output stays in the browser, and never rides along to the caller');
+{
+  const rt = new PyodideRuntime({
+    runtime: { ...RUNTIME, limits: { stdout_bytes: 256 } },
+    workerFactory: workerFrom('executing'),
+  });
+  const result = await rt.execute('LONG:1000', { callId: 'call-long' });
+
+  // Split off before the result reaches ANY caller. ClientToolResult is
+  // extra="forbid", so a forwarded `full` would cost the whole result a 422,
+  // and the point of keeping it here is that bulk output never leaves the tab.
+  assert(!('full' in result), 'the result a caller receives carries no full streams');
+  assertEqual(rt.outputs.size, 1, 'the runtime kept them');
+
+  const first = rt.getFullOutput({ call_id: 'call-long' }, { callId: 'call-read-1' });
+  assertEqual(first.status, 'ok', 'get_full_output answers from what this tab kept');
+  assertEqual(first.call_id, 'call-read-1',
+    'the answer is reported against the get_full_output call itself, not the run it reads');
+  assertEqual(first.stdout.length, 256, 'one page is at most the stdout cap, which the server enforces on it too');
+  assert(/characters 0 to 256 of 1000\. More remains: call again with offset=256\./.test(first.summary),
+    `the summary says where the page sits and how to get the next (got ${JSON.stringify(first.summary)})`);
+
+  const last = rt.getFullOutput({ call_id: 'call-long', offset: 768 }, { callId: 'call-read-2' });
+  assertEqual(last.stdout.length, 232, 'the last page is what remains');
+  assert(/This is the end of the stream\./.test(last.summary), 'and says it is the end');
+
+  const past = rt.getFullOutput({ call_id: 'call-long', offset: 5000 }, { callId: 'call-read-3' });
+  assertEqual(past.stdout, '', 'an offset past the end returns nothing');
+  assert(/past the end of stdout/.test(past.summary), 'and says why, with the real length');
+
+  // Deterministic, because this result enters stored history like any other.
+  const again = rt.getFullOutput({ call_id: 'call-long' }, { callId: 'call-read-1' });
+  assertEqual(JSON.stringify(again), JSON.stringify(first), 'reading the same page twice gives the same bytes');
+  rt.terminate();
+}
+
+console.log('\nget_full_output fails in words the model can act on');
+{
+  const rt = new PyodideRuntime({ runtime: RUNTIME, workerFactory: workerFrom('executing') });
+  const unknown = rt.getFullOutput({ call_id: 'call-from-before-a-reload' }, { callId: 'call-read' });
+  assertEqual(unknown.status, 'error', 'an unknown call_id is an error result, not a rejection');
+  assert(/gone after a reload/.test(unknown.stderr) && /last 16 runs/.test(unknown.stderr),
+    'and names the two reasons output is not there, rather than implying it never existed');
+
+  const badStream = rt.getFullOutput({ call_id: 'x', stream: 'everything' }, { callId: 'call-read' });
+  assertEqual(badStream.status, 'error', 'an unknown stream is refused');
+  assert(/stdout, stderr, traceback, figures/.test(badStream.stderr), 'with the streams that do exist');
+}
+
+console.log('\nfigures can be read back, which stored history cannot give the model');
+{
+  const rt = new PyodideRuntime({ runtime: RUNTIME, workerFactory: workerFrom('executing') });
+  await rt.execute('IMAGE please', { callId: 'call-plot' });
+  const figures = rt.getFullOutput({ call_id: 'call-plot', stream: 'figures' }, { callId: 'call-read' });
+  assertEqual(figures.images.length, 1, 'the figure is re-attached to the answer');
+  assert(/1 figure\(s\) from call_id "call-plot", attached/.test(figures.summary), 'and the summary says so');
+  rt.terminate();
+}
+
+console.log('\noutput outlives the instance that produced it');
+{
+  // A timeout is exactly when someone wants what was printed before the stop,
+  // and the recycle that follows discards the instance, not the output.
+  const rt = new PyodideRuntime({ runtime: RUNTIME, workerFactory: workerFrom('executing') });
+  await rt.execute('LONG:100', { callId: 'call-kept' });
+  rt._recycle();
+  assertEqual(rt.getFullOutput({ call_id: 'call-kept' }, { callId: 'r' }).status, 'ok',
+    'a recycled runtime still answers for output it produced earlier');
+  rt.terminate();
+}
+
+console.log('\na result for a call nobody is waiting on is not kept');
+{
+  const rt = new PyodideRuntime({ runtime: RUNTIME, workerFactory: workerFrom('executing') });
+  await rt.boot();
+  // Injected through the path the worker uses. Keeping it would let
+  // get_full_output describe a run no caller was ever told had finished, under
+  // a call_id the model may never have seen.
+  rt._onWorkerMessage({
+    type: 'result',
+    call_id: 'call-nobody-asked-for',
+    status: 'ok',
+    stdout: '',
+    stderr: '',
+    summary: '',
+    images: [],
+    artifacts: [],
+    elapsed_ms: 0,
+    full: { stdout: 'stray', stderr: '', traceback: '' },
+  });
+  assertEqual(rt.outputs.size, 0, 'a stray result is not stored');
+  rt.terminate();
+}
+
+console.log('\na run that timed out leaves nothing behind to be read');
+{
+  // True because the deadline recycles the instance, which terminates the
+  // worker before its answer can arrive, not because of a check on arrival.
+  // Asserted anyway: it is the behavior a person sees.
+  const rt = new PyodideRuntime({
+    runtime: { ...RUNTIME, limits: { exec_seconds: 1 } },
+    workerFactory: workerFrom('executing'),
+  });
+  await rt.execute('DELAY:1600 late', { callId: 'call-too-late' });
+  await new Promise((r) => setTimeout(r, 900));
+  assertEqual(rt.outputs.size, 0, 'nothing is stored for a call that timed out');
+  rt.terminate();
+}
+
+console.log('\nthe store is bounded by count and by size, least recently used first');
+{
+  const store = new FullOutputStore({ maxCalls: 3, maxChars: 1000 });
+  for (const id of ['a', 'b', 'c']) store.remember(id, { stdout: 'x'.repeat(10) }, []);
+  store.get('a'); // a is now the most recently used
+  store.remember('d', { stdout: 'x'.repeat(10) }, []);
+  assertEqual(store.get('b'), undefined, 'the least recently used run is evicted by count');
+  assert(store.get('a') !== undefined, 'a run that was READ counts as recently used and survives');
+
+  store.remember('huge', { stdout: 'x'.repeat(990) }, []);
+  assert(store.chars <= 1000, `the size bound holds (${store.chars} characters kept)`);
+  assert(store.get('huge') !== undefined, 'the newest run is kept even when it alone nearly fills the budget');
+
+  const images = new FullOutputStore({ maxCalls: 10, maxChars: 100 });
+  images.remember('p', { stdout: '' }, [{ data_base64: 'y'.repeat(80) }]);
+  images.remember('q', { stdout: '' }, [{ data_base64: 'y'.repeat(80) }]);
+  assertEqual(images.get('p'), undefined, 'image bytes count toward the size bound, not just text');
+}
+
+console.log('\nevery result a caller receives is exactly the server\'s shape');
+{
+  // ClientToolResult is extra="forbid": one extra key refuses the WHOLE result
+  // with a 422. The worker protocol's own `type` field reached callers before
+  // this was checked, and would have been the first thing step 7 forwarded.
+  const python = await Bun.file(new URL('../src/api/tool_results.py', import.meta.url)).text();
+  const body = python.split('class ClientToolResult(BaseModel):')[1].split(/\n(?:class |def )/)[0];
+  const serverFields = [...body.matchAll(/^ {4}(\w+): /gm)].map((m) => m[1]).filter((f) => f !== 'model_config');
+  assertEqual(JSON.stringify([...serverFields].sort()), JSON.stringify([...CLIENT_TOOL_RESULT_FIELDS].sort()),
+    'the runtime\'s field list matches ClientToolResult in src/api/tool_results.py');
+
+  const allowed = new Set(CLIENT_TOOL_RESULT_FIELDS);
+  const onlyServerFields = (result, label) => {
+    const extra = Object.keys(result).filter((k) => !allowed.has(k));
+    assert(extra.length === 0 && 'call_id' in result && 'status' in result,
+      `${label}: carries only ClientToolResult fields${extra.length ? ' (extra: ' + extra.join(', ') + ')' : ''}`);
+  };
+
+  const rt = new PyodideRuntime({ runtime: { ...RUNTIME, limits: { exec_seconds: 1 } }, workerFactory: workerFrom('executing') });
+  onlyServerFields(await rt.execute('fine', { callId: 'shape-ok' }), 'a worker result');
+  onlyServerFields(await rt.execute('NEVER answers', { callId: 'shape-timeout' }), 'a timeout');
+  onlyServerFields(await rt.execute('CRASH the instance', { callId: 'shape-oom' }), 'a dead worker');
+  await rt.execute('LONG:10', { callId: 'shape-kept' });
+  onlyServerFields(rt.getFullOutput({ call_id: 'shape-kept' }, { callId: 'shape-read' }), 'a get_full_output answer');
+  onlyServerFields(rt.getFullOutput({ call_id: 'nothing-here' }, { callId: 'shape-miss' }), 'a get_full_output refusal');
   rt.terminate();
 }
 

@@ -1,0 +1,8 @@
+{
+  "name": "osa-dev-tooling",
+  "private": true,
+  "description": "Development-only JavaScript dependencies. Nothing here ships: frontend/ is deployed as-is by `wrangler pages deploy frontend`, and this file sits outside it on purpose.",
+  "devDependencies": {
+    "pyodide": "0.28.3"
+  }
+}

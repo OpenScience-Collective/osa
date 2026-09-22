@@ -53,18 +53,28 @@ self.onmessage = (event) => {
     const delayMatch = code.match(/^DELAY:(\d+)/);
     const delay = delayMatch ? Number(delayMatch[1]) : 0;
 
+    // LONG:<n> produces n characters of full stdout, of which only a bounded
+    // copy is returned, which is the shape the real harness sends. IMAGE adds
+    // one image, so the store's handling of figures is exercised.
+    const longMatch = code.match(/^LONG:(\d+)/);
+    const fullStdout = longMatch ? 'x'.repeat(Number(longMatch[1])) : `stdout of ${code}`;
+    const images = code.startsWith('IMAGE')
+      ? [{ mime: 'image/png', data_base64: 'iVBORw0KGgo=', width: 1, height: 1 }]
+      : [];
+
     const reply = () => {
       self.postMessage({
         type: 'result',
         call_id: data.call_id,
         status: 'ok',
-        stdout: '',
+        stdout: fullStdout.slice(0, 64),
         stderr: '',
         // Echoed so a test can prove THIS result belongs to THIS call.
         summary: code,
-        images: [],
+        images,
         artifacts: [],
         elapsed_ms: delay,
+        full: { stdout: fullStdout, stderr: '', traceback: '' },
       });
     };
 

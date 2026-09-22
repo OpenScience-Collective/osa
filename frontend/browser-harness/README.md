@@ -5,8 +5,14 @@ under a real `Content-Security-Policy` header,
 and exercises the half of the runtime that no `bun` test can reach.
 
 This is a manual check, not a CI gate.
-There is no browser in CI,
-and the `bun` suites deliberately stop at the protocol boundary:
+There is no browser in CI.
+Most of the Python half is now ALSO tested in CI:
+`frontend/test-worker-core.js` runs the same worker core
+against the real Pyodide from npm under Bun.
+What only this harness can check is the browser itself:
+the Content-Security-Policy, the blob worker, and the egress guard
+installed on a real worker global.
+and the protocol tests deliberately stop at the message boundary:
 the workers under `frontend/test-workers/` speak the message protocol and nothing more,
 because Pyodide needs a browser and asserting the Python half against a stand-in
 would be asserting the stand-in.
@@ -50,6 +56,11 @@ Recorded on #431, measured 2026-09-22 against Pyodide 0.28.3 in Chrome:
   the next
 - a failed run still returns the output it produced before it failed, which is
   usually what explains the exception
+- the summary describes arrays by facts rather than contents,
+  including the wasm32 default integer width (`int32`, since numpy's default
+  integer is a C long); an error carries its type, message and offending line
+  while the full traceback stays in the browser, readable by `call_id`; and a
+  figure is described in words that outlive the image
 - **an infinite loop is stopped on the deadline**, measured at 3009 ms against a
   3-second limit, and the runtime then reboots and runs the next execution.
   Pyodide cannot interrupt its own Python without a `SharedArrayBuffer`, which

@@ -29,7 +29,8 @@
  */
 
 import { buildDataClientSource, buildEgressGuardSource, buildNamespaceSealSource } from './osa-egress.js';
-import { buildOutputCaptureSource, resolveLimits } from './osa-output.js';
+import { buildHelpersSource, buildOutputCaptureSource, resolveLimits } from './osa-output.js';
+import { createWorkerRuntime } from './osa-worker-core.js';
 
 /** Lifecycle states. A runtime is in exactly one at a time. */
 export const RUNTIME_STATE = Object.freeze({
@@ -68,270 +69,61 @@ export const BOOT_FAILURE = Object.freeze({
  * @returns {string} Worker source.
  */
 export function buildWorkerSource(runtime) {
-  const version = runtime.pyodide_version;
-  const indexURL = `https://cdn.jsdelivr.net/pyodide/v${version}/full/`;
-  const preload = JSON.stringify(runtime.preload || []);
+  const indexURL = `https://cdn.jsdelivr.net/pyodide/v${runtime.pyodide_version}/full/`;
 
   // The egress guard is installed as the worker's FIRST statement, before the
-  // loader is even fetched, because `importScripts` is one of the transports it
+  // loader is even fetched, because importScripts is one of the transports it
   // shims and the boot itself goes through it. A guard installed after boot
   // would leave the whole download window unguarded.
   //
   // Its boot allowlist is the Pyodide CDN plus any configured wheel index, and
-  // NOT the community's `fetch_allow`: those are the origins the runtime needs
-  // to assemble itself, which is a strictly different set from the origins
-  // executed code may reach.
-  const bootAllow = [indexURL].concat(runtime.index_urls || []);
-  const guard = buildEgressGuardSource({ bootAllow });
-  const fetchAllow = JSON.stringify(runtime.fetch_allow || []);
-  const allowInstall = JSON.stringify(runtime.allow_install || []);
-  const indexUrls = JSON.stringify(runtime.index_urls || []);
+  // NOT the community's fetch_allow: those are the origins the runtime needs to
+  // assemble itself, a strictly different set from the origins executed code
+  // may reach.
+  const guard = buildEgressGuardSource({ bootAllow: [indexURL].concat(runtime.index_urls || []) });
 
-  // The Python half of the boundary, run at the end of boot: it takes
-  // `micropip`, `js`, `pyodide` and `ctypes` away from the namespace executed
-  // code lives in, so install-time and bridge capability cannot be reacquired
-  // from inside a run.
-  const namespaceSeal = JSON.stringify(buildNamespaceSealSource());
-  const dataClient = JSON.stringify(buildDataClientSource());
-  const outputCapture = JSON.stringify(buildOutputCaptureSource(resolveLimits(runtime.limits)));
+  // Everything the worker needs, decided here and baked in as data. A worker
+  // that has to ask for its own configuration has a window where it is alive
+  // but unconfigured, and that is exactly where a half-initialized runtime
+  // would be reachable.
+  const config = {
+    indexURL,
+    preload: runtime.preload || [],
+    allowInstall: runtime.allow_install || [],
+    indexUrls: runtime.index_urls || [],
+    fetchAllow: runtime.fetch_allow || [],
+    python: {
+      helpers: buildHelpersSource(),
+      outputCapture: buildOutputCaptureSource(resolveLimits(runtime.limits)),
+      dataClient: buildDataClientSource(),
+      namespaceSeal: buildNamespaceSealSource(),
+    },
+  };
 
-  // Built here rather than inside the template, because a template literal
-  // interprets escape sequences in its own source: an '\n' written in there
-  // becomes a real newline in the generated file and truncates the string
-  // literal it was part of. Anything carrying an escape is assembled in
-  // JavaScript and interpolated as JSON.
+  // The template is only glue now. The logic is createWorkerRuntime, embedded
+  // by value: an interpolated value is inserted verbatim, so escapes inside it
+  // are not reinterpreted the way escapes written in this template would be.
   //
-  // This gate is defined before the namespace seal so it can close over
-  // pyodide.code, which the seal blocks a moment later, and it lives in a
-  // namespace executed code has no reference to: reachable, it could be
-  // redefined to approve the imports of the NEXT execution.
-  const importGate = [
-    'import importlib.util as _ilu',
-    'from pyodide.code import find_imports as _find_imports',
-    'def _unavailable_imports(code):',
-    '    missing = []',
-    '    for name in _find_imports(code):',
-    '        try:',
-    '            if _ilu.find_spec(name) is None:',
-    '                missing.append(name)',
-    '        except Exception:',
-    '            missing.append(name)',
-    '    return missing',
-  ].join('\n');
-
-  // Assembled as a template so the config is baked in at build time rather than
-  // posted after boot. A worker that has to ask for its own configuration has a
-  // window where it is alive but unconfigured, and that window is exactly where a
-  // half-initialized runtime would be reachable.
-  // One function scope for the guard and the worker body together. The guard is
-  // a fragment that must not reach global scope (a top-level `function` in a
-  // classic worker becomes a property of the global object, which made the
-  // sealing function publicly callable), and the boot handler has to be able to
-  // call `__seal`, so they share a scope rather than communicate through one.
+  // One function scope holds the guard and the runtime together. The guard must
+  // not reach global scope (a top-level function in a classic worker becomes a
+  // property of the global object, which made the sealing function publicly
+  // callable), and the runtime must be able to call __seal, so they share a
+  // scope rather than communicate through one.
   return `
     (function () {
     ${guard}
 
-    let pyodide = null;
-    // Created once and reused, so variables survive across turns: a reader who
-    // computes something in one message and plots it in the next is the normal
-    // case, not an edge one. It is a namespace of its own rather than
-    // pyodide.globals so that the host helpers below are not reachable from
-    // executed code, which could otherwise redefine the import gate that
-    // decides whether the NEXT execution is allowed to run.
-    let userNamespace = null;
-    let internals = null;
-    let busy = false;
+    const runtime = (${createWorkerRuntime.toString()})(${JSON.stringify(config)}, {
+      load: function (indexURL) {
+        importScripts(indexURL + 'pyodide.js');
+        return loadPyodide({ indexURL: indexURL, stdout: function () {}, stderr: function () {} });
+      },
+      seal: __seal,
+      send: function (message) { self.postMessage(message); },
+    });
 
-    const send = (msg) => self.postMessage(msg);
-
-    async function boot() {
-      try {
-        send({ type: 'progress', phase: 'loading_runtime' });
-        importScripts(${JSON.stringify(indexURL)} + 'pyodide.js');
-
-        pyodide = await loadPyodide({
-          indexURL: ${JSON.stringify(indexURL)},
-          stdout: () => {},
-          stderr: () => {},
-        });
-        send({ type: 'progress', phase: 'runtime_loaded' });
-
-        const preload = ${preload};
-        for (let i = 0; i < preload.length; i++) {
-          send({ type: 'progress', phase: 'loading_package', package: preload[i], index: i, total: preload.length });
-          await pyodide.loadPackage(preload[i]);
-        }
-
-        // EVERY package this runtime will ever have is installed here, during
-        // boot. Installing on demand would mean the wheel index had to stay
-        // reachable from executed code, which is the opposite of sealing.
-        //
-        // deps is false for every entry, so \`allow_install\` is a complete,
-        // ordered list rather than a resolver seed. That is deliberate on two
-        // counts: zarr cannot resolve at all in Pyodide (its numcodecs>=0.14 pin
-        // is metadata and no emscripten wheel exists at any version), and a
-        // resolver that is allowed to pull transitive dependencies decides the
-        // package set at runtime, which breaks the byte-identical results the
-        // conversation's prompt cache depends on.
-        const allowInstall = ${allowInstall};
-        const indexUrls = ${indexUrls};
-        if (allowInstall.length > 0) {
-          await pyodide.loadPackage('micropip');
-          const micropip = pyodide.pyimport('micropip');
-          for (let i = 0; i < allowInstall.length; i++) {
-            send({ type: 'progress', phase: 'installing', package: allowInstall[i], index: i, total: allowInstall.length });
-            const options = { deps: false };
-            if (indexUrls.length > 0) options.index_urls = indexUrls;
-            await micropip.install.callKwargs(allowInstall[i], options);
-          }
-          micropip.destroy();
-        }
-
-        internals = pyodide.globals.get('dict')();
-        pyodide.runPython(${JSON.stringify(importGate)}, { globals: internals });
-        pyodide.runPython(${outputCapture}, { globals: internals });
-
-        userNamespace = pyodide.globals.get('dict')();
-        userNamespace.set('__name__', '__main__');
-
-        // The sanctioned network route, installed in the user namespace BEFORE
-        // the seal, because it needs the js bridge the seal is about to remove.
-        // Sealing without it leaves executed code with no way to read anything.
-        pyodide.runPython(${dataClient}, { globals: userNamespace });
-
-        // display() is the ONE capture helper executed code can reach. _begin and
-        // _end stay in the internal namespace: tampering with them would corrupt
-        // only the run's own result, but keeping the seam in one place is what
-        // makes that true rather than merely likely.
-        const display = internals.get('display');
-        userNamespace.set('display', display);
-        display.destroy();
-
-        // Python-side capability removal, then JS-side egress narrowing. Both
-        // happen before the first executable statement exists, and the egress
-        // seal is ONE-SHOT: moving either later widens what executed code can
-        // reach and is a decision, not a refactor.
-        pyodide.runPython(${namespaceSeal});
-        __seal(${fetchAllow});
-
-        send({ type: 'ready', version: pyodide.version });
-      } catch (err) {
-        send({ type: 'error', kind: 'runtime', message: String((err && err.message) || err) });
-      }
-    }
-
-    async function execute(data) {
-      const callId = data.call_id;
-      const started = Date.now();
-      const reply = (status, fields) => {
-        busy = false;
-        send(Object.assign(
-          { type: 'result', call_id: callId, status: status, stdout: '', stderr: '', summary: '', images: [], artifacts: [] },
-          fields,
-          { elapsed_ms: Date.now() - started }
-        ));
-      };
-
-      if (pyodide === null) {
-        reply('error', { stderr: 'the runtime is not booted' });
-        return;
-      }
-      // One execution at a time. Two concurrent runs would share userNamespace
-      // and interleave their output, and the second would report the first's.
-      if (busy) {
-        reply('error', { stderr: 'another execution is already running' });
-        return;
-      }
-      busy = true;
-
-      const code = typeof data.code === 'string' ? data.code : '';
-
-      // The import gate. loadPackagesFromImports is deliberately NOT used: it
-      // fetches from the CDN, which is unreachable once sealed, so it would turn
-      // an unavailable package into an egress error naming the wrong cause.
-      let missing;
-      try {
-        const unavailable = internals.get('_unavailable_imports');
-        const found = unavailable(code);
-        missing = found.toJs();
-        found.destroy();
-        unavailable.destroy();
-      } catch (err) {
-        // A syntax error reaches find_imports before it reaches the compiler.
-        reply('error', { stderr: String((err && err.message) || err) });
-        return;
-      }
-      if (missing.length > 0) {
-        // Phase 1's ResultStatus has no denied_import member, so the status is
-        // \`denied\` and the machine-readable reason travels in stderr. Adding a
-        // status would be a server contract change; this is the same
-        // information inside the contract that exists.
-        reply('denied', {
-          stderr: 'denied_import: ' + missing.join(', '),
-          summary: 'Not run. This runtime has no ' + missing.join(', ') +
-            '. Only packages the community installed at startup are available, and nothing is installed on demand.',
-        });
-        return;
-      }
-
-      // Capture brackets the run, and _end is reached on BOTH paths: a run that
-      // raised still printed, and that output is usually what explains the
-      // exception. Leaving the streams swapped would also silently send every
-      // later run's output into a dead buffer.
-      const begin = internals.get('_begin');
-      begin();
-      begin.destroy();
-
-      let status = 'ok';
-      let errorText = '';
-      try {
-        await pyodide.runPythonAsync(code, { globals: userNamespace });
-      } catch (err) {
-        errorText = String((err && err.message) || err);
-        // A wasm out-of-memory is NOT the same failure as a raised exception and
-        // is not a timeout either: the instance aborts without any deadline
-        // firing, so #431 gives it its own status. The instance is unusable
-        // afterwards, which the host handles by recycling.
-        status = /out of memory|Cannot enlarge memory|memory access out of bounds|Aborted\(OOM\)|RangeError: Array buffer allocation failed/i.test(errorText)
-          ? 'oom'
-          : 'error';
-      }
-
-      let captured;
-      try {
-        const end = internals.get('_end');
-        captured = JSON.parse(end(errorText));
-        end.destroy();
-      } catch (err) {
-        // Capture itself failing must not swallow the run. Reported as an error
-        // naming the capture, so it is not mistaken for the code's own failure.
-        reply('error', {
-          stderr: '[runtime] output capture failed: ' + String((err && err.message) || err) +
-            (errorText ? '\\n' + errorText : ''),
-        });
-        return;
-      }
-
-      reply(status, {
-        stdout: captured.stdout,
-        stderr: captured.stderr,
-        images: captured.images,
-        artifacts: captured.artifacts,
-      });
-    }
-
-    self.onmessage = async (event) => {
-      const data = event.data || {};
-      if (data.type === 'boot') {
-        await boot();
-        return;
-      }
-      if (data.type === 'execute') {
-        await execute(data);
-        return;
-      }
-      send({ type: 'error', kind: 'protocol', message: 'unexpected message: ' + data.type });
+    self.onmessage = function (event) {
+      runtime.handle(event.data || {});
     };
     })();
   `;
@@ -358,6 +150,127 @@ export function defaultWorkerFactory(source) {
   URL.revokeObjectURL(url);
   return worker;
 }
+
+/**
+ * The fields of phase 1's `ClientToolResult`, and nothing else.
+ *
+ * That model is `extra="forbid"`, so a result carrying one extra key, such as
+ * the worker protocol's own `type`, is refused WHOLE with a 422. Every result
+ * this runtime hands a caller is cut to exactly this list by
+ * `toClientToolResult`, and `test-runtime-lifecycle.js` reads the Python model
+ * and fails if the two drift.
+ */
+export const CLIENT_TOOL_RESULT_FIELDS = Object.freeze([
+  'call_id',
+  'status',
+  'stdout',
+  'stderr',
+  'summary',
+  'images',
+  'artifacts',
+  'elapsed_ms',
+]);
+
+/**
+ * Cut a worker message or a synthesized result down to exactly the server's shape.
+ *
+ * @param {object} message
+ * @returns {object}
+ */
+export function toClientToolResult(message) {
+  const result = {};
+  for (const field of CLIENT_TOOL_RESULT_FIELDS) {
+    if (message[field] !== undefined) result[field] = message[field];
+  }
+  return result;
+}
+
+/** How many runs' full output the browser keeps. */
+export const FULL_OUTPUT_MAX_CALLS = 16;
+
+/**
+ * Total characters kept across all of them, text and base64 images together.
+ * JavaScript strings are UTF-16, so this is about 32 MB of a tab's memory at
+ * worst. The worker already bounds each stream, so no single run can exceed it.
+ */
+export const FULL_OUTPUT_MAX_CHARS = 16_000_000;
+
+/**
+ * The untruncated output of recent runs, kept in the browser for get_full_output.
+ *
+ * The conversation carries a bounded copy and a summary; this is where the rest
+ * lives. It is per tab and in memory by design: raw output never goes to the
+ * server, so it is gone after a reload, and get_full_output says so rather than
+ * returning nothing.
+ *
+ * Evicts the least recently used run first, by count and by total size, so one
+ * enormous run cannot push out everything else and a long session cannot grow
+ * without bound.
+ */
+export class FullOutputStore {
+  constructor({ maxCalls = FULL_OUTPUT_MAX_CALLS, maxChars = FULL_OUTPUT_MAX_CHARS } = {}) {
+    this.maxCalls = maxCalls;
+    this.maxChars = maxChars;
+    // Map iteration order is insertion order, which makes it the LRU list.
+    this._entries = new Map();
+    this._chars = 0;
+  }
+
+  static _sizeOf(entry) {
+    let n = entry.stdout.length + entry.stderr.length + entry.traceback.length;
+    for (const image of entry.images) n += image.data_base64.length;
+    return n;
+  }
+
+  /**
+   * @param {string} callId
+   * @param {{stdout?: string, stderr?: string, traceback?: string}} full
+   * @param {object[]} images - The images the run returned.
+   */
+  remember(callId, full, images) {
+    const entry = {
+      stdout: String((full && full.stdout) || ''),
+      stderr: String((full && full.stderr) || ''),
+      traceback: String((full && full.traceback) || ''),
+      images: Array.isArray(images) ? images : [],
+    };
+    this.forget(callId);
+    this._entries.set(callId, entry);
+    this._chars += FullOutputStore._sizeOf(entry);
+    while (this._entries.size > 1 && (this._entries.size > this.maxCalls || this._chars > this.maxChars)) {
+      this.forget(this._entries.keys().next().value);
+    }
+  }
+
+  /** The entry, refreshed as most recently used, or undefined. */
+  get(callId) {
+    const entry = this._entries.get(callId);
+    if (entry !== undefined) {
+      this._entries.delete(callId);
+      this._entries.set(callId, entry);
+    }
+    return entry;
+  }
+
+  forget(callId) {
+    const entry = this._entries.get(callId);
+    if (entry !== undefined) {
+      this._chars -= FullOutputStore._sizeOf(entry);
+      this._entries.delete(callId);
+    }
+  }
+
+  get size() {
+    return this._entries.size;
+  }
+
+  get chars() {
+    return this._chars;
+  }
+}
+
+/** The streams get_full_output can read. */
+export const FULL_OUTPUT_STREAMS = Object.freeze(['stdout', 'stderr', 'traceback', 'figures']);
 
 /**
  * Owns one Pyodide worker: its boot, its warm lifetime, and its teardown.
@@ -401,14 +314,20 @@ export class PyodideRuntime {
     this._bootPromise = null;
     this._bootTimer = null;
     this._settle = null;
-    // call_id -> {resolve, reject}. Executions are correlated by the id the
-    // server minted, so a result can never be attributed to the wrong call.
+    // call_id -> {resolve, reject, timer, started}. Executions are correlated
+    // by the call_id the server parked, which is the provider-assigned id of the
+    // model's own tool_use block (phase 1 never mints one), so a result can
+    // never be attributed to the wrong call.
     this._pending = new Map();
     this._callSeq = 0;
     // Clamped the same way the worker clamps them, so the host's deadline and
     // the worker's output caps cannot come from two different readings of one
     // config.
     this.limits = resolveLimits(runtime.limits);
+    // Deliberately NOT cleared by _recycle or terminate: output a run produced
+    // is still the person's after the instance that produced it is gone, and a
+    // timeout is exactly when someone wants to read what was printed first.
+    this.outputs = new FullOutputStore();
   }
 
   /** True when the runtime can accept work. */
@@ -512,10 +431,21 @@ export class PyodideRuntime {
       return;
     }
     if (msg.type === 'result') {
+      // The full streams stay in this tab. They are split off HERE, before the
+      // result reaches any caller, so nothing downstream can forward them to the
+      // server by accident: ClientToolResult is extra="forbid" and would refuse
+      // the whole result, and the point is that bulk output never leaves.
+      const full = msg.full;
+      const result = toClientToolResult(msg);
       // A result for a call nobody is waiting on is dropped rather than thrown:
       // the execution was abandoned, or its deadline already settled it. Never
-      // silently attributed to another call.
-      const settled = this._settleExecution(msg.call_id, msg);
+      // silently attributed to another call, and not kept either, since nobody
+      // was told its call_id resolved to this output.
+      const waiting = this._pending.has(msg.call_id);
+      if (waiting && full) {
+        this.outputs.remember(msg.call_id, full, result.images);
+      }
+      const settled = this._settleExecution(msg.call_id, result);
       // An instance that reported its own out-of-memory is still the instance
       // that ran out. Keeping it would let the next execution start against a
       // heap that is already exhausted, and fail for a reason belonging to the
@@ -625,8 +555,10 @@ export class PyodideRuntime {
    * being torn down mid-execution.
    *
    * @param {string} code - Python to run.
-   * @param {{callId?: string}} [options] - `callId` is the server-minted id this
-   *   result will be reported against; a local one is generated when absent.
+   * @param {{callId?: string}} [options] - `callId` is the call_id from the
+   *   server's tool_request, which is the provider-assigned id of the model's
+   *   tool_use block; the result is reported against it. A local one is
+   *   generated when absent.
    * @returns {Promise<object>} The result envelope.
    */
   async execute(code, options = {}) {
@@ -659,11 +591,10 @@ export class PyodideRuntime {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         // Resolved, not rejected: the server expects a ClientToolResult for every
-        // call_id it minted, and a timeout is a result with a status. Rejecting
+        // call it parked, and a timeout is a result with a status. Rejecting
         // would leave the model with no tool_result for its tool_use, which the
         // provider refuses outright.
-        this._settleExecution(callId, {
-          type: 'result',
+        this._settleExecution(callId, toClientToolResult({
           call_id: callId,
           status: 'timeout',
           stdout: '',
@@ -672,7 +603,7 @@ export class PyodideRuntime {
           images: [],
           artifacts: [],
           elapsed_ms: Date.now() - started,
-        });
+        }));
         // Recycled rather than terminated: the person asked for THIS run to stop,
         // not for the runtime to be gone, and the next execution boots a fresh
         // worker. terminate() stays reserved for explicit cancellation, which
@@ -717,8 +648,7 @@ export class PyodideRuntime {
     for (const [callId, waiting] of entries) {
       this._pending.delete(callId);
       clearTimeout(waiting.timer);
-      waiting.resolve({
-        type: 'result',
+      waiting.resolve(toClientToolResult({
         call_id: callId,
         status: 'oom',
         stdout: '',
@@ -729,7 +659,7 @@ export class PyodideRuntime {
         images: [],
         artifacts: [],
         elapsed_ms: Date.now() - waiting.started,
-      });
+      }));
     }
     this._recycle();
   }
@@ -760,6 +690,96 @@ export class PyodideRuntime {
     this._settle = null;
     this._bootPromise = null;
     this._setState(RUNTIME_STATE.IDLE);
+  }
+
+  /**
+   * Answer a get_full_output call from what this tab kept.
+   *
+   * Runs on the host, not in the worker: it reads stored text, needs no Python,
+   * and must work after the instance that produced the output was recycled.
+   *
+   * @param {{call_id: string, stream?: string, offset?: number}} args - The tool
+   *   call's arguments. `call_id` names the EARLIER run to read.
+   * @param {{callId?: string}} [options] - `callId` is this get_full_output
+   *   call's own id, which the result is reported against.
+   * @returns {object} A result envelope, never a rejection: the model gets an
+   *   answer it can act on for every call, including the ones that cannot be
+   *   served.
+   */
+  getFullOutput(args, options = {}) {
+    const requested = args && typeof args.call_id === 'string' ? args.call_id : '';
+    const stream = (args && args.stream) || 'stdout';
+    const rawOffset = args && args.offset;
+    const offset = Number.isInteger(rawOffset) && rawOffset > 0 ? rawOffset : 0;
+    const base = {
+      call_id: options.callId || `local-${++this._callSeq}`,
+      status: 'ok',
+      stdout: '',
+      stderr: '',
+      summary: '',
+      images: [],
+      artifacts: [],
+      // Zero rather than a measured duration: nothing ran, and a varying number
+      // here would be the one nondeterministic byte in an otherwise stable result.
+      elapsed_ms: 0,
+    };
+    const quoted = JSON.stringify(requested);
+
+    if (!FULL_OUTPUT_STREAMS.includes(stream)) {
+      return {
+        ...base,
+        status: 'error',
+        stderr: `[runtime] unknown stream ${JSON.stringify(stream)}; use one of ${FULL_OUTPUT_STREAMS.join(', ')}.`,
+      };
+    }
+
+    const entry = this.outputs.get(requested);
+    if (entry === undefined) {
+      return {
+        ...base,
+        status: 'error',
+        stderr:
+          `[runtime] no output is kept for call_id ${quoted} in this browser. Output stays in the ` +
+          `tab that ran the code: it is gone after a reload, and only the last ${this.outputs.maxCalls} ` +
+          'runs are kept.',
+      };
+    }
+
+    if (stream === 'figures') {
+      // Every image the run returned. They are re-attached to THIS result, so
+      // the model sees them again even though stored history carries only a
+      // placeholder for the original.
+      const images = entry.images.slice(0, this.limits.images);
+      return {
+        ...base,
+        images,
+        summary:
+          images.length === 0
+            ? `get_full_output: call_id ${quoted} returned no figures.`
+            : `get_full_output: ${images.length} figure(s) from call_id ${quoted}, attached.`,
+      };
+    }
+
+    const text = entry[stream];
+    if (offset >= text.length && text.length > 0) {
+      return {
+        ...base,
+        summary: `get_full_output: offset ${offset} is past the end of ${stream} for call_id ${quoted}, which has ${text.length} characters.`,
+      };
+    }
+    const end = Math.min(text.length, offset + this.limits.stdout_chars);
+    const more =
+      end < text.length
+        ? ` More remains: call again with offset=${end}.`
+        : ' This is the end of the stream.';
+    return {
+      ...base,
+      stdout: text.slice(offset, end),
+      summary:
+        text.length === 0
+          ? `get_full_output: ${stream} of call_id ${quoted} is empty.`
+          : `get_full_output: ${stream} of call_id ${quoted}, characters ${offset} to ${end} of ${text.length}.${more}`,
+    };
   }
 
   terminate() {
