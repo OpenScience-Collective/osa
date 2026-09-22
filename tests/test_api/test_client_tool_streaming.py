@@ -72,7 +72,6 @@ def _config(**overrides: Any) -> CommunityConfig:
             "python": {
                 "pyodide_version": "314.0.6",
                 "lockfile": "runtime/browsertest-pyodide-lock.json",
-                "limits": {},
             }
         },
     }

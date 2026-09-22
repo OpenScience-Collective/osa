@@ -16,6 +16,7 @@ from pydantic import ValidationError
 from src.core.config.community import (
     BudgetConfig,
     CitationConfig,
+    ClientToolConfig,
     CommunitiesConfig,
     CommunityConfig,
     DocSource,
@@ -23,6 +24,9 @@ from src.core.config.community import (
     GitHubConfig,
     McpServer,
     PythonPlugin,
+    PythonRuntimeConfig,
+    RuntimeConfig,
+    RuntimeLimits,
     WidgetConfig,
 )
 
@@ -1895,3 +1899,338 @@ class TestFAQTemperatureWarning:
             )
 
         assert config.summary_agent.temperature == 0.1
+
+
+class TestClientToolConfig:
+    """Tests for ClientToolConfig model."""
+
+    def test_valid_client_tool(self) -> None:
+        """Should create a valid client tool entry."""
+        tool = ClientToolConfig(
+            name="execute_code",
+            runtime="python",
+            description="Run Python in the browser and return its output.",
+        )
+        assert tool.name == "execute_code"
+        assert tool.runtime == "python"
+        assert tool.requires_permission is True
+
+    def test_requires_permission_defaults_true(self) -> None:
+        """requires_permission should default to True (safe default)."""
+        tool = ClientToolConfig(name="execute_code", runtime="python", description="Run code.")
+        assert tool.requires_permission is True
+
+    def test_requires_permission_can_be_disabled(self) -> None:
+        """requires_permission should be settable to False."""
+        tool = ClientToolConfig(
+            name="execute_code",
+            runtime="python",
+            description="Run code.",
+            requires_permission=False,
+        )
+        assert tool.requires_permission is False
+
+    def test_rejects_unknown_runtime(self) -> None:
+        """Should reject a runtime other than the known literal values."""
+        with pytest.raises(ValidationError):
+            ClientToolConfig(name="execute_code", runtime="javascript", description="Run code.")
+
+    def test_rejects_extra_fields(self) -> None:
+        """Should reject unknown fields, matching every sibling model."""
+        with pytest.raises(ValidationError):
+            ClientToolConfig(
+                name="execute_code",
+                runtime="python",
+                description="Run code.",
+                unexpected="nope",
+            )
+
+    def test_requires_name_runtime_and_description(self) -> None:
+        """name, runtime, and description should all be required."""
+        with pytest.raises(ValidationError):
+            ClientToolConfig(runtime="python", description="Run code.")  # type: ignore[call-arg]
+        with pytest.raises(ValidationError):
+            ClientToolConfig(name="execute_code", description="Run code.")  # type: ignore[call-arg]
+        with pytest.raises(ValidationError):
+            ClientToolConfig(name="execute_code", runtime="python")  # type: ignore[call-arg]
+
+
+class TestRuntimeLimits:
+    """Tests for RuntimeLimits model."""
+
+    def test_defaults(self) -> None:
+        """Should default to the documented resource caps."""
+        limits = RuntimeLimits()
+        assert limits.memory_mb == 1536
+        assert limits.stdout_bytes == 16384
+        assert limits.stderr_bytes == 8192
+        assert limits.images == 3
+        assert limits.image_px == 1024
+        assert limits.exec_seconds == 120
+
+    def test_accepts_overrides(self) -> None:
+        """Should accept explicit values for every field."""
+        limits = RuntimeLimits(
+            memory_mb=2048,
+            stdout_bytes=32768,
+            stderr_bytes=16384,
+            images=5,
+            image_px=2048,
+            exec_seconds=60,
+        )
+        assert limits.memory_mb == 2048
+        assert limits.images == 5
+
+    def test_images_can_be_zero(self) -> None:
+        """images=0 (no images allowed) should be a valid, explicit choice."""
+        limits = RuntimeLimits(images=0)
+        assert limits.images == 0
+
+    @pytest.mark.parametrize(
+        "field,bad_value",
+        [
+            ("memory_mb", 0),
+            ("stdout_bytes", 0),
+            ("stderr_bytes", 0),
+            ("images", -1),
+            ("image_px", 0),
+            ("exec_seconds", 0),
+        ],
+    )
+    def test_rejects_below_lower_bound(self, field: str, bad_value: int) -> None:
+        """Every field should reject a value below its documented lower bound."""
+        with pytest.raises(ValidationError):
+            RuntimeLimits(**{field: bad_value})
+
+    def test_rejects_extra_fields(self) -> None:
+        """Should reject unknown fields, matching every sibling model."""
+        with pytest.raises(ValidationError):
+            RuntimeLimits(unexpected="nope")
+
+
+class TestPythonRuntimeConfig:
+    """Tests for PythonRuntimeConfig model."""
+
+    def test_valid_config_with_explicit_limits(self) -> None:
+        """An explicit limits section should be honored."""
+        config = PythonRuntimeConfig(
+            pyodide_version="0.28.3",
+            lockfile="pyodide-lock-2026-01.json",
+            limits=RuntimeLimits(),
+        )
+        assert config.pyodide_version == "0.28.3"
+        assert config.limits.memory_mb == 1536
+
+    def test_omitted_limits_defaults_to_runtime_limits_defaults(self) -> None:
+        """Omitting limits entirely should validate and take every RuntimeLimits default.
+
+        Every field inside RuntimeLimits already has a default, so a
+        community with no reason to deviate from them should not have to
+        spell out an empty `limits: {}`.
+        """
+        config = PythonRuntimeConfig(
+            pyodide_version="0.28.3",
+            lockfile="pyodide-lock-2026-01.json",
+        )
+        assert config.limits == RuntimeLimits()
+        assert config.limits.memory_mb == 1536
+        assert config.limits.exec_seconds == 120
+
+    def test_optional_fields_default_empty(self) -> None:
+        """preload/allow_install/fetch_allow/index_urls should default to empty lists."""
+        config = PythonRuntimeConfig(
+            pyodide_version="0.28.3",
+            lockfile="pyodide-lock-2026-01.json",
+            limits=RuntimeLimits(),
+        )
+        assert config.preload == []
+        assert config.allow_install == []
+        assert config.fetch_allow == []
+        assert config.index_urls == []
+        assert config.preload_on == "first_run"
+
+    def test_preload_on_accepts_widget_open(self) -> None:
+        """preload_on should accept 'widget_open' as well as the default."""
+        config = PythonRuntimeConfig(
+            pyodide_version="0.28.3",
+            lockfile="pyodide-lock-2026-01.json",
+            preload_on="widget_open",
+            limits=RuntimeLimits(),
+        )
+        assert config.preload_on == "widget_open"
+
+    def test_rejects_unknown_preload_on(self) -> None:
+        """Should reject a preload_on value outside the known literal set."""
+        with pytest.raises(ValidationError):
+            PythonRuntimeConfig(
+                pyodide_version="0.28.3",
+                lockfile="pyodide-lock-2026-01.json",
+                preload_on="on_click",
+                limits=RuntimeLimits(),
+            )
+
+    def test_rejects_extra_fields(self) -> None:
+        """Should reject unknown fields, matching every sibling model."""
+        with pytest.raises(ValidationError):
+            PythonRuntimeConfig(
+                pyodide_version="0.28.3",
+                lockfile="pyodide-lock-2026-01.json",
+                limits=RuntimeLimits(),
+                unexpected="nope",
+            )
+
+
+class TestRuntimeConfig:
+    """Tests for RuntimeConfig model."""
+
+    def test_python_defaults_to_none(self) -> None:
+        """A RuntimeConfig with nothing configured should have python=None."""
+        config = RuntimeConfig()
+        assert config.python is None
+
+    def test_accepts_python_runtime(self) -> None:
+        """Should accept a configured python runtime."""
+        config = RuntimeConfig(
+            python=PythonRuntimeConfig(
+                pyodide_version="0.28.3",
+                lockfile="pyodide-lock-2026-01.json",
+                limits=RuntimeLimits(),
+            )
+        )
+        assert config.python is not None
+        assert config.python.pyodide_version == "0.28.3"
+
+    def test_rejects_extra_fields(self) -> None:
+        """Should reject unknown fields, matching every sibling model."""
+        with pytest.raises(ValidationError):
+            RuntimeConfig(unexpected="nope")
+
+
+class TestExtensionsConfigClientTools:
+    """Tests for ExtensionsConfig.client_tools field."""
+
+    def test_defaults_to_empty(self) -> None:
+        """client_tools should default to an empty list."""
+        config = ExtensionsConfig()
+        assert config.client_tools == []
+
+    def test_accepts_client_tools(self) -> None:
+        """Should accept a list of client tool entries."""
+        config = ExtensionsConfig(
+            client_tools=[
+                ClientToolConfig(name="execute_code", runtime="python", description="Run code."),
+            ]
+        )
+        assert len(config.client_tools) == 1
+        assert config.client_tools[0].name == "execute_code"
+
+    def test_does_not_enforce_uniqueness_itself(self) -> None:
+        """Duplicate names are allowed to construct at the ExtensionsConfig
+        level: uniqueness is enforced on CommunityConfig, which can see the
+        client_tools list as a whole alongside the runtime sibling field
+        (see TestCommunityConfigClientTools)."""
+        config = ExtensionsConfig(
+            client_tools=[
+                ClientToolConfig(name="dup", runtime="python", description="One."),
+                ClientToolConfig(name="dup", runtime="python", description="Two."),
+            ]
+        )
+        assert len(config.client_tools) == 2
+
+
+def _python_runtime_config() -> RuntimeConfig:
+    """A minimal valid RuntimeConfig with a python runtime, for reuse below."""
+    return RuntimeConfig(
+        python=PythonRuntimeConfig(
+            pyodide_version="0.28.3",
+            lockfile="pyodide-lock-2026-01.json",
+            limits=RuntimeLimits(),
+        )
+    )
+
+
+class TestCommunityConfigClientTools:
+    """Tests for CommunityConfig's client_tools/runtime cross-field validator."""
+
+    def test_no_client_tools_no_runtime_required(self) -> None:
+        """A community with no client_tools should not need a runtime section."""
+        config = CommunityConfig(id="test", name="Test", description="Test")
+        assert config.runtime is None
+
+    def test_runtime_optional_when_unused(self) -> None:
+        """A community may configure a runtime with no client_tools using it yet."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            runtime=_python_runtime_config(),
+        )
+        assert config.runtime is not None
+        assert config.extensions is None
+
+    def test_client_tools_without_runtime_rejected(self) -> None:
+        """client_tools set but no top-level runtime section should fail."""
+        with pytest.raises(ValidationError, match="runtime"):
+            CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                extensions=ExtensionsConfig(
+                    client_tools=[
+                        ClientToolConfig(
+                            name="execute_code", runtime="python", description="Run code."
+                        ),
+                    ]
+                ),
+            )
+
+    def test_client_tools_python_without_runtime_python_rejected(self) -> None:
+        """A runtime: python client tool needs runtime.python configured."""
+        with pytest.raises(ValidationError, match="runtime.python"):
+            CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                extensions=ExtensionsConfig(
+                    client_tools=[
+                        ClientToolConfig(
+                            name="execute_code", runtime="python", description="Run code."
+                        ),
+                    ]
+                ),
+                runtime=RuntimeConfig(),
+            )
+
+    def test_client_tools_with_matching_runtime_accepted(self) -> None:
+        """client_tools plus a matching runtime.python should validate cleanly."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            extensions=ExtensionsConfig(
+                client_tools=[
+                    ClientToolConfig(
+                        name="execute_code", runtime="python", description="Run code."
+                    ),
+                ]
+            ),
+            runtime=_python_runtime_config(),
+        )
+        assert config.extensions.client_tools[0].name == "execute_code"
+        assert config.runtime.python is not None
+
+    def test_rejects_duplicate_client_tool_names(self) -> None:
+        """Duplicate client_tools names should be rejected on CommunityConfig."""
+        with pytest.raises(ValidationError, match="Duplicate client_tools names"):
+            CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                extensions=ExtensionsConfig(
+                    client_tools=[
+                        ClientToolConfig(name="execute_code", runtime="python", description="One."),
+                        ClientToolConfig(name="execute_code", runtime="python", description="Two."),
+                    ]
+                ),
+                runtime=_python_runtime_config(),
+            )
