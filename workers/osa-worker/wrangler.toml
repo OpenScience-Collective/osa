@@ -6,21 +6,38 @@ main = "index.js"
 compatibility_date = "2024-01-01"
 account_id = "10f166f3ec8395ff4a219f581c5f359d"
 
+# Explicit (#437): once a [[routes]] table is present, wrangler defaults
+# workers_dev to false on deploy unless this is set, which would silently
+# take down the existing osa-worker*.workers.dev hostname the moment the
+# route-mounted deploy above ships. Keep both reachable.
+workers_dev = true
+
 # Production environment (default)
 [vars]
 BACKEND_URL = "https://api.osc.earth/osa"
 ENVIRONMENT = "production"
 
-# Custom domain (#437): a stable, product-owned name for this worker, so the
-# frontend widget (and anyone else's CSP allowlist, e.g. nemarOrg/website
-# ADR 0017) never has to be updated again just because the account running
-# the edge changes. This is the worker's OWN public hostname, distinct from
-# BACKEND_URL above, which is the FastAPI backend the worker proxies to.
-# The existing osa-worker.<account>.workers.dev name keeps working once this
-# is added; a route does not remove the workers.dev default.
+# Path-mounted route (#437): a stable, product-owned host for this worker,
+# so the frontend widget (and anyone else's CSP allowlist, e.g.
+# nemarOrg/website ADR 0017) never has to be updated again just because the
+# account running the edge changes. This is the worker's OWN public
+# hostname, distinct from BACKEND_URL above, which is the FastAPI backend
+# the worker proxies to. The existing osa-worker.<account>.workers.dev name
+# keeps working once this is added; a route does not remove the
+# workers.dev default.
+#
+# widget.osc.earth is a GENERIC host reserved for widgets in general;
+# "/osa" is this widget's own path under it, so a later widget can be added
+# at, say, "widget.osc.earth/some-other-widget/*" without consuming a
+# subdomain of its own. That rules out `custom_domain = true`: a Custom
+# Domain maps one whole hostname 1:1 to one worker and cannot carry a path,
+# which would foreclose exactly that. This is instead an ordinary zone
+# route with a path pattern -- `custom_domain` is intentionally omitted.
+# Cloudflare delivers the FULL path, "/osa/..." prefix included, to the
+# worker for a route like this; index.js strips it once at the top of
+# fetch() (stripMountPrefix) before any route is matched.
 [[routes]]
-pattern = "assistant.osc.earth"
-custom_domain = true
+pattern = "widget.osc.earth/osa/*"
 zone_name = "osc.earth"
 
 # Hybrid rate limiting approach:
@@ -41,14 +58,19 @@ id = "8f8506b1a7fb400680a00014312c124d"
 # Development environment
 [env.dev]
 name = "osa-worker-dev"
+# workers_dev is not inherited from the top level per-environment; set it
+# again here for the same reason (#437).
+workers_dev = true
 vars = { BACKEND_URL = "https://api.osc.earth/osa-dev", ENVIRONMENT = "development" }
 
-# Custom domain for dev (#437). Single-level subdomain (develop-assistant,
-# not develop.assistant) to avoid SSL certificate issues, matching the
-# develop-demo.osc.earth convention the frontend already uses.
+# Path-mounted route for dev (#437). Single-level subdomain
+# (develop-widget, not develop.widget) to avoid SSL certificate issues,
+# matching the develop-demo.osc.earth convention the frontend already
+# uses; "/osa" is the same per-widget path as production, under dev's own
+# host. Ordinary route, not a Custom Domain -- see the production
+# [[routes]] comment above for why.
 [[env.dev.routes]]
-pattern = "develop-assistant.osc.earth"
-custom_domain = true
+pattern = "develop-widget.osc.earth/osa/*"
 zone_name = "osc.earth"
 
 # Per-minute rate limiter (dev has higher limit: 60/min)
@@ -88,24 +110,36 @@ id = "6d46ef72877b4129b38ef2ca1e1cd5ea"
 #    curl https://osa-worker.<your-subdomain>.workers.dev/health
 #
 # =============================================================================
-# Custom Domain Provisioning (#437, one-time, needs zone-level Cloudflare
-# access to the osc.earth account -- deploying with `[[routes]]` above
-# registers the route but this repo's CI account may not have permission to
-# create the Custom Domain / DNS record itself)
+# Route Provisioning (#437, one-time, needs zone-level Cloudflare access to
+# the osc.earth zone on the account that owns it -- deploying with
+# `[[routes]]` above registers the route, but only an account with access
+# to that zone can do so)
 # =============================================================================
 #
 # The `[[routes]]` / `[[env.dev.routes]]` blocks above declare the mapping;
-# someone with access to the osc.earth Cloudflare account still needs to run:
+# someone with zone access to osc.earth still needs to run:
 #
-#   bunx wrangler deploy                 # production: registers assistant.osc.earth
-#   bunx wrangler deploy --env dev       # dev: registers develop-assistant.osc.earth
+#   bunx cfman wrangler --account neuromechanist deploy --env dev   # dev: widget.osc.earth/osa via develop-widget.osc.earth
+#   bunx cfman wrangler --account neuromechanist deploy              # production: registers widget.osc.earth/osa/*
 #
-# `custom_domain = true` makes wrangler create the Custom Domain (and its
-# DNS record) in the osc.earth zone as part of that deploy -- no separate
-# `dns_records` API call or dashboard step is required, since the whole
-# osc.earth zone is already on Cloudflare. Deploy dev first and verify it
-# (curl /health and /version on develop-assistant.osc.earth) before
-# deploying production; see PR for #437 for the full checklist.
+# This is an ordinary zone route (no `custom_domain`), so it attaches the
+# pattern to this worker within the osc.earth zone -- it does not create or
+# touch any DNS record, and it does not affect any other route already
+# published on osc.earth (demo.osc.earth, develop-demo.osc.earth,
+# api.osc.earth, or either osa-worker*.workers.dev name). Deploy dev first
+# and verify it (curl /health and /version on develop-widget.osc.earth/osa)
+# before deploying production; see PR for #437 for the full checklist.
+#
+# IMPORTANT, confirmed during #437's dev rollout: unlike `custom_domain =
+# true`, an ordinary route does NOT provision a DNS record, and the route
+# is unreachable from the public internet until one exists. Both
+# widget.osc.earth and develop-widget.osc.earth need a NEW proxied
+# (orange-cloud) DNS record in the osc.earth zone -- any target works, the
+# same way demo.osc.earth / develop-demo.osc.earth already have one -- so
+# that Cloudflare's edge accepts the hostname before it ever evaluates the
+# route pattern above. `wrangler deploy` reporting the route as "Deployed"
+# does not mean this record exists; verify with a plain `curl` against the
+# public hostname, not just against the deploy output.
 #
 # =============================================================================
 # Turnstile Setup

@@ -21,7 +21,7 @@ OSA uses a multi-layer security architecture to protect the backend API from abu
            ▼                              ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    OSA CLOUDFLARE WORKER                            │
-│         (assistant.osc.earth / develop-assistant.osc.earth;         │
+│    (widget.osc.earth/osa / develop-widget.osc.earth/osa;            │
 │          osa-worker*.workers.dev names retained but not public)     │
 ├─────────────────────────────────────────────────────────────────────┤
 │  1. Turnstile Verification (for web clients)                        │
