@@ -86,6 +86,39 @@ console.log('\nbuildWorkerSource bakes the config in');
     !src.includes('undefined'),
     'no config field renders as undefined, which would silently load the wrong build'
   );
+
+  // The template was never EXECUTED by any test, so every nesting mistake in it
+  // was invisible here and would first appear as a worker that dies on start.
+  // It is now two generated sources concatenated, which makes that considerably
+  // easier to get wrong.
+  let parseError = null;
+  try {
+    // eslint-disable-next-line no-new-func
+    new Function(src);
+  } catch (err) {
+    parseError = err;
+  }
+  assert(parseError === null,
+    `the assembled worker source is parseable JavaScript${parseError ? ': ' + parseError.message : ''}`);
+}
+
+console.log('\nthe worker carries the egress guard, installed before anything is fetched');
+{
+  const src = buildWorkerSource(RUNTIME);
+
+  assert(src.includes('__install'), 'the egress guard is actually in the worker source, not merely exported');
+  assert(src.indexOf('__install') < src.indexOf('pyodide.js'),
+    'the guard is installed BEFORE the loader is fetched, since importScripts is one of the transports it shims');
+  assert(src.includes('__seal(["https://zarr.nemar.org/"])'),
+    "the boot ends by sealing the allowlist down to the community's fetch_allow");
+
+  // The distinction the two allowlists exist for: during boot the runtime may
+  // reach the CDN it is assembled from, and executed code may reach the data
+  // plane. Neither set may quietly become the other.
+  const beforeSeal = src.slice(0, src.indexOf('__seal('));
+  assert(!beforeSeal.includes('zarr.nemar.org'),
+    'fetch_allow is NOT reachable during boot: the data plane appears nowhere before the seal');
+  assert(beforeSeal.includes('cdn.jsdelivr.net'), 'the boot allowlist does carry the CDN the loader comes from');
 }
 
 console.log('\na successful boot reaches READY and reports its version');
@@ -253,6 +286,57 @@ console.log('\na runtime config without a version is refused at construction');
     threw = true;
   }
   assert(threw, 'constructing without pyodide_version throws rather than booting the wrong build');
+}
+
+console.log('\na failed boot TERMINATES its worker rather than leaving it downloading');
+{
+  // A real worker, with its real terminate() counted rather than replaced: a
+  // worker that failed to boot may still be mid-download, and leaving it alive
+  // holds a Pyodide heap and an open connection for a runtime nothing will use.
+  // Deleting the _disposeWorker() call in _failBoot changed nothing observable
+  // before this existed.
+  const counting = (name) => {
+    const calls = { terminated: 0 };
+    const factory = () => {
+      const w = new Worker(new URL(`./test-workers/${name}.js`, import.meta.url).href);
+      const native = w.terminate.bind(w);
+      w.terminate = () => {
+        calls.terminated++;
+        return native();
+      };
+      return w;
+    };
+    return { calls, factory };
+  };
+
+  const onTimeout = counting('silent');
+  const rt1 = new PyodideRuntime({ runtime: RUNTIME, workerFactory: onTimeout.factory, bootTimeoutMs: 300 });
+  try { await rt1.boot(); } catch { /* expected */ }
+  assertEqual(onTimeout.calls.terminated, 1, 'a boot that times out terminates its worker exactly once');
+
+  const onError = counting('failing');
+  const rt2 = new PyodideRuntime({ runtime: RUNTIME, workerFactory: onError.factory, bootTimeoutMs: 5000 });
+  try { await rt2.boot(); } catch { /* expected */ }
+  assertEqual(onError.calls.terminated, 1, 'a boot that fails with a runtime error terminates its worker too');
+}
+
+console.log('\nthe deadline is the CONFIGURED one, not a constant that happens to fire');
+{
+  // Every timeout assertion above would pass equally if bootTimeoutMs were
+  // ignored and some fixed delay were used instead, because they only assert
+  // THAT it fired. These assert the value reaches the timer.
+  const timeToFail = async (ms) => {
+    const rt = new PyodideRuntime({ runtime: RUNTIME, workerFactory: workerFrom('silent'), bootTimeoutMs: ms });
+    const started = Date.now();
+    try { await rt.boot(); } catch { /* expected */ }
+    return Date.now() - started;
+  };
+
+  const shortWait = await timeToFail(200);
+  const longWait = await timeToFail(1200);
+  assert(shortWait < 700, `a 200ms deadline fires promptly rather than on a fixed delay (took ${shortWait}ms)`);
+  assert(longWait - shortWait > 500,
+    `a longer deadline waits measurably longer (200ms -> ${shortWait}ms, 1200ms -> ${longWait}ms)`);
 }
 
 console.log('\n' + '='.repeat(60));

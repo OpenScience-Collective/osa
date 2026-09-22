@@ -72,6 +72,15 @@ export function isUrlAllowed(rawUrl, prefixes, options = {}) {
 
   for (const prefix of prefixes || []) {
     let allow;
+    // WHATWG URL parsing collapses ".." at parse time, so an entry like
+    // "https://host/data/../" parses to pathname "/" and silently grants the
+    // WHOLE ORIGIN instead of the scoped path someone meant to write. This is
+    // config input rather than attacker input, but a typo that quietly widens an
+    // allowlist is worse than one that errors, so entries containing dot
+    // segments are refused outright.
+    if (/(^|\/)\.\.?(\/|$)/.test(String(prefix))) {
+      continue;
+    }
     try {
       allow = new URL(String(prefix));
     } catch {
@@ -106,27 +115,33 @@ export function isUrlAllowed(rawUrl, prefixes, options = {}) {
  * @returns {string}
  */
 export function buildEgressGuardSource({ bootAllow = [] } = {}) {
+  // IMPORTANT: this is a FRAGMENT, not a standalone script. The caller must
+  // embed it inside a function scope (buildWorkerSource wraps the whole worker
+  // in an IIFE).
+  //
+  // An earlier version emitted these as top-level statements. In a classic
+  // Worker, top-level `function` declarations become properties of the global
+  // object, which made `self.__seal` a directly callable, unauthenticated
+  // global: one line of executed code re-widened the allowlist to any origin.
+  // That was demonstrated with a working proof. Nothing here may be declared
+  // at top level, and nothing may be assigned to `self` except the shims.
   return `
-  // ---- egress guard (phase 2 step 2) ----
   const DENY_REASON = ${JSON.stringify(DENY_REASON)};
   const isUrlAllowed = ${isUrlAllowed.toString()};
 
-  const __egress = {
-    // Wide during boot so packages can be installed, then sealed.
-    allow: ${JSON.stringify(bootAllow)},
-    sealed: false,
-    denials: [],
-  };
+  const __egress = { allow: ${JSON.stringify(bootAllow)}, sealed: false };
 
-  function __seal(fetchAllow) {
-    // One-way. Boot reaches the wheel origin; user code must not inherit that,
-    // and a guard that can be widened again is not a guard.
+  // One-shot. The previous version tracked a sealed flag and never read it,
+  // so sealing could be repeated and widened at will.
+  const __seal = (fetchAllow) => {
+    if (__egress.sealed) {
+      throw new Error('egress allowlist is already sealed and cannot be changed');
+    }
     __egress.allow = Array.isArray(fetchAllow) ? fetchAllow.slice() : [];
     __egress.sealed = true;
-  }
+  };
 
-  function __denied(url, reason) {
-    __egress.denials.push({ url: String(url).slice(0, 200), reason });
+  const __denied = (url, reason) => {
     const err = new Error(
       'Blocked by the runtime egress policy (' + reason + '): ' + String(url).slice(0, 200) +
       '. Only origins in this community\\'s fetch_allow are reachable from executed code.'
@@ -134,25 +149,60 @@ export function buildEgressGuardSource({ bootAllow = [] } = {}) {
     err.name = 'EgressDenied';
     err.reason = reason;
     return err;
-  }
-
-  function __check(url) {
-    const verdict = isUrlAllowed(url, __egress.allow, { base: self.location && self.location.href });
-    if (!verdict.allowed) throw __denied(url, verdict.reason);
-  }
-
-  // fetch. credentials are omitted so a same-origin request cannot silently
-  // carry the embedding page's cookies into model-written code's reach.
-  const __nativeFetch = self.fetch.bind(self);
-  self.fetch = function (input, init) {
-    const url = (input && typeof input === 'object' && 'url' in input) ? input.url : input;
-    __check(url);
-    const merged = Object.assign({}, init, { credentials: 'omit' });
-    return __nativeFetch(input, merged);
   };
 
-  // XMLHttpRequest. Pyodide's synchronous HTTP shims reach for this, so leaving
-  // it unshimmed would leave a second door open beside a guarded fetch.
+  const __check = (url) => {
+    const verdict = isUrlAllowed(url, __egress.allow);
+    if (!verdict.allowed) throw __denied(url, verdict.reason);
+    return true;
+  };
+
+  // Replace a global so the original is unreachable and the shim cannot be
+  // swapped back out. WebIDL members usually live on the global's PROTOTYPE, so
+  // assigning an own property alone can leave the pristine native one reachable
+  // via Object.getPrototypeOf(self).
+  const __install = (name, value) => {
+    let proto = Object.getPrototypeOf(self);
+    while (proto && proto !== Object.prototype) {
+      if (Object.getOwnPropertyDescriptor(proto, name)) {
+        try { delete proto[name]; } catch (e) { /* non-configurable; own property still shadows */ }
+      }
+      proto = Object.getPrototypeOf(proto);
+    }
+    try {
+      Object.defineProperty(self, name, {
+        value, writable: false, configurable: false, enumerable: true,
+      });
+    } catch (e) {
+      self[name] = value;
+    }
+  };
+
+  const __nativeFetch = self.fetch.bind(self);
+
+  __install('fetch', function (input, init) {
+    // Normalize to a Request ONCE, then check and dispatch the SAME object.
+    // Reading \`input.url\` for the check while passing \`input\` to fetch reads one
+    // object through two different algorithms, and they can be made to
+    // disagree: { url: allowedUrl, toString() { return evilUrl } } passed the
+    // check and fetched the evil URL. Proven with running code.
+    let request;
+    try {
+      request = new Request(input, init);
+    } catch (e) {
+      throw __denied(typeof input === 'string' ? input : '[unparseable request]', DENY_REASON.UNPARSEABLE);
+    }
+    __check(request.url);
+    // credentials omitted so a same-origin request cannot carry the embedding
+    // page's cookies. redirect 'error' because a 302 from an ALLOWED origin to a
+    // disallowed one was followed and its body delivered; also proven. Manual
+    // redirect handling cannot re-check, since an opaque-redirect response
+    // exposes no Location header cross-origin, so failing closed is the only
+    // correct option. A data plane that legitimately redirects will surface as
+    // an error rather than as a silent hole.
+    return __nativeFetch(new Request(request, { credentials: 'omit', redirect: 'error' }));
+  });
+
   if (self.XMLHttpRequest) {
     const __open = self.XMLHttpRequest.prototype.open;
     self.XMLHttpRequest.prototype.open = function (method, url, ...rest) {
@@ -162,24 +212,35 @@ export function buildEgressGuardSource({ bootAllow = [] } = {}) {
     };
   }
 
-  // WebSocket and EventSource are refused outright rather than allowlisted.
-  // Nothing in the runtime needs a persistent channel, and a long-lived socket
-  // is a poor fit for an allowlist whose whole model is per-request. This is the
-  // deliberately strict default; relaxing it later is a config change, while
-  // tightening it later would break working embeds.
-  //
+  // importScripts performs a real cross-origin GET and is completely outside
+  // fetch and XHR. It was previously unguarded, and the worker's own boot
+  // depends on it, so it is guarded rather than removed.
+  if (typeof self.importScripts === 'function') {
+    const __nativeImport = self.importScripts.bind(self);
+    __install('importScripts', function (...urls) {
+      for (const u of urls) __check(u);
+      return __nativeImport(...urls);
+    });
+  }
+
+  // CacheStorage performs real network requests through Cache.add/addAll, which
+  // never touch the fetch shim. Nothing in the runtime needs it.
+  if ('caches' in self) {
+    try {
+      Object.defineProperty(self, 'caches', {
+        get() { throw __denied('caches', DENY_REASON.TRANSPORT); },
+        configurable: false,
+      });
+    } catch (e) { /* not redefinable in this environment */ }
+  }
+
   // Defined UNCONDITIONALLY, not guarded by an existence check. An earlier
   // version only replaced these when the global already existed, which left two
   // holes: an environment that lacks one today and gains it later would run
   // unshimmed, and a test could not tell "absent" from "allowed" and so passed
-  // vacuously. Defining the blocker either way closes both.
-  self.WebSocket = function () {
-    throw __denied('websocket', DENY_REASON.TRANSPORT);
-  };
-  self.EventSource = function () {
-    throw __denied('eventsource', DENY_REASON.TRANSPORT);
-  };
-  // ---- end egress guard ----
+  // vacuously.
+  __install('WebSocket', function () { throw __denied('websocket', DENY_REASON.TRANSPORT); });
+  __install('EventSource', function () { throw __denied('eventsource', DENY_REASON.TRANSPORT); });
   `;
 }
 
@@ -195,19 +256,73 @@ export function buildEgressGuardSource({ bootAllow = [] } = {}) {
  * @returns {string}
  */
 export function buildNamespaceSealSource() {
+  // NOTE: this has NOT been executed against a real Pyodide runtime. The JS test
+  // harness has no Python interpreter, so it is verified by inspection only and
+  // must be re-checked in the browser against the pinned Pyodide version before
+  // it is relied on. Said plainly because the previous version was verified by
+  // regex over its own source text, which cannot tell a working seal from a
+  // comment mentioning the right words.
   return [
-    'import sys as _sys',
+    'import builtins as _b, sys as _sys',
     '',
-    '# Anything that can install, fetch or introspect the loader is dropped before',
-    '# model-written code runs. micropip is the one that matters: reachable, it',
-    '# turns allow_install into a suggestion.',
-    'for _name in ("micropip", "pyodide_js", "pyodide_http"):',
+    '# Names executed code must not be able to reach.',
+    '#   micropip      installs packages, which makes allow_install advisory',
+    '#   js            the bridge to the host global scope; js.fetch would route',
+    '#                 around the shimmed self.fetch entirely',
+    '#   pyodide       pyodide.code.run_js executes arbitrary JavaScript, which is',
+    '#                 a direct path back to every global the guard just closed.',
+    '#                 The previous version missed this entirely: it dropped',
+    '#                 pyodide_js, a different module, and left pyodide.code open.',
+    '_BLOCKED_ROOTS = frozenset({',
+    '    "micropip", "js", "pyodide", "pyodide_js", "pyodide_http", "ctypes",',
+    '})',
+    '',
+    '',
+    'class _ImportBlocker:',
+    '    """Refuse blocked modules at the FINDER level, not the cache level.',
+    '',
+    '    Popping sys.modules only evicts a cache entry. Pyodide builds js and',
+    '    pyodide_js through an import hook over the live JS globals, so a later',
+    '    "import js" simply rebuilds an equally capable proxy. Worse, importlib',
+    '    .import_module does not go through builtins.__import__ at all, so',
+    '    wrapping that alone leaves a second door open. A meta_path finder sits',
+    '    in front of both.',
+    '    """',
+    '',
+    '    def find_spec(self, fullname, path=None, target=None):',
+    '        if fullname.partition(".")[0] in _BLOCKED_ROOTS:',
+    '            raise ImportError(',
+    '                f"{fullname!r} is not available to executed code. "',
+    '                "Network access goes through the runtime\'s own client, "',
+    '                "which enforces this community\'s fetch_allow."',
+    '            )',
+    '        return None',
+    '',
+    '',
+    '_sys.meta_path.insert(0, _ImportBlocker())',
+    '',
+    '# Evict anything already imported, so a live reference cannot be re-fetched',
+    '# from the cache without going through the finder above.',
+    'for _name in [n for n in _sys.modules if n.partition(".")[0] in _BLOCKED_ROOTS]:',
     '    _sys.modules.pop(_name, None)',
     '',
-    '# js is the bridge to the host global scope. Executed code reaching js.fetch',
-    '# directly would route around the shimmed self.fetch entirely.',
-    '_sys.modules.pop("js", None)',
+    '# Belt and braces: __import__ is what the import statement compiles to.',
+    '# Built through a factory so the original import is captured in a CLOSURE',
+    '# rather than left in module globals. An earlier version bound it globally',
+    '# and then deleted it, which made the FIRST import after sealing raise',
+    '# NameError instead of working. Executing this found that immediately;',
+    '# matching its source text never would have.',
+    'def _install_import_guard(_real):',
+    '    def _guarded_import(name, *args, **kwargs):',
+    '        if name.partition(".")[0] in _BLOCKED_ROOTS:',
+    '            raise ImportError(f"{name!r} is not available to executed code.")',
+    '        return _real(name, *args, **kwargs)',
     '',
-    'del _sys',
+    '    return _guarded_import',
+    '',
+    '',
+    '_b.__import__ = _install_import_guard(_b.__import__)',
+    '',
+    'del _b, _sys, _install_import_guard',
   ].join('\n');
 }

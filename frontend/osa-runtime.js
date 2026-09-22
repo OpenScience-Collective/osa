@@ -28,6 +28,8 @@
  * a community's own `fetch_allow` inside it.
  */
 
+import { buildEgressGuardSource } from './osa-egress.js';
+
 /** Lifecycle states. A runtime is in exactly one at a time. */
 export const RUNTIME_STATE = Object.freeze({
   IDLE: 'idle',
@@ -69,11 +71,32 @@ export function buildWorkerSource(runtime) {
   const indexURL = `https://cdn.jsdelivr.net/pyodide/v${version}/full/`;
   const preload = JSON.stringify(runtime.preload || []);
 
+  // The egress guard is installed as the worker's FIRST statement, before the
+  // loader is even fetched, because `importScripts` is one of the transports it
+  // shims and the boot itself goes through it. A guard installed after boot
+  // would leave the whole download window unguarded.
+  //
+  // Its boot allowlist is the Pyodide CDN plus any configured wheel index, and
+  // NOT the community's `fetch_allow`: those are the origins the runtime needs
+  // to assemble itself, which is a strictly different set from the origins
+  // executed code may reach.
+  const bootAllow = [indexURL].concat(runtime.index_urls || []);
+  const guard = buildEgressGuardSource({ bootAllow });
+  const fetchAllow = JSON.stringify(runtime.fetch_allow || []);
+
   // Assembled as a template so the config is baked in at build time rather than
   // posted after boot. A worker that has to ask for its own configuration has a
   // window where it is alive but unconfigured, and that window is exactly where a
   // half-initialized runtime would be reachable.
+  // One function scope for the guard and the worker body together. The guard is
+  // a fragment that must not reach global scope (a top-level `function` in a
+  // classic worker becomes a property of the global object, which made the
+  // sealing function publicly callable), and the boot handler has to be able to
+  // call `__seal`, so they share a scope rather than communicate through one.
   return `
+    (function () {
+    ${guard}
+
     let pyodide = null;
 
     const send = (msg) => self.postMessage(msg);
@@ -101,6 +124,18 @@ export function buildWorkerSource(runtime) {
           await pyodide.loadPackage(preload[i]);
         }
 
+        // Install-time capability ends HERE, before anything executable exists.
+        // Every package this runtime will ever have is installed during boot:
+        // \`preload\` plus, in step 3, the community's \`allow_install\` list, which
+        // is static config and so has no reason to be deferred. An import of
+        // anything else then yields \`denied_import\` rather than a silent
+        // install, which is the behavior #431 asks for, and it is what lets the
+        // allowlist narrow to \`fetch_allow\` before any user code runs.
+        //
+        // The seal is ONE-SHOT. Moving this call later is therefore a deliberate
+        // decision that widens what executed code can reach, not a refactor.
+        __seal(${fetchAllow});
+
         send({ type: 'ready', version: pyodide.version });
       } catch (err) {
         send({
@@ -110,6 +145,7 @@ export function buildWorkerSource(runtime) {
         });
       }
     };
+    })();
   `;
 }
 
@@ -156,6 +192,12 @@ export class PyodideRuntime {
   }) {
     if (!runtime || typeof runtime.pyodide_version !== 'string') {
       throw new TypeError('PyodideRuntime requires a runtime config with pyodide_version');
+    }
+    if (typeof bootTimeoutMs !== 'number' || !Number.isFinite(bootTimeoutMs) || bootTimeoutMs <= 0) {
+      // Left unvalidated, a negative value is a coin flip: the host clamps it to
+      // about a millisecond, so the boot either fails spuriously or wins the race
+      // and is silently ignored, with no error in either case.
+      throw new TypeError(`bootTimeoutMs must be a positive finite number, got ${bootTimeoutMs}`);
     }
     this.runtime = runtime;
     this.onProgress = onProgress;
@@ -256,6 +298,14 @@ export class PyodideRuntime {
   }
 
   _onWorkerMessage(msg) {
+    // Once a boot has settled, protocol messages from that worker are ignored.
+    // A second `ready` previously overwrote `version` and refired onStateChange
+    // after boot() had already resolved and the caller had moved on, which is
+    // silent: no error, and the UI simply sees a version change out from under
+    // it. `progress` is exempt because it is advisory and harmless either way.
+    if (this._settle === null && (msg.type === 'ready' || msg.type === 'error')) {
+      return;
+    }
     if (msg.type === 'progress') {
       this.onProgress(msg);
       return;
