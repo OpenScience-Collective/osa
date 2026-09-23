@@ -355,8 +355,8 @@ Two live checks, both against real, production endpoints:
   CORS for the whole community API is `_is_authorized_origin` (`community.py:868-924`, platform demo origins plus the community's own
   `cors_origins`) enforced as `CORSMiddleware` (`src/api/main.py`), and independently at the edge by `workers/osa-worker/index.js`'s
   `getCorsHeaders`/`isAllowedOrigin`, whose allowlist is a fixed set of each community's known embed origins
-  (for nemar: `nemar.org`, `www.nemar.org`, plus the platform's demo hosts: the bare `osc.earth`, `demo.osc.earth`,
-  `*-demo.osc.earth` and the legacy `*.pages.dev` previews).
+  (for nemar: `nemar.org`, `www.nemar.org` and the staging site `test.nemar.org`, which the edge also admits as any `*.nemar.org`,
+  plus the platform's demo hosts: the bare `osc.earth`, `demo.osc.earth`, `*-demo.osc.earth` and the legacy `*.pages.dev` previews).
   An origin not on that list gets `Access-Control-Allow-Origin: https://demo.osc.earth`, a **fixed fallback value, not the requester's own
   origin**, which fails the browser's own CORS check for any other origin.
   **So once the wheel route deploys, it will be narrower than `zarr.nemar.org`:
