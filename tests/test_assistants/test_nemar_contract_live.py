@@ -21,7 +21,9 @@ the wheel actually committed beside the prompt.
 from __future__ import annotations
 
 import ast
+import json
 import re
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -34,6 +36,7 @@ from src.tools.mcp_client import discover_mcp_tools
 
 NEMAR_DIR = Path(__file__).resolve().parents[2] / "src" / "assistants" / "nemar"
 NEMAR_MCP_URL = "https://mcp.nemar.org/mcp"
+RUNNER_PATH = Path(__file__).resolve().parents[2] / "scripts" / "run_python_browser_recipe.py"
 
 
 def _vendored_eegprep_lean_wheel() -> Path:
@@ -439,4 +442,83 @@ class TestReadWindowContract:
         assert not problems, (
             f"the live python_browser recipe cannot run on the vendored wheel "
             f"({WHEEL_PATH.name}): {problems}\n{snippet}"
+        )
+
+
+@pytest.mark.network
+class TestLiveRecipeOnCPython:
+    """The daily live check (#432): run production's actual `python_browser` recipe,
+    unmodified, in a fresh CPython interpreter with nothing installed but the
+    vendored wheel -- the same bytes this repository serves same-origin to a
+    reader's browser. The tests above check the recipe's names and keywords fit the
+    wheel's signatures; this one runs it, over the real network, against real data.
+
+    `eegprep_lean.transport.UrllibTransport` (the CPython, non-Pyodide path this
+    subprocess actually takes) sends ``User-Agent: eegprep-lean``, never the bare
+    ``Python-urllib/x.y`` default -- see that module's own ``USER_AGENT`` constant
+    and its comment, which already names the NEMAR hosts refusing the default. So
+    this test needs no user-agent workaround; if that ever changes upstream, this
+    is exactly the test that would start failing with a 403 from zarr.nemar.org.
+    """
+
+    async def test_the_live_recipe_runs_on_the_vendored_wheel(self, tmp_path: Path) -> None:
+        tools = discover_mcp_tools(McpServer(name="nemar", url=NEMAR_MCP_URL))
+        list_recordings = next(t for t in tools if t.name == "nemar_list_recordings")
+        read_window = next(t for t in tools if t.name == "nemar_read_window")
+
+        recordings = await list_recordings.ainvoke({"dataset_id": "nm000103", "limit": 1})
+        recording = recordings["recordings"][0]
+        group_name = recording["groups"][0]["name"]
+
+        result = await read_window.ainvoke(
+            {
+                "dataset_id": "nm000103",
+                "recording": recording["path"],
+                "group": group_name,
+                "start_s": 0,
+                "duration_s": 2,
+            }
+        )
+
+        recipe = result["recipe"]
+        snippet = recipe["how_to"]["python_browser"]
+        sample_slice = recipe["sample_slice"]
+        start_sample, end_sample = sample_slice["start"], sample_slice["end"]
+        width = end_sample - start_sample
+
+        recipe_file = tmp_path / "recipe.py"
+        recipe_file.write_text(snippet, encoding="utf-8")
+
+        completed = subprocess.run(
+            [
+                "uv",
+                "run",
+                "--isolated",
+                "--no-project",
+                "--with",
+                f"eegprep-lean[zarr] @ file://{WHEEL_PATH.resolve()}",
+                "python",
+                str(RUNNER_PATH),
+                str(recipe_file),
+                str(start_sample),
+                str(end_sample),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+
+        assert completed.returncode == 0, (
+            f"the live recipe failed under the vendored wheel on CPython "
+            f"({WHEEL_PATH.name}):\n{snippet}\n"
+            f"--- stdout ---\n{completed.stdout}\n--- stderr ---\n{completed.stderr}"
+        )
+        report = json.loads(completed.stdout.strip().splitlines()[-1])
+        bound = report.get("window") or report.get("digital")
+        assert bound is not None, (
+            f"the recipe ran but bound neither `window` nor `digital`: {report}\n{snippet}"
+        )
+        assert bound["shape"][-1] == width, (
+            f"expected a window {width} samples wide (sample_slice {start_sample}-{end_sample}), "
+            f"got {bound}"
         )

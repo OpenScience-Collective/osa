@@ -73,9 +73,17 @@ jobs:
           # The browser-lane guard: read_window's live recipe still carries
           # how_to.python_browser and a sample range, and every eegprep_lean
           # name that recipe uses is exported by the wheel committed beside
-          # the prompt.
-          run_target "test_nemar_contract_live.py" \
-            tests/test_assistants/test_nemar_contract_live.py
+          # the prompt. TestLiveRecipeOnCPython runs separately below, since it
+          # shells out to `uv run --isolated` and is worth its own pass/fail line.
+          run_target "test_nemar_contract_live.py (recipe + wheel contract)" \
+            tests/test_assistants/test_nemar_contract_live.py -k "not TestLiveRecipeOnCPython"
+
+          # The strongest guard (#432): run production's actual python_browser
+          # recipe, unmodified, on CPython with nothing installed but the
+          # vendored wheel. A name/keyword match can miss what only running the
+          # recipe catches.
+          run_target "test_nemar_contract_live.py::TestLiveRecipeOnCPython" \
+            tests/test_assistants/test_nemar_contract_live.py::TestLiveRecipeOnCPython
 
           if [ -n "$failures" ]; then
             # A random delimiter, so no line of the report can end the value early.
@@ -120,6 +128,9 @@ jobs:
               '- `nemar_read_window`\'s live recipe now calls an eegprep_lean name the vendored wheel',
               '  (`src/assistants/nemar/runtime/wheels/`) does not export -- a server-side change or a wheel',
               '  that needs bumping and re-vendoring.',
+              '- TestLiveRecipeOnCPython specifically: the recipe runs but fails against the real data --',
+              '  a signature match is not proof it executes correctly. Check the subprocess stderr in the',
+              '  job log; a 403 there means zarr.nemar.org is refusing the transport\'s User-Agent.',
               '',
               'This closes itself on the next green run.',
             ].join('\n');
