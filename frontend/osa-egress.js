@@ -242,7 +242,7 @@ export function buildEgressGuardSource({ bootAllow = [] } = {}) {
   // and EventSource below. Nothing in the runtime needs it: Pyodide loads its
   // wasm binary, lock file and packages with fetch, not XHR (verified against
   // the vendored pyodide.asm.js), and the namespace seal below already removes
-  // every Python path -- js, pyodide, pyodide_http -- that could reach it.
+  // every Python path that could reach it (js, pyodide, pyodide_http).
   __install('XMLHttpRequest', function () { throw __denied('xmlhttprequest', DENY_REASON.TRANSPORT); });
 
   // importScripts performs a real cross-origin GET and is completely outside
