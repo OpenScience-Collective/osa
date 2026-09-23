@@ -429,10 +429,10 @@ console.log('\na second request while one is answered gets its own result');
 //
 // IndexedDB does not exist under Bun, so `new WorkspaceStore({community})`
 // with no dbFactory is a REAL store whose every write genuinely fails --
-// not a stand-in for one. That is exactly "a store that genuinely fails,
-// for example a quota you set to zero through the module's real
-// configuration", the failure mode the phase plan asks be tested this way,
-// and it exercises the controller's real amendment logic end to end.
+// not a stand-in for one (the NO MOCK policy asks for a store that
+// genuinely fails, such as a real quota set to zero through the module's
+// own configuration, rather than a stubbed method), and it exercises the
+// controller's real amendment logic end to end.
 
 console.log('\nwith no workspace configured, a saved-files result is untouched');
 {
@@ -457,6 +457,30 @@ console.log('\na workspace write that genuinely fails drops the artifact and not
   assert(/\[workspace\] could not save artifacts\/file-1\.txt: IndexedDB is not available in this browser/.test(result.stderr),
     'and the second');
   assertEqual(result.status, 'ok', 'the run itself is not failed by a workspace write that fails');
+  rt.terminate();
+}
+
+console.log('\na workspace failure note is never clipped away when stderr_chars is small (E4)');
+{
+  const workspace = new WorkspaceStore({ community: 'test-community' });
+  const smallStderr = { ...RUNTIME, limits: { ...RUNTIME.limits, stderr_chars: 256 } };
+  const { rt, controller } = setup({ workspace, runtime: smallStderr });
+  // FILES:20 makes 21 real failures (20 explicit + the automatic-files
+  // placeholder), each around 90+ characters: the WHOLE note cannot
+  // possibly fit in a 256-character stderr, a floor a community can
+  // actually configure (RUNTIME_LIMITS.stderr_chars.min, osa-output.js).
+  const result = await controller.answer(request('call-workspace-small-stderr', 'FILES:20'));
+  assertEqual(result.artifacts.length, 0, 'every explicit save is still dropped');
+  assert(result.stderr.length <= 256, `stderr never exceeds the community's own 256-char limit (got ${result.stderr.length})`);
+  assert(
+    /\[workspace\] could not save artifacts\/file-0\.txt: IndexedDB is not available in this browser/.test(result.stderr),
+    `the first (sorted) failure line survives WHOLE, not clipped mid-line (got ${JSON.stringify(result.stderr)})`
+  );
+  assert(/and \d+ more$/.test(result.stderr), `a trailing "and N more" line reports what did not fit (got ${JSON.stringify(result.stderr)})`);
+  assert(
+    !/characters omitted/.test(result.stderr),
+    `the note is dropped by WHOLE lines, never by clipText's head/tail marker (got ${JSON.stringify(result.stderr)})`
+  );
   rt.terminate();
 }
 
