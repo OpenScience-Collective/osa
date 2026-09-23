@@ -23,6 +23,7 @@ import stockLock from 'pyodide/pyodide-lock.json';
 import pyodidePackage from 'pyodide/package.json';
 import { buildWorkerConfig } from './osa-runtime.js';
 import { createWorkerRuntime } from './osa-worker-core.js';
+import { rangeResponse } from './test-support/byte-range.js';
 
 let passed = 0;
 let failed = 0;
@@ -82,18 +83,37 @@ console.log('='.repeat(60));
 console.log('NEMAR data lane on the real Pyodide');
 console.log('='.repeat(60));
 
-console.log('\nthe overlay resolves against the Pyodide it is pinned to');
+console.log('\nevery community runtime resolves against the Pyodide these tests run');
 {
-  assertEqual(PYTHON.pyodide_version, pyodidePackage.version, 'NEMAR pins the Pyodide these tests run on');
-  const known = new Set([...Object.keys(stockLock.packages), ...Object.keys(OVERLAY)]);
-  for (const [key, entry] of Object.entries(OVERLAY)) {
-    const missing = entry.depends.filter((name) => !known.has(name));
-    assertEqual(missing, [], `every dependency of ${key} is an entry in the distribution or the overlay`);
-    assert(!(key in stockLock.packages), `${key} adds a package rather than replacing one`);
+  // Every community, not only NEMAR: a runtime pinned to another Pyodide, or an
+  // overlay whose dependencies that Pyodide lacks, would pass every test here and
+  // fail only in a reader's browser.
+  const ASSISTANTS = new URL('src/assistants/', ROOT);
+  const checked = [];
+  for await (const path of new Bun.Glob('*/config.yaml').scan(ASSISTANTS.pathname)) {
+    const config = Bun.YAML.parse(await Bun.file(new URL(path, ASSISTANTS)).text());
+    const python = config.runtime && config.runtime.python;
+    if (!python) continue;
+    const id = config.id;
+    checked.push(id);
+    assertEqual(python.pyodide_version, pyodidePackage.version,
+      `${id} pins the Pyodide these tests run on, the only one CI can vouch for`);
+    let overlay = {};
+    if (python.lockfile) {
+      const lockfile = new URL(python.lockfile, new URL(`${path.split('/')[0]}/`, ASSISTANTS));
+      overlay = JSON.parse(await Bun.file(lockfile).text()).packages;
+    }
+    const known = new Set([...Object.keys(stockLock.packages), ...Object.keys(overlay)]);
+    for (const [key, entry] of Object.entries(overlay)) {
+      const missing = entry.depends.filter((name) => !known.has(name));
+      assertEqual(missing, [], `${id}: every dependency of ${key} is an entry in the distribution or the overlay`);
+      assert(!(key in stockLock.packages), `${id}: ${key} adds a package rather than replacing one`);
+    }
+    for (const name of python.preload || []) {
+      assert(known.has(name), `${id}: preload ${name} is something the lock can load`);
+    }
   }
-  for (const name of PYTHON.preload) {
-    assert(known.has(name), `preload ${name} is something the lock can load`);
-  }
+  assert(checked.includes('nemar'), `the search found NEMAR's runtime among ${JSON.stringify(checked)}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -170,14 +190,7 @@ const server = Bun.serve({
     const key = pathname.replace(/^\/(ignores-range\/)?rec\.zarr\//, '');
     const body = STORE.get(key);
     if (body === undefined) return new Response('Not Found', { status: 404 });
-    if (!range || !honorsRange) return new Response(body);
-    const suffix = /^bytes=-(\d+)$/.exec(range);
-    const closed = /^bytes=(\d+)-(\d+)$/.exec(range);
-    const open = /^bytes=(\d+)-$/.exec(range);
-    if (suffix) return new Response(body.slice(body.length - Number(suffix[1])), { status: 206 });
-    if (closed) return new Response(body.slice(Number(closed[1]), Number(closed[2]) + 1), { status: 206 });
-    if (open) return new Response(body.slice(Number(open[1])), { status: 206 });
-    return new Response('Range Not Satisfiable', { status: 416 });
+    return rangeResponse(body, honorsRange ? range : null);
   },
 });
 const BASE = `http://127.0.0.1:${server.port}/`;
