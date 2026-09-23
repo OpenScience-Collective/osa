@@ -273,7 +273,9 @@ and nothing written to it is ever sent to the server.
 Python cannot reach browser storage at all --
 the namespace seal removes `js`, `mountOPFS` is unreleased, and `mountNativeFS` is Chromium-only --
 so a run's files travel back to the host in the worker's own result message,
-the way its full, untruncated output already does,
+the way its fuller copy of the output already does
+(bounded at 262,144 characters per stream, `_FULL_CHARS`, not literally unbounded --
+see the note on `results/run-NNN/stdout.txt` below),
 and the host writes them to IndexedDB before that result is ever answered to the server.
 
 ### Layout
@@ -290,7 +292,8 @@ Every executed run is saved automatically,
 whether or not the model asked to keep anything:
 `scripts/run-NNN.py` (the code as it ran),
 `results/run-NNN/stdout.txt`, `stderr.txt` and `summary.txt`
-(the full, untruncated text, not the bounded copy the model saw),
+(the same 262,144-character-bounded copy `get_full_output` keeps, `_FULL_CHARS` in `osa-output.js` --
+far more than the model's own turn sees, but not literally untruncated),
 and a `results/run-NNN/figure-K.png` for each figure it produced.
 A `get_full_output` call is not a run and writes nothing.
 
