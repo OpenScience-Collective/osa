@@ -79,6 +79,30 @@ const PYTHON_BROWSER_RECIPE = [
   '# read_window(index, store, ...) does the same read in physical units, with labels',
 ].join('\n');
 
+// The ONE canonical snippet in NEMAR's system prompt: the first ```python fence
+// after this heading. Extracted from the real prompt text rather than
+// hand-copied here, so an edit that breaks the snippet fails this suite instead of
+// only failing in a reader's browser.
+const PROMPT_HEADING = "## Running code in the reader's browser";
+
+function extractPromptSnippet(promptText) {
+  const headingAt = promptText.indexOf(PROMPT_HEADING);
+  if (headingAt === -1) return null;
+  const afterHeading = promptText.slice(headingAt + PROMPT_HEADING.length);
+  const fenceMatch = afterHeading.match(/```python\n([\s\S]*?)\n```/);
+  return fenceMatch ? fenceMatch[1] : null;
+}
+
+// Whole-word substitution: a placeholder is an identifier-shaped token, and `\b`
+// treats `_` as a word character, so DATASET_ID never matches inside a longer name.
+function fillPlaceholders(snippet, substitutions) {
+  let filled = snippet;
+  for (const [name, value] of substitutions) {
+    filled = filled.replace(new RegExp(`\\b${name}\\b`, 'g'), value);
+  }
+  return filled;
+}
+
 console.log('='.repeat(60));
 console.log('NEMAR data lane on the real Pyodide');
 console.log('='.repeat(60));
@@ -178,12 +202,21 @@ async function buildStore() {
 
 const STORE = await buildStore();
 const seen = [];
+// Populated once BASE is known (a format-3 index.json is keyed by dataset_id and
+// served from this same loopback server; see "the prompt's own python snippet").
+const INDEX_DOCS = new Map();
 const server = Bun.serve({
   port: 0,
   fetch(request) {
     const { pathname } = new URL(request.url);
     const range = request.headers.get('range');
     seen.push({ pathname, range });
+    const indexMatch = pathname.match(/^\/([^/]+)\/zarr\/index\.json$/);
+    if (indexMatch) {
+      const doc = INDEX_DOCS.get(indexMatch[1]);
+      if (doc === undefined) return new Response('Not Found', { status: 404 });
+      return new Response(JSON.stringify(doc), { headers: { 'content-type': 'application/json' } });
+    }
     // /ignores-range/ serves the same store answering every request in full,
     // which is what a misconfigured host does and what the reader must refuse.
     const honorsRange = !pathname.startsWith('/ignores-range/');
@@ -307,6 +340,106 @@ window = await read_window(index, index.stores[0], start_sample=0, n_samples=2)
     assertEqual(result.status, 'error', 'the read fails');
     assert(/TransportError/.test(result.stderr) && /answered in full/.test(result.stderr),
       `as a TransportError saying why (got ${JSON.stringify(result.stderr.slice(0, 200))})`);
+  }
+
+  console.log("\nthe prompt's own python snippet is executable, through eegprep-lean's real index fetch");
+  {
+    const snippet = extractPromptSnippet(NEMAR.system_prompt);
+    assert(
+      snippet !== null,
+      `NEMAR's system_prompt has a \`\`\`python fence after the heading ${JSON.stringify(PROMPT_HEADING)}`
+    );
+
+    if (snippet !== null) {
+      const SNIPPET_DATASET_ID = 'xx099999';
+      const SNIPPET_PATH = 'sub-01/eeg/sub-01_task-test_eeg.set';
+      const SNIPPET_GROUP = 'eeg_250hz';
+      const READ_N_SAMPLES = 100;
+      // DATASET_ID, RECORDING_PATH and GROUP sit inside quotes the snippet already
+      // has (e.g. `read_index("DATASET_ID")`), so the substitution is the bare
+      // value, not a re-quoted one -- JSON.stringify here would double the quotes.
+      const substitutions = [
+        ['DATASET_ID', SNIPPET_DATASET_ID],
+        ['RECORDING_PATH', SNIPPET_PATH],
+        ['GROUP', SNIPPET_GROUP],
+        ['START_SAMPLE', '0'],
+        ['N_SAMPLES', String(READ_N_SAMPLES)],
+        ['CHANNELS', '[0, 1, 2]'],
+      ];
+      const filled = fillPlaceholders(snippet, substitutions);
+      for (const [name] of substitutions) {
+        assert(!new RegExp(`\\b${name}\\b`).test(filled), `no ${name} placeholder token remains after substitution`);
+      }
+
+      // A real format-3 index, served from this same loopback server. contract_base
+      // is BASE itself, so eegprep-lean's level0_url resolves to the existing
+      // rec.zarr/eeg_250hz/0 array the rest of this file already reads.
+      INDEX_DOCS.set(SNIPPET_DATASET_ID, {
+        format: 'nemar-zarr-index',
+        format_version: 3,
+        dataset_id: SNIPPET_DATASET_ID,
+        contract_base: BASE,
+        data_base: BASE,
+        store_count: 1,
+        stores: [
+          {
+            path: SNIPPET_PATH,
+            zarr: 'rec.zarr',
+            groups: [
+              {
+                name: SNIPPET_GROUP,
+                modality: 'EEG',
+                rate: 250.0,
+                n_channels: N_CHANNELS,
+                n_samples: N_SAMPLES,
+                n_view_levels: 0,
+              },
+            ],
+          },
+        ],
+      });
+
+      seen.length = 0;
+      const pointAtLoopback = await run(
+        'import eegprep_lean.index as _index\n' +
+          `_index.INDEX_URL_TEMPLATE = ${JSON.stringify(`${BASE}{dataset_id}/zarr/index.json`)}\n`
+      );
+      assertEqual(
+        pointAtLoopback.status,
+        'ok',
+        `pointing eegprep-lean at the loopback index, in a run() of its own (stderr: ${pointAtLoopback.stderr.slice(-300)})`
+      );
+
+      const result = await run(filled);
+      assertEqual(result.status, 'ok', `the prompt's own snippet runs unchanged (stderr: ${result.stderr.slice(-300)})`);
+      assert(
+        seen.some((r) => r.pathname === `/${SNIPPET_DATASET_ID}/zarr/index.json`),
+        'the server saw the index.json request the snippet made'
+      );
+
+      // A follow-up run() in the same namespace: `window` survives from the run above.
+      const printed = await run(
+        'import json\n' +
+          'print(json.dumps({"shape": list(window.data.shape), "unit": window.unit, "rate": window.rate, ' +
+          '"labels": list(window.labels or ()), "data": window.data.tolist()}))'
+      );
+      assertEqual(
+        printed.status,
+        'ok',
+        `printing window.data from a follow-up run() in the same namespace (stderr: ${printed.stderr.slice(-300)})`
+      );
+      const info = JSON.parse(printed.stdout || 'null') || {};
+      assertEqual(info.shape, [3, READ_N_SAMPLES], 'shape (3, 100), from three CHANNELS and N_SAMPLES=100');
+      assertEqual(info.unit, 'uV', "unit uV, from the store's channel metadata");
+      assertEqual(info.rate, 250, 'rate 250, from the channel group');
+      assertEqual(info.labels, LABELS, 'labels E1, E2, E3');
+      const expectedData = [0, 1, 2].map((c) =>
+        Array.from({ length: READ_N_SAMPLES }, (_, s) => digital(c, s) * SCALE[c] + OFFSET[c])
+      );
+      assertEqual(info.data, expectedData, 'physical values equal digital * scale + offset, per channel');
+      assertEqual(result.images.length, 1, "exactly one PNG image in the snippet's own result");
+      assertEqual(result.images[0] && result.images[0].mime, 'image/png', 'and it is a PNG');
+    }
   }
 } finally {
   server.stop(true);

@@ -358,3 +358,81 @@ class TestTheRunBudget:
         assert request["call_id"] == OTHER_CALL_ID
         session = _get_session_store(COMMUNITY)["sess-parked"]
         assert session.pending_call.runs_before == MAX_BROWSER_RUNS_PER_REPLY - 1
+
+
+class TestTheProviderDecidesWhetherImagesGo:
+    """The endpoint is where run 2's provider meets the result's images.
+
+    `build_live_tool_message` is tested one layer down with the decision already
+    made. These drive the endpoint with each provider's key header, so a decision
+    dropped or inverted at this call site fails here and nowhere else.
+    """
+
+    def _what_run_two_saw(self, client, monkeypatch, headers: dict) -> tuple[list, str]:
+        import base64
+
+        from langchain_core.messages import ToolMessage
+
+        from tests.helpers.images import tiny_png
+
+        _parked_session()
+        model = ScriptedChatModel(responses=[AIMessage(content="Here is the plot.")])
+        assistant = AssistantWithMetrics(
+            assistant=CommunityAssistant(
+                model=model,
+                config=_config(),
+                preload_docs=False,
+                declared_client_tools={"execute_code"},
+            ),
+            model="claude-haiku-4-5",
+            key_source="byok",
+        )
+        monkeypatch.setattr(
+            "src.api.routers.community.create_community_assistant",
+            lambda *_a, **_k: assistant,
+        )
+        png = base64.b64encode(tiny_png(width=6, height=4)).decode()
+        image = {"mime": "image/png", "data_base64": png, "width": 6, "height": 4}
+        result = {"call_id": CALL_ID, "status": "ok", "summary": "plotted", "images": [image]}
+
+        response = client.post(
+            f"/{COMMUNITY}/chat/resume", json=_body(result=result), headers=headers
+        )
+
+        assert response.status_code == 200
+        answered = next(
+            m
+            for m in model.seen_message_lists[0]
+            if isinstance(m, ToolMessage) and m.tool_call_id == CALL_ID
+        )
+        return answered.content, png
+
+    def test_an_anthropic_key_sends_the_image(self, client: TestClient, monkeypatch) -> None:
+        content, png = self._what_run_two_saw(
+            client, monkeypatch, {"X-Anthropic-API-Key": "sk-ant-test"}
+        )
+
+        images = [b for b in content if b.get("type") == "image"]
+        assert [b["source"]["data"] for b in images] == [png]
+
+    def test_an_openrouter_key_sends_a_placeholder_instead(
+        self, client: TestClient, monkeypatch
+    ) -> None:
+        content, png = self._what_run_two_saw(
+            client, monkeypatch, {"X-OpenRouter-Key": "sk-or-test"}
+        )
+
+        assert not any(b.get("type") == "image" for b in content)
+        assert png not in json.dumps(content)
+        assert (
+            "[image: 6x4 image/png, not attached: images are not sent to this model]"
+            in (content[0]["text"])
+        )
+
+    def test_no_resolvable_provider_sends_no_image(self, client: TestClient, monkeypatch) -> None:
+        """No key and no allowed origin: the real run would answer 403, and until then
+        nothing here may have decided in favor of images."""
+        content, png = self._what_run_two_saw(client, monkeypatch, {})
+
+        assert not any(b.get("type") == "image" for b in content)
+        assert png not in json.dumps(content)

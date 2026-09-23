@@ -39,14 +39,26 @@ class TestTheShippedConfig:
             True,
         )
 
-    def test_the_tool_points_the_model_at_the_browser_recipe(self, nemar: CommunityConfig) -> None:
-        """The model sees this description verbatim, and the recipe it names is the
-        one that works here; the desktop one starts a thread a browser cannot."""
+    def test_the_tool_teaches_the_read_that_is_in_physical_units(
+        self, nemar: CommunityConfig
+    ) -> None:
+        """The model sees this description verbatim. The read it names returns physical
+        units with labels, and the one it warns off returns stored digital counts, which
+        plot like EEG while being wrong."""
         assert nemar.extensions is not None
         description = nemar.extensions.client_tools[0].description
-        assert "python_browser" in description
-        assert "never use" in description and "python_zarr" in description
+        assert "eegprep_lean.read_index" in description
+        assert "eegprep_lean.read_window" in description
+        assert "open_array" in description and "digital counts" in description
+        assert "python_zarr" in description
         assert "display(eegprep_lean.plot_window(window).figure)" in description
+
+    def test_the_prompt_says_where_each_value_comes_from(self, nemar: CommunityConfig) -> None:
+        """index.store matches a store's path only, and nemar_read_window also accepts
+        the zarr name, so the prompt must name the field."""
+        prompt = nemar.system_prompt
+        assert "nemar_list_recordings" in prompt
+        assert "`path`" in prompt and "never its `zarr` name" in prompt
 
     def test_it_reaches_only_the_data_plane(self, nemar: CommunityConfig) -> None:
         assert nemar.runtime is not None and nemar.runtime.python is not None
@@ -66,6 +78,20 @@ class TestTheShippedConfig:
         assert "## Running code in the reader's browser" in prompt
         assert "python_browser" in prompt
         assert "eegprep-lean" in prompt
+
+    def test_the_prompt_reads_the_placeholder_a_withheld_image_carries(
+        self, nemar: CommunityConfig
+    ) -> None:
+        """On a model path that takes no images, a figure or overview arrives as a
+        placeholder, and the prompt tells the model what that phrase means. Both
+        sides are pinned here so a reworded placeholder cannot leave the model
+        describing an image it never received."""
+        from src.api.tool_results import IMAGES_NOT_SENT
+
+        prompt = nemar.system_prompt
+        assert IMAGES_NOT_SENT.startswith("not attached")
+        assert prompt.count("says it was not attached") == 1
+        assert "says the figure was not attached" in prompt
 
 
 class TestTheLockOverlay:

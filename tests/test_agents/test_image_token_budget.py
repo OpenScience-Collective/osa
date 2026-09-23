@@ -60,7 +60,8 @@ def _conversation(image_count: int = 1) -> list:
                 call_id=CALL_ID,
                 summary="peak 10.2 Hz",
                 images=[_image() for _ in range(image_count)],
-            )
+            ),
+            allow_images=True,
         ),
     ]
 

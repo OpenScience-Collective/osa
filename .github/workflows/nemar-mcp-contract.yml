@@ -1,0 +1,179 @@
+name: NEMAR MCP Contract
+
+# Watches NEMAR's live MCP server (mcp.nemar.org) and the eegprep-lean wheel
+# vendored beside the prompt, which nothing else does on a schedule (issue #432).
+#
+# The rest of this repository's tests prove the CLIENT against a real server
+# (tests/test_tools/test_mcp_client.py), and that the ASSISTANT wires up to
+# whatever that server presents (tests/test_assistants/test_nemar_mcp_wiring.py).
+# Both are deselected in the default CI sweep (`-m "not network"`), so nothing
+# runs them unless someone remembers to. This is that memory: a server-side
+# rename, a removed tool, or a `python_browser` recipe that starts calling an
+# eegprep_lean name the vendored wheel does not export would break NEMAR's
+# browser lane silently, between the runs that would otherwise catch it.
+
+on:
+  schedule:
+    # Once a day. This checks a third party's server and a fixed committed
+    # wheel, neither of which changes often enough to warrant more.
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  contract:
+    name: Check NEMAR's MCP contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: |
+          uv sync --frozen --extra dev
+
+      - name: Run the NEMAR MCP contract tests
+        id: contract
+        run: |
+          set +e
+          failures=""
+
+          run_target() {
+            local desc="$1"
+            shift
+            if uv run pytest -v "$@"; then
+              echo "ok    $desc"
+            else
+              echo "FAIL  $desc"
+              failures="${failures}\n- \`$desc\` failed"
+            fi
+          }
+
+          # The client wrapper against production: the documented tool set is
+          # still there, search still returns real datasets, a refusal still
+          # reads as text.
+          run_target "test_mcp_client.py::TestAgainstProductionNemar" \
+            tests/test_tools/test_mcp_client.py::TestAgainstProductionNemar
+
+          # The assistant's own wiring against production: every tool the
+          # prompt names is one the server actually serves, and vice versa.
+          run_target "test_nemar_mcp_wiring.py -m network" \
+            tests/test_assistants/test_nemar_mcp_wiring.py -m network
+
+          # The browser-lane guard: read_window's live recipe still carries
+          # how_to.python_browser and a sample range, and every eegprep_lean
+          # name that recipe uses is exported by the wheel committed beside
+          # the prompt.
+          run_target "test_nemar_contract_live.py" \
+            tests/test_assistants/test_nemar_contract_live.py
+
+          if [ -n "$failures" ]; then
+            # A random delimiter, so no line of the report can end the value early.
+            delimiter="report_$(openssl rand -hex 8)"
+            {
+              echo "failed=true"
+              echo "report<<$delimiter"
+              echo -e "$failures"
+              echo "$delimiter"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "failed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Also on any earlier failure, such as checkout or `uv sync`: a check that never
+      # ran is a failing check, and the issue is what makes a scheduled failure seen.
+      - name: Open or update an issue on failure
+        if: failure() || steps.contract.outputs.failed == 'true'
+        uses: actions/github-script@v7
+        env:
+          # Passed through env rather than interpolated into the script body;
+          # see widget-route-health.yml for why that habit matters here, where
+          # this job holds issues:write.
+          CONTRACT_REPORT: ${{ steps.contract.outputs.report }}
+        with:
+          script: |
+            const title = 'NEMAR MCP contract check failing';
+            const report =
+              process.env.CONTRACT_REPORT ||
+              '- The job failed before the checks ran (checkout, Python or `uv sync`), so nothing was checked.';
+            const body = [
+              'The scheduled check of NEMAR\'s live MCP server and its eegprep-lean wheel is failing.',
+              '',
+              report,
+              '',
+              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              '',
+              'Likely causes, cheapest first:',
+              '',
+              '- `mcp.nemar.org` is down or slow (a network blip, not a contract break).',
+              '- A tool was renamed or removed on the server side; the assistant\'s prompt still names the old one.',
+              '- `nemar_read_window`\'s live recipe now calls an eegprep_lean name the vendored wheel',
+              '  (`src/assistants/nemar/runtime/wheels/`) does not export -- a server-side change or a wheel',
+              '  that needs bumping and re-vendoring.',
+              '',
+              'This closes itself on the next green run.',
+            ].join('\n');
+
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'nemar-mcp-contract',
+            });
+
+            if (existing.data.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.data[0].number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['nemar-mcp-contract'],
+              });
+            }
+
+      - name: Close the tracking issue on recovery
+        if: steps.contract.outputs.failed == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'nemar-mcp-contract',
+            });
+            for (const issue of existing.data) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `Recovered: all NEMAR MCP contract checks green as of ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed',
+              });
+            }
+
+      - name: Fail the run so the schedule surfaces it
+        if: steps.contract.outputs.failed == 'true'
+        run: exit 1

@@ -149,3 +149,47 @@ class TestReplaceHistory:
         Asserted so a future reduction has to face the arithmetic rather than looking
         like a tidy-up."""
         assert MAX_MESSAGES_PER_SESSION // 4 >= 50
+
+    def test_it_scrubs_images_when_it_also_trims(self) -> None:
+        """Trimming and scrubbing are separate passes, and both must run when a run
+        is over the cap and carries an image, rather than one standing in for the
+        other."""
+        import base64
+
+        from tests.helpers.images import tiny_png
+
+        png = base64.b64encode(tiny_png(width=4, height=3)).decode()
+        image_turn = [
+            HumanMessage(content="overview"),
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "render", "args": {}, "id": "call_img", "type": "tool_call"}],
+            ),
+            ToolMessage(
+                content=[
+                    {"type": "text", "text": "overview"},
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": "image/png", "data": png},
+                    },
+                ],
+                tool_call_id="call_img",
+            ),
+            AIMessage(content="Here it is."),
+        ]
+        messages = _conversation(MAX_MESSAGES_PER_SESSION, with_tools=True) + image_turn
+        session = ChatSession("s", "c")
+
+        session.replace_history(messages)
+
+        assert len(session.messages) <= MAX_MESSAGES_PER_SESSION
+        kept = next(
+            m
+            for m in session.messages
+            if isinstance(m, ToolMessage) and m.tool_call_id == "call_img"
+        )
+        assert kept.content[1] == {
+            "type": "text",
+            "text": "[image: 4x3 image/png, not retained in history]",
+        }
+        assert png not in str([m.content for m in session.messages])

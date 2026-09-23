@@ -54,6 +54,7 @@ from src.api.tool_results import (
     build_history_tool_message,
     build_live_tool_message,
     build_unanswered_tool_message,
+    scrub_stored_images,
 )
 from src.assistants import registry
 from src.assistants.community import CommunityAssistant
@@ -571,8 +572,17 @@ class ChatSession:
         The cap is enforced by trimming from the FRONT and never between an assistant
         message and the tool results that answer it, because a tool result whose call is
         gone, or a call whose result is gone, is rejected by the provider outright.
+
+        Scrubbed for images before it is kept (`scrub_stored_images`). The graph's own
+        state can still carry a LIVE, image-bearing tool message here: a run that parks
+        a second browser call was seeded with `initial_messages`, which includes the
+        first call's live `build_live_tool_message` result, and a real MCP tool result
+        with an image is built directly by LangGraph's `ToolNode` rather than through
+        `build_history_tool_message`. Neither of those two sources is a
+        `ClientToolResult` this method can hand to `build_history_tool_message` itself,
+        so the scrub runs on the adopted messages generically instead.
         """
-        adopted = list(messages)
+        adopted = scrub_stored_images(list(messages))
         if len(adopted) > MAX_MESSAGES_PER_SESSION:
             adopted = _trim_preserving_tool_turns(adopted, MAX_MESSAGES_PER_SESSION)
         self.messages = adopted
@@ -944,6 +954,13 @@ class ProviderChoice:
                 )
         elif not self.api_key:
             raise ValueError("api_key must not be an empty string; use None for server mode")
+
+    @property
+    def takes_native_blocks(self) -> bool:
+        """Whether this path has been shown to accept Anthropic's native content
+        blocks: search_result citations and image blocks alike. The one place that
+        answers it, so citations, MCP images and browser figures cannot disagree."""
+        return self.provider == "anthropic"
 
 
 def _platform_choice(settings: Settings) -> ProviderChoice:
@@ -1479,10 +1496,14 @@ def create_community_assistant(
         # search result in a request must share one citations.enabled
         # setting; the provider choice is already fixed per request, so
         # this satisfies that constraint for free.
-        citations=provider_choice.provider == "anthropic",
+        citations=provider_choice.takes_native_blocks,
+        # The same gate, for the image block an MCP tool result (nemar_render_overview)
+        # can carry. See src.tools.mcp_client._content_of.
+        allow_mcp_images=provider_choice.takes_native_blocks,
         # None on the /ask path, which has no session to park a browser call in and so
-        # binds no client-executed tools at all. That is decision 7 of the phase plan,
-        # enforced by the default rather than by a check.
+        # binds no client-executed tools at all: /ask is one request and one answer, so
+        # nothing could carry a browser result back. Enforced by the default rather
+        # than by a check.
         declared_client_tools=declared_client_tools,
         browser_runs_left=browser_runs_left,
     )
@@ -2066,6 +2087,23 @@ def create_community_router(community_id: str) -> APIRouter:
         origin = http_request.headers.get("origin")
         byok = resolve_byok(x_anthropic_key, x_openrouter_key)
 
+        # Whether run 2 may carry the result's images, decided the same way
+        # `create_community_assistant` decides citations. Not an authorization
+        # check: `_stream_chat_response` makes that one, on the same inputs, and its
+        # 403 is the one a caller sees. So a refusal here only means no images. It
+        # runs before the call is claimed, because anything raised after the claim
+        # would leave the session unanswerable (see the note on the re-park below).
+        try:
+            allow_images = _resolve_provider(community_id, byok, origin).takes_native_blocks
+        except HTTPException as err:
+            logger.debug(
+                "No provider for /chat/resume images (%s: %s); sending placeholders",
+                err.status_code,
+                err.detail,
+                extra={"community_id": community_id},
+            )
+            allow_images = False
+
         session = get_session(community_id, body.session_id)
         if session is None:
             raise HTTPException(status_code=404, detail="Session not found or expired.")
@@ -2093,7 +2131,10 @@ def create_community_router(community_id: str) -> APIRouter:
         # have nothing left to abandon. Nothing in these two builders can raise today;
         # the re-park is here so that stays true when someone adds something that can.
         try:
-            live_messages = [*session.messages, build_live_tool_message(body.result)]
+            live_messages = [
+                *session.messages,
+                build_live_tool_message(body.result, allow_images=allow_images),
+            ]
             session.messages.append(build_history_tool_message(body.result))
         except Exception:
             session.set_pending_call(pending)
@@ -2614,6 +2655,37 @@ def create_community_router(community_id: str) -> APIRouter:
 # ---------------------------------------------------------------------------
 
 
+def _sse_safe_tool_output(tool_output: Any) -> str:
+    """Render a tool's `on_tool_end` output for the `tool_end` SSE event.
+
+    `tool_output` is the `ToolMessage` LangGraph's `ToolNode` built, not the tool's
+    raw return value, and `str()` on it prints its `content` in full. That was safe
+    while `content` was a string. An MCP tool can now return a block list carrying a
+    base64 PNG (`src.tools.mcp_client._content_of`), and `str()` would stream it.
+
+    So a block list keeps only what is known to be text: each text block's text, and
+    a one-line placeholder naming any other block's type. That fails closed for a
+    block spelling nobody has written yet. String content renders exactly as
+    `str(tool_output)` always has; nothing reads this field today beyond a log line
+    in the widget, so the rendering is for people reading the stream.
+    """
+    if not tool_output:
+        return ""
+    content = getattr(tool_output, "content", tool_output)
+    if not isinstance(content, list):
+        return str(tool_output)
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, str):
+            parts.append(block)
+        elif isinstance(block, dict) and block.get("type") == "text":
+            parts.append(str(block.get("text", "")))
+        else:
+            kind = block.get("type", "unknown") if isinstance(block, dict) else type(block).__name__
+            parts.append(f"[{kind} block, not shown in this event]")
+    return "\n".join(parts)
+
+
 def _extract_token_usage(event_data: dict) -> tuple[int, int, int, int]:
     """Extract token counts from an on_chat_model_end event.
 
@@ -2835,7 +2907,7 @@ async def _stream_ask_response(
                 sse_event = {
                     "event": "tool_end",
                     "name": event.get("name", ""),
-                    "output": str(tool_output) if tool_output else "",
+                    "output": _sse_safe_tool_output(tool_output),
                 }
                 yield f"data: {json.dumps(sse_event)}\n\n"
 
@@ -3187,7 +3259,7 @@ async def _stream_chat_response(
                 sse_event = {
                     "event": "tool_end",
                     "name": event.get("name", ""),
-                    "output": str(tool_output) if tool_output else "",
+                    "output": _sse_safe_tool_output(tool_output),
                 }
                 yield f"data: {json.dumps(sse_event)}\n\n"
 

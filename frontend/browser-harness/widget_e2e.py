@@ -19,7 +19,8 @@ then open http://127.0.0.1:PORT/browser-harness/widget-e2e.html and ask it to
 
 --nemar serves NEMAR's own config instead: its runtime, its lock overlay and the
 wheels its route serves, reading the live, public zarr.nemar.org. Ask it to "read"
-(read_window and a plot) or for the "recipe" (the python_browser snippet). Its MCP
+(read_window and a plot), for the "recipe" (the python_browser snippet), or for the
+"prompt" (the snippet NEMAR's prompt teaches, taken from its config). Its MCP
 servers are dropped, since the scripted model never calls them. --tamper-wheel serves
 every wheel one byte longer and still valid, the byte as the zip's comment: the
 negative control for the browser's integrity check, which alone can refuse it, so
@@ -57,7 +58,11 @@ FRONTEND = Path(__file__).resolve().parent.parent
 ROOT = FRONTEND.parent
 sys.path.insert(0, str(ROOT))
 
-from src.api.routers.community import AssistantWithMetrics, create_community_router  # noqa: E402
+from src.api.routers.community import (  # noqa: E402
+    AssistantWithMetrics,
+    ProviderChoice,
+    create_community_router,
+)
 from src.assistants.community import CommunityAssistant  # noqa: E402
 from src.assistants.registry import registry  # noqa: E402
 from src.core.config.community import CommunityConfig  # noqa: E402
@@ -107,12 +112,39 @@ print(url)
 print(window.shape, window.dtype, int(window.min()), int(window.max()))
 """
 
+
+def _prompt_snippet() -> str:
+    """The snippet NEMAR's prompt teaches, filled in for nm000103's first recording.
+
+    Read from the shipped prompt rather than copied here, so this runs what the model
+    is told to run. `frontend/test-data-lane.js` extracts it the same way.
+    """
+    prompt = NEMAR_CONFIG.read_text()
+    heading = prompt.index("## Running code in the reader's browser")
+    fence = re.search(r"```python\n(.*?)\n\s*```", prompt[heading:], re.DOTALL)
+    if fence is None:
+        raise ValueError("NEMAR's prompt has no python snippet under its browser heading")
+    snippet = "\n".join(line.removeprefix("  ") for line in fence.group(1).splitlines())
+    values = {
+        "DATASET_ID": "nm000103",
+        "RECORDING_PATH": "sub-NDARAA075AMK/eeg/sub-NDARAA075AMK_task-DespicableMe_eeg.set",
+        "GROUP": "eeg_250hz",
+        "START_SAMPLE": "2500",
+        "N_SAMPLES": "500",
+        "CHANNELS": "[0, 1, 2, 3]",
+    }
+    for name, value in values.items():
+        snippet = re.sub(rf"\b{name}\b", value, snippet)
+    return snippet
+
+
 SCRIPTS = {
     "plot": (PLOT, "Plot a 10 Hz sine with a 25 Hz component"),
     "loop": ("while True:\n    pass\n", "Spin forever, to test Stop"),
     "error": ("values = [1, 2, 3]\nvalues[10]\n", "Index past the end of a list"),
     "read": (READ, "Read two seconds of nm000103 and plot four channels"),
     "recipe": (RECIPE, "Run the python_browser recipe on nm000103"),
+    "prompt": (_prompt_snippet(), "Run the snippet NEMAR's prompt teaches, on nm000103"),
 }
 
 
@@ -328,6 +360,13 @@ if __name__ == "__main__":
     if args.widget_open:
         config = _booting_on_open(config)
     app = build_app(config, tamper_wheel=args.tamper_wheel, test_hooks=args.widget_open)
-    with patch("src.api.routers.community.create_community_assistant", app.state.assistant):
+    # The scripted model stands in for Anthropic's, so the provider choice does too:
+    # /chat/resume sends a figure to run 2 only on the Anthropic path, and this page's
+    # origin holds no key.
+    anthropic = ProviderChoice(provider="anthropic", api_key=None, key_source="platform")
+    with (
+        patch("src.api.routers.community.create_community_assistant", app.state.assistant),
+        patch("src.api.routers.community._resolve_provider", lambda *_a, **_k: anthropic),
+    ):
         print(f"open http://127.0.0.1:{args.port}/browser-harness/widget-e2e.html")
         uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")

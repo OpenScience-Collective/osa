@@ -98,7 +98,7 @@ class TestTheProviderAcceptsWhatWeBuild:
                 SystemMessage(content="Answer in one short sentence."),
                 HumanMessage(content="What was the alpha peak?"),
                 _call(),
-                build_live_tool_message(result),
+                build_live_tool_message(result, allow_images=True),
             ]
         )
 
@@ -164,7 +164,9 @@ class TestTheProviderAcceptsWhatWeBuild:
                 SystemMessage(content="Answer in one short sentence."),
                 HumanMessage(content="Run two things."),
                 batch,
-                build_live_tool_message(ClientToolResult(call_id=CALL_ID, summary="ran a")),
+                build_live_tool_message(
+                    ClientToolResult(call_id=CALL_ID, summary="ran a"), allow_images=True
+                ),
                 build_unanswered_tool_message(SECOND_CALL_ID, "only one run per turn"),
                 HumanMessage(content="Say OK."),
             ]
@@ -192,7 +194,7 @@ class TestTheModelReadsTheResult:
                 SystemMessage(content="Answer with a single digit and nothing else."),
                 HumanMessage(content="Counting from the left starting at 1, which bar is tallest?"),
                 _call(code="plot()"),
-                build_live_tool_message(result),
+                build_live_tool_message(result, allow_images=True),
             ]
         )
 
@@ -208,7 +210,7 @@ class TestTheModelReadsTheResult:
                 SystemMessage(content="Answer with the number only."),
                 HumanMessage(content="What frequency was the alpha peak?"),
                 _call(),
-                build_live_tool_message(result),
+                build_live_tool_message(result, allow_images=True),
             ]
         )
 

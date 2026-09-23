@@ -439,6 +439,21 @@ Attach real image content blocks only for the MOST RECENT execution and replace 
 placeholders, because images in the history are bytes in the prefix. Provide a `get_full_output(call_id)`
 tool so the model can pull detail on demand: the common path stays cheap and the rare path stays possible.
 
+**MCP tool results follow the same rule, not a separate one (issue #432).** `nemar_render_overview`'s PNG
+reaches the model as a real Anthropic image content block, but only on the Anthropic path: OpenRouter and
+LiteLLM have not been shown to accept that block shape, so `CommunityAssistant`'s `allow_mcp_images` (resolved
+once from the request's provider choice, the same way `citations` is) gates it at tool-wrap time, and a
+non-Anthropic run gets a text placeholder instead of a silently-dropped image. The same gate now covers a
+browser execution's figures in run 2: `/chat/resume` resolves the provider before it builds the live
+message, and on a non-Anthropic path each figure arrives as "not attached: images are not sent to this
+model", which NEMAR's prompt tells the model to relay rather than describe. Within one run the image is
+re-sent with every later model call -- there is no per-call "most recent" trimming inside a single run, only
+across runs -- and stored history never keeps it: `scrub_stored_images` replaces every image block it finds
+(a client-tool result's live message that rode along into a second parked call, and a real MCP `ToolMessage`
+LangGraph's `ToolNode` built directly) with a text placeholder before `ChatSession.replace_history` persists
+anything. `OSA_MCP_IMAGES_DISABLED` is the incident-control kill switch, checked fresh on every call rather
+than baked in at discovery time, so it takes effect without waiting out the tool-discovery cache or a restart.
+
 **The breakpoint should move past the system block.** `CachingLLMWrapper` marks system messages only. A
 request may carry up to FOUR cache breakpoints, so the pattern this design wants is one covering tools and
 system, and a second moving forward over the stable conversation prefix, leaving only the recent tail
