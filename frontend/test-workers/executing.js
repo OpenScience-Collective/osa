@@ -67,6 +67,21 @@ self.onmessage = (event) => {
       ? [{ mime: 'image/png', data_base64: 'iVBORw0KGgo=', width: 1, height: 1 }]
       : [];
 
+    // FILES:<n> saves n explicitly-named artifacts, the way a real run's
+    // osa.save_artifact would report them: `files` (base64 bytes, host-only)
+    // beside `artifacts` (the names, which DO reach ClientToolResult). Used
+    // by controller- and runtime-level tests to exercise workspace
+    // persistence without booting real Pyodide.
+    const filesMatch = code.match(/^FILES:(\d+)/);
+    const fileCount = filesMatch ? Number(filesMatch[1]) : 0;
+    const artifacts = [];
+    const files = [];
+    for (let i = 0; i < fileCount; i++) {
+      const path = `artifacts/file-${i}.txt`;
+      artifacts.push(path);
+      files.push({ path, data_base64: btoa(`contents of file ${i}`) });
+    }
+
     const reply = () => {
       self.postMessage({
         type: 'result',
@@ -77,9 +92,10 @@ self.onmessage = (event) => {
         // Echoed so a test can prove THIS result belongs to THIS call.
         summary: code,
         images,
-        artifacts: [],
+        artifacts,
         elapsed_ms: delay,
-        full: { stdout: fullStdout, stderr: fullStderr, traceback: fullTraceback },
+        full: { stdout: fullStdout, stderr: fullStderr, traceback: fullTraceback, summary: code },
+        files,
       });
     };
 

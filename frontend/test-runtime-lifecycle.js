@@ -763,6 +763,34 @@ console.log('\nfull output stays in the browser, and never rides along to the ca
   rt.terminate();
 }
 
+console.log('\nexplicitly saved files stay in the browser too, and takeFiles hands them out once (#433)');
+{
+  const rt = new PyodideRuntime({ runtime: RUNTIME, workerFactory: workerFrom('executing') });
+  const result = await rt.execute('FILES:2', { callId: 'call-saved' });
+
+  // Not a ClientToolResult field (see CLIENT_TOOL_RESULT_FIELDS), so it is
+  // never part of what a caller receives: the same guarantee `full` gets,
+  // and for the same reason -- bytes that never leave the tab cannot be
+  // forwarded to the server by accident.
+  assert(!('files' in result), 'the result a caller receives carries no file bytes');
+  assertEqual(JSON.stringify(result.artifacts), JSON.stringify(['artifacts/file-0.txt', 'artifacts/file-1.txt']),
+    'the model-visible artifact NAMES still ride along on the result, as ClientToolResult allows');
+
+  const taken = rt.takeFiles('call-saved');
+  assertEqual(taken.length, 2, 'takeFiles hands back exactly what the run saved');
+  assertEqual(taken[0].path, 'artifacts/file-0.txt', 'each entry names its workspace-relative path');
+  assert(typeof taken[0].data_base64 === 'string' && taken[0].data_base64.length > 0, 'and carries base64 bytes');
+
+  const takenAgain = rt.takeFiles('call-saved');
+  assertEqual(takenAgain.length, 0, 'a second call gets nothing: files are handed out exactly once');
+  assertEqual(rt.outputs.get('call-saved').summary, 'FILES:2', 'the full, unclipped summary is kept beside stdout/stderr/traceback');
+
+  const noFiles = await rt.execute('no save here', { callId: 'call-none' });
+  assert(!('files' in noFiles), 'a run that saved nothing still carries no files field');
+  assertEqual(rt.takeFiles('call-none').length, 0, 'and takeFiles reports nothing to take');
+  rt.terminate();
+}
+
 console.log('\nget_full_output fails in words the model can act on');
 {
   const rt = new PyodideRuntime({ runtime: RUNTIME, workerFactory: workerFrom('executing') });
@@ -816,8 +844,10 @@ console.log('\na result for a call nobody is waiting on is not kept');
     artifacts: [],
     elapsed_ms: 0,
     full: { stdout: 'stray', stderr: '', traceback: '' },
+    files: [{ path: 'artifacts/stray.txt', data_base64: 'eA==' }],
   });
   assertEqual(rt.outputs.size, 0, 'a stray result is not stored');
+  assertEqual(rt.takeFiles('call-nobody-asked-for').length, 0, 'nor are its files kept for a later takeFiles');
   rt.terminate();
 }
 
@@ -875,6 +905,7 @@ console.log('\nevery result a caller receives is exactly the server\'s shape');
 
   const rt = new PyodideRuntime({ runtime: { ...RUNTIME, limits: { exec_seconds: 1 } }, workerFactory: workerFrom('executing') });
   onlyServerFields(await rt.execute('fine', { callId: 'shape-ok' }), 'a worker result');
+  onlyServerFields(await rt.execute('FILES:1', { callId: 'shape-files' }), 'a result that saved a file');
   onlyServerFields(await rt.execute('NEVER answers', { callId: 'shape-timeout' }), 'a timeout');
   onlyServerFields(await rt.execute('CRASH the instance', { callId: 'shape-oom' }), 'a dead worker');
   const stopping = rt.execute('NEVER answers', { callId: 'shape-cancel' });
