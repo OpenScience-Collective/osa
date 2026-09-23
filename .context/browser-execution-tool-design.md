@@ -30,13 +30,14 @@ Three constraints shape where that code can run:
 Code runs in the user's browser, in a Pyodide interpreter inside a dedicated Web Worker owned by the widget.
 The agent loop stays on the server in LangGraph.
 `execute_code` is a **client-executed tool**: when the model calls it,
-the graph interrupts, the server streams a `tool_request` event to the widget,
-the widget runs the code and streams a `tool_result` back, and the graph resumes with that result
-in the model's context, images included.
+the server's run ends with a `tool_request` event to the widget,
+the widget runs the code with no request open and posts the result back,
+and a second run continues the conversation with that result in the model's context, images included.
 The runtime is lazy: Pyodide boots on first use or on widget open,
-packages load from the code's imports against a per-community pinned lockfile,
+loads the community's pinned packages as it boots,
 and everything is cached by the browser after the first download.
-Scripts and results persist in browser storage, and a notebook surface can open them later.
+Scripts and results persist in browser storage;
+the reader can download them as a zip with a Jupyter notebook, and re-run any run in the chat with their own edits.
 No login is involved anywhere in this design; identity is a per-community concern for later stages.
 
 ## Goals and non-goals
@@ -78,6 +79,16 @@ Non-goals:
   +--------------------------------------+
 ```
 
+**As built (phase 1, #430).** The diagram and the components below are the proposal.
+The transport that shipped is the two-run continuation this note's header records:
+there is no `interrupt()`, no `Command(resume=...)` and no checkpointer.
+The `client_tools` node (`src/agents/base.py`) writes a `pending_client_call` into the run's state and routes to `END`,
+so run 1 ends; the session store holds that one parked call (`ChatSession.pending_call`),
+and `/chat/resume` claims it exactly once (`claim_pending_call`) before run 2 starts from the stored history.
+The workspace is IndexedDB, not the Origin Private File System (OPFS),
+and the notebook surface is deferred: ADR 0010 (`docs/adr/0010-the-notebook-surface.md`) rejects marimo,
+defers a hosted JupyterLite to #453, and ships an editable re-run panel in the chat instead.
+
 Components:
 
 - **Runtime worker.** One Pyodide instance per community per tab, in a Web Worker so the page never blocks.
@@ -116,6 +127,13 @@ server resumes graph with Command(resume=result)
 
 One round trip per execution.
 LLM latency dominates every round trip, so the transport choice is about connection handling, not speed.
+
+**As built (phase 1, #430).** Run 1 streams until the model calls `execute_code`;
+the `client_tools` node parks the call, `_stream_chat_response` sends `tool_request`, and the stream ends.
+The widget runs the code with no request open, then posts `{session_id, call_id, result}` to `/{community}/chat/resume`.
+The server claims the parked call, appends the result as the tool's message (images as content blocks on the Anthropic path),
+and runs the graph again from the stored history, streaming run 2 on the resume request's own response.
+A result for a call that is not outstanding, or has expired, is refused with a 409.
 
 ## Message protocol
 
@@ -180,6 +198,8 @@ As built, the server's caps are `src/core/limits.py` and a community narrows the
 names only, the deadline is `exec_seconds`, and images are capped by count and bytes,
 with the browser downscaling to the community's `image_px`.
 `frontend/test-output.js` reads the Python source, so the two sides cannot drift.
+One cap has no row above: a reply may ask for at most 20 browser runs (`MAX_BROWSER_RUNS_PER_REPLY`),
+enforced by the server and mirrored by the widget.
 
 Arrays never travel to the server.
 A tool that needs numbers back returns a small table in stdout or writes an artifact and reports its name.
@@ -216,6 +236,16 @@ subsequent `trim_messages(strategy="last")` then discards the conversation. The 
 context loss, not an error. Cap the `tool_result` payload in BYTES, not only in pixels.
 - Timeouts: an unanswered `tool_request` past `deadline_s` plus a grace period resumes the graph
   with `status: timeout` so the model can respond, and the thread is not left parked.
+
+**As built (phase 1, #430).** The bullets above describe the `interrupt()` design, which was not built.
+`ClientTool` (`src/tools/client_tools.py`) is bound like any tool but never executed: its `_run` raises `ClientToolNotExecutableError`.
+There is no checkpointer and no `thread_id`; the session store parks the call.
+The Timeouts bullet's active resumption does not exist either, deliberately:
+an unanswered call is closed out when the session is next used, by a new message or a late result,
+with a tool message telling the model it was not answered (`abandon_pending_call`),
+and the model is never run in the background, since no stream is open to carry its reply.
+The image budget bullet was wrong for the langchain-core this project locks: `count_tokens_approximately` has charged a flat `tokens_per_image`
+since 1.2.8, and `src/agents/base.py` passes it Anthropic's rate explicitly.
 
 Transport recommendation: start with SSE plus a resume endpoint, because the widget already speaks SSE
 and the change is additive.
@@ -402,20 +432,20 @@ model gains the field, and the cross-field validator must live on `CommunityConf
 
 | Community | Engine in the browser | Data path | Status |
 |---|---|---|---|
-| NEMAR | eegprep once its extras split ships; MNE until then | Zarr recipes from the MCP, HTTPS reads | first adopter |
-
-The NEMAR recipe carries two `how_to` snippets and only the TypeScript one is marked browser-safe: its
-`python_zarr` snippet uses anonymous S3 through boto3, and `boto3`, `botocore`, `aiobotocore` and `s3fs` are
-all absent from the Pyodide distribution. A model that copies it will fail. The reader must consume
-`data_base` and `array_path` over HTTPS, and the community prompt must tell the model to ignore
-`how_to.python_zarr` in the browser lane. `aiohttp` and `fsspec` are present, so the HTTPS path is viable.
+| NEMAR | `eegprep-lean` 0.1.0.dev2, vendored and served from OSA's own origin | the MCP's `how_to.python_browser` recipe, HTTPS range reads of `zarr.nemar.org` | shipped (epic #429) |
 | EEGLAB | eegprep (EEGLAB-parity numerics) on user-supplied or NEMAR data | same as NEMAR | after NEMAR |
 | HED | `hedtools` validation and search | `events.tsv` and sidecars fetched or pasted | candidate; verify pure-Python install |
 | BIDS | `pybids` over a fetched layout | dataset trees over HTTPS | candidate; verify pure-Python install |
 
 Each community brings: a lockfile, a `preload` set, an `allow_install` list, a `fetch_allow` list,
 prompt guidance on when to run code versus answer from documentation,
-and optionally a small pure-Python helper package (for NEMAR, a reader that turns a recipe into a numpy array).
+and optionally a small pure-Python helper package (for NEMAR, `eegprep-lean`, which turns a recipe into a numpy array).
+
+The NEMAR recipe's `python_zarr` snippet uses anonymous S3 through boto3,
+and `boto3`, `botocore`, `aiobotocore` and `s3fs` are all absent from the Pyodide distribution, so a model that copies it fails.
+When this note was written only the recipe's TypeScript snippet was browser-safe.
+nemar-cli has since added `how_to.python_browser` (its ADRs 0070 and 0071), written for this runtime and reading over HTTPS;
+NEMAR's prompt teaches that snippet and tells the model never to use `python_zarr` here.
 
 ## What goes back to the model, and why it must be deterministic
 
@@ -647,6 +677,12 @@ hold against the deployed code. They are Phase 0: none of Phase 1 works end to e
 5. **Second community.** EEGLAB or HED adopts the tool with no change to OSA source, supplying only
    community-owned artifacts. Not "configuration alone": this note also asks each community for a lockfile
    and optionally a helper package, and neither is configuration.
+
+**As built.** Phases 1 to 4 shipped as epic #429 (#430 to #433), all four on one epic branch.
+Phase 1's tests drive the real application with no checkpointer, since none was built.
+Phase 2's pilot used `eegprep-lean` rather than MNE, and pulled most of phase 3's lockfile work forward.
+Phase 4 kept the workspace, the `osa` helper and export, and replaced the JupyterLite handoff with the editable re-run panel (#456); a hosted JupyterLite is deferred to #453 (ADR 0010).
+Phase 5 has not started.
 
 Phases 1 to 3 land on an epic branch and merge to `develop` together, per this repo's own epic-branch
 workflow, which exists for exactly this shape: Phase 2 depends on Phase 3, and Phase 1 alone ships a tool
