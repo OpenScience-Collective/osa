@@ -100,90 +100,29 @@ jobs:
 
       # Also on any earlier failure, such as checkout or `uv sync`: a check that never
       # ran is a failing check, and the issue is what makes a scheduled failure seen.
-      - name: Open or update an issue on failure
-        if: failure() || steps.contract.outputs.failed == 'true'
-        uses: actions/github-script@v7
-        env:
-          # Passed through env rather than interpolated into the script body;
-          # see widget-route-health.yml for why that habit matters here, where
-          # this job holds issues:write.
-          CONTRACT_REPORT: ${{ steps.contract.outputs.report }}
+      - name: Track the contract check's issue
+        if: always()
+        uses: ./.github/actions/track-issue
         with:
-          script: |
-            const title = 'NEMAR MCP contract check failing';
-            const report =
-              process.env.CONTRACT_REPORT ||
-              '- The job failed before the checks ran (checkout, Python or `uv sync`), so nothing was checked.';
-            const body = [
-              'The scheduled check of NEMAR\'s live MCP server and its eegprep-lean wheel is failing.',
-              '',
-              report,
-              '',
-              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-              '',
-              'Likely causes, cheapest first:',
-              '',
-              '- `mcp.nemar.org` is down or slow (a network blip, not a contract break).',
-              '- A tool was renamed or removed on the server side; the assistant\'s prompt still names the old one.',
-              '- `nemar_read_window`\'s live recipe now calls an eegprep_lean name the vendored wheel',
-              '  (`src/assistants/nemar/runtime/wheels/`) does not export -- a server-side change or a wheel',
-              '  that needs bumping and re-vendoring.',
-              '- TestLiveRecipeOnCPython specifically: the recipe runs but fails against the real data --',
-              '  a signature match is not proof it executes correctly. Check the subprocess stderr in the',
-              '  job log; a 403 there means zarr.nemar.org is refusing the transport\'s User-Agent.',
-              '',
-              'This closes itself on the next green run.',
-            ].join('\n');
+          label: nemar-mcp-contract
+          title: 'NEMAR MCP contract check failing'
+          failed: ${{ job.status == 'failure' || steps.contract.outputs.failed == 'true' }}
+          recovery_message: 'all NEMAR MCP contract checks'
+          report: |
+            The scheduled check of NEMAR's live MCP server and its eegprep-lean wheel is failing.
 
-            const existing = await github.rest.issues.listForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              labels: 'nemar-mcp-contract',
-            });
+            ${{ steps.contract.outputs.report || '- The job failed before the checks ran (checkout, Python or `uv sync`), so nothing was checked.' }}
 
-            if (existing.data.length > 0) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: existing.data[0].number,
-                body,
-              });
-            } else {
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title,
-                body,
-                labels: ['nemar-mcp-contract'],
-              });
-            }
+            Likely causes, cheapest first:
 
-      - name: Close the tracking issue on recovery
-        if: steps.contract.outputs.failed == 'false'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const existing = await github.rest.issues.listForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              labels: 'nemar-mcp-contract',
-            });
-            for (const issue of existing.data) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issue.number,
-                body: `Recovered: all NEMAR MCP contract checks green as of ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-              });
-              await github.rest.issues.update({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issue.number,
-                state: 'closed',
-              });
-            }
+            - `mcp.nemar.org` is down or slow (a network blip, not a contract break).
+            - A tool was renamed or removed on the server side; the assistant's prompt still names the old one.
+            - `nemar_read_window`'s live recipe now calls an eegprep_lean name the vendored wheel
+              (`src/assistants/nemar/runtime/wheels/`) does not export -- a server-side change or a wheel
+              that needs bumping and re-vendoring.
+            - TestLiveRecipeOnCPython specifically: the recipe runs but fails against the real data --
+              a signature match is not proof it executes correctly. Check the subprocess stderr in the
+              job log; a 403 there means zarr.nemar.org is refusing the transport's User-Agent.
 
       - name: Fail the run so the schedule surfaces it
         if: steps.contract.outputs.failed == 'true'
