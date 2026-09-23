@@ -163,6 +163,18 @@ export async function startServer({ port = 8787 } = {}) {
       if (rest === '/browser-harness/harness-config.json') {
         return new Response(harnessConfig, { headers: { ...headers, 'Content-Type': 'application/json' } });
       }
+      // A same-origin redirect off the allowlist, for the egress guard's
+      // XMLHttpRequest check (harness.js): /allowed 302s to /disallowed, both
+      // on this origin, so a probe against /allowed exercises a REAL redirect
+      // response rather than a synthetic one. Only /allowed is ever put in a
+      // fetch_allow list; /disallowed's body is the secret nothing reachable
+      // through the guard should ever see.
+      if (rest === '/browser-harness/egress-redirect/allowed') {
+        return new Response(null, { status: 302, headers: { ...headers, Location: 'disallowed' } });
+      }
+      if (rest === '/browser-harness/egress-redirect/disallowed') {
+        return new Response('EGRESS_REDIRECT_SECRET', { headers: { ...headers, 'Content-Type': 'text/plain' } });
+      }
       // A lookup against the overlay, as the API's route is: nothing it does not list.
       // Immutable, like the API's real route and the worker in front of it: a
       // wheel's name is its identity, so the browser can keep these bytes

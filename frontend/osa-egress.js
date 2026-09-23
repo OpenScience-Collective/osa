@@ -230,14 +230,18 @@ export function buildEgressGuardSource({ bootAllow = [] } = {}) {
     return __nativeFetch(new Request(request, { credentials: 'omit', redirect: 'error' }));
   });
 
-  if (self.XMLHttpRequest) {
-    const __open = self.XMLHttpRequest.prototype.open;
-    self.XMLHttpRequest.prototype.open = function (method, url, ...rest) {
-      __check(url);
-      this.withCredentials = false;
-      return __open.call(this, method, url, ...rest);
-    };
-  }
+  // XMLHttpRequest is removed entirely rather than patched like fetch above.
+  // open() can check a URL, but native XHR then follows a redirect on its own
+  // with no way to stop at the Location header: a 302 from an ALLOWED origin
+  // to a disallowed one delivered its body, proven with running code. fetch
+  // has \`redirect: 'error'\` for exactly this; XHR has no equivalent mode, so
+  // checking the URL once and letting the native implementation run is not
+  // closeable, and removal is the only correct option, the same as WebSocket
+  // and EventSource below. Nothing in the runtime needs it: Pyodide loads its
+  // wasm binary, lock file and packages with fetch, not XHR (verified against
+  // the vendored pyodide.asm.js), and the namespace seal below already removes
+  // every Python path -- js, pyodide, pyodide_http -- that could reach it.
+  __install('XMLHttpRequest', function () { throw __denied('xmlhttprequest', DENY_REASON.TRANSPORT); });
 
   // importScripts performs a real cross-origin GET and is completely outside
   // fetch and XHR. It was previously unguarded, and the worker's own boot
