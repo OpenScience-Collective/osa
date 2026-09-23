@@ -179,8 +179,8 @@ def eegprep_lean_keywords(wheel_path: Path) -> dict[str, frozenset[str] | None]:
                 for key, value in zip(node.value.keys, node.value.values, strict=True):
                     if isinstance(key, ast.Constant) and isinstance(value, ast.Tuple):
                         module = value.elts[0]
-                        if isinstance(module, ast.Constant):
-                            homes[key.value] = module.value.replace(".", "/") + ".py"
+                        if isinstance(module, ast.Constant) and isinstance(module.value, str):
+                            homes[str(key.value)] = module.value.replace(".", "/") + ".py"
         modules = {
             path: ast.parse(archive.read(path).decode("utf-8")) for path in set(homes.values())
         }
@@ -355,13 +355,50 @@ class TestRecipeProblems:
 # ---------------------------------------------------------------------------
 
 
+def _answer(result: object, tool: str) -> dict:
+    """A tool's structured answer. A tool that answers in text (a refusal, a timeout,
+    an unreachable server) fails here with that text, not with a TypeError later."""
+    assert isinstance(result, dict), f"{tool} answered in text, not structured data: {result!r}"
+    return result
+
+
+async def _live_read_window(duration_s: int) -> tuple[dict, dict]:
+    """nm000103's first recording, and `nemar_read_window`'s answer for its first
+    `duration_s` seconds of its first group, from production."""
+    tools = discover_mcp_tools(McpServer(name="nemar", url=NEMAR_MCP_URL))
+    list_recordings = next(t for t in tools if t.name == "nemar_list_recordings")
+    read_window = next(t for t in tools if t.name == "nemar_read_window")
+
+    listed = _answer(
+        await list_recordings.ainvoke({"dataset_id": "nm000103", "limit": 1}),
+        "nemar_list_recordings",
+    )
+    recording = listed["recordings"][0]
+    result = _answer(
+        await read_window.ainvoke(
+            {
+                "dataset_id": "nm000103",
+                "recording": recording["path"],
+                "group": recording["groups"][0]["name"],
+                "start_s": 0,
+                "duration_s": duration_s,
+            }
+        ),
+        "nemar_read_window",
+    )
+    return recording, result
+
+
 @pytest.mark.network
 class TestListRecordingsContract:
     async def test_every_recording_has_a_path_and_named_groups(self) -> None:
         tools = discover_mcp_tools(McpServer(name="nemar", url=NEMAR_MCP_URL))
         list_recordings = next(t for t in tools if t.name == "nemar_list_recordings")
 
-        result = await list_recordings.ainvoke({"dataset_id": "nm000103", "limit": 5})
+        result = _answer(
+            await list_recordings.ainvoke({"dataset_id": "nm000103", "limit": 5}),
+            "nemar_list_recordings",
+        )
 
         recordings = result["recordings"]
         assert len(recordings) > 0
@@ -380,23 +417,7 @@ class TestReadWindowContract:
         """Pins what `nemar_read_window`'s response actually contains today, so a
         server-side rename fails this test rather than only the model's next
         attempt to read the sample range out of it."""
-        tools = discover_mcp_tools(McpServer(name="nemar", url=NEMAR_MCP_URL))
-        list_recordings = next(t for t in tools if t.name == "nemar_list_recordings")
-        read_window = next(t for t in tools if t.name == "nemar_read_window")
-
-        recordings = await list_recordings.ainvoke({"dataset_id": "nm000103", "limit": 1})
-        recording = recordings["recordings"][0]
-        group_name = recording["groups"][0]["name"]
-
-        result = await read_window.ainvoke(
-            {
-                "dataset_id": "nm000103",
-                "recording": recording["path"],
-                "group": group_name,
-                "start_s": 0,
-                "duration_s": 10,
-            }
-        )
+        _, result = await _live_read_window(duration_s=10)
 
         assert result["mode"] == "recipe"
         recipe = result["recipe"]
@@ -415,23 +436,7 @@ class TestReadWindowContract:
         export, or passes a keyword its function does not take, this fails before
         a reader's browser does.
         """
-        tools = discover_mcp_tools(McpServer(name="nemar", url=NEMAR_MCP_URL))
-        list_recordings = next(t for t in tools if t.name == "nemar_list_recordings")
-        read_window = next(t for t in tools if t.name == "nemar_read_window")
-
-        recordings = await list_recordings.ainvoke({"dataset_id": "nm000103", "limit": 1})
-        recording = recordings["recordings"][0]
-        group_name = recording["groups"][0]["name"]
-
-        result = await read_window.ainvoke(
-            {
-                "dataset_id": "nm000103",
-                "recording": recording["path"],
-                "group": group_name,
-                "start_s": 0,
-                "duration_s": 10,
-            }
-        )
+        _, result = await _live_read_window(duration_s=10)
 
         snippet = result["recipe"]["how_to"]["python_browser"]
         assert eegprep_lean_names_used(snippet), (
@@ -462,23 +467,7 @@ class TestLiveRecipeOnCPython:
     """
 
     async def test_the_live_recipe_runs_on_the_vendored_wheel(self, tmp_path: Path) -> None:
-        tools = discover_mcp_tools(McpServer(name="nemar", url=NEMAR_MCP_URL))
-        list_recordings = next(t for t in tools if t.name == "nemar_list_recordings")
-        read_window = next(t for t in tools if t.name == "nemar_read_window")
-
-        recordings = await list_recordings.ainvoke({"dataset_id": "nm000103", "limit": 1})
-        recording = recordings["recordings"][0]
-        group_name = recording["groups"][0]["name"]
-
-        result = await read_window.ainvoke(
-            {
-                "dataset_id": "nm000103",
-                "recording": recording["path"],
-                "group": group_name,
-                "start_s": 0,
-                "duration_s": 2,
-            }
-        )
+        _, result = await _live_read_window(duration_s=2)
 
         recipe = result["recipe"]
         snippet = recipe["how_to"]["python_browser"]
@@ -514,11 +503,19 @@ class TestLiveRecipeOnCPython:
             f"--- stdout ---\n{completed.stdout}\n--- stderr ---\n{completed.stderr}"
         )
         report = json.loads(completed.stdout.strip().splitlines()[-1])
-        bound = report.get("window") or report.get("digital")
-        assert bound is not None, (
+        bound = [read for read in (report.get("window"), report.get("digital")) if read]
+        assert bound, (
             f"the recipe ran but bound neither `window` nor `digital`: {report}\n{snippet}"
         )
-        assert bound["shape"][-1] == width, (
-            f"expected a window {width} samples wide (sample_slice {start_sample}-{end_sample}), "
-            f"got {bound}"
-        )
+        for read in bound:
+            assert read["shape"][-1] == width, (
+                f"expected {width} samples (sample_slice {start_sample}-{end_sample}), got {read}"
+            )
+            assert read["dtype"], f"a read with no dtype: {read}"
+        physical = report.get("window") or {}
+        if "unit" in physical:
+            # A read_window recipe: the physical read names its unit, and the raw
+            # read it keeps covers the same channels and samples.
+            assert isinstance(physical["unit"], str) and physical["unit"], physical
+            if report.get("digital"):
+                assert report["digital"]["shape"] == physical["shape"], report

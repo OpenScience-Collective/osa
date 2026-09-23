@@ -33,7 +33,9 @@ from pathlib import Path
 def _describe(value: object) -> dict[str, object] | None:
     if value is None:
         return None
-    data = getattr(value, "data", value)  # a WindowResult wraps an array in .data
+    # A read_window Window wraps its array in .data; a bare array is described as it
+    # is, since an ndarray's own .data is a memoryview with no dtype.
+    data = value if hasattr(value, "shape") else getattr(value, "data", value)
     shape = getattr(data, "shape", None)
     description: dict[str, object] = {
         "shape": list(shape) if shape is not None else None,
