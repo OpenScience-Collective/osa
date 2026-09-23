@@ -84,6 +84,36 @@ function appendWorkspaceNote(stderr, noteLines, limit) {
   return note ? `${prefix}${note}` : clippedStderr;
 }
 
+/**
+ * Attach a save-failure note to a ClientToolResult for the WIDGET alone to
+ * read, never for the wire.
+ *
+ * `answer()`'s and `runLocal()`'s result goes straight into what reaches the
+ * server (`postResume`'s JSON body) or is read by `executionRecord`, and
+ * ClientToolResult is `extra="forbid"`: a real, enumerable extra field here
+ * would refuse the WHOLE result with a 422 nobody asked for. A NON-enumerable
+ * property is invisible to `JSON.stringify` and to a `{...result}` spread
+ * (`toClientToolResult` itself uses one), so neither the server nor a later
+ * copy of this object ever carries it, while the widget can still read it by
+ * name. This exists because `appendWorkspaceNote` above already folds the
+ * same text into `stderr` for the MODEL's benefit, and stderr is shown to
+ * the reader only when status is not `ok` -- exactly backwards for a save
+ * failure, which matters most on a run whose Python succeeded, and, for the
+ * reader's own runs (runLocal), is the ONLY place this note is visible at
+ * all, since that call never reaches the server for the model to read either.
+ *
+ * @param {object} clientResult
+ * @param {string} note - The same lines already appended to stderr, joined,
+ *   unclipped: the widget bounds this on its own screen-sized terms.
+ * @returns {object} `clientResult`, unchanged except for the added property.
+ */
+function withWorkspaceNote(clientResult, note) {
+  if (note) {
+    Object.defineProperty(clientResult, 'workspaceFailureNote', { value: note, enumerable: false });
+  }
+  return clientResult;
+}
+
 export class ClientToolController {
   #runtime;
   #tools;
@@ -92,6 +122,14 @@ export class ClientToolController {
   #autoRun = false;
   // {callId, cancelled, stop} while a request is being answered, else null.
   #current = null;
+  // {callId, done} while the reader's own code is running, else null. The
+  // worker behind #runtime executes one call at a time (osa-worker-core.js's
+  // own `busy` guard), so this and #current are never both let touch the
+  // runtime at once: answer() waits for `done` before it dispatches, and
+  // runLocal() refuses outright when #current or #localRun is already set,
+  // rather than queuing behind it.
+  #localRun = null;
+  #localRunSeq = 0;
 
   /**
    * @param {object} options
@@ -161,9 +199,15 @@ export class ClientToolController {
     this.#autoRun = value === true;
   }
 
-  /** Whether a request is being answered right now. */
+  /**
+   * Whether the runtime is already doing something: answering a tool_request
+   * from the assistant, or running code the reader started themselves with
+   * runLocal(). Either way there is nothing free for a NEW local run to use,
+   * since the worker behind this runtime can only run one execution at a
+   * time.
+   */
   get busy() {
-    return this.#current !== null;
+    return this.#current !== null || this.#localRun !== null;
   }
 
   /**
@@ -187,8 +231,26 @@ export class ClientToolController {
       return this.#result(callId, 'error', '[runtime] another browser task is still running in this page.');
     }
     const current = { callId, cancelled: false, stop: null };
+    // Set before the wait below, not after: while this is in flight, a
+    // concurrent runLocal() must see the runtime as claimed and refuse,
+    // rather than racing #dispatch for the same worker.
     this.#current = current;
     try {
+      if (this.#localRun !== null) {
+        // The worker runs one execution at a time. The assistant's call still
+        // needs a real answer -- refusing it here would be wrong, not just
+        // unhelpful, since the runtime is not broken, only briefly busy -- so
+        // this waits for the reader's own run to leave the runtime rather
+        // than answering with a busy error. local.done never rejects (its
+        // own try/catch turns any failure into a result), but it is awaited
+        // defensively rather than assumed.
+        await this.#localRun.done.catch(() => {});
+      }
+      if (current.cancelled) {
+        // Stop, pressed while this was only waiting its turn, counts as
+        // declining: nothing of the assistant's ever ran.
+        return this.#result(callId, 'denied', DENIED_STDERR, DENIED_SUMMARY);
+      }
       return await this.#dispatch(request, current);
     } finally {
       this.#current = null;
@@ -196,11 +258,17 @@ export class ClientToolController {
   }
 
   /**
-   * Stop the request being answered.
+   * Stop the assistant's tool_request being answered (the tool panel's
+   * Stop). Targeted: it never touches a reader's own run started with
+   * runLocal(), even though the two can be outstanding at the same time (an
+   * assistant call queued behind a local run still in progress). Use
+   * cancelLocal() for that one instead.
    *
    * While the person is still being asked, this counts as declining: nothing
    * ran. Once the code is running, the runtime stops it and the result says
-   * `cancelled`.
+   * `cancelled`. While the assistant's call is only queued behind a local
+   * run (waiting in answer(), before #current.stop exists), this still
+   * records the decline; it is answered once the runtime is free.
    *
    * @returns {boolean} Whether there was anything to stop.
    */
@@ -215,6 +283,22 @@ export class ClientToolController {
       return true;
     }
     return this.#runtime.cancel(current.callId);
+  }
+
+  /**
+   * Stop the reader's own run in progress (the editor's Stop). Targeted the
+   * same way cancel() is, in the other direction: it never touches an
+   * assistant tool_request, queued or running, even though both can be
+   * outstanding at once.
+   *
+   * @returns {boolean} Whether there was anything to stop.
+   */
+  cancelLocal() {
+    const local = this.#localRun;
+    if (local === null) {
+      return false;
+    }
+    return this.#runtime.cancel(local.callId);
   }
 
   async #dispatch(request, current) {
@@ -285,9 +369,12 @@ export class ClientToolController {
    * @param {{call_id: string, session_id?: string}} request
    * @param {{code: string, description?: string}} args
    * @param {object} result - What `this.#runtime.execute` resolved with.
+   * @param {boolean} [local] - Whether this run was the reader's own
+   *   (runLocal), not the assistant's, so the stored record -- and so the
+   *   manifest and notebook.ipynb derived from it -- can say so.
    * @returns {Promise<object>}
    */
-  async #persist(request, args, result) {
+  async #persist(request, args, result, local = false) {
     if (this.#workspace === null) return result;
     const kept = typeof this.#runtime.outputs?.get === 'function' ? this.#runtime.outputs.get(request.call_id) : undefined;
     const explicitFiles = typeof this.#runtime.takeFiles === 'function' ? this.#runtime.takeFiles(request.call_id) : [];
@@ -306,6 +393,7 @@ export class ClientToolController {
         summary: kept.summary,
         images: kept.images,
         explicitFiles,
+        local,
       });
     } catch (err) {
       // recordRun reports every ORDINARY save failure -- a bad path, a quota,
@@ -320,12 +408,12 @@ export class ClientToolController {
       console.error('[OSA] Workspace persist failed unexpectedly:', err);
       const explicitPaths = new Set(explicitFiles.map((f) => f.path));
       const artifacts = explicitPaths.size > 0 ? (result.artifacts || []).filter((a) => !explicitPaths.has(a)) : result.artifacts;
-      const stderr = appendWorkspaceNote(
-        result.stderr,
-        ["[workspace] could not save this run's files: the workspace failed unexpectedly"],
-        this.#runtime.limits.stderr_chars
+      const noteLines = ["[workspace] could not save this run's files: the workspace failed unexpectedly"];
+      const stderr = appendWorkspaceNote(result.stderr, noteLines, this.#runtime.limits.stderr_chars);
+      return withWorkspaceNote(
+        toClientToolResult({ ...result, artifacts, stderr }, this.#runtime.limits),
+        noteLines.join('\n')
       );
-      return toClientToolResult({ ...result, artifacts, stderr }, this.#runtime.limits);
     }
     if (persisted.failures.length === 0) return result;
 
@@ -345,7 +433,87 @@ export class ClientToolController {
       .sort((a, b) => a.path.localeCompare(b.path))
       .map((f) => `[workspace] could not save ${f.path}: ${f.reason}`);
     const stderr = appendWorkspaceNote(result.stderr, lines, this.#runtime.limits.stderr_chars);
-    return toClientToolResult({ ...result, artifacts, stderr }, this.#runtime.limits);
+    return withWorkspaceNote(
+      toClientToolResult({ ...result, artifacts, stderr }, this.#runtime.limits),
+      lines.join('\n')
+    );
+  }
+
+  /**
+   * Run code the reader wrote themselves, in the SAME runtime and namespace
+   * the assistant's own runs use -- variables an earlier run defined are
+   * there, which is what makes this tinkering rather than a fresh
+   * interpreter. Clicking Run is the reader's own consent, so this never
+   * calls the gate.
+   *
+   * Nothing about THIS CALL reaches the server: no request is sent for it.
+   * But the namespace is shared, so what it leaves behind -- a variable, a
+   * file `osa.save_artifact` wrote -- is visible to a LATER run in the same
+   * namespace, the assistant's included, and that later run's own output
+   * does reach the model the ordinary way. The run itself stays private a
+   * second way: its full output is marked in the runtime's own store so
+   * get_full_output refuses it to the model outright (see `execute`'s
+   * `local` option and `FullOutputStore`, osa-runtime.js), exactly as if the
+   * call_id had never existed, never with a distinct "that one is private"
+   * answer that would itself reveal the run happened.
+   *
+   * Refused outright, never queued, while the runtime is already doing
+   * something else (see `busy`): a person can just click Run again once it
+   * is free, and queuing silently would mean a click sits waiting with no
+   * sign anything is happening. Bounded by the same egress seal, output
+   * limits and execution deadline as any other run, because it is the same
+   * runtime, and by its own Stop, `cancelLocal()` -- never `cancel()`, which
+   * is the assistant's tool_request's alone, even when both are outstanding
+   * at once (an assistant call queued behind this very run).
+   *
+   * @param {string} code
+   * @param {{description?: string, session?: string}} [options] - `session`
+   *   is the workspace session this run's files belong under; omitted, it
+   *   falls back the same way #persist already does for a request with no
+   *   session_id.
+   * @returns {Promise<{ok: true, result: object}|{ok: false, reason: string}>}
+   *   `result`, when ok, is a ClientToolResult-shaped object, exactly what
+   *   answer() resolves with for the assistant's own runs -- so a caller can
+   *   build a run record for it the same way. Never throws for anything
+   *   that can happen while running; only a non-string `code` is refused
+   *   before anything starts.
+   */
+  async runLocal(code, { description = '', session = '' } = {}) {
+    if (typeof code !== 'string') {
+      throw new TypeError('runLocal needs the code to run as a string');
+    }
+    if (this.#current !== null) {
+      return { ok: false, reason: 'the assistant is using this runtime right now' };
+    }
+    if (this.#localRun !== null) {
+      return { ok: false, reason: 'another of your runs is still going' };
+    }
+    // Never a call_id shape a provider hands out (those come back verbatim
+    // from the model's own tool_use block), so a run the reader started can
+    // never be confused for one the model started.
+    const callId = `person-run-${++this.#localRunSeq}`;
+    const local = { callId };
+    local.done = (async () => {
+      try {
+        // local: true marks this execution's remembered full output as the
+        // reader's own (osa-runtime.js, FullOutputStore), so get_full_output
+        // refuses it to the model exactly the way an unknown call_id is
+        // refused, never revealing that this run happened at all.
+        const result = await this.#runtime.execute(code, { callId, local: true });
+        return await this.#persist({ call_id: callId, session_id: session }, { code, description }, result, true);
+      } catch (err) {
+        // No result can come from the runtime: it could not boot, or it was
+        // torn down mid-run.
+        return this.#result(callId, 'error', `[runtime] the code could not be run: ${describe(err)}`);
+      }
+    })();
+    this.#localRun = local;
+    try {
+      const result = await local.done;
+      return { ok: true, result };
+    } finally {
+      this.#localRun = null;
+    }
   }
 
   /** Ask the person, and let cancel() answer for them. */

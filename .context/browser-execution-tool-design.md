@@ -531,6 +531,9 @@ prefix, which is a further reason the result format must be deterministic.
   The speed question is also settled and does not favor marimo:
   under a CDN-matched control, the two surfaces differ by well under a second for a trivial cell.
   See ADR 0010 and its companion `.context/notebook-surface-measurements.md` for the full measurement.
+  No notebook surface ships yet: until JupyterLite lands, the chat widget's own editable re-run panel
+  ("Edit and run" on a recorded run, `ClientToolController.runLocal`, `docs/community-browser-runtime.md`)
+  is the one place a reader can keep tinkering with what the assistant already ran.
 - JupyterLite's contents layer does **not** mount the widget's own Origin Private File System (OPFS) or IndexedDB storage directly
   (confirmed by building it, not only assumed):
   a build-time `--contents <dir>` import into JupyterLite's own, same-origin IndexedDB-backed Contents store is what was tested and works;

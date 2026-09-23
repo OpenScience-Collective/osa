@@ -365,14 +365,19 @@ export class FullOutputStore {
    *   one of `FULL_OUTPUT_STREAMS`, since the model's own `summary` field is
    *   already usually complete and get_full_output never reads this copy.
    * @param {object[]} images - The images the run returned.
+   * @param {{local?: boolean}} [options] - `local: true` marks this entry as
+   *   the reader's own run, so getFullOutput refuses to read it back to the
+   *   model: "the assistant has not seen it" (the widget's own label) has to
+   *   hold from the model's side too, and this is the flag that enforces it.
    */
-  remember(callId, full, images) {
+  remember(callId, full, images, { local = false } = {}) {
     const entry = {
       stdout: String((full && full.stdout) || ''),
       stderr: String((full && full.stderr) || ''),
       traceback: String((full && full.traceback) || ''),
       summary: String((full && full.summary) || ''),
       images: Array.isArray(images) ? images : [],
+      local: local === true,
     };
     this.forget(callId);
     this.#entries.set(callId, entry);
@@ -616,11 +621,14 @@ export class PyodideRuntime {
       // the execution was abandoned, or its deadline already settled it. Never
       // silently attributed to another call, and not kept either, since nobody
       // was told its call_id resolved to this output.
-      const waiting = this._pending.has(msg.call_id);
-      if (waiting && full) {
-        this.outputs.remember(msg.call_id, full, result.images);
+      const pendingEntry = this._pending.get(msg.call_id);
+      if (pendingEntry && full) {
+        // `local` travels with the pending entry from execute()'s own options,
+        // never guessed from the call_id's shape, so get_full_output can later
+        // refuse a local run's output without trusting a naming convention.
+        this.outputs.remember(msg.call_id, full, result.images, { local: pendingEntry.local === true });
       }
-      if (waiting && files.length > 0) {
+      if (pendingEntry && files.length > 0) {
         this._files.set(msg.call_id, files);
       }
       const settled = this._settleExecution(msg.call_id, result);
@@ -742,10 +750,15 @@ export class PyodideRuntime {
    * exist, such as the boot failing or the runtime being torn down mid-execution.
    *
    * @param {string} code - Python to run.
-   * @param {{callId?: string}} [options] - `callId` is the call_id from the
-   *   server's tool_request, which is the provider-assigned id of the model's
-   *   tool_use block; the result is reported against it. A local one is
-   *   generated when absent.
+   * @param {{callId?: string, local?: boolean}} [options] - `callId` is the
+   *   call_id from the server's tool_request, which is the provider-assigned
+   *   id of the model's tool_use block; the result is reported against it. A
+   *   generated one (`local-N`) is used when absent. `local: true` marks this
+   *   execution as the READER's own (ClientToolController#runLocal), which
+   *   travels with the pending call so the remembered full output is marked
+   *   the same way: get_full_output must never be able to read it back for
+   *   the model, and this is the one place that fact is recorded (osa-controller.js
+   *   never relies on the call_id's `person-run-` shape for this).
    * @returns {Promise<object>} The result envelope.
    */
   async execute(code, options = {}) {
@@ -831,7 +844,7 @@ export class PyodideRuntime {
         reject(new Error(`call_id ${callId} is both starting and running`));
         return;
       }
-      this._pending.set(callId, { resolve, reject, timer, started });
+      this._pending.set(callId, { resolve, reject, timer, started, local: options.local === true });
       try {
         this._worker.postMessage({ type: 'execute', call_id: callId, code });
       } catch (err) {
@@ -989,7 +1002,11 @@ export class PyodideRuntime {
     }
 
     const entry = this.outputs.get(requested);
-    if (entry === undefined) {
+    // A local run's entry is refused with EXACTLY the unknown-id answer
+    // below, not a distinct "that one is private" message: the model must
+    // not learn the run even exists, only that this call_id has nothing for
+    // it, the same as a call_id that was never recorded or already evicted.
+    if (entry === undefined || entry.local === true) {
       return answer({
         status: 'error',
         stderr:

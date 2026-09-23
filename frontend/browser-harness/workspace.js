@@ -246,16 +246,57 @@ async function runWritePhase(rt) {
 
   await runProtocolWorkerChecks();
   await runDirectStoreChecks();
+  // Writes into this SAME community's workspace (a third session's worth of
+  // files), so the real total grows again here, same as the second session
+  // did above.
+  await runLocalRunChecks(controller, workspace);
 
-  // usedWithSecondSession, not the earlier `used`: the second session
-  // writes into this SAME community, so the community's real total grew
-  // after `used` was captured. The read phase's own sizeUsed() reflects
-  // that growth for real, and the expectation this page leaves behind has
-  // to agree with it, not with a snapshot from before that session ran.
+  // The FINAL size, after every write into this community, including the
+  // reader's own run just above: the read phase's own sizeUsed() reflects
+  // all of it for real, and the expectation this page leaves behind has to
+  // agree with the total, not with a snapshot from partway through.
+  const usedFinal = await workspace.sizeUsed();
   localStorage.setItem(
     EXPECTATION_KEY,
-    JSON.stringify({ used: usedWithSecondSession, runCount: manifest ? manifest.runs.length : 0 })
+    JSON.stringify({ used: usedFinal, runCount: manifest ? manifest.runs.length : 0 })
   );
+}
+
+const SESSION_ID_LOCAL = 'harness-session-local';
+
+/**
+ * ClientToolController#runLocal, against a REAL IndexedDB: the reader's own
+ * run, not the assistant's, still lands as its own row, marked `local`, and
+ * (checked in the read phase) survives a reload the same way any other run
+ * does. The gate-skipping and busy-refusal guarantees are already proven at
+ * the controller level under Bun (frontend/test-controller.js); what only a
+ * real browser can prove is that the stored record actually reaches
+ * IndexedDB and reads back marked as the reader's own.
+ *
+ * @param {ClientToolController} controller - The SAME controller
+ *   `runWritePhase` already built over a real runtime and this community's
+ *   real WorkspaceStore, so this run lands beside the assistant's own runs.
+ * @param {WorkspaceStore} workspace
+ */
+async function runLocalRunChecks(controller, workspace) {
+  // Fired back to back, neither awaited yet: the second must be refused
+  // while the first is still going, not queued behind it.
+  const first = controller.runLocal('print("mine")', {
+    description: "the reader's own edit",
+    session: SESSION_ID_LOCAL,
+  });
+  const second = controller.runLocal('print("second")', { session: SESSION_ID_LOCAL });
+
+  const outcome = await first;
+  check('runLocal succeeds against a real runtime', outcome.ok === true && outcome.result.status === 'ok', JSON.stringify(outcome));
+  const busy = await second;
+  check('a second local run started while the first is still going is refused, not queued',
+    busy.ok === false, JSON.stringify(busy));
+
+  const manifests = await workspace.manifests();
+  const manifest = manifests[SESSION_ID_LOCAL];
+  check('the reader\'s own run is recorded in its session\'s manifest', !!manifest && manifest.runs.length === 1, JSON.stringify(manifest));
+  check("the manifest marks it local: true", !!manifest && manifest.runs[0].local === true, JSON.stringify(manifest));
 }
 
 /**
@@ -489,6 +530,13 @@ async function runReadPhase() {
 
   const used = await workspace.sizeUsed();
   check('after a fresh page load, sizeUsed matches what the first page wrote', used === expected.used, `got ${used}, expected ${expected.used}`);
+
+  // The reader's own run (runLocal), read back through a FRESH store: local
+  // is a stored property of the run record, not something only the tab that
+  // made it remembers.
+  const localManifest = manifests[SESSION_ID_LOCAL];
+  check("the reader's own run survives a fresh page load", !!localManifest && localManifest.runs.length === 1, JSON.stringify(localManifest));
+  check("and is still marked local: true after the reload", !!localManifest && localManifest.runs[0].local === true, JSON.stringify(localManifest));
 
   // Ordinals continue correctly across a reload. Recorded directly
   // against this FRESH store -- an ordinal is a WorkspaceStore/IndexedDB

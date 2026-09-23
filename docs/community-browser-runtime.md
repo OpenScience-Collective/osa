@@ -358,6 +358,52 @@ nor the workspace.
 This is documented, not engineered around:
 there is no cross-origin storage bridge here, and none is planned.
 
+## The editable re-run panel
+
+Each recorded run in the chat gets an "Edit and run" control,
+once the runtime exists on that page.
+It opens an inline editor holding the run's code,
+bounded by the same length limit a recorded run's code already has,
+with Run and Cancel controls.
+Clicking Run is the reader's own consent,
+so it skips the permission gate entirely
+(`ClientToolController.runLocal`, `frontend/osa-controller.js`),
+and it runs in the SAME runtime and namespace as the assistant's own runs:
+a variable an earlier run defined is still there,
+which is what makes this tinkering rather than a fresh interpreter.
+No request is sent for the run itself.
+But because the namespace is shared,
+what it leaves behind, a variable or a file `osa.save_artifact` wrote,
+is visible to a LATER run in that same namespace, the assistant's included,
+and that later run's own output does reach the model the ordinary way:
+sharing the namespace is the point, and it has this one consequence.
+The run's own output stays private a second way,
+enforced by the runtime itself, not only by the widget's own display:
+`get_full_output` refuses a reader's own call id with EXACTLY the answer it gives an unknown one,
+so the model cannot read the run back even by asking for it directly,
+and is never told the run existed at all
+(`PyodideRuntime.execute`'s `local` option, `FullOutputStore`, `frontend/osa-runtime.js`).
+
+The runtime accepts one execution at a time,
+so Run is refused outright, not queued,
+while the runtime is already busy with the assistant's own code or still booting.
+An assistant tool call that arrives while the reader's own run is in progress waits for it instead,
+so it is still answered correctly once the runtime is free, rather than refused.
+The same egress seal, output limits and execution deadline apply,
+because it is the same runtime.
+Stop is targeted: the editor's own Stop (`cancelLocal()`) reaches only the reader's own run,
+and the assistant's tool panel Stop (`cancel()`) reaches only the assistant's call,
+even when both are outstanding at once,
+an assistant call queued behind a reader's run still in progress.
+
+The result becomes its own entry among the reply's other runs,
+so it survives a reload,
+and is labeled plainly as the reader's own: the assistant never sees it.
+It is stored in the workspace the same way any other run is,
+marked `local` in the stored run record,
+so the derived `manifest.json` and the exported `notebook.ipynb` (see "Workspace" above)
+can say so too.
+
 ## Known blockers
 
 `pybids` cannot be preloaded today:

@@ -41,6 +41,22 @@ function assertEqual(actual, expected, msg) {
   assert(same, `${msg}${same ? '' : ` (expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)})`}`);
 }
 
+/**
+ * Poll `predicate` until it is true, for real DOM click handlers that kick
+ * off an async runLocal() a test cannot otherwise await directly (the click
+ * event handler itself is fire-and-forget). Throws with `label` on timeout,
+ * rather than leaving a test hung against the suite's own watchdog.
+ */
+async function waitUntil(predicate, label, timeoutMs = 5000) {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > timeoutMs) {
+      throw new Error(`waitUntil timed out after ${timeoutMs}ms: ${label}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 const SOURCE = readFileSync(new URL('./osa-chat-widget.js', import.meta.url), 'utf8');
 
 function noNetwork(url) {
@@ -174,6 +190,580 @@ console.log('\nthe permission gate puts only our markup on the page, whatever it
     }
   }
   assertEqual(api.toolPanelHtml(null), '', 'no activity, no panel');
+}
+
+// ---------------------------------------------------------------------------
+// The editable re-run panel: "Edit and run" on a recorded run.
+// ---------------------------------------------------------------------------
+
+function loadWidgetWithRealBundle() {
+  const loaded = loadWidget({ bundleLoads: true });
+  // eslint-disable-next-line no-new-func
+  new Function(readFileSync(new URL('./osa-runtime.bundle.js', import.meta.url), 'utf8'))();
+  loaded.window.OSARuntime = globalThis.OSARuntime;
+  return loaded;
+}
+
+const LOCAL_RUNTIME_CONFIG = {
+  pyodide_version: '0.29.5',
+  preload: [],
+  preload_on: 'first_run',
+  fetch_allow: [],
+  limits: { exec_seconds: 60 },
+};
+const LOCAL_TOOLS = [{ name: 'execute_code', runtime: 'python', requires_permission: true }];
+
+/**
+ * Swap the widget's browserTools/browserRuntime for a REAL
+ * ClientToolController over the REAL test worker (test-workers/*.js, the
+ * same one test-controller.js drives directly), instead of the real-Pyodide
+ * instance setUpBrowserTools() itself builds. runtimeApi (set by
+ * declaredClientTools() below) is untouched, so highlightPython and
+ * RUNTIME_STATE keep coming from the real bundle.
+ *
+ * @param {{api: object, window: object}} loaded - loadWidgetWithRealBundle()'s return.
+ * @param {{worker?: string, gate?: Function}} [options]
+ * @returns {Promise<{runtime: object, controller: object}>}
+ */
+async function useLocalController({ api, window }, { worker = 'executing', gate, runtimeConfig = LOCAL_RUNTIME_CONFIG } = {}) {
+  api.setUpBrowserTools({ client_tools: LOCAL_TOOLS, runtime: { python: LOCAL_RUNTIME_CONFIG } });
+  await api.declaredClientTools();
+  const runtime = new window.OSARuntime.PyodideRuntime({
+    runtime: runtimeConfig,
+    workerFactory: () => new Worker(new URL(`./test-workers/${worker}.js`, import.meta.url).href),
+  });
+  const controller = new window.OSARuntime.ClientToolController({
+    runtime,
+    tools: LOCAL_TOOLS,
+    // No assistant call is answered in these tests unless a test overrides
+    // this, so a gate that is ever actually asked something is a bug: it
+    // would mean runLocal reached the gate, which it must never do.
+    gate: gate || (async () => { throw new Error('the gate must never be asked for a local run'); }),
+  });
+  api.setBrowserTools(controller);
+  api.setBrowserRuntime(runtime);
+  return { runtime, controller };
+}
+
+/** A minimal `.osa-chat-widget` skeleton renderMessages() can render into. */
+function mountedContainer(window) {
+  const container = window.document.createElement('div');
+  container.className = 'osa-chat-widget';
+  container.innerHTML = '<div class="osa-chat-messages"></div>';
+  window.document.body.appendChild(container);
+  return container;
+}
+
+/** Dispatch a real click event, the same way every existing rerun test does. */
+function click(window, el) {
+  el.dispatchEvent(new window.Event('click', { bubbles: true }));
+}
+
+console.log('\n"Edit and run" only appears once the runtime exists on the page');
+{
+  const { window, api } = loadWidget();
+  const run = {
+    callId: 'call-1', tool: 'execute_code', description: 'load the file', code: 'print(1)',
+    status: 'ok', stdout: '', stderr: '', images: [],
+  };
+  const html = api.executionsHtml([run], 0);
+  const holder = window.document.createElement('div');
+  holder.innerHTML = html;
+  assert(!holder.querySelector('.osa-rerun-open'), 'no client tools declared: no "Edit and run" affordance at all');
+}
+
+console.log('\nthe editor opens prefilled with the run\'s code, and escapes hostile content');
+{
+  const { window, api } = loadWidgetWithRealBundle();
+  api.setUpBrowserTools({
+    client_tools: [{ name: 'execute_code', runtime: 'python', requires_permission: true }],
+    runtime: { python: { pyodide_version: '0.29.5', preload: [], fetch_allow: [], limits: {} } },
+  });
+  await api.declaredClientTools();
+  assert(api.canRunLocalCode(), 'the runtime exists on this page now');
+
+  const hostileCode = '</textarea><script>alert(1)</script>';
+  const run = {
+    callId: 'call-2', tool: 'execute_code', description: 'load the file', code: hostileCode,
+    status: 'ok', stdout: '', stderr: '', images: [],
+  };
+  const openHtml = api.executionsHtml([run], 2);
+  const { problems: openProblems, holder: openHolder } = markupProblems(window, openHtml,
+    ['details', 'summary', 'pre', 'code', 'div', 'button', 'span']);
+  assertEqual(openProblems, [], 'the closed record leaves no foreign markup');
+  const openBtn = openHolder.querySelector('.osa-rerun-open');
+  assert(openBtn, 'the "Edit and run" button is offered');
+  assertEqual(openBtn.getAttribute('data-msg-index'), '2', 'naming the reply it belongs to');
+  assertEqual(openBtn.getAttribute('data-run-index'), '0', 'and the run within it');
+
+  const editingRun = { ...run, _editing: true };
+  const editorHtml = api.executionsHtml([editingRun], 2);
+  const { problems: editorProblems, holder: editorHolder } = markupProblems(window, editorHtml,
+    ['details', 'summary', 'pre', 'code', 'div', 'label', 'textarea', 'button', 'span']);
+  assertEqual(editorProblems, [], 'the open editor leaves no foreign markup either, for hostile code');
+  const textarea = editorHolder.querySelector('.osa-rerun-textarea');
+  assert(textarea, 'the editor has a textarea');
+  assertEqual(textarea.value, hostileCode, 'prefilled with the run\'s code, read back exactly as it was, unescaped');
+  assert(!editorHolder.querySelector('.osa-rerun-open'), 'no "Edit and run" button while it is already open');
+  assert(editorHolder.querySelector('.osa-rerun-run'), 'a Run control is present');
+  assert(editorHolder.querySelector('.osa-rerun-cancel'), 'and a Cancel control');
+}
+
+console.log('\nRun is disabled, and says why, while the runtime is already answering the assistant');
+{
+  const { window, api } = loadWidgetWithRealBundle();
+  api.setUpBrowserTools({
+    client_tools: [{ name: 'execute_code', runtime: 'python', requires_permission: true }],
+    runtime: { python: { pyodide_version: '0.29.5', preload: [], fetch_allow: [], limits: {} } },
+  });
+  await api.declaredClientTools();
+
+  const container = window.document.createElement('div');
+  container.className = 'osa-chat-widget';
+  container.innerHTML = '<div class="osa-chat-messages"></div>';
+  window.document.body.appendChild(container);
+
+  const answering = api.getBrowserTools().answer({
+    call_id: 'busy-1', tool: 'execute_code', args: { code: 'print(1)', description: 'd' }, requires_permission: true,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assertEqual(api.getBrowserTools().busy, true, 'the controller reports busy while the gate is showing');
+
+  const run = {
+    callId: 'call-3', tool: 'execute_code', description: 'x', code: 'print(2)',
+    status: 'ok', stdout: '', stderr: '', images: [], _editing: true,
+  };
+  const html = api.executionsHtml([run], 0);
+  const holder = window.document.createElement('div');
+  holder.innerHTML = html;
+  const runBtn = holder.querySelector('.osa-rerun-run');
+  assert(runBtn && runBtn.hasAttribute('disabled'), 'Run is disabled while the runtime is busy');
+  const note = holder.querySelector('.osa-rerun-note');
+  assert(note && /busy/i.test(note.textContent), 'and says why');
+
+  const asking = api.getToolActivity();
+  asking.decide(window.OSARuntime.GATE_DECISION.DENY, false);
+  await answering;
+  assertEqual(api.getBrowserTools().busy, false, 'free again once the assistant\'s call is answered');
+
+  const htmlAfter = api.executionsHtml([run], 0);
+  const holderAfter = window.document.createElement('div');
+  holderAfter.innerHTML = htmlAfter;
+  const runBtnAfter = holderAfter.querySelector('.osa-rerun-run');
+  assert(runBtnAfter && !runBtnAfter.hasAttribute('disabled'), 'and Run is enabled again once the runtime is free');
+}
+
+console.log('\na finished local run renders labeled plainly as the reader\'s own, open by default');
+{
+  const { window, api } = loadWidget();
+  const run = {
+    callId: 'person-run-1', tool: 'execute_code', description: 'tweak the seed', code: 'print("mine")',
+    status: 'ok', stdout: 'mine\n', stderr: '', images: [], local: true,
+  };
+  const html = api.executionsHtml([run], 0);
+  const holder = window.document.createElement('div');
+  holder.innerHTML = html;
+  const details = holder.querySelector('details.osa-execution');
+  assert(details && details.hasAttribute('open'), 'a local run is expanded by default, not collapsed');
+  const summary = holder.querySelector('summary');
+  assert(summary && summary.textContent.startsWith('Your run: '), 'labeled as the reader\'s own in the summary');
+  const note = holder.querySelector('.osa-execution-local-note');
+  assert(note && note.textContent === 'This run is yours. The assistant has not seen it.', 'and said plainly in the body too');
+  const output = holder.querySelector('.osa-execution-output');
+  assert(output && output.textContent === 'mine\n', 'its stdout is shown, bounded the way any recorded run\'s already is');
+}
+
+console.log('\na local run is kept in the reply\'s runs and survives reloading the stored conversation');
+{
+  const { window, api } = loadWidget();
+  const localRun = {
+    callId: 'person-run-7', tool: 'execute_code', description: 'edited', code: 'print(1)',
+    status: 'ok', stdout: '1\n', stderr: '', images: [{ mime: 'image/png', data_base64: 'iVBORw0KGgo=' }],
+    local: true, _editing: true, _draft: 'print(1)  # draft', _runningLocal: false,
+    _localResult: { callId: 'person-run-7', status: 'ok', stdout: '1\n', stderr: '', images: [] },
+  };
+  api.setMessages([{ role: 'assistant', content: 'here you go', executions: [localRun] }]);
+  api.saveHistory();
+
+  const raw = JSON.parse(window.localStorage.getItem(api.getConfig().storageKey));
+  const savedRun = raw.messages[0].executions[0];
+  assert(
+    !('_editing' in savedRun) && !('_draft' in savedRun) && !('_runningLocal' in savedRun) && !('_localResult' in savedRun),
+    'every transient editing field is stripped before saving'
+  );
+  assertEqual(savedRun.local, true, 'local survives the save');
+  assertEqual(savedRun.images, [], 'images are not persisted, the same as any other run');
+
+  api.setMessages([]);
+  const needsSave = api.loadHistory();
+  const reloaded = api.getMessages();
+  assertEqual(reloaded[0].executions[0].local, true, 'local survives being read back too');
+  assert(!('_editing' in reloaded[0].executions[0]), 'and no transient field comes back either');
+  assert(!needsSave, 'a clean, current-version save needs no immediate re-save');
+}
+
+console.log('\nCancel closes the editor and the run renders exactly as it did before editing began');
+{
+  const { window, api } = loadWidgetWithRealBundle();
+  api.setUpBrowserTools({
+    client_tools: [{ name: 'execute_code', runtime: 'python', requires_permission: true }],
+    runtime: { python: { pyodide_version: '0.29.5', preload: [], fetch_allow: [], limits: {} } },
+  });
+  await api.declaredClientTools();
+
+  const run = {
+    callId: 'call-9', tool: 'execute_code', description: 'x', code: 'print(9)',
+    status: 'ok', stdout: '9\n', stderr: '', images: [],
+  };
+  api.setMessages([{ role: 'assistant', content: 'hi' }, { role: 'assistant', content: 'ok', executions: [run] }]);
+
+  const container = window.document.createElement('div');
+  container.className = 'osa-chat-widget';
+  container.innerHTML = '<div class="osa-chat-messages"></div>';
+  window.document.body.appendChild(container);
+
+  api.renderMessages(container);
+  const before = container.querySelector('.osa-chat-messages').innerHTML;
+
+  const openBtn = container.querySelector('.osa-rerun-open');
+  assert(openBtn, 'the "Edit and run" button is rendered');
+  openBtn.dispatchEvent(new window.Event('click', { bubbles: true }));
+  assertEqual(api.getMessages()[1].executions[0]._editing, true, 'clicking it opens the editor');
+
+  const textarea = container.querySelector('.osa-rerun-textarea');
+  textarea.value = 'print("something else")';
+  textarea.dispatchEvent(new window.Event('input', { bubbles: true }));
+  assertEqual(api.getMessages()[1].executions[0]._draft, 'print("something else")', 'typing updates the draft');
+
+  const cancelBtn = container.querySelector('.osa-rerun-cancel');
+  assert(cancelBtn, 'a Cancel control is present while editing');
+  cancelBtn.dispatchEvent(new window.Event('click', { bubbles: true }));
+
+  const runAfter = api.getMessages()[1].executions[0];
+  assert(!('_editing' in runAfter) && !('_draft' in runAfter), 'Cancel discards the edit');
+  const after = container.querySelector('.osa-chat-messages').innerHTML;
+  assertEqual(after, before, 'and the record renders exactly as it did before editing began');
+}
+
+// ---------------------------------------------------------------------------
+// Clicking Run for real, over the real controller and the real test worker
+// (test-workers/*.js, the same seam test-controller.js drives directly).
+// ---------------------------------------------------------------------------
+
+console.log('\nclicking Run executes the reader\'s edit for real and lands it in the reply\'s runs, saved');
+{
+  const { window, api } = loadWidgetWithRealBundle();
+  await useLocalController({ api, window });
+
+  const run = {
+    callId: 'call-1', tool: 'execute_code', description: 'load it', code: 'print(1)',
+    status: 'ok', stdout: '1\n', stderr: '', images: [], local: false,
+  };
+  api.setMessages([{ role: 'assistant', content: 'hi' }, { role: 'assistant', content: 'ok', executions: [run] }]);
+  const container = mountedContainer(window);
+  api.renderMessages(container);
+
+  click(window, container.querySelector('.osa-rerun-open[data-msg-index="1"][data-run-index="0"]'));
+  const textarea = container.querySelector('.osa-rerun-textarea');
+  textarea.value = 'print("edited")';
+  textarea.dispatchEvent(new window.Event('input', { bubbles: true }));
+  click(window, container.querySelector('.osa-rerun-run'));
+
+  await waitUntil(() => api.getMessages()[1].executions.length === 2, 'the new run to land');
+  const executions = api.getMessages()[1].executions;
+  assertEqual(executions.length, 2, 'a new run entry was appended, the original left alone');
+  const record = executions[1];
+  assertEqual(record.local, true, "marked as the reader's own");
+  assertEqual(record.code, 'print("edited")', 'carrying the EDITED code, not the original run\'s');
+  assertEqual(record.status, 'ok', 'the test worker answers ok');
+  assertEqual(record.stdout, 'stdout of print("edited")', "the run's real stdout (executing.js's own `stdout of ${code}`)");
+
+  const bodyText = container.querySelector('.osa-chat-messages').textContent;
+  assert(bodyText.includes('stdout of print("edited")'), "the rendered DOM shows the run's real stdout, not just the in-memory record");
+
+  const raw = JSON.parse(window.localStorage.getItem(api.getConfig().storageKey));
+  assertEqual(raw.messages[1].executions.length, 2, 'the conversation was saved with both runs, not just rendered');
+  assertEqual(raw.messages[1].executions[1].local, true, 'saved marked local too');
+}
+
+console.log('\na reader\'s run that crashes still lands local: true, its status and stderr rendered');
+{
+  // executing.js cannot produce a genuine Python-exception "error" status at
+  // the top level (ERR: only populates get_full_output's OWN store, which a
+  // local run never reaches anyway, since that call never goes to the
+  // model); CRASH (worker dies, -> oom) and a real timeout below are what it
+  // can actually produce as a non-ok top-level status with real stderr.
+  const { window, api } = loadWidgetWithRealBundle();
+  await useLocalController({ api, window });
+  const run = { callId: 'call-2', tool: 'execute_code', description: 'x', code: 'print(1)', status: 'ok', stdout: '', stderr: '', images: [] };
+  api.setMessages([{ role: 'assistant', content: 'ok', executions: [run] }]);
+  const container = mountedContainer(window);
+  api.renderMessages(container);
+  click(window, container.querySelector('.osa-rerun-open[data-msg-index="0"][data-run-index="0"]'));
+  const textarea = container.querySelector('.osa-rerun-textarea');
+  textarea.value = 'CRASH the instance';
+  textarea.dispatchEvent(new window.Event('input', { bubbles: true }));
+  click(window, container.querySelector('.osa-rerun-run'));
+
+  await waitUntil(() => api.getMessages()[0].executions.length === 2, 'the crashed run to land');
+  const record = api.getMessages()[0].executions[1];
+  assertEqual(record.local, true, 'still marked local even though the run failed');
+  assertEqual(record.status, 'oom', 'reported as oom, the same as any other run whose instance dies');
+  assert(/out of memory/.test(record.stderr), 'with the fixed explanation in stderr');
+  const bodyText = container.querySelector('.osa-chat-messages').textContent;
+  assert(bodyText.includes('out of memory'), 'the crash is rendered in the DOM');
+}
+
+console.log("\na reader's run that times out still lands local: true, its status and stderr rendered");
+{
+  const { window, api } = loadWidgetWithRealBundle();
+  await useLocalController({ api, window }, { runtimeConfig: { ...LOCAL_RUNTIME_CONFIG, limits: { exec_seconds: 1 } } });
+  const run = { callId: 'call-3', tool: 'execute_code', description: 'x', code: 'print(1)', status: 'ok', stdout: '', stderr: '', images: [] };
+  api.setMessages([{ role: 'assistant', content: 'ok', executions: [run] }]);
+  const container = mountedContainer(window);
+  api.renderMessages(container);
+  click(window, container.querySelector('.osa-rerun-open[data-msg-index="0"][data-run-index="0"]'));
+  const textarea = container.querySelector('.osa-rerun-textarea');
+  textarea.value = 'NEVER answers';
+  textarea.dispatchEvent(new window.Event('input', { bubbles: true }));
+  click(window, container.querySelector('.osa-rerun-run'));
+
+  await waitUntil(() => api.getMessages()[0].executions.length === 2, 'the timed-out run to land', 6000);
+  const record = api.getMessages()[0].executions[1];
+  assertEqual(record.local, true, 'still marked local even though the run timed out');
+  assertEqual(record.status, 'timeout', 'reported as a timeout, the same as any other run over its deadline');
+  assert(/ran longer than 1s/.test(record.stderr), 'with the fixed explanation, naming the configured deadline');
+  const bodyText = container.querySelector('.osa-chat-messages').textContent;
+  assert(bodyText.includes('ran longer than 1s'), 'the timeout is rendered in the DOM');
+}
+
+console.log('\nCancel after a completed run: the record shows exactly once, matching what was persisted');
+{
+  // Intended behavior: the run HAPPENED and stays part of the reply's runs;
+  // Cancel only closes the editor, it does not undo or hide the run.
+  const { window, api } = loadWidgetWithRealBundle();
+  await useLocalController({ api, window });
+  const run = { callId: 'call-4', tool: 'execute_code', description: 'x', code: 'print(1)', status: 'ok', stdout: '', stderr: '', images: [] };
+  api.setMessages([{ role: 'assistant', content: 'ok', executions: [run] }]);
+  const container = mountedContainer(window);
+  api.renderMessages(container);
+  click(window, container.querySelector('.osa-rerun-open[data-msg-index="0"][data-run-index="0"]'));
+  const textarea = container.querySelector('.osa-rerun-textarea');
+  textarea.value = 'print("cancel-test")';
+  textarea.dispatchEvent(new window.Event('input', { bubbles: true }));
+  click(window, container.querySelector('.osa-rerun-run'));
+  await waitUntil(() => api.getMessages()[0].executions.length === 2, 'the run to land');
+
+  const stdoutText = 'stdout of print("cancel-test")';
+  const during = container.querySelector('.osa-chat-messages').textContent;
+  const occurrencesDuring = during.split(stdoutText).length - 1;
+  assertEqual(occurrencesDuring, 1, 'shown exactly once while the editor is still open (live, under the editor)');
+
+  click(window, container.querySelector('.osa-rerun-cancel'));
+  const executions = api.getMessages()[0].executions;
+  assertEqual(executions.length, 2, "the run happened: it stays in the reply's runs, Cancel does not remove it");
+  const record = executions[1];
+  assertEqual(record.stdout, stdoutText, 'matching exactly what was persisted when it ran');
+
+  const after = container.querySelector('.osa-chat-messages').textContent;
+  const occurrencesAfter = after.split(stdoutText).length - 1;
+  assertEqual(occurrencesAfter, 1, 'still shown exactly once after Cancel: now as its own entry, never duplicated, never dropped');
+}
+
+console.log("\nStop from the widget cancels a reader's run mid-flight, and the runtime is free after");
+{
+  const { window, api } = loadWidgetWithRealBundle();
+  const { controller, runtime } = await useLocalController({ api, window });
+  // Warm the runtime with a throwaway run first, fully awaited, so the run
+  // this test stops is genuinely EXECUTING (state READY, the call handed to
+  // the worker) rather than still racing its own cold boot. Cancelling a
+  // call that is still booting does not recycle the instance -- the boot
+  // carries on and the runtime reaches READY on its own timeline, since the
+  // person stopped a run and not the runtime (osa-runtime.js execute()/
+  // cancel(), and see test-runtime-lifecycle.js's "Stop during a cold boot"
+  // case) -- so without this the widget would correctly, not incorrectly,
+  // still say Python is starting, and this test would be exercising that
+  // other, already-covered case instead of the one it names.
+  await runtime.execute('print("warm")', { callId: 'warmup' });
+  const run = { callId: 'call-5', tool: 'execute_code', description: 'x', code: 'print(1)', status: 'ok', stdout: '', stderr: '', images: [] };
+  api.setMessages([{ role: 'assistant', content: 'ok', executions: [run] }]);
+  const container = mountedContainer(window);
+  api.renderMessages(container);
+  click(window, container.querySelector('.osa-rerun-open[data-msg-index="0"][data-run-index="0"]'));
+  const textarea = container.querySelector('.osa-rerun-textarea');
+  textarea.value = 'NEVER answers';
+  textarea.dispatchEvent(new window.Event('input', { bubbles: true }));
+  click(window, container.querySelector('.osa-rerun-run'));
+
+  await waitUntil(() => container.querySelector('.osa-rerun-stop') !== null, 'the Stop control to appear');
+  // The Stop button existing in the DOM only proves _runningLocal was set;
+  // execute() still races its own (now-warm) boot check before the call
+  // reaches the worker. Wait for it to actually land in the worker's pending
+  // map -- a real tick, not a synchronous check -- so Stop below targets a
+  // running call, not one still inside that race.
+  await waitUntil(() => runtime._pending.size > 0, 'the run to reach the worker, past its own boot race');
+  assertEqual(controller.busy, true, 'the controller is genuinely busy while it runs');
+  click(window, container.querySelector('.osa-rerun-stop'));
+
+  await waitUntil(() => api.getMessages()[0].executions.length === 2, 'the cancelled run to land');
+  const record = api.getMessages()[0].executions[1];
+  assertEqual(record.status, 'cancelled', 'Stop cancels it');
+  assertEqual(controller.busy, false, 'the runtime is free again, not stuck busy');
+
+  // Controls reset AND the runtime genuinely accepts a new run: not merely
+  // re-enabled in the DOM, but actually usable.
+  const runBtnAfter = container.querySelector('.osa-rerun-run');
+  assert(runBtnAfter && !runBtnAfter.hasAttribute('disabled'), 'Run is available again, not stuck disabled');
+  textarea.value = 'print("after stop")';
+  textarea.dispatchEvent(new window.Event('input', { bubbles: true }));
+  click(window, container.querySelector('.osa-rerun-run'));
+  await waitUntil(() => api.getMessages()[0].executions.length === 3, 'a genuinely new run to complete after Stop');
+  assertEqual(api.getMessages()[0].executions[2].status, 'ok', 'and it succeeds normally');
+}
+
+console.log("\nboth Stop buttons visible at once: each one stops only its own run");
+{
+  const { window, api } = loadWidgetWithRealBundle();
+  const { controller, runtime } = await useLocalController({ api, window });
+  // Warm the runtime first, same reason as the previous test: the reader's
+  // run below needs to be genuinely executing (past its own boot race) for
+  // the assistant's call to queue behind it with #current already set --
+  // the exact shape #12 found broken, where the reader's own Stop reached
+  // the assistant's queued call instead of the run it was pressed on.
+  await runtime.execute('print("warm")', { callId: 'warmup' });
+
+  const run = { callId: 'call-7', tool: 'execute_code', description: 'x', code: 'print(1)', status: 'ok', stdout: '', stderr: '', images: [] };
+  api.setMessages([
+    { role: 'assistant', content: 'ok', executions: [run] },
+    { role: 'assistant', content: '', executions: [] },
+  ]);
+  const container = mountedContainer(window);
+  api.renderMessages(container);
+
+  // The reader opens and runs their own edit first.
+  click(window, container.querySelector('.osa-rerun-open[data-msg-index="0"][data-run-index="0"]'));
+  const textarea = container.querySelector('.osa-rerun-textarea');
+  textarea.value = 'NEVER answers';
+  textarea.dispatchEvent(new window.Event('input', { bubbles: true }));
+  click(window, container.querySelector('.osa-rerun-run'));
+  await waitUntil(() => container.querySelector('.osa-rerun-stop') !== null, "the reader's Stop to appear");
+  await waitUntil(() => runtime._pending.size > 0, "the reader's run to reach the worker, past its own boot race");
+
+  // The assistant's own call is asked while the reader's run is still going,
+  // so it queues behind it (answer() sets #current, then awaits
+  // #localRun.done, per osa-controller.js). Not awaited here: it only
+  // settles once the reader's run is stopped or finishes.
+  const assistantRequest = { call_id: 'call-assistant-1', tool: 'execute_code', args: { code: 'print(2)', description: 'assistant run' } };
+  const assistantAnswered = api.answerToolRequest(container, assistantRequest, 1);
+  await waitUntil(() => container.querySelector('.osa-tool-stop') !== null, "the assistant's tool panel Stop to appear");
+
+  // Both panels are visible at once. Stop the assistant's call through ITS
+  // OWN button first. It is still only queued (answer() awaits
+  // #localRun.done before it can even resolve), so this marks it cancelled
+  // without settling anything yet -- and, critically, must not touch the
+  // reader's run, which is proven right here, before either promise
+  // resolves: still busy, its own Stop still standing.
+  assertEqual(controller.busy, true, "still busy: the reader's run has not been touched");
+  click(window, container.querySelector('.osa-tool-stop'));
+  // Give any wrongly-targeted cancellation a real chance to land (a wrong
+  // cancel() would settle runtime.execute() and, a few microtasks later,
+  // runLocal()'s own record) before checking it did not: an assertion made
+  // in the very same synchronous tick as the click would pass either way,
+  // since neither path's consequences have propagated yet.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assertEqual(api.getMessages()[0].executions.length, 1, "the reader's run has not landed: the assistant's Stop never reached it");
+  assert(container.querySelector('.osa-rerun-stop') !== null, "the reader's own Stop is still there: their run was never touched");
+  assertEqual(controller.busy, true, "the reader's run is still genuinely running, untouched by the assistant's Stop");
+
+  // Now stop the reader's own run through ITS OWN button. That frees the
+  // runtime, which is what finally lets the assistant's already-cancelled
+  // call resolve.
+  click(window, container.querySelector('.osa-rerun-stop'));
+  await waitUntil(() => api.getMessages()[0].executions.length === 2, "the reader's cancelled run to land");
+  assertEqual(api.getMessages()[0].executions[1].status, 'cancelled', "the reader's own run stopped, through its own Stop");
+
+  const assistantResult = await assistantAnswered;
+  assertEqual(assistantResult.status, 'denied', "the assistant's call is the one its own Stop marked -- declined once its turn came, never run");
+  assertEqual(controller.busy, false, 'the runtime is free again');
+}
+
+console.log('\na synchronous double click on Run executes exactly once');
+{
+  const { window, api } = loadWidgetWithRealBundle();
+  await useLocalController({ api, window });
+  const run = { callId: 'call-6', tool: 'execute_code', description: 'x', code: 'print(1)', status: 'ok', stdout: '', stderr: '', images: [] };
+  api.setMessages([{ role: 'assistant', content: 'ok', executions: [run] }]);
+  const container = mountedContainer(window);
+  api.renderMessages(container);
+  click(window, container.querySelector('.osa-rerun-open[data-msg-index="0"][data-run-index="0"]'));
+  const textarea = container.querySelector('.osa-rerun-textarea');
+  textarea.value = 'print("double")';
+  textarea.dispatchEvent(new window.Event('input', { bubbles: true }));
+
+  const runBtn = container.querySelector('.osa-rerun-run');
+  // Two clicks, back to back, on the SAME node reference, before either
+  // handler yields to the event loop: the worst-case shape of a real
+  // double-click, and the one a naive re-query after the first render would
+  // not even reproduce.
+  click(window, runBtn);
+  click(window, runBtn);
+
+  await waitUntil(() => api.getMessages()[0].executions.length >= 2, 'the run to land');
+  await new Promise((resolve) => setTimeout(resolve, 80)); // let a wrongly-started second run finish landing too
+  const executions = api.getMessages()[0].executions;
+  assertEqual(executions.length, 2, 'exactly one new run landed, never two');
+}
+
+console.log('\nRun is disabled, and says why, while the runtime is still booting (a real BOOTING state)');
+{
+  const { window, api } = loadWidgetWithRealBundle();
+  const { runtime } = await useLocalController({ api, window }, { worker: 'slow-boot' });
+  const run = {
+    callId: 'call-7', tool: 'execute_code', description: 'x', code: 'print(1)',
+    status: 'ok', stdout: '', stderr: '', images: [], _editing: true,
+  };
+  // slow-boot.js answers `ready` after a real 300ms delay: booted directly
+  // here (not through Run) so the BOOTING window is observed without racing
+  // a click against it.
+  const booting = runtime.boot();
+  assertEqual(runtime.state, window.OSARuntime.RUNTIME_STATE.BOOTING, 'genuinely booting, not simulated');
+  const html = api.executionsHtml([run], 0);
+  const holder = window.document.createElement('div');
+  holder.innerHTML = html;
+  const runBtn = holder.querySelector('.osa-rerun-run');
+  assert(runBtn && runBtn.hasAttribute('disabled'), 'Run is disabled while the runtime is booting');
+  const note = holder.querySelector('.osa-rerun-note');
+  assert(note && /starting/i.test(note.textContent), 'and says why');
+  await booting;
+  assertEqual(runtime.state, window.OSARuntime.RUNTIME_STATE.READY, 'and it does finish booting, proving the window was real');
+  runtime.terminate();
+}
+
+// ---------------------------------------------------------------------------
+// #7: a workspace save failure renders for BOTH kinds of run, regardless of
+// the run's own status (unlike ordinary stderr, which is status-gated).
+// ---------------------------------------------------------------------------
+
+console.log('\na workspace save-failure note renders regardless of status, for an assistant run and for a local run');
+{
+  const { window, api } = loadWidget();
+  const assistantRun = {
+    callId: 'call-a', tool: 'execute_code', description: 'x', code: 'print(1)',
+    status: 'ok', stdout: 'fine\n', stderr: '', images: [], local: false,
+    workspaceNote: "[workspace] could not save artifacts/x.txt: quota exceeded",
+  };
+  const localRun = {
+    callId: 'person-run-9', tool: 'execute_code', description: 'x', code: 'print(1)',
+    status: 'ok', stdout: 'fine\n', stderr: '', images: [], local: true,
+    workspaceNote: "[workspace] could not save artifacts/y.txt: quota exceeded",
+  };
+  const html = api.executionsHtml([assistantRun, localRun], 0);
+  const holder = window.document.createElement('div');
+  holder.innerHTML = html;
+  const notes = Array.from(holder.querySelectorAll('.osa-execution-workspace-note')).map((n) => n.textContent);
+  assertEqual(notes.length, 2, 'one note per run, even though BOTH runs succeeded (status ok)');
+  assert(notes[0].includes('artifacts/x.txt'), "the assistant run's own failure is shown");
+  assert(notes[1].includes('artifacts/y.txt'), "the reader's own run's failure is shown too, its only visible surface");
 }
 
 console.log('\na determinate progress bar tracks a real boot sequence, and never jumps');

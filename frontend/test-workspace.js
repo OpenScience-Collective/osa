@@ -130,6 +130,27 @@ console.log('\nderiveManifest is pure: sorted by ordinal, files sorted and de-du
   assertEqual(deriveManifest(undefined).runs, [], 'and so does no argument at all');
 }
 
+console.log("\nderiveManifest always reports whether a run was the reader's own");
+{
+  const manifest = deriveManifest([
+    { ordinal: 1, callId: 'c1', status: 'ok', files: [], timestamp: '2026-01-01T00:00:00Z', local: true },
+    { ordinal: 2, callId: 'c2', status: 'ok', files: [], timestamp: '2026-01-02T00:00:00Z' },
+  ]);
+  assertEqual(manifest.runs[0].local, true, "a run recorded with local: true reports it in the manifest");
+  assertEqual(manifest.runs[1].local, false, 'a run with no local field at all is reported as false, never left undefined');
+}
+
+console.log("\nbuildNotebook marks a run as the reader's own in its markdown cell, and only that run");
+{
+  const notebook = buildNotebook([
+    { ordinal: 1, description: 'load the recording', code: 'x = 1', stdout: '', stderr: '', images: [], local: true },
+    { ordinal: 2, description: '', code: 'print(x)', stdout: '', stderr: '', images: [] },
+  ]);
+  assertEqual(notebook.cells[0].source, 'load the recording (run by the reader, not the assistant)',
+    'the local run\'s markdown cell says so');
+  assertEqual(notebook.cells[2].source, 'Run 2', "an assistant run's cell is unchanged, label and all");
+}
+
 console.log('\nbuildNotebook produces nbformat 4.5 with cell ids, one markdown + one code cell per run');
 {
   const notebook = buildNotebook([

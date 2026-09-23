@@ -457,6 +457,18 @@ console.log('\na workspace write that genuinely fails drops the artifact and not
   assert(/\[workspace\] could not save artifacts\/file-1\.txt: IndexedDB is not available in this browser/.test(result.stderr),
     'and the second');
   assertEqual(result.status, 'ok', 'the run itself is not failed by a workspace write that fails');
+
+  // #7: a save failure on a run whose Python succeeded must still reach the
+  // widget. It travels as a NON-enumerable property, so it never becomes
+  // part of what answer()'s caller sends to the server (postResume's
+  // JSON.stringify body) or of a later {...result} copy, only something a
+  // caller that knows to look for it (the widget) can read directly.
+  assert(typeof result.workspaceFailureNote === 'string' && result.workspaceFailureNote.length > 0,
+    `a workspaceFailureNote carries the same failures (got ${JSON.stringify(result.workspaceFailureNote)})`);
+  assert(/could not save artifacts\/file-0\.txt/.test(result.workspaceFailureNote), 'naming the first failed file');
+  assert(!Object.keys(result).includes('workspaceFailureNote'), 'not enumerable: Object.keys never sees it');
+  assert(!JSON.stringify(result).includes('workspaceFailureNote'), 'and JSON.stringify (what postResume sends) never carries it either');
+  assert(onlyServerFields(result), 'the result otherwise still carries only ClientToolResult fields');
   rt.terminate();
 }
 
@@ -526,6 +538,224 @@ console.log('\nonly a call that actually ran Python is persisted: a declined run
   const result = await controller.answer(request('call-declined', 'print(1)'));
   assertEqual(result.status, 'denied', 'the run was declined');
   assertEqual(recorded.length, 0, 'and nothing was ever handed to the workspace');
+  rt.terminate();
+}
+
+// ---------------------------------------------------------------------------
+// runLocal: the reader's own edit-and-run
+// ---------------------------------------------------------------------------
+
+console.log("\na local run executes without the gate, and is recorded as the reader's own");
+{
+  const workspace = new WorkspaceStore({ community: 'test-community' });
+  const recorded = [];
+  const originalRecordRun = workspace.recordRun.bind(workspace);
+  workspace.recordRun = (...args) => {
+    recorded.push(args);
+    return originalRecordRun(...args);
+  };
+  const { rt, controller, asked } = setup({ workspace });
+  const outcome = await controller.runLocal('print("mine")', { description: 'tweak it', session: 'sess-local' });
+  assertEqual(asked.length, 0, 'no gate is asked: clicking Run is the consent');
+  assert(outcome.ok === true, 'the run completes');
+  assertEqual(outcome.result.status, 'ok', 'and succeeds');
+  assert(/^person-run-\d+$/.test(outcome.result.call_id), `its call id has the reader's own shape (got ${JSON.stringify(outcome.result.call_id)})`);
+  assertEqual(recorded.length, 1, 'exactly one write reached the workspace');
+  assertEqual(recorded[0][0].local, true, "marked as the reader's own in the stored record");
+  assertEqual(recorded[0][0].session, 'sess-local', 'under the session it was given');
+  assertEqual(recorded[0][0].description, 'tweak it', 'carrying the description it was given');
+  rt.terminate();
+}
+
+console.log('\na local run sends nothing toward the server');
+{
+  // Poisoned rather than recorded: proves the absence of a network call by
+  // making any attempt explode, not by trusting an empty log.
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = () => {
+    throw new Error('runLocal must never touch the network');
+  };
+  try {
+    const { rt, controller } = setup();
+    const outcome = await controller.runLocal('print(2)', { session: 'sess-network' });
+    assert(outcome.ok === true && outcome.result.status === 'ok', 'the run still completes with fetch poisoned');
+    rt.terminate();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+console.log('\na local run is refused, not queued, while the assistant is being asked');
+{
+  let release;
+  const { rt, controller } = setup({ decision: () => new Promise((resolve) => { release = resolve; }) });
+  const answering = controller.answer(request('call-busy-assistant', 'print(1)'));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const refused = await controller.runLocal('print("mine")', {});
+  assertEqual(JSON.stringify(refused), JSON.stringify({ ok: false, reason: 'the assistant is using this runtime right now' }),
+    'refused while the assistant is being asked');
+  release(GATE_DECISION.DENY);
+  await answering;
+  rt.terminate();
+}
+
+console.log('\na local run is refused, not queued, while another of the reader\'s own is going');
+{
+  const { rt, controller } = setup();
+  const first = controller.runLocal('DELAY:50', { session: 'sess-busy-local' });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const refused = await controller.runLocal('print("second")', {});
+  assertEqual(JSON.stringify(refused), JSON.stringify({ ok: false, reason: 'another of your runs is still going' }),
+    'refused while the first is still going');
+  const firstOutcome = await first;
+  assertEqual(firstOutcome.ok, true, 'and the first still completes fine, unaffected by the refused second');
+  rt.terminate();
+}
+
+console.log("\ncancelLocal() cancels the reader's own run");
+{
+  const { rt, controller } = setup();
+  const running = controller.runLocal('NEVER answers', { session: 'sess-stop' });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assertEqual(controller.busy, true, "busy: the reader's own code is running");
+  assertEqual(controller.cancel(), false, "cancel() (the ASSISTANT's Stop) has nothing to stop: no assistant call is outstanding");
+  assertEqual(controller.cancelLocal(), true, 'cancelLocal() reaches the runtime');
+  const outcome = await running;
+  assertEqual(outcome.ok, true, 'runLocal still resolves, never rejects');
+  assertEqual(outcome.result.status, 'cancelled', 'status cancelled');
+  assertEqual(outcome.result.stderr, CANCELLED_STDERR, 'with the fixed explanation');
+  assertEqual(controller.busy, false, 'and the controller is free again');
+  assertEqual(controller.cancelLocal(), false, 'nothing left to stop');
+  rt.terminate();
+}
+
+console.log('\ncancel() and cancelLocal() are targeted: each Stop reaches only its own run, even with both outstanding at once');
+{
+  const { rt, controller, asked } = setup();
+  const local = controller.runLocal('NEVER answers', { session: 'sess-targeted' });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const assistant = controller.answer(request('call-targeted', 'print(1)'));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  // Both are now outstanding: the reader's own run still spinning in the
+  // runtime, the assistant's call queued behind it, waiting for the runtime
+  // to free up (osa-controller.js's answer() awaits #localRun.done). This is
+  // the exact shape #12 found broken: the two Stop buttons sharing one
+  // undifferentiated cancel() meant the reader's own Stop silently hit the
+  // assistant's queued call instead, leaving the reader's run unstoppable.
+  assertEqual(controller.cancelLocal(), true, "cancelLocal() reaches the reader's own run");
+  const localOutcome = await local;
+  assertEqual(localOutcome.result.status, 'cancelled', "the reader's own run is the one that stopped");
+  const assistantResult = await assistant;
+  assertEqual(assistantResult.status, 'ok', "the assistant's call is UNAFFECTED: it still runs normally, once the runtime is free");
+  assertEqual(assistantResult.call_id, 'call-targeted', 'answering the right call');
+  assertEqual(asked.length, 1, 'its gate was asked, exactly as it would be with no local run involved at all');
+  rt.terminate();
+}
+
+console.log("\nget_full_output refuses a reader's own run's call_id, exactly like one that never existed");
+{
+  // "This run is yours. The assistant has not seen it" has to hold even
+  // against a model that calls get_full_output with a call_id it never
+  // received (#433's get_full_output has no gate and costs nothing to try,
+  // and person-run-N's shape is published in the runtime bundle). The
+  // refusal must be indistinguishable from an unknown call_id, or the
+  // model learns the run exists even while being refused its content.
+  const { rt, controller } = setup();
+  controller.autoRun = true;
+  const local = await controller.runLocal('LONG:20000', { session: 'sess-privacy' });
+  assert(local.ok === true && local.result.status === 'ok', "the reader's own run completes");
+  const localCallId = local.result.call_id;
+
+  const unknownAnswer = async (callId) =>
+    controller.answer({
+      call_id: 'call-read-' + callId,
+      tool: FULL_OUTPUT_TOOL_NAME,
+      args: { call_id: callId, stream: 'stdout', offset: 0 },
+      requires_permission: false,
+    });
+  const readLocal = await unknownAnswer(localCallId);
+  const readNeverExisted = await unknownAnswer('call-never-existed');
+
+  const unknownIdTemplate =
+    /^\[runtime\] no output is kept for call_id "[^"]*" in this browser\. Output stays in the tab that ran the code: it is gone after a reload, and only the last \d+ runs are kept\.$/;
+  assertEqual(readLocal.status, 'error', "reading the reader's own run's output is refused");
+  assert(unknownIdTemplate.test(readLocal.stderr), `the refusal matches the unknown-call_id template exactly (got ${JSON.stringify(readLocal.stderr)})`);
+  assertEqual(readLocal.status, readNeverExisted.status, 'the same status as a call_id that never existed');
+  assert(unknownIdTemplate.test(readNeverExisted.stderr), 'and the never-existed one matches the same template too, so the two are indistinguishable');
+  assert(!readLocal.stdout.includes('x'), "none of the reader's own stdout reached the answer");
+
+  const assistantRun = await controller.answer(request('call-assistant-privacy', 'LONG:5000'));
+  const readAssistant = await unknownAnswer(assistantRun.call_id);
+  assertEqual(readAssistant.status, 'ok', "an ASSISTANT run's own call_id is unaffected: get_full_output still answers it for real");
+  assert(readAssistant.stdout.length > 64, 'and carries its real kept output');
+  rt.terminate();
+}
+
+console.log("\na tool request that arrives during the reader's own run is still answered correctly");
+{
+  const { rt, controller, asked } = setup();
+  const local = controller.runLocal('DELAY:50', { session: 'sess-overlap' });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assertEqual(controller.busy, true, "busy: the reader's own run is still going");
+  // The worker runs one execution at a time, so this MUST wait rather than
+  // interleave; the point of the test is that waiting still ends in a real
+  // answer, not a busy refusal, once the runtime is free again.
+  const assistant = controller.answer(request('call-overlap', 'print(9)'));
+  const localOutcome = await local;
+  assertEqual(localOutcome.ok, true, "the reader's own run completes first");
+  assertEqual(localOutcome.result.status, 'ok', 'and succeeds');
+  const assistantResult = await assistant;
+  assertEqual(assistantResult.status, 'ok', "the assistant's call still runs, for real, once the runtime is free");
+  assertEqual(assistantResult.call_id, 'call-overlap', 'and answers the right call');
+  assertEqual(asked.length, 1, 'the gate was asked for the assistant\'s call: it was queued, not skipped or refused');
+  rt.terminate();
+}
+
+console.log("\na queued tool request never reaches the runtime until the reader's own run has fully left it");
+{
+  // rt.execute is the one door onto the worker: wrapped here to OBSERVE when
+  // each call starts and ends, still calling the real implementation, so
+  // this proves ordering at the exact boundary the worker's own "one
+  // execution at a time" rule (osa-worker-core.js) depends on the host
+  // never crossing.
+  const { rt, controller, asked } = setup();
+  const originalExecute = rt.execute.bind(rt);
+  const events = [];
+  rt.execute = (code, options) => {
+    const callId = options && options.callId;
+    events.push(`start:${callId}`);
+    return originalExecute(code, options).then((result) => {
+      events.push(`end:${callId}`);
+      return result;
+    });
+  };
+  const local = controller.runLocal('DELAY:40', { session: 'sess-serial' });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const assistant = controller.answer(request('call-serial', 'print(9)'));
+  await Promise.all([local, assistant]);
+  const localEnd = events.findIndex((e) => /^end:person-run-/.test(e));
+  const assistantStart = events.indexOf('start:call-serial');
+  assert(localEnd >= 0 && assistantStart >= 0, `both executions reached the runtime (got ${JSON.stringify(events)})`);
+  assert(localEnd < assistantStart,
+    `the assistant's execute() never starts until the reader's own has fully finished (order: ${events.join(' > ')})`);
+  assertEqual(asked.length, 1, 'the gate still ran, after the wait, not before it');
+  rt.terminate();
+}
+
+console.log("\nStop pressed while the assistant's call is only waiting behind a local run counts as declining");
+{
+  const { rt, controller } = setup();
+  const local = controller.runLocal('DELAY:80', { session: 'sess-overlap-stop' });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const assistant = controller.answer(request('call-overlap-stop', 'print(9)'));
+  // Cancel while the assistant's call is still queued, before the local run
+  // has left the runtime. The call is answered as declined rather than
+  // silently proceeding once the runtime frees up.
+  controller.cancel();
+  const localOutcome = await local;
+  assertEqual(localOutcome.result.status, 'ok', "cancel() reached the QUEUED assistant call, not the reader's own run in progress");
+  const result = await assistant;
+  assertEqual(result.status, 'denied', 'Stop, pressed while only waiting its turn, still counts as declining');
   rt.terminate();
 }
 
