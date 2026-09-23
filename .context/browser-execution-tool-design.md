@@ -293,6 +293,9 @@ The message schema is identical either way.
   can install for itself. Shim every entry point, set `credentials: "omit"` on the allowed ones so
   same-origin requests do not silently carry cookies, and treat `fetch_allow` as an EGRESS control: an
   allowlisted origin can be sent conversation content inside a URL and will log it.
+  **As built:** `fetch` is shimmed with `redirect: 'error'`, and `XMLHttpRequest` is removed outright,
+  like `WebSocket` and `EventSource`: XHR follows a redirect with no way to refuse it,
+  so a 302 from an allowed origin delivered a disallowed one's body in Chrome, and nothing in the runtime needs it.
 - Content Security Policy: the embedding page needs `wasm-unsafe-eval` in `script-src`, `worker-src` for
   the runtime worker (a policy with no `worker-src` falls back to `script-src 'self'` and refuses a blob
   worker), and `connect-src` entries for the data plane, the Pyodide CDN and the wheel host. Website
