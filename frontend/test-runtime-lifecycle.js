@@ -20,6 +20,7 @@ import {
   MAX_ARTIFACTS,
   MAX_ARTIFACT_NAME_CHARS,
   PyodideRuntime,
+  RESULT_STATUSES,
   RUNTIME_STATE,
   buildWorkerSource,
   createWorkerEnv,
@@ -916,6 +917,23 @@ console.log('\nevery result a caller receives is exactly the server\'s shape');
   onlyServerFields(rt.getFullOutput({ call_id: 'shape-kept' }, { callId: 'shape-read' }), 'a get_full_output answer');
   onlyServerFields(rt.getFullOutput({ call_id: 'nothing-here' }, { callId: 'shape-miss' }), 'a get_full_output refusal');
   rt.terminate();
+}
+
+console.log('\nthe browser\'s status set matches ResultStatus in src/api/tool_results.py');
+{
+  // ClientToolResult.status is a Literal and the model is extra="forbid", so a
+  // status the browser writes but the Literal does not name is refused whole,
+  // and a status the Literal names but the browser never writes is dead code
+  // nobody would notice drifting. RESULT_STATUSES (osa-runtime.js) is the one
+  // place the browser's set is declared; this is the one place it is checked
+  // against the server's.
+  const python = await Bun.file(new URL('../src/api/tool_results.py', import.meta.url)).text();
+  const literalLine = python.split('\n').find((line) => line.trimStart().startsWith('ResultStatus = Literal['));
+  assert(literalLine !== undefined, 'tool_results.py declares ResultStatus as a Literal');
+  const serverStatuses = [...(literalLine || '').matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+  assert(serverStatuses.length > 0, 'at least one status was parsed out of the Literal');
+  assertEqual(JSON.stringify([...serverStatuses].sort()), JSON.stringify([...RESULT_STATUSES].sort()),
+    'the sets are exactly equal, in either direction');
 }
 
 console.log('\nevery result is sized to what the server accepts, at one choke point');

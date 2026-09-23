@@ -258,6 +258,32 @@ export const CLIENT_TOOL_RESULT_FIELDS = Object.freeze([
 ]);
 
 /**
+ * Every status a `ClientToolResult` may report, by name, so the host code below
+ * writes `RESULT_STATUS.CANCELLED` rather than a bare string it could misspell.
+ *
+ * Equals `ResultStatus` in `src/api/tool_results.py` (a `Literal`, and
+ * `ClientToolResult` is `extra="forbid"`, so a status outside this set is
+ * refused whole). `test-runtime-lifecycle.js` reads that Literal back and
+ * fails if the two drift, the same way it already does for
+ * `CLIENT_TOOL_RESULT_FIELDS` above.
+ *
+ * Not used inside `createWorkerRuntime` (osa-worker-core.js): that function is
+ * serialized with `Function.prototype.toString` and loses its closure, so it
+ * keeps its own status literals inline rather than referencing this constant.
+ */
+export const RESULT_STATUS = Object.freeze({
+  OK: 'ok',
+  ERROR: 'error',
+  DENIED: 'denied',
+  TIMEOUT: 'timeout',
+  CANCELLED: 'cancelled',
+  OOM: 'oom',
+});
+
+/** `RESULT_STATUS`'s values, in the order the Python `Literal` declares them. */
+export const RESULT_STATUSES = Object.freeze(Object.values(RESULT_STATUS));
+
+/**
  * Bound a string the same way the Python harness does: both ends kept, and the
  * gap says how much was dropped. Mirrors `_clip` in osa-output.js.
  *
@@ -636,7 +662,7 @@ export class PyodideRuntime {
       // that ran out. Keeping it would let the next execution start against a
       // heap that is already exhausted, and fail for a reason belonging to the
       // previous run.
-      if (settled && msg.status === 'oom') {
+      if (settled && msg.status === RESULT_STATUS.OOM) {
         this._recycle();
       }
       return;
@@ -796,7 +822,7 @@ export class PyodideRuntime {
       this._starting.delete(callId);
     }
     if (wasCancelled || starting.cancelled) {
-      return this._emptyResult(callId, 'cancelled', CANCELLED_STDERR, Date.now() - requested);
+      return this._emptyResult(callId, RESULT_STATUS.CANCELLED, CANCELLED_STDERR, Date.now() - requested);
     }
 
     // Re-checked AFTER the await, not before it. `boot()` yields, so a
@@ -825,7 +851,7 @@ export class PyodideRuntime {
           callId,
           this._emptyResult(
             callId,
-            'timeout',
+            RESULT_STATUS.TIMEOUT,
             `[runtime] the code ran longer than ${this.limits.exec_seconds}s and was stopped.`,
             Date.now() - started
           )
@@ -874,7 +900,7 @@ export class PyodideRuntime {
       waiting.resolve(
         this._emptyResult(
           callId,
-          'oom',
+          RESULT_STATUS.OOM,
           '[runtime] the Python runtime ran out of memory and was restarted. ' +
             'Try working on less data at a time.' + (message ? ' (' + message + ')' : ''),
           Date.now() - waiting.started
@@ -911,7 +937,7 @@ export class PyodideRuntime {
     if (!waiting) {
       return false;
     }
-    this._settleExecution(callId, this._emptyResult(callId, 'cancelled', CANCELLED_STDERR, Date.now() - waiting.started));
+    this._settleExecution(callId, this._emptyResult(callId, RESULT_STATUS.CANCELLED, CANCELLED_STDERR, Date.now() - waiting.started));
     this._recycle();
     return true;
   }
@@ -980,7 +1006,7 @@ export class PyodideRuntime {
       toClientToolResult(
         {
           call_id: options.callId || `local-${++this._callSeq}`,
-          status: 'ok',
+          status: RESULT_STATUS.OK,
           stdout: '',
           stderr: '',
           summary: '',
@@ -996,7 +1022,7 @@ export class PyodideRuntime {
 
     if (!FULL_OUTPUT_STREAMS.includes(stream)) {
       return answer({
-        status: 'error',
+        status: RESULT_STATUS.ERROR,
         stderr: `[runtime] unknown stream ${JSON.stringify(String(stream).slice(0, 64))}; use one of ${FULL_OUTPUT_STREAMS.join(', ')}.`,
       });
     }
@@ -1008,7 +1034,7 @@ export class PyodideRuntime {
     // it, the same as a call_id that was never recorded or already evicted.
     if (entry === undefined || entry.local === true) {
       return answer({
-        status: 'error',
+        status: RESULT_STATUS.ERROR,
         stderr:
           `[runtime] no output is kept for call_id ${quoted} in this browser. Output stays in the ` +
           `tab that ran the code: it is gone after a reload, and only the last ${this.outputs.maxCalls} ` +
