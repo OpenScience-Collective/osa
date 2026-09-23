@@ -18,6 +18,11 @@ Pyodide 0.29.5 ships every one of them, and `depends.toml` names them.
 They are why the runtime needs 0.29.5,
 since 0.28.3 has no `google-crc32c` and zarr imports it.
 
+`sources.toml`, beside this file, records where each wheel above came from --
+for `eegprep-lean`, the upstream repository, branch, path and commit; for `zarr`,
+that it is PyPI's own wheel, byte for byte. A test fails if a wheel in `wheels/`
+has no entry there, or an entry names no wheel.
+
 ## Changing a wheel
 
 1. Build or download the new wheel under a **new version**.
@@ -25,7 +30,8 @@ since 0.28.3 has no `google-crc32c` and zarr imports it.
    so new bytes under an old name would reach some readers and not others,
    and the generator refuses them.
 2. Put it in `wheels/`, remove the old one, and update `depends.toml` if its needs changed.
-3. Regenerate the overlay, and record where the wheel came from in the table above:
+3. Regenerate the overlay, and record where the wheel came from in `sources.toml`
+   and the table above:
 
    ```bash
    uv run python scripts/build_runtime_lock.py src/assistants/nemar/runtime/nemar-pyodide-lock.json
@@ -34,3 +40,50 @@ since 0.28.3 has no `google-crc32c` and zarr imports it.
 4. Run `bun frontend/test-data-lane.js`, which loads these exact files in a real Pyodide and reads a store through them.
 
 A test fails when the overlay is not what the wheels and `depends.toml` produce.
+
+## Refreshing eegprep-lean
+
+**Owner:** the OSA maintainer for NEMAR.
+
+**Signal:** the weekly drift watcher's issue (label `eegprep-lean-drift`,
+opened or updated by `.github/workflows/eegprep-lean-watch.yml`). It runs
+`scripts/eegprep_lean_drift.py`, which compares `sources.toml`'s recorded commit
+against the newest commit on `sccn/eegprep`'s `develop` branch touching
+`packages/eegprep-lean` -- by commit, never by version string alone, since a
+version can sit still across more than one upstream commit -- and reports
+`current`, `behind`, or `unknown` (a fetch or parse failure; never reported as
+current). Run it by hand at any time: `uv run python scripts/eegprep_lean_drift.py`.
+
+**Build:** from the commit `sources.toml` records, with the reproducible command
+it names:
+
+```bash
+git archive <commit> packages/eegprep-lean | tar -x -C <dir>
+cd <dir>/packages/eegprep-lean
+SOURCE_DATE_EPOCH=<the commit's own timestamp> uv build --wheel
+```
+
+Without `SOURCE_DATE_EPOCH` set to the commit's own timestamp, setuptools stamps
+the build time and two builds of the same commit differ; set to it, the wheel is
+reproducible byte for byte (verified for the 0.1.0.dev2 re-vendor: a second build
+from a fresh checkout produced the identical sha256).
+
+**Proof, in order:**
+
+1. `uv run python scripts/build_runtime_lock.py --check src/assistants/nemar/runtime/nemar-pyodide-lock.json`
+   once the new wheel is in `wheels/` and the overlay regenerated (drop `--check`
+   to write it in the first place).
+2. `bun frontend/test-data-lane.js` -- loads the new wheel in a real Pyodide and
+   reads a store through it, both production's current recipe and nemar-cli
+   dev's level-0 recipe.
+3. `bun frontend/browser-harness/chrome.js` -- the same, in headless Chrome,
+   which is the only thing here that proves the wheel loads by URL with its
+   sha256 checked, under a real CSP.
+4. `uv run python frontend/browser-harness/widget_e2e.py --nemar`, against the
+   live archive: open the page it prints and ask it for the "recipe" (the
+   `python_browser` snippet) and the "prompt" (the snippet NEMAR's system prompt
+   teaches) -- both run the new wheel against real, public `zarr.nemar.org` data.
+
+Only once all four pass: update `sources.toml` (repository, branch, path, commit
+and build command for the new commit) and the table at the top of this file
+(file name and sha256), in the same pull request as the new wheel.
