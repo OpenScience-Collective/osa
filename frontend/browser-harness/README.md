@@ -123,9 +123,9 @@ small):
   `encodedDataLength` rather than trusting `fromDiskCache` alone.
 - **lock change**: booting a THIRD time with eegprep-lean renamed to
   `eegprep_lean-0.1.0.dev1-2-py3-none-any.whl` sent exactly that one wheel to
-  the network (28,475 B; the byte count differs slightly from the cold row
-  above only because this run measured the request from a fresh page, not
-  because the bytes differ) while zarr, at its unchanged URL, stayed cached.
+  the network (28,502 B, the same byte count as the cold row above, since it
+  is the same bytes under a different name) while zarr, at its unchanged URL,
+  stayed cached (0 B, `fromDiskCache=true`).
 - **jsDelivr's own assets** (the interpreter and the stock wheels numpy and
   matplotlib pull in) were ALSO cache hits by the warm run, `Cache-Control:
   public, max-age=31536000` on every one; this is reported, not asserted on,
