@@ -1128,6 +1128,14 @@ class WidgetConfig(BaseModel):
     Defaults to the platform blue (#2563eb) if not specified.
     """
 
+    user_bubble_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    """Background of the reader's own message bubbles, as a hex code.
+
+    Separate from `theme_color` so that setting one never changes the other: a community
+    that sets only `theme_color` keeps the platform blue (#2563eb) bubbles it has always had.
+    The widget draws white text on it, so choose a color with at least 4.5:1 contrast.
+    """
+
     logo_url: str | None = Field(default=None, max_length=500)
     """URL to a custom logo/icon image for the widget header avatar.
 
@@ -1187,6 +1195,8 @@ class WidgetConfig(BaseModel):
         }
         if self.theme_color:
             result["theme_color"] = self.theme_color
+        if self.user_bubble_color:
+            result["user_bubble_color"] = self.user_bubble_color
         return result
 
 

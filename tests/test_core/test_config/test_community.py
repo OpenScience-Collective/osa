@@ -566,6 +566,29 @@ class TestWidgetConfig:
         result = widget.resolve("Test")
         assert "theme_color" not in result
 
+    def test_user_bubble_color_valid(self) -> None:
+        """Should accept a valid hex color for the reader's bubbles."""
+        widget = WidgetConfig(user_bubble_color="#257a92")
+        assert widget.user_bubble_color == "#257a92"
+
+    def test_user_bubble_color_rejects_invalid_format(self) -> None:
+        """Should reject the same non-hex values theme_color does."""
+        for bad in ("teal", "257a92", "#abc", "#257a92;background:red"):
+            with pytest.raises(ValidationError):
+                WidgetConfig(user_bubble_color=bad)
+
+    def test_theme_color_alone_sets_no_bubble_color(self) -> None:
+        """A community that sets only theme_color keeps the platform bubbles: resolve()
+        adds no user_bubble_color, so the widget never derives one from the theme."""
+        result = WidgetConfig(theme_color="#008a79").resolve("Test")
+        assert result["theme_color"] == "#008a79"
+        assert "user_bubble_color" not in result
+
+    def test_resolve_includes_user_bubble_color_when_set(self) -> None:
+        """resolve() should include user_bubble_color when specified."""
+        result = WidgetConfig(user_bubble_color="#257a92").resolve("Test")
+        assert result["user_bubble_color"] == "#257a92"
+
     def test_placeholder_max_length(self) -> None:
         """Should enforce placeholder max length."""
         with pytest.raises(ValidationError):
