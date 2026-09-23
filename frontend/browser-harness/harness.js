@@ -25,18 +25,20 @@ function check(name, ok, detail) {
 // every first plot, and the deadline check below would then wait needlessly long.
 const EXEC_SECONDS = 10;
 
-const RUNTIME = {
-  pyodide_version: '0.29.5',
-  lockfile: 'harness',
-  preload: ['numpy', 'matplotlib'],
-  allow_install: [],
-  preload_on: 'widget_open',
-  fetch_allow: [new URL('.', location.href).href],
-  index_urls: [],
-  limits: { exec_seconds: EXEC_SECONDS },
-};
-
 async function main() {
+  // The Pyodide version the npm package pins, which is the one the Bun suites run,
+  // and NEMAR's shipped runtime config and lock overlay, from serve.js.
+  const HARNESS = await (await fetch('./harness-config.json')).json();
+  const RUNTIME = {
+    pyodide_version: HARNESS.pyodide_version,
+    preload: ['numpy', 'matplotlib'],
+    allow_install: [],
+    preload_on: 'widget_open',
+    fetch_allow: [new URL('.', location.href).href],
+    index_urls: [],
+    limits: { exec_seconds: EXEC_SECONDS },
+  };
+
   const rt = new PyodideRuntime({
     runtime: RUNTIME,
     // Long enough for a cold Pyodide download, short enough that the control
@@ -140,7 +142,7 @@ async function main() {
 
   const allowedUrl = new URL('./harness.js', location.href).href;
   const sameOriginDenied = new URL('../osa-egress.js', location.href).href;
-  const crossOriginDenied = 'https://cdn.jsdelivr.net/pyodide/v0.29.5/full/pyodide.js';
+  const crossOriginDenied = `https://cdn.jsdelivr.net/pyodide/v${HARNESS.pyodide_version}/full/pyodide.js`;
 
   const okRead = await probe('osa.fetch_bytes inside fetch_allow', `osa.fetch_bytes(${JSON.stringify(allowedUrl)})`);
   check('executed code CAN read a URL inside fetch_allow', /^OK:\d+ bytes/.test(okRead), okRead);
@@ -263,10 +265,81 @@ async function main() {
   check('the runtime recovers and runs the next execution', afterTimeout.status === 'ok',
     `status=${afterTimeout.status} stdout=${JSON.stringify(afterTimeout.stdout)} ${afterTimeout.stderr.slice(-120)}`);
 
+  rt.terminate();
+  await checkNemarOverlay(HARNESS.nemar);
+
   const failures = results.filter((r) => !r.ok).length;
   statusEl.textContent = failures === 0 ? `ALL ${results.length} CHECKS PASSED` : `${failures} of ${results.length} FAILED`;
   statusEl.className = failures === 0 ? 'pass' : 'fail';
   window.__harness = { results, done: true, failures };
+}
+
+// NEMAR'S LOCK OVERLAY, which only a browser can check. Under Bun, Pyodide loads
+// a lock entry from a local path and ignores its sha256 (test-data-lane.js), so
+// this is the one place the shipped path runs: each wheel fetched by URL from the
+// server that sent the hashes, through the egress guard, checked against its
+// digest as it loads.
+async function checkNemarOverlay(nemar) {
+  const onProgress = (p) => log(`  nemar progress: ${p.phase}${p.package ? ' ' + p.package : ''}`);
+  const runtimeFrom = (base) => new PyodideRuntime({
+    runtime: nemar.runtime,
+    lock: { packages: nemar.packages, baseUrl: new URL(base, location.href).href },
+    bootTimeoutMs: 120_000,
+    onProgress,
+  });
+
+  const shipped = runtimeFrom('../runtime/nemar/');
+  try {
+    const started = performance.now();
+    await shipped.boot();
+    check("NEMAR's runtime boots, its overlay wheels fetched by URL and checked by digest", true,
+      `${Math.round(performance.now() - started)}ms`);
+    const imported = await shipped.execute(
+      'import eegprep_lean, zarr\n' +
+        'print(eegprep_lean.__version__, zarr.__version__, type(eegprep_lean.default_transport()).__name__)'
+    );
+    const expected = `${nemar.packages['eegprep-lean'].version} ${nemar.packages.zarr.version} FetchTransport\n`;
+    check('the overlay packages import, and the prelude made osa.fetch their transport',
+      imported.stdout === expected, `status=${imported.status} ${imported.stdout}${imported.stderr.slice(-200)}`);
+  } catch (err) {
+    check("NEMAR's runtime boots, its overlay wheels fetched by URL and checked by digest", false, err.message);
+  } finally {
+    shipped.terminate();
+  }
+
+  const tampered = runtimeFrom('../tampered/nemar/');
+  try {
+    await tampered.boot();
+    check('a wheel that does not match its sha256 stops the runtime from starting', false, 'it booted');
+  } catch (err) {
+    // The tampered wheel is a valid wheel, so nothing but the digest refuses it,
+    // and a refused digest reaches Pyodide as the browser's "Failed to fetch".
+    check('a wheel that does not match its sha256 stops the runtime from starting',
+      err.kind === 'runtime_error' && /zarr/.test(err.message) && /Failed to fetch/.test(err.message),
+      `${err.kind}: ${err.message.slice(-200)}`);
+  } finally {
+    tampered.terminate();
+  }
+
+  // The cause, not only the outcome: the same tampered URL loads without the
+  // digest, so nothing but the integrity check refuses it.
+  const entry = nemar.packages.zarr;
+  const integrity = `sha256-${btoa(String.fromCharCode(...entry.sha256.match(/../g).map((h) => parseInt(h, 16))))}`;
+  const outcome = async (base, init) => {
+    try {
+      const response = await fetch(new URL(`${base}${entry.file_name}`, location.href), init);
+      return `${response.status}:${(await response.arrayBuffer()).byteLength}`;
+    } catch (err) {
+      return `rejected:${err.name}`;
+    }
+  };
+  const committed = await outcome('../runtime/nemar/', { integrity });
+  const refused = await outcome('../tampered/nemar/', { integrity });
+  const unchecked = await outcome('../tampered/nemar/', {});
+  check("the committed wheel passes the digest its entry records", /^200:\d+$/.test(committed), committed);
+  check('the tampered one fails that digest', refused === 'rejected:TypeError', refused);
+  check('and loads without it, one byte longer, so the digest alone refused it',
+    unchecked === `200:${Number(committed.split(':')[1]) + 1}`, unchecked);
 }
 
 main().catch((err) => {

@@ -148,6 +148,14 @@ jobs:
       - name: Run widget browser-execution tests on a real DOM
         run: bun frontend/test-widget-tools.js
 
+      # What only a browser can check: Pyodide under a real Content-Security-Policy,
+      # the egress guard on a real worker global, and NEMAR's lock overlay loaded by
+      # URL with each wheel's sha256 enforced (a valid wheel with other bytes must
+      # not start). The runner ships Chrome; the harness downloads Pyodide from the
+      # CDN, as a reader's browser does.
+      - name: Run the browser harness in headless Chrome
+        run: bun frontend/browser-harness/chrome.js
+
       - name: Check widget syntax
         run: node --check frontend/osa-chat-widget.js
 

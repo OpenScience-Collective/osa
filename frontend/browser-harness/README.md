@@ -4,26 +4,27 @@ Boots the real `buildWorkerSource` output against real Pyodide,
 under a real `Content-Security-Policy` header,
 and exercises the half of the runtime that no `bun` test can reach.
 
-This is a manual check, not a CI gate.
-There is no browser in CI.
-Most of the Python half is now ALSO tested in CI:
-`frontend/test-worker-core.js` runs the same worker core
-against the real Pyodide from npm under Bun.
-What only this harness can check is the browser itself:
-the Content-Security-Policy, the blob worker, and the egress guard
-installed on a real worker global.
-and the protocol tests deliberately stop at the message boundary:
-the workers under `frontend/test-workers/` speak the message protocol and nothing more,
-because Pyodide needs a browser and asserting the Python half against a stand-in
-would be asserting the stand-in.
+It runs in CI, in headless Chrome, as a gate:
+`frontend/browser-harness/chrome.js` opens the `nemarlike` page and requires every check to pass,
+then opens the `control` page and requires its boot to fail.
+The Python half is ALSO tested under Bun:
+`frontend/test-worker-core.js` and `frontend/test-data-lane.js` run the same worker core
+against the real Pyodide from npm.
+What only a browser can check is what this harness is for:
+the Content-Security-Policy, the blob worker, the egress guard installed on a real worker global,
+and a lock overlay's wheels loaded by URL with each one's sha256 enforced,
+which Pyodide's Node loader does not do.
 
 ## Running it
 
 ```bash
-python3 frontend/browser-harness/serve.py 8791
+bun frontend/browser-harness/chrome.js          # headless, as CI runs it
+bun frontend/browser-harness/serve.js 8791      # or serve the pages and open one
 ```
 
 Then open <http://127.0.0.1:8791/nemarlike/browser-harness/index.html>.
+`chrome.js` finds Chrome at `CHROME_PATH` or where it installs on macOS and on the GitHub runner;
+under `CI` a missing Chrome fails, and elsewhere it skips.
 
 The path prefix selects the policy.
 `nemarlike` is nemar.org's production policy verbatim as of website v0.2.16,
@@ -34,6 +35,18 @@ That is not hypothetical,
 an earlier spike reported a false failure
 because no policy granted `'unsafe-inline'`,
 so the page's own inline script never ran and that read as "Pyodide failed".
+
+The page reads `harness-config.json` from the server:
+the Pyodide version the npm package pins, and NEMAR's shipped runtime config and lock overlay.
+The server serves NEMAR's wheels at `runtime/nemar/<file>`, as the API's route does,
+and at `tampered/nemar/<file>` a valid wheel one byte longer,
+the byte written as the zip's comment.
+It has to be valid:
+a wheel with a bare byte appended is a broken zip,
+and a boot would refuse it whether or not the digest was checked.
+Measured 2026-09-22: with `checkIntegrity: false` passed to `loadPackage`,
+the tampered runtime boots and `chrome.js` fails,
+which it did not do while the tampered wheel was a broken zip.
 
 ## What it measures
 
@@ -63,6 +76,11 @@ Recorded on #431, first against Pyodide 0.28.3 and then, on the same day
   integer is a C long); an error carries its type, message and offending line
   while the full traceback stays in the browser, readable by `call_id`; and a
   figure is described in words that outlive the image
+- NEMAR's runtime boots with its lock overlay's wheels fetched by URL, each
+  checked against its sha256; eegprep-lean and zarr import at the versions the
+  overlay records, and the prelude made `osa.fetch` eegprep-lean's transport
+- **a valid wheel with other bytes stops that runtime from starting**, and the
+  same URL loads when fetched without the digest, so the digest alone refused it
 - **an infinite loop is stopped on the deadline**, measured at 10670 ms against
   a 10-second limit, and the runtime then reboots and runs the next execution.
   The limit was 3 seconds until 0.29.5, where a fresh instance spends about
@@ -126,13 +144,15 @@ Measured 2026-09-22 in Chrome, against the live archive:
 - the overlay wheels load from the API's wheel route with their `sha256` as
   `fetch` integrity, through the egress guard; nothing is refused and the console
   is clean
-- **negative control**, `--tamper-wheel`: every wheel arrives one byte long, and
+- **negative control**, `--tamper-wheel`: every wheel arrives one byte longer, and
   the run fails with "package zarr did not load ... Failed to fetch". From the same
   page, that URL fetches fine without a digest and is refused with the entry's, so
-  the refusal is the browser's integrity check and nothing else
+  the refusal is the browser's integrity check. (This was measured with a bare
+  appended byte; `--tamper-wheel` now writes it as the zip's comment, so the wheel
+  stays valid and only the digest can refuse it, as in `chrome.js`.)
 - `--widget-open`: the runtime stays `idle` until the chat opens, then boots with
   nothing sent, `ready` 2.5 s later
 
 The Bun test for this lane is `frontend/test-data-lane.js`, which cannot load a
-wheel by URL or check its digest (Pyodide's Node loader does neither); those two
-are what this page is for.
+wheel by URL or check its digest (Pyodide's Node loader does neither). Those two
+run in CI through `chrome.js`; this page adds the widget and the live archive.

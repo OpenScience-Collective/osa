@@ -9,8 +9,8 @@
 // What stands in: the data host. The store is served by Bun.serve on loopback in
 // place of zarr.nemar.org, so fetch_allow names the loopback base.
 //
-// What this cannot check, measured on Pyodide 0.29.5 and covered in Chrome by
-// frontend/browser-harness/widget_e2e.py instead:
+// What this cannot check, measured on Pyodide 0.29.5 and covered in headless
+// Chrome, in CI, by frontend/browser-harness/chrome.js instead:
 // - Wheels by URL. Under Node, Pyodide resolves a lock file_name with
 //   path.resolve against its package cache, so an http URL becomes a local path
 //   that does not exist; a browser resolves it with new URL. The overlay entries

@@ -20,9 +20,10 @@ then open http://127.0.0.1:PORT/browser-harness/widget-e2e.html and ask it to
 --nemar serves NEMAR's own config instead: its runtime, its lock overlay and the
 wheels its route serves, reading the live, public zarr.nemar.org. Ask it to "read"
 (read_window and a plot) or for the "recipe" (the python_browser snippet). Its MCP
-servers are dropped, since the scripted model never calls them. --tamper-wheel adds
-one byte to every wheel served, the negative control for the browser's integrity
-check: the runtime must then refuse to start. --widget-open boots the runtime when
+servers are dropped, since the scripted model never calls them. --tamper-wheel serves
+every wheel one byte longer and still valid, the byte as the zip's comment: the
+negative control for the browser's integrity check, which alone can refuse it, so
+the runtime must then refuse to start. --widget-open boots the runtime when
 the chat opens rather than at the first run, and turns on the widget's test hooks so
 `OSAChatWidget.__browser.getBrowserRuntime().state` can be read from the console.
 """
@@ -113,6 +114,18 @@ SCRIPTS = {
     "read": (READ, "Read two seconds of nm000103 and plot four channels"),
     "recipe": (RECIPE, "Run the python_browser recipe on nm000103"),
 }
+
+
+def _tamper(wheel: bytes) -> bytes:
+    """The wheel one byte longer and still valid: the byte becomes the zip's comment.
+
+    Appending a bare byte breaks the zip, and a boot then fails whether or not the
+    digest is checked. The same trick as tamperWheel in serve.js.
+    """
+    end = wheel[-22:]
+    if end[:4] != b"PK\x05\x06" or end[20:22] != b"\x00\x00":
+        raise ValueError("expected a wheel whose zip has no comment")
+    return wheel[:-2] + b"\x01\x00 "
 
 
 def _nemar_config() -> CommunityConfig:
@@ -290,9 +303,9 @@ def build_app(
     async def policy(request: Request, call_next):
         response = await call_next(request)
         if tamper_wheel and "/runtime/" in request.url.path and request.url.path.endswith(".whl"):
-            # One byte more than the entry's sha256 describes: a corrupted edge,
-            # which the browser must refuse through fetch's integrity check.
-            body = b"".join([chunk async for chunk in response.body_iterator]) + b"\0"
+            # A valid wheel that is not the one the entry's sha256 describes, so
+            # only the browser's integrity check can refuse it: see _tamper.
+            body = _tamper(b"".join([chunk async for chunk in response.body_iterator]))
             headers = {k: v for k, v in response.headers.items() if k.lower() != "content-length"}
             response = Response(body, status_code=response.status_code, headers=headers)
         if not request.url.path.startswith("/api/"):

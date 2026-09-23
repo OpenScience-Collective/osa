@@ -4,9 +4,10 @@
  * Drives the real PyodideRuntime against REAL Bun workers speaking the real boot
  * protocol. Nothing here stubs the module's own logic; the worker is a platform
  * boundary, and the alternative (downloading Pyodide in CI) would test the CDN
- * rather than the lifecycle. Pyodide itself is covered by the browser spike,
- * because Bun does not enforce Content-Security-Policy and that is exactly the
- * property the boot deadline exists for.
+ * rather than the lifecycle. Pyodide itself is covered by
+ * test-worker-core.js, and under a real Content-Security-Policy by the browser
+ * harness in headless Chrome (browser-harness/chrome.js), because Bun enforces
+ * none and that is exactly the property the boot deadline exists for.
  *
  * Run with: bun frontend/test-runtime-lifecycle.js
  */
