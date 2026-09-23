@@ -162,7 +162,7 @@ console.log('\nthe permission gate puts only our markup on the page, whatever it
   const { window, api } = loadWidget();
   for (const text of HOSTILE) {
     const asking = api.toolPanelHtml({ phase: 'asking', prompt: { code: text, description: text }, decide() {} });
-    const running = api.toolPanelHtml({ phase: 'running', prompt: { code: text, description: text }, progress: text });
+    const running = api.toolPanelHtml({ phase: 'running', prompt: { code: text, description: text }, progress: { text, step: null, steps: null } });
     for (const [label, html] of [['asking', asking], ['running', running]]) {
       const { problems, holder } = markupProblems(window, html,
         ['div', 'pre', 'code', 'button', 'label', 'input', 'span']);
@@ -172,6 +172,90 @@ console.log('\nthe permission gate puts only our markup on the page, whatever it
     }
   }
   assertEqual(api.toolPanelHtml(null), '', 'no activity, no panel');
+}
+
+console.log('\na determinate progress bar tracks a real boot sequence, and never jumps');
+{
+  const { window, api } = loadWidget();
+
+  // Nothing to show yet: runningActivity() starts with progress: null, and
+  // the panel falls back to a plain label with no bar at all.
+  api.setToolActivity(api.runningActivity({ code: 'x = 1', description: 'set x' }));
+  {
+    const holder = window.document.createElement('div');
+    holder.innerHTML = api.toolPanelHtml(api.getToolActivity());
+    assertEqual(holder.querySelector('.osa-tool-progress'), null, 'no bar before any progress event arrives');
+    assertEqual(holder.querySelector('.osa-tool-status').textContent, 'Running Python in your browser...',
+      'a generic label stands in until the worker reports something');
+  }
+
+  // The real sequence a preload-only boot sends (frontend/test-worker-core.js
+  // proves the worker emits exactly this): loading_runtime and runtime_loaded
+  // share step 1 (the interpreter), then each preload name advances by one,
+  // ending at step === steps.
+  const sequence = [
+    { phase: 'loading_runtime', step: 1, steps: 3 },
+    { phase: 'runtime_loaded', step: 1, steps: 3 },
+    { phase: 'loading_package', package: 'numpy', step: 2, steps: 3 },
+    { phase: 'loading_package', package: 'pandas', step: 3, steps: 3 },
+  ];
+  const seen = [];
+  for (const event of sequence) {
+    api.onRuntimeProgress(event);
+    const activity = api.getToolActivity();
+    const holder = window.document.createElement('div');
+    holder.innerHTML = api.toolPanelHtml(activity);
+    const bar = holder.querySelector('.osa-tool-progress');
+    seen.push({
+      phase: event.phase,
+      step: activity.progress.step,
+      steps: activity.progress.steps,
+      role: bar && bar.getAttribute('role'),
+      valuemin: bar && bar.getAttribute('aria-valuemin'),
+      valuemax: bar && bar.getAttribute('aria-valuemax'),
+      valuenow: bar && bar.getAttribute('aria-valuenow'),
+      hasName: Boolean(bar && bar.getAttribute('aria-label')),
+      fillWidth: bar && bar.querySelector('.osa-tool-progress-fill').style.width,
+    });
+  }
+  assertEqual(seen, [
+    { phase: 'loading_runtime', step: 1, steps: 3, role: 'progressbar', valuemin: '0', valuemax: '3', valuenow: '1', hasName: true, fillWidth: '33%' },
+    { phase: 'runtime_loaded', step: 1, steps: 3, role: 'progressbar', valuemin: '0', valuemax: '3', valuenow: '1', hasName: true, fillWidth: '33%' },
+    { phase: 'loading_package', step: 2, steps: 3, role: 'progressbar', valuemin: '0', valuemax: '3', valuenow: '2', hasName: true, fillWidth: '67%' },
+    { phase: 'loading_package', step: 3, steps: 3, role: 'progressbar', valuemin: '0', valuemax: '3', valuenow: '3', hasName: true, fillWidth: '100%' },
+  ], 'steps stays 3 throughout, step never resets, and the bar ends full');
+
+  // runtime_loaded, which used to render nothing at all, now carries its own label.
+  api.setToolActivity(api.runningActivity({ code: 'x', description: '' }));
+  api.onRuntimeProgress({ phase: 'runtime_loaded', step: 1, steps: 2 });
+  const loadedStatus = api.getToolActivity().progress.text;
+  assert(/downloads once/.test(loadedStatus) && !/\d+\s*(MB|kB|bytes)/i.test(loadedStatus),
+    `runtime_loaded gets a reassuring label with no size figure, got ${JSON.stringify(loadedStatus)}`);
+
+  // A progress event reaching the widget without step/steps (an older worker,
+  // or a message this code does not otherwise recognize) degrades to the
+  // label alone, never to a broken or stale bar.
+  api.setToolActivity(api.runningActivity({ code: 'x', description: '' }));
+  api.onRuntimeProgress({ phase: 'loading_runtime' });
+  {
+    const activity = api.getToolActivity();
+    assertEqual([activity.progress.step, activity.progress.steps], [null, null], 'no step/steps means no bar, not a guess');
+    const holder = window.document.createElement('div');
+    holder.innerHTML = api.toolPanelHtml(activity);
+    assertEqual(holder.querySelector('.osa-tool-progress'), null, 'and none is rendered');
+  }
+
+  // The gate: onRuntimeProgress only ever touches a RUNNING activity. Asking
+  // and no-activity are both left alone, so a progress event that arrives
+  // late (after the person already answered, or before) cannot resurrect or
+  // corrupt a panel nobody is looking at.
+  api.setToolActivity(null);
+  api.onRuntimeProgress({ phase: 'loading_runtime', step: 1, steps: 1 });
+  assertEqual(api.getToolActivity(), null, 'a progress event with no running activity is a no-op');
+
+  api.setToolActivity({ phase: 'asking', prompt: { code: '', description: '' }, decide() {} });
+  api.onRuntimeProgress({ phase: 'loading_runtime', step: 1, steps: 1 });
+  assertEqual(api.getToolActivity().phase, 'asking', 'and never overwrites the asking panel either');
 }
 
 console.log('\nwhat is stored is what is read back, within the same bounds');

@@ -93,7 +93,27 @@ export function createWorkerRuntime(config, env) {
   let internals = null;
   let busy = false;
 
+  // The whole boot's step budget, and the step currently starting. Both are
+  // set once at the top of boot(), before anything else runs, so `steps`
+  // never changes mid-boot and a caller's progress bar never has to re-read
+  // a shrinking or growing total. `step` is advanced by nextStep() immediately
+  // before each unit of work begins (each preload name, micropip, each
+  // allow_install entry, the prelude); the interpreter is step 1 from the
+  // start and `runtime_loaded` deliberately reports it again without
+  // advancing, since that message is the SAME step finishing, not a new one.
+  let steps = 0;
+  let step = 0;
+
   const describe = (err) => String((err && err.message) || err);
+
+  function nextStep() {
+    step += 1;
+    return step;
+  }
+
+  function sendProgress(fields) {
+    env.send(Object.assign({ type: 'progress', step, steps }, fields));
+  }
 
   function call(name, ...args) {
     const fn = internals.get(name);
@@ -130,7 +150,8 @@ export function createWorkerRuntime(config, env) {
     // a denied import naming the package, which reads as a policy decision when
     // it was a network failure. So any reported error fails the boot here.
     for (let i = 0; i < names.length; i++) {
-      env.send({ type: 'progress', phase, package: names[i], index: i, total: names.length });
+      nextStep();
+      sendProgress({ phase, package: names[i] });
       const errors = [];
       await pyodide.loadPackage(names[i], {
         messageCallback: () => {},
@@ -153,7 +174,17 @@ export function createWorkerRuntime(config, env) {
       return;
     }
     try {
-      env.send({ type: 'progress', phase: 'loading_runtime' });
+      // One for the interpreter, one per preload name, and, when
+      // allow_install is non-empty, one for micropip plus one per
+      // allow_install entry, and one for the prelude when there is one.
+      steps =
+        1 +
+        config.preload.length +
+        (config.allowInstall.length > 0 ? 1 + config.allowInstall.length : 0) +
+        (config.prelude !== '' ? 1 : 0);
+      step = 1; // the interpreter, starting now
+
+      sendProgress({ phase: 'loading_runtime' });
       let loadOptions;
       if (Object.keys(config.lockPackages).length > 0) {
         // Reported apart from a failure of Pyodide itself, since the fault is in
@@ -179,7 +210,10 @@ export function createWorkerRuntime(config, env) {
         loadOptions = { lockFileContents, packageBaseUrl: config.indexURL };
       }
       pyodide = await env.load(config.indexURL, loadOptions);
-      env.send({ type: 'progress', phase: 'runtime_loaded' });
+      // Still step 1: this is the interpreter step finishing, not a new one
+      // starting, so the widget's progress bar has something to show for it
+      // without appearing to move backward when the next step begins.
+      sendProgress({ phase: 'runtime_loaded' });
 
       await loadPackages(config.preload, 'loading_package');
 
@@ -198,13 +232,8 @@ export function createWorkerRuntime(config, env) {
         const micropip = pyodide.pyimport('micropip');
         try {
           for (let i = 0; i < config.allowInstall.length; i++) {
-            env.send({
-              type: 'progress',
-              phase: 'installing',
-              package: config.allowInstall[i],
-              index: i,
-              total: config.allowInstall.length,
-            });
+            nextStep();
+            sendProgress({ phase: 'installing', package: config.allowInstall[i] });
             const options = { deps: false };
             if (config.indexUrls.length > 0) options.index_urls = config.indexUrls;
             await micropip.install.callKwargs(config.allowInstall[i], options);
@@ -245,7 +274,8 @@ export function createWorkerRuntime(config, env) {
       // runtime every later execution would fail in, for a reason naming the
       // wrong cause, so the boot fails instead and says so.
       if (config.prelude !== '') {
-        env.send({ type: 'progress', phase: 'prelude' });
+        nextStep();
+        sendProgress({ phase: 'prelude' });
         try {
           await pyodide.runPythonAsync(config.prelude, { globals: userNamespace });
         } catch (err) {

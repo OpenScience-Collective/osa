@@ -22,6 +22,7 @@ import { buildDataClientSource, buildNamespaceSealSource } from './osa-egress.js
 import { buildHelpersSource, buildOutputCaptureSource, resolveLimits } from './osa-output.js';
 import { createWorkerRuntime } from './osa-worker-core.js';
 import { rangeResponse } from './test-support/byte-range.js';
+import { buildMinimalWheel } from './test-support/minimal-wheel.js';
 
 let passed = 0;
 let failed = 0;
@@ -71,6 +72,8 @@ globalThis.fetch = (input, init) =>
  */
 async function bootRuntime({
   preload = [],
+  allowInstall = [],
+  indexUrls = [],
   fetchAllow = ['http://127.0.0.1/allowed/'],
   limits = {},
   lockPackages = {},
@@ -85,8 +88,8 @@ async function bootRuntime({
     // Pyodide for the distribution's own wheels when it is handed a lock.
     indexURL: `https://cdn.jsdelivr.net/pyodide/v${pyodidePackage.version}/full/`,
     preload,
-    allowInstall: [],
-    indexUrls: [],
+    allowInstall,
+    indexUrls,
     fetchAllow,
     lockPackages,
     prelude,
@@ -310,6 +313,95 @@ console.log('\nthe summary is deterministic, because the prompt cache is a byte-
 // The numeric and plotting half needs packages. They are fetched once and
 // cached, so this is slow only the first time on a machine.
 const scientific = await bootRuntime({ preload: ['numpy', 'matplotlib'] });
+
+console.log('\nthe whole boot\'s step budget is fixed before it starts, and step reaches it exactly once');
+{
+  // Every progress message a boot sends, reduced to what a progress bar
+  // needs: which step is starting, out of how many, and never index/total
+  // (dropped: nothing reads them any more, this suite included).
+  const steps = (messages) =>
+    messages
+      .filter((m) => m.type === 'progress')
+      .map((m) => ({ phase: m.phase, package: m.package === undefined ? null : m.package, step: m.step, steps: m.steps }));
+  const hasNoIndexOrTotal = (messages) =>
+    messages.filter((m) => m.type === 'progress').every((m) => !('index' in m) && !('total' in m));
+
+  // Scenario 1: preload only. Two packages, so `steps` is 3 (interpreter +
+  // two names) and the sequence visibly advances past the shared step-1 pair.
+  assertEqual(JSON.stringify(steps(scientific.messages)), JSON.stringify([
+    { phase: 'loading_runtime', package: null, step: 1, steps: 3 },
+    { phase: 'runtime_loaded', package: null, step: 1, steps: 3 },
+    { phase: 'loading_package', package: 'numpy', step: 2, steps: 3 },
+    { phase: 'loading_package', package: 'matplotlib', step: 3, steps: 3 },
+  ]), 'preload only: loading_runtime and runtime_loaded share step 1, then one step per preload name, ending at steps');
+  assert(hasNoIndexOrTotal(scientific.messages), 'preload only: no message carries index or total');
+
+  // Scenario 2: preload and allow_install. The installed package is a real,
+  // hand-built wheel served by a real local HTTP server, so micropip runs its
+  // real install path; nothing here is a stand-in for that network fetch.
+  const wheel = buildMinimalWheel({
+    distribution: 'osatestpkg', version: '1.0.0', modules: { 'osatestpkg/__init__.py': 'VALUE = 42\n' },
+  });
+  const wheelServer = Bun.serve({
+    port: 0,
+    hostname: '127.0.0.1',
+    fetch(request) {
+      const url = new URL(request.url);
+      if (url.pathname === `/${wheel.fileName}`) {
+        return new Response(wheel.bytes, { headers: { 'Content-Type': 'application/octet-stream' } });
+      }
+      return new Response('Not Found', { status: 404 });
+    },
+  });
+  let installed;
+  try {
+    const wheelUrl = `http://127.0.0.1:${wheelServer.port}/${wheel.fileName}`;
+    installed = await bootRuntime({ preload: ['numpy'], allowInstall: [wheelUrl] });
+    assert(installed.ready !== undefined, `installing a real wheel over a real local server lets the runtime come up (got ${JSON.stringify(installed.messages.at(-1))})`);
+    const readBack = await installed.run('import osatestpkg\nosatestpkg.VALUE');
+    assertEqual(readBack.status, 'ok', 'and the installed package actually imports');
+
+    assertEqual(JSON.stringify(steps(installed.messages)), JSON.stringify([
+      { phase: 'loading_runtime', package: null, step: 1, steps: 4 },
+      { phase: 'runtime_loaded', package: null, step: 1, steps: 4 },
+      { phase: 'loading_package', package: 'numpy', step: 2, steps: 4 },
+      { phase: 'loading_package', package: 'micropip', step: 3, steps: 4 },
+      { phase: 'installing', package: wheelUrl, step: 4, steps: 4 },
+    ]), 'preload and allow_install: one step each for numpy, micropip and the installed wheel, ending at steps');
+    assert(hasNoIndexOrTotal(installed.messages), 'preload and allow_install: no message carries index or total');
+  } finally {
+    wheelServer.stop(true);
+  }
+
+  // Scenario 3: a prelude, and nothing else. steps is 2 (interpreter + the
+  // prelude itself), and runtime_loaded still reports step 1, not step 2:
+  // the prelude has not started yet when the interpreter finishes loading.
+  const withPrelude = await bootRuntime({ prelude: 'prelude_ran = True\n' });
+  assertEqual(JSON.stringify(steps(withPrelude.messages)), JSON.stringify([
+    { phase: 'loading_runtime', package: null, step: 1, steps: 2 },
+    { phase: 'runtime_loaded', package: null, step: 1, steps: 2 },
+    { phase: 'prelude', package: null, step: 2, steps: 2 },
+  ]), 'a prelude: one more step than the interpreter alone, and it is the last one');
+  assert(hasNoIndexOrTotal(withPrelude.messages), 'a prelude: no message carries index or total');
+
+  // Across every scenario: steps never changes mid-boot, and step strictly
+  // increases across the DISTINCT values a boot reports (loading_runtime and
+  // runtime_loaded sharing step 1 is the one deliberate repeat), reaching
+  // steps exactly at the final progress message and never beyond it.
+  for (const { label, messages } of [
+    { label: 'preload only', messages: scientific.messages },
+    { label: 'preload and allow_install', messages: installed.messages },
+    { label: 'a prelude', messages: withPrelude.messages },
+  ]) {
+    const progressMessages = messages.filter((m) => m.type === 'progress');
+    const distinctSteps = [...new Set(progressMessages.map((m) => m.step))];
+    const wantedTotal = progressMessages[0].steps;
+    assert(progressMessages.every((m) => m.steps === wantedTotal), `${label}: steps is constant across the whole boot`);
+    assertEqual(JSON.stringify(distinctSteps), JSON.stringify(Array.from({ length: wantedTotal }, (_, i) => i + 1)),
+      `${label}: the distinct step values are exactly 1..steps, in order`);
+    assertEqual(progressMessages.at(-1).step, wantedTotal, `${label}: the last progress message reports step === steps`);
+  }
+}
 
 console.log('\nthe summary: arrays are described by facts, never by their contents');
 {
