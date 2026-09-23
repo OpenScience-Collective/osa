@@ -1462,6 +1462,86 @@
       border-radius: 6px;
       background: #ffffff;
     }
+
+    .osa-execution-local-note {
+      color: var(--osa-primary);
+      font-weight: 600;
+      margin: 6px 0;
+    }
+
+    .osa-rerun-actions {
+      margin-top: 6px;
+    }
+
+    .osa-rerun-actions button,
+    .osa-rerun-buttons button {
+      border: 1px solid var(--osa-border);
+      background: var(--osa-bg);
+      color: var(--osa-text);
+      border-radius: 6px;
+      padding: 5px 12px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .osa-rerun-buttons button.osa-rerun-run {
+      background: var(--osa-primary);
+      border-color: var(--osa-primary);
+      color: #ffffff;
+    }
+
+    .osa-rerun-buttons button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .osa-rerun {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px dashed var(--osa-border);
+    }
+
+    .osa-rerun-label {
+      display: block;
+      font-size: 12px;
+      color: var(--osa-text-light);
+      margin-bottom: 4px;
+    }
+
+    .osa-rerun-textarea {
+      display: block;
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 80px;
+      margin-top: 4px;
+      padding: 8px;
+      border-radius: 8px;
+      border: 1px solid var(--osa-border);
+      background: #1f2937;
+      color: #f9fafb;
+      font-size: 12px;
+      font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+      resize: vertical;
+    }
+
+    .osa-rerun-note {
+      color: var(--osa-text-light);
+      font-size: 12px;
+      margin: 4px 0;
+    }
+
+    .osa-rerun-buttons {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-top: 6px;
+      flex-wrap: wrap;
+    }
+
+    .osa-rerun-result-status {
+      font-weight: 600;
+      margin-top: 8px;
+    }
   `;
 
   // Escape text for interpolation into HTML, including quoted attribute values.
@@ -1786,6 +1866,10 @@
         stdout: clipField(run.stdout, 'stdout'),
         stderr: clipField(run.stderr, 'stderr'),
         images: [],
+        // Whether the READER ran this themselves (runLocal), not the
+        // assistant: always a real boolean, never left undefined, so a run
+        // read back from storage renders identically to one just produced.
+        local: run.local === true,
       }));
   }
 
@@ -1958,9 +2042,15 @@
       const persistable = messages.map((m) => {
         const { _feedbackCommitting, _feedbackJustOpened, _responseId, feedbackDraft, ...rest } = m;
         if (rest.feedback && !rest.feedbackCommitted) delete rest.feedback;
-        // Figures are shown for the life of the page and not stored.
+        // Figures are shown for the life of the page and not stored. An open
+        // "Edit and run" editor, its draft and its live echo are the same
+        // kind of transient, in-page-only state as the feedback flags above:
+        // a reload always starts back at the plain recorded view.
         if (Array.isArray(rest.executions)) {
-          rest.executions = rest.executions.map((run) => ({ ...run, images: [] }));
+          rest.executions = rest.executions.map((run) => {
+            const { _editing, _draft, _runningLocal, _localResult, ...keep } = run;
+            return { ...keep, images: [] };
+          });
         }
         return rest;
       });
@@ -2665,7 +2755,86 @@
       stdout: clipField(result && result.stdout, 'stdout'),
       stderr: clipField(result && result.stderr, 'stderr'),
       images: result && Array.isArray(result.images) ? result.images : [],
+      local: false,
     };
+  }
+
+  // The same shape, for a run the READER started with "Edit and run"
+  // (ClientToolController#runLocal) rather than one the assistant asked for:
+  // no request came from the server, so this is built from the edited code
+  // and description directly instead of requestPrompt().
+  function localExecutionRecord(tool, description, code, result) {
+    return {
+      callId: clipField(result && result.call_id, 'callId'),
+      tool: clipField(tool, 'tool'),
+      description: clipField(description, 'description'),
+      code: clipField(code, 'code'),
+      status: clipField(result && result.status, 'status'),
+      stdout: clipField(result && result.stdout, 'stdout'),
+      stderr: clipField(result && result.stderr, 'stderr'),
+      images: result && Array.isArray(result.images) ? result.images : [],
+      local: true,
+    };
+  }
+
+  // The run record a rerun control's data-msg-index/data-run-index name, or
+  // null if either index is stale (the reply was cleared from under it).
+  function runAt(el) {
+    const msgIndex = parseInt(el.getAttribute('data-msg-index'), 10);
+    const runIndex = parseInt(el.getAttribute('data-run-index'), 10);
+    const message = messages[msgIndex];
+    return (message && Array.isArray(message.executions) && message.executions[runIndex]) || null;
+  }
+
+  // Run the reader's own edit of a recorded run: consent is the click
+  // itself, so this skips the permission gate entirely (runLocal), shares
+  // the runtime and its namespace with the assistant's own runs, and sends
+  // nothing to the server. The result becomes its own entry in the reply's
+  // runs (kept there so it survives a reload, see executionsHtml/saveHistory)
+  // and, while the editor stays open, is also shown live right under it.
+  async function runEditedCode(container, msgIndex, runIndex) {
+    const message = messages[msgIndex];
+    const run = message && Array.isArray(message.executions) && message.executions[runIndex];
+    if (!run || !browserTools) return;
+    const blocked = localRunBlockedReason();
+    if (blocked) {
+      showError(container, blocked);
+      return;
+    }
+    const code = clipField(typeof run._draft === 'string' ? run._draft : (run.code || ''), 'code');
+    if (code.trim() === '') {
+      showError(container, 'There is no code to run.');
+      return;
+    }
+    run._runningLocal = true;
+    renderMessages(container);
+    let outcome;
+    try {
+      outcome = await browserTools.runLocal(code, { description: run.description || '', session: sessionId || '' });
+    } finally {
+      run._runningLocal = false;
+    }
+    if (!outcome.ok) {
+      renderMessages(container);
+      showError(container, `Could not run this code: ${outcome.reason}`);
+      return;
+    }
+    const record = localExecutionRecord(run.tool, run.description || '', code, outcome.result);
+    message.executions = message.executions.concat(record);
+    run._localResult = {
+      callId: record.callId,
+      status: record.status,
+      stdout: record.stdout,
+      stderr: record.stderr,
+      images: record.images,
+    };
+    renderMessages(container);
+    try {
+      saveHistory();
+    } catch (saveError) {
+      console.error('[OSA] Failed to save history:', saveError);
+      showError(container, 'Warning: Unable to save conversation');
+    }
   }
 
   // Answer one tool_request and record it on the reply it belongs to.
@@ -2890,32 +3059,140 @@
       && /^[A-Za-z0-9+/]+=*$/.test(image.data_base64);
   }
 
+  // Whether this page can run code the reader wrote themselves: the runtime
+  // exists only once a community declares client tools AND the bundle has
+  // loaded (startBrowserTools), which is also everything runLocal() itself
+  // needs. A page with neither shows no "Edit and run" affordance at all,
+  // rather than one that fails the moment it is clicked.
+  function canRunLocalCode() {
+    return !!browserTools;
+  }
+
+  // Why Run is disabled right now, or null when it is free. Read fresh at
+  // render time: booting and busy are the ONE shared runtime's state, never
+  // this run record's own, so two edited-and-open records always agree.
+  function localRunBlockedReason() {
+    if (!browserTools) return 'Python is not available on this page.';
+    if (browserRuntime && runtimeApi && browserRuntime.state === runtimeApi.RUNTIME_STATE.BOOTING) {
+      return 'Python is starting in your browser. Try again in a moment.';
+    }
+    if (browserTools.busy) return 'Busy: the runtime is already running code.';
+    return null;
+  }
+
+  // stdout, stderr and figures, bounded and escaped exactly the way a
+  // recorded run's own body already is. Shared by the normal per-run block
+  // and by the live echo runEditedCode() shows under an open editor, so the
+  // two can never disagree about what "bounded on screen" means.
+  function runOutputHtml(run) {
+    const stdout = run.stdout ? `<pre class="osa-execution-output">${escapeHtml(run.stdout)}</pre>` : '';
+    const stderr = run.stderr && run.status !== 'ok'
+      ? `<pre class="osa-execution-output">${escapeHtml(run.stderr)}</pre>`
+      : '';
+    const images = (Array.isArray(run.images) ? run.images : [])
+      .filter(isShowableImage)
+      .map((image) => `<img alt="Figure produced by the code" src="data:image/png;base64,${image.data_base64}">`)
+      .join('');
+    return `${stdout}${stderr}${images}`;
+  }
+
+  // The inline "Edit and run" editor for one run record: a labeled textarea
+  // prefilled with the code, Run/Cancel, and -- while the reader's own
+  // attempt is in flight or just finished -- its status and output, right
+  // there under the editor. _draft/_runningLocal/_localResult are transient,
+  // in-memory-only fields on the run record (never saved, see saveHistory);
+  // reading and writing them here is what lets this survive a re-render
+  // triggered by something else, such as runtime progress, without losing
+  // what the reader was typing.
+  function rerunEditorHtml(run, msgIndex, runIndex) {
+    const draft = typeof run._draft === 'string' ? run._draft : (run.code || '');
+    const running = run._runningLocal === true;
+    const blocked = running ? null : localRunBlockedReason();
+    const busyNote = blocked
+      ? `<div class="osa-rerun-note">${escapeHtml(blocked)}</div>`
+      : '';
+    const controls = running
+      ? `<div class="osa-rerun-buttons">
+          <span class="osa-rerun-note">Running your code...</span>
+          <button type="button" class="osa-rerun-stop" data-msg-index="${msgIndex}" data-run-index="${runIndex}">Stop</button>
+        </div>`
+      : `<div class="osa-rerun-buttons">
+          <button type="button" class="osa-rerun-run" data-msg-index="${msgIndex}" data-run-index="${runIndex}"${blocked ? ' disabled' : ''}>Run</button>
+          <button type="button" class="osa-rerun-cancel" data-msg-index="${msgIndex}" data-run-index="${runIndex}">Cancel</button>
+        </div>`;
+    let result = '';
+    if (run._localResult) {
+      const label = Object.prototype.hasOwnProperty.call(EXECUTION_LABELS, run._localResult.status)
+        ? EXECUTION_LABELS[run._localResult.status]
+        : 'Python';
+      result = `
+        <div class="osa-execution-local-note">This run is yours. The assistant has not seen it.</div>
+        <div class="osa-rerun-result-status">${escapeHtml(label)}</div>
+        ${runOutputHtml(run._localResult)}`;
+    }
+    return `
+      <div class="osa-rerun">
+        <label class="osa-rerun-label">Edit the code and run it yourself
+          <textarea class="osa-rerun-textarea" data-msg-index="${msgIndex}" data-run-index="${runIndex}"
+            maxlength="${EXECUTION_FIELD_LIMITS.code}"${running ? ' readonly' : ''}>${escapeHtml(draft)}</textarea>
+        </label>
+        ${busyNote}
+        ${controls}
+        ${result}
+      </div>`;
+  }
+
   // What ran for a reply, as HTML: one collapsible entry per run. Every field
   // is escaped: the description is the model's, the output is whatever the
   // code printed, and a stored record is whatever storage holds.
-  function executionsHtml(executions) {
+  //
+  // msgIndex names the reply these runs belong to, so the edit/run/cancel
+  // controls below know which record to act on; omitted, no "Edit and run"
+  // controls render at all (canRunLocalCode() still gates them first).
+  //
+  // A run whose OWN editor is open and has a live result (run._localResult)
+  // is shown inline under that editor rather than as its own separate
+  // block, even though it is already a real entry in `executions` (kept
+  // there so it survives a reload once the editor closes): the two would
+  // otherwise show the exact same run twice in one render.
+  function executionsHtml(executions, msgIndex) {
     if (!Array.isArray(executions) || executions.length === 0) return '';
-    return executions.map((run) => {
+    const mirrored = new Set(
+      executions
+        .filter((run) => run && run._editing === true && run._localResult && typeof run._localResult.callId === 'string')
+        .map((run) => run._localResult.callId)
+    );
+    const canEdit = canRunLocalCode();
+    return executions.map((run, runIndex) => {
+      if (mirrored.has(run.callId)) return '';
+      const isLocal = run.local === true;
       const label = Object.prototype.hasOwnProperty.call(EXECUTION_LABELS, run.status)
         ? EXECUTION_LABELS[run.status]
         : 'Python';
-      const title = `${label}${run.description ? `: ${run.description}` : ''}`;
+      const title = `${isLocal ? 'Your run: ' : ''}${label}${run.description ? `: ${run.description}` : ''}`;
       const code = run.code
         ? `<pre class="osa-tool-code"><code>${highlightOrEscape(run.code)}</code></pre>`
         : '';
-      const stdout = run.stdout ? `<pre class="osa-execution-output">${escapeHtml(run.stdout)}</pre>` : '';
-      const stderr = run.stderr && run.status !== 'ok'
-        ? `<pre class="osa-execution-output">${escapeHtml(run.stderr)}</pre>`
+      const localNote = isLocal
+        ? '<div class="osa-execution-local-note">This run is yours. The assistant has not seen it.</div>'
         : '';
-      const images = (Array.isArray(run.images) ? run.images : [])
-        .filter(isShowableImage)
-        .map((image) => `<img alt="Figure produced by the code" src="data:image/png;base64,${image.data_base64}">`)
-        .join('');
-      // Figures open by default: they are the point of most runs.
+      const output = runOutputHtml(run);
+      const hasImages = Array.isArray(run.images) && run.images.some(isShowableImage);
+      const editing = run._editing === true;
+      let rerun = '';
+      if (canEdit && typeof msgIndex === 'number') {
+        rerun = editing
+          ? rerunEditorHtml(run, msgIndex, runIndex)
+          : `<div class="osa-rerun-actions">
+              <button type="button" class="osa-rerun-open" data-msg-index="${msgIndex}" data-run-index="${runIndex}">Edit and run</button>
+            </div>`;
+      }
+      // Figures, a local run, or an open editor all open by default: each is
+      // the point of looking at that particular run.
       return `
-        <details class="osa-execution"${images ? ' open' : ''}>
+        <details class="osa-execution"${(isLocal || editing || hasImages) ? ' open' : ''}>
           <summary>${escapeHtml(title)}</summary>
-          ${code}${stdout}${stderr}${images}
+          ${localNote}${code}${output}${rerun}
         </details>`;
     }).join('');
   }
@@ -3741,7 +4018,7 @@
           <span class="osa-message-label">${escapeHtml(label)}</span>
           ${copyBtn}
         </div>
-        ${msg.role === 'assistant' ? executionsHtml(msg.executions) : ''}
+        ${msg.role === 'assistant' ? executionsHtml(msg.executions, msgIndex) : ''}
         <div class="osa-message-content">${content}</div>
         ${sourcesRow}
         ${feedbackRow}
@@ -3811,6 +4088,59 @@
         e.stopPropagation();
         if (messages[msgIndex]) messages[msgIndex].feedbackDraft = '';
         commitResponseFeedback(container, msgIndex, { interactive: true });
+      });
+    });
+
+    // "Edit and run" (#433 c): open the inline editor for a specific run.
+    messagesEl.querySelectorAll('.osa-rerun-open[data-msg-index]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const run = runAt(btn);
+        if (!run) return;
+        run._editing = true;
+        run._draft = run.code || '';
+        renderMessages(container);
+      });
+    });
+
+    // Discard the edit and go back to showing the record as it was.
+    messagesEl.querySelectorAll('.osa-rerun-cancel[data-msg-index]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const run = runAt(btn);
+        if (!run) return;
+        delete run._editing;
+        delete run._draft;
+        delete run._localResult;
+        renderMessages(container);
+      });
+    });
+
+    // Remember what the reader is typing across a re-render triggered by
+    // something unrelated (runtime progress, a new message), the same way
+    // the feedback comment box's draft already does.
+    messagesEl.querySelectorAll('.osa-rerun-textarea[data-msg-index]').forEach((textarea) => {
+      const run = runAt(textarea);
+      if (!run) return;
+      textarea.addEventListener('input', () => {
+        run._draft = textarea.value;
+      });
+    });
+
+    messagesEl.querySelectorAll('.osa-rerun-run[data-msg-index]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const msgIndex = parseInt(btn.getAttribute('data-msg-index'), 10);
+        const runIndex = parseInt(btn.getAttribute('data-run-index'), 10);
+        runEditedCode(container, msgIndex, runIndex);
+      });
+    });
+
+    messagesEl.querySelectorAll('.osa-rerun-stop[data-msg-index]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.currentTarget.disabled = true;
+        if (browserTools) browserTools.cancel();
       });
     });
 
@@ -4888,6 +5218,16 @@
       downloadWorkspace,
       handleWorkspaceDeleteClick,
       closeSettings,
+      // The editable re-run panel (#433 c).
+      localExecutionRecord,
+      runEditedCode,
+      canRunLocalCode,
+      localRunBlockedReason,
+      renderMessages,
+      saveHistory,
+      loadHistory,
+      getSessionId: () => sessionId,
+      setSessionId: (value) => { sessionId = value; },
     };
   }
 
