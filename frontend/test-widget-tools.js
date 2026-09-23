@@ -14,6 +14,7 @@
 import { readFileSync } from 'node:fs';
 import { Window } from 'happy-dom';
 import { RUNTIME_STATE } from './osa-runtime.js';
+import { WorkspaceStore } from './osa-workspace.js';
 
 let passed = 0;
 let failed = 0;
@@ -696,6 +697,73 @@ console.log('\nthe stream handler continues the same reply across runs');
   assert(error === null, 'a stream that ends early with earlier text is reported in the reply, not thrown');
   assert(api.getMessages()[index].content.startsWith('Let me check.[1]\n\nThe peak is 10 Hz.[2]'),
     'and the earlier text survives it');
+}
+
+console.log('\nthe Settings workspace panel: size formatting, visibility, and delete arm/disarm (T3, #433)');
+{
+  const config = { default_model: 'm', offered_models: [], widget: {}, client_tools: [], runtime: null };
+  const fetch = async (url) => {
+    if (String(url).endsWith('/health')) return new Response(JSON.stringify({ status: 'healthy' }));
+    return new Response(JSON.stringify(config), { headers: { 'content-type': 'application/json' } });
+  };
+  const { window, api, widget } = loadWidget({ fetch });
+  widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: 'osa-test-settings' });
+  widget.init();
+  const container = window.document.querySelector('.osa-chat-widget');
+  assert(container !== null, 'the widget renders a container to test the panel against');
+
+  // Size formatting: exact unit boundaries, not merely "a number and a unit".
+  assertEqual(api.formatWorkspaceBytes(0), '0 B', '0 bytes');
+  assertEqual(api.formatWorkspaceBytes(500), '500 B', 'under 1 KB stays in bytes');
+  assertEqual(api.formatWorkspaceBytes(1023), '1023 B', 'just under the KB boundary');
+  assertEqual(api.formatWorkspaceBytes(1024), '1.0 KB', 'exactly 1024 bytes is 1.0 KB');
+  assertEqual(api.formatWorkspaceBytes(1536), '1.5 KB', 'a KB value with a fraction');
+  assertEqual(api.formatWorkspaceBytes(1024 * 1024), '1.0 MB', 'exactly 1 MiB');
+  assertEqual(api.formatWorkspaceBytes(2.5 * 1024 * 1024), '2.5 MB', 'an MB value with a fraction');
+  assertEqual(api.formatWorkspaceBytes(1024 * 1024 * 1024), '1.0 GB', 'exactly 1 GiB');
+  assertEqual(api.formatWorkspaceBytes(3 * 1024 * 1024 * 1024), '3.0 GB', 'GB is the top unit: it never rolls over further');
+
+  // Hidden when there is no store at all (the default state, before any
+  // runtime bundle has set one up).
+  api.setWorkspaceStore(null);
+  const field = container.querySelector('.osa-workspace-field');
+  await api.refreshWorkspacePanel(container);
+  assertEqual(field.style.display, 'none', 'the panel is hidden when getWorkspaceStore() is null');
+
+  // A REAL WorkspaceStore, genuinely unavailable under happy-dom (no
+  // `indexedDB` global here, the same real absence test-controller.js
+  // relies on under Bun) -- not a stand-in for one.
+  const store = new WorkspaceStore({ community: 'widget-test' });
+  assertEqual(store.available, false, 'happy-dom has no real IndexedDB either, so this store genuinely cannot reach one');
+  api.setWorkspaceStore(store);
+
+  await api.refreshWorkspacePanel(container);
+  assertEqual(field.style.display, '', 'the panel is shown once a store exists');
+  const usage = container.querySelector('.osa-workspace-usage');
+  assert(/not available/.test(usage.textContent) && /IndexedDB is not available/.test(usage.textContent),
+    `a failed size read shows an error, not silence (got ${JSON.stringify(usage.textContent)})`);
+
+  const deleteBtn = container.querySelector('.osa-workspace-delete-btn');
+  assertEqual(deleteBtn.textContent.trim(), 'Delete workspace', 'starts unarmed');
+
+  await api.handleWorkspaceDeleteClick(container);
+  assertEqual(deleteBtn.textContent.trim(), 'Confirm delete', 'the first click only arms it');
+  assert(deleteBtn.classList.contains('osa-workspace-confirm'), 'and marks it visually');
+
+  await api.handleWorkspaceDeleteClick(container);
+  assertEqual(deleteBtn.textContent.trim(), 'Delete workspace', 'the second click attempts the delete, resetting the label either way');
+  const errorEl = container.querySelector('.osa-error');
+  assert(errorEl && errorEl.style.display === 'block' && /IndexedDB is not available/.test(errorEl.textContent),
+    `a failed delete against a genuinely unavailable store shows an error (got ${JSON.stringify(errorEl && errorEl.textContent)})`);
+
+  // Reopening Settings disarms a pending confirm: refreshWorkspacePanel is
+  // exactly what openSettings calls, so this is the real disarm path, not a
+  // stand-in for it.
+  await api.handleWorkspaceDeleteClick(container);
+  assertEqual(deleteBtn.textContent.trim(), 'Confirm delete', 'armed again, to prove the next step disarms it');
+  await api.refreshWorkspacePanel(container);
+  assertEqual(deleteBtn.textContent.trim(), 'Delete workspace', 'reopening settings disarms a pending confirm');
+  assert(!deleteBtn.classList.contains('osa-workspace-confirm'), 'and clears the visual mark too');
 }
 
 console.log('\n' + '='.repeat(60));
