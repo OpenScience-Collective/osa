@@ -194,6 +194,18 @@ console.log('\na package that fails to load fails the boot, rather than surfacin
   assert(broken.ready === undefined, 'the runtime does not report ready');
   assert(error !== undefined && /definitely-not-a-package/.test(error.message),
     `the error names the package (got ${JSON.stringify(error && error.message)})`);
+  // The progress it sent before failing used the same boot-wide count as a
+  // boot that succeeds: the failing package was announced as the step
+  // starting, and nothing was announced after it.
+  assertEqual(
+    JSON.stringify(broken.messages.filter((m) => m.type === 'progress').map((m) => [m.phase, m.package || null, m.step, m.steps])),
+    JSON.stringify([
+      ['loading_runtime', null, 1, 2],
+      ['runtime_loaded', null, 1, 2],
+      ['loading_package', 'definitely-not-a-package', 2, 2],
+    ]),
+    'a failing boot counts its steps the way a succeeding one does, up to the step that failed'
+  );
 }
 
 console.log('\nthe import gate');
@@ -326,6 +338,13 @@ console.log('\nthe whole boot\'s step budget is fixed before it starts, and step
   const hasNoIndexOrTotal = (messages) =>
     messages.filter((m) => m.type === 'progress').every((m) => !('index' in m) && !('total' in m));
 
+  // Scenario 0: nothing to preload, install or run first. The interpreter is
+  // the whole boot, so there is one step, and the bar is full once it loads.
+  assertEqual(JSON.stringify(steps(plain.messages)), JSON.stringify([
+    { phase: 'loading_runtime', package: null, step: 1, steps: 1 },
+    { phase: 'runtime_loaded', package: null, step: 1, steps: 1 },
+  ]), 'nothing to load: the interpreter is the one step');
+
   // Scenario 1: preload only. Two packages, so `steps` is 3 (interpreter +
   // two names) and the sequence visibly advances past the shared step-1 pair.
   assertEqual(JSON.stringify(steps(scientific.messages)), JSON.stringify([
@@ -354,6 +373,7 @@ console.log('\nthe whole boot\'s step budget is fixed before it starts, and step
     },
   });
   let installed;
+  let installedAlone;
   try {
     const wheelUrl = `http://127.0.0.1:${wheelServer.port}/${wheel.fileName}`;
     installed = await bootRuntime({ preload: ['numpy'], allowInstall: [wheelUrl] });
@@ -369,6 +389,16 @@ console.log('\nthe whole boot\'s step budget is fixed before it starts, and step
       { phase: 'installing', package: wheelUrl, step: 4, steps: 4 },
     ]), 'preload and allow_install: one step each for numpy, micropip and the installed wheel, ending at steps');
     assert(hasNoIndexOrTotal(installed.messages), 'preload and allow_install: no message carries index or total');
+
+    // allow_install with nothing to preload: micropip is still its own step.
+    installedAlone = await bootRuntime({ allowInstall: [wheelUrl] });
+    assert(installedAlone.ready !== undefined, `allow_install alone lets the runtime come up (got ${JSON.stringify(installedAlone.messages.at(-1))})`);
+    assertEqual(JSON.stringify(steps(installedAlone.messages)), JSON.stringify([
+      { phase: 'loading_runtime', package: null, step: 1, steps: 3 },
+      { phase: 'runtime_loaded', package: null, step: 1, steps: 3 },
+      { phase: 'loading_package', package: 'micropip', step: 2, steps: 3 },
+      { phase: 'installing', package: wheelUrl, step: 3, steps: 3 },
+    ]), 'allow_install alone: micropip, then the wheel, ending at steps');
   } finally {
     wheelServer.stop(true);
   }
@@ -389,8 +419,10 @@ console.log('\nthe whole boot\'s step budget is fixed before it starts, and step
   // runtime_loaded sharing step 1 is the one deliberate repeat), reaching
   // steps exactly at the final progress message and never beyond it.
   for (const { label, messages } of [
+    { label: 'nothing to load', messages: plain.messages },
     { label: 'preload only', messages: scientific.messages },
     { label: 'preload and allow_install', messages: installed.messages },
+    { label: 'allow_install alone', messages: installedAlone.messages },
     { label: 'a prelude', messages: withPrelude.messages },
   ]) {
     const progressMessages = messages.filter((m) => m.type === 'progress');
