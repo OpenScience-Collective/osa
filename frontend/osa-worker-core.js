@@ -135,6 +135,10 @@ export function createWorkerRuntime(config, env) {
       await pyodide.loadPackage(names[i], {
         messageCallback: () => {},
         errorCallback: (message) => errors.push(String(message)),
+        // Pyodide's default, stated because the lock overlay rests on it: each
+        // wheel is fetched with its sha256 as fetch integrity. The browser harness
+        // fails in CI if this is ever off.
+        checkIntegrity: true,
       });
       if (errors.length > 0) {
         throw new Error(`package ${names[i]} did not load: ${errors.join('; ')}`);
