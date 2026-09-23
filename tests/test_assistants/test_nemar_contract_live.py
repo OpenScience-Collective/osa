@@ -21,7 +21,9 @@ the wheel actually committed beside the prompt.
 from __future__ import annotations
 
 import ast
+import json
 import re
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -34,6 +36,7 @@ from src.tools.mcp_client import discover_mcp_tools
 
 NEMAR_DIR = Path(__file__).resolve().parents[2] / "src" / "assistants" / "nemar"
 NEMAR_MCP_URL = "https://mcp.nemar.org/mcp"
+RUNNER_PATH = Path(__file__).resolve().parents[2] / "scripts" / "run_python_browser_recipe.py"
 
 
 def _vendored_eegprep_lean_wheel() -> Path:
@@ -176,8 +179,8 @@ def eegprep_lean_keywords(wheel_path: Path) -> dict[str, frozenset[str] | None]:
                 for key, value in zip(node.value.keys, node.value.values, strict=True):
                     if isinstance(key, ast.Constant) and isinstance(value, ast.Tuple):
                         module = value.elts[0]
-                        if isinstance(module, ast.Constant):
-                            homes[key.value] = module.value.replace(".", "/") + ".py"
+                        if isinstance(module, ast.Constant) and isinstance(module.value, str):
+                            homes[str(key.value)] = module.value.replace(".", "/") + ".py"
         modules = {
             path: ast.parse(archive.read(path).decode("utf-8")) for path in set(homes.values())
         }
@@ -352,13 +355,55 @@ class TestRecipeProblems:
 # ---------------------------------------------------------------------------
 
 
+def _answer(result: object, tool: str, key: str) -> dict:
+    """A tool's structured answer, holding `key`. A tool that answers in text (a
+    refusal, a timeout, an unreachable server) or with an error object fails here,
+    showing what it said, not with a TypeError or KeyError later."""
+    assert isinstance(result, dict), f"{tool} answered in text, not structured data: {result!r}"
+    assert key in result, f"{tool} answered without {key!r}: {result!r}"
+    return result
+
+
+async def _live_read_window(duration_s: int) -> tuple[dict, dict]:
+    """nm000103's first recording, and `nemar_read_window`'s answer for its first
+    `duration_s` seconds of its first group, from production."""
+    tools = discover_mcp_tools(McpServer(name="nemar", url=NEMAR_MCP_URL))
+    list_recordings = next(t for t in tools if t.name == "nemar_list_recordings")
+    read_window = next(t for t in tools if t.name == "nemar_read_window")
+
+    listed = _answer(
+        await list_recordings.ainvoke({"dataset_id": "nm000103", "limit": 1}),
+        "nemar_list_recordings",
+        "recordings",
+    )
+    recording = listed["recordings"][0]
+    result = _answer(
+        await read_window.ainvoke(
+            {
+                "dataset_id": "nm000103",
+                "recording": recording["path"],
+                "group": recording["groups"][0]["name"],
+                "start_s": 0,
+                "duration_s": duration_s,
+            }
+        ),
+        "nemar_read_window",
+        "recipe",
+    )
+    return recording, result
+
+
 @pytest.mark.network
 class TestListRecordingsContract:
     async def test_every_recording_has_a_path_and_named_groups(self) -> None:
         tools = discover_mcp_tools(McpServer(name="nemar", url=NEMAR_MCP_URL))
         list_recordings = next(t for t in tools if t.name == "nemar_list_recordings")
 
-        result = await list_recordings.ainvoke({"dataset_id": "nm000103", "limit": 5})
+        result = _answer(
+            await list_recordings.ainvoke({"dataset_id": "nm000103", "limit": 5}),
+            "nemar_list_recordings",
+            "recordings",
+        )
 
         recordings = result["recordings"]
         assert len(recordings) > 0
@@ -377,23 +422,7 @@ class TestReadWindowContract:
         """Pins what `nemar_read_window`'s response actually contains today, so a
         server-side rename fails this test rather than only the model's next
         attempt to read the sample range out of it."""
-        tools = discover_mcp_tools(McpServer(name="nemar", url=NEMAR_MCP_URL))
-        list_recordings = next(t for t in tools if t.name == "nemar_list_recordings")
-        read_window = next(t for t in tools if t.name == "nemar_read_window")
-
-        recordings = await list_recordings.ainvoke({"dataset_id": "nm000103", "limit": 1})
-        recording = recordings["recordings"][0]
-        group_name = recording["groups"][0]["name"]
-
-        result = await read_window.ainvoke(
-            {
-                "dataset_id": "nm000103",
-                "recording": recording["path"],
-                "group": group_name,
-                "start_s": 0,
-                "duration_s": 10,
-            }
-        )
+        _, result = await _live_read_window(duration_s=10)
 
         assert result["mode"] == "recipe"
         recipe = result["recipe"]
@@ -412,23 +441,7 @@ class TestReadWindowContract:
         export, or passes a keyword its function does not take, this fails before
         a reader's browser does.
         """
-        tools = discover_mcp_tools(McpServer(name="nemar", url=NEMAR_MCP_URL))
-        list_recordings = next(t for t in tools if t.name == "nemar_list_recordings")
-        read_window = next(t for t in tools if t.name == "nemar_read_window")
-
-        recordings = await list_recordings.ainvoke({"dataset_id": "nm000103", "limit": 1})
-        recording = recordings["recordings"][0]
-        group_name = recording["groups"][0]["name"]
-
-        result = await read_window.ainvoke(
-            {
-                "dataset_id": "nm000103",
-                "recording": recording["path"],
-                "group": group_name,
-                "start_s": 0,
-                "duration_s": 10,
-            }
-        )
+        _, result = await _live_read_window(duration_s=10)
 
         snippet = result["recipe"]["how_to"]["python_browser"]
         assert eegprep_lean_names_used(snippet), (
@@ -440,3 +453,74 @@ class TestReadWindowContract:
             f"the live python_browser recipe cannot run on the vendored wheel "
             f"({WHEEL_PATH.name}): {problems}\n{snippet}"
         )
+
+
+@pytest.mark.network
+class TestLiveRecipeOnCPython:
+    """The daily live check (#432): run production's actual `python_browser` recipe,
+    unmodified, in a fresh CPython interpreter with nothing installed but the
+    vendored wheel -- the same bytes this repository serves same-origin to a
+    reader's browser. The tests above check the recipe's names and keywords fit the
+    wheel's signatures; this one runs it, over the real network, against real data.
+
+    `eegprep_lean.transport.UrllibTransport` (the CPython, non-Pyodide path this
+    subprocess actually takes) sends ``User-Agent: eegprep-lean``, never the bare
+    ``Python-urllib/x.y`` default -- see that module's own ``USER_AGENT`` constant
+    and its comment, which already names the NEMAR hosts refusing the default. So
+    this test needs no user-agent workaround; if that ever changes upstream, this
+    is exactly the test that would start failing with a 403 from zarr.nemar.org.
+    """
+
+    async def test_the_live_recipe_runs_on_the_vendored_wheel(self, tmp_path: Path) -> None:
+        _, result = await _live_read_window(duration_s=2)
+
+        recipe = result["recipe"]
+        snippet = recipe["how_to"]["python_browser"]
+        sample_slice = recipe["sample_slice"]
+        start_sample, end_sample = sample_slice["start"], sample_slice["end"]
+        width = end_sample - start_sample
+
+        recipe_file = tmp_path / "recipe.py"
+        recipe_file.write_text(snippet, encoding="utf-8")
+
+        completed = subprocess.run(
+            [
+                "uv",
+                "run",
+                "--isolated",
+                "--no-project",
+                "--with",
+                f"eegprep-lean[zarr] @ file://{WHEEL_PATH.resolve()}",
+                "python",
+                str(RUNNER_PATH),
+                str(recipe_file),
+                str(start_sample),
+                str(end_sample),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+
+        assert completed.returncode == 0, (
+            f"the live recipe failed under the vendored wheel on CPython "
+            f"({WHEEL_PATH.name}):\n{snippet}\n"
+            f"--- stdout ---\n{completed.stdout}\n--- stderr ---\n{completed.stderr}"
+        )
+        report = json.loads(completed.stdout.strip().splitlines()[-1])
+        bound = [read for read in (report.get("window"), report.get("digital")) if read]
+        assert bound, (
+            f"the recipe ran but bound neither `window` nor `digital`: {report}\n{snippet}"
+        )
+        for read in bound:
+            assert read["shape"][-1] == width, (
+                f"expected {width} samples (sample_slice {start_sample}-{end_sample}), got {read}"
+            )
+            assert read["dtype"], f"a read with no dtype: {read}"
+        physical = report.get("window") or {}
+        if "unit" in physical:
+            # A read_window recipe: the physical read names its unit, and the raw
+            # read it keeps covers the same channels and samples.
+            assert isinstance(physical["unit"], str) and physical["unit"], physical
+            if report.get("digital"):
+                assert report["digital"]["shape"] == physical["shape"], report

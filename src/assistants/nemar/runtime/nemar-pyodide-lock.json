@@ -2,11 +2,11 @@
   "packages": {
     "eegprep-lean": {
       "name": "eegprep-lean",
-      "version": "0.1.0.dev1",
-      "file_name": "eegprep_lean-0.1.0.dev1-py3-none-any.whl",
+      "version": "0.1.0.dev2",
+      "file_name": "eegprep_lean-0.1.0.dev2-py3-none-any.whl",
       "package_type": "package",
       "install_dir": "site",
-      "sha256": "64385eed4945896e71de5a5720c9d2d07472b8d3534c8dcf01f8a7f654210eb7",
+      "sha256": "39f33b99415ad8f6132a4430fe96acebcb7ced785b127143dd6e0b43f7157582",
       "imports": [
         "eegprep_lean"
       ],
