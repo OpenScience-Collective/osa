@@ -66,11 +66,10 @@ const localPackages = Object.fromEntries(
   Object.entries(OVERLAY).map(([key, entry]) => [key, { ...entry, file_name: WHEELS + entry.file_name }])
 );
 
-// Production's CURRENT python_browser recipe: nemar-cli v0.10.5's buildHowTo in
-// shared/contract/mcp.ts, verbatim, with the array URL left as a placeholder. This
-// is the shape live today, before this PR's re-vendor: it leads with open_array and
-// has no read_index/index_url at all. It is what nemar_read_window hands the model
-// on production right now.
+// Production's python_browser recipe as of nemar-cli v0.10.5: its buildHowTo in
+// shared/contract/mcp.ts, copied as text, with the array URL left as a placeholder.
+// It leads with open_array and has no read_index or index_url. It stays live until
+// nemar-cli's next release replaces it with the level-0 recipe below.
 const PYTHON_BROWSER_RECIPE = [
   'from eegprep_lean import open_array  # from the runtime\'s lockfile, not micropip',
   '',
@@ -97,6 +96,12 @@ function extractPromptSnippet(promptText) {
 
 // Whole-word substitution: a placeholder is an identifier-shaped token, and `\b`
 // treats `_` as a word character, so DATASET_ID never matches inside a longer name.
+// The dataset id every loopback index here names. It is NEMAR's own declared id
+// that never resolves (nemar-cli's ABSENT_DATASET_ID, the floor of its reserved
+// fixture band), so a read that escaped the loopback would find nothing rather than
+// a real or fixture dataset.
+const ABSENT_DATASET_ID = 'nm099900';
+
 function fillPlaceholders(snippet, substitutions) {
   let filled = snippet;
   for (const [name, value] of substitutions) {
@@ -106,7 +111,7 @@ function fillPlaceholders(snippet, substitutions) {
 }
 
 // nemar-cli DEV's LEVEL-0 python_browser recipe: buildHowTo's isLevel0 branch in
-// shared/contract/mcp.ts, verbatim, as of nemarOrg/nemar-cli's origin/dev at
+// shared/contract/mcp.ts, transcribed line for line from nemarOrg/nemar-cli's origin/dev at
 // 0.10.6-dev7 (2026-09-22) -- unreleased. This is the recipe #432 exists to guard:
 // it leads with read_index(dataset_id, index_url=...), which needs eegprep-lean
 // 0.1.0.dev2 or later (see test_nemar_contract_live.py's index_url test). Built the
@@ -341,9 +346,9 @@ try {
     assert(seen.some((r) => r.range && /^bytes=\d+-\d+$/.test(r.range)), 'and the inner chunk with a bounded range');
   }
 
-  console.log("\nnemar-cli dev's level-0 recipe runs verbatim (read_index, index_url)");
+  console.log("\nnemar-cli dev's level-0 recipe, as its buildHowTo writes it (read_index, index_url)");
   {
-    const LEVEL0_DATASET_ID = 'xx099998';
+    const LEVEL0_DATASET_ID = ABSENT_DATASET_ID;
     const LEVEL0_STORE_PATH = 'sub-01/eeg/sub-01_task-test_eeg.set';
     const LEVEL0_GROUP = 'eeg_250hz';
     const LEVEL0_RELATIVE_PATH = 'rec.zarr/eeg_250hz/0';
@@ -412,7 +417,7 @@ from eegprep_lean import read_window
 from eegprep_lean.index import ChannelGroup, DatasetIndex, Store
 
 index = DatasetIndex(
-    dataset_id="xx099999", format_version=3, contract_base=${JSON.stringify(BASE)}, store_count=1,
+    dataset_id="${ABSENT_DATASET_ID}", format_version=3, contract_base=${JSON.stringify(BASE)}, store_count=1,
     stores=(Store(path="sub-01/eeg/sub-01_task-test_eeg.set", zarr="rec.zarr", groups=(
         ChannelGroup(name="eeg_250hz", modality="EEG", rate=250.0, n_channels=${N_CHANNELS},
                      n_samples=${N_SAMPLES}, n_view_levels=0),)),),
@@ -462,7 +467,7 @@ window = await read_window(index, index.stores[0], start_sample=0, n_samples=2)
     );
 
     if (snippet !== null) {
-      const SNIPPET_DATASET_ID = 'xx099999';
+      const SNIPPET_DATASET_ID = ABSENT_DATASET_ID;
       const SNIPPET_PATH = 'sub-01/eeg/sub-01_task-test_eeg.set';
       const SNIPPET_GROUP = 'eeg_250hz';
       const READ_N_SAMPLES = 100;
