@@ -80,7 +80,7 @@ const PYTHON_BROWSER_RECIPE = [
 ].join('\n');
 
 // The ONE canonical snippet in NEMAR's system prompt: the first ```python fence
-// after this heading (6c13d2b). Extracted from the real prompt text rather than
+// after this heading. Extracted from the real prompt text rather than
 // hand-copied here, so an edit that breaks the snippet fails this suite instead of
 // only failing in a reader's browser.
 const PROMPT_HEADING = "## Running code in the reader's browser";

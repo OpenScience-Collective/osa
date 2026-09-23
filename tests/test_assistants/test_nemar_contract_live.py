@@ -3,12 +3,14 @@
 `tests/test_assistants/test_nemar_mcp_wiring.py` proves the assistant's config
 wires up to whatever the server presents, and `tests/test_tools/test_mcp_client.py`
 proves the client wrapper against a real server. Neither proves that the LIVE
-server's `read_window` still hands out a `python_browser` recipe the prompt's own
-snippet (`src/assistants/nemar/config.yaml`, committed as 6c13d2b) can actually run:
-`eegprep_lean.read_index`, `.store`, `.group` and `read_window` need the names the
-recipe uses to exist in the vendored wheel, and a server-side rename or a wheel
-bump that drops one would break the browser lane while every other test here stays
-green. This is the guard for that gap.
+server still hands out what NEMAR's prompt relies on: every recording's `path` and
+group `name`, `read_window`'s sample range, and a `python_browser` recipe whose
+`eegprep_lean` names the vendored wheel exports. A server-side rename, or a wheel
+bump that drops a name, would break the browser lane while every other test here
+stays green. This is the guard for that gap.
+
+A name check cannot see a new keyword argument or a changed signature. Running
+the live recipe itself against the vendored wheel is the stronger check.
 
 Everything that touches `mcp.nemar.org` is `@pytest.mark.network` and deselected by
 default (`.github/workflows/nemar-mcp-contract.yml` runs it on a schedule). The
@@ -24,20 +26,27 @@ from pathlib import Path
 
 import pytest
 
-from src.core.config.community import McpServer
+from src.core.config.community import CommunityConfig, McpServer
+from src.core.config.runtime_lock import WHEELS_DIR_NAME, load_runtime_lock
 from src.tools.mcp_client import discover_mcp_tools
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-WHEEL_PATH = (
-    REPO_ROOT
-    / "src"
-    / "assistants"
-    / "nemar"
-    / "runtime"
-    / "wheels"
-    / "eegprep_lean-0.1.0.dev1-py3-none-any.whl"
-)
+NEMAR_DIR = Path(__file__).resolve().parents[2] / "src" / "assistants" / "nemar"
 NEMAR_MCP_URL = "https://mcp.nemar.org/mcp"
+
+
+def _vendored_eegprep_lean_wheel() -> Path:
+    """The eegprep-lean wheel NEMAR's lock overlay ships, found through the overlay
+    the way the server finds it, so a re-vendor needs no edit here."""
+    config = CommunityConfig.from_yaml(NEMAR_DIR / "config.yaml")
+    assert config.runtime is not None and config.runtime.python is not None
+    lockfile = config.runtime.python.lockfile
+    assert lockfile is not None, "NEMAR's runtime names no lock overlay"
+    overlay = load_runtime_lock(NEMAR_DIR, lockfile)
+    entry = overlay.packages["eegprep-lean"]
+    return (NEMAR_DIR / lockfile).parent / WHEELS_DIR_NAME / entry.file_name
+
+
+WHEEL_PATH = _vendored_eegprep_lean_wheel()
 
 
 # ---------------------------------------------------------------------------
@@ -109,9 +118,9 @@ class TestEegprepLeanExportedNames:
     not a network test: something here runs in every CI sweep."""
 
     def test_open_array_and_read_window_are_both_exported(self) -> None:
-        """The two names the two recipe flavors need: `open_array` for the
-        recipe's own `python_browser` snippet, `read_window` for the prompt's
-        canonical snippet (config.yaml, 6c13d2b)."""
+        """The names both reads need: `open_array` for the raw read, and
+        `read_index`, `read_window` and `plot_window` for the physical read the
+        prompt's snippet makes."""
         names = eegprep_lean_exported_names(WHEEL_PATH)
         assert {"open_array", "read_window", "read_index", "plot_window"} <= names
 
