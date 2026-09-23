@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import tomllib
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
@@ -250,3 +251,64 @@ class TestTheGenerator:
         zarr = overlay["packages"]["zarr"]
         assert (zarr["name"], zarr["version"], zarr["imports"]) == ("zarr", "3.4.0", ["zarr"])
         assert zarr["sha256"] == hashlib.sha256(wheel.read_bytes()).hexdigest()
+
+
+def _sources_problems(runtime_dir: Path) -> list[str]:
+    """What's wrong between `wheels/` and `sources.toml` in `runtime_dir`, if anything:
+    a wheel no entry names, or an entry that names no wheel (missing key, or a name
+    that is not in `wheels/`). Empty when every wheel and every entry agree."""
+    sources = tomllib.loads((runtime_dir / "sources.toml").read_text())
+    wheel_files = {path.name for path in (runtime_dir / "wheels").glob("*.whl")}
+
+    named: dict[str, str] = {}
+    problems: list[str] = []
+    for key, entry in sources.items():
+        wheel = entry.get("wheel") if isinstance(entry, dict) else None
+        if not isinstance(wheel, str) or not wheel:
+            problems.append(f"{key}: names no wheel")
+            continue
+        named[key] = wheel
+        if wheel not in wheel_files:
+            problems.append(f"{key}: names {wheel}, which is not in wheels/")
+
+    for orphan in sorted(wheel_files - set(named.values())):
+        problems.append(f"{orphan}: no sources.toml entry names it")
+    return problems
+
+
+class TestSourcesToml:
+    """`src/assistants/nemar/runtime/sources.toml`: where each vendored wheel came
+    from. Read by scripts/eegprep_lean_drift.py and its weekly workflow; nothing in
+    the load path above checks this, so it needs its own test."""
+
+    def test_every_wheel_and_every_entry_agree(self) -> None:
+        assert _sources_problems(NEMAR_DIR / "runtime") == []
+
+    def test_a_wheel_with_no_entry_is_named(self, tmp_path: Path) -> None:
+        runtime = tmp_path / "runtime"
+        shutil.copytree(NEMAR_DIR / "runtime", runtime)
+        _wheel(runtime / "wheels" / "ghost-1.0-py3-none-any.whl", "ghost", "1.0")
+
+        assert _sources_problems(runtime) == [
+            "ghost-1.0-py3-none-any.whl: no sources.toml entry names it"
+        ]
+
+    def test_an_entry_that_names_no_wheel_is_named(self, tmp_path: Path) -> None:
+        runtime = tmp_path / "runtime"
+        shutil.copytree(NEMAR_DIR / "runtime", runtime)
+        sources = runtime / "sources.toml"
+        sources.write_text(sources.read_text() + '\n[ghost]\nsource = "nowhere"\n')
+
+        assert _sources_problems(runtime) == ["ghost: names no wheel"]
+
+    def test_an_entry_naming_a_missing_wheel_is_named(self, tmp_path: Path) -> None:
+        runtime = tmp_path / "runtime"
+        shutil.copytree(NEMAR_DIR / "runtime", runtime)
+        sources = runtime / "sources.toml"
+        sources.write_text(
+            sources.read_text() + '\n[ghost]\nwheel = "ghost-1.0-py3-none-any.whl"\n'
+        )
+
+        assert _sources_problems(runtime) == [
+            "ghost: names ghost-1.0-py3-none-any.whl, which is not in wheels/"
+        ]
