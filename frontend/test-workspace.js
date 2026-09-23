@@ -20,6 +20,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { buildStoredZip } from './osa-zip.js';
 import {
   autoFigurePath,
   autoResultDir,
@@ -186,6 +187,13 @@ console.log('\nWorkspaceStore reports IndexedDB unavailability as a value, never
   const tooBig = await store.putFile('session-1', 'artifacts/big.bin', new Uint8Array(WORKSPACE_LIMITS.MAX_FILE_BYTES + 1));
   assert(!tooBig.ok && /per-file limit/.test(tooBig.reason), `an oversized file fails on size, not on IndexedDB (got ${JSON.stringify(tooBig)})`);
 
+  // T5: the boundary itself, mirroring the community-cap pair just below --
+  // exactly at the per-file cap must pass the SIZE check, so IndexedDB
+  // (unavailable here) is the only reason it still fails overall.
+  const exactlyAtFileCap = await store.putFile('session-1', 'artifacts/exact.bin', new Uint8Array(WORKSPACE_LIMITS.MAX_FILE_BYTES));
+  assert(!exactlyAtFileCap.ok && exactlyAtFileCap.reason === 'IndexedDB is not available in this browser',
+    `exactly at the per-file cap still passes the size check, so IndexedDB is the ONLY reason it fails here (got ${JSON.stringify(exactlyAtFileCap)})`);
+
   // The community cap is checked against a CALLER-SUPPLIED usage figure
   // (recordRun is what actually measures it), so this branch is reachable
   // and testable under Bun even though `available` is false: it must run
@@ -228,12 +236,125 @@ console.log('\nWorkspaceStore reports IndexedDB unavailability as a value, never
   assert(threw instanceof TypeError, 'a WorkspaceStore requires a non-empty community id');
 }
 
+console.log('\na store whose IndexedDB open() never settles reports a deadline failure, not a hang (E1)');
+{
+  // A REAL, test-controlled dbFactory -- not a mock of WorkspaceStore's own
+  // logic. Its open() returns a request shape whose handlers are simply
+  // never invoked, exactly what a genuinely stuck IndexedDB implementation
+  // looks like. `operationTimeoutMs` is overridden to milliseconds here (the
+  // same constructor knob PyodideRuntime's tests use for `bootTimeoutMs`),
+  // so this proves the real race against the deadline mechanism without a
+  // test waiting out the real 10s default.
+  const neverSettles = { open: () => ({}) };
+  const store = new WorkspaceStore({ community: 'timeout-test', dbFactory: neverSettles, operationTimeoutMs: 50 });
+  const start = Date.now();
+  const result = await store.deleteAll();
+  const elapsed = Date.now() - start;
+  assert(!result.ok && /did not finish within/.test(result.reason), `a hung open() resolves to a reported failure, not a hang (got ${JSON.stringify(result)})`);
+  assert(elapsed < 2000, `it resolves close to the overridden deadline, not the real 10s default (took ${elapsed}ms)`);
+}
+
+console.log('\na rejected open() does not poison later calls: _dbPromise is reset (E1)');
+{
+  // Fails FAST and for real (onerror on a microtask), a different failure
+  // mode from the never-settles case above: this one proves the SPECIFIC
+  // claim that a rejection clears the cached `_dbPromise`, by making a
+  // second call observe a SECOND, distinct open() attempt rather than the
+  // first rejection replayed.
+  let openCalls = 0;
+  const factory = {
+    open() {
+      openCalls += 1;
+      const attempt = openCalls;
+      const request = {};
+      queueMicrotask(() => {
+        request.error = new Error(`open attempt ${attempt} failed`);
+        request.onerror?.();
+      });
+      return request;
+    },
+  };
+  const store = new WorkspaceStore({ community: 'reset-test', dbFactory: factory, operationTimeoutMs: 5000 });
+  const first = await store.deleteAll();
+  const second = await store.deleteAll();
+  assertEqual(openCalls, 2, 'a rejected _dbPromise is not cached: the next call opens again');
+  assert(!first.ok && first.reason === 'open attempt 1 failed', `the first attempt fails for its own reason (got ${JSON.stringify(first)})`);
+  assert(!second.ok && second.reason === 'open attempt 2 failed', `the second attempt fails for ITS OWN reason, not the first's cached rejection (got ${JSON.stringify(second)})`);
+}
+
+console.log('\nbuildStoredZip refuses more than 65,535 entries rather than writing a wrapped count (C3)');
+{
+  const tooMany = Object.fromEntries(Array.from({ length: 0x10000 }, (_, i) => [`f${i}`, '']));
+  let threw = null;
+  try {
+    buildStoredZip(tooMany);
+  } catch (err) {
+    threw = err;
+  }
+  assert(threw instanceof Error && /65,535/.test(threw.message), `65,536 entries is refused clearly (got ${threw && threw.message})`);
+
+  const exactly = Object.fromEntries(Array.from({ length: 0xffff }, (_, i) => [`f${i}`, '']));
+  let atCapThrew = null;
+  try {
+    buildStoredZip(exactly);
+  } catch (err) {
+    atCapThrew = err;
+  }
+  assert(atCapThrew === null, `exactly 65,535 entries is still allowed (got ${atCapThrew && atCapThrew.message})`);
+}
+
+console.log('\nbuildStoredZip sets the UTF-8 flag bit, so a non-ASCII name round-trips through an INDEPENDENT reader (C4)');
+{
+  const dir = mkdtempSync(join(tmpdir(), 'osa-zip-utf8-'));
+  try {
+    const name = 'sess-1/artifacts/données-café.txt';
+    const bytes = buildStoredZip({ [name]: 'hello' });
+    const zipPath = join(dir, 'utf8.zip');
+    writeFileSync(zipPath, bytes);
+
+    // unzip -t only checks CRC-32s, never filename decoding, so it is used
+    // here just to confirm a non-ASCII entry does not corrupt the archive
+    // structure itself. Its own -Z1 LISTING is deliberately not asserted on:
+    // Apple's bundled Info-ZIP build (confirmed by hand against this exact
+    // file) mis-decodes an otherwise flag-correct UTF-8 name regardless of
+    // locale, a known limitation of that specific binary, not evidence of a
+    // malformed archive -- Python's zipfile below, which reads the SAME
+    // bytes and flag, is the independent reader that actually checks this.
+    const unzipTest = Bun.spawnSync(['unzip', '-t', zipPath]);
+    assert(unzipTest.exitCode === 0, `unzip -t still verifies the CRC-32 of a non-ASCII entry (got: ${unzipTest.stdout}${unzipTest.stderr})`);
+
+    const checker = `
+import sys
+import zipfile
+
+with zipfile.ZipFile(sys.argv[1]) as zf:
+    names = zf.namelist()
+    assert names == [${JSON.stringify(name)}], names
+    flag = zf.infolist()[0].flag_bits
+    assert flag & 0x800, f"UTF-8 bit not set: {flag:#x}"
+    assert zf.read(names[0]) == b"hello"
+    print("OK")
+`;
+    const checkerPath = join(dir, 'check_utf8.py');
+    writeFileSync(checkerPath, checker);
+    const py = Bun.spawnSync(['python3', checkerPath, zipPath]);
+    assertEqual(py.stdout.toString().trim(), 'OK', `Python's zipfile decodes the name as UTF-8 and confirms the flag bit (got: ${py.stdout}${py.stderr})`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 console.log('\nthe zip writer produces bytes an INDEPENDENT reader accepts (unzip and Python zipfile)');
 {
   const dir = mkdtempSync(join(tmpdir(), 'osa-workspace-zip-'));
   try {
     const notebookRuns = [{ ordinal: 1, description: 'demo', code: 'print(1)', stdout: '1\n', stderr: '', images: [] }];
     const runs = [{ ordinal: 1, callId: 'call-1', status: 'ok', description: 'demo', files: ['scripts/run-001.py'], timestamp: '2026-01-01T00:00:00Z' }];
+    // T2: a SECOND session, with its own run and its own file, to prove
+    // exportZip scopes each session's manifest and notebook to only its own
+    // runs rather than leaking across sessions that share one community.
+    const notebookRuns2 = [{ ordinal: 1, description: 'other session', code: 'print(2)', stdout: '2\n', stderr: '', images: [] }];
+    const runs2 = [{ ordinal: 1, callId: 'call-2', status: 'ok', description: 'other session', files: ['scripts/run-001.py'], timestamp: '2026-01-01T00:01:00Z' }];
     const bytes = buildWorkspaceZip([
       {
         session: 'sess-1',
@@ -243,6 +364,12 @@ console.log('\nthe zip writer produces bytes an INDEPENDENT reader accepts (unzi
         ],
         runs,
         notebookRuns,
+      },
+      {
+        session: 'sess-2',
+        files: [{ path: 'scripts/run-001.py', data: new TextEncoder().encode('print(2)') }],
+        runs: runs2,
+        notebookRuns: notebookRuns2,
       },
     ]);
     const zipPath = join(dir, 'workspace.zip');
@@ -262,14 +389,23 @@ console.log('\nthe zip writer produces bytes an INDEPENDENT reader accepts (unzi
       'sess-1/manifest.json',
       'sess-1/notebook.ipynb',
       'sess-1/scripts/run-001.py',
-    ], 'every expected entry is present, once each');
+      'sess-2/manifest.json',
+      'sess-2/notebook.ipynb',
+      'sess-2/scripts/run-001.py',
+    ], 'every expected entry, for BOTH sessions, is present once each');
 
     const extractedScript = Bun.spawnSync(['unzip', '-p', zipPath, 'sess-1/scripts/run-001.py']);
     assertEqual(extractedScript.stdout.toString(), 'print(1)', 'a text entry round-trips byte for byte');
 
+    const extractedScript2 = Bun.spawnSync(['unzip', '-p', zipPath, 'sess-2/scripts/run-001.py']);
+    assertEqual(extractedScript2.stdout.toString(), 'print(2)', "a same-NAMED entry in the other session is its OWN content, not session 1's");
+
     // Independent reader 2: Python's stdlib zipfile, via a throwaway script,
     // which also validates the notebook JSON and the manifest JSON parse
-    // and carry the fields WorkspaceStore.exportZip is documented to write.
+    // and carry the fields WorkspaceStore.exportZip is documented to write,
+    // AND (T2) that each session's manifest and notebook hold only ITS OWN
+    // run -- session 2's call_id must never appear under session 1's path,
+    // or vice versa.
     const checker = `
 import json
 import sys
@@ -284,8 +420,20 @@ with zipfile.ZipFile(sys.argv[1]) as zf:
     notebook = json.loads(zf.read("sess-1/notebook.ipynb"))
     data = zf.read("sess-1/artifacts/data.bin")
     assert manifest["runs"][0]["call_id"] == "call-1", manifest
+    assert len(manifest["runs"]) == 1, manifest
     assert notebook["nbformat"] == 4, notebook
     assert data == bytes([0, 1, 2, 255, 254]), data
+
+    manifest2 = json.loads(zf.read("sess-2/manifest.json"))
+    notebook2 = json.loads(zf.read("sess-2/notebook.ipynb"))
+    assert manifest2["runs"][0]["call_id"] == "call-2", manifest2
+    assert len(manifest2["runs"]) == 1, manifest2
+    assert notebook2["nbformat"] == 4, notebook2
+
+    # Neither session's manifest names the other session's call_id: proves
+    # the scoping, not merely that both files happen to exist.
+    assert "call-2" not in json.dumps(manifest), manifest
+    assert "call-1" not in json.dumps(manifest2), manifest2
     print("OK")
 `;
     const checkerPath = join(dir, 'check.py');
