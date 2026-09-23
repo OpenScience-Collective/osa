@@ -4132,7 +4132,7 @@
       });
     });
 
-    // "Edit and run" (#433 c): open the inline editor for a specific run.
+    // "Edit and run": open the inline editor for a specific run.
     messagesEl.querySelectorAll('.osa-rerun-open[data-msg-index]').forEach((btn) => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -4181,7 +4181,10 @@
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
         e.currentTarget.disabled = true;
-        if (browserTools) browserTools.cancel();
+        // cancelLocal(), never cancel(): this button is the reader's own run,
+        // which can be outstanding at the same time as an assistant call
+        // queued behind it, and each Stop must reach only its own run.
+        if (browserTools) browserTools.cancelLocal();
       });
     });
 
@@ -4201,6 +4204,9 @@
       panelEl.querySelector('.osa-tool-deny')?.addEventListener('click', () => decide(runtimeApi.GATE_DECISION.DENY));
       panelEl.querySelector('.osa-tool-stop')?.addEventListener('click', (e) => {
         e.currentTarget.disabled = true;
+        // cancel(), never cancelLocal(): this button is the assistant's own
+        // call, which can be queued behind a reader's run still in progress,
+        // and each Stop must reach only its own run.
         if (browserTools) browserTools.cancel();
       });
     } else if (isLoading) {
@@ -5259,7 +5265,7 @@
       downloadWorkspace,
       handleWorkspaceDeleteClick,
       closeSettings,
-      // The editable re-run panel (#433 c).
+      // The editable re-run panel.
       localExecutionRecord,
       runEditedCode,
       canRunLocalCode,
