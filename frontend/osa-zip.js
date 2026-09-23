@@ -82,12 +82,19 @@ function encodeEntry(name, content) {
 /**
  * Build a ZIP archive of STORED (uncompressed) entries.
  *
+ * Every entry name and its bytes are written as UTF-8, with the
+ * general-purpose flag's UTF-8 bit (bit 11, 0x0800) set on both the local
+ * and central headers, so a non-ASCII name a future caller passes reads
+ * back correctly in any reader that honors the flag.
+ *
  * @param {Record<string, string|Uint8Array|{data: string|Uint8Array, mtime?: Date}>} files -
  *   Map of archive path to its content, either directly or with a `mtime`
  *   (default: now). Iteration order is insertion order, which is also the
  *   archive's entry order, so a deterministic caller (e.g. a sorted object)
- *   gets deterministic bytes.
+ *   gets deterministic bytes. At most 65,535 entries (a non-Zip64 zip's
+ *   entry count is a 16-bit field); more than that throws.
  * @returns {Uint8Array}
+ * @throws {Error} If `files` has more than 65,535 entries.
  */
 export function buildStoredZip(files) {
   const entries = Object.entries(files).map(([name, value]) => {
@@ -97,6 +104,16 @@ export function buildStoredZip(files) {
     const { nameBytes, data } = encodeEntry(name, content);
     return { nameBytes, data, crc: crc32Of(data), ...dosDateTime(mtime) };
   });
+
+  // The end-of-central-directory record's entry count is a raw 16-bit field
+  // (C3): past 65,535 entries it would silently wrap and produce a zip whose
+  // declared count no longer matches what is actually inside, which a
+  // reader would either misread or reject far more confusingly than this
+  // message does. No Zip64 support is needed for that: refusing clearly, so
+  // the export path can report it, is enough.
+  if (entries.length > 0xffff) {
+    throw new Error(`buildStoredZip: ${entries.length} entries exceeds the 65,535-entry limit of a non-Zip64 zip`);
+  }
 
   const localParts = [];
   const centralParts = [];
@@ -108,7 +125,7 @@ export function buildStoredZip(files) {
     const local = new DataView(new ArrayBuffer(30));
     local.setUint32(0, 0x04034b50, true);
     local.setUint16(4, 20, true); // version needed
-    local.setUint16(6, 0, true); // flags
+    local.setUint16(6, 0x0800, true); // flags: bit 11 (0x0800) = name/comment are UTF-8 (C4)
     local.setUint16(8, 0, true); // method: stored
     local.setUint16(10, time, true);
     local.setUint16(12, date, true);
@@ -123,7 +140,7 @@ export function buildStoredZip(files) {
     central.setUint32(0, 0x02014b50, true);
     central.setUint16(4, 20, true); // version made by
     central.setUint16(6, 20, true); // version needed
-    central.setUint16(8, 0, true); // flags
+    central.setUint16(8, 0x0800, true); // flags: bit 11 (0x0800) = name/comment are UTF-8 (C4)
     central.setUint16(10, 0, true); // method
     central.setUint16(12, time, true);
     central.setUint16(14, date, true);
