@@ -102,6 +102,36 @@ function extractPromptSnippet(promptText) {
 // a real or fixture dataset.
 const ABSENT_DATASET_ID = 'nm099900';
 
+// A format-3 index.json for one store with one group, served from the loopback
+// server, whose contract_base is BASE so it resolves to the store the rest of this
+// file builds.
+function buildIndexDoc({ datasetId, path, group }) {
+  return {
+    format: 'nemar-zarr-index',
+    format_version: 3,
+    dataset_id: datasetId,
+    contract_base: BASE,
+    data_base: BASE,
+    store_count: 1,
+    stores: [
+      {
+        path,
+        zarr: 'rec.zarr',
+        groups: [
+          {
+            name: group,
+            modality: 'EEG',
+            rate: 250.0,
+            n_channels: N_CHANNELS,
+            n_samples: N_SAMPLES,
+            n_view_levels: 0,
+          },
+        ],
+      },
+    ],
+  };
+}
+
 function fillPlaceholders(snippet, substitutions) {
   let filled = snippet;
   for (const [name, value] of substitutions) {
@@ -355,30 +385,7 @@ try {
 
     // nemar-cli's own index_url convention: BASE + "index.json", flat, no dataset
     // segment (see the server's `pathname === '/index.json'` route above).
-    LEVEL0_INDEX_DOC = {
-      format: 'nemar-zarr-index',
-      format_version: 3,
-      dataset_id: LEVEL0_DATASET_ID,
-      contract_base: BASE,
-      data_base: BASE,
-      store_count: 1,
-      stores: [
-        {
-          path: LEVEL0_STORE_PATH,
-          zarr: 'rec.zarr',
-          groups: [
-            {
-              name: LEVEL0_GROUP,
-              modality: 'EEG',
-              rate: 250.0,
-              n_channels: N_CHANNELS,
-              n_samples: N_SAMPLES,
-              n_view_levels: 0,
-            },
-          ],
-        },
-      ],
-    };
+    LEVEL0_INDEX_DOC = buildIndexDoc({ datasetId: LEVEL0_DATASET_ID, path: LEVEL0_STORE_PATH, group: LEVEL0_GROUP });
 
     const recipe = nemarCliDevLevel0Recipe({
       contractBase: BASE,
@@ -490,30 +497,7 @@ window = await read_window(index, index.stores[0], start_sample=0, n_samples=2)
       // A real format-3 index, served from this same loopback server. contract_base
       // is BASE itself, so eegprep-lean's level0_url resolves to the existing
       // rec.zarr/eeg_250hz/0 array the rest of this file already reads.
-      INDEX_DOCS.set(SNIPPET_DATASET_ID, {
-        format: 'nemar-zarr-index',
-        format_version: 3,
-        dataset_id: SNIPPET_DATASET_ID,
-        contract_base: BASE,
-        data_base: BASE,
-        store_count: 1,
-        stores: [
-          {
-            path: SNIPPET_PATH,
-            zarr: 'rec.zarr',
-            groups: [
-              {
-                name: SNIPPET_GROUP,
-                modality: 'EEG',
-                rate: 250.0,
-                n_channels: N_CHANNELS,
-                n_samples: N_SAMPLES,
-                n_view_levels: 0,
-              },
-            ],
-          },
-        ],
-      });
+      INDEX_DOCS.set(SNIPPET_DATASET_ID, buildIndexDoc({ datasetId: SNIPPET_DATASET_ID, path: SNIPPET_PATH, group: SNIPPET_GROUP }));
 
       seen.length = 0;
       const pointAtLoopback = await run(

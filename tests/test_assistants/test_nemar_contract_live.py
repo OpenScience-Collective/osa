@@ -355,10 +355,12 @@ class TestRecipeProblems:
 # ---------------------------------------------------------------------------
 
 
-def _answer(result: object, tool: str) -> dict:
-    """A tool's structured answer. A tool that answers in text (a refusal, a timeout,
-    an unreachable server) fails here with that text, not with a TypeError later."""
+def _answer(result: object, tool: str, key: str) -> dict:
+    """A tool's structured answer, holding `key`. A tool that answers in text (a
+    refusal, a timeout, an unreachable server) or with an error object fails here,
+    showing what it said, not with a TypeError or KeyError later."""
     assert isinstance(result, dict), f"{tool} answered in text, not structured data: {result!r}"
+    assert key in result, f"{tool} answered without {key!r}: {result!r}"
     return result
 
 
@@ -372,6 +374,7 @@ async def _live_read_window(duration_s: int) -> tuple[dict, dict]:
     listed = _answer(
         await list_recordings.ainvoke({"dataset_id": "nm000103", "limit": 1}),
         "nemar_list_recordings",
+        "recordings",
     )
     recording = listed["recordings"][0]
     result = _answer(
@@ -385,6 +388,7 @@ async def _live_read_window(duration_s: int) -> tuple[dict, dict]:
             }
         ),
         "nemar_read_window",
+        "recipe",
     )
     return recording, result
 
@@ -398,6 +402,7 @@ class TestListRecordingsContract:
         result = _answer(
             await list_recordings.ainvoke({"dataset_id": "nm000103", "limit": 5}),
             "nemar_list_recordings",
+            "recordings",
         )
 
         recordings = result["recordings"]
