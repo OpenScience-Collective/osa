@@ -72,6 +72,14 @@ self.onmessage = (event) => {
     // beside `artifacts` (the names, which DO reach ClientToolResult). Used
     // by controller- and runtime-level tests to exercise workspace
     // persistence without booting real Pyodide.
+    //
+    // BADFILE reports one artifact whose base64 is genuinely malformed --
+    // real Python/JS base64 encoding (osa-egress.js's save_artifact through
+    // the worker's own reply path) can never produce this, so it stands in
+    // for a bug elsewhere that reaches recordRun, the one case #433's E3
+    // fix exists for: WorkspaceStore.recordRun calling atob() on it must
+    // genuinely throw (a real DOMException, in a real browser with real
+    // IndexedDB), reaching ClientToolController#persist's catch for real.
     const filesMatch = code.match(/^FILES:(\d+)/);
     const fileCount = filesMatch ? Number(filesMatch[1]) : 0;
     const artifacts = [];
@@ -80,6 +88,10 @@ self.onmessage = (event) => {
       const path = `artifacts/file-${i}.txt`;
       artifacts.push(path);
       files.push({ path, data_base64: btoa(`contents of file ${i}`) });
+    }
+    if (code.startsWith('BADFILE')) {
+      artifacts.push('artifacts/bad.bin');
+      files.push({ path: 'artifacts/bad.bin', data_base64: 'not-valid-base64!!!' });
     }
 
     const reply = () => {
