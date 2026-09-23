@@ -180,7 +180,7 @@ export function deriveManifest(runs) {
       description: run.description || '',
       files: [...new Set(run.files || [])].sort(),
       created_at: run.timestamp,
-      // Whether the READER ran this, not the assistant (runLocal, #433 c):
+      // Whether the READER ran this, not the assistant (runLocal):
       // always present, so a listing never has to treat its absence as
       // meaningful.
       local: run.local === true,
