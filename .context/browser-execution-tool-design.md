@@ -519,10 +519,30 @@ prefix, which is a further reason the result format must be deterministic.
   with a `manifest.json` per session naming what the assistant produced and when.
 - Python writes through an injected `osa` helper: `osa.save_script(name, code)`, `osa.save_artifact(path, bytes)`.
   The widget mirrors saves into the `tool_result` artifacts list.
-- The notebook surface is JupyterLite with the Pyodide kernel, opened from the widget with the session's workspace.
-  Phase 4 evaluates whether JupyterLite's contents layer can mount the same storage directly
-  or needs an import step, and whether sharing the live kernel with the chat worker is worth its complexity.
-  File sharing ships first; kernel sharing is a refinement.
+- **DECIDED (ADR 0010, 2026-09-23): the notebook surface is JupyterLite with the Pyodide kernel, pinned to Pyodide 0.29.5 (OSA's own pin), not marimo.**
+  marimo was measured directly, not only reasoned about:
+  it cannot complete the real NEMAR read in any configuration,
+  because its own WASM concurrency sandbox rejects the `multiprocessing.Lock` `numcodecs`'s blosc codec needs to decompress real Zarr chunks
+  (`UnsupportedWasmConcurrencyError`),
+  on top of the four integration gaps the 2026-09-16 review already found
+  (no `postMessage`/embedding API, its own IDBFS storage, CDN-only Pyodide now a full version generation past 0.29.5,
+  and the one-definition-per-variable model).
+  The speed question is also settled and does not favor marimo:
+  under a CDN-matched control, the two surfaces differ by well under a second for a trivial cell.
+  See ADR 0010 for the full measurement.
+- JupyterLite's contents layer does **not** mount the widget's own OPFS/IndexedDB storage directly (confirmed by building it, not only assumed):
+  a build-time `--contents <dir>` import into JupyterLite's own, same-origin IndexedDB-backed Contents store is what was tested and works;
+  there is no live cross-origin bridge to the widget's storage,
+  since the notebook surface opens on its own origin (never the widget's embedding page's origin)
+  and neither browser storage nor Pyodide's kernel is shared across that boundary.
+  File sharing (export a zip, import it into JupyterLite's own contents) is therefore not a stepping stone toward kernel sharing —
+  it is the mechanism, full stop, for as long as the notebook surface is a separate origin.
+  Sharing a live kernel with the chat worker stays a non-goal (see below), not a later refinement of this.
+- Pinning JupyterLite to exactly 0.29.5 is possible (`jupyter lite build --pyodide=<tarball>`, confirmed working)
+  but costs a real, measured 529-531 MB unpruned static deploy, versus ~64 MB for the unpinned default
+  (which drifts to whatever Pyodide version `jupyterlite-pyodide-kernel` ships next — currently 314.0.0, the same generation marimo uses, not 0.29.5).
+  `--no-unused-shared-packages` should prune that down for a real deployment;
+  the pruned size was not measured and is open work for whoever builds this phase.
 - Export: download the workspace as a zip at any time. Nothing leaves the browser unless the person exports it.
 
 ## Security
@@ -666,10 +686,17 @@ note and do not correspond to the global phases in `.context/plan.md`.
   as a URL rather than inline bytes, which would have the model's provider fetch from the data plane; inline
   base64 is what keeps this design's "bytes never move through a third party" property, and it is what the
   tests pin.
-- JupyterLite storage bridge versus a lighter notebook UI of our own. Note that sharing a live JupyterLite
-  kernel with the chat worker is not an open tradeoff; it is unsupported, and belongs under non-goals.
-  Pyodide's `mountOPFS` is also not in a released version yet, so Phase 4 should plan on IndexedDB plus an
-  import step; the stable `mountNativeFS` is the File System Access API and is Chromium-only.
+- ~~JupyterLite storage bridge versus a lighter notebook UI of our own (i.e., marimo).~~
+  **DECIDED (ADR 0010, 2026-09-23): JupyterLite, with a build-time import, not a live storage bridge — and not marimo.**
+  marimo was built and measured directly against the real NEMAR read and failed on all of them
+  (its WASM sandbox refuses a lock a real dependency needs, on top of the four integration gaps the 2026-09-16 review already found),
+  so "a lighter notebook UI of our own" resolved to "not marimo" rather than to marimo.
+  On the storage half: Pyodide's `mountOPFS` is still not in a released version as of 2026-09-23 (re-checked),
+  so there is still no live bridge to mount;
+  what was built and confirmed working is a **build-time `--contents` import** into JupyterLite's own, same-origin IndexedDB-backed Contents store —
+  an offline step, not a bridge, and that is now the answer rather than an open question.
+  Sharing a live JupyterLite kernel with the chat worker remains unsupported and belongs under non-goals, unchanged by this decision.
+  `mountNativeFS` (the File System Access API, Chromium-only) remains unexplored.
 - ~~Where community lockfiles live.~~ **DECIDED 2026-09-22 (#431, step 8): in the community's own folder
   in this repo, served by this API.** An eegprep-lean bump is then a server deploy, with no widget release
   and no nemar.org re-pin. Hosting them beside the widget was rejected because the server's config and a
