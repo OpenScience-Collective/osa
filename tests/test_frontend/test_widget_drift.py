@@ -160,6 +160,8 @@ class TestWidgetAttributeEscaping:
         "codeId",  # read back from the data-code-id this file just wrote
         "msgIndex",  # array index into messages, a number
         "fb",  # compared against string literals, yields a boolean
+        "progress.step",  # onRuntimeProgress only sets this from Number.isInteger checks
+        "progress.steps",  # same guard; both are null or a positive integer, never a string
     }
 
     def test_escape_html_escapes_both_quote_characters(self) -> None:

@@ -258,7 +258,7 @@ console.log('\na successful boot reaches READY and reports its version');
     runtime: RUNTIME,
     workerFactory: workerFrom('happy'),
     onStateChange: (s) => states.push(s),
-    onProgress: (p) => progress.push(p.phase),
+    onProgress: (p) => progress.push(p),
   });
   assertEqual(rt.state, RUNTIME_STATE.IDLE, 'starts IDLE');
   const result = await rt.boot();
@@ -266,8 +266,18 @@ console.log('\na successful boot reaches READY and reports its version');
   assertEqual(result.version, '0.29.5', 'resolves with the runtime version');
   assert(rt.isReady, 'isReady is true');
   assertEqual(states.join(','), 'booting,ready', 'transitions IDLE -> BOOTING -> READY');
-  assert(progress.includes('loading_runtime'), 'reports runtime-loading progress');
-  assert(progress.includes('loading_package'), 'reports per-package progress');
+  // The widget draws its bar from step and steps, so the runtime hands each
+  // progress message on whole, exactly as the worker sent it (happy.js sends
+  // the boot-wide count the real worker core does).
+  assertEqual(
+    JSON.stringify(progress.map((p) => [p.phase, p.package || null, p.step, p.steps])),
+    JSON.stringify([
+      ['loading_runtime', null, 1, 2],
+      ['runtime_loaded', null, 1, 2],
+      ['loading_package', 'numpy', 2, 2],
+    ]),
+    'reports each progress message with its phase, package, step and steps intact'
+  );
   rt.terminate();
 }
 

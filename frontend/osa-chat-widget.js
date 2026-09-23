@@ -208,7 +208,7 @@
   // browser before any of it runs. Written by scripts/build-runtime-bundle.js;
   // CI rebuilds and fails if the committed bundle or this line is stale.
   // BEGIN GENERATED: runtime bundle integrity
-  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-LlKiw1SBe8niKNNpZt6qLzn8E6hJVYMUAG58nCeytFX5Kq+jJVImWOxJaajGsQuF';
+  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-oAb/tfbolR+WOyAVNsh782fTloiCIfpcc5iIMY0ySClMVaVgh1uuoRQba6vH/fK+';
   // END GENERATED: runtime bundle integrity
 
   // Icons (SVG)
@@ -1377,6 +1377,30 @@
       color: var(--osa-text-light);
     }
 
+    .osa-tool-progress-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
+    .osa-tool-progress {
+      flex: 1 1 90px;
+      min-width: 60px;
+      height: 6px;
+      border-radius: 999px;
+      background: var(--osa-border);
+      overflow: hidden;
+    }
+
+    .osa-tool-progress-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: var(--osa-primary);
+      transition: width 0.2s ease;
+    }
+
     .osa-execution {
       margin: 0 0 8px 0;
       font-size: 13px;
@@ -2312,7 +2336,12 @@
         return null;
       }
       try {
-        browserRuntime = new api.PyodideRuntime({ runtime: python, lock, onProgress: onRuntimeProgress });
+        browserRuntime = new api.PyodideRuntime({
+          runtime: python,
+          lock,
+          onProgress: onRuntimeProgress,
+          onStateChange: onRuntimeStateChange,
+        });
         browserTools = new api.ClientToolController({ runtime: browserRuntime, tools, gate: askToRunCode });
         runtimeApi = api;
       } catch (err) {
@@ -2403,6 +2432,12 @@
     return { phase: 'running', prompt, progress: null };
   }
 
+  // Shown when the interpreter has loaded and its packages are about to: the
+  // point where a reader might wonder whether this happens every time, so it
+  // says it does not. No size, which depends on the community and the cache.
+  const RUNTIME_LOADED_LABEL =
+    'Python started. It downloads once, and your browser keeps it after that.';
+
   // The code and description a tool_request carries, as strings. The request
   // came from the model, so neither is assumed to be one.
   function requestPrompt(request) {
@@ -2416,16 +2451,33 @@
   function onRuntimeProgress(event) {
     if (!toolActivity || toolActivity.phase !== 'running') return;
     const phase = event && event.phase;
+    let text;
     if (phase === 'loading_runtime') {
-      toolActivity.progress = 'Starting Python in your browser...';
+      text = 'Starting Python in your browser...';
+    } else if (phase === 'runtime_loaded') {
+      text = RUNTIME_LOADED_LABEL;
     } else if ((phase === 'loading_package' || phase === 'installing') && event.package) {
-      const count = Number.isInteger(event.total) ? ` (${event.index + 1} of ${event.total})` : '';
-      toolActivity.progress = `Loading ${event.package}${count}...`;
+      text = `Loading ${event.package}...`;
     } else if (phase === 'prelude') {
-      toolActivity.progress = 'Setting up the Python environment...';
+      text = 'Setting up the Python environment...';
     } else {
       return;
     }
+    const rawStep = Number.isInteger(event.step) && event.step > 0 ? event.step : null;
+    const rawSteps = Number.isInteger(event.steps) && event.steps > 0 ? event.steps : null;
+    const hasBar = rawStep !== null && rawSteps !== null && rawStep <= rawSteps;
+    toolActivity.progress = { text, step: hasBar ? rawStep : null, steps: hasBar ? rawSteps : null };
+    renderIfMounted();
+  }
+
+  // Boot progress describes a boot. Once the runtime leaves `booting`, for
+  // ready, failed, terminated or idle, the boot's last label and bar no longer
+  // say what is happening, so the panel goes back to its running label until
+  // the answer ends it.
+  function onRuntimeStateChange(state) {
+    if (state === 'booting' || !toolActivity || toolActivity.phase !== 'running') return;
+    if (!toolActivity.progress) return;
+    toolActivity.progress = null;
     renderIfMounted();
   }
 
@@ -2653,13 +2705,28 @@
           </div>
         </div>`;
     }
-    const status = activity.progress || 'Running Python in your browser...';
+    const progress = activity.progress;
+    const status = progress ? progress.text : 'Running Python in your browser...';
+    // A determinate bar only once the boot reports a step within a known
+    // total; before that (or once the boot is done and code is actually
+    // running) the label stands alone rather than showing a bar frozen at
+    // whatever step last reported.
+    const hasBar = Boolean(progress) && progress.step !== null && progress.steps !== null;
+    const percent = hasBar ? Math.round((progress.step / progress.steps) * 100) : 0;
+    const bar = hasBar
+      ? `<div class="osa-tool-progress" role="progressbar" aria-valuemin="0" aria-valuemax="${progress.steps}" ` +
+        `aria-valuenow="${progress.step}" aria-label="${escapeHtml(status)}">` +
+        `<div class="osa-tool-progress-fill" style="width: ${percent}%"></div></div>`
+      : '';
     return `
       <div class="osa-tool-panel" role="status">
         <div class="osa-tool-panel-title">Running Python</div>
         ${description}
         <div class="osa-tool-actions">
-          <span class="osa-tool-status">${escapeHtml(status)}</span>
+          <div class="osa-tool-progress-row">
+            <span class="osa-tool-status">${escapeHtml(status)}</span>
+            ${bar}
+          </div>
           <button type="button" class="osa-tool-stop">Stop</button>
         </div>
       </div>`;
@@ -4630,6 +4697,10 @@
       getBrowserRuntime: () => browserRuntime,
       getConfig: () => CONFIG,
       getToolActivity: () => toolActivity,
+      setToolActivity: (activity) => { toolActivity = activity; },
+      onRuntimeProgress,
+      onRuntimeStateChange,
+      runningActivity,
       getMessages: () => messages,
       setMessages: (list) => { messages = list; },
     };

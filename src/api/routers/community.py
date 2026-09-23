@@ -102,6 +102,14 @@ from src.tools.client_tools import client_tools_disabled
 
 logger = logging.getLogger(__name__)
 
+# A wheel's name is its identity (see get_runtime_wheel), so the bytes at a
+# given URL never change: cacheable for a year, immutable. The worker
+# (workers/osa-worker/index.js, IMMUTABLE) and the browser-harness test server
+# (frontend/browser-harness/serve.js) each hold their own copy of this exact
+# string, since neither can import Python; a drift test
+# (tests/test_api/test_runtime_wheel_cache_control.py) keeps all three equal.
+RUNTIME_WHEEL_CACHE_CONTROL = "public, max-age=31536000, immutable"
+
 # ---------------------------------------------------------------------------
 # Models (shared across all community routers)
 # ---------------------------------------------------------------------------
@@ -2334,7 +2342,7 @@ def create_community_router(community_id: str) -> APIRouter:
         return Response(
             content=wheel,
             media_type="application/octet-stream",
-            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+            headers={"Cache-Control": RUNTIME_WHEEL_CACHE_CONTROL},
         )
 
     # -----------------------------------------------------------------------
