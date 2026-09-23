@@ -61,11 +61,14 @@ def test_export_contains_one_folder_per_session(export_zip_path: Path) -> None:
     with zipfile.ZipFile(export_zip_path) as archive:
         names = archive.namelist()
     sessions = {name.split("/", 1)[0] for name in names}
-    assert sessions == {"session-abc123"}
+    assert sessions == {"session-abc123", "session-def456"}
     assert "session-abc123/manifest.json" in names
     assert "session-abc123/notebook.ipynb" in names
     assert "session-abc123/scripts/run-001.py" in names
     assert "session-abc123/artifacts/table.csv" in names
+    assert "session-def456/manifest.json" in names
+    assert "session-def456/notebook.ipynb" in names
+    assert "session-def456/scripts/run-001.py" in names
 
 
 def test_manifest_names_every_run(export_zip_path: Path) -> None:
@@ -82,6 +85,34 @@ def test_manifest_names_every_run(export_zip_path: Path) -> None:
     )
     assert "results/run-001/figure-1.png" in first["files"]
     assert second["files"] == sorted(set(second["files"])), "and de-duplicated"
+
+
+def test_export_scopes_each_session_to_its_own_manifest(export_zip_path: Path) -> None:
+    """T2: a second session's run never leaks into the first session's
+
+    manifest or notebook, and vice versa, even though both sessions share
+    a path (`scripts/run-001.py`) inside one archive.
+    """
+    with zipfile.ZipFile(export_zip_path) as archive:
+        manifest1 = json.loads(archive.read("session-abc123/manifest.json"))
+        manifest2 = json.loads(archive.read("session-def456/manifest.json"))
+        notebook1_json = json.loads(archive.read("session-abc123/notebook.ipynb"))
+        notebook2_json = json.loads(archive.read("session-def456/notebook.ipynb"))
+        script1 = archive.read("session-abc123/scripts/run-001.py")
+        script2 = archive.read("session-def456/scripts/run-001.py")
+
+    assert [run["call_id"] for run in manifest2["runs"]] == ["call-other-session"]
+    assert "call-other-session" not in json.dumps(manifest1)
+    assert "call-1" not in json.dumps(manifest2)
+    assert "call-2" not in json.dumps(manifest2)
+
+    assert "a different session" not in json.dumps(notebook1_json)
+    assert "np.arange" not in json.dumps(notebook2_json)
+
+    # Same NAME, different session: each is its own content, not one
+    # overwriting the other inside the shared archive.
+    assert script1 != script2
+    assert b"a different session" in script2
 
 
 def test_notebook_is_valid_nbformat(export_zip_path: Path) -> None:

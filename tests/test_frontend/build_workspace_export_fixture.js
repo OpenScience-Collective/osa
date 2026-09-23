@@ -79,5 +79,37 @@ const files = [
   { path: 'artifacts/table.csv', data: encoder.encode('a,b\n1,2\n') },
 ];
 
-const bytes = buildWorkspaceZip([{ session: 'session-abc123', files, runs, notebookRuns }]);
+// A SECOND session (T2), so a Python-side reader can prove exportZip scopes
+// each session's manifest and notebook to only its own runs -- the same
+// property frontend/test-workspace.js's Bun-side zip test proves, checked
+// here independently against the fixture the pytest suite actually reads.
+const runs2 = [
+  {
+    ordinal: 1,
+    callId: 'call-other-session',
+    status: 'ok',
+    description: 'A run in a different session entirely.',
+    files: ['scripts/run-001.py', 'results/run-001/stdout.txt'],
+    timestamp: '2026-09-23T01:00:00.000Z',
+  },
+];
+const notebookRuns2 = [
+  {
+    ordinal: 1,
+    description: runs2[0].description,
+    code: 'print("a different session")',
+    stdout: 'a different session\n',
+    stderr: '',
+    images: [],
+  },
+];
+const files2 = [
+  { path: 'scripts/run-001.py', data: encoder.encode(notebookRuns2[0].code) },
+  { path: 'results/run-001/stdout.txt', data: encoder.encode(notebookRuns2[0].stdout) },
+];
+
+const bytes = buildWorkspaceZip([
+  { session: 'session-abc123', files, runs, notebookRuns },
+  { session: 'session-def456', files: files2, runs: runs2, notebookRuns: notebookRuns2 },
+]);
 writeFileSync(outPath, bytes);
