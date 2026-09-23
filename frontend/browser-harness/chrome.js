@@ -42,12 +42,12 @@ const CANDIDATES = [
   '/usr/bin/chromium-browser',
 ].filter(Boolean);
 
-function findChrome() {
+export function findChrome() {
   return CANDIDATES.find((path) => existsSync(path)) || null;
 }
 
 /** Launch Chrome and resolve its browser-level DevTools WebSocket URL. */
-async function launch(chromePath, profileDir) {
+export async function launch(chromePath, profileDir) {
   const args = [
     '--headless=new',
     '--remote-debugging-port=0',
@@ -85,7 +85,7 @@ async function launch(chromePath, profileDir) {
 }
 
 /** A minimal DevTools protocol client over one browser-level WebSocket. */
-function connect(wsUrl) {
+export function connect(wsUrl) {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(wsUrl);
     const pending = new Map();
@@ -130,7 +130,7 @@ function connect(wsUrl) {
  * by session so two requests that happen to share a requestId (a different
  * worker, a different page) are never merged into one record.
  */
-class NetworkRecorder {
+export class NetworkRecorder {
   constructor() {
     this.requests = new Map();
     // Workers whose network could not be watched. A run with any is a failed
@@ -203,8 +203,12 @@ class NetworkRecorder {
  * @param {ReturnType<typeof connect>} cdp
  * @param {string} pageSessionId
  * @param {NetworkRecorder} recorder
+ * @param {string[]} [targetTypes] - Target.type values to auto-attach to,
+ *   beyond the page itself. Defaults to `['worker']` (Pyodide's own case);
+ *   a caller whose page loads its content in an `iframe` (rather than a
+ *   Worker) passes `['worker', 'iframe']` to follow that too.
  */
-async function attachWithNetwork(cdp, pageSessionId, recorder) {
+export async function attachWithNetwork(cdp, pageSessionId, recorder, targetTypes = ['worker']) {
   const tracked = new Set([pageSessionId]);
   const unsubscribe = cdp.on((message) => {
     // Target.attachedToTarget for a CHILD of this page arrives on the PAGE's
@@ -212,7 +216,7 @@ async function attachWithNetwork(cdp, pageSessionId, recorder) {
     // session id is inside params, not the message's outer sessionId.
     if (message.method === 'Target.attachedToTarget' && message.sessionId === pageSessionId) {
       const { sessionId: childSessionId, targetInfo } = message.params;
-      if (targetInfo.type !== 'worker') return;
+      if (!targetTypes.includes(targetInfo.type)) return;
       tracked.add(childSessionId);
       // Paused on start (waitForDebuggerOnStart), so nothing the worker does
       // is missed between it existing and Network being enabled on it.
@@ -455,4 +459,6 @@ async function main() {
   }
 }
 
-process.exit(await main());
+if (import.meta.main) {
+  process.exit(await main());
+}
