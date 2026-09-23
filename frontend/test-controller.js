@@ -457,6 +457,18 @@ console.log('\na workspace write that genuinely fails drops the artifact and not
   assert(/\[workspace\] could not save artifacts\/file-1\.txt: IndexedDB is not available in this browser/.test(result.stderr),
     'and the second');
   assertEqual(result.status, 'ok', 'the run itself is not failed by a workspace write that fails');
+
+  // #7: a save failure on a run whose Python succeeded must still reach the
+  // widget. It travels as a NON-enumerable property, so it never becomes
+  // part of what answer()'s caller sends to the server (postResume's
+  // JSON.stringify body) or of a later {...result} copy, only something a
+  // caller that knows to look for it (the widget) can read directly.
+  assert(typeof result.workspaceFailureNote === 'string' && result.workspaceFailureNote.length > 0,
+    `a workspaceFailureNote carries the same failures (got ${JSON.stringify(result.workspaceFailureNote)})`);
+  assert(/could not save artifacts\/file-0\.txt/.test(result.workspaceFailureNote), 'naming the first failed file');
+  assert(!Object.keys(result).includes('workspaceFailureNote'), 'not enumerable: Object.keys never sees it');
+  assert(!JSON.stringify(result).includes('workspaceFailureNote'), 'and JSON.stringify (what postResume sends) never carries it either');
+  assert(onlyServerFields(result), 'the result otherwise still carries only ClientToolResult fields');
   rt.terminate();
 }
 
@@ -530,7 +542,7 @@ console.log('\nonly a call that actually ran Python is persisted: a declined run
 }
 
 // ---------------------------------------------------------------------------
-// runLocal: the reader's own edit-and-run (#433 c)
+// runLocal: the reader's own edit-and-run
 // ---------------------------------------------------------------------------
 
 console.log("\na local run executes without the gate, and is recorded as the reader's own");
@@ -600,19 +612,82 @@ console.log('\na local run is refused, not queued, while another of the reader\'
   rt.terminate();
 }
 
-console.log("\nStop cancels the reader's own run");
+console.log("\ncancelLocal() cancels the reader's own run");
 {
   const { rt, controller } = setup();
   const running = controller.runLocal('NEVER answers', { session: 'sess-stop' });
   await new Promise((resolve) => setTimeout(resolve, 50));
   assertEqual(controller.busy, true, "busy: the reader's own code is running");
-  assertEqual(controller.cancel(), true, 'cancel() reaches the runtime');
+  assertEqual(controller.cancel(), false, "cancel() (the ASSISTANT's Stop) has nothing to stop: no assistant call is outstanding");
+  assertEqual(controller.cancelLocal(), true, 'cancelLocal() reaches the runtime');
   const outcome = await running;
   assertEqual(outcome.ok, true, 'runLocal still resolves, never rejects');
   assertEqual(outcome.result.status, 'cancelled', 'status cancelled');
   assertEqual(outcome.result.stderr, CANCELLED_STDERR, 'with the fixed explanation');
   assertEqual(controller.busy, false, 'and the controller is free again');
-  assertEqual(controller.cancel(), false, 'nothing left to stop');
+  assertEqual(controller.cancelLocal(), false, 'nothing left to stop');
+  rt.terminate();
+}
+
+console.log('\ncancel() and cancelLocal() are targeted: each Stop reaches only its own run, even with both outstanding at once');
+{
+  const { rt, controller, asked } = setup();
+  const local = controller.runLocal('NEVER answers', { session: 'sess-targeted' });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const assistant = controller.answer(request('call-targeted', 'print(1)'));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  // Both are now outstanding: the reader's own run still spinning in the
+  // runtime, the assistant's call queued behind it, waiting for the runtime
+  // to free up (osa-controller.js's answer() awaits #localRun.done). This is
+  // the exact shape #12 found broken: the two Stop buttons sharing one
+  // undifferentiated cancel() meant the reader's own Stop silently hit the
+  // assistant's queued call instead, leaving the reader's run unstoppable.
+  assertEqual(controller.cancelLocal(), true, "cancelLocal() reaches the reader's own run");
+  const localOutcome = await local;
+  assertEqual(localOutcome.result.status, 'cancelled', "the reader's own run is the one that stopped");
+  const assistantResult = await assistant;
+  assertEqual(assistantResult.status, 'ok', "the assistant's call is UNAFFECTED: it still runs normally, once the runtime is free");
+  assertEqual(assistantResult.call_id, 'call-targeted', 'answering the right call');
+  assertEqual(asked.length, 1, 'its gate was asked, exactly as it would be with no local run involved at all');
+  rt.terminate();
+}
+
+console.log("\nget_full_output refuses a reader's own run's call_id, exactly like one that never existed");
+{
+  // "This run is yours. The assistant has not seen it" has to hold even
+  // against a model that calls get_full_output with a call_id it never
+  // received (#433's get_full_output has no gate and costs nothing to try,
+  // and person-run-N's shape is published in the runtime bundle). The
+  // refusal must be indistinguishable from an unknown call_id, or the
+  // model learns the run exists even while being refused its content.
+  const { rt, controller } = setup();
+  controller.autoRun = true;
+  const local = await controller.runLocal('LONG:20000', { session: 'sess-privacy' });
+  assert(local.ok === true && local.result.status === 'ok', "the reader's own run completes");
+  const localCallId = local.result.call_id;
+
+  const unknownAnswer = async (callId) =>
+    controller.answer({
+      call_id: 'call-read-' + callId,
+      tool: FULL_OUTPUT_TOOL_NAME,
+      args: { call_id: callId, stream: 'stdout', offset: 0 },
+      requires_permission: false,
+    });
+  const readLocal = await unknownAnswer(localCallId);
+  const readNeverExisted = await unknownAnswer('call-never-existed');
+
+  const unknownIdTemplate =
+    /^\[runtime\] no output is kept for call_id "[^"]*" in this browser\. Output stays in the tab that ran the code: it is gone after a reload, and only the last \d+ runs are kept\.$/;
+  assertEqual(readLocal.status, 'error', "reading the reader's own run's output is refused");
+  assert(unknownIdTemplate.test(readLocal.stderr), `the refusal matches the unknown-call_id template exactly (got ${JSON.stringify(readLocal.stderr)})`);
+  assertEqual(readLocal.status, readNeverExisted.status, 'the same status as a call_id that never existed');
+  assert(unknownIdTemplate.test(readNeverExisted.stderr), 'and the never-existed one matches the same template too, so the two are indistinguishable');
+  assert(!readLocal.stdout.includes('x'), "none of the reader's own stdout reached the answer");
+
+  const assistantRun = await controller.answer(request('call-assistant-privacy', 'LONG:5000'));
+  const readAssistant = await unknownAnswer(assistantRun.call_id);
+  assertEqual(readAssistant.status, 'ok', "an ASSISTANT run's own call_id is unaffected: get_full_output still answers it for real");
+  assert(readAssistant.stdout.length > 64, 'and carries its real kept output');
   rt.terminate();
 }
 
