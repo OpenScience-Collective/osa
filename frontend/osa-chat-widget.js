@@ -5244,6 +5244,14 @@
       setUpBrowserTools,
       getBrowserTools: () => browserTools,
       getBrowserRuntime: () => browserRuntime,
+      // A test builds its own ClientToolController/PyodideRuntime pair over
+      // the real test worker (test-workers/executing.js, the same one
+      // test-controller.js drives directly) and swaps it in here, so a
+      // click on Run or Stop exercises the real controller without booting
+      // real Pyodide. setUpBrowserTools()'s own pair (real Pyodide, never
+      // booted by these tests) is still what sets runtimeApi.
+      setBrowserTools: (tools) => { browserTools = tools; },
+      setBrowserRuntime: (runtime) => { browserRuntime = runtime; },
       getConfig: () => CONFIG,
       getToolActivity: () => toolActivity,
       setToolActivity: (activity) => { toolActivity = activity; },
