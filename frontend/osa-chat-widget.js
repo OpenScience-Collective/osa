@@ -2831,9 +2831,18 @@
     let outcome;
     try {
       outcome = await browserTools.runLocal(code, { description: run.description || '', session: sessionId || '' });
-    } finally {
+    } catch (err) {
+      // runLocal's own contract is to never throw for anything that can
+      // happen while running; this is defensive, for a genuine bug here or
+      // in the controller, so a failure here cannot leave the UI stuck on
+      // "Running your code..." forever with nothing logged and no way out.
       run._runningLocal = false;
+      console.error('[OSA] runLocal failed unexpectedly:', err);
+      renderMessages(container);
+      showError(container, `Could not run this code: ${(err && err.message) || err}`);
+      return;
     }
+    run._runningLocal = false;
     if (!outcome.ok) {
       renderMessages(container);
       showError(container, `Could not run this code: ${outcome.reason}`);
@@ -2847,13 +2856,18 @@
       stdout: record.stdout,
       stderr: record.stderr,
       images: record.images,
+      workspaceNote: record.workspaceNote,
     };
     renderMessages(container);
     try {
       saveHistory();
     } catch (saveError) {
+      // saveHistory() already shows the SPECIFIC reason on screen (storage
+      // full, privacy settings blocking localStorage); a second, generic
+      // message here would overwrite it with something less useful. Matches
+      // commitResponseFeedback's own saveHistory() catch, the other place a
+      // save failure here must not cost the reader the real reason.
       console.error('[OSA] Failed to save history:', saveError);
-      showError(container, 'Warning: Unable to save conversation');
     }
   }
 
