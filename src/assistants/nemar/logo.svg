@@ -6,7 +6,7 @@
       stroke: none;
     }
     .logo-electrodes {
-      fill: #f39c12;
+      fill: #f4d06b;
       stroke: none;
     }
   </style>

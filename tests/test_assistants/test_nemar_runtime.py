@@ -133,6 +133,36 @@ class TestTheShippedConfig:
         assert max_run_mb == limits["MAX_RUN_BYTES"] / (1024 * 1024)
 
 
+def _contrast_with_white(hex_color: str) -> float:
+    """WCAG 2 contrast ratio of white text on `hex_color`."""
+
+    def channel(value: int) -> float:
+        c = value / 255
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+    r, g, b = (int(hex_color[i : i + 2], 16) for i in (1, 3, 5))
+    luminance = 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+    return 1.05 / (luminance + 0.05)
+
+
+class TestTheWidgetColors:
+    """The widget draws white text on both colors: the header and buttons on
+    theme_color, the reader's own messages on user_bubble_color. nemar.org's brand teal
+    (#5bbad5) is only 2.2:1 against white, so NEMAR ships it darkened, and this keeps
+    either color from drifting back below the 4.5:1 that body text needs."""
+
+    def test_both_colors_keep_white_text_readable(self, nemar: CommunityConfig) -> None:
+        assert nemar.widget is not None
+        for name in ("theme_color", "user_bubble_color"):
+            color = getattr(nemar.widget, name)
+            assert color is not None, f"NEMAR sets no {name}"
+            assert _contrast_with_white(color) >= 4.5, (name, color)
+
+    def test_the_brand_teal_itself_would_fail(self) -> None:
+        """The check can go red: the undarkened brand teal is below the bar."""
+        assert _contrast_with_white("#5bbad5") < 4.5
+
+
 class TestTheLockOverlay:
     """NEMAR's own entries. That the overlay verifies and is what its wheels produce is
     checked for every community in test_shipped_runtimes.py."""

@@ -94,6 +94,17 @@ class TestCommunitiesEndpoint:
                     f"Community {community['id']} has widget config but no suggested questions"
                 )
 
+    def test_only_nemar_sets_its_own_bubble_color(self) -> None:
+        """NEMAR's widget colors the reader's bubbles; every other community keeps the
+        platform blue, because none of them sets user_bubble_color."""
+        client = _create_test_client()
+        data = client.get("/communities").json()
+
+        by_id = {community["id"]: community["widget"] for community in data}
+        assert by_id["nemar"].get("user_bubble_color") == "#257a92"
+        others = {cid: w.get("user_bubble_color") for cid, w in by_id.items() if cid != "nemar"}
+        assert others and all(color is None for color in others.values()), others
+
     def test_widget_title_defaults_to_name(self) -> None:
         """If widget title is not set, it should default to community name."""
         client = _create_test_client()
