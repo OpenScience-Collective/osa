@@ -195,7 +195,7 @@ Measured 2026-09-22 in Chrome, against the live archive:
   from Run to result, with numpy and matplotlib already in the HTTP cache
 - "recipe" reads (129, 500) int16 through `open_array`, with no transport argument,
   because NEMAR's prelude made the runtime's own client eegprep-lean's default;
-  re-measured 2026-09-22 with the recipe fetched live, which is nemar-cli 0.10.5's
+  re-measured 2026-09-22 with the recipe fetched live, which is nemar-cli 0.10.5's `python_browser` recipe
 - "prompt" returns the same (4, 500) window as "read", in uV at 250 Hz,
   labeled E1 to E4, with its figure
 - the overlay wheels load from the API's wheel route with their `sha256` as

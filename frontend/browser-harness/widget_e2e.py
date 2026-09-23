@@ -392,10 +392,14 @@ if __name__ == "__main__":
     args = parser.parse_args()
     config = _nemar_config() if args.nemar else _config()
     if args.nemar:
+        # Ahead of "prompt", where the literal above used to hold it: the scripted
+        # model answers the first keyword it finds, in this order.
+        prompt = SCRIPTS.pop("prompt")
         SCRIPTS["recipe"] = (
             _live_recipe(NEMAR_MCP_URL),
             "Run the python_browser recipe mcp.nemar.org hands a model, on nm000103",
         )
+        SCRIPTS["prompt"] = prompt
     if args.widget_open:
         config = _booting_on_open(config)
     app = build_app(config, tamper_wheel=args.tamper_wheel, test_hooks=args.widget_open)
