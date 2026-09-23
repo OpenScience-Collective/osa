@@ -165,7 +165,7 @@ export const RESERVED_RUN_STATUS = 'reserved';
  * really there yet, or never will be.
  *
  * @param {Array<{ordinal: number, callId: string, status: string, description?: string,
- *   files: string[], timestamp: string}>} runs
+ *   files: string[], timestamp: string, local?: boolean}>} runs
  * @returns {{runs: Array<object>}}
  */
 export function deriveManifest(runs) {
@@ -180,6 +180,10 @@ export function deriveManifest(runs) {
       description: run.description || '',
       files: [...new Set(run.files || [])].sort(),
       created_at: run.timestamp,
+      // Whether the READER ran this, not the assistant (runLocal, #433 c):
+      // always present, so a listing never has to treat its absence as
+      // meaningful.
+      local: run.local === true,
     })),
   };
 }
@@ -205,18 +209,24 @@ function cellId(label) {
  * result with the real `nbformat` package).
  *
  * @param {Array<{ordinal: number, description?: string, code?: string,
- *   stdout?: string, stderr?: string, images?: Array<{data_base64: string}>}>} runs
+ *   stdout?: string, stderr?: string, images?: Array<{data_base64: string}>,
+ *   local?: boolean}>} runs
  * @returns {object} An nbformat 4.5 notebook.
  */
 export function buildNotebook(runs) {
   const sorted = [...(runs || [])].sort((a, b) => a.ordinal - b.ordinal);
   const cells = [];
   for (const run of sorted) {
+    const heading = run.description && run.description.trim() ? run.description : `Run ${run.ordinal}`;
+    // Said plainly in the notebook too, not only in the chat widget: a run
+    // the reader started and re-ran themselves reads the same way here as
+    // it does live, without opening the widget to tell the two apart.
+    const source = run.local === true ? `${heading} (run by the reader, not the assistant)` : heading;
     cells.push({
       cell_type: 'markdown',
       id: cellId(`run-${run.ordinal}-md`),
       metadata: {},
-      source: run.description && run.description.trim() ? run.description : `Run ${run.ordinal}`,
+      source,
     });
     const outputs = [];
     if (run.stdout) {
@@ -640,6 +650,10 @@ export class WorkspaceStore {
    * @param {string} [run.summary]
    * @param {Array<{data_base64: string}>} [run.images]
    * @param {Array<{path: string, data_base64: string}>} [run.explicitFiles]
+   * @param {boolean} [run.local] - Whether the READER ran this, through
+   *   ClientToolController#runLocal, rather than the assistant. Carried
+   *   into the stored run record so `deriveManifest`/`buildNotebook` can
+   *   say so; does not change anything about how or where the files land.
    * @returns {Promise<{ordinal: number|null, savedArtifacts: string[],
    *   failures: Array<{path: string, reason: string}>}>}
    */
@@ -681,6 +695,7 @@ export class WorkspaceStore {
     summary = '',
     images = [],
     explicitFiles = [],
+    local = false,
   }) {
     const failures = [];
     const explicitPaths = new Set(explicitFiles.map((f) => f.path));
@@ -773,6 +788,7 @@ export class WorkspaceStore {
         description,
         files: saved,
         timestamp: new Date().toISOString(),
+        local: local === true,
       });
       await new Promise((resolve, reject) => {
         tx.oncomplete = () => resolve();
@@ -854,6 +870,7 @@ export class WorkspaceStore {
             stdout: readText(session, `${autoResultDir(run.ordinal)}/stdout.txt`),
             stderr: readText(session, `${autoResultDir(run.ordinal)}/stderr.txt`),
             images,
+            local: run.local === true,
           };
         });
       return { session, files: sessionFiles, runs: sessionRuns, notebookRuns };
