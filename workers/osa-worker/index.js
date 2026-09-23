@@ -22,8 +22,10 @@ export const ROUTE_PATTERNS = {
   // by communityAction above (which is anchored to exactly two segments).
   communityChatResume: /^\/([^\/]+)\/chat\/resume$/,
   // /:communityId/runtime/:file -- a wheel the browser runtime loads (#431).
-  // The name is checked here, so anything that is not a bare wheel name never
-  // reaches the backend, which serves only the names its lock overlay lists.
+  // A coarse filter: anything that is not a bare wheel name never reaches the
+  // backend. The backend owns the exact rule (pure-Python -py3-none-any wheels,
+  // in src/core/config/runtime_lock.py) and serves only the names its lock
+  // overlay lists, so the edge does not repeat it.
   communityRuntimeFile: /^\/([^\/]+)\/runtime\/([A-Za-z0-9_.+-]+\.whl)$/,
 };
 
@@ -966,8 +968,9 @@ const IMMUTABLE = 'public, max-age=31536000, immutable';
  */
 async function handleRuntimeFile(request, env, ctx, communityId, fileName, corsHeaders, CONFIG) {
   const path = `/${communityId}/runtime/${fileName}`;
-  // The Cache API exists in Workers and not in a test runtime; on a
-  // *.workers.dev host it exists and stores nothing, which is only a miss.
+  // The Cache API exists in Workers and not in Bun, where test-routing.js
+  // supplies one; on a *.workers.dev host it exists and stores nothing, which
+  // is only a miss.
   const cache = typeof caches !== 'undefined' ? caches.default : null;
   const cacheKey = new Request(new URL(path, request.url).toString(), { method: 'GET' });
   const respond = (body) => new Response(body, {
@@ -1003,8 +1006,9 @@ async function handleRuntimeFile(request, env, ctx, communityId, fileName, corsH
     console.error('Runtime file proxy error:', error.message);
     return new Response('Bad Gateway', { status: 502, headers: corsHeaders });
   }
-  // A 404 is the backend's answer (not a listed wheel) and passes through; any
-  // other failure is ours, is not cached, and must not read as "no such file".
+  // A 404 is the backend's answer (not a listed wheel) and passes through. Any
+  // other failure, the backend's own 503 for an overlay that does not verify
+  // included, is not cached and must not read as "no such file".
   if (upstream.status === 404) return new Response('Not Found', { status: 404, headers: corsHeaders });
   if (!upstream.ok) {
     console.error(`Runtime file ${path}: backend answered ${upstream.status}`);
@@ -1016,7 +1020,13 @@ async function handleRuntimeFile(request, env, ctx, communityId, fileName, corsH
     const stored = new Response(bytes, {
       headers: { 'Content-Type': 'application/octet-stream', 'Cache-Control': IMMUTABLE },
     });
-    ctx.waitUntil(cache.put(cacheKey, stored));
+    // Logged, because a write that fails leaves every later request a miss,
+    // each spending rate budget, with nothing else to show for it.
+    ctx.waitUntil(
+      cache.put(cacheKey, stored).catch((error) => {
+        console.error(`Runtime file ${path}: cache write failed:`, error && error.message);
+      })
+    );
   }
   return respond(bytes);
 }

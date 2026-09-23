@@ -399,6 +399,86 @@ try {
   wheelBackend.stop(true);
 }
 
+// The edge cache, which is what keeps a reader's boot from spending rate budget.
+// Bun has no Cache API, so a Map stands in for caches.default, keeping the body
+// and headers of what was put, as the platform does; the handler's own logic
+// runs unchanged against it.
+console.log('\nthe runtime route answers repeat requests from the edge cache, with CORS per request');
+{
+  const stored = new Map();
+  const fakeDefault = {
+    match: async (request) => {
+      const hit = stored.get(request.url);
+      return hit ? new Response(hit.body.slice(0), { headers: hit.headers }) : undefined;
+    },
+    put: async (request, response) => {
+      stored.set(request.url, { body: new Uint8Array(await response.arrayBuffer()), headers: response.headers });
+    },
+  };
+  let backendHits = 0;
+  const backend = Bun.serve({
+    port: 0,
+    fetch(request) {
+      backendHits++;
+      const { pathname } = new URL(request.url);
+      if (pathname === '/hed/runtime/tinypkg-1.0-py3-none-any.whl') return new Response(WHEEL_BYTES);
+      if (pathname === '/hed/runtime/unverified-1.0-py3-none-any.whl') return new Response('no', { status: 503 });
+      return new Response('Not Found', { status: 404 });
+    },
+  });
+  const env = stubEnv({ BACKEND_URL: `http://localhost:${backend.port}` });
+  const pending = [];
+  const ctx = { waitUntil: (promise) => pending.push(promise) };
+  const wheelUrl = `https://${MOUNTED_HOST}/osa/hed/runtime/tinypkg-1.0-py3-none-any.whl`;
+  const get = (url, origin) => worker.fetch(new Request(url, { headers: { Origin: origin } }), env, ctx);
+  const hadCaches = 'caches' in globalThis;
+  const realCaches = globalThis.caches;
+  const realError = console.error;
+  globalThis.caches = { default: fakeDefault };
+  try {
+    const first = await get(wheelUrl, 'https://nemar.org');
+    await first.arrayBuffer();
+    await Promise.all(pending.splice(0));
+    assertEqual(backendHits, 1, 'a miss asks the backend once');
+    assertEqual([...stored.keys()].length, 1, 'and stores what it got');
+    assertEqual(stored.values().next().value.headers.get('Access-Control-Allow-Origin'), null,
+      'without anyone\'s CORS header, since the next reader may be another embedder');
+
+    const second = await get(wheelUrl, 'https://develop.nemar.org');
+    assertEqual(backendHits, 1, 'a repeat request is answered from the cache, without the backend');
+    assertEqual(
+      JSON.stringify([...new Uint8Array(await second.arrayBuffer())]),
+      JSON.stringify([...WHEEL_BYTES]),
+      'with the same bytes'
+    );
+    assertEqual(second.headers.get('Access-Control-Allow-Origin'), 'https://develop.nemar.org',
+      'and CORS for the embedder asking now, not the one that filled the cache');
+    assertEqual(second.headers.get('Cache-Control'), 'public, max-age=31536000, immutable', 'still immutable');
+
+    const unverified = await get(`https://${MOUNTED_HOST}/osa/hed/runtime/unverified-1.0-py3-none-any.whl`, 'https://nemar.org');
+    await Promise.all(pending.splice(0));
+    assertEqual(unverified.status, 502, 'the backend\'s 503 for an overlay that does not verify is a 502 here');
+    assertEqual([...stored.keys()].length, 1, 'and is not cached');
+
+    const logged = [];
+    console.error = (...args) => logged.push(args.join(' '));
+    fakeDefault.put = async () => {
+      throw new Error('entry too large');
+    };
+    stored.clear();
+    const unstored = await get(wheelUrl, 'https://nemar.org');
+    await Promise.all(pending.splice(0));
+    assertEqual(unstored.status, 200, 'a cache write that fails still serves the wheel');
+    assert(logged.some((line) => /tinypkg-1\.0-py3-none-any\.whl: cache write failed: entry too large/.test(line)),
+      `and says so, since every later request would be a miss (logged ${JSON.stringify(logged)})`);
+  } finally {
+    console.error = realError;
+    if (hadCaches) globalThis.caches = realCaches;
+    else delete globalThis.caches;
+    backend.stop(true);
+  }
+}
+
 console.log('\n' + '='.repeat(60));
 console.log('Test Summary');
 console.log('='.repeat(60));
