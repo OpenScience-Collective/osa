@@ -251,6 +251,15 @@ export function createWorkerRuntime(config, env) {
       userNamespace = pyodide.globals.get('dict')();
       userNamespace.set('__name__', '__main__');
 
+      // _save_file is the bridge osa.save_script/osa.save_artifact close over
+      // (#433): it lives in the INTERNAL namespace (defined by
+      // outputCapture, beside _pending), so it is handed across the same way
+      // `display` is a few lines below, rather than left reachable by name in
+      // the namespace executed code runs in.
+      const saveFile = internals.get('_record_saved_file');
+      userNamespace.set('_save_file', saveFile);
+      saveFile.destroy();
+
       // The sanctioned network route, installed before the seal because it needs
       // the js bridge the seal removes. Sealing without it leaves executed code
       // with no way to read anything; that was measured, not assumed.
@@ -387,6 +396,10 @@ export function createWorkerRuntime(config, env) {
       // Kept in the browser for get_full_output and stripped by the host
       // before anything is sent to the server.
       full: captured.full,
+      // Explicitly saved files, base64 bytes and all (#433). Never part of
+      // ClientToolResult: the host persists these to IndexedDB and strips
+      // the field the same way it strips `full`, before anything is sent.
+      files: captured.files,
     });
   }
 
