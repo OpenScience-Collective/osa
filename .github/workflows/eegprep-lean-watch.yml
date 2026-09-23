@@ -70,11 +70,13 @@ jobs:
       # Also on any earlier failure (checkout, Python, `uv sync`): a watcher that
       # never ran told us nothing, and unknown is never current.
       - name: Track the drift watcher's issue
-        if: always()
+        # Not on a cancelled run: that is neither green nor failing, and the
+        # action would read it as green and close the issue.
+        if: ${{ !cancelled() }}
         uses: ./.github/actions/track-issue
         with:
           label: eegprep-lean-drift
-          title: 'eegprep-lean: vendored wheel is behind upstream'
+          title: 'eegprep-lean drift check needs attention'
           failed: ${{ job.status == 'failure' || steps.drift.outputs.status == 'behind' || steps.drift.outputs.status == 'unknown' }}
           recovery_message: 'the eegprep-lean drift check'
           report: |

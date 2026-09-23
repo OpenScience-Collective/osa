@@ -101,7 +101,9 @@ jobs:
       # Also on any earlier failure, such as checkout or `uv sync`: a check that never
       # ran is a failing check, and the issue is what makes a scheduled failure seen.
       - name: Track the contract check's issue
-        if: always()
+        # Not on a cancelled run: that is neither green nor failing, and the
+        # action would read it as green and close the issue.
+        if: ${{ !cancelled() }}
         uses: ./.github/actions/track-issue
         with:
           label: nemar-mcp-contract
