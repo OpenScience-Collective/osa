@@ -19,11 +19,13 @@ import base64
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from mcp.types import CallToolResult, ImageContent
 
 from src.api.config import Settings
 from src.core.services.anthropic_llm import CachingChatAnthropic, create_anthropic_llm
 from src.core.services.anthropic_models import IMAGE_MEDIA_TYPES
-from tests.helpers.images import BAR_FIXTURES, bar_chart_png, tallest_and_shortest
+from src.tools.mcp_client import _content_of
+from tests.helpers.images import BAR_FIXTURES, bar_chart_png, tallest_and_shortest, tiny_png
 
 TOOL_CALL_ID = "toolu_01aaaaaaaaaaaaaaaaaaaaaa"
 
@@ -185,6 +187,87 @@ def test_no_cache_marker_lands_inside_the_tool_result() -> None:
 
     assert "cache_control" not in block
     assert all("cache_control" not in sub_block for sub_block in block["content"])
+
+
+def _mcp_render_overview_result(mime: str = "image/png") -> CallToolResult:
+    """A real MCP `CallToolResult` shaped like `nemar_render_overview`'s answer:
+    structured content plus one real PNG `ImageContent` block."""
+    png = base64.b64encode(tiny_png(width=6, height=4)).decode()
+    return CallToolResult(
+        content=[ImageContent(type="image", data=png, mimeType=mime)],
+        structuredContent={"dataset_id": "nm000103"},
+    )
+
+
+class TestMcpImageOnTheRealProviderPaths:
+    """`src.tools.mcp_client._content_of` builds the same Anthropic-native image
+    block a browser execution does (`ToolResultImage.to_content_block`), gated by
+    `allow_images`. This proves what happens to ITS output specifically on each
+    real transport, rather than re-proving the shape-survives-Anthropic property
+    the tests above already cover.
+    """
+
+    def test_an_accepted_mcp_image_survives_the_real_anthropic_payload_builder(self) -> None:
+        content = _content_of(_mcp_render_overview_result(), allow_images=True)
+        assert isinstance(content, list), "nothing was refused, so this must be the block list"
+
+        block = _tool_result(content)
+
+        text, image = block["content"]
+        assert image["type"] == "image"
+        assert image["source"]["media_type"] == "image/png"
+        assert len(image["source"]["data"]) > 0
+
+    def test_a_gated_mcp_image_reaches_litellm_as_only_the_placeholder(self) -> None:
+        """`allow_images=False` is what a non-Anthropic model path wraps the MCP
+        tool with (`CommunityAssistant.allow_mcp_images`). The real assertion is
+        that what THAT decision produces -- text only, never a block -- is what
+        `ChatLiteLLM._create_message_dicts` (`langchain_litellm`) forwards
+        unexamined to the wire: `_convert_message_to_dict` copies
+        `message.content` verbatim, with no shape check of its own, so a block
+        that should never have been built is the only thing this transport
+        cannot be relied on to catch.
+        """
+        from langchain_litellm import ChatLiteLLM
+
+        result = _mcp_render_overview_result()
+        png = result.content[0].data
+        content = _content_of(result, allow_images=False)
+        assert isinstance(content, str), "everything was refused, so this is plain text"
+
+        llm = ChatLiteLLM(model="openrouter/openai/gpt-oss-120b", api_key="test-key")
+        message = ToolMessage(content=content, tool_call_id=TOOL_CALL_ID)
+        message_dicts, _params = llm._create_message_dicts([message], None)
+
+        assert len(message_dicts) == 1
+        sent = message_dicts[0]["content"]
+        assert isinstance(sent, str)
+        assert "[image 1 of 1 not attached: images are not sent to this model]" in sent
+        assert png not in sent
+
+    def test_an_unrefused_mcp_image_would_reach_litellm_untouched(self) -> None:
+        """The control for the test above, and the reason the gate exists rather
+        than trusting this transport to reject an image block on its own: if the
+        gate were bypassed, LiteLLM's converter would forward the SAME real
+        content-block list -- image and all -- with no validation of its shape.
+        `CommunityAssistant`'s docstring (`src.assistants.community`)
+        says OpenRouter/LiteLLM has "not been shown to accept" this block; this is
+        what that sentence means concretely, and why `allow_images` gates it
+        before it is ever built for that path rather than after.
+        """
+        from langchain_litellm import ChatLiteLLM
+
+        content = _content_of(_mcp_render_overview_result(), allow_images=True)
+        assert isinstance(content, list)
+
+        llm = ChatLiteLLM(model="openrouter/openai/gpt-oss-120b", api_key="test-key")
+        message = ToolMessage(content=content, tool_call_id=TOOL_CALL_ID)
+        message_dicts, _params = llm._create_message_dicts([message], None)
+
+        assert message_dicts[0]["content"] == content, (
+            "LiteLLM's own converter does not strip or validate the image block; "
+            "nothing downstream of allow_images is what keeps it off this path"
+        )
 
 
 def test_the_two_bar_fixtures_have_different_answers() -> None:

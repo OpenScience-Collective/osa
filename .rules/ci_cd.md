@@ -28,7 +28,7 @@
 - `sync-develop.yml` - merges `main` back into `develop` and bumps to the next `.dev0` after a release
 
 ### Other
-- `claude.yml` / `claude-code-review.yml` - Claude-based PR assistance/review bot
+- `claude.yml` - Claude-based PR assistance, answering `@claude` mentions (there is no automated review bot; pull requests are reviewed locally)
 - `deploy-pages.yml`, `deploy-dashboard.yml` - docs/dashboard deployment
 - `community-admin-pr-merge.yml` - community-maintainer "LGTM/merge" comment command (see `.context/community-admin-merge.md`)
 - `publish.yml` / `publish-testpypi.yml` - package publishing

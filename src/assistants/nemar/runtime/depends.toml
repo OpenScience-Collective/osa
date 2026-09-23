@@ -1,0 +1,11 @@
+# The Pyodide lock entries each wheel in wheels/ needs, by canonical name.
+# scripts/build_runtime_lock.py reads this to write nemar-pyodide-lock.json, and
+# every wheel needs a line. Each name must be an entry in Pyodide 0.29.5's own
+# lock or in this overlay.
+
+# zarr's own requirements, every one shipped by Pyodide 0.29.5 at a version
+# that satisfies it.
+zarr = ["donfig", "google-crc32c", "msgspec", "numcodecs", "numpy", "packaging", "typing-extensions"]
+
+# The zarr and plot extras, which are what a NEMAR session reads and draws with.
+eegprep-lean = ["matplotlib", "numpy", "zarr"]

@@ -286,6 +286,11 @@ class TestEndpointsThatDoNotSpendByokRequireAdminAuth:
         needing a dedicated case added after the fact -- a future route
         added with RequireAuth by copy-paste, whatever its path, fails
         here immediately rather than shipping a silent auth bypass.
+
+        `/chat/resume` is on the allowlist because it genuinely spends the
+        credential: it is run 2 of a browser-execution turn and invokes the
+        model with the tool result appended, exactly as `/chat` does. It is
+        not a status or fetch route that merely reads state.
         """
         from fastapi.routing import APIRoute
 
@@ -302,7 +307,7 @@ class TestEndpointsThatDoNotSpendByokRequireAdminAuth:
         }
         assert routes_using_verify_api_key, "expected at least one route to use verify_api_key"
         for path in routes_using_verify_api_key:
-            assert path.endswith(("/ask", "/chat")), (
+            assert path.endswith(("/ask", "/chat", "/chat/resume")), (
                 f"{path} depends on verify_api_key (RequireAuth), whose BYOK bypass "
                 "is only safe for a route that actually spends the credential against "
                 "an LLM. If this route genuinely does, add it to this allowlist; "

@@ -36,6 +36,9 @@ else's host is down is worse than one that is missing a few tools.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import json
 import logging
 import threading
 import time
@@ -44,11 +47,30 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import TYPE_CHECKING, Any
 
 from langchain_core.tools import BaseTool, StructuredTool
+from pydantic import ValidationError
+
+# The one import from src.api into src.tools, and it must stay one-way:
+# src.api.tool_results owns the image block's shape and caps, and nothing there may
+# import this module, or the two packages import each other.
+from src.api.tool_results import IMAGES_NOT_SENT, ToolResultImage, png_dimensions
+from src.core.limits import MAX_IMAGES
+from src.tools.client_tools import env_flag_set
 
 if TYPE_CHECKING:
     from src.core.config.community import McpServer
 
 logger = logging.getLogger(__name__)
+
+#: The incident-control kill switch on MCP images, modeled on
+#: `src.tools.client_tools.CLIENT_TOOL_KILL_SWITCH_ENV`. Setting it withdraws every MCP
+#: image without touching a community's config.yaml or restarting anything.
+MCP_IMAGES_KILL_SWITCH_ENV = "OSA_MCP_IMAGES_DISABLED"
+
+
+def mcp_images_disabled() -> bool:
+    """True when the kill switch is set. Read on every call, never at discovery time."""
+    return env_flag_set(MCP_IMAGES_KILL_SWITCH_ENV)
+
 
 #: How long to wait for a server to list its tools before giving up and starting
 #: without them. Discovery blocks the assistant's constructor, so this is a
@@ -69,9 +91,13 @@ CALL_TIMEOUT_S = 60.0
 #: more conservative so a tool rename is picked up within minutes.
 TOOL_CACHE_TTL_S = 300.0
 
-#: Cache of discovered tools, keyed by (server name, url). Guarded by a lock
-#: because discovery can be entered from more than one worker thread.
-_tool_cache: dict[tuple[str, str], tuple[float, list[BaseTool]]] = {}
+#: Cache of discovered tools, keyed by (server name, url, allow_images). Guarded by
+#: a lock because discovery can be entered from more than one worker thread. The
+#: third key element matters: the same server discovered once for an Anthropic
+#: request and once for an OpenRouter request must not share one cached, already-
+#: wrapped tool list, or whichever request discovered first would decide whether
+#: every later request of BOTH kinds gets images.
+_tool_cache: dict[tuple[str, str, bool], tuple[float, list[BaseTool]]] = {}
 _tool_cache_lock = threading.Lock()
 
 
@@ -115,11 +141,97 @@ def _payload_of(result: Any) -> Any:
     return _text_of(result)
 
 
-def _wrap_tool(server: McpServer, url: str, mcp_tool: Any) -> BaseTool:
+def _accept_mcp_image(block: Any, *, accepted_so_far: int) -> dict[str, Any] | str:
+    """One MCP `ImageContent` block, as an image content block or the reason it is refused.
+
+    Only `image/png` is accepted (NEMAR's `render_overview` renders PNG), and only
+    within `MAX_IMAGES`, `MAX_IMAGE_BYTES` and `MAX_IMAGE_EDGE_PX`. Width and height come
+    from the PNG itself (`png_dimensions`), since an MCP `ImageContent` never carries
+    them. An accepted image has exactly the shape `ToolResultImage.to_content_block`
+    builds, the spelling `tests/test_core/test_tool_result_image_transport.py` proves
+    survives the Anthropic payload builder. A refusal is a `str` naming why.
+    """
+    if accepted_so_far >= MAX_IMAGES:
+        return f"over the MAX_IMAGES cap ({MAX_IMAGES})"
+    mime_type = getattr(block, "mime_type", None)
+    if mime_type != "image/png":
+        return f"only image/png is accepted here (got {mime_type!r})"
+    data = getattr(block, "data", None) or ""
+    try:
+        decoded = base64.b64decode(data, validate=True)
+    except (binascii.Error, ValueError, TypeError):
+        return "its data is not valid base64"
+    try:
+        width, height = png_dimensions(decoded)
+    except ValueError as err:
+        return str(err)
+    try:
+        image = ToolResultImage(mime="image/png", data_base64=data, width=width, height=height)
+    except ValidationError as err:
+        # The model's own validators enforce MAX_IMAGE_BYTES and MAX_IMAGE_EDGE_PX, and
+        # an image can break both, so every message is kept.
+        return "; ".join(error["msg"] for error in err.errors())
+    return image.to_content_block()
+
+
+def _content_of(result: Any, *, allow_images: bool) -> Any:
+    """What the model should see for a tool result, images included when allowed.
+
+    A result with no image content gets exactly `_payload_of`, so a tool that never
+    returns a picture is unaffected by any of this. Otherwise each image is attached
+    if `allow_images` holds and `_accept_mcp_image` accepts it; every other image
+    becomes a line saying it was not attached, and why. `allow_images` is the
+    caller's decision (the request's provider, and the kill switch), not made here.
+
+    Returns a list of content blocks, one text block and then the accepted images,
+    only when at least one image is attached. Otherwise it returns text, with
+    `structured_content` serialized as JSON: `_payload_of` would return the dict,
+    and LangChain serializes that to the same JSON on its way into the ToolMessage.
+    """
+    if getattr(result, "is_error", False):
+        return f"The tool reported an error: {_text_of(result) or 'no detail given'}"
+
+    blocks = getattr(result, "content", None) or []
+    image_blocks = [block for block in blocks if getattr(block, "type", None) == "image"]
+    if not image_blocks:
+        return _payload_of(result)
+
+    structured = getattr(result, "structured_content", None)
+    text_value = structured if structured is not None else _text_of(result)
+    text = text_value if isinstance(text_value, str) else json.dumps(text_value)
+
+    accepted: list[dict[str, Any]] = []
+    notes: list[str] = []
+    for index, block in enumerate(image_blocks):
+        label = f"image {index + 1} of {len(image_blocks)}"
+        if not allow_images:
+            notes.append(f"[{label} {IMAGES_NOT_SENT}]")
+            continue
+        outcome = _accept_mcp_image(block, accepted_so_far=len(accepted))
+        if isinstance(outcome, str):
+            notes.append(f"[{label} not attached: {outcome}]")
+        else:
+            accepted.append(outcome)
+
+    if notes:
+        text = f"{text}\n\n" + "\n".join(notes)
+    if not accepted:
+        return text
+    return [{"type": "text", "text": text}, *accepted]
+
+
+def _wrap_tool(server: McpServer, url: str, mcp_tool: Any, *, allow_images: bool) -> BaseTool:
     """One MCP tool as a LangChain `StructuredTool`.
 
     The name is prefixed with the server's name (`nemar_search_datasets`) so two
     servers offering a `search` cannot collide in one assistant's tool list.
+
+    `allow_images` is baked in here, at wrap time, rather than read inside `_call`:
+    it is the caller's already-made provider decision (see `_content_of`), and the
+    point of passing it in rather than inspecting anything at call time is that
+    there is nothing left here to sniff. The MCP kill switch is the one exception,
+    checked fresh on every call (`mcp_images_disabled`) rather than baked in, so an
+    incident does not have to wait out `TOOL_CACHE_TTL_S`.
     """
     tool_name = mcp_tool.name
 
@@ -161,7 +273,16 @@ def _wrap_tool(server: McpServer, url: str, mcp_tool: Any) -> BaseTool:
                 "Tell the user NEMAR's dataset service is temporarily unavailable and "
                 "point them at https://nemar.org/discover."
             )
-        return _payload_of(result)
+        try:
+            return _content_of(result, allow_images=allow_images and not mcp_images_disabled())
+        except Exception:  # noqa: BLE001 - same reason as above: degrade, never end the turn
+            # The result arrived, so the answer is still worth giving without its
+            # images. Reaching here means a server sent content this reader has no
+            # rule for; the log line is how anyone finds out.
+            logger.exception(
+                "MCP tool %s on %s returned content that could not be read", tool_name, url
+            )
+            return _payload_of(result)
 
     return StructuredTool(
         name=f"{server.name}_{tool_name}",
@@ -174,7 +295,7 @@ def _wrap_tool(server: McpServer, url: str, mcp_tool: Any) -> BaseTool:
     )
 
 
-async def _discover(server: McpServer, url: str) -> list[BaseTool]:
+async def _discover(server: McpServer, url: str, *, allow_images: bool) -> list[BaseTool]:
     from mcp import Client
 
     async def _list() -> Any:
@@ -189,7 +310,7 @@ async def _discover(server: McpServer, url: str) -> list[BaseTool]:
     tools: list[BaseTool] = []
     for mcp_tool in listed.tools:
         try:
-            tools.append(_wrap_tool(server, url, mcp_tool))
+            tools.append(_wrap_tool(server, url, mcp_tool, allow_images=allow_images))
         except Exception:  # noqa: BLE001 - skip the offender, keep the rest
             logger.exception(
                 "Skipping tool %r from MCP server %s: its descriptor could not be wrapped",
@@ -207,12 +328,16 @@ async def _discover(server: McpServer, url: str) -> list[BaseTool]:
     return tools
 
 
-def discover_mcp_tools(server: McpServer) -> list[BaseTool]:
+def discover_mcp_tools(server: McpServer, *, allow_images: bool = False) -> list[BaseTool]:
     """Connect to `server`, list its tools, and return them as LangChain tools.
 
     Safe to call from synchronous code whether or not an event loop is already
     running on the calling thread (see the module docstring). Returns `[]` and
     logs on any failure; never raises.
+
+    `allow_images` decides whether an MCP image result is attached as a content
+    block or reduced to a placeholder (see `_content_of`), and it is part of the
+    cache key for the reason given at `_tool_cache`.
     """
     if server.url is None:
         # `command`-style (stdio) servers are a different transport and nothing
@@ -225,7 +350,7 @@ def discover_mcp_tools(server: McpServer) -> list[BaseTool]:
         return []
 
     url = str(server.url)
-    key = (server.name, url)
+    key = (server.name, url, allow_images)
 
     with _tool_cache_lock:
         cached = _tool_cache.get(key)
@@ -243,7 +368,7 @@ def discover_mcp_tools(server: McpServer) -> list[BaseTool]:
     # unbounded wait here freezes every community's requests, not just this one.
     pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mcp-discover")
     try:
-        future = pool.submit(lambda: asyncio.run(_discover(server, url)))
+        future = pool.submit(lambda: asyncio.run(_discover(server, url, allow_images=allow_images)))
         tools = future.result(timeout=DISCOVERY_TIMEOUT_S + 5.0)
     except FutureTimeoutError:
         logger.error(

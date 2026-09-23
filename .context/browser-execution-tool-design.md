@@ -30,13 +30,14 @@ Three constraints shape where that code can run:
 Code runs in the user's browser, in a Pyodide interpreter inside a dedicated Web Worker owned by the widget.
 The agent loop stays on the server in LangGraph.
 `execute_code` is a **client-executed tool**: when the model calls it,
-the graph interrupts, the server streams a `tool_request` event to the widget,
-the widget runs the code and streams a `tool_result` back, and the graph resumes with that result
-in the model's context, images included.
+the server's run ends with a `tool_request` event to the widget,
+the widget runs the code with no request open and posts the result back,
+and a second run continues the conversation with that result in the model's context, images included.
 The runtime is lazy: Pyodide boots on first use or on widget open,
-packages load from the code's imports against a per-community pinned lockfile,
+loads the community's pinned packages as it boots,
 and everything is cached by the browser after the first download.
-Scripts and results persist in browser storage, and a notebook surface can open them later.
+Scripts and results persist in browser storage;
+the reader can download them as a zip with a Jupyter notebook, and re-run any run in the chat with their own edits.
 No login is involved anywhere in this design; identity is a per-community concern for later stages.
 
 ## Goals and non-goals
@@ -69,7 +70,7 @@ Non-goals:
   |   |  execute_code                    |         |   agent --> tools (server tools)        |
   |   v                                  |         |         --> client_tools (interrupt)    |
   | runtime worker (Pyodide)             |         |  checkpointer keyed by session_id       |
-  |   loadPackagesFromImports / micropip |         +----------------------------------------+
+  |   every package loaded at boot       |         +----------------------------------------+
   |   fetch allowlist, output capture    |
   |   v                                  |          Data plane (community-owned, public)
   | workspace (OPFS / IndexedDB)         |<-------  e.g. zarr.nemar.org, S3, PyPI, CDN
@@ -77,6 +78,16 @@ Non-goals:
   | notebook surface (JupyterLite)       |
   +--------------------------------------+
 ```
+
+**As built (phase 1, #430).** The diagram and the components below are the proposal.
+The transport that shipped is the two-run continuation this note's header records:
+there is no `interrupt()`, no `Command(resume=...)` and no checkpointer.
+The `client_tools` node (`src/agents/base.py`) writes a `pending_client_call` into the run's state and routes to `END`,
+so run 1 ends; the session store holds that one parked call (`ChatSession.pending_call`),
+and `/chat/resume` claims it exactly once (`claim_pending_call`) before run 2 starts from the stored history.
+The workspace is IndexedDB, not the Origin Private File System (OPFS),
+and the notebook surface is deferred: ADR 0010 (`docs/adr/0010-the-notebook-surface.md`) rejects marimo,
+defers a hosted JupyterLite to #453, and ships an editable re-run panel in the chat instead.
 
 Components:
 
@@ -106,7 +117,7 @@ model emits tool_call(execute_code, {code, description})
   -> _stream_chat_response sees __interrupt__ nested in on_chain_stream, emits SSE event tool_request
 widget receives tool_request
   -> shows code; waits for Run (or auto-run is on)
-  -> worker.run(code): loadPackagesFromImports, micropip for allowlisted imports, execute
+  -> worker.run(code): execute (every package was loaded at boot; see Lazy loading)
   -> captures stdout/stderr, images, artifact names; applies caps
   -> POST /{community}/chat/resume {session_id, call_id, result}   (or WebSocket frame)
 server resumes graph with Command(resume=result)
@@ -116,6 +127,13 @@ server resumes graph with Command(resume=result)
 
 One round trip per execution.
 LLM latency dominates every round trip, so the transport choice is about connection handling, not speed.
+
+**As built (phase 1, #430).** Run 1 streams until the model calls `execute_code`;
+the `client_tools` node parks the call, `_stream_chat_response` sends `tool_request`, and the stream ends.
+The widget runs the code with no request open, then posts `{session_id, call_id, result}` to `/{community}/chat/resume`.
+The server claims the parked call, appends the result as the tool's message (images as content blocks on the Anthropic path),
+and runs the graph again from the stored history, streaming run 2 on the resume request's own response.
+A result for a call that is not outstanding, or has expired, is refused with a 409.
 
 ## Message protocol
 
@@ -155,6 +173,16 @@ All payloads are JSON.
 
 `tool_cancel` (either direction): `{ "call_id": "c_01J..." }`.
 
+**As built (phases 1 and 2).** The shapes above are the proposal. What is on the wire is
+`ToolRequestEvent` and `ClientToolResult` in `src/api/tool_results.py`, which win over
+these examples. `tool_request` also carries the run's `content` and `citations`, and no
+`deadline_s`: the deadline is `runtime.python.limits.exec_seconds`, which the widget reads
+from `/config`. The result adds `summary`, the structured description the model reasons
+over, and `oom` as a status; it has no `truncated` field (a clipped stream says so in its
+own text, and the full output stays in the browser, readable with `get_full_output`), no
+`runtime` block, and `artifacts` are bare names. There is no `tool_cancel` event: Stop
+terminates the worker, and the call is answered `cancelled` through `/chat/resume`.
+
 Caps, enforced on the client and re-checked on the server:
 
 | Field | Cap | Why |
@@ -164,6 +192,14 @@ Caps, enforced on the client and re-checked on the server:
 | images | 3 per call, longest side 1024 px, PNG | Bounded context cost, still legible |
 | artifacts | names and sizes only | Data stays in the browser |
 | execution | `deadline_s` from config, default 120 | A runaway cell must not park the thread |
+
+As built, the server's caps are `src/core/limits.py` and a community narrows them with
+`runtime.python.limits` (`RuntimeLimits`): the stream caps are as above, artifacts are
+names only, the deadline is `exec_seconds`, and images are capped by count and bytes,
+with the browser downscaling to the community's `image_px`.
+`frontend/test-output.js` reads the Python source, so the two sides cannot drift.
+One cap has no row above: a reply may ask for at most 20 browser runs (`MAX_BROWSER_RUNS_PER_REPLY`),
+enforced by the server and mirrored by the widget.
 
 Arrays never travel to the server.
 A tool that needs numbers back returns a small table in stdout or writes an artifact and reports its name.
@@ -201,6 +237,16 @@ context loss, not an error. Cap the `tool_result` payload in BYTES, not only in 
 - Timeouts: an unanswered `tool_request` past `deadline_s` plus a grace period resumes the graph
   with `status: timeout` so the model can respond, and the thread is not left parked.
 
+**As built (phase 1, #430).** The bullets above describe the `interrupt()` design, which was not built.
+`ClientTool` (`src/tools/client_tools.py`) is bound like any tool but never executed: its `_run` raises `ClientToolNotExecutableError`.
+There is no checkpointer and no `thread_id`; the session store parks the call.
+The Timeouts bullet's active resumption does not exist either, deliberately:
+an unanswered call is closed out when the session is next used, by a new message or a late result,
+with a tool message telling the model it was not answered (`abandon_pending_call`),
+and the model is never run in the background, since no stream is open to carry its reply.
+The image budget bullet was wrong for the langchain-core this project locks: `count_tokens_approximately` has charged a flat `tokens_per_image`
+since 1.2.8, and `src/agents/base.py` passes it Anthropic's rate explicitly.
+
 Transport recommendation: start with SSE plus a resume endpoint, because the widget already speaks SSE
 and the change is additive.
 Move to one WebSocket per session when the resume round trips are measurable in practice,
@@ -211,15 +257,26 @@ The message schema is identical either way.
 
 - Worker lifecycle: boot on `preload_on: widget_open` for communities that opt in,
   otherwise on the first `tool_request`.
-  Show a progress bar keyed to package downloads;
-  the first load of a scientific stack is about 33 MB, dominated by scipy at about 14 MB.
-  ADR 0049's "50 to 60 MB" figure is too high and should be corrected there in the same pass.
-  Dropping scipy and matplotlib from `preload` gets under 10 MB, which changes the tradeoff.
+  Show a progress bar keyed to package downloads, by step rather than by byte
+  (see `docs/community-browser-runtime.md`, "First-load cost, and what a warm
+  reader pays", for why: the browser keeps the download after the first boot,
+  so a byte figure would be correct once per browser and misleading every
+  time after).
+  Measured on Pyodide 0.29.5, uncompressed: the interpreter alone is 5.3 MB;
+  NEMAR's 23 preloaded packages (its four `preload` names plus what they pull
+  in) add 13.6 MB, 18.9 MB in all; adding scipy would bring that to 35.2 MB
+  (scipy alone is 16.3 MB), which is the tradeoff dropping it from `preload`
+  avoids. ADR 0049's "50 to 60 MB" was an estimate, and a high one; its
+  amendment of 2026-09-22 records these measured figures.
   Keep the worker warm across turns.
 - Execution: `pyodide.loadPackagesFromImports(code)` for packages Pyodide ships,
   then `micropip.install` for imports that resolve to pure-Python wheels and are on the community allowlist,
   then `runPythonAsync`.
   An import outside the allowlist produces a `denied_import` in the result rather than a silent install.
+  **As built:** nothing is installed at execution. `preload` (from the Pyodide lock and the
+  community's overlay) and `allow_install` (micropip, `deps=False`) both run at boot, before the
+  seal removes `micropip`; an execution only runs code, and any import of something not
+  installed is a `denied_import`.
 - Output capture: redirect `sys.stdout` and `sys.stderr`; set the matplotlib backend to Agg
   and collect figures as PNG; support a small `display()` protocol for images and HTML tables.
 - Cancellation: cooperative cancellation through `setInterruptBuffer` needs a `SharedArrayBuffer`,
@@ -236,6 +293,9 @@ The message schema is identical either way.
   can install for itself. Shim every entry point, set `credentials: "omit"` on the allowed ones so
   same-origin requests do not silently carry cookies, and treat `fetch_allow` as an EGRESS control: an
   allowlisted origin can be sent conversation content inside a URL and will log it.
+  **As built:** `fetch` is shimmed with `redirect: 'error'`, and `XMLHttpRequest` is removed outright,
+  like `WebSocket` and `EventSource`: XHR follows a redirect with no way to refuse it,
+  so a 302 from an allowed origin delivered a disallowed one's body in Chrome, and nothing in the runtime needs it.
 - Content Security Policy: the embedding page needs `wasm-unsafe-eval` in `script-src`, `worker-src` for
   the runtime worker (a policy with no `worker-src` falls back to `script-src 'self'` and refuses a blob
   worker), and `connect-src` entries for the data plane, the Pyodide CDN and the wheel host. Website
@@ -261,8 +321,8 @@ The mental model is a `uv` project per community, mapped onto what Pyodide alrea
 | uv concept | Pyodide mechanism | Where it lives |
 |---|---|---|
 | `pyproject` dependencies | `runtime.python.preload` and `allow_install` | community `config.yaml` |
-| `uv.lock` | `micropip.freeze()` output, loaded through `loadPyodide({ lockFileURL })` | `runtime/<community>-pyodide-lock.json`, committed |
-| `uv sync` | `loadPackagesFromImports` plus `micropip.install` on demand | worker, at run time |
+| `uv.lock` | a lock **overlay** merged into the stock lock and passed as `loadPyodide({ lockFileContents })` | `src/assistants/<community>/runtime/<community>-pyodide-lock.json`, committed with its wheels |
+| `uv sync` | `loadPackage` of `preload` at boot, resolving overlay and stock entries together | worker, at boot only |
 | package index | Pyodide CDN for built packages, PyPI for pure wheels, optional community index | `runtime.python.index_urls` |
 | interpreter pin | `runtime.python.pyodide_version` | community `config.yaml` |
 | cache | browser Cache API; wheels are immutable | user's browser |
@@ -274,9 +334,38 @@ Rules:
   the fix is upstream packaging, which is exactly the eegprep case.
 - The lockfile is regenerated by a script, reviewed in a PR, and pinned to a Pyodide version.
   Every user of a community gets the same environment.
-- `preload` is the small set worth paying for on widget open; `allow_install` is what the model may pull in;
-  anything else is denied and reported.
+- `preload` is the small set worth paying for on widget open; `allow_install` is installed at boot as
+  well (as built, the model pulls in nothing); anything else is denied and reported.
 - Cache invalidation is by URL: a new lockfile means new URLs, old wheels expire on their own.
+
+**As built (phase 2, step 8, #431).** The lockfile is an overlay, not a full lock: the
+entries a community adds to the Pyodide distribution of its pinned version, in Pyodide's
+own lock-entry shape (`src/core/config/runtime_lock.py`).
+The wheels sit in `wheels/` beside it, the server verifies each against its `sha256`
+when it loads the overlay, sends the entries in `/config` as `runtime_lock`, and serves
+the wheels itself at `GET /{community}/runtime/{file_name}`, immutable, so the host
+that sent the hashes is the host the bytes come from and the two cannot come from
+different releases. The worker merges the overlay into the stock lock (an entry may add
+a package, never replace one), hands the result to `loadPyodide`, and `preload` then
+resolves overlay packages and their distribution dependencies in one pass, with the
+browser enforcing each digest through `fetch`'s `integrity`. There is no micropip in
+this path; `allow_install` remains for installs from `index_urls` at boot.
+`scripts/build_runtime_lock.py` regenerates an overlay from its wheels and a
+`depends.toml`, and refuses new bytes under a committed wheel name.
+
+Measured on Pyodide 0.29.5: under Node, `loadPackage` resolves a lock `file_name` with
+`path.resolve` against its package cache, so an absolute URL does not load there, and
+Node ignores the digest entirely. Both work in a browser, which is where they are
+verified: in CI by `frontend/browser-harness/chrome.js`, in headless Chrome, whose
+tampered wheel is valid so that only the digest can refuse it, and by hand, with the
+widget and the live archive, by `frontend/browser-harness/widget_e2e.py`. The Bun test
+names the committed wheels by path (`frontend/test-data-lane.js`).
+
+A community can also run a **prelude**, `runtime.python.prelude`: Python run once after
+the seal and before the first execution, with exactly executed code's privileges,
+compiled at config load. NEMAR's registers eegprep-lean's transport over `osa.fetch`
+(the ranged, non-raising client), because eegprep-lean's default reads through
+`pyodide.http`, which the seal removes.
 
 ## Configuration
 
@@ -313,8 +402,8 @@ runtime:
       # 2 and 4 GB and an out-of-memory condition aborts the instance, which a seconds-based
       # deadline does not catch. Budget it explicitly and define an `oom` result status.
       memory_mb: 1536
-      stdout_bytes: 16384
-      stderr_bytes: 8192
+      stdout_chars: 16384
+      stderr_chars: 8192
       images: 3
       image_px: 1024
       exec_seconds: 120
@@ -326,8 +415,18 @@ Pydantic shape: `ClientTool { name, runtime: Literal["python"], requires_permiss
 `extra="forbid"` throughout, unique tool names, and a validator that a `client_tools` entry
 requires a matching `runtime` section.
 `mcp_servers` and its runtime consumer shipped in #352 (`src/tools/mcp_client.py`, loaded by
-`CommunityAssistant._load_mcp_tools`), and `src/assistants/nemar/config.yaml` already carries the block
-shown above. `client_tools` and `runtime` are the only new configuration in this design.
+`CommunityAssistant._load_mcp_tools`), and `src/assistants/nemar/config.yaml` already carries the
+`mcp_servers` block shown above. `client_tools` and `runtime` are the only new configuration in this design.
+
+**As built (phase 2).** The YAML above is the proposal and is not valid as written: there is no
+`analysis_engine` key, which `extra="forbid"` refuses, and no Pyodide `314.0.6`. The shipped block is
+`src/assistants/nemar/config.yaml`, and the model is `PythonRuntimeConfig` in
+`src/core/config/community.py`, which also has `prelude`. NEMAR pins Pyodide 0.29.5 (zarr 3.4.0 needs
+its `google-crc32c`), names its lock overlay in `lockfile`, preloads numpy, matplotlib, zarr and
+eegprep-lean, reaches only `https://zarr.nemar.org/`, installs nothing with `allow_install`, keeps the
+default limits, and registers eegprep-lean's transport in its prelude. The analysis engine ADR 0049
+asks to be named is named in NEMAR's prompt, as eegprep-lean. `frontend/test-data-lane.js` requires every
+community runtime to pin the Pyodide CI runs.
 Note that `CommunityConfig` sets `extra="forbid"`, so a top-level `runtime:` key is rejected until the
 model gains the field, and the cross-field validator must live on `CommunityConfig`, not on
 `ExtensionsConfig`, because the latter cannot see a top-level sibling.
@@ -336,20 +435,20 @@ model gains the field, and the cross-field validator must live on `CommunityConf
 
 | Community | Engine in the browser | Data path | Status |
 |---|---|---|---|
-| NEMAR | eegprep once its extras split ships; MNE until then | Zarr recipes from the MCP, HTTPS reads | first adopter |
-
-The NEMAR recipe carries two `how_to` snippets and only the TypeScript one is marked browser-safe: its
-`python_zarr` snippet uses anonymous S3 through boto3, and `boto3`, `botocore`, `aiobotocore` and `s3fs` are
-all absent from the Pyodide distribution. A model that copies it will fail. The reader must consume
-`data_base` and `array_path` over HTTPS, and the community prompt must tell the model to ignore
-`how_to.python_zarr` in the browser lane. `aiohttp` and `fsspec` are present, so the HTTPS path is viable.
+| NEMAR | `eegprep-lean` 0.1.0.dev2, vendored and served from OSA's own origin | the MCP's `how_to.python_browser` recipe, HTTPS range reads of `zarr.nemar.org` | shipped (epic #429) |
 | EEGLAB | eegprep (EEGLAB-parity numerics) on user-supplied or NEMAR data | same as NEMAR | after NEMAR |
 | HED | `hedtools` validation and search | `events.tsv` and sidecars fetched or pasted | candidate; verify pure-Python install |
 | BIDS | `pybids` over a fetched layout | dataset trees over HTTPS | candidate; verify pure-Python install |
 
 Each community brings: a lockfile, a `preload` set, an `allow_install` list, a `fetch_allow` list,
 prompt guidance on when to run code versus answer from documentation,
-and optionally a small pure-Python helper package (for NEMAR, a reader that turns a recipe into a numpy array).
+and optionally a small pure-Python helper package (for NEMAR, `eegprep-lean`, which turns a recipe into a numpy array).
+
+The NEMAR recipe's `python_zarr` snippet uses anonymous S3 through boto3,
+and `boto3`, `botocore`, `aiobotocore` and `s3fs` are all absent from the Pyodide distribution, so a model that copies it fails.
+When this note was written only the recipe's TypeScript snippet was browser-safe.
+nemar-cli has since added `how_to.python_browser` (its ADRs 0070 and 0071), written for this runtime and reading over HTTPS;
+NEMAR's prompt teaches that snippet and tells the model never to use `python_zarr` here.
 
 ## What goes back to the model, and why it must be deterministic
 
@@ -379,6 +478,21 @@ So the runtime returns a deterministic summary, and the raw output stays in the 
 Attach real image content blocks only for the MOST RECENT execution and replace older ones with text
 placeholders, because images in the history are bytes in the prefix. Provide a `get_full_output(call_id)`
 tool so the model can pull detail on demand: the common path stays cheap and the rare path stays possible.
+
+**MCP tool results follow the same rule, not a separate one (issue #432).** `nemar_render_overview`'s PNG
+reaches the model as a real Anthropic image content block, but only on the Anthropic path: OpenRouter and
+LiteLLM have not been shown to accept that block shape, so `CommunityAssistant`'s `allow_mcp_images` (resolved
+once from the request's provider choice, the same way `citations` is) gates it at tool-wrap time, and a
+non-Anthropic run gets a text placeholder instead of a silently-dropped image. The same gate now covers a
+browser execution's figures in run 2: `/chat/resume` resolves the provider before it builds the live
+message, and on a non-Anthropic path each figure arrives as "not attached: images are not sent to this
+model", which NEMAR's prompt tells the model to relay rather than describe. Within one run the image is
+re-sent with every later model call -- there is no per-call "most recent" trimming inside a single run, only
+across runs -- and stored history never keeps it: `scrub_stored_images` replaces every image block it finds
+(a client-tool result's live message that rode along into a second parked call, and a real MCP `ToolMessage`
+LangGraph's `ToolNode` built directly) with a text placeholder before `ChatSession.replace_history` persists
+anything. `OSA_MCP_IMAGES_DISABLED` is the incident-control kill switch, checked fresh on every call rather
+than baked in at discovery time, so it takes effect without waiting out the tool-discovery cache or a restart.
 
 **The breakpoint should move past the system block.** `CachingLLMWrapper` marks system messages only. A
 request may carry up to FOUR cache breakpoints, so the pattern this design wants is one covering tools and
@@ -438,10 +552,35 @@ prefix, which is a further reason the result format must be deterministic.
   with a `manifest.json` per session naming what the assistant produced and when.
 - Python writes through an injected `osa` helper: `osa.save_script(name, code)`, `osa.save_artifact(path, bytes)`.
   The widget mirrors saves into the `tool_result` artifacts list.
-- The notebook surface is JupyterLite with the Pyodide kernel, opened from the widget with the session's workspace.
-  Phase 4 evaluates whether JupyterLite's contents layer can mount the same storage directly
-  or needs an import step, and whether sharing the live kernel with the chat worker is worth its complexity.
-  File sharing ships first; kernel sharing is a refinement.
+- **DECIDED (ADR 0010, 2026-09-23): the notebook surface is JupyterLite with the Pyodide kernel, pinned to Pyodide 0.29.5 (OSA's own pin), not marimo.**
+  marimo was measured directly, not only reasoned about:
+  it cannot complete the real NEMAR read in any configuration,
+  because its own WebAssembly (WASM) concurrency sandbox rejects the `multiprocessing.Lock` `numcodecs`'s blosc codec needs to decompress
+  real Zarr chunks (`UnsupportedWasmConcurrencyError`),
+  on top of the four integration gaps the 2026-09-16 review already found
+  (no `postMessage`/embedding application programming interface (API), its own storage backed by IndexedDB File System (IDBFS),
+  content delivery network (CDN)-only Pyodide now a full version generation past 0.29.5,
+  and the one-definition-per-variable model).
+  The speed question is also settled and does not favor marimo:
+  under a CDN-matched control, the two surfaces differ by well under a second for a trivial cell.
+  See ADR 0010 and its companion `.context/notebook-surface-measurements.md` for the full measurement.
+  No notebook surface ships yet: until JupyterLite lands, the chat widget's own editable re-run panel
+  ("Edit and run" on a recorded run, `ClientToolController.runLocal`, `docs/community-browser-runtime.md`)
+  is the one place a reader can keep tinkering with what the assistant already ran.
+- JupyterLite's contents layer does **not** mount the widget's own Origin Private File System (OPFS) or IndexedDB storage directly
+  (confirmed by building it, not only assumed):
+  a build-time `--contents <dir>` import into JupyterLite's own, same-origin IndexedDB-backed Contents store is what was tested and works;
+  there is no live cross-origin bridge to the widget's storage,
+  since the notebook surface opens on its own origin (never the widget's embedding page's origin)
+  and neither browser storage nor Pyodide's kernel is shared across that boundary.
+  File sharing (export a zip, import it into JupyterLite's own contents) is therefore not a stepping stone toward kernel sharing:
+  it is the mechanism, full stop, for as long as the notebook surface is a separate origin.
+  Sharing a live kernel with the chat worker stays a non-goal (see below), not a later refinement of this.
+- Pinning JupyterLite to exactly 0.29.5 is possible (`jupyter lite build --pyodide=<tarball>`, confirmed working)
+  but costs a real, measured 529-531 MB unpruned static deploy, versus ~64 MB for the unpinned default
+  (which drifts to whatever Pyodide version `jupyterlite-pyodide-kernel` ships next, currently 314.0.0, the same generation marimo uses, not 0.29.5).
+  `--no-unused-shared-packages` should prune that down for a real deployment;
+  the pruned size was not measured and is open work for whoever builds this phase.
 - Export: download the workspace as a zip at any time. Nothing leaves the browser unless the person exports it.
 
 ## Security
@@ -542,6 +681,12 @@ hold against the deployed code. They are Phase 0: none of Phase 1 works end to e
    community-owned artifacts. Not "configuration alone": this note also asks each community for a lockfile
    and optionally a helper package, and neither is configuration.
 
+**As built.** Phases 1 to 4 shipped as epic #429 (#430 to #433), all four on one epic branch.
+Phase 1's tests drive the real application with no checkpointer, since none was built.
+Phase 2's pilot used `eegprep-lean` rather than MNE, and pulled most of phase 3's lockfile work forward.
+Phase 4 kept the workspace, the `osa` helper and export, and replaced the JupyterLite handoff with the editable re-run panel (#456); a hosted JupyterLite is deferred to #453 (ADR 0010).
+Phase 5 has not started.
+
 Phases 1 to 3 land on an epic branch and merge to `develop` together, per this repo's own epic-branch
 workflow, which exists for exactly this shape: Phase 2 depends on Phase 3, and Phase 1 alone ships a tool
 surface with no executor. Phases 4 and 5 can be separate pull requests. Phase numbers here are local to this
@@ -585,11 +730,21 @@ note and do not correspond to the global phases in `.context/plan.md`.
   as a URL rather than inline bytes, which would have the model's provider fetch from the data plane; inline
   base64 is what keeps this design's "bytes never move through a third party" property, and it is what the
   tests pin.
-- JupyterLite storage bridge versus a lighter notebook UI of our own. Note that sharing a live JupyterLite
-  kernel with the chat worker is not an open tradeoff; it is unsupported, and belongs under non-goals.
-  Pyodide's `mountOPFS` is also not in a released version yet, so Phase 4 should plan on IndexedDB plus an
-  import step; the stable `mountNativeFS` is the File System Access API and is Chromium-only.
-- Where community lockfiles live: in this repo next to the config, or in a community-owned repo referenced by URL.
+- ~~JupyterLite storage bridge versus a lighter notebook UI of our own (i.e., marimo).~~
+  **DECIDED (ADR 0010, 2026-09-23): JupyterLite, with a build-time import, not a live storage bridge, and not marimo.**
+  marimo was built and measured directly against the real NEMAR read and failed on all of them
+  (its WASM sandbox refuses a lock a real dependency needs, on top of the four integration gaps the 2026-09-16 review already found),
+  so "a lighter notebook UI of our own" resolved to "not marimo" rather than to marimo.
+  On the storage half: Pyodide's `mountOPFS` is still not in a released version as of 2026-09-23 (re-checked),
+  so there is still no live bridge to mount;
+  what was built and confirmed working is a **build-time `--contents` import** into JupyterLite's own, same-origin IndexedDB-backed Contents store,
+  an offline step, not a bridge, and that is now the answer rather than an open question.
+  Sharing a live JupyterLite kernel with the chat worker remains unsupported and belongs under non-goals, unchanged by this decision.
+  `mountNativeFS` (the File System Access API, Chromium-only) remains unexplored.
+- ~~Where community lockfiles live.~~ **DECIDED 2026-09-22 (#431, step 8): in the community's own folder
+  in this repo, served by this API.** An eegprep-lean bump is then a server deploy, with no widget release
+  and no nemar.org re-pin. Hosting them beside the widget was rejected because the server's config and a
+  pinned widget's wheels would then drift; a community-owned repository by URL stays open for phase 5.
 - Image cost in the model context; whether to downscale further by default.
 - The SSE event vocabulary listed earlier in this note is incomplete: the live stream also emits `session`
   and `warning`, and the widget handles both. Anyone adding an event needs the true list.
@@ -608,6 +763,8 @@ note and do not correspond to the global phases in `.context/plan.md`.
   de-risking.
 - `.context/qp-worker-architecture.md`: the streaming proxy pattern the widget already uses.
 - Pyodide: `loadPackagesFromImports`, `micropip.install`, `micropip.freeze`, `loadPyodide({ lockFileURL })`, `setInterruptBuffer`.
+  As built: `loadPyodide({ lockFileContents, packageBaseUrl })` and `loadPackage(name, { checkIntegrity })`;
+  neither `micropip.freeze` nor `setInterruptBuffer` is used.
 - LangGraph: `interrupt`, `Command(resume=...)`, checkpointers.
 - nemarOrg/nemar-cli ADR 0049 (compute in the browser, only HPC submission gated) and issue #1065 (the MCP server whose recipes this runtime consumes).
 - sccn/eegprep: the extras split that makes eegprep installable under Pyodide.

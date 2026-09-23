@@ -163,6 +163,13 @@ uv run osa validate src/assistants/my-tool/config.yaml
 
 For the full guide, see the [community registry documentation](https://docs.osc.earth/osa/registry/).
 
+To let a community's model write and run Python in the reader's own browser
+(`execute_code`, a client tool), see
+[`docs/community-browser-runtime.md`](docs/community-browser-runtime.md):
+the `extensions.client_tools` and `runtime.python` config keys, the lock
+overlay for wheels Pyodide does not ship, the embedding page's
+Content-Security-Policy, and the measured first-load cost.
+
 ## Documentation
 
 Full documentation is available at **[docs.osc.earth/osa](https://docs.osc.earth/osa/)**.

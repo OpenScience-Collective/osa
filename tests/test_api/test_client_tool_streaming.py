@@ -1,0 +1,851 @@
+"""The two-run continuation, driven end to end through the real graph.
+
+What is real here: the community config and its validator, `build_client_tools`, the
+`CommunityAssistant`, the compiled LangGraph graph, the routing decision, the
+`client_tools` node, the shape of `astream_events`, `_stream_chat_response`'s SSE
+assembly, and the session store.
+
+What stands in: the chat model, whose behavior is not under test, and the router's
+`create_community_assistant`, which builds a real LLM client from settings this suite
+has no keys for. `.rules/testing_guidelines.md` permits both, and names the second as
+needing a companion test closer to the wire, which
+`tests/test_integration/test_client_tool_round_trip.py` provides.
+
+Deliberately NOT stood in: the graph and its events. An earlier draft replayed canned
+LangGraph events, which would have asserted the shape of the fixture rather than the
+shape langgraph actually emits. The one thing this phase most needs to be true is that
+the root graph's `on_chain_end` carries `pending_client_call`, and a canned event
+proves nothing about that.
+"""
+
+import base64
+import json
+from typing import Any
+from unittest.mock import patch
+
+import pytest
+from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.tools import tool
+
+from src.api.routers.community import (
+    AssistantWithMetrics,
+    ChatSession,
+    _stream_chat_response,
+)
+from src.api.tool_results import (
+    ClientToolResult,
+    ToolResultImage,
+    build_history_tool_message,
+    build_live_tool_message,
+)
+from src.assistants.community import CommunityAssistant
+from src.core.config.community import FULL_OUTPUT_TOOL_NAME, CommunityConfig
+from src.tools.client_tools import CLIENT_TOOL_KILL_SWITCH_ENV
+from tests.helpers.chat_models import (
+    ScriptedChatModel,
+    multi_tool_call_response,
+    tool_call_response,
+)
+from tests.helpers.images import bar_chart_png, tiny_png
+
+CALL_ID = "toolu_01aaaaaaaaaaaaaaaaaaaaaa"
+SECOND_CALL_ID = "toolu_01bbbbbbbbbbbbbbbbbbbbbb"
+COMMUNITY = "browsertest"
+
+
+@tool
+def lookup_docs(query: str) -> str:
+    """Look something up. A real, server-executed tool, for the mixed-batch test."""
+    return f"documentation for {query}"
+
+
+#: A real PNG, real base64 -- what render_with_image below actually returns, and
+#: what every test in this file asserts never reaches a session or an SSE event.
+RENDER_PNG_B64 = base64.b64encode(tiny_png(width=4, height=3)).decode()
+
+
+@tool
+def render_with_image(dataset_id: str) -> list[dict]:
+    """A real, server-executed tool whose result carries an image content block,
+    in exactly the shape `src.tools.mcp_client._wrap_tool`'s coroutine returns for
+    an accepted `nemar_render_overview` image (issue #432). LangGraph's own
+    `ToolNode` builds the real `ToolMessage` from this return value -- nothing
+    here stands in for that step."""
+    return [
+        {"type": "text", "text": f"overview of {dataset_id}"},
+        {
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": RENDER_PNG_B64},
+        },
+    ]
+
+
+def _config(**overrides: Any) -> CommunityConfig:
+    fields: dict[str, Any] = {
+        "id": COMMUNITY,
+        "name": "Browser Test",
+        "description": "A community that runs code in the browser",
+        "extensions": {
+            "client_tools": [
+                {
+                    "name": "execute_code",
+                    "runtime": "python",
+                    "requires_permission": True,
+                    "description": "Run Python in the user's browser.",
+                }
+            ]
+        },
+        "runtime": {
+            "python": {
+                "pyodide_version": "314.0.6",
+                "lockfile": "runtime/browsertest-pyodide-lock.json",
+            }
+        },
+    }
+    fields.update(overrides)
+    return CommunityConfig(**fields)
+
+
+def _assistant(
+    responses: list,
+    *,
+    declared: set[str] | None = None,
+    server_tools: list | None = None,
+    browser_runs_left: int | None = None,
+) -> tuple[CommunityAssistant, ScriptedChatModel]:
+    model = ScriptedChatModel(responses=responses)
+    assistant = CommunityAssistant(
+        model=model,
+        config=_config(),
+        preload_docs=False,
+        additional_tools=server_tools or [],
+        declared_client_tools={"execute_code"} if declared is None else declared,
+        browser_runs_left=browser_runs_left,
+    )
+    return assistant, model
+
+
+def _awm(assistant: CommunityAssistant) -> AssistantWithMetrics:
+    return AssistantWithMetrics(
+        assistant=assistant, model="claude-haiku-4-5", key_source="platform"
+    )
+
+
+async def _collect(agen) -> list[dict]:
+    events = []
+    async for line in agen:
+        assert line.startswith("data: ")
+        events.append(json.loads(line[len("data: ") :]))
+    return events
+
+
+async def _run(session: ChatSession, assistant: CommunityAssistant, **kwargs) -> list[dict]:
+    with patch(
+        "src.api.routers.community.create_community_assistant", return_value=_awm(assistant)
+    ):
+        return await _collect(_stream_chat_response(COMMUNITY, session, None, None, None, **kwargs))
+
+
+def _session() -> ChatSession:
+    session = ChatSession("sess-1", COMMUNITY)
+    session.add_user_message("Plot the alpha power.")
+    return session
+
+
+def _names(events: list[dict]) -> list[str]:
+    return [event["event"] for event in events]
+
+
+class TestTheToolReachesTheModel:
+    def test_a_declared_client_tool_is_bound(self) -> None:
+        assistant, model = _assistant([AIMessage(content="hi")])
+
+        assert "execute_code" in model.bound_tool_names
+
+    def test_an_undeclared_client_tool_is_never_bound(self) -> None:
+        """Structural, not checked: the model cannot call what it cannot see, so the
+        server cannot ask a client to run something it has no executor for."""
+        _, model = _assistant([AIMessage(content="hi")], declared=set())
+
+        assert "execute_code" not in model.bound_tool_names
+
+    def test_declaring_a_different_tool_binds_nothing(self) -> None:
+        _, model = _assistant([AIMessage(content="hi")], declared={"render_html"})
+
+        assert "execute_code" not in model.bound_tool_names
+
+    def test_the_kill_switch_strips_the_tool_from_a_willing_caller(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The switch has to win over a correctly configured community AND a caller
+        that declared the capability, because that is the only situation in which it
+        would ever be reached. A switch tested only against a config that binds nothing
+        anyway would pass while doing nothing.
+
+        `develop` auto-deploys, and a client tool with no executor parks every stream,
+        so this is what makes the phase safe to merge before phase 2 exists.
+        """
+        monkeypatch.setenv(CLIENT_TOOL_KILL_SWITCH_ENV, "1")
+
+        _, model = _assistant([AIMessage(content="hi")], declared={"execute_code"})
+
+        assert "execute_code" not in model.bound_tool_names
+
+    @pytest.mark.asyncio
+    async def test_a_killed_turn_ends_in_done_not_tool_request(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Stripping the binding is only half of it; the run must also complete
+        normally rather than ending on a call nothing can answer."""
+        monkeypatch.setenv(CLIENT_TOOL_KILL_SWITCH_ENV, "1")
+        session = _session()
+        assistant, _ = _assistant([AIMessage(content="I cannot run code right now.")])
+
+        events = await _run(session, assistant, declared_client_tools={"execute_code"})
+
+        assert "done" in _names(events)
+        assert "tool_request" not in _names(events)
+        assert session.pending_call is None
+
+
+class TestRunOneEndsOnTheCall:
+    @pytest.mark.asyncio
+    async def test_it_emits_tool_request_and_no_done(self) -> None:
+        """`done` means the turn finished. This turn is waiting on a browser, so a
+        client that saw `done` would render a reply that has not been written."""
+        assistant, _ = _assistant(
+            [tool_call_response("execute_code", {"code": "x", "description": "run x"}, CALL_ID)]
+        )
+
+        events = await _run(_session(), assistant, declared_client_tools={"execute_code"})
+
+        assert "tool_request" in _names(events)
+        assert "done" not in _names(events)
+
+    @pytest.mark.asyncio
+    async def test_the_request_carries_the_providers_own_call_id(self) -> None:
+        assistant, _ = _assistant(
+            [tool_call_response("execute_code", {"code": "x", "description": "run x"}, CALL_ID)]
+        )
+
+        events = await _run(_session(), assistant, declared_client_tools={"execute_code"})
+
+        request = next(e for e in events if e["event"] == "tool_request")
+        assert request["call_id"] == CALL_ID
+        assert request["tool"] == "execute_code"
+        assert request["args"] == {"code": "x", "description": "run x"}
+        assert request["requires_permission"] is True
+
+    @pytest.mark.asyncio
+    async def test_the_session_parks_the_call_and_keeps_the_assistant_message(self) -> None:
+        """The assistant message carrying tool_calls has to survive the turn boundary,
+        or run 2 has nothing to send."""
+        session = _session()
+        assistant, _ = _assistant(
+            [tool_call_response("execute_code", {"code": "x", "description": "run x"}, CALL_ID)]
+        )
+
+        await _run(session, assistant, declared_client_tools={"execute_code"})
+
+        assert session.pending_call is not None
+        assert session.pending_call.call_id == CALL_ID
+        assert any(isinstance(m, AIMessage) and m.tool_calls for m in session.messages), (
+            "the tool call was dropped at the turn boundary"
+        )
+
+
+class TestTheStateCaptureCannotFailQuietly:
+    """What happens when langgraph changes the shape of its events.
+
+    The run reads the parked call out of the root graph's `on_chain_end`. That event is
+    a dependency bump away from changing at any time, and if it is ever missed the turn
+    looks completely normal from outside: the model's tool-calling message carries no
+    text, so nothing is persisted and the client receives an ordinary `done`. The
+    model's request to run code would be dropped permanently, platform wide, with every
+    metric green.
+
+    So the run cross-checks two independent signals: the node's own event says a call
+    was parked, the state says which one. Disagreement is an error.
+    """
+
+    @staticmethod
+    def _without_root_end(assistant: CommunityAssistant) -> CommunityAssistant:
+        """Drop the root graph's `on_chain_end`, exactly as an upstream change would."""
+        real_build = assistant.build_graph
+
+        class _Filtered:
+            def __init__(self, graph) -> None:
+                self._graph = graph
+
+            async def astream_events(self, *args, **kwargs):
+                async for event in self._graph.astream_events(*args, **kwargs):
+                    if event.get("event") == "on_chain_end" and not event.get("parent_ids"):
+                        continue
+                    yield event
+
+        assistant.build_graph = lambda: _Filtered(real_build())  # type: ignore[method-assign]
+        return assistant
+
+    @pytest.mark.asyncio
+    async def test_it_errors_rather_than_ending_the_turn_normally(self) -> None:
+        assistant, _ = _assistant(
+            [tool_call_response("execute_code", {"code": "x", "description": "run x"}, CALL_ID)]
+        )
+
+        events = await _run(
+            _session(), self._without_root_end(assistant), declared_client_tools={"execute_code"}
+        )
+
+        assert "error" in _names(events), "a dropped state event ended the turn quietly"
+        assert "done" not in _names(events), "a failed browser turn must not look successful"
+        assert "tool_request" not in _names(events)
+
+    @pytest.mark.asyncio
+    async def test_the_error_carries_an_id_to_find_it_by(self) -> None:
+        assistant, _ = _assistant(
+            [tool_call_response("execute_code", {"code": "x", "description": "run x"}, CALL_ID)]
+        )
+
+        events = await _run(
+            _session(), self._without_root_end(assistant), declared_client_tools={"execute_code"}
+        )
+
+        assert next(e for e in events if e["event"] == "error")["error_id"]
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_turn_is_unaffected_by_the_same_drift(self) -> None:
+        """The cross-check must not fire on a turn that never parked anything, or every
+        conversation in every community would break on the same dependency bump."""
+        assistant, _ = _assistant([AIMessage(content="No code needed.")], declared=set())
+
+        events = await _run(_session(), self._without_root_end(assistant))
+
+        assert "done" in _names(events)
+        assert "error" not in _names(events)
+
+
+class TestBatches:
+    @pytest.mark.asyncio
+    async def test_a_server_call_in_the_same_batch_is_answered(self) -> None:
+        """Every tool_use needs a matching tool_result or the provider refuses the
+        whole message list."""
+        session = _session()
+        assistant, _ = _assistant(
+            [
+                multi_tool_call_response(
+                    [
+                        ("lookup_docs", {"query": "alpha"}, "call_server"),
+                        ("execute_code", {"code": "x", "description": "run x"}, CALL_ID),
+                    ]
+                )
+            ],
+            server_tools=[lookup_docs],
+        )
+
+        events = await _run(session, assistant, declared_client_tools={"execute_code"})
+
+        assert _names(events).count("tool_request") == 1
+        answered = {m.tool_call_id for m in session.messages if isinstance(m, ToolMessage)}
+        assert "call_server" in answered
+
+    @pytest.mark.asyncio
+    async def test_a_second_browser_call_is_refused_in_writing(self) -> None:
+        """One browser execution per turn. The second still needs a tool_result, and
+        saying why in it is how the model learns the constraint."""
+        session = _session()
+        assistant, _ = _assistant(
+            [
+                multi_tool_call_response(
+                    [
+                        ("execute_code", {"code": "first", "description": "run first"}, CALL_ID),
+                        (
+                            "execute_code",
+                            {"code": "second", "description": "run second"},
+                            SECOND_CALL_ID,
+                        ),
+                    ]
+                )
+            ]
+        )
+
+        events = await _run(session, assistant, declared_client_tools={"execute_code"})
+
+        assert _names(events).count("tool_request") == 1
+        assert session.pending_call.call_id == CALL_ID
+        refused = [
+            m
+            for m in session.messages
+            if isinstance(m, ToolMessage) and m.tool_call_id == SECOND_CALL_ID
+        ]
+        assert len(refused) == 1, "the second call was left without a result"
+
+    @pytest.mark.asyncio
+    async def test_every_tool_call_ends_up_answered_or_pending(self) -> None:
+        """The invariant the provider actually enforces, asserted directly rather than
+        via the individual cases above."""
+        session = _session()
+        assistant, _ = _assistant(
+            [
+                multi_tool_call_response(
+                    [
+                        ("lookup_docs", {"query": "a"}, "call_server"),
+                        ("execute_code", {"code": "x", "description": "run x"}, CALL_ID),
+                        ("execute_code", {"code": "y", "description": "run y"}, SECOND_CALL_ID),
+                    ]
+                )
+            ],
+            server_tools=[lookup_docs],
+        )
+
+        await _run(session, assistant, declared_client_tools={"execute_code"})
+
+        called = {
+            call["id"]
+            for m in session.messages
+            if isinstance(m, AIMessage)
+            for call in m.tool_calls
+        }
+        answered = {m.tool_call_id for m in session.messages if isinstance(m, ToolMessage)}
+        pending = {session.pending_call.call_id}
+
+        assert called == answered | pending
+
+
+class TestToolEndEventNeverCarriesBase64:
+    """`on_tool_end`'s `output` field is `str(tool_output)` for every ordinary
+    tool, and `render_with_image`'s raw return value is a content-block list
+    (the shape `src.tools.mcp_client._wrap_tool`'s coroutine returns for an
+    accepted image) -- exactly what a bare `str()` would embed verbatim,
+    base64 and all, into the SSE stream.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_image_becomes_a_placeholder_not_its_base64(self) -> None:
+        session = _session()
+        assistant, _ = _assistant(
+            [
+                tool_call_response("render_with_image", {"dataset_id": "nm000103"}, "call_render"),
+                AIMessage(content="Here is the overview."),
+            ],
+            declared=set(),
+            server_tools=[render_with_image],
+        )
+
+        events = await _run(session, assistant)
+
+        tool_end_events = [e for e in events if e["event"] == "tool_end"]
+        assert tool_end_events, "render_with_image's on_tool_end never fired"
+        rendered = next(e for e in tool_end_events if e["name"] == "render_with_image")
+        assert RENDER_PNG_B64 not in rendered["output"]
+        assert "[image block, not shown in this event]" in rendered["output"]
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_text_tools_output_is_unaffected(self) -> None:
+        """The control: a tool with nothing pictorial to hide is rendered by the
+        exact same `str(tool_output)` this event always used, so this file's other
+        tests -- and any existing consumer of `tool_end` -- see no different a
+        string for a tool that never carried an image."""
+        session = _session()
+        assistant, _ = _assistant(
+            [
+                tool_call_response("lookup_docs", {"query": "alpha"}, "call_docs"),
+                AIMessage(content="Found it."),
+            ],
+            declared=set(),
+            server_tools=[lookup_docs],
+        )
+
+        events = await _run(session, assistant)
+
+        rendered = next(
+            e for e in events if e["event"] == "tool_end" and e["name"] == "lookup_docs"
+        )
+        assert "documentation for alpha" in rendered["output"]
+        assert "image" not in rendered["output"]
+
+
+class TestToolEndRendering:
+    """`_sse_safe_tool_output` directly, for the block shapes no tool here returns yet."""
+
+    def test_a_block_of_an_unknown_type_is_withheld(self) -> None:
+        """Fails closed: only text is known to be safe to stream, so a block spelling
+        nobody has written yet is named, never printed."""
+        from src.api.routers.community import _sse_safe_tool_output
+
+        message = ToolMessage(
+            content=[
+                {"type": "text", "text": "overview of nm000103"},
+                {"type": "future_media", "payload": "c2VjcmV0IGJ5dGVz"},
+            ],
+            tool_call_id="call_x",
+        )
+
+        rendered = _sse_safe_tool_output(message)
+
+        assert rendered == "overview of nm000103\n[future_media block, not shown in this event]"
+
+    def test_string_content_renders_as_it_always_has(self) -> None:
+        from src.api.routers.community import _sse_safe_tool_output
+
+        message = ToolMessage(content="documentation for alpha", tool_call_id="call_x")
+
+        assert _sse_safe_tool_output(message) == str(message)
+
+
+class TestNothingHappensWithoutAClientTool:
+    @pytest.mark.asyncio
+    async def test_an_ordinary_turn_still_ends_in_done(self) -> None:
+        """Every community ships with client_tools unset, so this is the path that
+        actually runs in production for this phase."""
+        session = _session()
+        assistant, _ = _assistant([AIMessage(content="Alpha power is 10.2 Hz.")], declared=set())
+
+        events = await _run(session, assistant)
+
+        assert "done" in _names(events)
+        assert "tool_request" not in _names(events)
+        assert session.pending_call is None
+
+
+class TestClaimingIsOnceOnly:
+    def test_a_replayed_call_id_is_refused(self) -> None:
+        session = _session()
+        session.set_pending_call(_pending())
+
+        assert session.claim_pending_call(CALL_ID) is not None
+        assert session.claim_pending_call(CALL_ID) is None
+
+    def test_a_different_call_id_is_refused(self) -> None:
+        session = _session()
+        session.set_pending_call(_pending())
+
+        assert session.claim_pending_call(SECOND_CALL_ID) is None
+
+    def test_claiming_does_not_await(self) -> None:
+        """The concurrency design in one assertion.
+
+        The session store has no locking, so the only thing keeping check-then-clear
+        atomic is that no await appears between them. A coroutine function here would
+        reintroduce a window in which one result is accepted twice.
+        """
+        import inspect
+
+        assert not inspect.iscoroutinefunction(ChatSession.claim_pending_call)
+
+    def test_an_expired_call_is_repaired_not_merely_refused(self) -> None:
+        """Leaving a stale call parked would keep an unanswered tool_call in history,
+        and that is what makes a session unusable rather than merely stale."""
+        from datetime import UTC, datetime, timedelta
+
+        from src.api.tool_results import PENDING_CALL_TTL_SECONDS, PendingClientCall
+
+        session = _session()
+        session.messages.append(
+            AIMessage(content="", tool_calls=[{"name": "execute_code", "args": {}, "id": CALL_ID}])
+        )
+        session.set_pending_call(
+            PendingClientCall(
+                call_id=CALL_ID,
+                tool="execute_code",
+                args={},
+                requires_permission=True,
+                created_at=datetime.now(UTC) - timedelta(seconds=PENDING_CALL_TTL_SECONDS + 1),
+            )
+        )
+
+        assert session.claim_pending_call(CALL_ID) is None
+        assert session.pending_call is None
+        assert any(
+            isinstance(m, ToolMessage) and m.tool_call_id == CALL_ID for m in session.messages
+        ), "history was left with a tool call nothing answers"
+
+
+class TestAbandonment:
+    def test_moving_on_leaves_a_message_list_the_provider_accepts(self) -> None:
+        session = _session()
+        session.messages.append(
+            AIMessage(content="", tool_calls=[{"name": "execute_code", "args": {}, "id": CALL_ID}])
+        )
+        session.set_pending_call(_pending())
+
+        assert session.abandon_pending_call("the conversation moved on") is True
+
+        called = {
+            call["id"]
+            for m in session.messages
+            if isinstance(m, AIMessage)
+            for call in m.tool_calls
+        }
+        answered = {m.tool_call_id for m in session.messages if isinstance(m, ToolMessage)}
+        assert called == answered
+
+    def test_abandoning_nothing_is_not_an_error(self) -> None:
+        assert _session().abandon_pending_call("nothing to do") is False
+
+
+class TestRunTwo:
+    @pytest.mark.asyncio
+    async def test_the_result_reaches_the_model_with_its_image(self) -> None:
+        """The point of the whole phase: a plot drawn in the browser reaches the model."""
+        import base64
+
+        png = base64.b64encode(bar_chart_png([0.35, 0.60, 1.0, 0.12])).decode()
+        session = _session()
+        session.messages.append(
+            AIMessage(content="", tool_calls=[{"name": "execute_code", "args": {}, "id": CALL_ID}])
+        )
+        result = ClientToolResult(
+            call_id=CALL_ID,
+            summary="peak 10.2 Hz",
+            images=[ToolResultImage(mime="image/png", data_base64=png, width=640, height=480)],
+        )
+        from src.api.tool_results import build_history_tool_message, build_live_tool_message
+
+        live = [*session.messages, build_live_tool_message(result, allow_images=True)]
+        session.messages.append(build_history_tool_message(result))
+
+        assistant, model = _assistant([AIMessage(content="The peak is at 10.2 Hz.")])
+        await _run(
+            session,
+            assistant,
+            declared_client_tools={"execute_code"},
+            initial_messages=live,
+        )
+
+        sent = model.seen_message_lists[-1]
+        tool_messages = [m for m in sent if isinstance(m, ToolMessage)]
+        assert tool_messages, "run 2 sent no tool result at all"
+        blocks = tool_messages[-1].content
+        assert any(b.get("type") == "image" for b in blocks), "the image did not reach the model"
+
+    @pytest.mark.asyncio
+    async def test_the_stored_history_keeps_no_image_bytes(self) -> None:
+        import base64
+
+        png = base64.b64encode(bar_chart_png([0.35, 0.60, 1.0, 0.12])).decode()
+        session = _session()
+        result = ClientToolResult(
+            call_id=CALL_ID,
+            images=[ToolResultImage(mime="image/png", data_base64=png, width=640, height=480)],
+        )
+        from src.api.tool_results import build_history_tool_message
+
+        session.messages.append(build_history_tool_message(result))
+
+        assert png not in json.dumps([str(m.content) for m in session.messages])
+
+    @pytest.mark.asyncio
+    async def test_a_second_parked_call_scrubs_the_first_calls_live_image(self) -> None:
+        """The leak `scrub_stored_images` closes: a run that parks a SECOND
+        browser call adopts the graph's final state whole
+        (`ChatSession.replace_history`), and that state still carries the FIRST
+        call's LIVE tool message from `initial_messages` -- built with the real
+        image attached, precisely so the model could see it that turn.
+        """
+        png = base64.b64encode(bar_chart_png([0.35, 0.60, 1.0, 0.12])).decode()
+        session = _session()
+        session.messages.append(
+            AIMessage(content="", tool_calls=[{"name": "execute_code", "args": {}, "id": CALL_ID}])
+        )
+        result = ClientToolResult(
+            call_id=CALL_ID,
+            images=[ToolResultImage(mime="image/png", data_base64=png, width=640, height=480)],
+        )
+        live = [*session.messages, build_live_tool_message(result, allow_images=True)]
+        session.messages.append(build_history_tool_message(result))
+
+        assistant, _ = _assistant(
+            [
+                tool_call_response(
+                    "execute_code", {"code": "y", "description": "run y"}, SECOND_CALL_ID
+                )
+            ]
+        )
+        await _run(
+            session,
+            assistant,
+            declared_client_tools={"execute_code"},
+            initial_messages=live,
+        )
+
+        assert session.pending_call is not None
+        assert session.pending_call.call_id == SECOND_CALL_ID
+        dumped = json.dumps([str(m.content) for m in session.messages])
+        assert png not in dumped, "the first call's live image leaked into stored history"
+
+    @pytest.mark.asyncio
+    async def test_a_batch_with_a_real_mcp_style_image_result_stores_no_base64(self) -> None:
+        """The other source `scrub_stored_images` exists for: a real MCP-shaped
+        tool result carrying an image is built by LangGraph's own `ToolNode`
+        directly from the tool's return value, never through
+        `build_history_tool_message`, so nothing upstream of storage would
+        otherwise strip it.
+        """
+        session = _session()
+        assistant, _ = _assistant(
+            [
+                multi_tool_call_response(
+                    [
+                        ("render_with_image", {"dataset_id": "nm000103"}, "call_render"),
+                        ("execute_code", {"code": "x", "description": "run x"}, CALL_ID),
+                    ]
+                )
+            ],
+            server_tools=[render_with_image],
+        )
+
+        await _run(session, assistant, declared_client_tools={"execute_code"})
+
+        assert session.pending_call is not None
+        assert session.pending_call.call_id == CALL_ID
+        rendered = next(
+            m
+            for m in session.messages
+            if isinstance(m, ToolMessage) and m.tool_call_id == "call_render"
+        )
+        assert isinstance(rendered.content, list)
+        assert not any(b.get("type") == "image" for b in rendered.content), (
+            "scrub_stored_images should have replaced the real MCP-style image block"
+        )
+        assert RENDER_PNG_B64 not in json.dumps([str(m.content) for m in session.messages])
+
+
+def _pending():
+    from datetime import UTC, datetime
+
+    from src.api.tool_results import PendingClientCall
+
+    return PendingClientCall(
+        call_id=CALL_ID,
+        tool="execute_code",
+        args={"code": "x"},
+        requires_permission=True,
+        created_at=datetime.now(UTC),
+    )
+
+
+class TestGetFullOutputReachesTheBrowser:
+    """The derived tool travels the same two-run path as execute_code, ungated."""
+
+    @pytest.mark.asyncio
+    async def test_it_parks_and_asks_the_browser_without_a_gate(self) -> None:
+        """requires_permission reaches the browser on the tool_request itself.
+
+        That field is the ONLY way the widget learns to skip the permission gate for
+        this call, so it is asserted where the widget reads it: on the wire.
+        """
+        args = {"call_id": CALL_ID, "stream": "stdout", "offset": 0}
+        assistant, _ = _assistant(
+            [tool_call_response(FULL_OUTPUT_TOOL_NAME, args, SECOND_CALL_ID)],
+            declared={"execute_code", FULL_OUTPUT_TOOL_NAME},
+        )
+
+        events = await _run(
+            _session(), assistant, declared_client_tools={"execute_code", FULL_OUTPUT_TOOL_NAME}
+        )
+
+        request = next(e for e in events if e["event"] == "tool_request")
+        assert request["tool"] == FULL_OUTPUT_TOOL_NAME
+        assert request["call_id"] == SECOND_CALL_ID
+        assert request["args"] == args
+        assert request["requires_permission"] is False
+        assert "done" not in _names(events)
+
+
+class TestARefusedCallStillReplies:
+    """An invalid client call is answered by the model, on the same stream."""
+
+    @pytest.mark.asyncio
+    async def test_invalid_arguments_stream_a_reply_not_a_tool_request(self) -> None:
+        """Missing `description` would have rendered a blank permission gate. Now
+        the model is told, and its reply is what the person sees."""
+        assistant, model = _assistant(
+            [
+                tool_call_response("execute_code", {"code": "x"}, CALL_ID),
+                AIMessage(content="Let me describe the code before running it."),
+            ]
+        )
+
+        events = await _run(_session(), assistant, declared_client_tools={"execute_code"})
+
+        assert "tool_request" not in _names(events)
+        # Not an error: this is the path that used to trip the event-shape guard,
+        # which read "the client_tools node ran" as "a call was parked".
+        assert "error" not in _names(events)
+        assert "done" in _names(events)
+        # The model was asked AGAIN, with the refusal in front of it. The reply's
+        # text cannot be asserted here: the router streams content from chunks and
+        # the scripted model does not stream, which is true of every turn in this
+        # file, so the second call is the observable proof the run went back.
+        assert model.calls == 2
+
+
+class TestAReplyHasABudgetOfBrowserRuns:
+    """One question cannot chain browser runs without end.
+
+    Each run is a request and a model call. The worker bounds resume calls per IP per
+    hour, which says nothing about one reply, so the per-reply bound lives on the
+    server. The widget stops at the same number, which does not help against any
+    other client.
+    """
+
+    @pytest.mark.asyncio
+    async def test_with_no_runs_left_the_call_is_refused_and_the_model_answers(self) -> None:
+        assistant, model = _assistant(
+            [
+                tool_call_response("execute_code", {"code": "x", "description": "d"}, CALL_ID),
+                AIMessage(content="Here is what the earlier runs showed."),
+            ],
+            browser_runs_left=0,
+        )
+        session = _session()
+
+        events = await _run(session, assistant, declared_client_tools={"execute_code"})
+
+        assert "tool_request" not in _names(events)
+        assert "done" in _names(events)
+        assert session.pending_call is None
+        refusal = next(m for m in model.seen_message_lists[-1] if isinstance(m, ToolMessage))
+        assert refusal.tool_call_id == CALL_ID
+        assert "most times one reply may" in str(refusal.content)
+        assert model.calls == 2, "the run went back to the model with the refusal"
+
+    @pytest.mark.asyncio
+    async def test_the_last_run_in_budget_still_parks(self) -> None:
+        assistant, _ = _assistant(
+            [tool_call_response("execute_code", {"code": "x", "description": "d"}, CALL_ID)],
+            browser_runs_left=1,
+        )
+
+        events = await _run(_session(), assistant, declared_client_tools={"execute_code"})
+
+        assert "tool_request" in _names(events)
+
+    @pytest.mark.asyncio
+    async def test_the_parked_call_records_how_many_runs_came_before(self) -> None:
+        assistant, _ = _assistant(
+            [tool_call_response("execute_code", {"code": "x", "description": "d"}, CALL_ID)]
+        )
+        session = _session()
+
+        with patch(
+            "src.api.routers.community.create_community_assistant",
+            return_value=_awm(assistant),
+        ) as created:
+            await _collect(
+                _stream_chat_response(
+                    COMMUNITY,
+                    session,
+                    None,
+                    None,
+                    None,
+                    declared_client_tools={"execute_code"},
+                    browser_runs_answered=3,
+                )
+            )
+
+        assert session.pending_call.runs_before == 3
+        # And the budget the assistant was built with is what is left of the cap.
+        from src.core.limits import MAX_BROWSER_RUNS_PER_REPLY
+
+        assert created.call_args.kwargs["browser_runs_left"] == MAX_BROWSER_RUNS_PER_REPLY - 3
