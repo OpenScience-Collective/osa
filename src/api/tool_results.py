@@ -34,7 +34,7 @@ import struct
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any, Literal, TypedDict
+from typing import Annotated, Any, Final, Literal, TypedDict
 
 from langchain_core.messages import BaseMessage, ToolMessage
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
@@ -97,13 +97,18 @@ def png_dimensions(data: bytes) -> tuple[int, int]:
 
 
 #: Why an image in stored history is text: it was seen once and not kept.
-NOT_RETAINED = "not retained in history"
+NOT_RETAINED: Final = "not retained in history"
 
 #: Why an image in a LIVE message is text: the model path in use has not been shown
 #: to accept an image block, so the model never saw it. Worded so the model can tell
 #: the two apart, and with "not attached", which NEMAR's prompt tells it to relay as
 #: "I could not see it" rather than describe. `src.tools.mcp_client` uses it too.
-IMAGES_NOT_SENT = "not attached: images are not sent to this model"
+IMAGES_NOT_SENT: Final = "not attached: images are not sent to this model"
+
+#: The only two reasons a placeholder gives.
+PlaceholderReason = Literal[
+    "not retained in history", "not attached: images are not sent to this model"
+]
 
 
 def image_block_placeholder(
@@ -111,7 +116,7 @@ def image_block_placeholder(
     width: int | None = None,
     height: int | None = None,
     *,
-    reason: str = NOT_RETAINED,
+    reason: PlaceholderReason = NOT_RETAINED,
 ) -> str:
     """The text that stands in for one image block.
 
@@ -173,7 +178,7 @@ class ToolResultImage(BaseModel):
             "source": {"type": "base64", "media_type": self.mime, "data": self.data_base64},
         }
 
-    def placeholder(self, reason: str = NOT_RETAINED) -> str:
+    def placeholder(self, reason: PlaceholderReason = NOT_RETAINED) -> str:
         """What stands in for this image in stored history, or in a live message
         whose model path takes no images (`IMAGES_NOT_SENT`)."""
         return image_block_placeholder(self.mime, self.width, self.height, reason=reason)
@@ -277,7 +282,9 @@ def build_history_tool_message(result: ClientToolResult) -> ToolMessage:
     return _placeholder_tool_message(result, reason=NOT_RETAINED)
 
 
-def _placeholder_tool_message(result: ClientToolResult, *, reason: str) -> ToolMessage:
+def _placeholder_tool_message(
+    result: ClientToolResult, *, reason: PlaceholderReason
+) -> ToolMessage:
     text = _fence(result)
     if result.images:
         placeholders = "\n".join(image.placeholder(reason) for image in result.images)
@@ -333,7 +340,7 @@ def _image_block_meta(block: Any) -> tuple[str, str] | None:
     return None
 
 
-def is_image_block(block: Any) -> bool:
+def _is_image_block(block: Any) -> bool:
     """True for a content block of any image spelling `scrub_stored_images` knows."""
     return isinstance(block, Mapping) and block.get("type") in ("image", "image_url")
 
@@ -368,7 +375,7 @@ def scrub_stored_images(messages: Sequence[BaseMessage]) -> list[BaseMessage]:
         new_content: list[Any] = []
         changed = False
         for block in content:
-            if not is_image_block(block):
+            if not _is_image_block(block):
                 new_content.append(block)
                 continue
             changed = True

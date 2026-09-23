@@ -43,7 +43,15 @@ config and the lock overlay from `/config`, and the wheel route, through the
 server's environment rather than any community's config.
 """
 
-TRUTHY = {"1", "true", "yes", "on"}
+TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def env_flag_set(name: str) -> bool:
+    """True when environment variable `name` holds one of `TRUTHY`, case-insensitively.
+
+    Read on every call, so a kill switch built on it flips without a restart.
+    """
+    return os.environ.get(name, "").strip().lower() in TRUTHY
 
 
 class ClientToolNotExecutableError(RuntimeError):
@@ -199,7 +207,7 @@ def client_tools_disabled() -> bool:
     restart. Truthy values are `1`, `true`, `yes`, `on`, matched
     case-insensitively; anything else (including unset) is `False`.
     """
-    return os.environ.get(CLIENT_TOOL_KILL_SWITCH_ENV, "").strip().lower() in TRUTHY
+    return env_flag_set(CLIENT_TOOL_KILL_SWITCH_ENV)
 
 
 def build_client_tools(config: CommunityConfig, declared: set[str] | None) -> list[ClientTool]:

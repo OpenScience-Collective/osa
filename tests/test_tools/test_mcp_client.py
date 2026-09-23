@@ -31,7 +31,9 @@ from langchain_core.messages import ToolMessage
 from mcp.server import MCPServer
 from mcp.types import CallToolResult, ImageContent, TextContent
 
+from src.api.tool_results import IMAGES_NOT_SENT
 from src.core.config.community import McpServer
+from src.core.limits import MAX_IMAGE_BYTES, MAX_IMAGE_EDGE_PX
 from src.tools.mcp_client import (
     MCP_IMAGES_KILL_SWITCH_ENV,
     clear_tool_cache,
@@ -119,6 +121,23 @@ def _build_server() -> MCPServer:
         )
 
     @srv.tool(structured_output=False)
+    def oversized_images() -> CallToolResult:
+        """Three real PNGs, each over a different cap: bytes (the PNG followed by
+        padding, which leaves its IHDR readable), edge, and both at once."""
+        wide = tiny_png(width=MAX_IMAGE_EDGE_PX + 1, height=1)
+        padding = b"\x00" * MAX_IMAGE_BYTES
+        return CallToolResult(
+            content=[
+                ImageContent(
+                    type="image",
+                    data=base64.b64encode(image).decode(),
+                    mimeType="image/png",
+                )
+                for image in (FIXTURE_PNG + padding, wide, wide + padding)
+            ],
+        )
+
+    @srv.tool(structured_output=False)
     def wrong_mime_image() -> CallToolResult:
         """A real, valid PNG, but declared under a media type this reader refuses
         regardless of size or validity -- only image/png is accepted here."""
@@ -186,6 +205,7 @@ class TestDiscovery:
             "fixture_render_overview",
             "fixture_many_images",
             "fixture_undecodable_image",
+            "fixture_oversized_images",
             "fixture_wrong_mime_image",
         }
 
@@ -221,11 +241,11 @@ class TestDiscovery:
             return discover_mcp_tools(_server(mcp_url))
 
         tools = asyncio.run(caller())
-        assert len(tools) == 7
+        assert len(tools) == 8
 
     def test_works_from_a_plain_synchronous_caller(self, mcp_url: str) -> None:
         """The other half: no loop running at all."""
-        assert len(discover_mcp_tools(_server(mcp_url))) == 7
+        assert len(discover_mcp_tools(_server(mcp_url))) == 8
 
 
 # --------------------------------------------------------------------------
@@ -407,6 +427,93 @@ class TestImages:
         assert len(image_blocks) == MAX_IMAGES
         text_blocks = [b for b in result.content if b.get("type") == "text"]
         assert any("MAX_IMAGES" in b["text"] for b in text_blocks)
+
+    async def test_each_cap_is_named_when_an_image_breaks_it(self, mcp_url: str) -> None:
+        tool = next(
+            t
+            for t in discover_mcp_tools(_server(mcp_url), allow_images=True)
+            if t.name.endswith("oversized_images")
+        )
+
+        result = await tool.ainvoke({})
+
+        assert isinstance(result, str), "every image was refused, so no block list"
+        lines = [line for line in result.splitlines() if line.startswith("[image ")]
+        assert len(lines) == 3
+        assert "over the" in lines[0] and "byte cap" in lines[0]
+        assert f"less than or equal to {MAX_IMAGE_EDGE_PX}" in lines[1]
+        assert "byte cap" in lines[2] and f"less than or equal to {MAX_IMAGE_EDGE_PX}" in lines[2]
+
+    async def test_one_server_discovered_for_both_paths_keeps_them_apart(
+        self, mcp_url: str
+    ) -> None:
+        """Discovery is cached per server for minutes, and an Anthropic request and an
+        OpenRouter request can discover the same server inside that window. Each must
+        get tools wrapped for its own path, whichever discovered first."""
+        for first, second in ((True, False), (False, True)):
+            clear_tool_cache()
+            discovered = {
+                allow: next(
+                    t
+                    for t in discover_mcp_tools(_server(mcp_url), allow_images=allow)
+                    if t.name.endswith("render_overview")
+                )
+                for allow in (first, second)
+            }
+
+            with_images = await discovered[True].ainvoke(
+                _call(discovered[True].name, {"dataset_id": "nm000103"})
+            )
+            without = await discovered[False].ainvoke({"dataset_id": "nm000103"})
+
+            assert any(b.get("type") == "image" for b in with_images.content), (first, second)
+            assert isinstance(without, str) and IMAGES_NOT_SENT in without, (first, second)
+
+
+class TestTheRequestProviderDecides:
+    """The entry point: `create_community_assistant` resolves the request's provider
+    and the MCP tools it binds must follow it. Tested through the assistant's own
+    tool list, so a gate dropped or inverted in the factory fails here."""
+
+    COMMUNITY = "mcpimagegate"
+
+    async def _render_overview_through(self, mcp_url: str, provider: str) -> Any:
+        from src.api.routers.community import create_community_assistant
+        from src.api.security import ByokCredential
+        from src.assistants.registry import registry
+        from src.core.config.community import CommunityConfig
+
+        clear_tool_cache()
+        registry.register_from_config(
+            CommunityConfig(
+                id=self.COMMUNITY,
+                name="MCP image gate",
+                description="Binds the fixture MCP server",
+                extensions={"mcp_servers": [{"name": "fixture", "url": mcp_url}]},
+            )
+        )
+        try:
+            # Construction never calls the provider, so a placeholder key is enough.
+            key = "sk-ant-test" if provider == "anthropic" else "sk-or-test"
+            awm = create_community_assistant(
+                self.COMMUNITY, byok=ByokCredential(key=key, provider=provider), preload_docs=False
+            )
+        finally:
+            registry._assistants.pop(self.COMMUNITY, None)
+        tool = next(t for t in awm.assistant.tools if t.name == "fixture_render_overview")
+        return await tool.ainvoke(_call(tool.name, {"dataset_id": "nm000103"}))
+
+    async def test_an_anthropic_request_sees_the_image(self, mcp_url: str) -> None:
+        result = await self._render_overview_through(mcp_url, "anthropic")
+
+        assert any(b.get("type") == "image" for b in result.content)
+
+    async def test_an_openrouter_request_gets_the_placeholder(self, mcp_url: str) -> None:
+        result = await self._render_overview_through(mcp_url, "openrouter")
+
+        assert isinstance(result.content, str)
+        assert IMAGES_NOT_SENT in result.content
+        assert FIXTURE_PNG_B64 not in result.content
 
 
 # --------------------------------------------------------------------------

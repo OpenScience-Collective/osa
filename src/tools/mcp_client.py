@@ -40,7 +40,6 @@ import base64
 import binascii
 import json
 import logging
-import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -50,30 +49,27 @@ from typing import TYPE_CHECKING, Any
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import ValidationError
 
+# The one import from src.api into src.tools, and it must stay one-way:
+# src.api.tool_results owns the image block's shape and caps, and nothing there may
+# import this module, or the two packages import each other.
 from src.api.tool_results import IMAGES_NOT_SENT, ToolResultImage, png_dimensions
 from src.core.limits import MAX_IMAGES
-from src.tools.client_tools import TRUTHY
+from src.tools.client_tools import env_flag_set
 
 if TYPE_CHECKING:
     from src.core.config.community import McpServer
 
 logger = logging.getLogger(__name__)
 
-#: Environment variable name for the incident-control kill switch on MCP images.
-#: Modeled on `src.tools.client_tools.CLIENT_TOOL_KILL_SWITCH_ENV`: setting it to any
-#: of `TRUTHY` withdraws every MCP image without touching a community's config.yaml,
-#: and without restarting anything, since it is read fresh on every call rather than
-#: baked in at tool-discovery time.
+#: The incident-control kill switch on MCP images, modeled on
+#: `src.tools.client_tools.CLIENT_TOOL_KILL_SWITCH_ENV`. Setting it withdraws every MCP
+#: image without touching a community's config.yaml or restarting anything.
 MCP_IMAGES_KILL_SWITCH_ENV = "OSA_MCP_IMAGES_DISABLED"
 
 
 def mcp_images_disabled() -> bool:
-    """True when the kill switch env var is set to a truthy value.
-
-    Checked live, like `client_tools_disabled`, so a deployment can flip this without
-    a restart.
-    """
-    return os.environ.get(MCP_IMAGES_KILL_SWITCH_ENV, "").strip().lower() in TRUTHY
+    """True when the kill switch is set. Read on every call, never at discovery time."""
+    return env_flag_set(MCP_IMAGES_KILL_SWITCH_ENV)
 
 
 #: How long to wait for a server to list its tools before giving up and starting
@@ -145,67 +141,52 @@ def _payload_of(result: Any) -> Any:
     return _text_of(result)
 
 
-def _accept_mcp_image(
-    block: Any, *, accepted_so_far: int
-) -> tuple[dict[str, Any] | None, str | None]:
-    """One MCP `ImageContent` block, accepted as a content block or refused as text.
+def _accept_mcp_image(block: Any, *, accepted_so_far: int) -> dict[str, Any] | str:
+    """One MCP `ImageContent` block, as an image content block or the reason it is refused.
 
-    Only `image/png` is accepted (NEMAR's `render_overview` is the only MCP tool that
-    returns one today, and it renders PNG), and only within `MAX_IMAGES`,
-    `MAX_IMAGE_BYTES` and `MAX_IMAGE_EDGE_PX` (`src.core.limits`). Width and height are
-    read from the PNG itself (`png_dimensions`): unlike a browser execution's
-    `ToolResultImage`, an MCP `ImageContent` never carries them.
-
-    Returns `(content_block, None)` when accepted, in exactly the shape
-    `ToolResultImage.to_content_block` builds -- the one spelling
-    `tests/test_core/test_tool_result_image_transport.py` proves survives the real
-    Anthropic payload builder -- or `(None, reason)` naming why it was not attached.
+    Only `image/png` is accepted (NEMAR's `render_overview` renders PNG), and only
+    within `MAX_IMAGES`, `MAX_IMAGE_BYTES` and `MAX_IMAGE_EDGE_PX`. Width and height come
+    from the PNG itself (`png_dimensions`), since an MCP `ImageContent` never carries
+    them. An accepted image has exactly the shape `ToolResultImage.to_content_block`
+    builds, the spelling `tests/test_core/test_tool_result_image_transport.py` proves
+    survives the Anthropic payload builder. A refusal is a `str` naming why.
     """
     if accepted_so_far >= MAX_IMAGES:
-        return None, f"over the MAX_IMAGES cap ({MAX_IMAGES})"
+        return f"over the MAX_IMAGES cap ({MAX_IMAGES})"
     mime_type = getattr(block, "mime_type", None)
     if mime_type != "image/png":
-        return None, f"only image/png is accepted here (got {mime_type!r})"
+        return f"only image/png is accepted here (got {mime_type!r})"
     data = getattr(block, "data", None) or ""
     try:
         decoded = base64.b64decode(data, validate=True)
-    except (binascii.Error, ValueError):
-        return None, "its data is not valid base64"
+    except (binascii.Error, ValueError, TypeError):
+        return "its data is not valid base64"
     try:
         width, height = png_dimensions(decoded)
     except ValueError as err:
-        return None, str(err)
+        return str(err)
     try:
         image = ToolResultImage(mime="image/png", data_base64=data, width=width, height=height)
     except ValidationError as err:
-        # MAX_IMAGE_BYTES and MAX_IMAGE_EDGE_PX are both enforced by this model's own
-        # validators (src.api.tool_results), so a rejection here is one of those two
-        # caps; the message names which.
-        return None, err.errors()[0]["msg"]
-    return image.to_content_block(), None
+        # The model's own validators enforce MAX_IMAGE_BYTES and MAX_IMAGE_EDGE_PX, and
+        # an image can break both, so every message is kept.
+        return "; ".join(error["msg"] for error in err.errors())
+    return image.to_content_block()
 
 
 def _content_of(result: Any, *, allow_images: bool) -> Any:
     """What the model should see for a tool result, images included when allowed.
 
-    Identical to `_payload_of` whenever the result carries no image content, which
-    is every NEMAR tool except `render_overview` today: a server that never returns
-    a picture is unaffected by any of this.
+    A result with no image content gets exactly `_payload_of`, so a tool that never
+    returns a picture is unaffected by any of this. Otherwise each image is attached
+    if `allow_images` holds and `_accept_mcp_image` accepts it; every other image
+    becomes a line saying it was not attached, and why. `allow_images` is the
+    caller's decision (the request's provider, and the kill switch), not made here.
 
-    When it does, and `allow_images` says this model path accepts one
-    (`src.assistants.community.CommunityAssistant`'s `allow_mcp_images`, threaded
-    from the request's already-resolved provider choice -- this function does not
-    decide or re-check that itself), the accepted images become real content
-    blocks after `_accept_mcp_image`; anything refused, including every image when
-    `allow_images` is False or the kill switch (`mcp_images_disabled`) is set,
-    becomes a text line here saying so.
-
-    Returns a scalar (dict or str, matching `_payload_of`) when nothing pictorial
-    survives, and a list of content blocks -- one text block, then one per
-    accepted image -- only when at least one image is actually attached. LangChain
-    `_format_output` JSON-stringifies a malformed list wholesale
-    (`langchain_core.tools.base`), which is why this never returns a list with
-    nothing real in it.
+    Returns a list of content blocks, one text block and then the accepted images,
+    only when at least one image is attached. Otherwise it returns text, with
+    `structured_content` serialized as JSON: `_payload_of` would return the dict,
+    and LangChain serializes that to the same JSON on its way into the ToolMessage.
     """
     if getattr(result, "is_error", False):
         return f"The tool reported an error: {_text_of(result) or 'no detail given'}"
@@ -226,11 +207,11 @@ def _content_of(result: Any, *, allow_images: bool) -> Any:
         if not allow_images:
             notes.append(f"[{label} {IMAGES_NOT_SENT}]")
             continue
-        content_block, reason = _accept_mcp_image(block, accepted_so_far=len(accepted))
-        if content_block is not None:
-            accepted.append(content_block)
+        outcome = _accept_mcp_image(block, accepted_so_far=len(accepted))
+        if isinstance(outcome, str):
+            notes.append(f"[{label} not attached: {outcome}]")
         else:
-            notes.append(f"[{label} not attached: {reason}]")
+            accepted.append(outcome)
 
     if notes:
         text = f"{text}\n\n" + "\n".join(notes)
@@ -292,7 +273,16 @@ def _wrap_tool(server: McpServer, url: str, mcp_tool: Any, *, allow_images: bool
                 "Tell the user NEMAR's dataset service is temporarily unavailable and "
                 "point them at https://nemar.org/discover."
             )
-        return _content_of(result, allow_images=allow_images and not mcp_images_disabled())
+        try:
+            return _content_of(result, allow_images=allow_images and not mcp_images_disabled())
+        except Exception:  # noqa: BLE001 - same reason as above: degrade, never end the turn
+            # The result arrived, so the answer is still worth giving without its
+            # images. Reaching here means a server sent content this reader has no
+            # rule for; the log line is how anyone finds out.
+            logger.exception(
+                "MCP tool %s on %s returned content that could not be read", tool_name, url
+            )
+            return _payload_of(result)
 
     return StructuredTool(
         name=f"{server.name}_{tool_name}",
@@ -345,12 +335,9 @@ def discover_mcp_tools(server: McpServer, *, allow_images: bool = False) -> list
     running on the calling thread (see the module docstring). Returns `[]` and
     logs on any failure; never raises.
 
-    `allow_images` decides, for every tool this discovers, whether an MCP image
-    result is attached as a real content block or reduced to a placeholder (see
-    `_content_of`). It is part of the cache key below rather than a detail baked
-    silently into a shared cached tool: the SAME server can be discovered once for
-    an Anthropic request and once for an OpenRouter request, and each must get
-    tools shaped for its own path, not whichever one happened to discover first.
+    `allow_images` decides whether an MCP image result is attached as a content
+    block or reduced to a placeholder (see `_content_of`), and it is part of the
+    cache key for the reason given at `_tool_cache`.
     """
     if server.url is None:
         # `command`-style (stdio) servers are a different transport and nothing

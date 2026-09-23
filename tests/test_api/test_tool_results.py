@@ -328,6 +328,15 @@ class TestImageBlockPlaceholder:
     def test_unknown_dimensions_fall_back_to_the_media_type_alone(self) -> None:
         assert image_block_placeholder("image/png") == "[image: image/png, not retained in history]"
 
+    def test_the_reason_type_names_exactly_the_two_reasons(self) -> None:
+        """`PlaceholderReason` repeats the two strings, since a Literal cannot name a
+        constant; this keeps the repetition honest."""
+        from typing import get_args
+
+        from src.api.tool_results import IMAGES_NOT_SENT, NOT_RETAINED, PlaceholderReason
+
+        assert set(get_args(PlaceholderReason)) == {NOT_RETAINED, IMAGES_NOT_SENT}
+
     def test_tool_result_images_own_placeholder_uses_the_same_wording(self) -> None:
         """`ToolResultImage.placeholder` delegates here rather than formatting its own
         text, so the two can never drift into two different placeholder strings for

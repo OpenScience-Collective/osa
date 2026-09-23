@@ -250,7 +250,7 @@ class TestMcpImageOnTheRealProviderPaths:
         than trusting this transport to reject an image block on its own: if the
         gate were bypassed, LiteLLM's converter would forward the SAME real
         content-block list -- image and all -- with no validation of its shape.
-        `create_openrouter_llm`'s docstring in `src.core.services.litellm_llm`
+        `CommunityAssistant`'s docstring (`src.assistants.community`)
         says OpenRouter/LiteLLM has "not been shown to accept" this block; this is
         what that sentence means concretely, and why `allow_images` gates it
         before it is ever built for that path rather than after.
