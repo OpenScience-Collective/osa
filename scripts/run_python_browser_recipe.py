@@ -11,20 +11,21 @@ The recipe's own source is never touched: it is a NEMAR MCP `read_window` respon
 ``recipe.how_to.python_browser`` field, written for a runtime whose top level is
 already async (Pyodide's exec harness) and so uses top-level ``await`` with no
 wrapping function. `compile` with ``ast.PyCF_ALLOW_TOP_LEVEL_AWAIT`` accepts that
-unchanged; the resulting code object is a coroutine body, so it is run with
-``eval()`` (which returns the coroutine) and ``asyncio.run()``, never ``exec()``
-(which would just discard the coroutine unawaited).
+unchanged. When the source awaits, ``eval()`` returns a coroutine, which
+``asyncio.run()`` runs; ``exec()`` would discard it unawaited. When it does not,
+``eval()`` runs it directly.
 
 Prints one JSON object: the shape, dtype and unit of whichever of `window` (the
 physical read, `read_window`/`plot_window` recipes) or `digital` (the raw-counts
 read, `open_array`/`getitem` recipes) the recipe bound. Exits non-zero, with the
-traceback on stderr, if the recipe raised.
+traceback on stderr, if the recipe raised, and with 3 if it bound neither.
 """
 
 from __future__ import annotations
 
 import ast
 import asyncio
+import inspect
 import json
 import sys
 from pathlib import Path
@@ -57,14 +58,21 @@ def main(argv: list[str]) -> int:
         "__name__": "__recipe__",
     }
     compiled = compile(code, recipe_file, "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
-    coroutine = eval(compiled, namespace)  # noqa: S307 - a code object, not a string
-    asyncio.run(coroutine)
+    # A recipe with a top-level await evaluates to a coroutine to run; one without
+    # runs as eval evaluates it and returns None.
+    result = eval(compiled, namespace)  # noqa: S307 - a code object, not a string
+    if inspect.iscoroutine(result):
+        asyncio.run(result)
 
     report = {
         "window": _describe(namespace.get("window")),
         "digital": _describe(namespace.get("digital")),
     }
     print(json.dumps(report))
+    if report["window"] is None and report["digital"] is None:
+        # A recipe that ran and read nothing is not a working recipe.
+        print("the recipe bound neither `window` nor `digital`", file=sys.stderr)
+        return 3
     return 0
 
 
