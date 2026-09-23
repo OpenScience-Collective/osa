@@ -7,8 +7,8 @@ and exercises the half of the runtime that no `bun` test can reach.
 It runs in CI, in headless Chrome, as a gate:
 `frontend/browser-harness/chrome.js` opens the `nemarlike` page and requires every check to pass,
 then opens the `control` page and requires its boot to fail,
-then opens `cache-boot.html` twice more (see "Wheel caching" below) to require the browser's
-own HTTP cache to have done its job the second and third time NEMAR's runtime boots.
+then opens `cache-boot.html` twice more (see "Wheel caching" below)
+to require the browser's own HTTP cache to have done its job the second and third time NEMAR's runtime boots.
 The Python half is ALSO tested under Bun:
 `frontend/test-worker-core.js` and `frontend/test-data-lane.js` run the same worker core
 against the real Pyodide from npm.
@@ -94,47 +94,50 @@ Recorded on #431, first against Pyodide 0.28.3 and then, on the same day
 
 ### Wheel caching (warm vs cold)
 
-`serve.js` used to send `no-store` on every route, including the overlay
-wheels, so the browser's own HTTP cache was never exercised by this harness
-even though the API and the worker in front of it both serve those wheels as
-`public, max-age=31536000, immutable` (a wheel's name is its identity, so the
-bytes at a given URL never change). `serve.js` now sends the same header on
-`/runtime/nemar/*` and `/tampered/nemar/*`, and `chrome.js` measures against
-it: after the `nemarlike` run, it boots NEMAR's overlay again on a fresh page
-(`cache-boot.html`), on the SAME server and port and in the SAME browser
-profile as the cold run (Chrome partitions its HTTP cache by top-level site,
-so a different port or a different browser would measure nothing), and a
-third time with one wheel (eegprep-lean) served under a renamed file (a real
-wheel build tag, same bytes and sha256) to prove the cache is keyed by exact
-URL rather than by content.
+`serve.js` used to send `no-store` on every route, the overlay wheels included,
+so this harness never exercised the browser's own HTTP cache,
+even though the API and the worker in front of it both serve those wheels as `public, max-age=31536000, immutable`
+(a wheel's name is its identity, so the bytes at a given URL never change).
+`serve.js` now sends the same header on `/runtime/nemar/*` and `/tampered/nemar/*`,
+and `tests/test_api/test_runtime_wheel_cache_control.py` keeps the three copies of that header equal.
 
-Measured 2026-09-22, Chrome 153.0.8010.53, Pyodide 0.29.5, on this machine's
-loopback (bytes are over-the-wire `encodedDataLength` from DevTools; a cache
-hit reports 0 because nothing crosses the network, not because the file is
-small):
+`chrome.js` measures against it.
+After the `nemarlike` run, it boots NEMAR's overlay again on a fresh page (`cache-boot.html`),
+on the SAME server and port and in the SAME browser profile as the cold run:
+Chrome partitions its HTTP cache by top-level site, so a different port or a different browser would measure nothing.
+It boots a third time with one wheel (eegprep-lean) served under a renamed file,
+a real wheel build tag over the same bytes and sha256,
+to show the cache is keyed by exact URL rather than by content.
+The Pyodide worker is a separate DevTools target,
+so `chrome.js` attaches to each worker paused at its start and records its network before letting it run;
+a worker it could not attach to fails that run, since its wheels would go unobserved.
+Both checks also require the exact set of wheel names the overlay lists,
+so a request nobody observed fails rather than passing as "every observed request was cached".
+
+Measured 2026-09-22, Chrome 153.0.8010.53, Pyodide 0.29.5, on this machine's loopback.
+Bytes are the over-the-wire `encodedDataLength` DevTools reports;
+a cache hit reports 0 because nothing crosses the network, not because the file is small.
 
 | wheel | cold | warm |
 |---|---|---|
 | `zarr-3.4.0-py3-none-any.whl` | 377,491 B (network) | 0 B, `fromDiskCache=true` |
 | `eegprep_lean-0.1.0.dev2-py3-none-any.whl` | 28,852 B (network) | 0 B, `fromDiskCache=true` |
 
-- **warm**: both overlay wheels came from the browser's HTTP cache on the
-  second boot, 0 bytes over the network for either, cross-checked against
-  `encodedDataLength` rather than trusting `fromDiskCache` alone.
-- **lock change**: booting a THIRD time with eegprep-lean renamed to
-  `eegprep_lean-0.1.0.dev2-2-py3-none-any.whl` sent exactly that one wheel to
-  the network, the same bytes under a different name, while zarr, at its
-  unchanged URL, stayed cached (0 B, `fromDiskCache=true`). Measured with
-  0.1.0.dev1 first, where the renamed wheel crossed at the cold row's exact
-  byte count; re-measured with 0.1.0.dev2 for the table above.
-- **jsDelivr's own assets** (the interpreter and the stock wheels numpy and
-  matplotlib pull in) were ALSO cache hits by the warm run, `Cache-Control:
-  public, max-age=31536000` on every one; this is reported, not asserted on,
-  since jsDelivr's cache behavior is not this project's to enforce.
-- **mutation-checked**: reverting `serve.js`'s wheel routes to `no-store`
-  turns the warm assertion (and the lock-change one) into a hard failure,
-  both overlay wheels reported `fromDiskCache=false` with their full byte
-  count over the network again; restored afterward.
+- **warm**: both overlay wheels came from the browser's HTTP cache on the second boot,
+  0 bytes over the network for either,
+  cross-checked against `encodedDataLength` rather than trusting `fromDiskCache` alone.
+- **lock change**: booting a THIRD time with eegprep-lean renamed to `eegprep_lean-0.1.0.dev2-2-py3-none-any.whl`
+  sent exactly that one wheel to the network, the same bytes under a different name,
+  while zarr, at its unchanged URL, stayed cached (0 B, `fromDiskCache=true`).
+  Measured with 0.1.0.dev1 first, where the renamed wheel crossed at the cold row's exact byte count;
+  re-measured with 0.1.0.dev2 for the table above.
+- **jsDelivr's own assets** (the interpreter, and the stock wheels numpy and matplotlib pull in)
+  were ALSO cache hits in the warm run, each sent with `Cache-Control: public, max-age=31536000`.
+  This is reported, not asserted on, since jsDelivr's cache behavior is not this project's to enforce.
+- **mutation-checked**: reverting `serve.js`'s wheel routes to `no-store` fails the warm and lock-change checks,
+  with both overlay wheels reported `fromDiskCache=false` and their full byte count over the network again.
+  A worker whose network could not be recorded fails every recorded run, naming the worker,
+  and an overlay that lists no wheel stops the harness before either cache check can pass vacuously.
 
 ## The widget, end to end
 
