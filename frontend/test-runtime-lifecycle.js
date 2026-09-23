@@ -928,9 +928,11 @@ console.log('\nthe browser\'s status set matches ResultStatus in src/api/tool_re
   // place the browser's set is declared; this is the one place it is checked
   // against the server's.
   const python = await Bun.file(new URL('../src/api/tool_results.py', import.meta.url)).text();
-  const literalLine = python.split('\n').find((line) => line.trimStart().startsWith('ResultStatus = Literal['));
-  assert(literalLine !== undefined, 'tool_results.py declares ResultStatus as a Literal');
-  const serverStatuses = [...(literalLine || '').matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+  // Up to the Literal's closing bracket, across lines, so the test still reads
+  // the declaration if a longer status list is ever wrapped by the formatter.
+  const literal = python.match(/^ResultStatus = Literal\[([^\]]*)\]/m);
+  assert(literal !== null, 'tool_results.py declares ResultStatus as a Literal');
+  const serverStatuses = [...((literal && literal[1]) || '').matchAll(/"([^"]+)"/g)].map((m) => m[1]);
   assert(serverStatuses.length > 0, 'at least one status was parsed out of the Literal');
   assertEqual(JSON.stringify([...serverStatuses].sort()), JSON.stringify([...RESULT_STATUSES].sort()),
     'the sets are exactly equal, in either direction');
