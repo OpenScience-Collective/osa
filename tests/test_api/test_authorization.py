@@ -184,6 +184,14 @@ class TestIsAuthorizedOrigin:
                 assert _is_authorized_origin(origin, "eeglab") is True
         assert _is_authorized_origin("https://example.com", "eeglab") is False
 
+    def test_nemar_staging_site_is_authorized_for_nemar_only(self):
+        """nemar.org's staging site tests the widget against the dev worker, so it must
+        reach the platform key for NEMAR. Any other nemar.org subdomain, and any other
+        community, still needs a key of its own."""
+        assert _is_authorized_origin("https://test.nemar.org", "nemar") is True
+        assert _is_authorized_origin("https://other.nemar.org", "nemar") is False
+        assert _is_authorized_origin("https://test.nemar.org", "hed") is False
+
     def test_unknown_community_returns_false(self):
         """Should return False for unknown community ID."""
         origin = _get_exact_origin("hed")

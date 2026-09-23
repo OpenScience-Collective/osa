@@ -28,6 +28,9 @@ widget:
 cors_origins:
   - https://nemar.org
   - https://www.nemar.org
+  # nemar.org's staging site (the website's `staging` branch), where the widget is
+  # tested against the dev worker before a release pins it on nemar.org.
+  - https://test.nemar.org
 
 # Community maintainers (GitHub usernames)
 maintainers:
