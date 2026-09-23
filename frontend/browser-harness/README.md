@@ -213,3 +213,6 @@ Measured 2026-09-22 in Chrome, against the live archive:
 The Bun test for this lane is `frontend/test-data-lane.js`, which cannot load a
 wheel by URL or check its digest (Pyodide's Node loader does neither). Those two
 run in CI through `chrome.js`; this page adds the widget and the live archive.
+
+`notebook-bench.js` times any page's boot, cold and warm, reusing `chrome.js`'s own Chrome-driving primitives;
+see ADR 0010 (`docs/adr/0010-the-notebook-surface.md`) and `.context/notebook-surface-measurements.md` for what it was built to measure.

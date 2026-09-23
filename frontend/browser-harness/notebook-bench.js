@@ -2,208 +2,136 @@
 /**
  * Time-to-first-output measurement for ADR 0010 (the notebook surface).
  *
- * Drives headless Chrome over the DevTools protocol, the same way
- * `chrome.js` does (see that file for the fuller pattern this borrows:
- * launching Chrome, a minimal CDP client, and a Network.* recorder that
- * follows a page into its Worker targets). This script is narrower: it does
- * not gate CI, it only times "navigation start" to "a sentinel string appears
- * in the page", cold (fresh profile) and warm (second navigation, same
- * profile and origin), and sums the bytes and request count the page and its
- * workers transferred.
+ * Drives headless Chrome over the DevTools protocol, reusing `chrome.js`'s
+ * own helpers directly (`findChrome`, `launch`, `connect`, `NetworkRecorder`,
+ * `attachWithNetwork`) rather than a second copy of them. This script is
+ * narrower than that harness: it does not gate CI, it only times "navigation
+ * start" to "a sentinel appears", cold (fresh profile) and warm (second
+ * navigation, same profile and origin), and sums the bytes, request count,
+ * and failed-request count the page and its Worker targets transferred.
+ *
+ * `attachWithNetwork`'s auto-attach follows Worker targets by default, which
+ * is what marimo and JupyterLite's Pyodide kernel both run in. A page that
+ * instead loads its content in an `iframe` (not used by this ADR's
+ * measurements, but supported for a future one) can be followed too by
+ * passing `['worker', 'iframe']` as `attachWithNetwork`'s fourth argument.
  *
  * Usage:
  *   bun frontend/browser-harness/notebook-bench.js <url> <sentinel> [timeoutMs]
+ *
+ * `<sentinel>` is normally a string to find in `document.body.innerText`.
+ * The special value `__harness__` instead polls `window.__harness.done`
+ * (the shape `frontend/browser-harness/cache-boot.js` and the rest of this
+ * harness use), so OSA's own runtime can be measured with this same script,
+ * on the same `nemarlike` page `chrome.js` gates CI with.
  *
  * Prints one JSON line per run (cold, then warm) to stdout. Chrome is
  * relaunched with a fresh --user-data-dir for "cold" and reused for "warm",
  * exactly as chrome.js's own warm check reuses the profile from its cold run.
  */
 
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { attachWithNetwork, connect, findChrome, launch, NetworkRecorder } from './chrome.js';
 
-const CANDIDATES = [
-  process.env.CHROME_PATH,
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/usr/bin/google-chrome',
-  '/usr/bin/google-chrome-stable',
-  '/usr/bin/chromium',
-  '/usr/bin/chromium-browser',
-].filter(Boolean);
-
-function findChrome() {
-  return CANDIDATES.find((path) => existsSync(path)) || null;
-}
-
-async function launch(chromePath, profileDir) {
-  const args = [
-    '--headless=new',
-    '--remote-debugging-port=0',
-    `--user-data-dir=${profileDir}`,
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--disable-gpu',
-    'about:blank',
-  ];
-  if (process.platform === 'linux') args.unshift('--no-sandbox');
-  const chrome = Bun.spawn([chromePath, ...args], { stdout: 'ignore', stderr: 'pipe' });
-  let seen = '';
-  const endpoint = new Promise((resolve) => {
-    (async () => {
-      const decoder = new TextDecoder();
-      for await (const chunk of chrome.stderr) {
-        if (seen.length < 20_000) seen += decoder.decode(chunk);
-        const match = /DevTools listening on (ws:\/\/\S+)/.exec(seen);
-        if (match) resolve(match[1]);
-      }
-      resolve(null);
-    })();
-  });
-  const wsUrl = await Promise.race([endpoint, Bun.sleep(30_000).then(() => null)]);
-  if (!wsUrl) {
-    chrome.kill();
-    throw new Error(`Chrome did not report a DevTools endpoint:\n${seen.slice(-800)}`);
-  }
-  return { chrome, wsUrl };
-}
-
-function connect(wsUrl) {
-  return new Promise((resolve, reject) => {
-    const socket = new WebSocket(wsUrl);
-    const pending = new Map();
-    const listeners = [];
-    let nextId = 0;
-    socket.onmessage = (event) => {
-      const message = JSON.parse(event.data);
-      if (message.id !== undefined && pending.has(message.id)) {
-        const { resolve: done, reject: fail } = pending.get(message.id);
-        pending.delete(message.id);
-        if (message.error) fail(new Error(`${message.error.message} (${message.error.code})`));
-        else done(message.result);
-      } else if (message.method) {
-        for (const listener of listeners) listener(message);
-      }
-    };
-    socket.onerror = () => reject(new Error(`could not connect to ${wsUrl}`));
-    socket.onopen = () =>
-      resolve({
-        send(method, params = {}, sessionId) {
-          const id = ++nextId;
-          socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
-          return new Promise((done, fail) => pending.set(id, { resolve: done, reject: fail }));
-        },
-        on(listener) {
-          listeners.push(listener);
-          return () => {
-            const index = listeners.indexOf(listener);
-            if (index >= 0) listeners.splice(index, 1);
-          };
-        },
-        close() {
-          socket.close();
-        },
-      });
-  });
-}
-
-/** Network.* traffic for a page and every worker it spawns (see chrome.js's NetworkRecorder). */
-class NetworkRecorder {
-  constructor() {
-    this.requests = new Map();
-    this.attachFailures = [];
-  }
-  handle(message) {
-    const { method, params, sessionId } = message;
-    if (typeof method !== 'string' || !method.startsWith('Network.') || !params || params.requestId === undefined) return;
-    const key = `${sessionId}:${params.requestId}`;
-    if (method === 'Network.requestWillBeSent') {
-      if (!this.requests.has(key)) {
-        this.requests.set(key, { url: params.request.url, encodedDataLength: 0, fromDiskCache: false, servedFromCache: false });
-      }
-    } else if (method === 'Network.responseReceived') {
-      const r = this.requests.get(key);
-      if (r) r.fromDiskCache = Boolean(params.response.fromDiskCache);
-    } else if (method === 'Network.requestServedFromCache') {
-      const r = this.requests.get(key);
-      if (r) r.servedFromCache = true;
-    } else if (method === 'Network.loadingFinished') {
-      const r = this.requests.get(key);
-      if (r) r.encodedDataLength = params.encodedDataLength;
-    }
-  }
-  totals() {
-    const all = Array.from(this.requests.values());
-    const bytes = all.reduce((sum, r) => sum + r.encodedDataLength, 0);
-    const cacheHits = all.filter((r) => r.fromDiskCache || r.servedFromCache).length;
-    return { requestCount: all.length, bytesTransferred: bytes, cacheHits };
-  }
-}
-
-async function attachWithNetwork(cdp, pageSessionId, recorder) {
-  const tracked = new Set([pageSessionId]);
-  const unsubscribe = cdp.on((message) => {
-    if (message.method === 'Target.attachedToTarget' && message.sessionId === pageSessionId) {
-      const { sessionId: childSessionId, targetInfo } = message.params;
-      if (targetInfo.type !== 'worker' && targetInfo.type !== 'iframe') return;
-      tracked.add(childSessionId);
-      cdp
-        .send('Network.enable', {}, childSessionId)
-        .then(() => cdp.send('Runtime.runIfWaitingForDebugger', {}, childSessionId))
-        .catch((err) => recorder.attachFailures.push(`${targetInfo.url}: ${err && err.message}`));
-      return;
-    }
-    if (tracked.has(message.sessionId)) recorder.handle(message);
-  });
-  await cdp.send('Network.enable', {}, pageSessionId);
-  await cdp.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, pageSessionId);
-  return unsubscribe;
-}
+const HARNESS_SENTINEL = '__harness__';
 
 /**
- * Navigate to `url` and poll until `document.body.innerText` contains
- * `sentinel`, or `timeoutMs` elapses. Returns elapsed milliseconds from just
- * before Page.navigate to the first poll that saw the sentinel, plus network
- * totals across the page and every worker it spawned.
+ * Navigate to `url` and poll until the sentinel condition is true, or
+ * `timeoutMs` elapses. Returns elapsed milliseconds from just before
+ * `Page.navigate` to the first poll that saw it, plus network totals across
+ * the page and every attached Worker (bytes transferred, request count, and
+ * how many of those requests failed outright, e.g. a CORS refusal or a
+ * dropped connection, which a byte-count alone reports as a silent zero).
  */
 async function timeToSentinel(cdp, url, sentinel, timeoutMs) {
   const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
   const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
   const recorder = new NetworkRecorder();
-  const unsubscribe = await attachWithNetwork(cdp, sessionId, recorder);
+  const unsubscribeNetwork = await attachWithNetwork(cdp, sessionId, recorder);
   await cdp.send('Runtime.enable', {}, sessionId);
   const consoleLines = [];
-  const stopConsole = cdp.on((message) => {
+  const exceptions = [];
+  const stopListening = cdp.on((message) => {
     if (message.sessionId !== sessionId) return;
     if (message.method === 'Runtime.consoleAPICalled') {
       consoleLines.push(message.params.args.map((a) => a.value ?? a.description ?? '').join(' '));
+    } else if (message.method === 'Runtime.exceptionThrown') {
+      exceptions.push(message.params.exceptionDetails.text);
     }
   });
+  const expression =
+    sentinel === HARNESS_SENTINEL
+      ? 'window.__harness && window.__harness.done ? JSON.stringify(window.__harness) : null'
+      : `document.body && document.body.innerText.includes(${JSON.stringify(sentinel)}) ? "1" : null`;
   try {
     const start = Date.now();
     await cdp.send('Page.navigate', { url }, sessionId);
     const deadline = start + timeoutMs;
     let foundAtMs = null;
+    let harness = null;
+    let polls = 0;
     while (Date.now() < deadline) {
-      const { result } = await cdp.send(
-        'Runtime.evaluate',
-        { expression: `document.body && document.body.innerText.includes(${JSON.stringify(sentinel)})`, returnByValue: true },
-        sessionId
-      );
-      if (result.value === true) {
+      polls++;
+      let value = null;
+      try {
+        const { result } = await cdp.send('Runtime.evaluate', { expression, returnByValue: true }, sessionId);
+        value = result.value ?? null;
+      } catch (err) {
+        // A navigation mid-poll (a redirect, a reload the page itself
+        // triggers) tears down the execution context Runtime.evaluate was
+        // sent to; that one poll is lost, not the whole run. Anything else
+        // still surfaces on the next iteration or the final timeout.
+        const message = (err && err.message) || String(err);
+        if (!/context/i.test(message)) throw err;
+        await Bun.sleep(200);
+        continue;
+      }
+      if (value) {
         foundAtMs = Date.now();
+        if (sentinel === HARNESS_SENTINEL) harness = JSON.parse(value);
         break;
       }
       await Bun.sleep(200);
     }
-    const totals = recorder.totals();
+    const all = Array.from(recorder.requests.values());
+    const totals = {
+      requestCount: all.length,
+      bytesTransferred: all.reduce((sum, r) => sum + r.encodedDataLength, 0),
+      cacheHits: all.filter((r) => r.fromDiskCache || r.servedFromCache).length,
+      failedRequests: all.filter((r) => r.failed).length,
+    };
     if (foundAtMs === null) {
-      return { ok: false, elapsedMs: null, error: `sentinel not seen within ${timeoutMs}ms`, consoleTail: consoleLines.slice(-10), ...totals };
+      return {
+        ok: false,
+        elapsedMs: null,
+        error: `sentinel not seen within ${timeoutMs}ms`,
+        exceptions,
+        consoleTail: consoleLines.slice(-10),
+        ...totals,
+      };
     }
-    return { ok: true, elapsedMs: foundAtMs - start, ...totals };
+    // A match on the very first poll (before the page could plausibly have
+    // done real work) is the signature of the false-positive this script
+    // once had: JupyterLite's REPL echoes submitted code into the DOM
+    // before running it, so a sentinel that is also a literal substring of
+    // the source matches instantly. Warn rather than silently reporting a
+    // number nobody should trust.
+    if (polls === 1) {
+      console.warn(`warning: sentinel matched on the first poll (${foundAtMs - start}ms) for ${url} -- verify it cannot match unexecuted source`);
+    }
+    const harnessOk = sentinel === HARNESS_SENTINEL ? harness.ok !== false : true;
+    return {
+      ok: harnessOk && exceptions.length === 0,
+      elapsedMs: foundAtMs - start,
+      ...(harness ? { harness } : {}),
+      exceptions,
+      ...totals,
+    };
   } finally {
-    stopConsole();
-    unsubscribe();
+    stopListening();
+    unsubscribeNetwork();
     await cdp.send('Target.closeTarget', { targetId }).catch(() => {});
   }
 }
@@ -211,13 +139,13 @@ async function timeToSentinel(cdp, url, sentinel, timeoutMs) {
 async function main() {
   const [url, sentinel, timeoutArg] = process.argv.slice(2);
   if (!url || !sentinel) {
-    console.error('usage: bun notebook-bench.js <url> <sentinel> [timeoutMs]');
+    console.error('usage: bun notebook-bench.js <url> <sentinel|__harness__> [timeoutMs]');
     return 1;
   }
   const timeoutMs = Number(timeoutArg || 180_000);
   const chromePath = findChrome();
   if (!chromePath) {
-    console.error(`no Chrome found (set CHROME_PATH; looked in ${CANDIDATES.join(', ')})`);
+    console.error('no Chrome found (set CHROME_PATH)');
     return 1;
   }
 
@@ -248,4 +176,6 @@ async function main() {
   }
 }
 
-process.exit(await main());
+if (import.meta.main) {
+  process.exit(await main());
+}
