@@ -41,7 +41,7 @@ const describe = (err) => String((err && err.message) || err || 'unknown error')
  * "\n". The full note is returned unchanged when it already fits. Otherwise
  * whole lines are dropped from the END until what remains, plus a final
  * "and N more" line naming how many were cut, fits; when even that does not
- * fit, the empty string is returned rather than a truncated line (#433, E4:
+ * fit, the empty string is returned rather than a truncated line (#433:
  * a line here is a workspace path plus a reason, and a mid-line cut reads as
  * a different, wrong path).
  *
@@ -66,7 +66,7 @@ function fitFailureNote(lines, remaining) {
 
 /**
  * Append a workspace note to a run's own stderr, WITHOUT letting
- * `toClientToolResult`'s stderr clipping cut it away (#433, E4): a
+ * `toClientToolResult`'s stderr clipping cut it away (#433): a
  * community can set `stderr_chars` as low as 256, and the run's own output
  * is clipped to fit FIRST, reserving whatever room is left for the note as
  * whole lines. `toClientToolResult` still clips the combined string

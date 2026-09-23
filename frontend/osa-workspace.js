@@ -620,8 +620,8 @@ export class WorkspaceStore {
    *
    * Explicit files ARE subject to the run's 25 MB budget, one candidate at
    * a time so "quota ran out partway through" reports exactly which files
-   * that left out, and capped at `MAX_EXPLICIT_FILES` distinct paths (E5,
-   * "saved equals announced": `ClientToolResult.artifacts` holds at most
+   * that left out, and capped at `MAX_EXPLICIT_FILES` distinct paths ("saved
+   * equals announced": `ClientToolResult.artifacts` holds at most
    * that many names) -- both re-checks of what osa.save_script/
    * osa.save_artifact already enforced in Python, for a caller that reaches
    * this method some other way. A run record is written whether or not

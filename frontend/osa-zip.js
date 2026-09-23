@@ -105,8 +105,8 @@ export function buildStoredZip(files) {
     return { nameBytes, data, crc: crc32Of(data), ...dosDateTime(mtime) };
   });
 
-  // The end-of-central-directory record's entry count is a raw 16-bit field
-  // (C3): past 65,535 entries it would silently wrap and produce a zip whose
+  // The end-of-central-directory record's entry count is a raw 16-bit field:
+  // past 65,535 entries it would silently wrap and produce a zip whose
   // declared count no longer matches what is actually inside, which a
   // reader would either misread or reject far more confusingly than this
   // message does. No Zip64 support is needed for that: refusing clearly, so
@@ -125,7 +125,7 @@ export function buildStoredZip(files) {
     const local = new DataView(new ArrayBuffer(30));
     local.setUint32(0, 0x04034b50, true);
     local.setUint16(4, 20, true); // version needed
-    local.setUint16(6, 0x0800, true); // flags: bit 11 (0x0800) = name/comment are UTF-8 (C4)
+    local.setUint16(6, 0x0800, true); // flags: bit 11 (0x0800) = name/comment are UTF-8
     local.setUint16(8, 0, true); // method: stored
     local.setUint16(10, time, true);
     local.setUint16(12, date, true);
@@ -140,7 +140,7 @@ export function buildStoredZip(files) {
     central.setUint32(0, 0x02014b50, true);
     central.setUint16(4, 20, true); // version made by
     central.setUint16(6, 20, true); // version needed
-    central.setUint16(8, 0x0800, true); // flags: bit 11 (0x0800) = name/comment are UTF-8 (C4)
+    central.setUint16(8, 0x0800, true); // flags: bit 11 (0x0800) = name/comment are UTF-8
     central.setUint16(10, 0, true); // method
     central.setUint16(12, time, true);
     central.setUint16(14, date, true);

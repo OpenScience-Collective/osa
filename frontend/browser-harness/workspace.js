@@ -51,7 +51,7 @@ function check(name, ok, detail) {
 /**
  * How long any one phase (or a self-contained check group run inside it) may
  * take before it is treated as hung rather than left to leave no verdict at
- * all (#433, E6). `runPage` in chrome.js has its own, larger, page-level
+ * all (#433). `runPage` in chrome.js has its own, larger, page-level
  * timeout; this is a SECOND, tighter bound inside the page itself, so a hang
  * fails with a named reason in the results this page already reports,
  * rather than only as chrome.js's generic "timed out waiting for the page".
@@ -77,7 +77,7 @@ function withDeadline(promise, label) {
  * as text rather than by base64-encoding a real `Uint8Array`: "AAAA" is
  * exactly 3 zero bytes' worth, so repeating it is both cheap at multi-
  * megabyte sizes and exactly as valid as a real encoder's output for what
- * T1 and C1 below need, which is SIZE and DISTINCTNESS, not particular
+ * the budget and concurrency checks below need, which is SIZE and DISTINCTNESS, not particular
  * content.
  */
 function base64OfZeros(byteLength) {
@@ -209,7 +209,7 @@ async function runWritePhase(rt) {
   const missing = expectedEntries.filter((name) => !entries.includes(name));
   check('every expected file is a real entry in the exported zip', missing.length === 0, `missing: ${missing.join(', ') || 'none'}; got ${entries.length} entries`);
 
-  // T6: a SECOND session in the same community. sizeUsed already aggregates
+  // A SECOND session in the same community. sizeUsed already aggregates
   // across every session (checked above); what is new here is that
   // manifests() reports BOTH sessions, each scoped to only its own run.
   const r3 = await controller.answer({
@@ -219,27 +219,27 @@ async function runWritePhase(rt) {
     args: { code: 'print("a second, unrelated session")', description: 'a run in a second session' },
     requires_permission: false,
   });
-  check('T6: a run in a second session succeeds', r3.status === 'ok', JSON.stringify(r3));
+  check('a run in a second session succeeds', r3.status === 'ok', JSON.stringify(r3));
 
   const manifestsWithSecondSession = await workspace.manifests();
   check(
-    'T6: manifests() lists BOTH sessions',
+    'manifests() lists BOTH sessions',
     JSON.stringify(Object.keys(manifestsWithSecondSession).sort()) === JSON.stringify([SESSION_ID, SESSION_ID_2].sort()),
     JSON.stringify(Object.keys(manifestsWithSecondSession))
   );
   check(
-    "T6: the first session's manifest is unchanged by the second session existing",
+    "the first session's manifest is unchanged by the second session existing",
     manifestsWithSecondSession[SESSION_ID]?.runs.length === 2,
     JSON.stringify(manifestsWithSecondSession[SESSION_ID])
   );
   check(
-    "T6: the second session's manifest has exactly its own one run",
+    "the second session's manifest has exactly its own one run",
     manifestsWithSecondSession[SESSION_ID_2]?.runs.length === 1 && manifestsWithSecondSession[SESSION_ID_2].runs[0].call_id === 'call-3',
     JSON.stringify(manifestsWithSecondSession[SESSION_ID_2])
   );
   const usedWithSecondSession = await workspace.sizeUsed();
   check(
-    'T6: sizeUsed grew after the second session wrote its own files',
+    'sizeUsed grew after the second session wrote its own files',
     usedWithSecondSession > used,
     `before=${used} after=${usedWithSecondSession}`
   );
@@ -247,11 +247,11 @@ async function runWritePhase(rt) {
   await runProtocolWorkerChecks();
   await runDirectStoreChecks();
 
-  // usedWithSecondSession, not the earlier `used`: T6's second session
+  // usedWithSecondSession, not the earlier `used`: the second session
   // writes into this SAME community, so the community's real total grew
   // after `used` was captured. The read phase's own sizeUsed() reflects
   // that growth for real, and the expectation this page leaves behind has
-  // to agree with it, not with a snapshot from before T6 ran.
+  // to agree with it, not with a snapshot from before that session ran.
   localStorage.setItem(
     EXPECTATION_KEY,
     JSON.stringify({ used: usedWithSecondSession, runCount: manifest ? manifest.runs.length : 0 })
@@ -259,7 +259,7 @@ async function runWritePhase(rt) {
 }
 
 /**
- * E3: a worker `files` entry with genuinely malformed base64 -- not
+ * A worker `files` entry with genuinely malformed base64 -- not
  * something real Python/JS encoding can ever produce, see the comment on
  * the BADFILE directive in test-workers/executing.js -- makes
  * WorkspaceStore.recordRun's own atob() call throw for real, reaching
@@ -312,15 +312,15 @@ async function runProtocolWorkerChecks() {
     console.error = realConsoleError;
   }
 
-  check('E3: a run with a malformed-base64 file still answers, status ok', result.status === 'ok', JSON.stringify(result));
-  check('E3: the malformed file is dropped from artifacts entirely', JSON.stringify(result.artifacts) === '[]', JSON.stringify(result.artifacts));
+  check('a run with a malformed-base64 file still answers, status ok', result.status === 'ok', JSON.stringify(result));
+  check('the malformed file is dropped from artifacts entirely', JSON.stringify(result.artifacts) === '[]', JSON.stringify(result.artifacts));
   check(
-    "E3: stderr carries the deterministic 'workspace failed unexpectedly' note",
+    "stderr carries the deterministic 'workspace failed unexpectedly' note",
     /\[workspace\] could not save this run's files: the workspace failed unexpectedly/.test(result.stderr),
     JSON.stringify(result.stderr)
   );
   check(
-    'E3: the genuine atob failure was logged, not silently swallowed',
+    'the genuine atob failure was logged, not silently swallowed',
     errorLog.some((line) => line.includes('[OSA] Workspace persist failed unexpectedly')),
     JSON.stringify(errorLog)
   );
@@ -329,11 +329,11 @@ async function runProtocolWorkerChecks() {
 }
 
 /**
- * T1 and C1: WorkspaceStore called directly, bypassing Python and the
+ * WorkspaceStore called directly, bypassing Python and the
  * controller entirely, against a REAL IndexedDB.
  */
 async function runDirectStoreChecks() {
-  // T1: the host-side per-run budget loop in recordRun. Three explicit
+  // The host-side per-run budget loop in recordRun. Three explicit
   // files that each fit the per-file cap but together cross the 25 MB
   // per-run budget, so the third must be refused by name while the first
   // two, and the run record itself, still succeed.
@@ -341,7 +341,7 @@ async function runDirectStoreChecks() {
     const workspace = new WorkspaceStore({ community: 'workspace-harness-budget' });
     const perFile = 9_000_000;
     check(
-      'T1: the fixture sizes actually straddle the per-run cap as intended',
+      'the fixture sizes actually straddle the per-run cap as intended',
       perFile * 2 < WORKSPACE_LIMITS.MAX_RUN_BYTES && perFile * 3 > WORKSPACE_LIMITS.MAX_RUN_BYTES,
       `perFile=${perFile} MAX_RUN_BYTES=${WORKSPACE_LIMITS.MAX_RUN_BYTES}`
     );
@@ -354,7 +354,7 @@ async function runDirectStoreChecks() {
       session: 'budget-session',
       callId: 'call-budget',
       status: 'ok',
-      description: 'T1: direct host-side run-budget check',
+      description: 'direct host-side run-budget check',
       code: 'print(1)',
       stdout: '',
       stderr: '',
@@ -363,33 +363,33 @@ async function runDirectStoreChecks() {
       explicitFiles,
     });
     const failedPaths = result.failures.map((f) => f.path);
-    check('T1: the run record was still written (only the third file failed)', result.ordinal !== null, JSON.stringify(result));
+    check('the run record was still written (only the third file failed)', result.ordinal !== null, JSON.stringify(result));
     check(
-      'T1: the first two files saved as artifacts',
+      'the first two files saved as artifacts',
       JSON.stringify(result.savedArtifacts) === JSON.stringify(['artifacts/a.bin', 'artifacts/b.bin']),
       JSON.stringify(result.savedArtifacts)
     );
-    check('T1: exactly the third file is named as a failure', JSON.stringify(failedPaths) === JSON.stringify(['artifacts/c.bin']), JSON.stringify(failedPaths));
+    check('exactly the third file is named as a failure', JSON.stringify(failedPaths) === JSON.stringify(['artifacts/c.bin']), JSON.stringify(failedPaths));
     check(
-      "T1: the failure names the per-run limit as why",
+      "the failure names the per-run limit as why",
       /per-run limit/.test((result.failures[0] || {}).reason || ''),
       JSON.stringify(result.failures)
     );
 
     const manifests = await workspace.manifests();
     const run = manifests['budget-session']?.runs.find((r) => r.ordinal === result.ordinal);
-    check('T1: the manifest omits the failed file', !!run && !run.files.includes('artifacts/c.bin'), JSON.stringify(run));
+    check('the manifest omits the failed file', !!run && !run.files.includes('artifacts/c.bin'), JSON.stringify(run));
     check(
-      'T1: but keeps the two files that actually saved',
+      'but keeps the two files that actually saved',
       !!run && run.files.includes('artifacts/a.bin') && run.files.includes('artifacts/b.bin'),
       JSON.stringify(run)
     );
   }
 
-  // E5 (host-side re-check): the 32-distinct-explicit-file cap, the other
+  // The host-side re-check of the 32-distinct-explicit-file cap, the other
   // half of "saved equals announced" -- Python enforces this too
   // (frontend/test-worker-core.js), but recordRun re-checks it independently
-  // for a caller that reaches the store some other way. Like T1, this needs
+  // for a caller that reaches the store some other way. Like the run-budget check, this needs
   // real IndexedDB: `available` is false under Bun, so recordRun returns
   // before ever reaching this loop there.
   {
@@ -402,7 +402,7 @@ async function runDirectStoreChecks() {
       session: 'filecount-session',
       callId: 'call-filecount',
       status: 'ok',
-      description: 'E5 (host): direct 32-distinct-file check',
+      description: 'direct 32-distinct-file check',
       code: 'print(1)',
       stdout: '',
       stderr: '',
@@ -410,20 +410,20 @@ async function runDirectStoreChecks() {
       images: [],
       explicitFiles,
     });
-    check('E5 (host): exactly 32 of the 33 distinct files saved', result.savedArtifacts.length === 32, `saved=${result.savedArtifacts.length}`);
+    check('exactly 32 of the 33 distinct files saved', result.savedArtifacts.length === 32, `saved=${result.savedArtifacts.length}`);
     check(
-      'E5 (host): the 33rd is refused by name',
+      'the 33rd is refused by name',
       result.failures.some((f) => f.path === 'artifacts/f32.txt'),
       JSON.stringify(result.failures)
     );
     check(
-      'E5 (host): the refusal names the 32-file cap, not the byte budget',
+      'the refusal names the 32-file cap, not the byte budget',
       result.failures.some((f) => f.path === 'artifacts/f32.txt' && /32 files/.test(f.reason)),
       JSON.stringify(result.failures)
     );
   }
 
-  // C1: two WorkspaceStore instances -- two separate IndexedDB connections
+  // Two WorkspaceStore instances -- two separate IndexedDB connections
   // to the same database -- recording concurrently for the SAME session
   // must never collide on an ordinal. This is _reserveOrdinal's own claim:
   // IndexedDB serializes readwrite transactions with overlapping scope
@@ -445,21 +445,21 @@ async function runDirectStoreChecks() {
       }),
     ]);
     check(
-      'C1: both concurrent recordRun calls were assigned an ordinal',
+      'both concurrent recordRun calls were assigned an ordinal',
       resultA.ordinal !== null && resultB.ordinal !== null,
       JSON.stringify([resultA.ordinal, resultB.ordinal])
     );
     check(
-      'C1: the two ordinals are exactly {1, 2}, never the same value',
+      'the two ordinals are exactly {1, 2}, never the same value',
       JSON.stringify([resultA.ordinal, resultB.ordinal].sort((x, y) => x - y)) === JSON.stringify([1, 2]),
       JSON.stringify([resultA.ordinal, resultB.ordinal])
     );
 
     const manifests = await storeA.manifests();
     const runs = manifests[session] ? manifests[session].runs : [];
-    check('C1: both runs survive in the manifest, neither overwritten', runs.length === 2, JSON.stringify(runs));
+    check('both runs survive in the manifest, neither overwritten', runs.length === 2, JSON.stringify(runs));
     check(
-      "C1: neither run's call_id was overwritten by the other's",
+      "neither run's call_id was overwritten by the other's",
       new Set(runs.map((r) => r.call_id)).size === 2,
       JSON.stringify(runs.map((r) => r.call_id))
     );
@@ -490,7 +490,7 @@ async function runReadPhase() {
   const used = await workspace.sizeUsed();
   check('after a fresh page load, sizeUsed matches what the first page wrote', used === expected.used, `got ${used}, expected ${expected.used}`);
 
-  // T4: ordinals continue correctly across a reload. Recorded directly
+  // Ordinals continue correctly across a reload. Recorded directly
   // against this FRESH store -- an ordinal is a WorkspaceStore/IndexedDB
   // guarantee, not something Python or the controller need be involved in
   // to prove -- and must land at run-003, leaving run-001's own files
@@ -500,7 +500,7 @@ async function runReadPhase() {
     session: SESSION_ID,
     callId: 'call-3-after-reload',
     status: 'ok',
-    description: 'T4: recorded directly against a fresh page load',
+    description: 'recorded directly against a fresh page load',
     code: 'print(3)',
     stdout: '3\n',
     stderr: '',
@@ -508,19 +508,19 @@ async function runReadPhase() {
     images: [],
     explicitFiles: [],
   });
-  check('T4: a run recorded after a fresh page load continues the ordinal sequence (run-003)', thirdRun.ordinal === 3, JSON.stringify(thirdRun));
+  check('a run recorded after a fresh page load continues the ordinal sequence (run-003)', thirdRun.ordinal === 3, JSON.stringify(thirdRun));
 
   const manifestsAfterThird = await workspace.manifests();
   const manifestAfterThird = manifestsAfterThird[SESSION_ID];
   const run1AfterThird = manifestAfterThird?.runs.find((r) => r.ordinal === 1);
-  check('T4: run-001 still exists once a third run has been added', !!run1AfterThird, JSON.stringify(manifestAfterThird));
+  check('run-001 still exists once a third run has been added', !!run1AfterThird, JSON.stringify(manifestAfterThird));
   check(
-    "T4: run-001's own files are byte-for-byte the same list as before the third run",
+    "run-001's own files are byte-for-byte the same list as before the third run",
     !!run1AfterThird && !!run1BeforeThird &&
       JSON.stringify([...run1AfterThird.files].sort()) === JSON.stringify([...run1BeforeThird.files].sort()),
     JSON.stringify({ before: run1BeforeThird, after: run1AfterThird })
   );
-  check('T4: the session now has exactly 3 runs', manifestAfterThird?.runs.length === 3, JSON.stringify(manifestAfterThird));
+  check('the session now has exactly 3 runs', manifestAfterThird?.runs.length === 3, JSON.stringify(manifestAfterThird));
 
   const zipBytes = await workspace.exportZip();
   check('after a fresh page load, exportZip still produces real bytes', zipBytes.length > 0, `length=${zipBytes.length}`);

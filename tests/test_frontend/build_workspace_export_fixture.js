@@ -79,7 +79,7 @@ const files = [
   { path: 'artifacts/table.csv', data: encoder.encode('a,b\n1,2\n') },
 ];
 
-// A SECOND session (T2), so a Python-side reader can prove exportZip scopes
+// A SECOND session, so a Python-side reader can prove exportZip scopes
 // each session's manifest and notebook to only its own runs -- the same
 // property frontend/test-workspace.js's Bun-side zip test proves, checked
 // here independently against the fixture the pytest suite actually reads.

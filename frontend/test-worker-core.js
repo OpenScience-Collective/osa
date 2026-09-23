@@ -721,8 +721,8 @@ console.log('\nevery path rule is enforced, refused with a readable message the 
 {
   const cases = [
     ['osa.save_artifact("", "x")', /^ValueError: path must be a non-empty string\n/],
-    // Checked on the RAW argument, before "artifacts/" is prepended (#433
-    // review, D7): the message names exactly what the caller wrote, not the
+    // Checked on the RAW argument, before "artifacts/" is prepended (#433):
+    // the message names exactly what the caller wrote, not the
     // prefixed path it would become.
     ['osa.save_artifact("../escape.txt", "x")', /^ValueError: path segment '\.\.' is not allowed: \.\.\/escape\.txt\n/],
     ['osa.save_artifact("a/./c.txt", "x")', /^ValueError: path segment '\.' is not allowed: a\/\.\/c\.txt\n/],
@@ -759,7 +759,7 @@ console.log('\nthe per-file and per-run size caps are enforced, with the actual 
     `the message names the actual size and the limit (got ${JSON.stringify(overFile.stderr)})`);
 
   // Exactly the 25 MB per-run boundary: three files that sum to precisely
-  // the limit must all succeed (T7). Sizes are picked to land on the exact
+  // the limit must all succeed. Sizes are picked to land on the exact
   // byte, not merely under it, so this is a real boundary test and not a
   // margin-of-error one.
   const exactRun = await plain.run(
@@ -785,7 +785,7 @@ console.log('\nthe per-file and per-run size caps are enforced, with the actual 
   );
 }
 
-console.log('\na run may explicitly save at most 32 distinct files (E5): "saved equals announced"');
+console.log('\na run may explicitly save at most 32 distinct files: "saved equals announced"');
 {
   const thirtyTwo = await plain.run(
     Array.from({ length: 32 }, (_, i) => `osa.save_artifact("f${i}.txt", "x")`).join('\n') + '\nprint("ok")'
@@ -820,7 +820,7 @@ console.log('\na run that saves nothing reports nothing');
   assertEqual(JSON.stringify(r.files), '[]', 'and no files to persist');
 }
 
-console.log('\n_save_file and _validate_before_prefix are unreachable from executed code (T8)');
+console.log('\n_save_file and _validate_before_prefix are unreachable from executed code');
 {
   // Both are set on the user namespace only long enough for dataClient to
   // build the osa module, then `del`eted (osa-egress.js). If either leaked,

@@ -460,7 +460,7 @@ console.log('\na workspace write that genuinely fails drops the artifact and not
   rt.terminate();
 }
 
-console.log('\na workspace failure note is never clipped away when stderr_chars is small (E4)');
+console.log('\na workspace failure note is never clipped away when stderr_chars is small');
 {
   const workspace = new WorkspaceStore({ community: 'test-community' });
   const smallStderr = { ...RUNTIME, limits: { ...RUNTIME.limits, stderr_chars: 256 } };

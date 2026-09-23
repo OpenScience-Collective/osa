@@ -76,7 +76,7 @@ console.log('\nthe mirrored caps have not drifted from the server');
   }
 }
 
-console.log('\nWORKSPACE_LIMITS has not drifted from the Python it is generated to mirror (D6, #433)');
+console.log('\nWORKSPACE_LIMITS has not drifted from the Python it is generated to mirror (#433)');
 {
   // osa-workspace.js's WORKSPACE_LIMITS mirrors five constants that live in
   // the GENERATED Python text (buildOutputCaptureSource's own output, not a

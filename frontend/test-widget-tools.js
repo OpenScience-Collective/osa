@@ -699,7 +699,7 @@ console.log('\nthe stream handler continues the same reply across runs');
     'and the earlier text survives it');
 }
 
-console.log('\nthe Settings workspace panel: size formatting, visibility, and delete arm/disarm (T3, #433)');
+console.log('\nthe Settings workspace panel: size formatting, visibility, and delete arm/disarm (#433)');
 {
   const config = { default_model: 'm', offered_models: [], widget: {}, client_tools: [], runtime: null };
   const fetch = async (url) => {

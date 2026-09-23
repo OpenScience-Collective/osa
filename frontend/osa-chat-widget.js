@@ -4875,7 +4875,7 @@
       runningActivity,
       getMessages: () => messages,
       setMessages: (list) => { messages = list; },
-      // The Settings workspace panel (#433, T3): workspaceStore is normally
+      // The Settings workspace panel (#433): workspaceStore is normally
       // set only by setUpBrowserTools once a runtime bundle loads, which
       // needs IndexedDB behind it to mean anything; a test sets it directly
       // to exercise the panel's own logic against a REAL WorkspaceStore

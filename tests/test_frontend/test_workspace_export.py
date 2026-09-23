@@ -88,7 +88,7 @@ def test_manifest_names_every_run(export_zip_path: Path) -> None:
 
 
 def test_export_scopes_each_session_to_its_own_manifest(export_zip_path: Path) -> None:
-    """T2: a second session's run never leaks into the first session's
+    """A second session's run never leaks into the first session's
 
     manifest or notebook, and vice versa, even though both sessions share
     a path (`scripts/run-001.py`) inside one archive.

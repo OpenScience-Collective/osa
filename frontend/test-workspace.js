@@ -187,7 +187,7 @@ console.log('\nWorkspaceStore reports IndexedDB unavailability as a value, never
   const tooBig = await store.putFile('session-1', 'artifacts/big.bin', new Uint8Array(WORKSPACE_LIMITS.MAX_FILE_BYTES + 1));
   assert(!tooBig.ok && /per-file limit/.test(tooBig.reason), `an oversized file fails on size, not on IndexedDB (got ${JSON.stringify(tooBig)})`);
 
-  // T5: the boundary itself, mirroring the community-cap pair just below --
+  // The boundary itself, mirroring the community-cap pair just below --
   // exactly at the per-file cap must pass the SIZE check, so IndexedDB
   // (unavailable here) is the only reason it still fails overall.
   const exactlyAtFileCap = await store.putFile('session-1', 'artifacts/exact.bin', new Uint8Array(WORKSPACE_LIMITS.MAX_FILE_BYTES));
@@ -236,7 +236,7 @@ console.log('\nWorkspaceStore reports IndexedDB unavailability as a value, never
   assert(threw instanceof TypeError, 'a WorkspaceStore requires a non-empty community id');
 }
 
-console.log('\na store whose IndexedDB open() never settles reports a deadline failure, not a hang (E1)');
+console.log('\na store whose IndexedDB open() never settles reports a deadline failure, not a hang');
 {
   // A REAL, test-controlled dbFactory -- not a mock of WorkspaceStore's own
   // logic. Its open() returns a request shape whose handlers are simply
@@ -254,7 +254,7 @@ console.log('\na store whose IndexedDB open() never settles reports a deadline f
   assert(elapsed < 2000, `it resolves close to the overridden deadline, not the real 10s default (took ${elapsed}ms)`);
 }
 
-console.log('\na rejected open() does not poison later calls: _dbPromise is reset (E1)');
+console.log('\na rejected open() does not poison later calls: _dbPromise is reset');
 {
   // Fails FAST and for real (onerror on a microtask), a different failure
   // mode from the never-settles case above: this one proves the SPECIFIC
@@ -282,7 +282,7 @@ console.log('\na rejected open() does not poison later calls: _dbPromise is rese
   assert(!second.ok && second.reason === 'open attempt 2 failed', `the second attempt fails for ITS OWN reason, not the first's cached rejection (got ${JSON.stringify(second)})`);
 }
 
-console.log('\nbuildStoredZip refuses more than 65,535 entries rather than writing a wrapped count (C3)');
+console.log('\nbuildStoredZip refuses more than 65,535 entries rather than writing a wrapped count');
 {
   const tooMany = Object.fromEntries(Array.from({ length: 0x10000 }, (_, i) => [`f${i}`, '']));
   let threw = null;
@@ -303,7 +303,7 @@ console.log('\nbuildStoredZip refuses more than 65,535 entries rather than writi
   assert(atCapThrew === null, `exactly 65,535 entries is still allowed (got ${atCapThrew && atCapThrew.message})`);
 }
 
-console.log('\nbuildStoredZip sets the UTF-8 flag bit, so a non-ASCII name round-trips through an INDEPENDENT reader (C4)');
+console.log('\nbuildStoredZip sets the UTF-8 flag bit, so a non-ASCII name round-trips through an INDEPENDENT reader');
 {
   const dir = mkdtempSync(join(tmpdir(), 'osa-zip-utf8-'));
   try {
@@ -350,7 +350,7 @@ console.log('\nthe zip writer produces bytes an INDEPENDENT reader accepts (unzi
   try {
     const notebookRuns = [{ ordinal: 1, description: 'demo', code: 'print(1)', stdout: '1\n', stderr: '', images: [] }];
     const runs = [{ ordinal: 1, callId: 'call-1', status: 'ok', description: 'demo', files: ['scripts/run-001.py'], timestamp: '2026-01-01T00:00:00Z' }];
-    // T2: a SECOND session, with its own run and its own file, to prove
+    // A SECOND session, with its own run and its own file, to prove
     // exportZip scopes each session's manifest and notebook to only its own
     // runs rather than leaking across sessions that share one community.
     const notebookRuns2 = [{ ordinal: 1, description: 'other session', code: 'print(2)', stdout: '2\n', stderr: '', images: [] }];
@@ -403,7 +403,7 @@ console.log('\nthe zip writer produces bytes an INDEPENDENT reader accepts (unzi
     // Independent reader 2: Python's stdlib zipfile, via a throwaway script,
     // which also validates the notebook JSON and the manifest JSON parse
     // and carry the fields WorkspaceStore.exportZip is documented to write,
-    // AND (T2) that each session's manifest and notebook hold only ITS OWN
+    // AND that each session's manifest and notebook hold only ITS OWN
     // run -- session 2's call_id must never appear under session 1's path,
     // or vice versa.
     const checker = `
