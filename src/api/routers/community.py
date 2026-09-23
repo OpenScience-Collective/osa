@@ -54,7 +54,6 @@ from src.api.tool_results import (
     build_history_tool_message,
     build_live_tool_message,
     build_unanswered_tool_message,
-    is_image_block,
     scrub_stored_images,
 )
 from src.assistants import registry
@@ -956,6 +955,13 @@ class ProviderChoice:
         elif not self.api_key:
             raise ValueError("api_key must not be an empty string; use None for server mode")
 
+    @property
+    def takes_native_blocks(self) -> bool:
+        """Whether this path has been shown to accept Anthropic's native content
+        blocks: search_result citations and image blocks alike. The one place that
+        answers it, so citations, MCP images and browser figures cannot disagree."""
+        return self.provider == "anthropic"
+
 
 def _platform_choice(settings: Settings) -> ProviderChoice:
     """Fall back to the platform's own key, preferring Anthropic.
@@ -1490,15 +1496,14 @@ def create_community_assistant(
         # search result in a request must share one citations.enabled
         # setting; the provider choice is already fixed per request, so
         # this satisfies that constraint for free.
-        citations=provider_choice.provider == "anthropic",
-        # Same gate as citations, and for the same reason: only the Anthropic path
-        # has been shown to accept the native image content block an MCP tool result
-        # (nemar_render_overview) can now carry. See CommunityAssistant's
-        # `allow_mcp_images` and src.tools.mcp_client._content_of.
-        allow_mcp_images=provider_choice.provider == "anthropic",
+        citations=provider_choice.takes_native_blocks,
+        # The same gate, for the image block an MCP tool result (nemar_render_overview)
+        # can carry. See src.tools.mcp_client._content_of.
+        allow_mcp_images=provider_choice.takes_native_blocks,
         # None on the /ask path, which has no session to park a browser call in and so
-        # binds no client-executed tools at all. That is decision 7 of the phase plan,
-        # enforced by the default rather than by a check.
+        # binds no client-executed tools at all: /ask is one request and one answer, so
+        # nothing could carry a browser result back. Enforced by the default rather
+        # than by a check.
         declared_client_tools=declared_client_tools,
         browser_runs_left=browser_runs_left,
     )
@@ -2089,8 +2094,14 @@ def create_community_router(community_id: str) -> APIRouter:
         # runs before the call is claimed, because anything raised after the claim
         # would leave the session unanswerable (see the note on the re-park below).
         try:
-            allow_images = _resolve_provider(community_id, byok, origin).provider == "anthropic"
-        except HTTPException:
+            allow_images = _resolve_provider(community_id, byok, origin).takes_native_blocks
+        except HTTPException as err:
+            logger.debug(
+                "No provider for /chat/resume images (%s: %s); sending placeholders",
+                err.status_code,
+                err.detail,
+                extra={"community_id": community_id},
+            )
             allow_images = False
 
         session = get_session(community_id, body.session_id)
@@ -2645,40 +2656,34 @@ def create_community_router(community_id: str) -> APIRouter:
 
 
 def _sse_safe_tool_output(tool_output: Any) -> str:
-    """Render a tool's raw `on_tool_end` output for the `tool_end` SSE event.
+    """Render a tool's `on_tool_end` output for the `tool_end` SSE event.
 
-    A bare `str(tool_output)` was always safe before MCP images, for a reason worth
-    being explicit about: `tool_output` here is not a tool's raw return value, it is
-    the `ToolMessage` LangGraph's `ToolNode` built from it, and `str()` on a
-    `ToolMessage` prints its `content` in full. That was harmless when `content` was
-    only ever a plain string. It stops being harmless now that
-    `src.tools.mcp_client._wrap_tool` can return a content-block list carrying a
-    real base64 PNG (`_content_of`): that list becomes `ToolMessage.content`
-    verbatim, and `str()` would embed the image's own base64 text in the SSE stream,
-    which is one of exactly the things this event must never do.
+    `tool_output` is the `ToolMessage` LangGraph's `ToolNode` built, not the tool's
+    raw return value, and `str()` on it prints its `content` in full. That was safe
+    while `content` was a string. An MCP tool can now return a block list carrying a
+    base64 PNG (`src.tools.mcp_client._content_of`), and `str()` would stream it.
 
-    So only a block LIST containing an image block, in any spelling
-    `scrub_stored_images` knows, is treated specially: text blocks are joined and
-    each image block becomes a one-line placeholder, never reading its data.
-    Everything else, including a `ToolMessage` whose content is a plain string,
-    renders exactly as `str(tool_output) if tool_output else ""` always has, so no
-    existing consumer of this field sees a different string for a tool that has
-    nothing pictorial to hide.
+    So a block list keeps only what is known to be text: each text block's text, and
+    a one-line placeholder naming any other block's type. That fails closed for a
+    block spelling nobody has written yet. String content renders exactly as
+    `str(tool_output)` always has; nothing reads this field today beyond a log line
+    in the widget, so the rendering is for people reading the stream.
     """
     if not tool_output:
         return ""
     content = getattr(tool_output, "content", tool_output)
-    if isinstance(content, list) and any(is_image_block(block) for block in content):
-        parts: list[str] = []
-        for block in content:
-            if is_image_block(block):
-                parts.append("[image, not shown in this event]")
-            elif isinstance(block, dict) and block.get("type") == "text":
-                parts.append(str(block.get("text", "")))
-            else:
-                parts.append(str(block))
-        return "\n".join(parts)
-    return str(tool_output)
+    if not isinstance(content, list):
+        return str(tool_output)
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, str):
+            parts.append(block)
+        elif isinstance(block, dict) and block.get("type") == "text":
+            parts.append(str(block.get("text", "")))
+        else:
+            kind = block.get("type", "unknown") if isinstance(block, dict) else type(block).__name__
+            parts.append(f"[{kind} block, not shown in this event]")
+    return "\n".join(parts)
 
 
 def _extract_token_usage(event_data: dict) -> tuple[int, int, int, int]:

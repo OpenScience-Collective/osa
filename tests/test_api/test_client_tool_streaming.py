@@ -437,7 +437,7 @@ class TestToolEndEventNeverCarriesBase64:
         assert tool_end_events, "render_with_image's on_tool_end never fired"
         rendered = next(e for e in tool_end_events if e["name"] == "render_with_image")
         assert RENDER_PNG_B64 not in rendered["output"]
-        assert "[image, not shown in this event]" in rendered["output"]
+        assert "[image block, not shown in this event]" in rendered["output"]
 
     @pytest.mark.asyncio
     async def test_an_ordinary_text_tools_output_is_unaffected(self) -> None:
@@ -462,6 +462,34 @@ class TestToolEndEventNeverCarriesBase64:
         )
         assert "documentation for alpha" in rendered["output"]
         assert "image" not in rendered["output"]
+
+
+class TestToolEndRendering:
+    """`_sse_safe_tool_output` directly, for the block shapes no tool here returns yet."""
+
+    def test_a_block_of_an_unknown_type_is_withheld(self) -> None:
+        """Fails closed: only text is known to be safe to stream, so a block spelling
+        nobody has written yet is named, never printed."""
+        from src.api.routers.community import _sse_safe_tool_output
+
+        message = ToolMessage(
+            content=[
+                {"type": "text", "text": "overview of nm000103"},
+                {"type": "future_media", "payload": "c2VjcmV0IGJ5dGVz"},
+            ],
+            tool_call_id="call_x",
+        )
+
+        rendered = _sse_safe_tool_output(message)
+
+        assert rendered == "overview of nm000103\n[future_media block, not shown in this event]"
+
+    def test_string_content_renders_as_it_always_has(self) -> None:
+        from src.api.routers.community import _sse_safe_tool_output
+
+        message = ToolMessage(content="documentation for alpha", tool_call_id="call_x")
+
+        assert _sse_safe_tool_output(message) == str(message)
 
 
 class TestNothingHappensWithoutAClientTool:
