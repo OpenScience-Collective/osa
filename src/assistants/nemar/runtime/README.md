@@ -11,7 +11,7 @@ How that works is in `src/core/config/runtime_lock.py`.
 | wheel | from | sha256 |
 |---|---|---|
 | `zarr-3.4.0-py3-none-any.whl` | PyPI, byte for byte (digest matches PyPI's published one) | `0a5e6c9b...eb72395` |
-| `eegprep_lean-0.1.0.dev1-py3-none-any.whl` | `sccn/eegprep` at `67670f5b` (#414), `packages/eegprep-lean`, `uv build --wheel` | `64385eed...4210eb7` |
+| `eegprep_lean-0.1.0.dev2-py3-none-any.whl` | `sccn/eegprep` at `b4aa18bd` (#416), `packages/eegprep-lean`, `uv build --wheel` | `39f33b99...7157582` |
 
 zarr's own dependencies are not here:
 Pyodide 0.29.5 ships every one of them, and `depends.toml` names them.
