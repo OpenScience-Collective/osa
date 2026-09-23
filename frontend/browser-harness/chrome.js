@@ -31,7 +31,7 @@ import { startServer } from './serve.js';
 // warm and lockchange boot NEMAR's overlay once more, on the SAME origin, so
 // everything but at most one wheel comes from the browser's own HTTP cache;
 // generous for the same reason, not because either is expected to be slow.
-const PAGE_TIMEOUT_MS = { nemarlike: 360_000, control: 150_000, warm: 120_000, lockchange: 120_000 };
+const PAGE_TIMEOUT_MS = { nemarlike: 360_000, control: 150_000, warm: 120_000, lockchange: 120_000, workspace: 120_000 };
 
 const CANDIDATES = [
   process.env.CHROME_PATH,
@@ -366,6 +366,33 @@ async function main() {
       control.done && boot && boot.ok === false,
       `control ${control.error || 'booted, so the policy was never applied'}`,
       `control, the boot failed as it must (${boot && boot.detail})`
+    );
+
+    // workspace: the persistent workspace (#433) against a REAL IndexedDB.
+    // Two separate page loads, same origin: the first boots Pyodide, runs
+    // real code through a real ClientToolController with a workspace
+    // attached, and checks what landed (the result's artifacts, the derived
+    // manifest, sizeUsed, and the exported zip's actual entries); the second
+    // is a fresh module graph reading back exactly what the first wrote,
+    // proving IndexedDB itself persisted it rather than one JS object
+    // remembering it, and exercises deleteAll.
+    console.log('workspace: osa.save_script/save_artifact against a real IndexedDB, across a reload');
+    const writePhase = await runPage(cdp, `${base}/nemarlike/browser-harness/workspace.html?phase=write`, PAGE_TIMEOUT_MS.workspace);
+    const writeFailing = writePhase.results.filter((r) => !r.ok);
+    report(
+      writePhase.done && !writePhase.error && writeFailing.length === 0 && writePhase.results.length > 0,
+      `workspace (write) ${writePhase.error || `${writeFailing.length} of ${writePhase.results.length} checks failed`}`,
+      `workspace (write), all ${writePhase.results.length} checks passed`,
+      writeFailing.map((r) => `${r.name}: ${r.detail}`)
+    );
+
+    const readPhase = await runPage(cdp, `${base}/nemarlike/browser-harness/workspace.html?phase=read`, PAGE_TIMEOUT_MS.workspace);
+    const readFailing = readPhase.results.filter((r) => !r.ok);
+    report(
+      readPhase.done && !readPhase.error && readFailing.length === 0 && readPhase.results.length > 0,
+      `workspace (read after reload) ${readPhase.error || `${readFailing.length} of ${readPhase.results.length} checks failed`}`,
+      `workspace (read after reload), all ${readPhase.results.length} checks passed`,
+      readFailing.map((r) => `${r.name}: ${r.detail}`)
     );
 
     // The overlay's own wheel names, from the config the harness pages boot

@@ -8,7 +8,9 @@ It runs in CI, in headless Chrome, as a gate:
 `frontend/browser-harness/chrome.js` opens the `nemarlike` page and requires every check to pass,
 then opens the `control` page and requires its boot to fail,
 then opens `cache-boot.html` twice more (see "Wheel caching" below)
-to require the browser's own HTTP cache to have done its job the second and third time NEMAR's runtime boots.
+to require the browser's own HTTP cache to have done its job the second and third time NEMAR's runtime boots,
+then opens `workspace.html` twice (`?phase=write`, then `?phase=read`, see "Workspace" below)
+to require the persistent workspace (#433) to actually round-trip through a real IndexedDB, across a reload.
 The Python half is ALSO tested under Bun:
 `frontend/test-worker-core.js` and `frontend/test-data-lane.js` run the same worker core
 against the real Pyodide from npm.
@@ -138,6 +140,26 @@ a cache hit reports 0 because nothing crosses the network, not because the file 
   with both overlay wheels reported `fromDiskCache=false` and their full byte count over the network again.
   A worker whose network could not be recorded fails every recorded run, naming the worker,
   and an overlay that lists no wheel stops the harness before either cache check can pass vacuously.
+
+### Workspace
+
+`frontend/test-workspace.js` already proves the storage-independent half
+(path validation, manifest derivation, the `.ipynb` builder, the zip writer,
+checked against two independent readers) runs correctly under Bun,
+where `indexedDB` does not exist.
+What only a real browser can check is IndexedDB itself, and `workspace.html` is for that.
+
+`?phase=write` boots a real runtime, runs two real executions through a real `ClientToolController`
+with a `WorkspaceStore` attached (calling `osa.save_script`/`osa.save_artifact` for real),
+and checks what actually landed:
+the result's `artifacts`, the derived manifest, `sizeUsed`, and the exported zip's own entries,
+parsed from its real central directory rather than assumed from the writer's own intent.
+It leaves what it expects in `localStorage`, on the same origin, for the second load to check against.
+
+`?phase=read` is a FRESH page load: a new `WorkspaceStore` for the same community,
+with no execution and no controller, reading back exactly what the first phase wrote,
+which is the only way to show IndexedDB itself persisted it rather than one JS object remembering it.
+It also exercises `deleteAll` and confirms the store reports empty afterward.
 
 ## The widget, end to end
 
