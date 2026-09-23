@@ -2336,7 +2336,12 @@
         return null;
       }
       try {
-        browserRuntime = new api.PyodideRuntime({ runtime: python, lock, onProgress: onRuntimeProgress });
+        browserRuntime = new api.PyodideRuntime({
+          runtime: python,
+          lock,
+          onProgress: onRuntimeProgress,
+          onStateChange: onRuntimeStateChange,
+        });
         browserTools = new api.ClientToolController({ runtime: browserRuntime, tools, gate: askToRunCode });
         runtimeApi = api;
       } catch (err) {
@@ -2427,11 +2432,11 @@
     return { phase: 'running', prompt, progress: null };
   }
 
-  // Shown once, when the interpreter itself has loaded and package
-  // downloads are about to start: the one point where a reader might
-  // wonder why this happens again next time, so it says it will not.
+  // Shown when the interpreter has loaded and its packages are about to: the
+  // point where a reader might wonder whether this happens every time, so it
+  // says it does not. No size, which depends on the community and the cache.
   const RUNTIME_LOADED_LABEL =
-    "Python is ready. It downloads once; your browser keeps it after that.";
+    'Python started. It downloads once, and your browser keeps it after that.';
 
   // The code and description a tool_request carries, as strings. The request
   // came from the model, so neither is assumed to be one.
@@ -2462,6 +2467,16 @@
     const rawSteps = Number.isInteger(event.steps) && event.steps > 0 ? event.steps : null;
     const hasBar = rawStep !== null && rawSteps !== null && rawStep <= rawSteps;
     toolActivity.progress = { text, step: hasBar ? rawStep : null, steps: hasBar ? rawSteps : null };
+    renderIfMounted();
+  }
+
+  // Once the runtime is ready, the boot's last label and full bar no longer
+  // describe what is happening: the reader's code is running, so the panel
+  // goes back to saying that.
+  function onRuntimeStateChange(state) {
+    if (state !== 'ready' || !toolActivity || toolActivity.phase !== 'running') return;
+    if (!toolActivity.progress) return;
+    toolActivity.progress = null;
     renderIfMounted();
   }
 
@@ -4683,6 +4698,7 @@
       getToolActivity: () => toolActivity,
       setToolActivity: (activity) => { toolActivity = activity; },
       onRuntimeProgress,
+      onRuntimeStateChange,
       runningActivity,
       getMessages: () => messages,
       setMessages: (list) => { messages = list; },

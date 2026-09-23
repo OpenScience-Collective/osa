@@ -256,6 +256,24 @@ console.log('\na determinate progress bar tracks a real boot sequence, and never
   api.setToolActivity({ phase: 'asking', prompt: { code: '', description: '' }, decide() {} });
   api.onRuntimeProgress({ phase: 'loading_runtime', step: 1, steps: 1 });
   assertEqual(api.getToolActivity().phase, 'asking', 'and never overwrites the asking panel either');
+
+  // Once the runtime is ready the boot is over and the reader's code is running,
+  // so its last label and full bar stop describing anything.
+  api.setToolActivity(api.runningActivity({ code: 'x', description: '' }));
+  api.onRuntimeProgress({ phase: 'prelude', step: 3, steps: 3 });
+  api.onRuntimeStateChange('booting');
+  assert(api.getToolActivity().progress !== null, 'a state other than ready leaves the boot progress');
+  api.onRuntimeStateChange('ready');
+  {
+    const holder = window.document.createElement('div');
+    holder.innerHTML = api.toolPanelHtml(api.getToolActivity());
+    assertEqual(holder.querySelector('.osa-tool-progress'), null, 'ready clears the bar');
+    assertEqual(holder.querySelector('.osa-tool-status').textContent, 'Running Python in your browser...',
+      'and the panel says the code is running');
+  }
+  api.setToolActivity({ phase: 'asking', prompt: { code: '', description: '' }, decide() {} });
+  api.onRuntimeStateChange('ready');
+  assertEqual(api.getToolActivity().phase, 'asking', 'ready never touches the asking panel');
 }
 
 console.log('\nwhat is stored is what is read back, within the same bounds');
@@ -522,6 +540,8 @@ console.log('\na community\'s lock overlay reaches the runtime, with its wheels 
   assertEqual(runtime && runtime.lock && runtime.lock.baseUrl, `${config.apiEndpoint}/${config.communityId}/runtime/`,
     'the wheels are fetched from this community\'s runtime route on the API');
   assertEqual(runtime && runtime.lock && runtime.lock.packages, packages, 'and the entries arrive as the server sent them');
+  assert(runtime && runtime.onProgress === api.onRuntimeProgress && runtime.onStateChange === api.onRuntimeStateChange,
+    'the runtime reports its progress and its state to the widget\'s own handlers');
 }
 
 console.log('\nwithout a lock overlay, the runtime gets none');
