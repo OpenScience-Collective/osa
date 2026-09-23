@@ -102,11 +102,16 @@ async function timeToSentinel(cdp, url, sentinel, timeoutMs) {
       cacheHits: all.filter((r) => r.fromDiskCache || r.servedFromCache).length,
       failedRequests: all.filter((r) => r.failed).length,
     };
-    if (foundAtMs === null) {
+    // A worker whose network could not be watched makes every byte and
+    // request count above an undercount, so such a run is not a
+    // measurement: it fails, naming the worker, as chrome.js's own cache
+    // checks do.
+    const attachFailures = recorder.attachFailures.map((f) => `could not watch a worker's network: ${f}`);
+    if (foundAtMs === null || attachFailures.length > 0) {
       return {
         ok: false,
         elapsedMs: null,
-        error: `sentinel not seen within ${timeoutMs}ms`,
+        error: attachFailures.length > 0 ? attachFailures.join('; ') : `sentinel not seen within ${timeoutMs}ms`,
         exceptions,
         consoleTail: consoleLines.slice(-10),
         ...totals,
