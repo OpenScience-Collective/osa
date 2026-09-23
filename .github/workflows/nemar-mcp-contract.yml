@@ -78,18 +78,22 @@ jobs:
             tests/test_assistants/test_nemar_contract_live.py
 
           if [ -n "$failures" ]; then
+            # A random delimiter, so no line of the report can end the value early.
+            delimiter="report_$(openssl rand -hex 8)"
             {
               echo "failed=true"
-              echo "report<<EOF"
+              echo "report<<$delimiter"
               echo -e "$failures"
-              echo "EOF"
+              echo "$delimiter"
             } >> "$GITHUB_OUTPUT"
           else
             echo "failed=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # Also on any earlier failure, such as checkout or `uv sync`: a check that never
+      # ran is a failing check, and the issue is what makes a scheduled failure seen.
       - name: Open or update an issue on failure
-        if: steps.contract.outputs.failed == 'true'
+        if: failure() || steps.contract.outputs.failed == 'true'
         uses: actions/github-script@v7
         env:
           # Passed through env rather than interpolated into the script body;
@@ -99,7 +103,9 @@ jobs:
         with:
           script: |
             const title = 'NEMAR MCP contract check failing';
-            const report = process.env.CONTRACT_REPORT || '';
+            const report =
+              process.env.CONTRACT_REPORT ||
+              '- The job failed before the checks ran (checkout, Python or `uv sync`), so nothing was checked.';
             const body = [
               'The scheduled check of NEMAR\'s live MCP server and its eegprep-lean wheel is failing.',
               '',
