@@ -59,7 +59,7 @@ and the real NEMAR read completes end to end under that pin.
 
 **User decision, 2026-09-23: this release's phase 4c is the editable re-run panel in the chat widget.
 A hosted JupyterLite notebook surface is deferred to a follow-up epic phase, not built in this release.**
-That follow-up has four prerequisites this ADR's measurements surfaced, none of them started:
+That follow-up (#453) has four prerequisites this ADR's measurements surfaced, none of them started:
 
 1. A pruned, pinned JupyterLite build (`jupyter lite build --pyodide=<0.29.5 tarball> --no-unused-shared-packages`);
    size not yet measured (the unpruned pin is 529 to 531 MB, an unrealistic deploy size).
