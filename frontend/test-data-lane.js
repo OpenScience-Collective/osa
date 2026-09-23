@@ -66,9 +66,11 @@ const localPackages = Object.fromEntries(
   Object.entries(OVERLAY).map(([key, entry]) => [key, { ...entry, file_name: WHEELS + entry.file_name }])
 );
 
-// nemar-cli's python_browser recipe, verbatim from buildHowTo in
-// shared/contract/mcp.ts (nemarOrg/nemar-cli, as of 2026-09-22), with the array
-// URL left as a placeholder. It is what nemar_read_window hands the model.
+// Production's CURRENT python_browser recipe: nemar-cli v0.10.5's buildHowTo in
+// shared/contract/mcp.ts, verbatim, with the array URL left as a placeholder. This
+// is the shape live today, before this PR's re-vendor: it leads with open_array and
+// has no read_index/index_url at all. It is what nemar_read_window hands the model
+// on production right now.
 const PYTHON_BROWSER_RECIPE = [
   'from eegprep_lean import open_array  # from the runtime\'s lockfile, not micropip',
   '',
@@ -101,6 +103,39 @@ function fillPlaceholders(snippet, substitutions) {
     filled = filled.replace(new RegExp(`\\b${name}\\b`, 'g'), value);
   }
   return filled;
+}
+
+// nemar-cli DEV's LEVEL-0 python_browser recipe: buildHowTo's isLevel0 branch in
+// shared/contract/mcp.ts, verbatim, as of nemarOrg/nemar-cli's origin/dev at
+// 0.10.6-dev7 (2026-09-22) -- unreleased. This is the recipe #432 exists to guard:
+// it leads with read_index(dataset_id, index_url=...), which needs eegprep-lean
+// 0.1.0.dev2 or later (see test_nemar_contract_live.py's index_url test). Built the
+// same way buildHowTo builds it -- JSON.stringify (`q`) on every value the index
+// document supplies -- and filled here for the loopback dataset exactly as
+// nemar-cli fills it: contractBase is BASE, so index_url is `${BASE}index.json`.
+function nemarCliDevLevel0Recipe({ contractBase, datasetId, storePath, groupName, relativePath }) {
+  const q = (value) => JSON.stringify(value);
+  const rawRead = [
+    `arr = await eegprep_lean.open_array(${q(`${contractBase}${relativePath}`)})`,
+    'digital = await arr.getitem((slice(None), slice(start_sample, end_sample)))',
+    "# physical = digital * scale + offset -- see the recipe's scale_offset field",
+  ];
+  return [
+    "import eegprep_lean  # from the runtime's lockfile, not micropip",
+    '',
+    '# index_url needs eegprep-lean 0.1.0.dev2 or later',
+    `index = await eegprep_lean.read_index(${q(datasetId)}, index_url=${q(`${contractBase}index.json`)})`,
+    `store = index.store(${q(storePath)})`,
+    'window = await eegprep_lean.read_window(',
+    `    index, store, group=store.group(${q(groupName)}),`,
+    '    start_sample=start_sample, n_samples=end_sample - start_sample,',
+    ')',
+    "# window.data is in physical units (window.unit), one row per channel in window.labels",
+    '# async throughout: the loop is already running, so there is no synchronous form',
+    '',
+    '# the stored digital counts instead, when those are what you need:',
+    ...rawRead,
+  ].join('\n');
 }
 
 console.log('='.repeat(60));
@@ -205,12 +240,22 @@ const seen = [];
 // Populated once BASE is known (a format-3 index.json is keyed by dataset_id and
 // served from this same loopback server; see "the prompt's own python snippet").
 const INDEX_DOCS = new Map();
+// nemar-cli's own index_url convention (buildHowTo: `${contract_base}index.json`,
+// flat, with no dataset segment -- contract_base already carries the dataset in a
+// real deployment's path). Populated by "nemar-cli dev's level-0 recipe" below.
+let LEVEL0_INDEX_DOC = null;
 const server = Bun.serve({
   port: 0,
   fetch(request) {
     const { pathname } = new URL(request.url);
     const range = request.headers.get('range');
     seen.push({ pathname, range });
+    if (pathname === '/index.json') {
+      if (LEVEL0_INDEX_DOC === null) return new Response('Not Found', { status: 404 });
+      return new Response(JSON.stringify(LEVEL0_INDEX_DOC), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }
     const indexMatch = pathname.match(/^\/([^/]+)\/zarr\/index\.json$/);
     if (indexMatch) {
       const doc = INDEX_DOCS.get(indexMatch[1]);
@@ -294,6 +339,72 @@ try {
       'and reads exactly the stored counts');
     assert(seen.some((r) => r.range && r.range.startsWith('bytes=-')), 'the shard index was read with a suffix range');
     assert(seen.some((r) => r.range && /^bytes=\d+-\d+$/.test(r.range)), 'and the inner chunk with a bounded range');
+  }
+
+  console.log("\nnemar-cli dev's level-0 recipe runs verbatim (read_index, index_url)");
+  {
+    const LEVEL0_DATASET_ID = 'xx099998';
+    const LEVEL0_STORE_PATH = 'sub-01/eeg/sub-01_task-test_eeg.set';
+    const LEVEL0_GROUP = 'eeg_250hz';
+    const LEVEL0_RELATIVE_PATH = 'rec.zarr/eeg_250hz/0';
+
+    // nemar-cli's own index_url convention: BASE + "index.json", flat, no dataset
+    // segment (see the server's `pathname === '/index.json'` route above).
+    LEVEL0_INDEX_DOC = {
+      format: 'nemar-zarr-index',
+      format_version: 3,
+      dataset_id: LEVEL0_DATASET_ID,
+      contract_base: BASE,
+      data_base: BASE,
+      store_count: 1,
+      stores: [
+        {
+          path: LEVEL0_STORE_PATH,
+          zarr: 'rec.zarr',
+          groups: [
+            {
+              name: LEVEL0_GROUP,
+              modality: 'EEG',
+              rate: 250.0,
+              n_channels: N_CHANNELS,
+              n_samples: N_SAMPLES,
+              n_view_levels: 0,
+            },
+          ],
+        },
+      ],
+    };
+
+    const recipe = nemarCliDevLevel0Recipe({
+      contractBase: BASE,
+      datasetId: LEVEL0_DATASET_ID,
+      storePath: LEVEL0_STORE_PATH,
+      groupName: LEVEL0_GROUP,
+      relativePath: LEVEL0_RELATIVE_PATH,
+    });
+
+    seen.length = 0;
+    const code =
+      'start_sample, end_sample = 5, 8\n' +
+      recipe +
+      '\nimport json\n' +
+      'print(json.dumps({"shape": list(window.data.shape), "unit": window.unit, "rate": window.rate, ' +
+      '"labels": list(window.labels or ()), "data": window.data.tolist(), "digital": digital.tolist()}))';
+    const result = await run(code);
+    assertEqual(result.status, 'ok', `it runs (stderr: ${result.stderr.slice(-300)})`);
+    assert(seen.some((r) => r.pathname === '/index.json'), "index_url landed on contract_base + 'index.json', as nemar-cli fills it");
+
+    const info = JSON.parse(result.stdout || 'null') || {};
+    assertEqual(info.shape, [N_CHANNELS, 3], 'physical shape (3 channels, 3 samples), from start_sample=5, end_sample=8');
+    assertEqual(info.unit, 'uV', "unit uV, from the store's channel metadata");
+    assertEqual(info.rate, 250, 'rate 250, from the channel group');
+    assertEqual(info.labels, LABELS, 'labels E1, E2, E3');
+    const expectedPhysical = [0, 1, 2].map((c) => [5, 6, 7].map((s) => digital(c, s) * SCALE[c] + OFFSET[c]));
+    assertEqual(info.data, expectedPhysical,
+      'the primary read (read_window): physical values equal digital * scale + offset');
+    const expectedDigital = [0, 1, 2].map((c) => [5, 6, 7].map((s) => digital(c, s)));
+    assertEqual(info.digital, expectedDigital,
+      'the raw read the recipe keeps (open_array/getitem): the stored digital counts, unconverted');
   }
 
   const INDEX = `
