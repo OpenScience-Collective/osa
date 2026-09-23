@@ -230,13 +230,76 @@ _state = {
     "traceback": "",
     "displayed": set(),
 }
-_pending = {"images": [], "artifacts": []}
+_pending = {"images": [], "artifacts": [], "files": []}
 _figures = []
 _notes = []
 
 # Default object reprs carry a heap address, which differs on every run and
 # would invalidate the conversation prefix for every later turn.
 _ADDRESS = _re.compile(r" at 0x[0-9a-fA-F]+")
+
+# The rules a workspace-relative path must satisfy, checked here so
+# osa.save_script/osa.save_artifact (frontend/osa-egress.js) raise a clear
+# ValueError at call time. Mirrored, not shared, in osa-workspace.js's
+# validateWorkspacePath, which the host re-checks before it ever writes to
+# IndexedDB: this side is what the model reads, that side is what nothing
+# gets to skip.
+_PATH_SEGMENT = _re.compile(r"^[A-Za-z0-9._-]+$")
+_MAX_PATH_CHARS = 200
+_MAX_PATH_DEPTH = 4
+_MAX_FILE_BYTES = 10 * 1024 * 1024
+_MAX_RUN_BYTES = 25 * 1024 * 1024
+
+
+def _validate_workspace_path(path):
+    """Raise ValueError naming exactly what is wrong with a workspace path.
+
+    Applied to the FULL workspace-relative path (e.g. "scripts/run.py" or
+    "artifacts/sub/dir/out.csv"), not to the name or path the caller passed
+    before the "scripts/"/"artifacts/" prefix was added, so the depth and
+    length limits bound what is actually stored.
+    """
+    if not isinstance(path, str) or not path:
+        raise ValueError("path must be a non-empty string")
+    if len(path) > _MAX_PATH_CHARS:
+        raise ValueError("path is %d characters, over the %d-character limit: %s" % (len(path), _MAX_PATH_CHARS, path))
+    if path.startswith("/") or path.startswith("\\"):
+        raise ValueError("path must be relative, not %r" % path)
+    segments = path.split("/")
+    if len(segments) > _MAX_PATH_DEPTH:
+        raise ValueError("path has %d segments, over the %d-segment limit: %s" % (len(segments), _MAX_PATH_DEPTH, path))
+    for segment in segments:
+        if segment in (".", ".."):
+            raise ValueError("path segment %r is not allowed: %s" % (segment, path))
+        if not _PATH_SEGMENT.match(segment):
+            raise ValueError("path segment %r must match [A-Za-z0-9._-]+: %s" % (segment, path))
+    return path
+
+
+def _record_saved_file(path, data):
+    """Validate and record one explicitly saved file for this run.
+
+    Raises ValueError for a bad path or a size over either cap, which
+    propagates to the model exactly like any other exception it raised.
+    Recorded into _pending["files"] (bytes, for the host to persist) and
+    _pending["artifacts"] (the path, sorted and de-duplicated at _end),
+    so a caller that saves the same path twice in one run is not double
+    counted against the per-run budget.
+    """
+    _validate_workspace_path(path)
+    if not isinstance(data, (bytes, bytearray, memoryview)):
+        raise TypeError("data must be bytes, bytearray, memoryview or str, not %s" % type(data).__name__)
+    data = bytes(data)
+    if len(data) > _MAX_FILE_BYTES:
+        raise ValueError("%s is %d bytes, over the %d-byte per-file limit" % (path, len(data), _MAX_FILE_BYTES))
+    already = sum(len(f["data"]) for f in _pending["files"] if f["path"] != path)
+    if already + len(data) > _MAX_RUN_BYTES:
+        raise ValueError(
+            "saving %s would use %d bytes; this run has already saved %d, over the %d-byte per-run limit"
+            % (path, len(data), already, _MAX_RUN_BYTES)
+        )
+    _pending["files"] = [f for f in _pending["files"] if f["path"] != path] + [{"path": path, "data": data}]
+    _pending["artifacts"].append(path)
 
 
 def _note(message):
@@ -613,7 +676,14 @@ def _clip(text, limit):
 
 
 def _summary(changed, namespace, truncated):
-    """Structured facts about the run, which is what the model reasons over."""
+    """Structured facts about the run, which is what the model reasons over.
+
+    Returned UNCLIPPED: _end clips one copy to _LIMITS["summary_chars"]
+    for what the model sees and a second, more generous copy to _FULL_CHARS
+    for full["summary"], the copy the workspace persists alongside a run's
+    stdout and stderr (#433). Clipping here would make the workspace's own
+    "the full, untruncated text" no truer than the summary already sent.
+    """
     lines = []
     call_id = _state["call_id"]
     handle = _json.dumps(call_id)
@@ -660,7 +730,7 @@ def _summary(changed, namespace, truncated):
     if _state["traceback"]:
         lines.append("traceback: get_full_output(call_id=%s, stream=\"traceback\")" % handle)
 
-    return _clip("\n".join(lines), _LIMITS["summary_chars"])
+    return "\n".join(lines)
 
 
 def _assigned_names(code):
@@ -722,6 +792,7 @@ def _begin(call_id="", code=""):
     _sys.stderr = _state["stderr"]
     _pending["images"].clear()
     _pending["artifacts"].clear()
+    _pending["files"] = []
     del _figures[:]
     del _notes[:]
 
@@ -760,18 +831,29 @@ def _end(error_text="", status="ok", changed=None, namespace=None):
     if len(err) > _LIMITS["stderr_chars"]:
         truncated.append(("stderr", len(err)))
 
+    summary_text = _summary(changed, namespace if namespace is not None else {}, truncated)
+
     return _json.dumps(
         {
             "status": status,
             "stdout": _clip(out, _LIMITS["stdout_chars"]),
             "stderr": _clip(err, _LIMITS["stderr_chars"]),
-            "summary": _summary(changed, namespace if namespace is not None else {}, truncated),
+            "summary": _clip(summary_text, _LIMITS["summary_chars"]),
             "images": list(_pending["images"]),
             "artifacts": sorted(set(_pending["artifacts"]))[:32],
+            # Explicitly saved files (osa.save_script/osa.save_artifact), as
+            # base64 bytes: the ONE way workspace bytes leave Python. The host
+            # persists them and strips this field before anything reaches the
+            # server (#433); it is never part of ClientToolResult.
+            "files": [
+                {"path": f["path"], "data_base64": _b64.b64encode(f["data"]).decode("ascii")}
+                for f in _pending["files"]
+            ],
             "full": {
                 "stdout": _clip(out, _FULL_CHARS),
                 "stderr": _clip(err, _FULL_CHARS),
                 "traceback": _clip(_ADDRESS.sub("", _state["traceback"]), _FULL_CHARS),
+                "summary": _clip(summary_text, _FULL_CHARS),
             },
         },
         sort_keys=True,
