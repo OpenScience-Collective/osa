@@ -262,7 +262,11 @@ extensions:
         https://zarr.nemar.org/ is reachable. eegprep_lean draws on its own figure
         rather than pyplot's, so hand the figure over with
         display(eegprep_lean.plot_window(window).figure). Print a few summary lines
-        rather than whole arrays.
+        rather than whole arrays. Every run's code and output are saved automatically
+        to a workspace the reader can download or delete from Settings; call
+        osa.save_script(name, code) or osa.save_artifact(path, data) to save something
+        worth keeping under its own name, and only what you explicitly save this way is
+        listed back to you as artifacts.
 
 # The browser runtime execute_code runs in. Wheels Pyodide does not ship are in
 # runtime/, pinned by runtime/nemar-pyodide-lock.json and served by this API.
