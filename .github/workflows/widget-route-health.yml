@@ -24,15 +24,15 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   probe:
     name: Probe the mounted widget hosts
     runs-on: ubuntu-latest
+    outputs:
+      failed: ${{ steps.probe.outputs.failed }}
+      report: ${{ steps.probe.outputs.report }}
     steps:
-      - uses: actions/checkout@v4
-
       - name: Probe
         id: probe
         run: |
@@ -80,20 +80,37 @@ jobs:
             echo "failed=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # Only when the probe step itself set an output at all: as before this
-      # refactor, a crash upstream of that step (e.g. checkout) opens no issue.
-      - name: Track the probe's issue
-        if: steps.probe.outputs.failed == 'true' || steps.probe.outputs.failed == 'false'
-        uses: ./.github/actions/track-issue
+      - name: Fail the run so the schedule surfaces it
+        if: steps.probe.outputs.failed == 'true'
+        run: exit 1
+
+  # A separate job, so the issue opens even when the check job fails before its
+  # check runs (checkout included): this job checks out only the action it
+  # needs, on its own runner. Not on a cancelled run, which is neither green nor
+  # failing and which the action would otherwise read as green.
+  track:
+    name: Track the issue
+    needs: probe
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/actions
+
+      - uses: ./.github/actions/track-issue
         with:
           label: widget-route-health
           title: 'Widget route health check failing'
-          failed: ${{ steps.probe.outputs.failed }}
+          failed: ${{ needs.probe.result == 'failure' || needs.probe.outputs.failed == 'true' }}
           recovery_message: 'all probes'
           report: |
             The scheduled probe of the widget worker hosts is failing.
 
-            ${{ steps.probe.outputs.report }}
+            ${{ needs.probe.outputs.report || '- The probe job failed before it probed anything; see the run.' }}
 
             Likely causes, cheapest first:
 
@@ -101,7 +118,3 @@ jobs:
             - A deploy flipped `workers_dev` off, taking the `workers.dev` hostname down.
             - `MOUNTED_HOSTS` and the `[[routes]]` patterns drifted, so the worker is never invoked.
             - The backend itself is down, which shows as `/osa/communities` failing while `/osa/health` still answers.
-
-      - name: Fail the run so the schedule surfaces it
-        if: steps.probe.outputs.failed == 'true'
-        run: exit 1

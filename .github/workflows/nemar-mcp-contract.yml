@@ -21,12 +21,14 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   contract:
     name: Check NEMAR's MCP contract
     runs-on: ubuntu-latest
+    outputs:
+      failed: ${{ steps.contract.outputs.failed }}
+      report: ${{ steps.contract.outputs.report }}
     steps:
       - uses: actions/checkout@v4
 
@@ -98,34 +100,45 @@ jobs:
             echo "failed=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # Also on any earlier failure, such as checkout or `uv sync`: a check that never
-      # ran is a failing check, and the issue is what makes a scheduled failure seen.
-      - name: Track the contract check's issue
-        # Not on a cancelled run: that is neither green nor failing, and the
-        # action would read it as green and close the issue.
-        if: ${{ !cancelled() }}
-        uses: ./.github/actions/track-issue
+      - name: Fail the run so the schedule surfaces it
+        if: steps.contract.outputs.failed == 'true'
+        run: exit 1
+
+  # A separate job, so the issue opens even when the check job fails before its
+  # check runs (checkout included): this job checks out only the action it
+  # needs, on its own runner. Not on a cancelled run, which is neither green nor
+  # failing and which the action would otherwise read as green.
+  track:
+    name: Track the issue
+    needs: contract
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/actions
+
+      - uses: ./.github/actions/track-issue
         with:
           label: nemar-mcp-contract
           title: 'NEMAR MCP contract check failing'
-          failed: ${{ job.status == 'failure' || steps.contract.outputs.failed == 'true' }}
+          failed: ${{ needs.contract.result == 'failure' || needs.contract.outputs.failed == 'true' }}
           recovery_message: 'all NEMAR MCP contract checks'
           report: |
             The scheduled check of NEMAR's live MCP server and its eegprep-lean wheel is failing.
 
-            ${{ steps.contract.outputs.report || '- The job failed before the checks ran (checkout, Python or `uv sync`), so nothing was checked.' }}
+            ${{ needs.contract.outputs.report || '- The check job failed before the checks ran (checkout, Python or `uv sync`), so nothing was checked.' }}
 
             Likely causes, cheapest first:
 
             - `mcp.nemar.org` is down or slow (a network blip, not a contract break).
             - A tool was renamed or removed on the server side; the assistant's prompt still names the old one.
             - `nemar_read_window`'s live recipe now calls an eegprep_lean name the vendored wheel
-              (`src/assistants/nemar/runtime/wheels/`) does not export -- a server-side change or a wheel
-              that needs bumping and re-vendoring.
-            - TestLiveRecipeOnCPython specifically: the recipe runs but fails against the real data --
-              a signature match is not proof it executes correctly. Check the subprocess stderr in the
-              job log; a 403 there means zarr.nemar.org is refusing the transport's User-Agent.
-
-      - name: Fail the run so the schedule surfaces it
-        if: steps.contract.outputs.failed == 'true'
-        run: exit 1
+              (`src/assistants/nemar/runtime/wheels/`) does not export, or passes a keyword its
+              function does not take: a server-side change, or a wheel that needs re-vendoring.
+            - TestLiveRecipeOnCPython specifically: the recipe runs but fails against the real data.
+              Check the subprocess stderr in the job log; a 403 there means zarr.nemar.org is refusing
+              the transport's User-Agent.

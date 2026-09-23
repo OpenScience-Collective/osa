@@ -3,9 +3,10 @@ description: >
   Open or comment on a labeled issue when a scheduled check is failing, and close
   it with a comment on the next green run. Three near-identical copies of this
   (widget-route-health.yml, nemar-mcp-contract.yml, and the eegprep-lean watcher)
-  is why this was pulled out; the caller decides WHETHER it failed (including a
-  setup failure before its own check even ran) and hands that decision in as
-  `failed` -- this action does no checking of its own, only the issue plumbing.
+  is why this was pulled out. Each caller runs it in a job of its own after the
+  check job, so a check job that fails before its check (checkout included) still
+  counts, and hands the decision in as `failed`. This action does no checking of
+  its own, only the issue plumbing.
 
 inputs:
   label:
@@ -36,6 +37,17 @@ inputs:
 runs:
   using: composite
   steps:
+    # Neither branch below runs for any other value, so an unset or misspelled
+    # `failed` would otherwise do nothing and look like a quiet week.
+    - name: Refuse a failed value that is neither true nor false
+      if: inputs.failed != 'true' && inputs.failed != 'false'
+      shell: bash
+      env:
+        FAILED: ${{ inputs.failed }}
+      run: |
+        echo "track-issue: failed must be 'true' or 'false', got '${FAILED}'" >&2
+        exit 1
+
     # Passed through env rather than interpolated into the script body: `report`
     # is caller-controlled free text (a rendered check report), and interpolating
     # any such text into a github-script body is the wrong habit to establish in

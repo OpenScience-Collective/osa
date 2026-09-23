@@ -20,12 +20,14 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   watch:
     name: Check eegprep-lean against upstream
     runs-on: ubuntu-latest
+    outputs:
+      status: ${{ steps.drift.outputs.status }}
+      report: ${{ steps.drift.outputs.report }}
     steps:
       - uses: actions/checkout@v4
 
@@ -47,8 +49,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set +e
-          output="$(uv run python scripts/eegprep_lean_drift.py)"
-          code=$?
+          # stderr too, so a crash's traceback reaches the issue.
+          output="$(uv run python scripts/eegprep_lean_drift.py 2>&1)"
           echo "$output"
 
           # A random delimiter, so no line of the report can end the value early.
@@ -59,40 +61,48 @@ jobs:
             echo "$delimiter"
           } >> "$GITHUB_OUTPUT"
 
-          if [ "$code" -eq 0 ]; then
-            echo "status=current" >> "$GITHUB_OUTPUT"
-          elif [ "$code" -eq 1 ]; then
-            echo "status=behind" >> "$GITHUB_OUTPUT"
-          else
-            echo "status=unknown" >> "$GITHUB_OUTPUT"
-          fi
+          # The status is read from the watcher's own status line, never from its
+          # exit code: a crash exits 1 as well, and must read as unknown.
+          status="$(printf '%s\n' "$output" | grep -oE '^status=(current|behind|unknown)( |$)' | tail -n 1 | cut -d= -f2 | tr -d ' ')"
+          echo "status=${status:-unknown}" >> "$GITHUB_OUTPUT"
 
-      # Also on any earlier failure (checkout, Python, `uv sync`): a watcher that
-      # never ran told us nothing, and unknown is never current.
-      - name: Track the drift watcher's issue
-        # Not on a cancelled run: that is neither green nor failing, and the
-        # action would read it as green and close the issue.
-        if: ${{ !cancelled() }}
-        uses: ./.github/actions/track-issue
+      - name: Fail the run so the schedule surfaces it
+        if: steps.drift.outputs.status != 'current'
+        run: exit 1
+
+  # A separate job, so the issue opens even when the check job fails before the
+  # watcher runs (checkout included): this job checks out only the action it
+  # needs, on its own runner. Not on a cancelled run, which is neither green nor
+  # failing and which the action would otherwise read as green.
+  track:
+    name: Track the issue
+    needs: watch
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/actions
+
+      - uses: ./.github/actions/track-issue
         with:
           label: eegprep-lean-drift
           title: 'eegprep-lean drift check needs attention'
-          failed: ${{ job.status == 'failure' || steps.drift.outputs.status == 'behind' || steps.drift.outputs.status == 'unknown' }}
+          failed: ${{ needs.watch.result == 'failure' || needs.watch.outputs.status != 'current' }}
           recovery_message: 'the eegprep-lean drift check'
           report: |
-            The weekly eegprep-lean drift watcher's status: **${{ steps.drift.outputs.status || 'unknown' }}**.
+            The weekly eegprep-lean drift watcher's status: **${{ needs.watch.outputs.status || 'unknown' }}**.
 
             ```
-            ${{ steps.drift.outputs.report || 'The job failed before the watcher could run (checkout, Python or `uv sync`); nothing was checked.' }}
+            ${{ needs.watch.outputs.report || 'The watch job failed before the watcher ran (checkout, Python or `uv sync`); nothing was checked.' }}
             ```
 
             Refresh procedure: `src/assistants/nemar/runtime/README.md`.
 
-            `unknown` means the watcher itself could not tell -- a GitHub fetch or a parse
-            failed (the report above says which), or the job never reached it at all --
-            and needs a look, never read as "no drift". `behind` means the watcher
+            `unknown` means the watcher itself could not tell: a GitHub fetch or a parse
+            failed (the report above says which), or the job never reached it at all.
+            It needs a look, and is never read as "no drift". `behind` means the watcher
             fetched successfully and upstream has a newer commit than the one vendored.
-
-      - name: Fail the run so the schedule surfaces it
-        if: steps.drift.outputs.status == 'behind' || steps.drift.outputs.status == 'unknown'
-        run: exit 1
