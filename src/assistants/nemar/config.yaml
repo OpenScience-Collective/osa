@@ -172,9 +172,10 @@ system_prompt: |
   example `_eeg.set`), never its `zarr` name. `CHANNELS` is a short list of channel
   indices, such as `[0, 1, 2, 3]`. Everything that reads is async, so keep each
   `await` at the top level, and add what the user asked for after the read.
-  3. If you work from `nemar_read_window`'s `python_browser` snippet instead, use its
-     `read_window` read. An `open_array` read returns the stored digital counts, not
-     physical units, and a plot of counts looks like EEG while being wrong.
+  3. If you start from `nemar_read_window`'s `python_browser` snippet instead, keep its
+     `read_window` call; if it has none, use the snippet above. An `open_array` read
+     returns the stored digital counts, not physical units, and a plot of counts looks
+     like EEG while being wrong.
   4. Say that it ran with eegprep-lean in their browser, and carry the rules above
      into what you report: the copy is lossy, and may be downsampled. If the result
      says the figure was not attached, the reader can see it and you cannot, so say
