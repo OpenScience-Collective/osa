@@ -284,6 +284,13 @@ class TestSourcesToml:
     def test_every_wheel_and_every_entry_agree(self) -> None:
         assert _sources_problems(NEMAR_DIR / "runtime") == []
 
+    def test_the_build_command_builds_the_recorded_commit(self) -> None:
+        """The command repeats the commit, so the two could drift apart unnoticed."""
+        entry = tomllib.loads((NEMAR_DIR / "runtime" / "sources.toml").read_text())["eegprep-lean"]
+
+        assert f"git archive {entry['commit']} " in entry["build"]
+        assert "SOURCE_DATE_EPOCH=" in entry["build"]
+
     def test_a_wheel_with_no_entry_is_named(self, tmp_path: Path) -> None:
         runtime = tmp_path / "runtime"
         shutil.copytree(NEMAR_DIR / "runtime", runtime)

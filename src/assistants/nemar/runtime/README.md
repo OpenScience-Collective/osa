@@ -11,7 +11,7 @@ How that works is in `src/core/config/runtime_lock.py`.
 | wheel | from | sha256 |
 |---|---|---|
 | `zarr-3.4.0-py3-none-any.whl` | PyPI, byte for byte (digest matches PyPI's published one) | `0a5e6c9b...eb72395` |
-| `eegprep_lean-0.1.0.dev2-py3-none-any.whl` | `sccn/eegprep` at `b4aa18bd` (#416), `packages/eegprep-lean`, `uv build --wheel` | `39f33b99...7157582` |
+| `eegprep_lean-0.1.0.dev2-py3-none-any.whl` | `sccn/eegprep` at `b4aa18bd` (#416), `packages/eegprep-lean`, `SOURCE_DATE_EPOCH=1790128328 uv build --wheel` (reproducible; see below) | `39f33b99...7157582` |
 
 zarr's own dependencies are not here:
 Pyodide 0.29.5 ships every one of them, and `depends.toml` names them.
@@ -53,6 +53,17 @@ against the newest commit on `sccn/eegprep`'s `develop` branch touching
 version can sit still across more than one upstream commit -- and reports
 `current`, `behind`, or `unknown` (a fetch or parse failure; never reported as
 current). Run it by hand at any time: `uv run python scripts/eegprep_lean_drift.py`.
+
+**When it says `behind` and the version did not move,**
+upstream changed the package without releasing it.
+Read the change.
+If it leaves the wheel as it is (tests, documentation, CI),
+set `reviewed_through` in `sources.toml` to the commit the watcher named,
+and the watcher reads that commit as current until upstream moves again or the version changes.
+If it changes the wheel, ask upstream for a new version first:
+a wheel's file name is its identity, served as immutable for a year,
+so new bytes under the same name would reach some readers and not others,
+and the overlay generator refuses them.
 
 **Build:** from the commit `sources.toml` records, with the reproducible command
 it names:

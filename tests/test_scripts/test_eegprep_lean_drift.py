@@ -33,17 +33,22 @@ CONTENTS_URL = f"https://api.github.com/repos/{REPO}/contents/{PKG_PATH}/pyproje
 
 
 def _write_recorded(
-    tmp_path: Path, *, commit: str = RECORDED_COMMIT, version: str = RECORDED_VERSION
+    tmp_path: Path,
+    *,
+    commit: str = RECORDED_COMMIT,
+    version: str = RECORDED_VERSION,
+    reviewed_through: str | None = None,
 ) -> tuple[Path, Path]:
     """A real sources.toml and a real overlay, the shape check_drift actually reads."""
     sources = tmp_path / "sources.toml"
+    reviewed = f'reviewed_through = "{reviewed_through}"\n' if reviewed_through else ""
     sources.write_text(
         "[eegprep-lean]\n"
         f'wheel = "eegprep_lean-{version}-py3-none-any.whl"\n'
         f'repository = "{REPO}"\n'
         f'branch = "{BRANCH}"\n'
         f'path = "{PKG_PATH}"\n'
-        f'commit = "{commit}"\n'
+        f'commit = "{commit}"\n' + reviewed
     )
     overlay = tmp_path / "nemar-pyodide-lock.json"
     overlay.write_text(json.dumps({"packages": {"eegprep-lean": {"version": version}}}))
@@ -107,6 +112,59 @@ class TestBehind:
         assert report.version_moved is True
 
 
+class TestReviewedThrough:
+    """A later upstream commit that changes nothing the wheel ships is acknowledged
+    with `reviewed_through`, since a re-vendor needs a new version and a new file name."""
+
+    @respx.mock
+    def test_current_when_upstream_stopped_at_the_reviewed_commit(self, tmp_path: Path) -> None:
+        sources, overlay = _write_recorded(tmp_path, reviewed_through=UPSTREAM_COMMIT)
+        respx.get(COMMITS_URL).mock(return_value=_commits_response(UPSTREAM_COMMIT))
+        respx.get(CONTENTS_URL).mock(return_value=_pyproject_response(RECORDED_VERSION))
+
+        with httpx.Client() as client:
+            report = check_drift(sources, overlay, client=client)
+
+        assert report.status == "current"
+        assert report.reviewed_through == UPSTREAM_COMMIT
+
+    @respx.mock
+    def test_behind_when_the_reviewed_commit_moved_the_version(self, tmp_path: Path) -> None:
+        """A review cannot cover a new release: that is a re-vendor."""
+        sources, overlay = _write_recorded(tmp_path, reviewed_through=UPSTREAM_COMMIT)
+        respx.get(COMMITS_URL).mock(return_value=_commits_response(UPSTREAM_COMMIT))
+        respx.get(CONTENTS_URL).mock(return_value=_pyproject_response(UPSTREAM_VERSION))
+
+        with httpx.Client() as client:
+            report = check_drift(sources, overlay, client=client)
+
+        assert report.status == "behind"
+        assert report.version_moved is True
+
+    @respx.mock
+    def test_behind_when_upstream_moved_past_the_reviewed_commit(self, tmp_path: Path) -> None:
+        later = "c" * 40
+        sources, overlay = _write_recorded(tmp_path, reviewed_through=UPSTREAM_COMMIT)
+        respx.get(COMMITS_URL).mock(return_value=_commits_response(later))
+        respx.get(CONTENTS_URL).mock(return_value=_pyproject_response(RECORDED_VERSION))
+
+        with httpx.Client() as client:
+            report = check_drift(sources, overlay, client=client)
+
+        assert report.status == "behind"
+        assert report.upstream_commit == later
+
+    def test_an_empty_reviewed_through_is_unknown_not_ignored(self, tmp_path: Path) -> None:
+        sources, overlay = _write_recorded(tmp_path)
+        sources.write_text(sources.read_text() + 'reviewed_through = ""\n')
+
+        with httpx.Client() as client:
+            report = check_drift(sources, overlay, client=client)
+
+        assert report.status == "unknown"
+        assert "reviewed_through" in (report.reason or "")
+
+
 class TestUnknown:
     """Unknown is never current: every case here must not report 'current'."""
 
@@ -167,11 +225,8 @@ class TestUnknown:
         assert "version" in (report.reason or "")
 
     def test_unknown_when_sources_toml_cannot_even_be_read(self, tmp_path: Path) -> None:
-        """No network involved at all: the earliest failure point. This is also the
-        path the mutation check exercises (see this repository's PR for the run): drop
-        the ``status = "unknown"`` assignment in ``check_drift``'s outermost except
-        clause and this test fails, because ``status`` never leaves its ``"current"``
-        default."""
+        """No network involved at all: the earliest failure point, which must read as
+        unknown rather than as anything a caller could act on."""
         sources = tmp_path / "sources.toml"  # deliberately never created
         overlay = tmp_path / "nemar-pyodide-lock.json"
         overlay.write_text(json.dumps({"packages": {"eegprep-lean": {"version": "0.1.0.dev1"}}}))

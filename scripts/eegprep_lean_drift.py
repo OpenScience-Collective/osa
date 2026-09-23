@@ -79,6 +79,7 @@ class Recorded:
     path: str
     commit: str
     version: str
+    reviewed_through: str | None = None
 
 
 def _read_recorded(sources_path: Path, overlay_path: Path) -> Recorded:
@@ -114,12 +115,18 @@ def _read_recorded(sources_path: Path, overlay_path: Path) -> Recorded:
     if not isinstance(version, str) or not version:
         raise DriftError(f"{overlay_path} names no eegprep-lean version")
 
+    reviewed_through = entry.get("reviewed_through")
+    if reviewed_through is not None and (
+        not isinstance(reviewed_through, str) or not reviewed_through
+    ):
+        raise DriftError(f"{sources_path}'s reviewed_through must be a commit sha")
     return Recorded(
         repository=entry["repository"],
         branch=entry["branch"],
         path=entry["path"],
         commit=entry["commit"],
         version=version,
+        reviewed_through=reviewed_through,
     )
 
 
@@ -205,6 +212,7 @@ class DriftReport:
     status: str  # "current" | "behind" | "unknown"
     recorded_commit: str
     recorded_version: str
+    reviewed_through: str | None = None
     upstream_commit: str | None = None
     upstream_version: str | None = None
     version_moved: bool | None = None
@@ -217,59 +225,58 @@ class DriftReport:
 def check_drift(sources_path: Path, overlay_path: Path, *, client: httpx.Client) -> DriftReport:
     """The report for the wheel `sources_path`/`overlay_path` record, against upstream.
 
-    Structured so that ``unknown`` is a status this function must choose to assign,
-    never one a caller falls into by default: ``status`` starts at ``"current"`` and
-    every failure path sets it to ``"unknown"`` explicitly before returning. A branch
-    that fails to do so is a real bug this function's own tests catch (see
-    ``tests/test_scripts/test_eegprep_lean_drift.py``'s mutation check).
+    Fails closed: every return names its status, and `current` is returned only after
+    upstream's newest commit was fetched and matched. The match is the vendored
+    commit, or `reviewed_through` when a maintainer has read a later commit and found
+    that it changes nothing the wheel ships, as long as the version has not moved.
     """
-    status = "current"
-    reason: str | None = None
-    recorded_commit = ""
-    recorded_version = ""
-    upstream_commit: str | None = None
-    upstream_version: str | None = None
-    version_moved: bool | None = None
-
     try:
         recorded = _read_recorded(sources_path, overlay_path)
     except DriftError as err:
-        status = "unknown"
-        reason = str(err)
-    else:
-        recorded_commit = recorded.commit
-        recorded_version = recorded.version
-        try:
-            upstream_commit = _latest_commit(
-                client, recorded.repository, recorded.branch, recorded.path
-            )
-        except DriftError as err:
-            status = "unknown"
-            reason = str(err)
-        else:
-            if upstream_commit == recorded.commit:
-                upstream_version = recorded.version
-                version_moved = False
-            else:
-                try:
-                    upstream_version = _pyproject_version(
-                        client, recorded.repository, recorded.path, upstream_commit
-                    )
-                except DriftError as err:
-                    status = "unknown"
-                    reason = str(err)
-                else:
-                    status = "behind"
-                    version_moved = upstream_version != recorded.version
+        return DriftReport(
+            status="unknown", recorded_commit="", recorded_version="", reason=str(err)
+        )
 
-    return DriftReport(
-        status=status,
-        recorded_commit=recorded_commit,
-        recorded_version=recorded_version,
+    def report(status: str, **fields: object) -> DriftReport:
+        return DriftReport(
+            status=status,
+            recorded_commit=recorded.commit,
+            recorded_version=recorded.version,
+            reviewed_through=recorded.reviewed_through,
+            **fields,
+        )
+
+    try:
+        upstream_commit = _latest_commit(
+            client, recorded.repository, recorded.branch, recorded.path
+        )
+    except DriftError as err:
+        return report("unknown", reason=str(err))
+    if upstream_commit == recorded.commit:
+        return report(
+            "current",
+            upstream_commit=upstream_commit,
+            upstream_version=recorded.version,
+            version_moved=False,
+        )
+
+    try:
+        upstream_version = _pyproject_version(
+            client, recorded.repository, recorded.path, upstream_commit
+        )
+    except DriftError as err:
+        return report("unknown", upstream_commit=upstream_commit, reason=str(err))
+    version_moved = upstream_version != recorded.version
+    status = (
+        "current"
+        if upstream_commit == recorded.reviewed_through and not version_moved
+        else "behind"
+    )
+    return report(
+        status,
         upstream_commit=upstream_commit,
         upstream_version=upstream_version,
         version_moved=version_moved,
-        reason=reason,
     )
 
 
@@ -279,6 +286,8 @@ def render_human(report: DriftReport) -> str:
         f"  recorded: commit {report.recorded_commit or '(unreadable)'}"
         f" (version {report.recorded_version or '(unreadable)'})"
     )
+    if report.reviewed_through:
+        lines.append(f"  reviewed through: commit {report.reviewed_through}")
     if report.status == "unknown":
         if report.upstream_commit:
             lines.append(f"  upstream: commit {report.upstream_commit}")
@@ -299,6 +308,13 @@ def render_human(report: DriftReport) -> str:
             else f"version unchanged at {report.recorded_version}"
         )
         lines.append(f"  status: behind (commit moved; {moved})")
+        if not report.version_moved:
+            lines.append(
+                "  upstream changed the package without a new version. If the change "
+                "leaves the wheel as it is, set reviewed_through in sources.toml to "
+                f"{report.upstream_commit}; if not, a re-vendor needs a new upstream "
+                "version first, since a wheel's name is its identity."
+            )
         lines.append(f"  refresh procedure: {REFRESH_PROCEDURE}")
     return "\n".join(lines)
 
