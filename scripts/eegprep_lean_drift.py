@@ -109,6 +109,8 @@ def _read_recorded(sources_path: Path, overlay_path: Path) -> Recorded:
     except json.JSONDecodeError as err:
         raise DriftError(f"{overlay_path} is not valid JSON: {err}") from err
 
+    if not isinstance(overlay, dict):
+        raise DriftError(f"{overlay_path} is not a JSON object")
     packages = overlay.get("packages")
     package = packages.get("eegprep-lean") if isinstance(packages, dict) else None
     version = package.get("version") if isinstance(package, dict) else None
@@ -339,8 +341,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="print one JSON object instead")
     args = parser.parse_args(argv)
 
-    with httpx.Client() as client:
-        report = check_drift(args.sources, args.overlay, client=client)
+    try:
+        with httpx.Client() as client:
+            report = check_drift(args.sources, args.overlay, client=client)
+    except Exception as err:  # noqa: BLE001 - a crash is an unknown, never a verdict
+        report = DriftReport(
+            status="unknown",
+            recorded_commit="",
+            recorded_version="",
+            reason=f"the watcher itself failed: {type(err).__name__}: {err}",
+        )
 
     if args.json:
         print(json.dumps(report.as_dict(), indent=2))
