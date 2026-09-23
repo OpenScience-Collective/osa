@@ -29,6 +29,18 @@ const FRONTEND = new URL('../', import.meta.url);
 const ASSISTANTS = new URL('../../src/assistants/', import.meta.url);
 const CDN = 'https://cdn.jsdelivr.net';
 
+// The API's real wheel route sends this (src/api/routers/community.py,
+// RUNTIME_WHEEL_CACHE_CONTROL) and so does the worker in front of it
+// (workers/osa-worker/index.js, IMMUTABLE); this harness has to match or a
+// warm-cache measurement here would prove nothing about what ships. A wheel's
+// name is its identity, so this is correct for BOTH /runtime/ and /tampered/:
+// the tampered bytes live at their own path (never the real wheel's name),
+// so caching them aggressively cannot make a later request see the wrong
+// bytes under a name that means something else. tests/test_api/
+// test_runtime_wheel_cache_control.py keeps this string equal to the other
+// two.
+const RUNTIME_WHEEL_CACHE_CONTROL = 'public, max-age=31536000, immutable';
+
 // Everything the runtime needs, held constant across strict and loose so the only
 // difference is the eval grant itself.
 const COMMON =
@@ -95,6 +107,18 @@ async function readCommunityRuntime(id) {
 }
 
 /**
+ * A wheel's file name with a build tag inserted before its python tag, still
+ * a name `_WHEEL_FILE_NAME` (src/core/config/runtime_lock.py) accepts: PEP
+ * 427 allows an optional build tag there, so this is a real, valid rename,
+ * not a synthetic one.
+ */
+function withBuildTag(fileName, tag) {
+  const suffix = '-py3-none-any.whl';
+  if (!fileName.endsWith(suffix)) throw new Error(`not a wheel file name: ${fileName}`);
+  return `${fileName.slice(0, -suffix.length)}-${tag}${suffix}`;
+}
+
+/**
  * Start the harness server.
  *
  * @param {{port?: number}} [options] - 0 picks a free port.
@@ -102,9 +126,22 @@ async function readCommunityRuntime(id) {
  */
 export async function startServer({ port = 8787 } = {}) {
   const nemar = await readCommunityRuntime('nemar');
+
+  // A second overlay variant for the lock-change cache test (chrome.js): ONE
+  // wheel (eegprep-lean) renamed with a build tag, same bytes and the same
+  // sha256, so booting it must fetch exactly that one wheel from the network
+  // while every other wheel this browser already has is served from its HTTP
+  // cache. Built here, in memory, from the SAME read-only overlay above: the
+  // real files under src/assistants/nemar/runtime/ are never touched.
+  const changedEntry = nemar.packages['eegprep-lean'];
+  const changedFileName = withBuildTag(changedEntry.file_name, '2');
+  nemar.wheels.set(changedFileName, nemar.wheels.get(changedEntry.file_name));
+  const lockChangedPackages = { ...nemar.packages, 'eegprep-lean': { ...changedEntry, file_name: changedFileName } };
+
   const harnessConfig = JSON.stringify({
     pyodide_version: pyodidePackage.version,
     nemar: { runtime: nemar.runtime, packages: nemar.packages },
+    nemarLockChanged: { runtime: nemar.runtime, packages: lockChangedPackages },
   });
 
   return Bun.serve({
@@ -127,12 +164,17 @@ export async function startServer({ port = 8787 } = {}) {
         return new Response(harnessConfig, { headers: { ...headers, 'Content-Type': 'application/json' } });
       }
       // A lookup against the overlay, as the API's route is: nothing it does not list.
+      // Immutable, like the API's real route and the worker in front of it: a
+      // wheel's name is its identity, so the browser can keep these bytes
+      // forever without ever needing to revalidate them.
       const wheel = /^\/(runtime|tampered)\/nemar\/([^/]+)$/.exec(rest);
       if (wheel) {
         const bytes = nemar.wheels.get(wheel[2]);
         if (!bytes) return new Response('Not Found', { status: 404, headers });
         const body = wheel[1] === 'tampered' ? tamperWheel(bytes) : bytes;
-        return new Response(body, { headers: { ...headers, 'Content-Type': 'application/octet-stream' } });
+        return new Response(body, {
+          headers: { ...headers, 'Content-Type': 'application/octet-stream', 'Cache-Control': RUNTIME_WHEEL_CACHE_CONTROL },
+        });
       }
 
       // Static files from frontend/, and never above it: the URL parser has
