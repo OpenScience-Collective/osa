@@ -244,47 +244,74 @@ _ADDRESS = _re.compile(r" at 0x[0-9a-fA-F]+")
 # validateWorkspacePath, which the host re-checks before it ever writes to
 # IndexedDB: this side is what the model reads, that side is what nothing
 # gets to skip.
+#
+# A run may save at most this many DISTINCT files explicitly. The rule this
+# repository holds everywhere else is "saved equals announced": ClientToolResult
+# .artifacts (src/api/tool_results.py) holds at most 32 names (MAX_ARTIFACTS,
+# osa-runtime.js), so a 33rd saved-but-unannounced file would be real on disk
+# and invisible to the model -- a file existing without the model ever being
+# told so is exactly what this workspace must never do. Re-checked on the
+# host in osa-workspace.js's recordRun.
 _PATH_SEGMENT = _re.compile(r"^[A-Za-z0-9._-]+$")
 _MAX_PATH_CHARS = 200
 _MAX_PATH_DEPTH = 4
 _MAX_FILE_BYTES = 10 * 1024 * 1024
 _MAX_RUN_BYTES = 25 * 1024 * 1024
+_MAX_EXPLICIT_FILES = 32
+
+
+def _validate_relative_and_shape(path, what):
+    """The rules on path that hold REGARDLESS of where it ends up nested.
+
+    Checked on the CALLER's own argument, before "scripts/"/"artifacts/" is
+    prepended (osa-egress.js's save_script/save_artifact call this first),
+    so an absolute-looking name is refused for what it actually is -- "name
+    must be relative" -- rather than for the empty path segment the prefix
+    would otherwise turn it into. Depth and length are NOT checked here:
+    those bound the path actually stored, which only exists once the prefix
+    is on, so _validate_workspace_path checks them on the full path instead.
+    """
+    if not isinstance(path, str) or not path:
+        raise ValueError("%s must be a non-empty string" % what)
+    if path.startswith("/") or path.startswith("\\"):
+        raise ValueError("%s must be relative, not %r" % (what, path))
+    for segment in path.split("/"):
+        if segment in (".", ".."):
+            raise ValueError("%s segment %r is not allowed: %s" % (what, segment, path))
+        if not _PATH_SEGMENT.match(segment):
+            raise ValueError("%s segment %r must match [A-Za-z0-9._-]+: %s" % (what, segment, path))
+    return path
 
 
 def _validate_workspace_path(path):
     """Raise ValueError naming exactly what is wrong with a workspace path.
 
     Applied to the FULL workspace-relative path (e.g. "scripts/run.py" or
-    "artifacts/sub/dir/out.csv"), not to the name or path the caller passed
-    before the "scripts/"/"artifacts/" prefix was added, so the depth and
-    length limits bound what is actually stored.
+    "artifacts/sub/dir/out.csv"), never to the name or path the caller passed
+    before the "scripts/"/"artifacts/" prefix was added -- save_script and
+    save_artifact already validated THAT with _validate_relative_and_shape
+    before building this path. This is the defense-in-depth pass
+    _record_saved_file always runs on what will actually be stored, so the
+    depth and length limits bind what is actually stored.
     """
-    if not isinstance(path, str) or not path:
-        raise ValueError("path must be a non-empty string")
+    _validate_relative_and_shape(path, "path")
     if len(path) > _MAX_PATH_CHARS:
         raise ValueError("path is %d characters, over the %d-character limit: %s" % (len(path), _MAX_PATH_CHARS, path))
-    if path.startswith("/") or path.startswith("\\"):
-        raise ValueError("path must be relative, not %r" % path)
     segments = path.split("/")
     if len(segments) > _MAX_PATH_DEPTH:
         raise ValueError("path has %d segments, over the %d-segment limit: %s" % (len(segments), _MAX_PATH_DEPTH, path))
-    for segment in segments:
-        if segment in (".", ".."):
-            raise ValueError("path segment %r is not allowed: %s" % (segment, path))
-        if not _PATH_SEGMENT.match(segment):
-            raise ValueError("path segment %r must match [A-Za-z0-9._-]+: %s" % (segment, path))
     return path
 
 
 def _record_saved_file(path, data):
     """Validate and record one explicitly saved file for this run.
 
-    Raises ValueError for a bad path or a size over either cap, which
-    propagates to the model exactly like any other exception it raised.
-    Recorded into _pending["files"] (bytes, for the host to persist) and
-    _pending["artifacts"] (the path, sorted and de-duplicated at _end),
-    so a caller that saves the same path twice in one run is not double
-    counted against the per-run budget.
+    Raises ValueError for a bad path, a size over either cap, or a 33rd
+    DISTINCT explicit save in one run, which propagates to the model exactly
+    like any other exception it raised. Recorded into _pending["files"]
+    (bytes, for the host to persist) and _pending["artifacts"] (the path,
+    sorted and de-duplicated at _end), so a caller that saves the same path
+    twice in one run is not double counted against either budget.
     """
     _validate_workspace_path(path)
     if not isinstance(data, (bytes, bytearray, memoryview)):
@@ -292,10 +319,17 @@ def _record_saved_file(path, data):
     data = bytes(data)
     if len(data) > _MAX_FILE_BYTES:
         raise ValueError("%s is %d bytes, over the %d-byte per-file limit" % (path, len(data), _MAX_FILE_BYTES))
+    is_new_path = not any(f["path"] == path for f in _pending["files"])
+    if is_new_path and len(_pending["files"]) >= _MAX_EXPLICIT_FILES:
+        raise ValueError(
+            "this run has already explicitly saved %d files, the most a run may save; "
+            "ClientToolResult.artifacts holds at most %d names, so a run may not save more than it can announce"
+            % (_MAX_EXPLICIT_FILES, _MAX_EXPLICIT_FILES)
+        )
     already = sum(len(f["data"]) for f in _pending["files"] if f["path"] != path)
     if already + len(data) > _MAX_RUN_BYTES:
         raise ValueError(
-            "saving %s would use %d bytes; this run has already saved %d, over the %d-byte per-run limit"
+            "saving %s would use %d bytes; this run has already explicitly saved %d, over the %d-byte per-run limit"
             % (path, len(data), already, _MAX_RUN_BYTES)
         )
     _pending["files"] = [f for f in _pending["files"] if f["path"] != path] + [{"path": path, "data": data}]
