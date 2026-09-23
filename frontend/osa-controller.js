@@ -13,7 +13,7 @@
  * resolves with a decision, and renders the code with highlightPython.
  */
 
-import { toClientToolResult } from './osa-runtime.js';
+import { clipText, toClientToolResult } from './osa-runtime.js';
 
 /**
  * Bound by the server beside any python tool the caller declares
@@ -36,10 +36,59 @@ export const DENIED_SUMMARY =
 
 const describe = (err) => String((err && err.message) || err || 'unknown error');
 
+/**
+ * Fit as many whole `lines` as possible in `remaining` characters, joined by
+ * "\n". The full note is returned unchanged when it already fits. Otherwise
+ * whole lines are dropped from the END until what remains, plus a final
+ * "and N more" line naming how many were cut, fits; when even that does not
+ * fit, the empty string is returned rather than a truncated line (#433:
+ * a line here is a workspace path plus a reason, and a mid-line cut reads as
+ * a different, wrong path).
+ *
+ * @param {string[]} lines
+ * @param {number} remaining
+ * @returns {string}
+ */
+function fitFailureNote(lines, remaining) {
+  if (remaining <= 0 || lines.length === 0) return '';
+  const full = lines.join('\n');
+  if (full.length <= remaining) return full;
+  for (let keep = lines.length - 1; keep >= 0; keep--) {
+    const omitted = lines.length - keep;
+    const candidate = lines
+      .slice(0, keep)
+      .concat([`and ${omitted} more`])
+      .join('\n');
+    if (candidate.length <= remaining) return candidate;
+  }
+  return '';
+}
+
+/**
+ * Append a workspace note to a run's own stderr, WITHOUT letting
+ * `toClientToolResult`'s stderr clipping cut it away (#433): a
+ * community can set `stderr_chars` as low as 256, and the run's own output
+ * is clipped to fit FIRST, reserving whatever room is left for the note as
+ * whole lines. `toClientToolResult` still clips the combined string
+ * afterward, which is a no-op here since it is already within `limit`.
+ *
+ * @param {string} stderr - The run's own stderr, unclipped.
+ * @param {string[]} noteLines - Whole lines to append, already ordered.
+ * @param {number} limit - The community's `stderr_chars` limit.
+ * @returns {string}
+ */
+function appendWorkspaceNote(stderr, noteLines, limit) {
+  const clippedStderr = clipText(stderr, limit);
+  const prefix = clippedStderr ? `${clippedStderr}\n` : '';
+  const note = fitFailureNote(noteLines, limit - prefix.length);
+  return note ? `${prefix}${note}` : clippedStderr;
+}
+
 export class ClientToolController {
   #runtime;
   #tools;
   #gate;
+  #workspace;
   #autoRun = false;
   // {callId, cancelled, stop} while a request is being answered, else null.
   #current = null;
@@ -51,8 +100,15 @@ export class ClientToolController {
    *   The community config's `client_tools`.
    * @param {(prompt: {callId: string, tool: string, code: string, description: string}) => Promise<string>} options.gate -
    *   Asks the person whether to run the code; resolves with a GATE_DECISION.
+   * @param {import('./osa-workspace.js').WorkspaceStore} [options.workspace] - When
+   *   given, every executed run is persisted here (#433) before its result is
+   *   returned: `answer()` is where the request's session id, call id, code
+   *   and description are all in hand and the result has not yet gone
+   *   anywhere, so this is where the write belongs. Omitted entirely (as it
+   *   is for a page with no client tools), nothing is persisted and every
+   *   result is exactly what the runtime returned, unchanged.
    */
-  constructor({ runtime, tools, gate }) {
+  constructor({ runtime, tools, gate, workspace = null }) {
     for (const method of ['execute', 'getFullOutput', 'cancel']) {
       if (!runtime || typeof runtime[method] !== 'function') {
         throw new TypeError(`ClientToolController needs a runtime with ${method}()`);
@@ -66,8 +122,12 @@ export class ClientToolController {
       // gate exists to prevent, and refusing everything would look like a bug.
       throw new TypeError('ClientToolController needs a gate to ask the person with');
     }
+    if (workspace !== null && typeof workspace.recordRun !== 'function') {
+      throw new TypeError('ClientToolController needs a workspace with recordRun(), or none at all');
+    }
     this.#runtime = runtime;
     this.#gate = gate;
+    this.#workspace = workspace;
     this.#tools = new Map(
       tools
         .filter((tool) => tool && typeof tool.name === 'string' && RUNNABLE_RUNTIMES.includes(tool.runtime))
@@ -89,8 +149,9 @@ export class ClientToolController {
   }
 
   /**
-   * Run code without asking, for the rest of this page's life. Deliberately not
-   * persisted anywhere (#431 decision 4): it is off again after a reload.
+   * Run code without asking, for the rest of this page's life. Deliberately
+   * kept in memory only, never written to storage: it is off again after a
+   * reload, so a person always starts a fresh page back at "ask first".
    */
   get autoRun() {
     return this.#autoRun;
@@ -198,12 +259,93 @@ export class ClientToolController {
     }
 
     try {
-      return await this.#runtime.execute(args.code, { callId });
+      const result = await this.#runtime.execute(args.code, { callId });
+      return await this.#persist(request, args, result);
     } catch (err) {
       // No result can come from the runtime: it could not boot, or it was torn
       // down. The call still needs one.
       return this.#result(callId, 'error', `[runtime] the code could not be run: ${describe(err)}`);
     }
+  }
+
+  /**
+   * Persist a run's workspace files, and correct `result` for whatever could
+   * not be saved (#433).
+   *
+   * Only a call that actually ran Python is persisted: `this.#runtime.outputs`
+   * holds an entry for a call_id only once the worker's `full` payload
+   * arrived, which happens for status `ok` or `error` and never for
+   * `denied`, `cancelled`, `timeout` or `oom` (see the comment on
+   * `FullOutputStore.remember` in osa-runtime.js) -- and never for
+   * get_full_output, which never reaches this method at all. A run that
+   * saved nothing still gets no `files` from `takeFiles`, so `recordRun`
+   * still writes its automatic files and the run record, and reports no
+   * failures.
+   *
+   * @param {{call_id: string, session_id?: string}} request
+   * @param {{code: string, description?: string}} args
+   * @param {object} result - What `this.#runtime.execute` resolved with.
+   * @returns {Promise<object>}
+   */
+  async #persist(request, args, result) {
+    if (this.#workspace === null) return result;
+    const kept = typeof this.#runtime.outputs?.get === 'function' ? this.#runtime.outputs.get(request.call_id) : undefined;
+    const explicitFiles = typeof this.#runtime.takeFiles === 'function' ? this.#runtime.takeFiles(request.call_id) : [];
+    if (!kept) return result;
+
+    let persisted;
+    try {
+      persisted = await this.#workspace.recordRun({
+        session: typeof request.session_id === 'string' && request.session_id ? request.session_id : 'unknown-session',
+        callId: request.call_id,
+        status: result.status,
+        description: typeof args.description === 'string' ? args.description : '',
+        code: args.code,
+        stdout: kept.stdout,
+        stderr: kept.stderr,
+        summary: kept.summary,
+        images: kept.images,
+        explicitFiles,
+      });
+    } catch (err) {
+      // recordRun reports every ORDINARY save failure -- a bad path, a quota,
+      // even its own 10s deadline expiring -- as a VALUE, never a rejection
+      // (WorkspaceStore's own contract). A rejection reaching here is
+      // therefore a genuine bug in this module or in WorkspaceStore, not a
+      // storage failure, so it is logged for whoever is watching the
+      // console rather than left silent. It must not cost the model its
+      // answer, and it must not let the model believe an unverifiable save
+      // succeeded: every explicit save for this run is dropped from
+      // `artifacts`, since recordRun never told us which (if any) landed.
+      console.error('[OSA] Workspace persist failed unexpectedly:', err);
+      const explicitPaths = new Set(explicitFiles.map((f) => f.path));
+      const artifacts = explicitPaths.size > 0 ? (result.artifacts || []).filter((a) => !explicitPaths.has(a)) : result.artifacts;
+      const stderr = appendWorkspaceNote(
+        result.stderr,
+        ["[workspace] could not save this run's files: the workspace failed unexpectedly"],
+        this.#runtime.limits.stderr_chars
+      );
+      return toClientToolResult({ ...result, artifacts, stderr }, this.#runtime.limits);
+    }
+    if (persisted.failures.length === 0) return result;
+
+    // The model must never be told a file exists when it does not: an
+    // explicit save that failed is dropped from `artifacts`, the list the
+    // model reads. An automatic file's failure has nothing to drop, since
+    // automatic files were never listed there.
+    const explicitPaths = new Set(explicitFiles.map((f) => f.path));
+    const failedExplicit = new Set(persisted.failures.filter((f) => explicitPaths.has(f.path)).map((f) => f.path));
+    const artifacts = failedExplicit.size > 0 ? (result.artifacts || []).filter((a) => !failedExplicit.has(a)) : result.artifacts;
+
+    // One deterministic line per file not saved, sorted by path: the same
+    // set of failures must always read back as the same bytes, since the
+    // prompt cache is a byte-exact prefix match.
+    const lines = persisted.failures
+      .slice()
+      .sort((a, b) => a.path.localeCompare(b.path))
+      .map((f) => `[workspace] could not save ${f.path}: ${f.reason}`);
+    const stderr = appendWorkspaceNote(result.stderr, lines, this.#runtime.limits.stderr_chars);
+    return toClientToolResult({ ...result, artifacts, stderr }, this.#runtime.limits);
   }
 
   /** Ask the person, and let cancel() answer for them. */

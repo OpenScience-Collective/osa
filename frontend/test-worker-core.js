@@ -684,6 +684,156 @@ console.log('\nosa.fetch reads byte ranges, and reports a status rather than rai
   }
 }
 
+console.log('\nosa.save_script and osa.save_artifact write into the run\'s workspace result (#433)');
+{
+  const r = await plain.run(
+    'p1 = osa.save_script("hello", "print(1)")\n' +
+      'p2 = osa.save_script("already.py", "x = 1")\n' +
+      'p3 = osa.save_artifact("data/out.csv", b"a,b\\n1,2\\n")\n' +
+      'p4 = osa.save_artifact("note.txt", "plain text")\n' +
+      'print(p1, p2, p3, p4)',
+    'call-save-basic'
+  );
+  assertEqual(r.status, 'ok', `saving four files succeeds (got ${JSON.stringify(r.stderr)})`);
+  assertEqual(r.stdout, 'scripts/hello.py scripts/already.py artifacts/data/out.csv artifacts/note.txt\n',
+    'save_script adds .py only when missing, and each call returns its workspace-relative path');
+  assertEqual(
+    JSON.stringify(r.artifacts),
+    JSON.stringify(['artifacts/data/out.csv', 'artifacts/note.txt', 'scripts/already.py', 'scripts/hello.py']),
+    'artifacts are sorted'
+  );
+  assertEqual(r.files.length, 4, 'the host-only files field carries all four, as base64 bytes');
+  const byPath = Object.fromEntries(r.files.map((f) => [f.path, f.data_base64]));
+  assertEqual(Buffer.from(byPath['artifacts/data/out.csv'], 'base64').toString(), 'a,b\n1,2\n', 'bytes data is saved verbatim');
+  assertEqual(Buffer.from(byPath['artifacts/note.txt'], 'base64').toString(), 'plain text', 'a str is saved UTF-8 encoded');
+}
+
+console.log('\nsaving the same path twice de-duplicates, keeping the LAST write');
+{
+  const r = await plain.run('osa.save_artifact("dup.txt", "first")\nosa.save_artifact("dup.txt", "second")', 'call-save-dup');
+  assertEqual(r.status, 'ok', 'saving the same path twice succeeds');
+  assertEqual(JSON.stringify(r.artifacts), JSON.stringify(['artifacts/dup.txt']), 'the artifact list has one entry, not two');
+  assertEqual(r.files.length, 1, 'one file entry too');
+  assertEqual(Buffer.from(r.files[0].data_base64, 'base64').toString(), 'second', 'the LAST write wins');
+}
+
+console.log('\nevery path rule is enforced, refused with a readable message the model can act on');
+{
+  const cases = [
+    ['osa.save_artifact("", "x")', /^ValueError: path must be a non-empty string\n/],
+    // Checked on the RAW argument, before "artifacts/" is prepended (#433):
+    // the message names exactly what the caller wrote, not the
+    // prefixed path it would become.
+    ['osa.save_artifact("../escape.txt", "x")', /^ValueError: path segment '\.\.' is not allowed: \.\.\/escape\.txt\n/],
+    ['osa.save_artifact("a/./c.txt", "x")', /^ValueError: path segment '\.' is not allowed: a\/\.\/c\.txt\n/],
+    ['osa.save_artifact("bad name!.txt", "x")', /^ValueError: path segment 'bad name!\.txt' must match \[A-Za-z0-9\._-\]\+: bad name!\.txt\n/],
+    ['osa.save_artifact("a/b/c/d.txt", "x")', /path has 5 segments, over the 4-segment limit: artifacts\/a\/b\/c\/d\.txt/],
+    [`osa.save_artifact(${JSON.stringify('x'.repeat(300))} + ".txt", "x")`, /over the 200-character limit/],
+    // An absolute-looking path used to be refused only via the empty
+    // segment the doubled slash produced once "artifacts/" was prepended,
+    // which read as a bug in save_artifact rather than in the caller's own
+    // argument. Fixed: this is now the FIRST thing checked, on the raw path.
+    ['osa.save_artifact("/abs.txt", "x")', /^ValueError: path must be relative, not '\/abs\.txt'\n/],
+    ['osa.save_artifact("\\\\abs.txt", "x")', /^ValueError: path must be relative, not '\\\\abs\.txt'\n/],
+    ['osa.save_artifact(5, "x")', /^ValueError: path must be a non-empty string\n/],
+    ['osa.save_artifact("ok.txt", 5)', /^TypeError: data must be bytes, bytearray, memoryview or str, not int\n/],
+    ['osa.save_script("", "x = 1")', /^ValueError: name must be a non-empty string\n/],
+    ['osa.save_script("/abs", "x = 1")', /^ValueError: name must be relative, not '\/abs'\n/],
+    ['osa.save_script("ok", 5)', /^TypeError: code must be a str, not int\n/],
+  ];
+  for (const [code, pattern] of cases) {
+    const r = await plain.run(code);
+    assertEqual(r.status, 'error', `refused: ${code}`);
+    assert(pattern.test(r.stderr), `readable message for ${code} (got ${JSON.stringify(r.stderr)})`);
+  }
+}
+
+console.log('\nthe per-file and per-run size caps are enforced, with the actual byte counts named');
+{
+  const exactFile = await plain.run('n = 10 * 1024 * 1024\nosa.save_artifact("exact.bin", b"x" * n)\nprint("ok")');
+  assertEqual(exactFile.status, 'ok', 'exactly the 10 MB per-file limit is allowed');
+
+  const overFile = await plain.run('n = 10 * 1024 * 1024 + 1\nosa.save_artifact("over.bin", b"x" * n)');
+  assertEqual(overFile.status, 'error', 'one byte over the per-file limit is refused');
+  assert(/over\.bin is 10485761 bytes, over the 10485760-byte per-file limit/.test(overFile.stderr),
+    `the message names the actual size and the limit (got ${JSON.stringify(overFile.stderr)})`);
+
+  // Exactly the 25 MB per-run boundary: three files that sum to precisely
+  // the limit must all succeed. Sizes are picked to land on the exact
+  // byte, not merely under it, so this is a real boundary test and not a
+  // margin-of-error one.
+  const exactRun = await plain.run(
+    'chunk = b"x" * (25 * 1024 * 1024 // 3)\n' +
+      'osa.save_artifact("a.bin", chunk)\n' +
+      'osa.save_artifact("b.bin", chunk)\n' +
+      'osa.save_artifact("c.bin", b"x" * (25 * 1024 * 1024 - 2 * (25 * 1024 * 1024 // 3)))\n' +
+      'print("ok")'
+  );
+  assertEqual(exactRun.status, 'ok', `exactly 25 MB of explicit saves in one run succeeds (got ${JSON.stringify(exactRun.stderr)})`);
+
+  const overRun = await plain.run(
+    'chunk = b"x" * (9 * 1024 * 1024)\n' +
+      'osa.save_artifact("a.bin", chunk)\n' +
+      'osa.save_artifact("b.bin", chunk)\n' +
+      'osa.save_artifact("c.bin", chunk)'
+  );
+  assertEqual(overRun.status, 'error', 'a third 9 MB file pushes the run over its 25 MB per-run budget');
+  assert(
+    /saving artifacts\/c\.bin would use \d+ bytes; this run has already explicitly saved \d+, over the 26214400-byte per-run limit/
+      .test(overRun.stderr),
+    `the message names this file's size and what the run already used (got ${JSON.stringify(overRun.stderr)})`
+  );
+}
+
+console.log('\na run may explicitly save at most 32 distinct files: "saved equals announced"');
+{
+  const thirtyTwo = await plain.run(
+    Array.from({ length: 32 }, (_, i) => `osa.save_artifact("f${i}.txt", "x")`).join('\n') + '\nprint("ok")'
+  );
+  assertEqual(thirtyTwo.status, 'ok', `exactly 32 distinct explicit saves succeed (got ${JSON.stringify(thirtyTwo.stderr)})`);
+  assertEqual(thirtyTwo.artifacts.length, 32, 'and all 32 are announced as artifacts');
+
+  const thirtyThree = await plain.run(
+    Array.from({ length: 33 }, (_, i) => `osa.save_artifact("f${i}.txt", "x")`).join('\n')
+  );
+  assertEqual(thirtyThree.status, 'error', 'a 33rd distinct file is refused');
+  assert(/already explicitly saved 32 files, the most a run may save/.test(thirtyThree.stderr),
+    `the message says why (got ${JSON.stringify(thirtyThree.stderr)})`);
+  assertEqual(thirtyThree.artifacts.length, 32, 'the 32 that succeeded before the 33rd call raised are still announced');
+
+  // Re-saving the SAME 32 paths a second time must not be refused: it is
+  // not a NEW distinct path, so the count guard must not fire on it.
+  const resaveSame = await plain.run(
+    Array.from({ length: 32 }, (_, i) => `osa.save_artifact("f${i}.txt", "x")`).join('\n') +
+      '\n' +
+      Array.from({ length: 32 }, (_, i) => `osa.save_artifact("f${i}.txt", "y")`).join('\n') +
+      '\nprint("ok")'
+  );
+  assertEqual(resaveSame.status, 'ok', `re-saving the same 32 paths again does not trip the distinct-file cap (got ${JSON.stringify(resaveSame.stderr)})`);
+  assertEqual(resaveSame.artifacts.length, 32, 'still exactly 32 distinct artifacts');
+}
+
+console.log('\na run that saves nothing reports nothing');
+{
+  const r = await plain.run('x = 1 + 1', 'call-save-none');
+  assertEqual(JSON.stringify(r.artifacts), '[]', 'no artifacts');
+  assertEqual(JSON.stringify(r.files), '[]', 'and no files to persist');
+}
+
+console.log('\n_save_file and _validate_before_prefix are unreachable from executed code');
+{
+  // Both are set on the user namespace only long enough for dataClient to
+  // build the osa module, then `del`eted (osa-egress.js). If either leaked,
+  // executed code could call the internal recorder directly, bypassing the
+  // path/size checks save_script/save_artifact wrap it in.
+  for (const name of ['_save_file', '_validate_before_prefix']) {
+    const r = await plain.run(`${name}("x", b"y")`);
+    assertEqual(r.status, 'error', `${name} is not reachable`);
+    assert(new RegExp(`NameError: name '${name}' is not defined`).test(r.stderr),
+      `and it is a plain NameError, not something that reveals what it was (got ${JSON.stringify(r.stderr)})`);
+  }
+}
+
 console.log('\n' + '='.repeat(60));
 console.log(`Total: ${passed + failed}   Passed: ${passed}   Failed: ${failed}`);
 console.log('='.repeat(60));

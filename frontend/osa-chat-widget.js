@@ -163,6 +163,14 @@
   let browserToolsSetup = null; // {tools, python} from the config, kept for a retry
   let browserToolsUnavailable = null; // {reason, detail} while code execution is off
   let browserToolsRetried = false;
+  // The persistent workspace (#433): one OSARuntime.WorkspaceStore per
+  // community, created lazily once the runtime bundle is loaded (it needs
+  // runtimeApi.WorkspaceStore) and reused for the life of the page.
+  let workspaceStore = null;
+  // Whether the workspace's Delete button is one click from deleting: reset
+  // whenever Settings opens or closes, so a stray click days later cannot
+  // land on a confirmation nobody meant to leave armed.
+  let workspaceDeleteConfirming = false;
   // What the tool panel shows while a tool_request is answered:
   // {phase: 'asking', prompt, decide} while the person is asked,
   // {phase: 'running', prompt, progress} while code runs, else null.
@@ -208,7 +216,7 @@
   // browser before any of it runs. Written by scripts/build-runtime-bundle.js;
   // CI rebuilds and fails if the committed bundle or this line is stale.
   // BEGIN GENERATED: runtime bundle integrity
-  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-oAb/tfbolR+WOyAVNsh782fTloiCIfpcc5iIMY0ySClMVaVgh1uuoRQba6vH/fK+';
+  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-mrIR7dGEOVBng6kMF4/HRRheVoZTs6sdVjo0jdbNe0C7OC0zHJLoRWMTeR/T9/yV';
   // END GENERATED: runtime bundle integrity
 
   // Icons (SVG)
@@ -1273,6 +1281,30 @@
 
     .osa-settings-btn-save:hover {
       background: var(--osa-primary-dark);
+    }
+
+    .osa-workspace-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .osa-workspace-actions .osa-settings-btn {
+      padding: 8px 14px;
+      background: transparent;
+      color: var(--osa-text);
+      border: 1px solid var(--osa-border);
+    }
+
+    .osa-workspace-actions .osa-settings-btn:hover {
+      background: var(--osa-border);
+    }
+
+    .osa-workspace-delete-btn.osa-workspace-confirm {
+      background: #e53e3e;
+      color: white;
+      border-color: #e53e3e;
     }
 
     /* Fullscreen mode (for pop-out windows) */
@@ -2342,11 +2374,21 @@
           onProgress: onRuntimeProgress,
           onStateChange: onRuntimeStateChange,
         });
-        browserTools = new api.ClientToolController({ runtime: browserRuntime, tools, gate: askToRunCode });
+        // One workspace per community (#433), constructed here so the
+        // controller can persist through it and the Settings panel can read
+        // and export through the same instance (getWorkspaceStore).
+        workspaceStore = new api.WorkspaceStore({ community: CONFIG.communityId });
+        browserTools = new api.ClientToolController({
+          runtime: browserRuntime,
+          tools,
+          gate: askToRunCode,
+          workspace: workspaceStore,
+        });
         runtimeApi = api;
       } catch (err) {
         browserRuntime = null;
         browserTools = null;
+        workspaceStore = null;
         markBrowserToolsUnavailable('setup-failed', err && err.message);
         return null;
       }
@@ -2370,6 +2412,109 @@
     if (browserToolsUnavailable) return { state: 'unavailable', ...browserToolsUnavailable };
     if (!browserTools) return { state: 'loading', reason: null };
     return { state: 'ready', reason: null };
+  }
+
+  // The workspace exists only for a community that declares client tools, and
+  // only once the runtime bundle (which carries WorkspaceStore) has loaded;
+  // null otherwise, which every caller below treats as "nothing to persist
+  // or show" rather than an error.
+  // The SAME instance the controller persists through (see startBrowserTools):
+  // one open IndexedDB connection per community, not two, and the Settings
+  // panel's view of "what is saved" is never a beat behind the controller's.
+  function getWorkspaceStore() {
+    return workspaceStore;
+  }
+
+  function formatWorkspaceBytes(n) {
+    if (!Number.isFinite(n) || n < 1024) return `${Math.max(0, Math.round(n || 0))} B`;
+    const units = ['KB', 'MB', 'GB'];
+    let value = n / 1024;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit += 1;
+    }
+    return `${value.toFixed(1)} ${units[unit]}`;
+  }
+
+  // Shown only for a community that declares client tools (getWorkspaceStore
+  // is null until the runtime bundle carrying WorkspaceStore has loaded,
+  // which only happens for one, see startBrowserTools). Re-run every time
+  // Settings opens, the same way the model dropdown is, so a workspace
+  // written after the panel last opened is reflected.
+  async function refreshWorkspacePanel(container) {
+    const field = container.querySelector('.osa-workspace-field');
+    const usage = container.querySelector('.osa-workspace-usage');
+    const deleteBtn = container.querySelector('.osa-workspace-delete-btn');
+    if (!field) return;
+    workspaceDeleteConfirming = false;
+    if (deleteBtn) {
+      deleteBtn.textContent = 'Delete workspace';
+      deleteBtn.classList.remove('osa-workspace-confirm');
+    }
+    const store = getWorkspaceStore();
+    if (!store) {
+      field.style.display = 'none';
+      return;
+    }
+    field.style.display = '';
+    if (usage) usage.textContent = 'Checking workspace size...';
+    try {
+      const bytes = await store.sizeUsed();
+      if (usage) usage.textContent = `Using ${formatWorkspaceBytes(bytes)} in this browser.`;
+    } catch (err) {
+      if (usage) usage.textContent = `Workspace size is not available: ${(err && err.message) || err}`;
+    }
+  }
+
+  async function downloadWorkspace(container) {
+    const store = getWorkspaceStore();
+    if (!store) return;
+    try {
+      const bytes = await store.exportZip();
+      const blob = new Blob([bytes], { type: 'application/zip' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${CONFIG.communityId}-workspace.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      // Freed after the click has had a chance to start the download, rather
+      // than immediately: revoking too early can cancel the download itself.
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (err) {
+      console.error('[OSA] Workspace export failed:', err);
+      showError(container, `Could not build the workspace download: ${(err && err.message) || err}`);
+    }
+  }
+
+  // A second click on the same button confirms, rather than confirm()/
+  // alert(): those are unusable in an embedded, possibly-sandboxed iframe,
+  // and this widget uses no browser dialog anywhere else.
+  async function handleWorkspaceDeleteClick(container) {
+    const deleteBtn = container.querySelector('.osa-workspace-delete-btn');
+    if (!workspaceDeleteConfirming) {
+      workspaceDeleteConfirming = true;
+      if (deleteBtn) {
+        deleteBtn.textContent = 'Confirm delete';
+        deleteBtn.classList.add('osa-workspace-confirm');
+      }
+      return;
+    }
+    workspaceDeleteConfirming = false;
+    if (deleteBtn) {
+      deleteBtn.textContent = 'Delete workspace';
+      deleteBtn.classList.remove('osa-workspace-confirm');
+    }
+    const store = getWorkspaceStore();
+    if (!store) return;
+    const result = await store.deleteAll();
+    if (!result.ok) {
+      showError(container, `Could not delete the workspace: ${result.reason}`);
+      return;
+    }
+    await refreshWorkspacePanel(container);
   }
 
   // Boot on open rather than on the first run, for a community that asks.
@@ -2524,6 +2669,12 @@
   }
 
   // Answer one tool_request and record it on the reply it belongs to.
+  //
+  // Workspace persistence (#433) happens INSIDE browserTools.answer(): the
+  // controller is handed a WorkspaceStore when it is constructed (see
+  // startBrowserTools) and writes a run's files there itself, before this
+  // function's caller ever sees the result, so `result` here already
+  // reflects any save failure (a dropped artifact, a stderr note).
   async function answerToolRequest(container, request, messageIndex) {
     if (!browserTools) {
       // Tools are declared only once the controller exists, so the server
@@ -2924,6 +3075,8 @@
     if (overlay) {
       overlay.classList.add('open');
     }
+
+    refreshWorkspacePanel(container).catch((err) => console.error('[OSA] Workspace panel refresh failed:', err));
   }
 
   // Close settings modal
@@ -2932,6 +3085,7 @@
     if (overlay) {
       overlay.classList.remove('open');
     }
+    workspaceDeleteConfirming = false;
   }
 
   // Save settings from modal
@@ -3427,6 +3581,18 @@
                 placeholder="provider/model-name"
                 autocomplete="off"
               />
+            </div>
+            <div class="osa-settings-field osa-workspace-field" style="display: none;">
+              <label class="osa-settings-label">Workspace</label>
+              <span class="osa-settings-hint osa-workspace-usage">Checking workspace size...</span>
+              <div class="osa-workspace-actions">
+                <button type="button" class="osa-settings-btn osa-workspace-download-btn">
+                  Download workspace (.zip)
+                </button>
+                <button type="button" class="osa-settings-btn osa-workspace-delete-btn">
+                  Delete workspace
+                </button>
+              </div>
             </div>
           </div>
           <div class="osa-settings-footer">
@@ -4559,6 +4725,12 @@
     settingsCancelBtn?.addEventListener('click', () => closeSettings(container));
     settingsSaveBtn?.addEventListener('click', () => saveSettings(container));
 
+    // Workspace panel (#433), inside Settings.
+    const workspaceDownloadBtn = container.querySelector('.osa-workspace-download-btn');
+    const workspaceDeleteBtn = container.querySelector('.osa-workspace-delete-btn');
+    workspaceDownloadBtn?.addEventListener('click', () => downloadWorkspace(container));
+    workspaceDeleteBtn?.addEventListener('click', () => handleWorkspaceDeleteClick(container));
+
     // Close settings modal when clicking outside
     settingsOverlay?.addEventListener('click', (e) => {
       if (e.target === settingsOverlay) {
@@ -4703,6 +4875,19 @@
       runningActivity,
       getMessages: () => messages,
       setMessages: (list) => { messages = list; },
+      // The Settings workspace panel (#433): workspaceStore is normally
+      // set only by setUpBrowserTools once a runtime bundle loads, which
+      // needs IndexedDB behind it to mean anything; a test sets it directly
+      // to exercise the panel's own logic against a REAL WorkspaceStore
+      // (genuinely unavailable under happy-dom, exactly as it is genuinely
+      // unavailable under Bun -- see test-controller.js's own comment on
+      // this) without booting a runtime at all.
+      setWorkspaceStore: (store) => { workspaceStore = store; },
+      formatWorkspaceBytes,
+      refreshWorkspacePanel,
+      downloadWorkspace,
+      handleWorkspaceDeleteClick,
+      closeSettings,
     };
   }
 

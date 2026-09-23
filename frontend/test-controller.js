@@ -18,6 +18,7 @@ import {
 } from './osa-controller.js';
 import { HIGHLIGHT_CLASSES, highlightPython, tokenizePython } from './osa-highlight.js';
 import { CANCELLED_STDERR, CLIENT_TOOL_RESULT_FIELDS, PyodideRuntime, RUNTIME_STATE } from './osa-runtime.js';
+import { WorkspaceStore } from './osa-workspace.js';
 
 let passed = 0;
 let failed = 0;
@@ -68,10 +69,10 @@ function person(decision) {
   return { gate, asked };
 }
 
-function setup({ tools = TOOLS, decision = GATE_DECISION.RUN, worker = 'executing', runtime = RUNTIME } = {}) {
+function setup({ tools = TOOLS, decision = GATE_DECISION.RUN, worker = 'executing', runtime = RUNTIME, workspace = null } = {}) {
   const rt = new PyodideRuntime({ runtime, workerFactory: workerFrom(worker) });
   const who = person(decision);
-  const controller = new ClientToolController({ runtime: rt, tools, gate: who.gate });
+  const controller = new ClientToolController({ runtime: rt, tools, gate: who.gate, workspace });
   return { rt, controller, asked: who.asked };
 }
 
@@ -419,6 +420,112 @@ console.log('\na second request while one is answered gets its own result');
   release(GATE_DECISION.RUN);
   const one = await first;
   assert(one.status === 'ok' && one.call_id === 'call-first', 'and the first is unaffected');
+  rt.terminate();
+}
+
+// ---------------------------------------------------------------------------
+// Workspace persistence (#433)
+// ---------------------------------------------------------------------------
+//
+// IndexedDB does not exist under Bun, so `new WorkspaceStore({community})`
+// with no dbFactory is a REAL store whose every write genuinely fails --
+// not a stand-in for one (the NO MOCK policy asks for a store that
+// genuinely fails, such as a real quota set to zero through the module's
+// own configuration, rather than a stubbed method), and it exercises the
+// controller's real amendment logic end to end.
+
+console.log('\nwith no workspace configured, a saved-files result is untouched');
+{
+  const { rt, controller } = setup();
+  const result = await controller.answer(request('call-no-workspace', 'FILES:2'));
+  assertEqual(JSON.stringify(result.artifacts), JSON.stringify(['artifacts/file-0.txt', 'artifacts/file-1.txt']),
+    'artifacts are exactly what the run reported');
+  assert(!/\[workspace\]/.test(result.stderr), 'and stderr carries no workspace note');
+  rt.terminate();
+}
+
+console.log('\na workspace write that genuinely fails drops the artifact and notes why');
+{
+  const workspace = new WorkspaceStore({ community: 'test-community' });
+  assertEqual(workspace.available, false, "IndexedDB does not exist under Bun, so this store is REALLY unavailable, not stubbed to look that way");
+  const { rt, controller } = setup({ workspace });
+  const result = await controller.answer(request('call-workspace-fail', 'FILES:2'));
+
+  assertEqual(result.artifacts.length, 0, 'the model must never be told a file exists when it does not: both failed saves are dropped');
+  assert(/\[workspace\] could not save artifacts\/file-0\.txt: IndexedDB is not available in this browser/.test(result.stderr),
+    `stderr names the first file and why (got ${JSON.stringify(result.stderr)})`);
+  assert(/\[workspace\] could not save artifacts\/file-1\.txt: IndexedDB is not available in this browser/.test(result.stderr),
+    'and the second');
+  assertEqual(result.status, 'ok', 'the run itself is not failed by a workspace write that fails');
+  rt.terminate();
+}
+
+console.log('\na workspace failure note is never clipped away when stderr_chars is small');
+{
+  const workspace = new WorkspaceStore({ community: 'test-community' });
+  const smallStderr = { ...RUNTIME, limits: { ...RUNTIME.limits, stderr_chars: 256 } };
+  const { rt, controller } = setup({ workspace, runtime: smallStderr });
+  // FILES:20 makes 21 real failures (20 explicit + the automatic-files
+  // placeholder), each around 90+ characters: the WHOLE note cannot
+  // possibly fit in a 256-character stderr, a floor a community can
+  // actually configure (RUNTIME_LIMITS.stderr_chars.min, osa-output.js).
+  const result = await controller.answer(request('call-workspace-small-stderr', 'FILES:20'));
+  assertEqual(result.artifacts.length, 0, 'every explicit save is still dropped');
+  assert(result.stderr.length <= 256, `stderr never exceeds the community's own 256-char limit (got ${result.stderr.length})`);
+  assert(
+    /\[workspace\] could not save artifacts\/file-0\.txt: IndexedDB is not available in this browser/.test(result.stderr),
+    `the first (sorted) failure line survives WHOLE, not clipped mid-line (got ${JSON.stringify(result.stderr)})`
+  );
+  assert(/and \d+ more$/.test(result.stderr), `a trailing "and N more" line reports what did not fit (got ${JSON.stringify(result.stderr)})`);
+  assert(
+    !/characters omitted/.test(result.stderr),
+    `the note is dropped by WHOLE lines, never by clipText's head/tail marker (got ${JSON.stringify(result.stderr)})`
+  );
+  rt.terminate();
+}
+
+console.log("\na run that saved nothing explicitly still reports its automatic files' failure, without failing the run");
+{
+  const workspace = new WorkspaceStore({ community: 'test-community' });
+  const { rt, controller } = setup({ workspace });
+  const result = await controller.answer(request('call-workspace-auto-fail', 'print(1)'));
+  assertEqual(result.artifacts.length, 0, 'nothing was ever listed as an artifact, so nothing needs dropping');
+  assert(/\[workspace\] could not save scripts\/run-NNN\.py \(and this run's other automatic files\): IndexedDB is not available in this browser/
+    .test(result.stderr), `the automatic files' failure is still reported (got ${JSON.stringify(result.stderr)})`);
+  assertEqual(result.status, 'ok', 'a run that ran fine is still reported as fine');
+  rt.terminate();
+}
+
+console.log('\nget_full_output never touches the workspace: it ran no code to persist');
+{
+  const workspace = new WorkspaceStore({ community: 'test-community' });
+  const recorded = [];
+  const originalRecordRun = workspace.recordRun.bind(workspace);
+  workspace.recordRun = (...args) => {
+    recorded.push(args);
+    return originalRecordRun(...args);
+  };
+  const { rt, controller } = setup({ workspace });
+  await controller.answer(request('call-for-output', 'print(1)'));
+  const before = recorded.length;
+  await controller.answer({ call_id: 'call-read', tool: FULL_OUTPUT_TOOL_NAME, args: { call_id: 'call-for-output' } });
+  assertEqual(recorded.length, before, 'a get_full_output call never calls recordRun');
+  rt.terminate();
+}
+
+console.log('\nonly a call that actually ran Python is persisted: a declined run writes nothing');
+{
+  const workspace = new WorkspaceStore({ community: 'test-community' });
+  const recorded = [];
+  const originalRecordRun = workspace.recordRun.bind(workspace);
+  workspace.recordRun = (...args) => {
+    recorded.push(args);
+    return originalRecordRun(...args);
+  };
+  const { rt, controller } = setup({ workspace, decision: GATE_DECISION.DENY });
+  const result = await controller.answer(request('call-declined', 'print(1)'));
+  assertEqual(result.status, 'denied', 'the run was declined');
+  assertEqual(recorded.length, 0, 'and nothing was ever handed to the workspace');
   rt.terminate();
 }
 

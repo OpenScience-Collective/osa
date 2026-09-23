@@ -67,6 +67,33 @@ self.onmessage = (event) => {
       ? [{ mime: 'image/png', data_base64: 'iVBORw0KGgo=', width: 1, height: 1 }]
       : [];
 
+    // FILES:<n> saves n explicitly-named artifacts, the way a real run's
+    // osa.save_artifact would report them: `files` (base64 bytes, host-only)
+    // beside `artifacts` (the names, which DO reach ClientToolResult). Used
+    // by controller- and runtime-level tests to exercise workspace
+    // persistence without booting real Pyodide.
+    //
+    // BADFILE reports one artifact whose base64 is genuinely malformed --
+    // real Python/JS base64 encoding (osa-egress.js's save_artifact through
+    // the worker's own reply path) can never produce this, so it stands in
+    // for a bug elsewhere that reaches recordRun, the one case the
+    // unexpected-failure handling exists for: WorkspaceStore.recordRun calling atob() on it must
+    // genuinely throw (a real DOMException, in a real browser with real
+    // IndexedDB), reaching ClientToolController#persist's catch for real.
+    const filesMatch = code.match(/^FILES:(\d+)/);
+    const fileCount = filesMatch ? Number(filesMatch[1]) : 0;
+    const artifacts = [];
+    const files = [];
+    for (let i = 0; i < fileCount; i++) {
+      const path = `artifacts/file-${i}.txt`;
+      artifacts.push(path);
+      files.push({ path, data_base64: btoa(`contents of file ${i}`) });
+    }
+    if (code.startsWith('BADFILE')) {
+      artifacts.push('artifacts/bad.bin');
+      files.push({ path: 'artifacts/bad.bin', data_base64: 'not-valid-base64!!!' });
+    }
+
     const reply = () => {
       self.postMessage({
         type: 'result',
@@ -77,9 +104,10 @@ self.onmessage = (event) => {
         // Echoed so a test can prove THIS result belongs to THIS call.
         summary: code,
         images,
-        artifacts: [],
+        artifacts,
         elapsed_ms: delay,
-        full: { stdout: fullStdout, stderr: fullStderr, traceback: fullTraceback },
+        full: { stdout: fullStdout, stderr: fullStderr, traceback: fullTraceback, summary: code },
+        files,
       });
     };
 

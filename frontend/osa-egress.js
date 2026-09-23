@@ -392,7 +392,9 @@ export function buildNamespaceSealSource() {
 }
 
 /**
- * Build the Python that gives executed code its ONE sanctioned network route.
+ * Build the Python that gives executed code its ONE sanctioned network route,
+ * and its ONE way to persist a file (epic #429, phase #433: `save_script` and
+ * `save_artifact`).
  *
  * Measured in Chrome on 2026-09-22, against real Pyodide under nemar.org's
  * production policy: once `buildNamespaceSealSource` has run, executed code has
@@ -402,6 +404,18 @@ export function buildNamespaceSealSource() {
  * thing this feature exists for, so the seal has to be paired with a client
  * rather than left to stand alone.
  *
+ * `save_script`/`save_artifact` need the same kind of bridge for a different
+ * reason: Python cannot reach browser storage at all (the seal removes `js`,
+ * and `mountOPFS`/`mountNativeFS` are not options here, see
+ * `docs/community-browser-runtime.md`), so a save only ever writes into the
+ * in-memory result `_execute` returns; the browser is what turns that into a
+ * persisted file, after the run ends. `_save_file` and `_validate_before_prefix`
+ * are the two functions from the output-capture module (`osa-output.js`) this
+ * module is handed, the same way `createWorkerRuntime` hands `display` to the
+ * user namespace, so saving lands in the SAME `_pending` state the rest of
+ * the harness already reads, and validates the caller's own argument with the
+ * SAME rule `_record_saved_file` re-checks on the full path afterward.
+ *
  * WHAT THIS IS AND IS NOT A BOUNDARY AGAINST
  *
  * It is not a Python/JavaScript boundary, and nothing in Pyodide could be. A
@@ -409,10 +423,10 @@ export function buildNamespaceSealSource() {
  * and any JsProxy reaches the whole JavaScript world through its own
  * `constructor`. Hiding the reference harder buys nothing.
  *
- * The boundary is the fetch shim itself, which is why decision 1 of the phase
- * plan puts it there: the native fetch is deleted from the prototype chain and
- * the shim installed non-writable and non-configurable, so code that reaches
- * JavaScript still finds only the guarded function. That is also why nested
+ * The boundary is the fetch shim itself: the native fetch is deleted from the
+ * prototype chain and the shim installed non-writable and non-configurable,
+ * so code that reaches JavaScript still finds only the guarded function.
+ * That is also why nested
  * workers are blocked, since a fresh global is the one way to get an unshimmed
  * one. What the namespace seal buys is that the obvious routes are gone and a
  * model does not stumble onto one, not that a determined escape is impossible.
@@ -428,7 +442,7 @@ export function buildDataClientSource() {
     'import js as _js',
     'from pyodide.ffi import JsException as _JsException, to_js as _to_js',
     '',
-    'def _build_osa_client(_fetch, _to_js, _Object, _JsException):',
+    'def _build_osa_client(_fetch, _to_js, _Object, _JsException, _save_file, _validate_before_prefix):',
     '    """Close over the SHIMMED fetch, which is the enforcement point."""',
     '',
     '    Response = _collections.namedtuple("Response", ["status", "body"])',
@@ -477,17 +491,69 @@ export function buildDataClientSource() {
     '        """The same, decoded."""',
     '        return (await fetch_bytes(url)).decode(encoding)',
     '',
+    '    def save_script(name, code):',
+    '        """Save Python source to this run\'s persistent workspace, as scripts/<name>.',
+    '',
+    '        A ".py" extension is added to `name` if it has none. `code` must be a',
+    '        str. Every run\'s code is already saved automatically as',
+    '        scripts/run-NNN.py; call this to give a script a name worth finding',
+    '        later, or to save something other than the code exactly as it ran.',
+    '        Returns the workspace-relative path saved to. Raises ValueError for a',
+    '        bad name, or for a file over 10 MB, or for a run that has already',
+    '        explicitly saved 32 files or 25 MB. The workspace panel in Settings',
+    '        is where a reader downloads this community\'s whole workspace, or',
+    '        deletes all of it; there is no per-file delete.',
+    '        """',
+    '        if not isinstance(name, str) or not name:',
+    '            raise ValueError("name must be a non-empty string")',
+    '        if not isinstance(code, str):',
+    '            raise TypeError("code must be a str, not %s" % type(code).__name__)',
+    '        _validate_before_prefix(name, "name")',
+    '        filename = name if name.endswith(".py") else name + ".py"',
+    '        path = "scripts/" + filename',
+    '        _save_file(path, code.encode("utf-8"))',
+    '        return path',
+    '',
+    '    def save_artifact(path, data):',
+    '        """Save bytes to this run\'s persistent workspace, as artifacts/<path>.',
+    '',
+    '        `data` is bytes, bytearray, memoryview or str (encoded UTF-8). Returns',
+    '        the workspace-relative path saved to. Raises ValueError for a bad',
+    '        path, or for a file over 10 MB, or for a run that has already',
+    '        explicitly saved 32 files or 25 MB; see save_script for where a',
+    '        reader finds what this saved.',
+    '        """',
+    '        if not isinstance(path, str) or not path:',
+    '            raise ValueError("path must be a non-empty string")',
+    '        if isinstance(data, str):',
+    '            data = data.encode("utf-8")',
+    '        elif isinstance(data, memoryview):',
+    '            data = data.tobytes()',
+    '        elif isinstance(data, bytearray):',
+    '            data = bytes(data)',
+    '        elif not isinstance(data, bytes):',
+    '            raise TypeError("data must be bytes, bytearray, memoryview or str, not %s" % type(data).__name__)',
+    '        _validate_before_prefix(path, "path")',
+    '        full_path = "artifacts/" + path',
+    '        _save_file(full_path, data)',
+    '        return full_path',
+    '',
     '    module = _types.ModuleType("osa")',
     '    module.__doc__ = (',
-    '        "Network access for code running in the browser runtime. "',
-    '        "Every call is async and must be awaited: zarr\'s synchronous API "',
-    '        "starts an IO thread, which Pyodide\'s main thread cannot do, and the "',
-    '        "RuntimeError it raises names neither zarr nor the browser."',
+    '        "Network access, and a persistent per-community workspace, for code "',
+    '        "running in the browser runtime. Every network call is async and must "',
+    '        "be awaited: zarr\'s synchronous API starts an IO thread, which "',
+    '        "Pyodide\'s main thread cannot do, and the RuntimeError it raises "',
+    '        "names neither zarr nor the browser. save_script and save_artifact "',
+    '        "are synchronous: they write to this run\'s in-memory result, and the "',
+    '        "browser persists it to IndexedDB after the run ends, never during it."',
     '    )',
     '    module.Response = Response',
     '    module.fetch = fetch',
     '    module.fetch_bytes = fetch_bytes',
     '    module.fetch_text = fetch_text',
+    '    module.save_script = save_script',
+    '    module.save_artifact = save_artifact',
     '    # Given a real spec and registered, so `import osa` works and so the',
     '    # static import gate can resolve it. A ModuleType built by hand has',
     '    # __spec__ of None, and find_spec RAISES on that rather than returning',
@@ -495,9 +561,12 @@ export function buildDataClientSource() {
     '    module.__spec__ = _ilu.spec_from_loader("osa", loader=None)',
     '    return module',
     '',
-    '_sys.modules["osa"] = _build_osa_client(_js.fetch, _to_js, _js.Object, _JsException)',
+    '_sys.modules["osa"] = _build_osa_client(',
+    '    _js.fetch, _to_js, _js.Object, _JsException, _save_file, _validate_before_prefix',
+    ')',
     'osa = _sys.modules["osa"]',
     '',
     'del _collections, _ilu, _sys, _types, _js, _to_js, _JsException, _build_osa_client',
+    'del _save_file, _validate_before_prefix',
   ].join('\n');
 }
