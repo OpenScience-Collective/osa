@@ -24,8 +24,9 @@ and neither surface was opened in a browser on our own machines during that revi
 The verdict was never written down;
 #423 exists to settle it with data and record it, one way or the other.
 
-Phase 4a's workspace exports, per session: `scripts/run-NNN.py` (plain scripts, one per assistant turn), `artifacts/`, `manifest.json`,
-and `notebook.ipynb` (Jupyter notebook format version 4.5, one code cell per run with outputs).
+Phase 4a's workspace exports, per session: `scripts/run-NNN.py` (plain scripts, one per run, the assistant's or the reader's own re-run),
+`results/run-NNN/` (each run's output and figures), `artifacts/`, `manifest.json`,
+and `notebook.ipynb` (Jupyter notebook format version 4.5, a markdown cell and a code cell per run, with outputs).
 The widget is embedded on third-party pages (for example nemar.org);
 any notebook surface opens in a new browser tab, on its own origin, as a second Pyodide instance.
 Sharing a live kernel with the chat worker is unsupported and out of scope
@@ -64,9 +65,14 @@ That follow-up (#453) has four prerequisites this ADR's measurements surfaced, n
 1. A pruned, pinned JupyterLite build (`jupyter lite build --pyodide=<0.29.5 tarball> --no-unused-shared-packages`);
    size not yet measured (the unpruned pin is 529 to 531 MB, an unrealistic deploy size).
 2. A hosting origin for the built site.
-3. That origin added to `zarr.nemar.org`'s Cross-Origin Resource Sharing (CORS) allowlist, which today answers only `nemar.org`, its subdomains, and loopback
-   (confirmed live, see the measurements note).
-   This is a change in `nemarOrg/nemar-cli`, not in this repository.
+3. That origin must be one `zarr.nemar.org` answers.
+   Its Cross-Origin Resource Sharing (CORS) allowlist already admits `nemar.org` and its subdomains,
+   `osc.earth` and every `*.osc.earth` subdomain, and loopback (confirmed live on 2026-09-23; see the measurements note).
+   A site hosted under `osc.earth` needs no change there; any other origin needs one in `nemarOrg/nemar-cli`.
+   OSA's own wheel route, which serves the vendored `eegprep-lean`, is narrower:
+   it admits the community's embed origins and the platform's demo hosts (`demo.osc.earth` and `*-demo.osc.earth`),
+   so an ordinary `osc.earth` subdomain still needs adding to `workers/osa-worker/index.js`'s `isAllowedOrigin` and NEMAR's `cors_origins`,
+   a change in this repository.
 4. A JupyterLite extension or content drive that receives the widget's exported workspace files
    (a build-time import was confirmed working for this ADR's measurements;
    nothing live or cross-origin exists yet).

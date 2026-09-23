@@ -286,7 +286,7 @@ A session's `manifest.json` is DERIVED from what is stored, whenever it is neede
 (`deriveManifest`, `frontend/osa-workspace.js`),
 and is never itself stored, so it cannot drift from what is actually there.
 It names each run: its ordinal, `call_id`, status, description, the files it wrote,
-and an ISO 8601 timestamp.
+an ISO 8601 timestamp, and `local`, which is true when the reader ran it with "Edit and run" rather than the assistant.
 
 Every executed run is saved automatically,
 whether or not the model asked to keep anything:
@@ -317,7 +317,9 @@ and checked again on the browser side before anything is written to IndexedDB
 - A path is relative; each `/`-separated segment matches `[A-Za-z0-9._-]+`;
   no segment is `.` or `..`; depth is at most 4 segments; length is at most 200 characters.
 - A single file is at most 10 MB.
-- One run's files together are at most 25 MB.
+- One run's explicit saves together are at most 25 MB, and at most 32 distinct files.
+  The files a run saves automatically (its script, output and figures) do not count toward that budget;
+  only the per-file and per-community caps apply to them.
 - One community's whole workspace is at most 250 MB,
   checked only on the browser side, since it depends on everything already stored.
 

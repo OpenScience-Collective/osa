@@ -265,8 +265,9 @@ extensions:
         rather than whole arrays. Every run's code and output are saved automatically
         to a workspace the reader can download or delete from Settings; call
         osa.save_script(name, code) or osa.save_artifact(path, data) to save something
-        worth keeping under its own name, and only what you explicitly save this way is
-        listed back to you as artifacts. The reader can also edit and re-run any of
+        worth keeping under its own name (at most 32 files, 10 MB each and 25 MB in all
+        per run), and only what you explicitly save this way is listed back to you as
+        artifacts. The reader can also edit and re-run any of
         these runs themselves with "Edit and run" on that run in the chat, so for a
         one-line change to something already run, tell them to try that rather than
         having you rewrite and run the whole thing again.
