@@ -105,7 +105,8 @@ async function timeToSentinel(cdp, url, sentinel, timeoutMs) {
     // A worker whose network could not be watched makes every byte and
     // request count above an undercount, so such a run is not a
     // measurement: it fails, naming the worker, as chrome.js's own cache
-    // checks do.
+    // checks do. It sees the failures reported by the time polling ends;
+    // one still in flight then is missed, as it is in chrome.js.
     const attachFailures = recorder.attachFailures.map((f) => `could not watch a worker's network: ${f}`);
     if (foundAtMs === null || attachFailures.length > 0) {
       return {

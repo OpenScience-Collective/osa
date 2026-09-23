@@ -355,14 +355,18 @@ Two live checks, both against real, production endpoints:
   CORS for the whole community API is `_is_authorized_origin` (`community.py:868-924`, platform demo origins plus the community's own
   `cors_origins`) enforced as `CORSMiddleware` (`src/api/main.py`), and independently at the edge by `workers/osa-worker/index.js`'s
   `getCorsHeaders`/`isAllowedOrigin`, whose allowlist is a fixed set of each community's known embed origins
-  (for nemar: `nemar.org`, `www.nemar.org`, plus the platform's `*.osc.earth`/`*.pages.dev` demo hosts).
+  (for nemar: `nemar.org`, `www.nemar.org`, plus the platform's demo hosts: the bare `osc.earth`, `demo.osc.earth`,
+  `*-demo.osc.earth` and the legacy `*.pages.dev` previews).
   An origin not on that list gets `Access-Control-Allow-Origin: https://demo.osc.earth`, a **fixed fallback value, not the requester's own
   origin**, which fails the browser's own CORS check for any other origin.
-  **So once the wheel route deploys, it will have the same shape as `zarr.nemar.org`'s: reachable from nemar.org and the platform's
-  `*.osc.earth` hosts, not from an arbitrary notebook-surface origin.**
-  A notebook surface hosted under `osc.earth` is therefore already reachable from both.
-  If it is hosted anywhere else, both the wheel route's `cors_origins` (`src/assistants/nemar/config.yaml`) and the
-  S3 bucket's CORS policy need that origin added, the same requirement embedding the chat widget already has, not a new category of work,
+  **So once the wheel route deploys, it will be narrower than `zarr.nemar.org`:
+  reachable from nemar.org and the platform's demo hosts, not from an arbitrary `osc.earth` subdomain.**
+  A notebook surface at, say, `notebook.osc.earth` would read the archive through `zarr.nemar.org` today,
+  and still be refused the `eegprep-lean` wheel by both the edge and the API.
+  Wherever it is hosted, its origin needs adding to the edge's `isAllowedOrigin` and the community's `cors_origins`
+  (`src/assistants/nemar/config.yaml`), and to the S3 bucket's CORS policy,
+  which admits `demo.osc.earth` but no other `osc.earth` host.
+  That is the same requirement embedding the chat widget already has: not a new category of work,
   but a real one to plan for rather than assume away.
 
 ## References

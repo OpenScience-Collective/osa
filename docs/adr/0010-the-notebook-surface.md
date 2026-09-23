@@ -69,6 +69,10 @@ That follow-up (#453) has four prerequisites this ADR's measurements surfaced, n
    Its Cross-Origin Resource Sharing (CORS) allowlist already admits `nemar.org` and its subdomains,
    `osc.earth` and every `*.osc.earth` subdomain, and loopback (confirmed live on 2026-09-23; see the measurements note).
    A site hosted under `osc.earth` needs no change there; any other origin needs one in `nemarOrg/nemar-cli`.
+   OSA's own wheel route, which serves the vendored `eegprep-lean`, is narrower:
+   it admits the community's embed origins and the platform's demo hosts (`demo.osc.earth` and `*-demo.osc.earth`),
+   so an ordinary `osc.earth` subdomain still needs adding to `workers/osa-worker/index.js`'s `isAllowedOrigin` and NEMAR's `cors_origins`,
+   a change in this repository.
 4. A JupyterLite extension or content drive that receives the widget's exported workspace files
    (a build-time import was confirmed working for this ADR's measurements;
    nothing live or cross-origin exists yet).
