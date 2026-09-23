@@ -3,6 +3,7 @@
 // The Python here is EXECUTED by a real interpreter rather than matched with a
 // regex. A malformed f-string in an earlier generated module passed every regex
 // assertion in this repository and only failed when something ran it.
+import { buildDataClientSource } from './osa-egress.js';
 import { buildOutputCaptureSource, RUNTIME_LIMITS, resolveLimits, SERVER_LIMITS } from './osa-output.js';
 import { WORKSPACE_LIMITS } from './osa-workspace.js';
 
@@ -109,6 +110,30 @@ console.log('\nWORKSPACE_LIMITS has not drifted from the Python it is generated 
     assert(fromPython !== null, `${pyName} is still declared in the generated Python`);
     assertEqual(WORKSPACE_LIMITS[jsName], fromPython, `WORKSPACE_LIMITS.${jsName} matches the generated Python's ${pyName}`);
   }
+}
+
+console.log('\nsave_script/save_artifact state the SAME caps WORKSPACE_LIMITS enforces');
+{
+  // The docstrings the model reads (osa-egress.js's buildDataClientSource) are
+  // generated FROM WORKSPACE_LIMITS rather than hand-written, so a prose number
+  // cannot drift from the constant that actually enforces it the way the old
+  // hardcoded "10 MB"/"32 files"/"25 MB" text could. This reads the generated
+  // Python back, the same way the block above reads generated Python, rather
+  // than trusting the source that built it.
+  const py = buildDataClientSource();
+  const maxFileMB = WORKSPACE_LIMITS.MAX_FILE_BYTES / (1024 * 1024);
+  const maxRunMB = WORKSPACE_LIMITS.MAX_RUN_BYTES / (1024 * 1024);
+
+  const fileCaps = [...py.matchAll(/file over (\d+) MB/g)].map((m) => Number(m[1]));
+  assertEqual(fileCaps.length, 2, 'both save_script and save_artifact state the per-file cap');
+  assert(fileCaps.every((mb) => mb === maxFileMB),
+    `both match WORKSPACE_LIMITS.MAX_FILE_BYTES (${maxFileMB} MB, got ${JSON.stringify(fileCaps)})`);
+
+  const runCaps = [...py.matchAll(/saved (\d+) files or (\d+) MB/g)].map((m) => [Number(m[1]), Number(m[2])]);
+  assertEqual(runCaps.length, 2, 'both docstrings state the per-run caps');
+  assert(runCaps.every(([files, mb]) => files === WORKSPACE_LIMITS.MAX_EXPLICIT_FILES && mb === maxRunMB),
+    'both match WORKSPACE_LIMITS.MAX_EXPLICIT_FILES and MAX_RUN_BYTES ' +
+      `(${WORKSPACE_LIMITS.MAX_EXPLICIT_FILES} files, ${maxRunMB} MB, got ${JSON.stringify(runCaps)})`);
 }
 
 console.log('\nthe mirrored defaults and floors have not drifted from RuntimeLimits');
