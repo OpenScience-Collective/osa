@@ -84,6 +84,36 @@ function appendWorkspaceNote(stderr, noteLines, limit) {
   return note ? `${prefix}${note}` : clippedStderr;
 }
 
+/**
+ * Attach a save-failure note to a ClientToolResult for the WIDGET alone to
+ * read, never for the wire.
+ *
+ * `answer()`'s and `runLocal()`'s result goes straight into what reaches the
+ * server (`postResume`'s JSON body) or is read by `executionRecord`, and
+ * ClientToolResult is `extra="forbid"`: a real, enumerable extra field here
+ * would refuse the WHOLE result with a 422 nobody asked for. A NON-enumerable
+ * property is invisible to `JSON.stringify` and to a `{...result}` spread
+ * (`toClientToolResult` itself uses one), so neither the server nor a later
+ * copy of this object ever carries it, while the widget can still read it by
+ * name. This exists because `appendWorkspaceNote` above already folds the
+ * same text into `stderr` for the MODEL's benefit, and stderr is shown to
+ * the reader only when status is not `ok` -- exactly backwards for a save
+ * failure, which matters most on a run whose Python succeeded, and, for the
+ * reader's own runs (runLocal), is the ONLY place this note is visible at
+ * all, since that call never reaches the server for the model to read either.
+ *
+ * @param {object} clientResult
+ * @param {string} note - The same lines already appended to stderr, joined,
+ *   unclipped: the widget bounds this on its own screen-sized terms.
+ * @returns {object} `clientResult`, unchanged except for the added property.
+ */
+function withWorkspaceNote(clientResult, note) {
+  if (note) {
+    Object.defineProperty(clientResult, 'workspaceFailureNote', { value: note, enumerable: false });
+  }
+  return clientResult;
+}
+
 export class ClientToolController {
   #runtime;
   #tools;
@@ -360,12 +390,12 @@ export class ClientToolController {
       console.error('[OSA] Workspace persist failed unexpectedly:', err);
       const explicitPaths = new Set(explicitFiles.map((f) => f.path));
       const artifacts = explicitPaths.size > 0 ? (result.artifacts || []).filter((a) => !explicitPaths.has(a)) : result.artifacts;
-      const stderr = appendWorkspaceNote(
-        result.stderr,
-        ["[workspace] could not save this run's files: the workspace failed unexpectedly"],
-        this.#runtime.limits.stderr_chars
+      const noteLines = ["[workspace] could not save this run's files: the workspace failed unexpectedly"];
+      const stderr = appendWorkspaceNote(result.stderr, noteLines, this.#runtime.limits.stderr_chars);
+      return withWorkspaceNote(
+        toClientToolResult({ ...result, artifacts, stderr }, this.#runtime.limits),
+        noteLines.join('\n')
       );
-      return toClientToolResult({ ...result, artifacts, stderr }, this.#runtime.limits);
     }
     if (persisted.failures.length === 0) return result;
 
@@ -385,7 +415,10 @@ export class ClientToolController {
       .sort((a, b) => a.path.localeCompare(b.path))
       .map((f) => `[workspace] could not save ${f.path}: ${f.reason}`);
     const stderr = appendWorkspaceNote(result.stderr, lines, this.#runtime.limits.stderr_chars);
-    return toClientToolResult({ ...result, artifacts, stderr }, this.#runtime.limits);
+    return withWorkspaceNote(
+      toClientToolResult({ ...result, artifacts, stderr }, this.#runtime.limits),
+      lines.join('\n')
+    );
   }
 
   /**
