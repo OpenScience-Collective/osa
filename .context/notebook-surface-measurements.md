@@ -343,6 +343,9 @@ Two live checks, both against real, production endpoints:
   `Range`/`GET, HEAD, OPTIONS`/exposed `ETag, Content-Length, Content-Range, Accept-Ranges` headers a sharded Zarr reader needs.
   A GET with `Origin: https://example-third-party-site.com` gets **no CORS headers at all**, so a browser fetch from that origin would be
   blocked.
+  It also admits `osc.earth` and every `*.osc.earth` subdomain:
+  `Origin: https://osc.earth`, `https://notebook.osc.earth` and `https://demo.osc.earth` each get their own origin reflected
+  (checked 2026-09-23; `isOscOrigin` in `nemarOrg/nemar-cli`'s `backend/src/services/cors-origins.ts`).
   This matches `.context/browser-execution-tool-design.md`'s own note that the S3 bucket "admits `nemar.org` and its subdomains, the website
   Pages previews, `demo.osc.earth` and loopback," measured here directly rather than only cited.
 - **OSA's own wheel route (`GET /{community}/runtime/{file_name}`) could not be probed live.**
@@ -355,9 +358,10 @@ Two live checks, both against real, production endpoints:
   (for nemar: `nemar.org`, `www.nemar.org`, plus the platform's `*.osc.earth`/`*.pages.dev` demo hosts).
   An origin not on that list gets `Access-Control-Allow-Origin: https://demo.osc.earth`, a **fixed fallback value, not the requester's own
   origin**, which fails the browser's own CORS check for any other origin.
-  **So once the wheel route deploys, it will have the same shape as `zarr.nemar.org`'s: reachable only from nemar.org (or the platform demo
-  hosts), not from an arbitrary notebook-surface origin.**
-  If the eventual notebook surface is hosted anywhere else, both the wheel route's `cors_origins` (`src/assistants/nemar/config.yaml`) and the
+  **So once the wheel route deploys, it will have the same shape as `zarr.nemar.org`'s: reachable from nemar.org and the platform's
+  `*.osc.earth` hosts, not from an arbitrary notebook-surface origin.**
+  A notebook surface hosted under `osc.earth` is therefore already reachable from both.
+  If it is hosted anywhere else, both the wheel route's `cors_origins` (`src/assistants/nemar/config.yaml`) and the
   S3 bucket's CORS policy need that origin added, the same requirement embedding the chat widget already has, not a new category of work,
   but a real one to plan for rather than assume away.
 
