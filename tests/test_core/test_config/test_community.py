@@ -20,6 +20,8 @@ from src.api.tool_results import (
     MAX_STDOUT_CHARS,
 )
 from src.core.config.community import (
+    MAX_CONFIGURED_CLIENT_TOOLS,
+    MAX_PRELUDE_CHARS,
     BudgetConfig,
     CitationConfig,
     ClientToolConfig,
@@ -1968,8 +1970,8 @@ class TestRuntimeLimits:
         """Should default to the documented resource caps."""
         limits = RuntimeLimits()
         assert limits.memory_mb == 1536
-        assert limits.stdout_bytes == 16384
-        assert limits.stderr_bytes == 8192
+        assert limits.stdout_chars == 16384
+        assert limits.stderr_chars == 8192
         assert limits.images == 3
         assert limits.image_px == 1024
         assert limits.exec_seconds == 120
@@ -1978,8 +1980,8 @@ class TestRuntimeLimits:
         """Should accept explicit values for every field, within the server's caps."""
         limits = RuntimeLimits(
             memory_mb=2048,
-            stdout_bytes=8192,
-            stderr_bytes=4096,
+            stdout_chars=8192,
+            stderr_chars=4096,
             images=2,
             image_px=2048,
             exec_seconds=60,
@@ -1990,8 +1992,8 @@ class TestRuntimeLimits:
     @pytest.mark.parametrize(
         ("field", "over_cap"),
         [
-            ("stdout_bytes", MAX_STDOUT_CHARS + 1),
-            ("stderr_bytes", MAX_STDERR_CHARS + 1),
+            ("stdout_chars", MAX_STDOUT_CHARS + 1),
+            ("stderr_chars", MAX_STDERR_CHARS + 1),
             ("images", MAX_IMAGES + 1),
             ("image_px", MAX_IMAGE_EDGE_PX + 1),
         ],
@@ -2014,8 +2016,8 @@ class TestRuntimeLimits:
         """So the common case needs no thought and cannot drift."""
         limits = RuntimeLimits()
 
-        assert limits.stdout_bytes == MAX_STDOUT_CHARS
-        assert limits.stderr_bytes == MAX_STDERR_CHARS
+        assert limits.stdout_chars == MAX_STDOUT_CHARS
+        assert limits.stderr_chars == MAX_STDERR_CHARS
         assert limits.images == MAX_IMAGES
 
     def test_memory_and_time_are_deliberately_unbounded_here(self) -> None:
@@ -2036,8 +2038,8 @@ class TestRuntimeLimits:
         "field,bad_value",
         [
             ("memory_mb", 0),
-            ("stdout_bytes", 0),
-            ("stderr_bytes", 0),
+            ("stdout_chars", 0),
+            ("stderr_chars", 0),
             ("images", -1),
             ("image_px", 0),
             ("exec_seconds", 0),
@@ -2060,11 +2062,11 @@ class TestPythonRuntimeConfig:
     def test_valid_config_with_explicit_limits(self) -> None:
         """An explicit limits section should be honored."""
         config = PythonRuntimeConfig(
-            pyodide_version="0.28.3",
+            pyodide_version="0.29.5",
             lockfile="pyodide-lock-2026-01.json",
             limits=RuntimeLimits(),
         )
-        assert config.pyodide_version == "0.28.3"
+        assert config.pyodide_version == "0.29.5"
         assert config.limits.memory_mb == 1536
 
     def test_omitted_limits_defaults_to_runtime_limits_defaults(self) -> None:
@@ -2075,7 +2077,7 @@ class TestPythonRuntimeConfig:
         spell out an empty `limits: {}`.
         """
         config = PythonRuntimeConfig(
-            pyodide_version="0.28.3",
+            pyodide_version="0.29.5",
             lockfile="pyodide-lock-2026-01.json",
         )
         assert config.limits == RuntimeLimits()
@@ -2085,7 +2087,7 @@ class TestPythonRuntimeConfig:
     def test_optional_fields_default_empty(self) -> None:
         """preload/allow_install/fetch_allow/index_urls should default to empty lists."""
         config = PythonRuntimeConfig(
-            pyodide_version="0.28.3",
+            pyodide_version="0.29.5",
             lockfile="pyodide-lock-2026-01.json",
             limits=RuntimeLimits(),
         )
@@ -2098,7 +2100,7 @@ class TestPythonRuntimeConfig:
     def test_preload_on_accepts_widget_open(self) -> None:
         """preload_on should accept 'widget_open' as well as the default."""
         config = PythonRuntimeConfig(
-            pyodide_version="0.28.3",
+            pyodide_version="0.29.5",
             lockfile="pyodide-lock-2026-01.json",
             preload_on="widget_open",
             limits=RuntimeLimits(),
@@ -2109,7 +2111,7 @@ class TestPythonRuntimeConfig:
         """Should reject a preload_on value outside the known literal set."""
         with pytest.raises(ValidationError):
             PythonRuntimeConfig(
-                pyodide_version="0.28.3",
+                pyodide_version="0.29.5",
                 lockfile="pyodide-lock-2026-01.json",
                 preload_on="on_click",
                 limits=RuntimeLimits(),
@@ -2119,11 +2121,57 @@ class TestPythonRuntimeConfig:
         """Should reject unknown fields, matching every sibling model."""
         with pytest.raises(ValidationError):
             PythonRuntimeConfig(
-                pyodide_version="0.28.3",
+                pyodide_version="0.29.5",
                 lockfile="pyodide-lock-2026-01.json",
                 limits=RuntimeLimits(),
                 unexpected="nope",
             )
+
+    def test_lockfile_and_prelude_are_optional(self) -> None:
+        """A runtime the Pyodide distribution alone satisfies needs neither."""
+        config = PythonRuntimeConfig(pyodide_version="0.29.5")
+        assert config.lockfile is None
+        assert config.prelude is None
+
+    def test_lockfile_and_prelude_may_be_given_as_null(self) -> None:
+        """A YAML key left empty arrives as None, which means the same as omitting it."""
+        config = PythonRuntimeConfig(pyodide_version="0.29.5", lockfile=None, prelude=None)
+        assert config.lockfile is None
+        assert config.prelude is None
+
+    @pytest.mark.parametrize(
+        "lockfile",
+        [
+            "/etc/lock.json",
+            "../other/lock.json",
+            "runtime/../../lock.json",
+            "./lock.json",
+            "runtime\\lock.json",
+            "runtime/lock.yaml",
+        ],
+    )
+    def test_a_lockfile_must_stay_in_the_community_folder(self, lockfile: str) -> None:
+        """It is joined onto a folder on the server, so it must not be able to leave it."""
+        with pytest.raises(ValidationError, match="lockfile"):
+            PythonRuntimeConfig(pyodide_version="0.29.5", lockfile=lockfile)
+
+    def test_a_prelude_that_awaits_at_top_level_is_accepted(self) -> None:
+        """It runs where executed code runs, and top-level await works there."""
+        prelude = "import osa\nstatus, body = await osa.fetch('https://zarr.nemar.org/x')\n"
+        assert PythonRuntimeConfig(pyodide_version="0.29.5", prelude=prelude).prelude == prelude
+
+    def test_a_prelude_that_does_not_compile_is_refused_here(self) -> None:
+        """Here, at config load, rather than as a failed boot in every reader's browser."""
+        with pytest.raises(ValidationError, match="prelude does not compile"):
+            PythonRuntimeConfig(pyodide_version="0.29.5", prelude="import osa\nif True\n")
+
+    def test_a_prelude_is_bounded(self) -> None:
+        at_the_cap = "x = 1\n" + "#" * (MAX_PRELUDE_CHARS - 7) + "\n"
+        assert len(at_the_cap) == MAX_PRELUDE_CHARS
+        assert PythonRuntimeConfig(pyodide_version="0.29.5", prelude=at_the_cap).prelude
+
+        with pytest.raises(ValidationError, match="at most"):
+            PythonRuntimeConfig(pyodide_version="0.29.5", prelude=at_the_cap + "\n")
 
 
 class TestRuntimeConfig:
@@ -2138,13 +2186,13 @@ class TestRuntimeConfig:
         """Should accept a configured python runtime."""
         config = RuntimeConfig(
             python=PythonRuntimeConfig(
-                pyodide_version="0.28.3",
+                pyodide_version="0.29.5",
                 lockfile="pyodide-lock-2026-01.json",
                 limits=RuntimeLimits(),
             )
         )
         assert config.python is not None
-        assert config.python.pyodide_version == "0.28.3"
+        assert config.python.pyodide_version == "0.29.5"
 
     def test_rejects_extra_fields(self) -> None:
         """Should reject unknown fields, matching every sibling model."""
@@ -2183,12 +2231,22 @@ class TestExtensionsConfigClientTools:
         )
         assert len(config.client_tools) == 2
 
+    def test_refuses_more_tools_than_a_request_can_declare(self) -> None:
+        """One tool past the cap is refused at load, where an operator sees it,
+        rather than as a 422 on every message the widget then sends."""
+        tools = [
+            ClientToolConfig(name=f"tool_{i}", runtime="python", description="Run.")
+            for i in range(MAX_CONFIGURED_CLIENT_TOOLS + 1)
+        ]
+        with pytest.raises(ValidationError, match="at most"):
+            ExtensionsConfig(client_tools=tools)
+
 
 def _python_runtime_config() -> RuntimeConfig:
     """A minimal valid RuntimeConfig with a python runtime, for reuse below."""
     return RuntimeConfig(
         python=PythonRuntimeConfig(
-            pyodide_version="0.28.3",
+            pyodide_version="0.29.5",
             lockfile="pyodide-lock-2026-01.json",
             limits=RuntimeLimits(),
         )

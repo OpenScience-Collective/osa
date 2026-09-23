@@ -121,13 +121,16 @@ def _body(**overrides) -> dict:
     return payload
 
 
-def _assistant() -> AssistantWithMetrics:
-    model = ScriptedChatModel(responses=[AIMessage(content="The peak is at 10.2 Hz.")])
+def _assistant(
+    responses: list | None = None, browser_runs_left: int | None = None
+) -> AssistantWithMetrics:
+    model = ScriptedChatModel(responses=responses or [AIMessage(content="The peak is at 10.2 Hz.")])
     assistant = CommunityAssistant(
         model=model,
         config=_config(),
         preload_docs=False,
         declared_client_tools={"execute_code"},
+        browser_runs_left=browser_runs_left,
     )
     return AssistantWithMetrics(
         assistant=assistant, model="claude-haiku-4-5", key_source="platform"
@@ -263,3 +266,95 @@ class TestTheHappyPath:
         assert any(
             isinstance(m, ToolMessage) and m.tool_call_id == CALL_ID for m in session.messages
         ), "the browser result was not recorded, so the next turn would be rejected"
+
+    def test_run_ones_citations_reach_the_reply(self, client: TestClient, monkeypatch) -> None:
+        """The endpoint hands the parked call's citations to run 2.
+
+        Checked here rather than below the endpoint, because dropping the argument at
+        this call site is exactly the slip the module docstring describes: run 2 would
+        number from [1] again and every test one layer down would stay green.
+        """
+        from dataclasses import replace
+
+        from src.agents.content import CitationMark
+
+        session = _parked_session()
+        mark = CitationMark(
+            marker=1, source="https://doc.example/alpha", title="Alpha", cited_text="x"
+        )
+        session.set_pending_call(replace(session.pending_call, carried_citations=(mark,)))
+        monkeypatch.setattr(
+            "src.api.routers.community.create_community_assistant",
+            lambda *_a, **_k: _assistant(),
+        )
+
+        response = client.post(f"/{COMMUNITY}/chat/resume", json=_body())
+
+        events = [
+            json.loads(line[len("data: ") :])
+            for line in response.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        done = next(e for e in events if e["event"] == "done")
+        assert done["citations"] == [
+            {
+                "marker": 1,
+                "source": "https://doc.example/alpha",
+                "title": "Alpha",
+                "cited_text": "x",
+            }
+        ]
+
+
+class TestTheRunBudget:
+    """The endpoint is what turns a parked call's run count into the next run's budget."""
+
+    def _resume_at(self, client, monkeypatch, runs_before: int) -> list[dict]:
+        from dataclasses import replace
+
+        from tests.helpers.chat_models import tool_call_response
+
+        session = _parked_session()
+        session.set_pending_call(replace(session.pending_call, runs_before=runs_before))
+        # The model asks for another run every time; only the budget can stop it.
+        monkeypatch.setattr(
+            "src.api.routers.community.create_community_assistant",
+            lambda *_a, **k: _assistant(
+                responses=[
+                    tool_call_response(
+                        "execute_code", {"code": "again", "description": "d"}, OTHER_CALL_ID
+                    ),
+                    AIMessage(content="That is as far as the runs go."),
+                ],
+                browser_runs_left=k.get("browser_runs_left"),
+            ),
+        )
+        response = client.post(f"/{COMMUNITY}/chat/resume", json=_body())
+        return [
+            json.loads(line[len("data: ") :])
+            for line in response.text.splitlines()
+            if line.startswith("data: ")
+        ]
+
+    def test_the_last_result_in_budget_gets_no_further_run(
+        self, client: TestClient, monkeypatch
+    ) -> None:
+        from src.core.limits import MAX_BROWSER_RUNS_PER_REPLY
+
+        events = self._resume_at(client, monkeypatch, runs_before=MAX_BROWSER_RUNS_PER_REPLY - 1)
+
+        names = [e["event"] for e in events]
+        assert "tool_request" not in names, "the reply ran code past its budget"
+        assert "done" in names
+
+    def test_a_result_inside_the_budget_may_ask_again(
+        self, client: TestClient, monkeypatch
+    ) -> None:
+        from src.core.limits import MAX_BROWSER_RUNS_PER_REPLY
+
+        events = self._resume_at(client, monkeypatch, runs_before=MAX_BROWSER_RUNS_PER_REPLY - 2)
+
+        request = next(e for e in events if e["event"] == "tool_request")
+        assert request["call_id"] == OTHER_CALL_ID
+        session = _get_session_store(COMMUNITY)["sess-parked"]
+        assert session.pending_call.runs_before == MAX_BROWSER_RUNS_PER_REPLY - 1

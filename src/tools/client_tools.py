@@ -9,21 +9,22 @@ in a second run, rather than to LangGraph's `ToolNode`. This module owns the
 tool class and the two functions that decide, at bind time, which client
 tools a given request is even allowed to see.
 
-Phase 1 ships with no community enabling this (no shipped config.yaml
-declares `extensions.client_tools`), so `build_client_tools` returns `[]`
-for every real request today. It exists so phase 2 (#431), which builds the
-browser-side executor and the permission gate, has a tested server contract
-to run against.
+The browser side is phase 2 (#431): the widget's sealed Pyodide runtime and
+its permission gate. NEMAR is the first community to declare a client tool
+(`execute_code`), so `build_client_tools` returns a live tool for its
+requests unless the kill switch below is set.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
+
+from src.core.config.community import FULL_OUTPUT_TOOL_NAME
 
 if TYPE_CHECKING:
     from src.core.config.community import CommunityConfig
@@ -35,10 +36,11 @@ CLIENT_TOOL_KILL_SWITCH_ENV = "OSA_CLIENT_TOOLS_DISABLED"
 strips every client tool regardless of what a community's config.yaml
 declares.
 
-`develop` auto-deploys on every push, and a client tool with no executor
-parks every stream that calls it -- this switch is what makes it safe to
-merge the graph plumbing before phase 2 (#431) exists to answer a
-`pending_client_call`.
+It made it safe to merge phase 1's graph plumbing before any browser could
+answer a `pending_client_call`. Now that NEMAR offers `execute_code`, it is
+the incident control: setting it withdraws every client tool, the runtime
+config and the lock overlay from `/config`, and the wheel route, through the
+server's environment rather than any community's config.
 """
 
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -77,6 +79,47 @@ class ExecuteCodeArgs(BaseModel):
             "the user in the permission gate before it runs."
         ),
     )
+
+
+class GetFullOutputArgs(BaseModel):
+    """Argument schema for the derived `get_full_output` client tool.
+
+    A result in the conversation carries bounded streams and a summary; the
+    untruncated streams, the full traceback and the run's figures stay in the
+    reader's browser. This reads them back on demand, so the common path stays
+    cheap and the rare one stays possible.
+    """
+
+    call_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=256,
+        description="The call_id printed in the summary of the earlier run to read.",
+    )
+    stream: Literal["stdout", "stderr", "traceback", "figures"] = Field(
+        "stdout",
+        description=(
+            "Which output to read. 'figures' re-attaches the run's images, which "
+            "the conversation otherwise keeps only as placeholders."
+        ),
+    )
+    offset: int = Field(
+        0,
+        ge=0,
+        description=(
+            "Character to start from. A long stream comes back one page at a time; "
+            "pass the offset the previous answer gives to read the next page."
+        ),
+    )
+
+
+_FULL_OUTPUT_DESCRIPTION = (
+    "Read the complete output of an earlier browser execution. Results in this "
+    "conversation carry clipped streams and a summary; when a summary says output "
+    "was clipped or a traceback is available, call this with the call_id it prints. "
+    "Output is kept only in the reader's browser tab, for its most recent runs, so "
+    "it is unavailable after a reload."
+)
 
 
 # Maps a client tool's configured `runtime` value to the pydantic model
@@ -183,7 +226,9 @@ def build_client_tools(config: CommunityConfig, declared: set[str] | None) -> li
 
     Returns:
         A `ClientTool` for every entry in `config.extensions.client_tools`
-        whose name is also in `declared`, in that list's order.
+        whose name is also in `declared`, in that list's order, followed by the
+        derived `get_full_output` tool when a python tool was bound and the
+        caller declared it.
     """
     configured = list(config.extensions.client_tools) if config.extensions else []
 
@@ -210,6 +255,7 @@ def build_client_tools(config: CommunityConfig, declared: set[str] | None) -> li
         return []
 
     tools: list[ClientTool] = []
+    python_bound = False
     for entry in configured:
         if entry.name not in declared:
             continue
@@ -220,6 +266,22 @@ def build_client_tools(config: CommunityConfig, declared: set[str] | None) -> li
                 description=entry.description,
                 args_schema=args_schema,
                 requires_permission=entry.requires_permission,
+            )
+        )
+        python_bound = python_bound or entry.runtime == "python"
+
+    # Derived, not configured. Bound only beside a python tool, because without
+    # one there is no browser output to read, and only when the caller declares
+    # it, because an old cached widget that cannot answer it would otherwise park
+    # every such call forever. No permission gate: it reads output the person's
+    # own browser already holds and runs nothing.
+    if python_bound and FULL_OUTPUT_TOOL_NAME in declared:
+        tools.append(
+            ClientTool(
+                name=FULL_OUTPUT_TOOL_NAME,
+                description=_FULL_OUTPUT_DESCRIPTION,
+                args_schema=GetFullOutputArgs,
+                requires_permission=False,
             )
         )
     if configured and not tools:

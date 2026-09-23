@@ -11,6 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from src.core.config.community import (
+    FULL_OUTPUT_TOOL_NAME,
     ClientToolConfig,
     CommunityConfig,
     ExtensionsConfig,
@@ -23,6 +24,7 @@ from src.tools.client_tools import (
     ClientTool,
     ClientToolNotExecutableError,
     ExecuteCodeArgs,
+    GetFullOutputArgs,
     _args_schema_for_runtime,
     build_client_tools,
     client_tools_disabled,
@@ -53,7 +55,7 @@ def _community_with_client_tools(
         ),
         runtime=RuntimeConfig(
             python=PythonRuntimeConfig(
-                pyodide_version="0.28.3",
+                pyodide_version="0.29.5",
                 lockfile="pyodide-lock-2026-01.json",
                 limits=RuntimeLimits(),
             )
@@ -221,3 +223,96 @@ class TestBuildClientTools:
         config = _community_with_client_tools(names=["execute_code"])
         tools = build_client_tools(config, {"execute_code"})
         assert tools[0].description == "Run execute_code."
+
+
+class TestGetFullOutput:
+    """The derived tool that reads back output a browser run kept locally.
+
+    It is bound, never configured, so the conditions under which it appears are the
+    whole contract: beside a python tool, and only for a caller that declared it.
+    """
+
+    def test_bound_beside_a_python_tool_when_declared(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(CLIENT_TOOL_KILL_SWITCH_ENV, raising=False)
+        tools = build_client_tools(
+            _community_with_client_tools(), {"execute_code", FULL_OUTPUT_TOOL_NAME}
+        )
+        assert [t.name for t in tools] == ["execute_code", FULL_OUTPUT_TOOL_NAME]
+
+    def test_not_bound_for_a_caller_that_did_not_declare_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An older widget can run execute_code but cannot answer get_full_output.
+
+        Binding it anyway would let the model call it, park the call, and leave the
+        reply hanging on a browser that will never respond.
+        """
+        monkeypatch.delenv(CLIENT_TOOL_KILL_SWITCH_ENV, raising=False)
+        tools = build_client_tools(_community_with_client_tools(), {"execute_code"})
+        assert FULL_OUTPUT_TOOL_NAME not in [t.name for t in tools]
+
+    def test_not_bound_without_a_python_tool(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """With nothing bound that runs code, there is no browser output to read."""
+        monkeypatch.delenv(CLIENT_TOOL_KILL_SWITCH_ENV, raising=False)
+        tools = build_client_tools(_community_with_client_tools(), {FULL_OUTPUT_TOOL_NAME})
+        assert tools == []
+
+    def test_the_kill_switch_strips_it_too(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(CLIENT_TOOL_KILL_SWITCH_ENV, "1")
+        tools = build_client_tools(
+            _community_with_client_tools(), {"execute_code", FULL_OUTPUT_TOOL_NAME}
+        )
+        assert tools == []
+
+    def test_it_needs_no_permission_gate(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """It reads output the person's own browser already holds and runs nothing.
+
+        Asserted against a community whose execute_code DOES require permission, so
+        the derived tool is not simply inheriting a False from the config.
+        """
+        monkeypatch.delenv(CLIENT_TOOL_KILL_SWITCH_ENV, raising=False)
+        tools = build_client_tools(
+            _community_with_client_tools(requires_permission=True),
+            {"execute_code", FULL_OUTPUT_TOOL_NAME},
+        )
+        by_name = {t.name: t for t in tools}
+        assert by_name["execute_code"].requires_permission is True
+        assert by_name[FULL_OUTPUT_TOOL_NAME].requires_permission is False
+        assert by_name[FULL_OUTPUT_TOOL_NAME].args_schema is GetFullOutputArgs
+
+    def test_a_community_cannot_configure_the_reserved_name(self) -> None:
+        """A configured tool under this name would sit beside the derived one, and the
+        model would see two tools called get_full_output with different arguments."""
+        with pytest.raises(ValidationError, match="reserved"):
+            ClientToolConfig(
+                name=FULL_OUTPUT_TOOL_NAME,
+                runtime="python",
+                description="Shadow the derived tool.",
+            )
+
+
+class TestGetFullOutputArgs:
+    """The schema is what the provider validates the model's call against."""
+
+    def test_defaults_to_the_first_page_of_stdout(self) -> None:
+        args = GetFullOutputArgs(call_id="toolu_01abc")
+        assert (args.stream, args.offset) == ("stdout", 0)
+
+    def test_accepts_every_stream_the_browser_serves(self) -> None:
+        for stream in ("stdout", "stderr", "traceback", "figures"):
+            assert GetFullOutputArgs(call_id="toolu_01abc", stream=stream).stream == stream
+
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            {"call_id": ""},
+            {"call_id": "x" * 257},
+            {"call_id": "toolu_01abc", "stream": "everything"},
+            {"call_id": "toolu_01abc", "offset": -1},
+        ],
+    )
+    def test_rejects_what_the_browser_cannot_serve(self, fields: dict) -> None:
+        with pytest.raises(ValidationError):
+            GetFullOutputArgs(**fields)

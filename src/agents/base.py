@@ -19,6 +19,7 @@ from langchain_core.tools import BaseTool
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode
+from pydantic import BaseModel, ValidationError
 
 from src.agents.state import BaseAgentState, PendingClientCallPayload
 from src.tools.client_tools import ClientTool
@@ -68,6 +69,38 @@ ANTHROPIC_TOKENS_PER_IMAGE = 1600
 CLIENT_TOOLS_NODE = "client_tools"
 
 
+def _after_client_tools(state: BaseAgentState) -> str:
+    """Where the run goes after the client_tools node.
+
+    END only when the node parked a call for the browser. Otherwise every client
+    call it saw was refused, and the model has to read those refusals to answer.
+    """
+    return "end" if state.get("pending_client_call") else "agent"
+
+
+def _validated_client_args(
+    tool: BaseTool | None, args: dict[str, Any]
+) -> tuple[dict[str, Any], str | None]:
+    """Validate a client call's arguments against the tool's own schema.
+
+    Returns the arguments to park, with defaults filled in so the browser never
+    has to re-derive them, and None; or the original arguments and a short,
+    deterministic description of what was wrong. The description is bounded
+    because it becomes a ToolMessage that stays in stored history.
+    """
+    schema = getattr(tool, "args_schema", None)
+    if not (isinstance(schema, type) and issubclass(schema, BaseModel)):
+        return args, None
+    try:
+        return schema.model_validate(args).model_dump(), None
+    except ValidationError as err:
+        problems = [
+            f"{'.'.join(str(part) for part in e['loc']) or 'arguments'}: {e['msg']}"
+            for e in err.errors()[:5]
+        ]
+        return args, "; ".join(problems)[:500]
+
+
 def count_conversation_tokens(messages: Sequence[BaseMessage]) -> int:
     """Approximate tokens for a conversation that may carry images.
 
@@ -91,6 +124,7 @@ class BaseAgent(ABC):
         max_conversation_tokens: int = DEFAULT_MAX_CONVERSATION_TOKENS,
         *,
         client_tool_names: set[str] | None = None,
+        browser_runs_left: int | None = None,
     ) -> None:
         """Initialize the agent.
 
@@ -108,8 +142,14 @@ class BaseAgent(ABC):
                 `ClientTool` instances, derived rather than accepted as-is
                 so a caller cannot pass a set that has drifted out of step
                 with what `tools` actually contains.
+            browser_runs_left: How many more browser executions this reply may
+                request, or None for no limit. At zero, the client_tools node
+                refuses every client call in writing instead of parking one, so
+                the model finishes the reply with what the earlier runs showed.
+                See `MAX_BROWSER_RUNS_PER_REPLY` in `src.core.limits`.
         """
         self.model = model
+        self.browser_runs_left = browser_runs_left
         self.tools = list(tools) if tools else []
         self.system_prompt = system_prompt
         self.max_conversation_tokens = max_conversation_tokens
@@ -202,11 +242,21 @@ class BaseAgent(ABC):
             )
             graph.add_edge("tools", "agent")
             if self.client_tool_names:
-                # A client tool call ends the run; the browser executes it
-                # and a fresh run (resume) continues the turn. No edge back
-                # to "agent" here -- that is the whole point of the
-                # two-run continuation (see the phase 1 plan).
-                graph.add_edge(CLIENT_TOOLS_NODE, END)
+                # A PARKED client call ends the run; the browser executes it
+                # and a fresh run (resume) continues the turn. That is the
+                # whole point of the two-run continuation.
+                #
+                # When nothing was parked, because every client call in the
+                # message was refused (an unknown name, invalid arguments), the
+                # run goes back to the model instead. An unconditional edge to
+                # END ended those turns on an error ToolMessage with no reply at
+                # all: the person saw nothing, and the model never saw the
+                # error it was given.
+                graph.add_conditional_edges(
+                    CLIENT_TOOLS_NODE,
+                    _after_client_tools,
+                    {"end": END, "agent": "agent"},
+                )
         else:
             graph.add_edge("agent", END)
 
@@ -404,13 +454,49 @@ class BaseAgent(ABC):
             new_messages.extend(result.get("messages", []))
 
         pending_client_call: PendingClientCallPayload | None = None
-        for i, tc in enumerate(client_calls):
-            if i == 0:
-                tool = self._client_tools_by_name.get(tc["name"])
+        out_of_runs = self.browser_runs_left is not None and self.browser_runs_left <= 0
+        for tc in client_calls:
+            tool = self._client_tools_by_name.get(tc["name"])
+            # Validated HERE, before anything reaches a browser. The provider does
+            # not enforce a tool's input schema, so a call can arrive missing
+            # `description` (and render a blank permission gate) or carrying a
+            # negative offset or an oversized call_id that the browser would
+            # otherwise have to defend against. A refused call is answered, like
+            # an unknown name, with a ToolMessage the model can act on.
+            args, problem = _validated_client_args(tool, tc.get("args") or {})
+            if problem is not None:
+                new_messages.append(
+                    ToolMessage(
+                        content=(
+                            f"Invalid arguments for {tc['name']}: {problem}. Nothing "
+                            "was run; call it again with valid arguments."
+                        ),
+                        tool_call_id=tc["id"],
+                        name=tc["name"],
+                        status="error",
+                    )
+                )
+            elif out_of_runs:
+                # The reply has used its budget of browser runs. Answered like any
+                # refused call, so the run returns to the model instead of parking
+                # one more; fixed text, so the cached prefix survives it.
+                new_messages.append(
+                    ToolMessage(
+                        content=(
+                            "This reply has already run code in the browser the most "
+                            "times one reply may; this call was not run. Answer with "
+                            "what the earlier runs showed."
+                        ),
+                        tool_call_id=tc["id"],
+                        name=tc["name"],
+                        status="error",
+                    )
+                )
+            elif pending_client_call is None:
                 pending_client_call = {
                     "call_id": tc["id"],
                     "tool": tc["name"],
-                    "args": tc.get("args", {}),
+                    "args": args,
                     "requires_permission": (tool.requires_permission if tool is not None else True),
                 }
             else:

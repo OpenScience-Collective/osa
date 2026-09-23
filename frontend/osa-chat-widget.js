@@ -72,7 +72,10 @@
     // Fullscreen mode (for pop-out windows)
     fullscreen: false,
     // Streaming responses - enable progressive text display for better UX
-    streamingEnabled: true
+    streamingEnabled: true,
+    // Where this script was loaded from, for a copy that runs inline (the
+    // pop-out) and so cannot tell. The browser runtime is found next to it.
+    widgetScriptUrl: null
   };
 
   // Log environment for debugging
@@ -148,6 +151,22 @@
   let communityDefaultModel = null; // Community's default model from API
   let offeredModels = null; // Live offered_models list from the community config API; null until loaded
   let sessionId = null; // Server-side session ID for multi-turn conversations
+  let communityConfigReady = null; // Promise for the community config fetch, once started
+  // Browser code execution (#431). browserToolsReady is assigned, to a pending
+  // promise, as soon as the config says the community runs code; it resolves to
+  // the controller once the runtime bundle has loaded and passed its integrity
+  // check, or to null if either fails. The rest are set when it resolves.
+  let browserToolsReady = null; // Promise resolving to the controller, or null
+  let browserTools = null; // OSARuntime.ClientToolController
+  let browserRuntime = null; // The OSARuntime.PyodideRuntime it drives
+  let runtimeApi = null; // The OSARuntime global itself, captured when it loaded
+  let browserToolsSetup = null; // {tools, python} from the config, kept for a retry
+  let browserToolsUnavailable = null; // {reason, detail} while code execution is off
+  let browserToolsRetried = false;
+  // What the tool panel shows while a tool_request is answered:
+  // {phase: 'asking', prompt, decide} while the person is asked,
+  // {phase: 'running', prompt, progress} while code runs, else null.
+  let toolActivity = null;
   const CHAT_HISTORY_VERSION = 2;
   let responseSequence = 0;
 
@@ -181,6 +200,16 @@
 
   // Store script URL at load time for reliable pop-out
   const WIDGET_SCRIPT_URL = document.currentScript?.src || null;
+
+  // The browser Python runtime ships as a separate file, loaded only for a
+  // community that configures client tools, and verified against this hash.
+  // The versioned embed pins THIS file by SRI, so the hash here extends that
+  // pin to the runtime: a runtime that does not match is refused by the
+  // browser before any of it runs. Written by scripts/build-runtime-bundle.js;
+  // CI rebuilds and fails if the committed bundle or this line is stale.
+  // BEGIN GENERATED: runtime bundle integrity
+  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-LlKiw1SBe8niKNNpZt6qLzn8E6hJVYMUAG58nCeytFX5Kq+jJVImWOxJaajGsQuF';
+  // END GENERATED: runtime bundle integrity
 
   // Icons (SVG)
   const ICONS = {
@@ -1272,6 +1301,111 @@
     .osa-chat-widget.fullscreen .osa-chat-header {
       border-radius: 0;
     }
+
+    /* Browser code execution: the permission gate and what ran. */
+    .osa-tool-panel {
+      border: 1px solid var(--osa-border);
+      border-radius: 12px;
+      padding: 10px 12px;
+      background: var(--osa-bg);
+      font-size: 13px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .osa-tool-panel-title {
+      font-weight: 600;
+    }
+
+    .osa-tool-panel-description {
+      color: var(--osa-text-light);
+    }
+
+    .osa-tool-code {
+      background: #1f2937;
+      color: #f9fafb;
+      padding: 10px;
+      border-radius: 8px;
+      overflow: auto;
+      max-height: 240px;
+      margin: 0;
+      font-size: 12px;
+      font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+      white-space: pre;
+    }
+
+    .osa-py-kw { color: #c4b5fd; }
+    .osa-py-bi { color: #93c5fd; }
+    .osa-py-str { color: #86efac; }
+    .osa-py-com { color: #9ca3af; font-style: italic; }
+    .osa-py-num { color: #fcd34d; }
+    .osa-py-dec { color: #f9a8d4; }
+
+    .osa-tool-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .osa-tool-actions button {
+      border: 1px solid var(--osa-border);
+      background: var(--osa-bg);
+      color: var(--osa-text);
+      border-radius: 6px;
+      padding: 5px 12px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .osa-tool-actions button.osa-tool-run {
+      background: var(--osa-primary);
+      border-color: var(--osa-primary);
+      color: #ffffff;
+    }
+
+    .osa-tool-autorun {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      color: var(--osa-text-light);
+      font-size: 12px;
+    }
+
+    .osa-tool-status {
+      color: var(--osa-text-light);
+    }
+
+    .osa-execution {
+      margin: 0 0 8px 0;
+      font-size: 13px;
+    }
+
+    .osa-execution summary {
+      cursor: pointer;
+      color: var(--osa-text-light);
+    }
+
+    .osa-execution-output {
+      background: rgba(0,0,0,0.05);
+      border-radius: 6px;
+      padding: 8px;
+      margin: 6px 0 0 0;
+      max-height: 200px;
+      overflow: auto;
+      white-space: pre-wrap;
+      font-size: 12px;
+      font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+    }
+
+    .osa-execution img {
+      display: block;
+      max-width: 100%;
+      margin-top: 6px;
+      border-radius: 6px;
+      background: #ffffff;
+    }
   `;
 
   // Escape text for interpolation into HTML, including quoted attribute values.
@@ -1576,7 +1710,27 @@
           && citation.marker > 0
           && typeof citation.source === 'string')
         : [],
+      executions: normalizePersistedExecutions(msg.executions),
     };
+  }
+
+  // A reply's browser runs, as stored: the fields executionRecord writes, as
+  // strings, bounded, and never images (see executionRecord).
+  function normalizePersistedExecutions(executions) {
+    if (!Array.isArray(executions)) return [];
+    return executions
+      .filter((run) => run && typeof run === 'object' && !Array.isArray(run))
+      .slice(0, MAX_BROWSER_RUNS_PER_REPLY)
+      .map((run) => ({
+        callId: clipField(run.callId, 'callId'),
+        tool: clipField(run.tool, 'tool'),
+        description: clipField(run.description, 'description'),
+        code: clipField(run.code, 'code'),
+        status: clipField(run.status, 'status'),
+        stdout: clipField(run.stdout, 'stdout'),
+        stderr: clipField(run.stderr, 'stderr'),
+        images: [],
+      }));
   }
 
   // Older widget versions persisted citation markers at the stream delta
@@ -1748,6 +1902,10 @@
       const persistable = messages.map((m) => {
         const { _feedbackCommitting, _feedbackJustOpened, _responseId, feedbackDraft, ...rest } = m;
         if (rest.feedback && !rest.feedbackCommitted) delete rest.feedback;
+        // Figures are shown for the life of the page and not stored.
+        if (Array.isArray(rest.executions)) {
+          rest.executions = rest.executions.map((run) => ({ ...run, images: [] }));
+        }
         return rest;
       });
       const data = JSON.stringify({ version: CHAT_HISTORY_VERSION, messages: persistable, sessionId });
@@ -2018,6 +2176,8 @@
       } else if (data) {
         console.warn('[OSA] API response missing widget config; using local defaults');
       }
+
+      setUpBrowserTools(data);
     } catch (e) {
       console.error('[OSA] Could not fetch community config:', e.message || e);
       const container = document.querySelector('.osa-chat-widget');
@@ -2025,6 +2185,521 @@
         disableWidget(container, 'Network error loading configuration. Please check your connection and try again.');
       }
     }
+  }
+
+  // --- Browser code execution (#431) ---------------------------------------
+  //
+  // A community that configures client tools gets a Python runtime in this
+  // page, loaded from a separate file whose hash this script carries (see
+  // RUNTIME_BUNDLE_INTEGRITY). Everything here degrades to "no code execution"
+  // rather than failing the widget: the tools are declared to the server only
+  // once the runtime has loaded, so a page that blocks it never receives a
+  // request to run code it cannot answer.
+
+  // Mirrors MAX_BROWSER_RUNS_PER_REPLY in src/core/limits.py, which the server
+  // enforces: the run with no budget left refuses a further browser call in
+  // writing. The widget stops at the same number so an older server cannot
+  // make it loop either. test-widget-tools.js checks the two agree.
+  const MAX_BROWSER_RUNS_PER_REPLY = 20;
+
+  // How long to wait before each retry of a result the worker's per-minute
+  // limit refused. That limit counts every resume, and a reply that runs code
+  // quickly can reach it. The code has already run and the parked call stays
+  // answerable for 15 minutes, so the result is worth waiting for rather than
+  // dropping. The limiter's window is 60 seconds.
+  const RESUME_RATE_LIMIT_WAITS_MS = Object.freeze([30000, 35000]);
+
+  // How much of each field of a run survives on the reply and in storage.
+  // executionRecord writes with these and normalizePersistedExecutions reads
+  // back with them; if they disagreed, a reload would quietly change what a
+  // run shows.
+  const EXECUTION_FIELD_LIMITS = Object.freeze({
+    callId: 256,
+    tool: 64,
+    description: 500,
+    code: 20000,
+    status: 32,
+    stdout: 4000,
+    stderr: 4000,
+  });
+
+  // The heading of a run's record, by result status.
+  const EXECUTION_LABELS = Object.freeze({
+    ok: 'Ran Python',
+    error: 'Python raised an error',
+    denied: 'Not run',
+    timeout: 'Stopped: took too long',
+    cancelled: 'Stopped',
+    oom: 'Stopped: out of memory',
+  });
+
+  // Where the runtime bundle lives: next to this script. The pop-out window
+  // runs this script inline, so it is handed the URL through its config.
+  // SRI pins the bytes, so which URL serves them is not a trust decision.
+  function runtimeBundleUrl() {
+    const base = WIDGET_SCRIPT_URL || CONFIG.widgetScriptUrl;
+    if (typeof base !== 'string' || !base) return null;
+    try {
+      return new URL('osa-runtime.bundle.js', base).href;
+    } catch {
+      return null;
+    }
+  }
+
+  // Code execution is off for this page. Logged in one fixed shape, so a
+  // systemic cause (a stale hash after a deploy, an embedder's policy) is
+  // recognizable in any report of it, and kept for getBrowserRuntimeStatus.
+  function markBrowserToolsUnavailable(reason, detail) {
+    browserToolsUnavailable = { reason, detail: detail || '' };
+    console.warn(
+      `[OSA] browser-runtime-unavailable reason=${reason}${detail ? `: ${detail}` : ''}. ` +
+      'Code execution is off; the assistant still answers.'
+    );
+  }
+
+  // Resolves with the OSARuntime global the bundle defines, or null.
+  function loadRuntimeBundle() {
+    const url = runtimeBundleUrl();
+    if (!url) {
+      markBrowserToolsUnavailable('no-script-url', 'the widget cannot tell where it was loaded from');
+      return Promise.resolve(null);
+    }
+    return new Promise((resolve) => {
+      const script = document.createElement('script');
+      script.src = url;
+      // The browser refuses the file before any of it runs unless it matches.
+      script.integrity = RUNTIME_BUNDLE_INTEGRITY;
+      script.crossOrigin = 'anonymous';
+      script.async = true;
+      script.onload = () => {
+        const api = window.OSARuntime || null;
+        // Loaded and verified, yet it defined nothing: it threw while running,
+        // or something on the page removed the global.
+        if (!api) markBrowserToolsUnavailable('bad-bundle', 'it loaded but did not define the runtime');
+        resolve(api);
+      };
+      script.onerror = () => {
+        // The browser does not say which: blocked by the page's policy,
+        // unreachable, or not matching its integrity hash.
+        markBrowserToolsUnavailable('load-failed', url);
+        resolve(null);
+      };
+      document.head.appendChild(script);
+    });
+  }
+
+  function setUpBrowserTools(data) {
+    const tools = data && Array.isArray(data.client_tools) ? data.client_tools : [];
+    const python = data && data.runtime && data.runtime.python;
+    if (tools.length === 0 || !python || browserToolsSetup) return;
+    // The wheels the community adds to Pyodide, served by the same API that sent
+    // their hashes.
+    const lock = data.runtime_lock && data.runtime_lock.packages
+      ? { packages: data.runtime_lock.packages, baseUrl: `${CONFIG.apiEndpoint}/${CONFIG.communityId}/runtime/` }
+      : null;
+    browserToolsSetup = { tools, python, lock };
+    startBrowserTools();
+  }
+
+  function startBrowserTools() {
+    const { tools, python, lock } = browserToolsSetup;
+    browserToolsUnavailable = null;
+    browserToolsReady = loadRuntimeBundle().then((api) => {
+      if (!api) return null;
+      if (typeof api.ClientToolController !== 'function' || typeof api.PyodideRuntime !== 'function'
+        || !api.GATE_DECISION) {
+        markBrowserToolsUnavailable('bad-bundle', 'the runtime it defined is incomplete');
+        return null;
+      }
+      try {
+        browserRuntime = new api.PyodideRuntime({ runtime: python, lock, onProgress: onRuntimeProgress });
+        browserTools = new api.ClientToolController({ runtime: browserRuntime, tools, gate: askToRunCode });
+        runtimeApi = api;
+      } catch (err) {
+        browserRuntime = null;
+        browserTools = null;
+        markBrowserToolsUnavailable('setup-failed', err && err.message);
+        return null;
+      }
+      if (isOpen) preloadRuntime();
+      return browserTools;
+    });
+  }
+
+  // A failed load may have been a network blip rather than a block or a bad
+  // hash, which the browser does not tell apart, so it is retried once, the
+  // next time the chat is opened. Only once: a block or a bad hash fails the
+  // same way every time.
+  function retryBrowserToolsOnce() {
+    if (!browserToolsUnavailable || browserToolsUnavailable.reason !== 'load-failed' || browserToolsRetried) return;
+    browserToolsRetried = true;
+    startBrowserTools();
+  }
+
+  function browserRuntimeStatus() {
+    if (!browserToolsSetup) return { state: 'off', reason: null };
+    if (browserToolsUnavailable) return { state: 'unavailable', ...browserToolsUnavailable };
+    if (!browserTools) return { state: 'loading', reason: null };
+    return { state: 'ready', reason: null };
+  }
+
+  // Boot on open rather than on the first run, for a community that asks.
+  function preloadRuntime() {
+    if (!browserRuntime || !browserRuntime.preloadsOnOpen) return;
+    browserRuntime.boot().catch((err) => {
+      // Not shown: nobody asked for anything yet. The next run boots again and
+      // reports the failure in its result, which the assistant then explains.
+      console.warn('[OSA] Preloading the browser runtime failed:', err && err.message);
+    });
+  }
+
+  // The client tools this page can run, once known. Waits briefly for the
+  // config and the runtime, so a question typed the moment the page opens is
+  // not sent without them; after that it resolves at once.
+  function declaredClientTools() {
+    return declaredClientToolsWithin(communityConfigReady, () => browserToolsReady, 3000);
+  }
+
+  // ONE deadline covers both waits, deliberately: it bounds how long a first
+  // message can be held, and a deadline per wait would double that. The tools
+  // are read through a getter because they only exist once the config is in.
+  async function declaredClientToolsWithin(configReady, toolsReady, ms) {
+    let timer = null;
+    const deadline = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(null), ms);
+    });
+    try {
+      if (configReady) await Promise.race([configReady, deadline]);
+      const ready = toolsReady();
+      if (!ready) return [];
+      const tools = await Promise.race([ready, deadline]);
+      return tools ? tools.declared : [];
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // Re-render from outside a click handler, where no container is at hand.
+  // A render failure is logged rather than thrown: the callers are the gate
+  // and runtime progress, and neither may stop because the display failed.
+  // A gate that never resolves leaves the server's call parked with nobody to
+  // answer it and the widget frozen.
+  function renderIfMounted() {
+    const container = document.querySelector('.osa-chat-widget');
+    if (!container) return;
+    try {
+      renderMessages(container);
+    } catch (err) {
+      console.error('[OSA] Could not render the conversation:', err);
+    }
+  }
+
+  // The two shapes toolActivity takes, built only here.
+  function askingActivity(prompt, decide) {
+    return { phase: 'asking', prompt, decide };
+  }
+
+  function runningActivity(prompt) {
+    return { phase: 'running', prompt, progress: null };
+  }
+
+  // The code and description a tool_request carries, as strings. The request
+  // came from the model, so neither is assumed to be one.
+  function requestPrompt(request) {
+    const args = (request && request.args) || {};
+    return {
+      code: typeof args.code === 'string' ? args.code : '',
+      description: typeof args.description === 'string' ? args.description : '',
+    };
+  }
+
+  function onRuntimeProgress(event) {
+    if (!toolActivity || toolActivity.phase !== 'running') return;
+    const phase = event && event.phase;
+    if (phase === 'loading_runtime') {
+      toolActivity.progress = 'Starting Python in your browser...';
+    } else if ((phase === 'loading_package' || phase === 'installing') && event.package) {
+      const count = Number.isInteger(event.total) ? ` (${event.index + 1} of ${event.total})` : '';
+      toolActivity.progress = `Loading ${event.package}${count}...`;
+    } else if (phase === 'prelude') {
+      toolActivity.progress = 'Setting up the Python environment...';
+    } else {
+      return;
+    }
+    renderIfMounted();
+  }
+
+  // The gate the controller calls. Resolves with the person's decision, and
+  // always resolves: see renderIfMounted.
+  function askToRunCode(prompt) {
+    return new Promise((resolve) => {
+      toolActivity = askingActivity(prompt, (decision, alwaysRun) => {
+        try {
+          if (decision === runtimeApi.GATE_DECISION.RUN) {
+            if (alwaysRun && browserTools) browserTools.autoRun = true;
+            toolActivity = runningActivity(prompt);
+          } else {
+            toolActivity = null;
+          }
+          renderIfMounted();
+        } finally {
+          resolve(decision);
+        }
+      });
+      renderIfMounted();
+    });
+  }
+
+  function clipField(value, field) {
+    return typeof value === 'string' ? value.slice(0, EXECUTION_FIELD_LIMITS[field]) : '';
+  }
+
+  // What the reader is shown of a run, kept on the reply. The images are shown
+  // now and never stored: three figures can be megabytes, and browser storage
+  // for a whole conversation is a few.
+  function executionRecord(request, result) {
+    const prompt = requestPrompt(request);
+    return {
+      callId: clipField(request && request.call_id, 'callId'),
+      tool: clipField(request && request.tool, 'tool'),
+      description: clipField(prompt.description, 'description'),
+      code: clipField(prompt.code, 'code'),
+      status: clipField(result && result.status, 'status'),
+      stdout: clipField(result && result.stdout, 'stdout'),
+      stderr: clipField(result && result.stderr, 'stderr'),
+      images: result && Array.isArray(result.images) ? result.images : [],
+    };
+  }
+
+  // Answer one tool_request and record it on the reply it belongs to.
+  async function answerToolRequest(container, request, messageIndex) {
+    if (!browserTools) {
+      // Tools are declared only once the controller exists, so the server
+      // should never ask. If it does, the parked call is abandoned (and
+      // repaired) by the next message, which declares nothing.
+      throw new Error(
+        'Code execution is not available on this page, so the code could not run. ' +
+        'Send your message again and the assistant will answer without it.'
+      );
+    }
+    const runsCode = request.tool !== runtimeApi.FULL_OUTPUT_TOOL_NAME;
+    let result;
+    try {
+      if (runsCode) toolActivity = runningActivity(requestPrompt(request));
+      isThinking = false;
+      renderMessages(container);
+      result = await browserTools.answer(request);
+    } finally {
+      // Cleared however the answer ends, so the panel can never outlive it.
+      toolActivity = null;
+    }
+    const message = messages[messageIndex];
+    if (message && runsCode) {
+      message.executions = (message.executions || []).concat(executionRecord(request, result));
+    }
+    renderMessages(container);
+    return result;
+  }
+
+  // Record on the reply itself that it stopped, since a reply that only ran
+  // code has no text to carry the error the banner shows for a few seconds.
+  function noteStoppedReply(messageIndex, error) {
+    const message = messages[messageIndex];
+    if (!message) return;
+    const reason = (error && error.message) || 'an error occurred';
+    message.content = `${message.content ? `${message.content}\n\n` : ''}_[The reply stopped: ${reason}]_`;
+  }
+
+  // Answer tool_requests until the reply finishes. Each run of a reply that
+  // runs code ends on one; its answer goes back on /chat/resume, whose stream
+  // continues the same message. `steps` answers, resumes and streams, and is a
+  // parameter so this loop, which owns the budget and the bookkeeping, can be
+  // tested without a network or a runtime.
+  async function continueBrowserReply(outcome, steps) {
+    let runs = 0;
+    let current = outcome;
+    while (current && current.toolRequest) {
+      const { toolRequest, messageIndex } = current;
+      runs += 1;
+      let resumed;
+      try {
+        if (runs > MAX_BROWSER_RUNS_PER_REPLY) {
+          // Left unanswered on purpose: the next message abandons the parked
+          // call, which the server repairs.
+          throw new Error(`it ran code ${MAX_BROWSER_RUNS_PER_REPLY} times, the most one reply may`);
+        }
+        const result = await steps.answer(toolRequest, messageIndex);
+        resumed = await steps.resume(toolRequest, result);
+      } catch (error) {
+        noteStoppedReply(messageIndex, error);
+        throw error;
+      }
+      // Streaming reports its own failures into the message.
+      current = await steps.stream(resumed, messageIndex);
+    }
+  }
+
+  // The request headers every chat call carries: content type and any BYOK key.
+  function chatRequestHeaders() {
+    const headers = { 'Content-Type': 'application/json' };
+    // The provider is checked explicitly rather than treating "not anthropic"
+    // as "openrouter", so an unrecognized provider never silently sends the
+    // key on the wrong header.
+    if (userSettings.apiKey) {
+      if (userSettings.keyProvider === 'anthropic') {
+        headers['X-Anthropic-API-Key'] = userSettings.apiKey;
+      } else if (userSettings.keyProvider === 'openrouter') {
+        headers['X-OpenRouter-Key'] = userSettings.apiKey;
+      } else {
+        console.error('[OSA] BYOK key has unknown provider; not sent with the request:', userSettings.keyProvider);
+      }
+    }
+    return headers;
+  }
+
+  // Turn a failed response into an Error carrying the most useful message.
+  async function responseError(response) {
+    let errorMessage = `Request failed (${response.status})`;
+    try {
+      const error = await response.json();
+      if (error && typeof error.detail === 'string') {
+        errorMessage = error.detail.substring(0, 500);
+      } else if (error && typeof error.error === 'string') {
+        // The worker says which limit in `details`, which is the useful half.
+        const details = typeof error.details === 'string' ? `: ${error.details}` : '';
+        errorMessage = `${error.error}${details}`.substring(0, 500);
+      }
+    } catch {
+      // Response wasn't JSON - use status-based message
+      if (response.status >= 500) {
+        errorMessage = 'The service is temporarily unavailable. Please try again later.';
+      } else if (response.status === 429) {
+        errorMessage = 'Too many requests. Please wait a moment and try again.';
+      } else if (response.status === 403) {
+        errorMessage = 'Access denied. Please complete the security verification.';
+      }
+    }
+    return new Error(errorMessage);
+  }
+
+  // Whether a 429 came from the worker's per-minute limit, the one worth
+  // waiting out. Its hourly budgets are not: they last the hour.
+  async function isPerMinuteLimit(response) {
+    try {
+      const body = await response.clone().json();
+      return typeof body.details === 'string' && /per minute/i.test(body.details);
+    } catch {
+      return false;
+    }
+  }
+
+  // Send a browser run's result and return the stream that continues the reply.
+  async function postResume(request, result, waits = RESUME_RATE_LIMIT_WAITS_MS) {
+    const body = {
+      session_id: request.session_id || sessionId,
+      result,
+      client_tools: browserTools ? browserTools.declared : [],
+    };
+    const pageContext = getPageContext();
+    if (pageContext) body.page_context = pageContext;
+    if (userSettings.model) body.model = userSettings.model;
+    for (let attempt = 0; ; attempt += 1) {
+      const response = await fetch(`${CONFIG.apiEndpoint}/${CONFIG.communityId}/chat/resume`, {
+        method: 'POST',
+        headers: chatRequestHeaders(),
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(120000),
+      });
+      if (response.status === 429 && attempt < waits.length && await isPerMinuteLimit(response)) {
+        const container = document.querySelector('.osa-chat-widget');
+        if (container) {
+          showWarning(container, 'Many code runs in a short time: waiting briefly before continuing the reply.');
+        }
+        await new Promise((resolve) => setTimeout(resolve, waits[attempt]));
+        continue;
+      }
+      if (!response.ok) throw await responseError(response);
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.includes('text/event-stream')) {
+        throw new Error('Invalid response from server');
+      }
+      return response;
+    }
+  }
+
+  // Model-written code as HTML: highlighted once the runtime has loaded,
+  // escaped plainly before that. Either way every character is escaped.
+  function highlightOrEscape(code) {
+    return runtimeApi ? runtimeApi.highlightPython(code) : escapeHtml(code);
+  }
+
+  // The panel shown while a tool_request is answered, as HTML.
+  function toolPanelHtml(activity) {
+    if (!activity) return '';
+    const prompt = activity.prompt || {};
+    const description = prompt.description
+      ? `<div class="osa-tool-panel-description">${escapeHtml(prompt.description)}</div>`
+      : '';
+    if (activity.phase === 'asking') {
+      return `
+        <div class="osa-tool-panel" role="group" aria-label="Run code in your browser?">
+          <div class="osa-tool-panel-title">Run this Python in your browser?</div>
+          ${description}
+          <pre class="osa-tool-code"><code>${highlightOrEscape(prompt.code || '')}</code></pre>
+          <div class="osa-tool-actions">
+            <button type="button" class="osa-tool-run">Run</button>
+            <button type="button" class="osa-tool-deny">Don't run</button>
+            <label class="osa-tool-autorun"><input type="checkbox" class="osa-tool-autorun-input"> Run without asking until I reload</label>
+          </div>
+        </div>`;
+    }
+    const status = activity.progress || 'Running Python in your browser...';
+    return `
+      <div class="osa-tool-panel" role="status">
+        <div class="osa-tool-panel-title">Running Python</div>
+        ${description}
+        <div class="osa-tool-actions">
+          <span class="osa-tool-status">${escapeHtml(status)}</span>
+          <button type="button" class="osa-tool-stop">Stop</button>
+        </div>
+      </div>`;
+  }
+
+  // Only a PNG whose data is plain base64 reaches an <img src>: the data is
+  // interpolated into an attribute, so anything else could close it.
+  function isShowableImage(image) {
+    return !!image && image.mime === 'image/png' && typeof image.data_base64 === 'string'
+      && /^[A-Za-z0-9+/]+=*$/.test(image.data_base64);
+  }
+
+  // What ran for a reply, as HTML: one collapsible entry per run. Every field
+  // is escaped: the description is the model's, the output is whatever the
+  // code printed, and a stored record is whatever storage holds.
+  function executionsHtml(executions) {
+    if (!Array.isArray(executions) || executions.length === 0) return '';
+    return executions.map((run) => {
+      const label = Object.prototype.hasOwnProperty.call(EXECUTION_LABELS, run.status)
+        ? EXECUTION_LABELS[run.status]
+        : 'Python';
+      const title = `${label}${run.description ? `: ${run.description}` : ''}`;
+      const code = run.code
+        ? `<pre class="osa-tool-code"><code>${highlightOrEscape(run.code)}</code></pre>`
+        : '';
+      const stdout = run.stdout ? `<pre class="osa-execution-output">${escapeHtml(run.stdout)}</pre>` : '';
+      const stderr = run.stderr && run.status !== 'ok'
+        ? `<pre class="osa-execution-output">${escapeHtml(run.stderr)}</pre>`
+        : '';
+      const images = (Array.isArray(run.images) ? run.images : [])
+        .filter(isShowableImage)
+        .map((image) => `<img alt="Figure produced by the code" src="data:image/png;base64,${image.data_base64}">`)
+        .join('');
+      // Figures open by default: they are the point of most runs.
+      return `
+        <details class="osa-execution"${images ? ' open' : ''}>
+          <summary>${escapeHtml(title)}</summary>
+          ${code}${stdout}${stderr}${images}
+        </details>`;
+    }).join('');
   }
 
   // Update DOM elements to reflect current CONFIG values (called after API config load)
@@ -2756,7 +3431,10 @@
       // response can update it in place. While the model is thinking, that
       // state must stay invisible: the loading bubble below is the assistant
       // response placeholder until the first answer text arrives.
-      if (isLoading && msg.role === 'assistant' && !msg.content && msgIndex === messages.length - 1) {
+      // A reply that has run code is shown even before it has text: the record
+      // of what ran is already part of it.
+      const ranCode = Array.isArray(msg.executions) && msg.executions.length > 0;
+      if (isLoading && msg.role === 'assistant' && !msg.content && !ranCode && msgIndex === messages.length - 1) {
         return;
       }
 
@@ -2830,6 +3508,7 @@
           <span class="osa-message-label">${escapeHtml(label)}</span>
           ${copyBtn}
         </div>
+        ${msg.role === 'assistant' ? executionsHtml(msg.executions) : ''}
         <div class="osa-message-content">${content}</div>
         ${sourcesRow}
         ${feedbackRow}
@@ -2902,7 +3581,25 @@
       });
     });
 
-    if (isLoading) {
+    if (toolActivity) {
+      // In place of the loading dots: nothing is loading, the reply is waiting
+      // on the person or on code running in this page.
+      const panelEl = document.createElement('div');
+      panelEl.innerHTML = toolPanelHtml(toolActivity);
+      messagesEl.appendChild(panelEl);
+      const decide = (decision) => {
+        const activity = toolActivity;
+        if (!activity || activity.phase !== 'asking') return;
+        const always = panelEl.querySelector('.osa-tool-autorun-input');
+        activity.decide(decision, !!(always && always.checked));
+      };
+      panelEl.querySelector('.osa-tool-run')?.addEventListener('click', () => decide(runtimeApi.GATE_DECISION.RUN));
+      panelEl.querySelector('.osa-tool-deny')?.addEventListener('click', () => decide(runtimeApi.GATE_DECISION.DENY));
+      panelEl.querySelector('.osa-tool-stop')?.addEventListener('click', (e) => {
+        e.currentTarget.disabled = true;
+        if (browserTools) browserTools.cancel();
+      });
+    } else if (isLoading) {
       const loadingEl = document.createElement('div');
       loadingEl.className = 'osa-loading';
       const loadingLabelText = isThinking ? 'Thinking...' : CONFIG.title;
@@ -2988,7 +3685,10 @@
     const finalContent = typeof event.content === 'string'
       ? event.content
       : streamedContent;
-    if (finalContent) {
+    // A reply that ran code is kept even when it ends with no text: what ran,
+    // and any figure it drew, is part of the answer the reader asked for.
+    const ranCode = Array.isArray(message.executions) && message.executions.length > 0;
+    if (finalContent || ranCode) {
       messageList[messageIndex] = {
         ...message,
         content: finalContent,
@@ -2999,6 +3699,11 @@
     return finalContent;
   }
 
+  // One reply's text across its runs: what earlier runs wrote, then this one's.
+  function composeReply(earlier, text) {
+    return earlier && text ? `${earlier}\n\n${text}` : earlier || text;
+  }
+
   // Handle streaming response from API
   // SSE Event formats:
   //   data: {"event": "content", "content": "text chunk"}
@@ -3007,8 +3712,15 @@
   //   data: {"event": "tool_end", "name": "tool_name", "output": "result"}
   //   data: {"event": "citation", "marker": 1, "source": "...", "title": "...", "cited_text": "..."}
   //   data: {"event": "done", "content": "final answer", "citations": [...]}
+  //   data: {"event": "tool_request", "call_id": "...", "tool": "...", "args": {...},
+  //          "content": "text so far", "citations": [...]}  (instead of done)
   //   data: {"event": "error", "message": "error description"}
-  async function handleStreamingResponse(response, container) {
+  //
+  // A browser-execution reply is several runs the reader sees as one message.
+  // A run that ends on tool_request resolves with {toolRequest, messageIndex};
+  // the caller answers it and streams the next run into the same message by
+  // passing `continuation` = {messageIndex}. Any other run resolves with null.
+  async function handleStreamingResponse(response, container, continuation = null) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -3019,10 +3731,20 @@
     const STREAM_TIMEOUT_MS = 60000; // 60 seconds with no data = timeout
     let receivedDoneEvent = false;
     let receivedFirstContent = false;
+    let toolRequest = null;
 
-    // Create placeholder assistant message (not rendered yet - loading dots stay visible)
-    messages.push({ role: 'assistant', content: '', citations: [], _responseId: createResponseId() });
-    const messageIndex = messages.length - 1;
+    // Create placeholder assistant message (not rendered yet - loading dots stay
+    // visible), or continue the one an earlier run of this reply wrote into.
+    let messageIndex;
+    if (continuation && messages[continuation.messageIndex]) {
+      messageIndex = continuation.messageIndex;
+    } else {
+      messages.push({ role: 'assistant', content: '', citations: [], _responseId: createResponseId() });
+      messageIndex = messages.length - 1;
+    }
+    // What earlier runs of this reply already wrote. This run's text follows it.
+    const earlier = continuation ? (messages[messageIndex].content || '') : '';
+    const compose = (text) => composeReply(earlier, text);
 
     try {
       while (true) {
@@ -3066,7 +3788,7 @@
             // Throttle UI updates for performance
             const now = Date.now();
             if (now - lastUpdateTime >= UPDATE_THROTTLE_MS) {
-              messages[messageIndex].content = accumulatedContent;
+              messages[messageIndex].content = compose(accumulatedContent);
               renderMessages(container);
               lastUpdateTime = now;
             }
@@ -3122,8 +3844,11 @@
             const finalContent = applyDoneEvent(
               messages,
               messageIndex,
-              event,
-              accumulatedContent,
+              {
+                ...event,
+                content: compose(typeof event.content === 'string' ? event.content : accumulatedContent),
+              },
+              compose(accumulatedContent),
             );
             accumulatedContent = finalContent;
             renderMessages(container);
@@ -3134,15 +3859,30 @@
               showError(container, 'Warning: Unable to save conversation');
             }
             updateStatusDisplay(true);
-            return; // Successfully completed
+            return null; // Successfully completed
+          } else if (event.event === 'tool_request') {
+            // The run ended on a call for this browser to answer. No `done`
+            // follows: the reply is not finished. content and citations are
+            // this run's canonical text, as done would have carried them.
+            toolRequest = event;
+            if (event.session_id && typeof event.session_id === 'string') {
+              sessionId = event.session_id;
+            }
+            const runText = typeof event.content === 'string' ? event.content : accumulatedContent;
+            messages[messageIndex].content = compose(runText);
+            if (Array.isArray(event.citations)) {
+              messages[messageIndex].citations = event.citations;
+            }
+            accumulatedContent = runText;
           } else if (event.event === 'error') {
             // Backend sent an error event
             const errorMsg = event.message || 'An error occurred during response generation';
             console.error('[OSA] Backend error event:', errorMsg);
 
             // Show partial content with error indicator
-            if (accumulatedContent) {
-              messages[messageIndex].content = accumulatedContent + `\n\n_[Error: ${errorMsg}]_`;
+            const shown = compose(accumulatedContent);
+            if (shown) {
+              messages[messageIndex].content = shown + `\n\n_[Error: ${errorMsg}]_`;
             } else {
               messages[messageIndex].content = `_[Error: ${errorMsg}]_`;
             }
@@ -3161,12 +3901,18 @@
         }
       }
 
+      if (toolRequest) {
+        renderMessages(container);
+        return { toolRequest, messageIndex };
+      }
+
       // Stream ended without receiving 'done' event - this is abnormal
       if (!receivedDoneEvent) {
         console.error('[OSA] Stream ended without done event');
 
-        if (accumulatedContent) {
-          messages[messageIndex].content = accumulatedContent +
+        const composed = compose(accumulatedContent);
+        if (composed) {
+          messages[messageIndex].content = composed +
             '\n\n_[Response may be incomplete - connection ended unexpectedly]_';
           renderMessages(container);
           try {
@@ -3184,8 +3930,11 @@
     } catch (error) {
       console.error('[OSA] Streaming error:', error);
 
-      // Keep partial content if we have any
-      if (accumulatedContent) {
+      // Keep partial content if we have any, including what earlier runs of
+      // this reply wrote and any code they ran.
+      const shown = compose(accumulatedContent);
+      const ran = messages[messageIndex] && messages[messageIndex].executions && messages[messageIndex].executions.length;
+      if (shown || ran) {
         const errorType = error.name || 'Error';
         let userMessage = 'Stream interrupted';
 
@@ -3198,7 +3947,7 @@
           throw error;
         }
 
-        messages[messageIndex].content = accumulatedContent + `\n\n_[${userMessage}]_`;
+        messages[messageIndex].content = (shown ? `${shown}\n\n` : '') + `_[${userMessage}]_`;
         renderMessages(container);
         try {
           saveHistory();
@@ -3207,7 +3956,7 @@
         }
       } else {
         // No content received - remove placeholder message
-        messages.pop();
+        messages.splice(messageIndex, 1);
       }
 
       throw error; // Re-throw to be handled by sendMessage
@@ -3286,52 +4035,26 @@
         throw new Error('Invalid community configuration. Please reload the page.');
       }
 
-      const headers = {
-        'Content-Type': 'application/json',
-      };
-
-      // Add BYOK API key if set, on the header matching its provider
-      // (inferred from the key's own prefix; see inferKeyProvider). The
-      // provider is checked explicitly rather than treating "not anthropic"
-      // as "openrouter", so an unrecognized provider never silently sends
-      // the wrong header.
-      if (userSettings.apiKey) {
-        if (userSettings.keyProvider === 'anthropic') {
-          headers['X-Anthropic-API-Key'] = userSettings.apiKey;
-        } else if (userSettings.keyProvider === 'openrouter') {
-          headers['X-OpenRouter-Key'] = userSettings.apiKey;
-        } else {
-          console.error('[OSA] BYOK key has unknown provider; not sent with the request:', userSettings.keyProvider);
+      // The client tools this page can run. Only a streaming reply can carry a
+      // tool_request, so they are declared only for one.
+      if (CONFIG.streamingEnabled) {
+        const declared = await declaredClientTools();
+        if (declared.length > 0) {
+          body.client_tools = declared;
         }
       }
 
+      // BYOK keys ride on the header matching their provider (inferred from the
+      // key's own prefix; see inferKeyProvider and chatRequestHeaders).
       const response = await fetch(`${CONFIG.apiEndpoint}/${CONFIG.communityId}/chat`, {
         method: 'POST',
-        headers: headers,
+        headers: chatRequestHeaders(),
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(120000), // 2 minute timeout for connection + streaming
       });
 
       if (!response.ok) {
-        let errorMessage = `Request failed (${response.status})`;
-        try {
-          const error = await response.json();
-          if (error && typeof error.detail === 'string') {
-            errorMessage = error.detail.substring(0, 500);
-          } else if (error && typeof error.error === 'string') {
-            errorMessage = error.error.substring(0, 500);
-          }
-        } catch {
-          // Response wasn't JSON - use status-based message
-          if (response.status >= 500) {
-            errorMessage = 'The service is temporarily unavailable. Please try again later.';
-          } else if (response.status === 429) {
-            errorMessage = 'Too many requests. Please wait a moment and try again.';
-          } else if (response.status === 403) {
-            errorMessage = 'Access denied. Please complete the security verification.';
-          }
-        }
-        throw new Error(errorMessage);
+        throw await responseError(response);
       }
 
       // Extract session ID from response header (set by streaming responses)
@@ -3345,7 +4068,15 @@
       if (CONFIG.streamingEnabled && contentType.includes('text/event-stream')) {
         // Handle streaming response
         assistantMessageCreated = true; // handleStreamingResponse creates assistant message
-        await handleStreamingResponse(response, container);
+        const outcome = await handleStreamingResponse(response, container);
+        // A reply that runs code in this page is several runs. Each run is a
+        // new request, so the 2 minute timeout above bounds one run, not the
+        // whole reply.
+        await continueBrowserReply(outcome, {
+          answer: (request, index) => answerToolRequest(container, request, index),
+          resume: postResume,
+          stream: (resumed, index) => handleStreamingResponse(resumed, container, { messageIndex: index }),
+        });
       } else {
         // Non-streaming response (either streaming not enabled, or fallback)
         if (CONFIG.streamingEnabled) {
@@ -3508,6 +4239,8 @@
       if (tooltip) tooltip.classList.remove('visible');
       // Surface any notice queued by an init-time failure (see loadUserSettings/loadHistory).
       flushPendingNotice(container);
+      retryBrowserToolsOnce();
+      preloadRuntime();
     } else {
       // Commit any open thumbs-down comment box on close.
       flushPendingResponseFeedback(container);
@@ -3584,8 +4317,10 @@
         return;
       }
 
-      // Create popup config with fullscreen mode
-      const popupConfig = { ...CONFIG, fullscreen: true };
+      // Create popup config with fullscreen mode. The pop-out runs this script
+      // inline, so it is told where the script lives: the runtime bundle is
+      // found next to it.
+      const popupConfig = { ...CONFIG, fullscreen: true, widgetScriptUrl: scriptUrl };
 
       // Serialize config safely (escape script-breaking sequences)
       let configJson;
@@ -3690,8 +4425,9 @@
       }
     }
 
-    // Fetch community default model (async, non-blocking)
-    fetchCommunityConfig();
+    // Fetch community default model (async, non-blocking). Kept as a promise
+    // so the first message can wait briefly for the client tools it declares.
+    communityConfigReady = fetchCommunityConfig();
 
     renderMessages(container);
     renderSuggestions(container);
@@ -3853,6 +4589,12 @@
     getConfig: function() {
       return { ...CONFIG };
     },
+    // Whether this page can run the assistant's code, and if not, why:
+    // {state: 'off' | 'loading' | 'ready' | 'unavailable', reason, detail?}.
+    // For an embedder checking their page's policy, and for support.
+    getBrowserRuntimeStatus: function() {
+      return browserRuntimeStatus();
+    },
     // Manually initialize the widget (use with data-no-auto-init on the script tag)
     init: function() {
       if (!initialized) {
@@ -3867,6 +4609,30 @@
     window.OSAChatWidget.__applyDoneEvent = applyDoneEvent;
     window.OSAChatWidget.__migrateLegacyCitationMarkers = migrateLegacyCitationMarkers;
     window.OSAChatWidget.__isSameResponseMessage = isSameResponseMessage;
+    window.OSAChatWidget.__browser = {
+      MAX_BROWSER_RUNS_PER_REPLY,
+      EXECUTION_FIELD_LIMITS,
+      answerToolRequest,
+      composeReply,
+      continueBrowserReply,
+      declaredClientToolsWithin,
+      executionRecord,
+      executionsHtml,
+      handleStreamingResponse,
+      loadRuntimeBundle,
+      normalizePersistedExecutions,
+      postResume,
+      runtimeBundleUrl,
+      toolPanelHtml,
+      declaredClientTools,
+      setUpBrowserTools,
+      getBrowserTools: () => browserTools,
+      getBrowserRuntime: () => browserRuntime,
+      getConfig: () => CONFIG,
+      getToolActivity: () => toolActivity,
+      getMessages: () => messages,
+      setMessages: (list) => { messages = list; },
+    };
   }
 
   // Auto-init unless the script tag has data-no-auto-init attribute

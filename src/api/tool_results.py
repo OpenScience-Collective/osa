@@ -30,13 +30,15 @@ from __future__ import annotations
 
 import base64
 import binascii
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, TypedDict
 
 from langchain_core.messages import ToolMessage
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+
+from src.agents.content import CitationMark
 
 # The caps live in `src.core.limits`, which imports nothing but the standard library,
 # because `src.core.config.community` bounds `RuntimeLimits` by the same numbers and
@@ -241,6 +243,14 @@ class PendingClientCall:
     args: dict[str, Any]
     requires_permission: bool
     created_at: datetime
+    #: The citations every earlier run of this reply attached to its text, so the next
+    #: run continues the same numbering. A browser reply is several runs the reader
+    #: sees as one; see `CitationTracker`.
+    carried_citations: tuple[CitationMark, ...] = ()
+    #: How many browser results this reply had already sent back when this call was
+    #: parked, so the run that answers it knows how much of
+    #: `MAX_BROWSER_RUNS_PER_REPLY` is left.
+    runs_before: int = 0
 
     #: Keys the graph node must supply. Named here so a drift between the node and this
     #: reader is one error naming the missing key, rather than the two different silent
@@ -248,8 +258,18 @@ class PendingClientCall:
     REQUIRED_KEYS = ("call_id", "tool", "args", "requires_permission")
 
     @classmethod
-    def from_state(cls, payload: Mapping[str, Any]) -> PendingClientCall:
+    def from_state(
+        cls,
+        payload: Mapping[str, Any],
+        *,
+        carried_citations: Sequence[CitationMark] = (),
+        runs_before: int = 0,
+    ) -> PendingClientCall:
         """Build from the `pending_client_call` the graph node put in its state.
+
+        `carried_citations` and `runs_before` are the reply's state so far, which the
+        graph does not hold; they are taken here so the parked call is complete when it
+        is built rather than patched afterwards.
 
         Every key is required, and that strictness is the point. Reading `args` with a
         `.get(..., {})` default meant a renamed key parked a call with EMPTY arguments:
@@ -270,17 +290,24 @@ class PendingClientCall:
             args=dict(payload["args"] or {}),
             requires_permission=bool(payload["requires_permission"]),
             created_at=datetime.now(UTC),
+            carried_citations=tuple(carried_citations),
+            runs_before=runs_before,
         )
 
     def is_expired(self, *, now: datetime | None = None) -> bool:
         moment = now or datetime.now(UTC)
         return moment - self.created_at > timedelta(seconds=PENDING_CALL_TTL_SECONDS)
 
-    def to_request_event(self, session_id: str) -> dict[str, Any]:
+    def to_request_event(self, session_id: str, content: str = "") -> ToolRequestEvent:
         """The `tool_request` SSE payload.
 
         Carries `event`, which the widget's dispatcher requires; the design note's own
         example of a sibling event omitted it and would not have dispatched.
+
+        `content` and `citations` do for a run that parks a call what `done` does for a
+        finished one: the text the run streamed, with its markers normalized, and every
+        citation the reply has so far. Such a run never sends `done`, so without these
+        the reader would keep the raw streamed text, whose markers can sit mid-word.
         """
         return {
             "event": "tool_request",
@@ -289,4 +316,24 @@ class PendingClientCall:
             "tool": self.tool,
             "args": self.args,
             "requires_permission": self.requires_permission,
+            "content": content,
+            "citations": [asdict(mark) for mark in self.carried_citations],
         }
+
+
+class ToolRequestEvent(TypedDict):
+    """The `tool_request` SSE event, as `frontend/osa-chat-widget.js` reads it.
+
+    The browser half of this contract is `ClientToolController.answer` in
+    `frontend/osa-controller.js`; a field renamed here is a field the widget stops
+    seeing, with no error on either side.
+    """
+
+    event: Literal["tool_request"]
+    session_id: str
+    call_id: str
+    tool: str
+    args: dict[str, Any]
+    requires_permission: bool
+    content: str
+    citations: list[dict[str, Any]]

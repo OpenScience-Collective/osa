@@ -374,3 +374,197 @@ class TestStreamChatResponseCitations:
         assert session.messages[-1].content == (
             "Infomax is implemented in runica.m, a MATLAB version.[1]"
         )
+
+
+SOURCE_A = "https://doc.example/alpha"
+SOURCE_B = "https://doc.example/welch"
+BROWSER_CALL_ID = "toolu_01cccccccccccccccccccccc"
+
+
+def _cite(source: str) -> dict:
+    return _text_event(citations=[{"source": source, "title": source, "cited_text": "x"}])
+
+
+def _parked_run_end() -> list[dict]:
+    """The two events a run that parks a browser call ends with.
+
+    Replayed rather than produced by a real graph, as in the rest of this module:
+    what is under test is how `_stream_chat_response` assembles `tool_request`, and
+    `tests/test_api/test_client_tool_streaming.py` covers the real graph emitting
+    exactly this shape.
+    """
+    from langchain_core.messages import AIMessage
+
+    from src.agents.base import CLIENT_TOOLS_NODE
+
+    call = {
+        "name": "execute_code",
+        "args": {"code": "x", "description": "d"},
+        "id": BROWSER_CALL_ID,
+    }
+    return [
+        {"event": "on_chain_end", "name": CLIENT_TOOLS_NODE, "parent_ids": ["root"], "data": {}},
+        {
+            "event": "on_chain_end",
+            "name": "LangGraph",
+            "parent_ids": [],
+            "data": {
+                "output": {
+                    "messages": [AIMessage(content="", tool_calls=[call])],
+                    "pending_client_call": {
+                        "call_id": BROWSER_CALL_ID,
+                        "tool": "execute_code",
+                        "args": call["args"],
+                        "requires_permission": True,
+                    },
+                }
+            },
+        },
+    ]
+
+
+class TestCitationsAcrossABrowserTurn:
+    """A browser reply is several runs that the reader sees as ONE reply.
+
+    Each run used to number its sources from [1], so a reply whose first half cited
+    one source and whose second half cited another showed two different [1]s.
+    """
+
+    async def _stream(self, session: ChatSession, events_in: list[dict], **kwargs) -> list[dict]:
+        fake_awm = AssistantWithMetrics(
+            assistant=_FakeAssistant(events_in), model="claude-haiku-4-5", key_source="platform"
+        )
+        with patch("src.api.routers.community.create_community_assistant", return_value=fake_awm):
+            return await _collect_sse_events(
+                _stream_chat_response("hed", session, None, None, None, **kwargs)
+            )
+
+    @pytest.mark.asyncio
+    async def test_tool_request_carries_run_ones_text_and_citations(self) -> None:
+        session = ChatSession(session_id="browser-turn-1", community_id="hed")
+        session.add_user_message("Plot alpha power.")
+        events = await self._stream(
+            session,
+            [_text_event("Alpha is 8 to 12 Hz."), _cite(SOURCE_A), *_parked_run_end()],
+        )
+
+        request = next(e for e in events if e["event"] == "tool_request")
+        assert request["content"] == "Alpha is 8 to 12 Hz.[1]"
+        assert [c["source"] for c in request["citations"]] == [SOURCE_A]
+        assert [c["marker"] for c in request["citations"]] == [1]
+        assert not [e for e in events if e["event"] == "done"]
+        # Kept with the parked call, because run 2 is a different request.
+        assert [m.source for m in session.pending_call.carried_citations] == [SOURCE_A]
+
+    @pytest.mark.asyncio
+    async def test_run_two_continues_run_ones_numbering(self) -> None:
+        session = ChatSession(session_id="browser-turn-2", community_id="hed")
+        session.add_user_message("Plot alpha power.")
+        await self._stream(
+            session, [_text_event("Alpha is 8 to 12 Hz."), _cite(SOURCE_A), *_parked_run_end()]
+        )
+        carried = session.claim_pending_call(BROWSER_CALL_ID).carried_citations
+
+        events = await self._stream(
+            session,
+            [
+                _text_event("Welch estimates it."),
+                _cite(SOURCE_B),
+                _text_event(" As before, alpha peaks."),
+                _cite(SOURCE_A),
+            ],
+            carried_citations=carried,
+        )
+
+        announced = [(e["marker"], e["source"]) for e in events if e["event"] == "citation"]
+        assert announced == [(2, SOURCE_B)], "only the new source is announced, as [2]"
+        done = next(e for e in events if e["event"] == "done")
+        assert [(c["marker"], c["source"]) for c in done["citations"]] == [
+            (1, SOURCE_A),
+            (2, SOURCE_B),
+        ]
+        assert done["content"] == "Welch estimates it.[2] As before, alpha peaks.[1]"
+
+    @pytest.mark.asyncio
+    async def test_a_turn_with_no_browser_call_still_starts_at_one(self) -> None:
+        session = ChatSession(session_id="browser-turn-3", community_id="hed")
+        session.add_user_message("Explain alpha.")
+        events = await self._stream(session, [_text_event("Welch estimates it."), _cite(SOURCE_B)])
+        done = next(e for e in events if e["event"] == "done")
+        assert [(c["marker"], c["source"]) for c in done["citations"]] == [(1, SOURCE_B)]
+
+
+class TestAThirdRunContinuesBoth:
+    @pytest.mark.asyncio
+    async def test_a_run_that_parks_again_carries_every_source_so_far(self) -> None:
+        stream = TestCitationsAcrossABrowserTurn()._stream
+        session = ChatSession(session_id="browser-turn-4", community_id="hed")
+        session.add_user_message("Plot alpha power.")
+        await stream(session, [_text_event("Alpha."), _cite(SOURCE_A), *_parked_run_end()])
+        first = session.claim_pending_call(BROWSER_CALL_ID)
+
+        events = await stream(
+            session,
+            [_text_event("Welch."), _cite(SOURCE_B), *_parked_run_end()],
+            carried_citations=first.carried_citations,
+            browser_runs_answered=first.runs_before + 1,
+        )
+        request = next(e for e in events if e["event"] == "tool_request")
+        assert [(c["marker"], c["source"]) for c in request["citations"]] == [
+            (1, SOURCE_A),
+            (2, SOURCE_B),
+        ]
+        second = session.claim_pending_call(BROWSER_CALL_ID)
+        assert second.runs_before == 1
+
+        events = await stream(
+            session,
+            [_text_event("Theta."), _cite("https://doc.example/theta"), _cite(SOURCE_A)],
+            carried_citations=second.carried_citations,
+            browser_runs_answered=second.runs_before + 1,
+        )
+        done = next(e for e in events if e["event"] == "done")
+        assert [c["marker"] for c in done["citations"]] == [1, 2, 3]
+        assert done["content"] == "Theta.[3][1]"
+
+
+class TestMalformedCarriedCitationsAreReported:
+    @pytest.mark.asyncio
+    async def test_the_stream_ends_in_an_error_event_with_an_id(self) -> None:
+        """The headers are already sent when the stream starts, so a fault raised
+        outside the handlers ended the stream with nothing: no error event, no log
+        line, and a reader told the connection dropped."""
+        from src.agents.content import CitationMark
+
+        session = ChatSession(session_id="browser-turn-5", community_id="hed")
+        session.add_user_message("Plot alpha power.")
+        broken = [CitationMark(marker=2, source=SOURCE_A, title="", cited_text="")]
+
+        events = await TestCitationsAcrossABrowserTurn()._stream(
+            session, [_text_event("never streamed")], carried_citations=broken
+        )
+
+        assert [e["event"] for e in events] == ["session", "error"]
+        assert events[1]["error_id"]
+        # The generic message, not the internal one the ValueError carries.
+        assert "numbered" not in events[1]["message"]
+        assert session.begin_turn(), "the turn was released"
+
+
+class TestCarriedCitationsAreValidated:
+    def test_a_gap_in_carried_markers_is_refused(self) -> None:
+        from src.agents.content import CitationMark, CitationTracker
+
+        with pytest.raises(ValueError, match="numbered 1..n"):
+            CitationTracker([CitationMark(marker=2, source=SOURCE_A, title="", cited_text="")])
+
+    def test_a_repeated_source_is_refused(self) -> None:
+        from src.agents.content import CitationMark, CitationTracker
+
+        with pytest.raises(ValueError, match="one per source"):
+            CitationTracker(
+                [
+                    CitationMark(marker=1, source=SOURCE_A, title="", cited_text=""),
+                    CitationMark(marker=2, source=SOURCE_A, title="", cited_text=""),
+                ]
+            )

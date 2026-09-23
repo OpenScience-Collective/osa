@@ -69,7 +69,7 @@ Non-goals:
   |   |  execute_code                    |         |   agent --> tools (server tools)        |
   |   v                                  |         |         --> client_tools (interrupt)    |
   | runtime worker (Pyodide)             |         |  checkpointer keyed by session_id       |
-  |   loadPackagesFromImports / micropip |         +----------------------------------------+
+  |   every package loaded at boot       |         +----------------------------------------+
   |   fetch allowlist, output capture    |
   |   v                                  |          Data plane (community-owned, public)
   | workspace (OPFS / IndexedDB)         |<-------  e.g. zarr.nemar.org, S3, PyPI, CDN
@@ -106,7 +106,7 @@ model emits tool_call(execute_code, {code, description})
   -> _stream_chat_response sees __interrupt__ nested in on_chain_stream, emits SSE event tool_request
 widget receives tool_request
   -> shows code; waits for Run (or auto-run is on)
-  -> worker.run(code): loadPackagesFromImports, micropip for allowlisted imports, execute
+  -> worker.run(code): execute (every package was loaded at boot; see Lazy loading)
   -> captures stdout/stderr, images, artifact names; applies caps
   -> POST /{community}/chat/resume {session_id, call_id, result}   (or WebSocket frame)
 server resumes graph with Command(resume=result)
@@ -155,6 +155,16 @@ All payloads are JSON.
 
 `tool_cancel` (either direction): `{ "call_id": "c_01J..." }`.
 
+**As built (phases 1 and 2).** The shapes above are the proposal. What is on the wire is
+`ToolRequestEvent` and `ClientToolResult` in `src/api/tool_results.py`, which win over
+these examples. `tool_request` also carries the run's `content` and `citations`, and no
+`deadline_s`: the deadline is `runtime.python.limits.exec_seconds`, which the widget reads
+from `/config`. The result adds `summary`, the structured description the model reasons
+over, and `oom` as a status; it has no `truncated` field (a clipped stream says so in its
+own text, and the full output stays in the browser, readable with `get_full_output`), no
+`runtime` block, and `artifacts` are bare names. There is no `tool_cancel` event: Stop
+terminates the worker, and the call is answered `cancelled` through `/chat/resume`.
+
 Caps, enforced on the client and re-checked on the server:
 
 | Field | Cap | Why |
@@ -164,6 +174,12 @@ Caps, enforced on the client and re-checked on the server:
 | images | 3 per call, longest side 1024 px, PNG | Bounded context cost, still legible |
 | artifacts | names and sizes only | Data stays in the browser |
 | execution | `deadline_s` from config, default 120 | A runaway cell must not park the thread |
+
+As built, the server's caps are `src/core/limits.py` and a community narrows them with
+`runtime.python.limits` (`RuntimeLimits`): the stream caps are as above, artifacts are
+names only, the deadline is `exec_seconds`, and images are capped by count and bytes,
+with the browser downscaling to the community's `image_px`.
+`frontend/test-output.js` reads the Python source, so the two sides cannot drift.
 
 Arrays never travel to the server.
 A tool that needs numbers back returns a small table in stdout or writes an artifact and reports its name.
@@ -220,6 +236,10 @@ The message schema is identical either way.
   then `micropip.install` for imports that resolve to pure-Python wheels and are on the community allowlist,
   then `runPythonAsync`.
   An import outside the allowlist produces a `denied_import` in the result rather than a silent install.
+  **As built:** nothing is installed at execution. `preload` (from the Pyodide lock and the
+  community's overlay) and `allow_install` (micropip, `deps=False`) both run at boot, before the
+  seal removes `micropip`; an execution only runs code, and any import of something not
+  installed is a `denied_import`.
 - Output capture: redirect `sys.stdout` and `sys.stderr`; set the matplotlib backend to Agg
   and collect figures as PNG; support a small `display()` protocol for images and HTML tables.
 - Cancellation: cooperative cancellation through `setInterruptBuffer` needs a `SharedArrayBuffer`,
@@ -261,8 +281,8 @@ The mental model is a `uv` project per community, mapped onto what Pyodide alrea
 | uv concept | Pyodide mechanism | Where it lives |
 |---|---|---|
 | `pyproject` dependencies | `runtime.python.preload` and `allow_install` | community `config.yaml` |
-| `uv.lock` | `micropip.freeze()` output, loaded through `loadPyodide({ lockFileURL })` | `runtime/<community>-pyodide-lock.json`, committed |
-| `uv sync` | `loadPackagesFromImports` plus `micropip.install` on demand | worker, at run time |
+| `uv.lock` | a lock **overlay** merged into the stock lock and passed as `loadPyodide({ lockFileContents })` | `src/assistants/<community>/runtime/<community>-pyodide-lock.json`, committed with its wheels |
+| `uv sync` | `loadPackage` of `preload` at boot, resolving overlay and stock entries together | worker, at boot only |
 | package index | Pyodide CDN for built packages, PyPI for pure wheels, optional community index | `runtime.python.index_urls` |
 | interpreter pin | `runtime.python.pyodide_version` | community `config.yaml` |
 | cache | browser Cache API; wheels are immutable | user's browser |
@@ -274,9 +294,38 @@ Rules:
   the fix is upstream packaging, which is exactly the eegprep case.
 - The lockfile is regenerated by a script, reviewed in a PR, and pinned to a Pyodide version.
   Every user of a community gets the same environment.
-- `preload` is the small set worth paying for on widget open; `allow_install` is what the model may pull in;
-  anything else is denied and reported.
+- `preload` is the small set worth paying for on widget open; `allow_install` is installed at boot as
+  well (as built, the model pulls in nothing); anything else is denied and reported.
 - Cache invalidation is by URL: a new lockfile means new URLs, old wheels expire on their own.
+
+**As built (phase 2, step 8, #431).** The lockfile is an overlay, not a full lock: the
+entries a community adds to the Pyodide distribution of its pinned version, in Pyodide's
+own lock-entry shape (`src/core/config/runtime_lock.py`).
+The wheels sit in `wheels/` beside it, the server verifies each against its `sha256`
+when it loads the overlay, sends the entries in `/config` as `runtime_lock`, and serves
+the wheels itself at `GET /{community}/runtime/{file_name}`, immutable, so the host
+that sent the hashes is the host the bytes come from and the two cannot come from
+different releases. The worker merges the overlay into the stock lock (an entry may add
+a package, never replace one), hands the result to `loadPyodide`, and `preload` then
+resolves overlay packages and their distribution dependencies in one pass, with the
+browser enforcing each digest through `fetch`'s `integrity`. There is no micropip in
+this path; `allow_install` remains for installs from `index_urls` at boot.
+`scripts/build_runtime_lock.py` regenerates an overlay from its wheels and a
+`depends.toml`, and refuses new bytes under a committed wheel name.
+
+Measured on Pyodide 0.29.5: under Node, `loadPackage` resolves a lock `file_name` with
+`path.resolve` against its package cache, so an absolute URL does not load there, and
+Node ignores the digest entirely. Both work in a browser, which is where they are
+verified: in CI by `frontend/browser-harness/chrome.js`, in headless Chrome, whose
+tampered wheel is valid so that only the digest can refuse it, and by hand, with the
+widget and the live archive, by `frontend/browser-harness/widget_e2e.py`. The Bun test
+names the committed wheels by path (`frontend/test-data-lane.js`).
+
+A community can also run a **prelude**, `runtime.python.prelude`: Python run once after
+the seal and before the first execution, with exactly executed code's privileges,
+compiled at config load. NEMAR's registers eegprep-lean's transport over `osa.fetch`
+(the ranged, non-raising client), because eegprep-lean's default reads through
+`pyodide.http`, which the seal removes.
 
 ## Configuration
 
@@ -313,8 +362,8 @@ runtime:
       # 2 and 4 GB and an out-of-memory condition aborts the instance, which a seconds-based
       # deadline does not catch. Budget it explicitly and define an `oom` result status.
       memory_mb: 1536
-      stdout_bytes: 16384
-      stderr_bytes: 8192
+      stdout_chars: 16384
+      stderr_chars: 8192
       images: 3
       image_px: 1024
       exec_seconds: 120
@@ -326,8 +375,18 @@ Pydantic shape: `ClientTool { name, runtime: Literal["python"], requires_permiss
 `extra="forbid"` throughout, unique tool names, and a validator that a `client_tools` entry
 requires a matching `runtime` section.
 `mcp_servers` and its runtime consumer shipped in #352 (`src/tools/mcp_client.py`, loaded by
-`CommunityAssistant._load_mcp_tools`), and `src/assistants/nemar/config.yaml` already carries the block
-shown above. `client_tools` and `runtime` are the only new configuration in this design.
+`CommunityAssistant._load_mcp_tools`), and `src/assistants/nemar/config.yaml` already carries the
+`mcp_servers` block shown above. `client_tools` and `runtime` are the only new configuration in this design.
+
+**As built (phase 2).** The YAML above is the proposal and is not valid as written: there is no
+`analysis_engine` key, which `extra="forbid"` refuses, and no Pyodide `314.0.6`. The shipped block is
+`src/assistants/nemar/config.yaml`, and the model is `PythonRuntimeConfig` in
+`src/core/config/community.py`, which also has `prelude`. NEMAR pins Pyodide 0.29.5 (zarr 3.4.0 needs
+its `google-crc32c`), names its lock overlay in `lockfile`, preloads numpy, matplotlib, zarr and
+eegprep-lean, reaches only `https://zarr.nemar.org/`, installs nothing with `allow_install`, keeps the
+default limits, and registers eegprep-lean's transport in its prelude. The analysis engine ADR 0049
+asks to be named is named in NEMAR's prompt, as eegprep-lean. `frontend/test-data-lane.js` requires every
+community runtime to pin the Pyodide CI runs.
 Note that `CommunityConfig` sets `extra="forbid"`, so a top-level `runtime:` key is rejected until the
 model gains the field, and the cross-field validator must live on `CommunityConfig`, not on
 `ExtensionsConfig`, because the latter cannot see a top-level sibling.
@@ -589,7 +648,10 @@ note and do not correspond to the global phases in `.context/plan.md`.
   kernel with the chat worker is not an open tradeoff; it is unsupported, and belongs under non-goals.
   Pyodide's `mountOPFS` is also not in a released version yet, so Phase 4 should plan on IndexedDB plus an
   import step; the stable `mountNativeFS` is the File System Access API and is Chromium-only.
-- Where community lockfiles live: in this repo next to the config, or in a community-owned repo referenced by URL.
+- ~~Where community lockfiles live.~~ **DECIDED 2026-09-22 (#431, step 8): in the community's own folder
+  in this repo, served by this API.** An eegprep-lean bump is then a server deploy, with no widget release
+  and no nemar.org re-pin. Hosting them beside the widget was rejected because the server's config and a
+  pinned widget's wheels would then drift; a community-owned repository by URL stays open for phase 5.
 - Image cost in the model context; whether to downscale further by default.
 - The SSE event vocabulary listed earlier in this note is incomplete: the live stream also emits `session`
   and `warning`, and the widget handles both. Anyone adding an event needs the true list.
@@ -608,6 +670,8 @@ note and do not correspond to the global phases in `.context/plan.md`.
   de-risking.
 - `.context/qp-worker-architecture.md`: the streaming proxy pattern the widget already uses.
 - Pyodide: `loadPackagesFromImports`, `micropip.install`, `micropip.freeze`, `loadPyodide({ lockFileURL })`, `setInterruptBuffer`.
+  As built: `loadPyodide({ lockFileContents, packageBaseUrl })` and `loadPackage(name, { checkIntegrity })`;
+  neither `micropip.freeze` nor `setInterruptBuffer` is used.
 - LangGraph: `interrupt`, `Command(resume=...)`, checkpointers.
 - nemarOrg/nemar-cli ADR 0049 (compute in the browser, only HPC submission gated) and issue #1065 (the MCP server whose recipes this runtime consumes).
 - sccn/eegprep: the extras split that makes eegprep installable under Pyodide.

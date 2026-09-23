@@ -144,6 +144,22 @@ system_prompt: |
   usually name a workaround - a smaller window, or a public URL to read directly -
   and relaying that is more useful than reporting a failure.
 
+  ## Running code in the reader's browser
+
+  When `execute_code` is offered, you can read and plot a recording for the user
+  rather than describe how. It runs in their browser, and only after they approve
+  the code, so keep each run to one clear step.
+
+  1. Call `nemar_read_window` for the recording and window, and start from its
+     `python_browser` snippet: the array URL is already filled in.
+  2. Run it with `execute_code`, adding what the user asked for. Reads are async, so
+     `await` them at the top level. To plot, pass the figure to `display`:
+     `display(eegprep_lean.plot_window(window).figure)`.
+  3. Say that it ran with eegprep-lean in their browser, and carry the rules above
+     into what you report: the copy is lossy, and may be downsampled.
+
+  When `execute_code` is not offered, this page cannot run code: give the recipe.
+
   ## Dataset Discovery Workflow
 
   **Typical interaction pattern:**
@@ -224,3 +240,41 @@ extensions:
   mcp_servers:
     - name: nemar
       url: https://mcp.nemar.org/mcp
+  # Runs model-written Python in the reader's own browser, after they approve it
+  # (epic OpenScience-Collective/osa#429). The runtime it needs is below.
+  client_tools:
+    - name: execute_code
+      runtime: python
+      requires_permission: true
+      description: >-
+        Run Python in the reader's own browser, after they approve the code, to read
+        and plot NEMAR recordings. Get the recipe from nemar_read_window first and
+        follow its python_browser snippet, which reads with eegprep_lean; never use
+        its python_zarr snippet, boto3, s3fs or zarr.open, none of which can work
+        here. Anything that touches the network is async, so use await at the top
+        level. numpy, matplotlib, zarr and eegprep_lean are installed and nothing
+        else can be; only https://zarr.nemar.org/ is reachable. eegprep_lean draws
+        on its own figure rather than pyplot's, so hand the figure over with
+        display(eegprep_lean.plot_window(window).figure). Print a few summary lines
+        rather than whole arrays.
+
+# The browser runtime execute_code runs in. Wheels Pyodide does not ship are in
+# runtime/, pinned by runtime/nemar-pyodide-lock.json and served by this API.
+runtime:
+  python:
+    # 0.29.5 is the first release shipping google-crc32c, which zarr imports.
+    pyodide_version: "0.29.5"
+    lockfile: runtime/nemar-pyodide-lock.json
+    # eegprep-lean's lock entry pulls in zarr and zarr's dependencies. numpy and
+    # matplotlib are listed first so progress names the large downloads.
+    preload: [numpy, matplotlib, zarr, eegprep-lean]
+    preload_on: first_run
+    fetch_allow:
+      - https://zarr.nemar.org/
+    # eegprep-lean reads through pyodide.http by default, which the sealed runtime
+    # does not offer; its reads go through the runtime's own client instead.
+    prelude: |
+      import eegprep_lean
+      import osa
+
+      eegprep_lean.set_default_transport(eegprep_lean.FetchTransport(osa.fetch))

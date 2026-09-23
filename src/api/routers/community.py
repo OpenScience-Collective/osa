@@ -30,6 +30,7 @@ from src.agents.base import (
 )
 from src.agents.content import (
     CitationAssembler,
+    CitationMark,
     ContentBlock,
     classify_content_blocks_with_indices,
     encode_citation_markers,
@@ -58,7 +59,21 @@ from src.assistants import registry
 from src.assistants.community import CommunityAssistant
 from src.assistants.community import PageContext as AgentPageContext
 from src.assistants.registry import AssistantInfo
-from src.core.config.community import WidgetConfig
+from src.core.config.community import (
+    MAX_DECLARED_CLIENT_TOOLS,
+    ClientToolConfig,
+    ClientToolRuntime,
+    CommunityConfig,
+    RuntimeConfig,
+    WidgetConfig,
+)
+from src.core.config.runtime_lock import (
+    RuntimeLockError,
+    RuntimeLockOverlay,
+    load_runtime_lock,
+    runtime_wheel,
+)
+from src.core.limits import MAX_BROWSER_RUNS_PER_REPLY
 from src.core.services.anthropic_llm import OFFERED_MODELS, create_anthropic_llm, normalize_model
 from src.core.services.litellm_llm import DEFAULT_MODEL as OPENROUTER_DEFAULT_MODEL
 from src.core.services.litellm_llm import DEFAULT_PROVIDER as OPENROUTER_DEFAULT_PROVIDER
@@ -82,6 +97,7 @@ from src.metrics.queries import (
     get_quality_summary,
     get_usage_stats,
 )
+from src.tools.client_tools import client_tools_disabled
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +171,7 @@ class ChatRequest(BaseModel):
     )
     client_tools: list[str] = Field(
         default_factory=list,
-        max_length=8,
+        max_length=MAX_DECLARED_CLIENT_TOOLS,
         description=(
             "Names of client-executed tools this caller can actually run. The "
             "assistant binds only tools that are both configured on the community and "
@@ -176,7 +192,7 @@ class ResumeRequest(BaseModel):
     result: ClientToolResult
     model: str | None = Field(default=None, description=MODEL_OVERRIDE_DESCRIPTION)
     page_context: PageContext | None = None
-    client_tools: list[str] = Field(default_factory=list, max_length=8)
+    client_tools: list[str] = Field(default_factory=list, max_length=MAX_DECLARED_CLIENT_TOOLS)
 
 
 class AskRequest(BaseModel):
@@ -297,6 +313,20 @@ class OfferedModelResponse(BaseModel):
     label: str = Field(..., description="Human-readable display label")
 
 
+class ClientToolInfo(BaseModel):
+    """A client tool the widget may be asked to run, as the widget needs to know it.
+
+    `runtime` is carried so the widget declares only the tools it has a runtime
+    for. Phase 1's rule is that a caller declares what it can execute; a widget
+    that declared every listed name would break that the day a second runtime
+    kind is added.
+    """
+
+    name: str
+    runtime: ClientToolRuntime
+    requires_permission: bool
+
+
 class CommunityConfigResponse(BaseModel):
     """Community configuration information."""
 
@@ -314,6 +344,30 @@ class CommunityConfigResponse(BaseModel):
         ..., description="Widget display configuration (title, placeholder, etc.)"
     )
     status: str = Field(..., description="Health status: healthy, degraded, or error")
+    client_tools: list[ClientToolInfo] = Field(
+        default_factory=list,
+        description=(
+            "Client tools this community configures, which the widget can offer to run. "
+            "Empty when none are configured or the server's kill switch is set, and the "
+            "widget loads no runtime at all in that case. get_full_output is not listed: "
+            "it is derived, not configured, and bound beside any python tool."
+        ),
+    )
+    runtime: RuntimeConfig | None = Field(
+        default=None,
+        description=(
+            "The execution environment those tools run in, exactly as configured. None "
+            "whenever client_tools is empty."
+        ),
+    )
+    runtime_lock: RuntimeLockOverlay | None = Field(
+        default=None,
+        description=(
+            "The Pyodide lock entries the runtime adds to its Pyodide version's own lock, "
+            "verified against the wheels this server serves at runtime/{file_name}. None "
+            "when the runtime names no lockfile, and whenever client_tools is empty."
+        ),
+    )
 
 
 class FAQEntryResponse(BaseModel):
@@ -1317,6 +1371,7 @@ def create_community_assistant(
     preload_docs: bool = True,
     page_context: PageContext | None = None,
     declared_client_tools: set[str] | None = None,
+    browser_runs_left: int | None = None,
 ) -> AssistantWithMetrics:
     """Create a community assistant instance with authorization checks.
 
@@ -1429,6 +1484,7 @@ def create_community_assistant(
         # binds no client-executed tools at all. That is decision 7 of the phase plan,
         # enforced by the default rather than by a check.
         declared_client_tools=declared_client_tools,
+        browser_runs_left=browser_runs_left,
     )
 
     # Wire LangFuse tracing if configured
@@ -1654,6 +1710,68 @@ def convention_logo_url(community_id: str, widget: WidgetConfig) -> str | None:
 # ---------------------------------------------------------------------------
 # Router Factory
 # ---------------------------------------------------------------------------
+
+
+def _offered_client_tools(config: CommunityConfig | None) -> list[ClientToolConfig]:
+    """The client tools a community offers right now: none under the kill switch.
+
+    None, too, for an assistant registered without a YAML config, which configures
+    nothing.
+    """
+    extensions = config.extensions if config is not None else None
+    if extensions is None or client_tools_disabled():
+        return []
+    return list(extensions.client_tools)
+
+
+def _runtime_lockfile(config: CommunityConfig) -> str | None:
+    """The lock overlay the community's Python runtime names, or None."""
+    python = config.runtime.python if config.runtime is not None else None
+    return python.lockfile if python is not None else None
+
+
+def _log_unusable_lock(community_id: str, err: RuntimeLockError) -> None:
+    # Logged on every request that meets it: the verdict is cached, so this costs a
+    # line and not a re-hash, and a broken deployment keeps saying so.
+    logger.error("Community %s: its runtime lock overlay does not verify: %s", community_id, err)
+
+
+def _client_tool_config(config: CommunityConfig | None) -> dict[str, Any]:
+    """The client-tool part of the public config: what the widget needs to run them.
+
+    Honors the kill switch here as well as at bind time. The widget decides from
+    this response whether to download a Python runtime at all, so a switched-off
+    feature must not still cost every visitor that download.
+
+    Fails closed on a lock overlay that does not verify: no client tools, so the
+    widget declares none and the model is never offered a tool whose runtime could
+    not start. A test verifies every shipped community's overlay, so this is a
+    deployment gone wrong rather than a state a reviewed config can reach.
+    """
+    none: dict[str, Any] = {"client_tools": [], "runtime": None, "runtime_lock": None}
+    configured = _offered_client_tools(config)
+    if config is None or not configured:
+        return none
+    lockfile = _runtime_lockfile(config)
+    runtime_lock = None
+    if lockfile is not None:
+        try:
+            runtime_lock = load_runtime_lock(_ASSISTANTS_DIR / config.id, lockfile)
+        except RuntimeLockError as err:
+            _log_unusable_lock(config.id, err)
+            return none
+    return {
+        "client_tools": [
+            ClientToolInfo(
+                name=entry.name,
+                runtime=entry.runtime,
+                requires_permission=entry.requires_permission,
+            )
+            for entry in configured
+        ],
+        "runtime": config.runtime,
+        "runtime_lock": runtime_lock,
+    }
 
 
 def create_community_router(community_id: str) -> APIRouter:
@@ -2000,6 +2118,8 @@ def create_community_router(community_id: str) -> APIRouter:
                 declared_client_tools=set(body.client_tools),
                 initial_messages=live_messages,
                 endpoint=f"/{community_id}/chat/resume",
+                carried_citations=pending.carried_citations,
+                browser_runs_answered=pending.runs_before + 1,
             ),
             media_type="text/event-stream",
             headers={
@@ -2105,6 +2225,7 @@ def create_community_router(community_id: str) -> APIRouter:
             ],
             widget=WidgetConfigResponse(**widget_cfg.resolve(info.name, logo_url=conv_logo)),
             status=health_status,
+            **_client_tool_config(info.community_config),
         )
 
     @router.get("/logo")
@@ -2136,6 +2257,43 @@ def create_community_router(community_id: str) -> APIRouter:
             media_type=media_type,
             filename=f"{community_id}-logo{logo_path.suffix}",
             headers=headers,
+        )
+
+    @router.get("/runtime/{file_name}")
+    async def get_runtime_wheel(file_name: str) -> Response:
+        """Serve one wheel the community's lock overlay lists, for the browser runtime.
+
+        Only names the overlay lists are served, found by lookup rather than by
+        joining the request onto the disk, and only while the community offers the
+        client tools that runtime is for, which is when /config sends the overlay.
+        The bytes are the ones hashed against the overlay's sha256, which Pyodide
+        checks again as it loads them. Immutable for a year: a wheel's name is its
+        identity.
+
+        A 404 means there is no such wheel. An overlay that does not verify is a 503
+        instead, so the edge neither caches it nor reports a broken deployment as a
+        missing file.
+        """
+        config = info.community_config
+        not_found = HTTPException(status_code=404, detail="No such runtime file")
+        if config is None or not _offered_client_tools(config):
+            raise not_found
+        lockfile = _runtime_lockfile(config)
+        if lockfile is None:
+            raise not_found
+        try:
+            wheel = runtime_wheel(_ASSISTANTS_DIR / config.id, lockfile, file_name)
+        except RuntimeLockError as err:
+            _log_unusable_lock(config.id, err)
+            raise HTTPException(
+                status_code=503, detail="This community's browser runtime is unavailable"
+            ) from None
+        if wheel is None:
+            raise not_found
+        return Response(
+            content=wheel,
+            media_type="application/octet-stream",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
 
     # -----------------------------------------------------------------------
@@ -2800,6 +2958,10 @@ def _finish_with_tool_request(
     session: ChatSession,
     pending_payload: dict[str, Any],
     final_state: dict[str, Any] | None,
+    *,
+    content: str = "",
+    citations: Sequence[CitationMark] = (),
+    runs_before: int = 0,
 ) -> Iterator[str]:
     """End run 1 on a browser call: adopt the history, park the call, ask the client to run it.
 
@@ -2819,10 +2981,17 @@ def _finish_with_tool_request(
     # which the provider rejects on every later turn: the session would be permanently
     # dead with no way to repair it, because `abandon_pending_call` has nothing to
     # abandon. Build the call first and let it raise while the session is untouched.
-    pending = PendingClientCall.from_state(pending_payload)
+    #
+    # The citations and the run count travel with the parked call, so the run that
+    # answers it continues the reply's numbering and knows its remaining budget.
+    # `content` is this run's text with its markers normalized, which the reader would
+    # otherwise only ever have in its raw streamed form.
+    pending = PendingClientCall.from_state(
+        pending_payload, carried_citations=citations, runs_before=runs_before
+    )
     session.replace_history(final_state.get("messages", []) if final_state else [])
     session.set_pending_call(pending)
-    yield f"data: {json.dumps(pending.to_request_event(session.session_id))}\n\n"
+    yield f"data: {json.dumps(pending.to_request_event(session.session_id, content))}\n\n"
 
 
 async def _stream_chat_response(
@@ -2837,6 +3006,8 @@ async def _stream_chat_response(
     declared_client_tools: set[str] | None = None,
     initial_messages: list[BaseMessage] | None = None,
     endpoint: str | None = None,
+    carried_citations: Sequence[CitationMark] = (),
+    browser_runs_answered: int = 0,
 ) -> AsyncGenerator[str, None]:
     """Stream assistant response as JSON-encoded Server-Sent Events.
 
@@ -2861,6 +3032,16 @@ async def _stream_chat_response(
     rationale). `done.content` is authoritative and contains the normalized
     answer that is persisted in session history, while `done.citations`
     repeats the full citation list.
+
+    A run that ends on a browser call sends `tool_request` instead of `done`,
+    carrying that run's normalized `content` and every citation the reply has so
+    far. The next run (`/chat/resume`) passes those back as `carried_citations` and
+    continues the numbering, so a reply of several runs numbers its sources as the
+    one reply the reader sees: the final `done.citations` lists every run's sources,
+    and `done.content` carries only the final run's text.
+
+    `browser_runs_answered` is how many browser results this reply has already sent
+    back; the run may request at most `MAX_BROWSER_RUNS_PER_REPLY` in total.
     """
     start_time = time.monotonic()
     tools_called: list[str] = []
@@ -2869,7 +3050,6 @@ async def _stream_chat_response(
     total_output_tokens = 0
     total_cache_read_tokens = 0
     total_cache_creation_tokens = 0
-    citation_assembler = CitationAssembler()
 
     # The metrics middleware assigns a per-request UUID; expose it only on the
     # final `done` event (below) so the widget attaches it only to a reply that
@@ -2915,6 +3095,17 @@ async def _stream_chat_response(
         return
 
     try:
+        # Built inside the handlers, not above them: the response headers went out
+        # with the `session` event, so anything raised before this `try` would end
+        # the stream with no error event and nothing logged.
+        try:
+            citation_assembler = CitationAssembler(carried_citations)
+        except ValueError as e:
+            # Not a limit the reader hit, which is what the ValueError handler below
+            # reports verbatim: the parked call carried malformed citations, which is
+            # a server fault and goes to the generic handler with an error id.
+            raise RuntimeError(f"the parked call's citations are malformed: {e}") from e
+
         awm = create_community_assistant(
             community_id,
             byok=byok,
@@ -2924,6 +3115,7 @@ async def _stream_chat_response(
             preload_docs=True,
             page_context=page_context,
             declared_client_tools=declared_client_tools,
+            browser_runs_left=MAX_BROWSER_RUNS_PER_REPLY - browser_runs_answered,
         )
         graph = awm.assistant.build_graph()
 
@@ -2941,7 +3133,12 @@ async def _stream_chat_response(
         stream_config = awm.langfuse_config or {}
         full_response = ""
         final_state: dict[str, Any] | None = None
-        client_tools_node_ran = False
+        # Whether the run ENDED on the client_tools node, tracked as the last graph
+        # node to finish. A parked call ends the run there; a node that refused
+        # every client call hands back to the agent, which then finishes after
+        # it. "The node ran" stopped implying "a call was parked" once refused
+        # calls started going back to the model.
+        ended_on_client_tools_node = False
 
         async for event in graph.astream_events(state, version="v2", config=stream_config):
             kind = event.get("event")
@@ -3006,16 +3203,20 @@ async def _stream_chat_response(
                         final_state = output
                 elif event.get("name") == CLIENT_TOOLS_NODE:
                     # Independent evidence that a browser call was parked, read from a
-                    # different event than the state is. If the node ran and the state
-                    # did not come back, the two disagree, and that is checked below
-                    # rather than left to fall through.
-                    client_tools_node_ran = True
+                    # different event than the state is. If the run ended on this node
+                    # and the state did not come back, the two disagree, and that is
+                    # checked below rather than left to fall through.
+                    ended_on_client_tools_node = True
+                elif event.get("name") in ("agent", "tools"):
+                    # A node after client_tools means the run continued past it,
+                    # so nothing was parked there.
+                    ended_on_client_tools_node = False
 
         pending_payload = (final_state or {}).get("pending_client_call")
 
-        if client_tools_node_ran and not pending_payload:
-            # The node that parks a browser call ran, and the state that should carry
-            # the parked call did not come back. Almost certainly langgraph changed the
+        if ended_on_client_tools_node and not pending_payload:
+            # The run ended on the node that parks a browser call, and the state that
+            # should carry the parked call did not come back. Almost certainly langgraph changed the
             # shape of its events, which is a dependency bump away at any time.
             #
             # This is raised rather than allowed to fall through, and that is the whole
@@ -3045,7 +3246,14 @@ async def _stream_chat_response(
             # the number someone would later build a "which tools get used" dashboard
             # on and believe.
             tools_called.append(str(pending_payload.get("tool", "")))
-            for sse_line in _finish_with_tool_request(session, pending_payload, final_state):
+            for sse_line in _finish_with_tool_request(
+                session,
+                pending_payload,
+                final_state,
+                content=normalize_citation_markers(full_response, citation_assembler.marks),
+                citations=citation_assembler.marks,
+                runs_before=browser_runs_answered,
+            ):
                 yield sse_line
             _log_streaming_metrics(
                 http_request=http_request,
