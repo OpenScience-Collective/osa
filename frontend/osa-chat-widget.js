@@ -216,7 +216,7 @@
   // browser before any of it runs. Written by scripts/build-runtime-bundle.js;
   // CI rebuilds and fails if the committed bundle or this line is stale.
   // BEGIN GENERATED: runtime bundle integrity
-  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-Q7jklD6Xt3+OPIw1JIS1ZEBfvEu+9wpFEK4H/zbZ/MVS16VW5uaNR0/E0aS68G9G';
+  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-mrIR7dGEOVBng6kMF4/HRRheVoZTs6sdVjo0jdbNe0C7OC0zHJLoRWMTeR/T9/yV';
   // END GENERATED: runtime bundle integrity
 
   // Icons (SVG)
@@ -4875,6 +4875,19 @@
       runningActivity,
       getMessages: () => messages,
       setMessages: (list) => { messages = list; },
+      // The Settings workspace panel (#433, T3): workspaceStore is normally
+      // set only by setUpBrowserTools once a runtime bundle loads, which
+      // needs IndexedDB behind it to mean anything; a test sets it directly
+      // to exercise the panel's own logic against a REAL WorkspaceStore
+      // (genuinely unavailable under happy-dom, exactly as it is genuinely
+      // unavailable under Bun -- see test-controller.js's own comment on
+      // this) without booting a runtime at all.
+      setWorkspaceStore: (store) => { workspaceStore = store; },
+      formatWorkspaceBytes,
+      refreshWorkspacePanel,
+      downloadWorkspace,
+      handleWorkspaceDeleteClick,
+      closeSettings,
     };
   }
 
