@@ -28,7 +28,10 @@ import { startServer } from './serve.js';
 // A cold run downloads Pyodide, numpy and matplotlib, boots three runtimes and
 // waits out a 10-second deadline once; the control waits out its 45-second boot
 // deadline. Both bounds are generous so that a slow runner is not a failure.
-const PAGE_TIMEOUT_MS = { nemarlike: 360_000, control: 150_000 };
+// warm and lockchange boot NEMAR's overlay once more, on the SAME origin, so
+// everything but at most one wheel comes from the browser's own HTTP cache;
+// generous for the same reason, not because either is expected to be slow.
+const PAGE_TIMEOUT_MS = { nemarlike: 360_000, control: 150_000, warm: 120_000, lockchange: 120_000 };
 
 const CANDIDATES = [
   process.env.CHROME_PATH,
@@ -117,8 +120,117 @@ function connect(wsUrl) {
   });
 }
 
-/** Open a page, echo its console, and return window.__harness once it is done. */
-async function runPage(cdp, url, timeoutMs) {
+/**
+ * Every Network.* event CDP delivers, from every session fed into it, keyed
+ * by session so two requests that happen to share a requestId (a different
+ * worker, a different page) are never merged into one record.
+ */
+class NetworkRecorder {
+  constructor() {
+    this.requests = new Map();
+  }
+
+  handle(message) {
+    const { method, params, sessionId } = message;
+    if (typeof method !== 'string' || !method.startsWith('Network.') || !params || params.requestId === undefined) return;
+    const key = `${sessionId}:${params.requestId}`;
+    if (method === 'Network.requestWillBeSent') {
+      // The first sighting wins: a request that gets a redirect resends this
+      // event for the SAME requestId, and what we care about is the URL
+      // whoever asked for a wheel actually asked for.
+      if (!this.requests.has(key)) {
+        this.requests.set(key, {
+          sessionId,
+          requestId: params.requestId,
+          url: params.request.url,
+          startedAtMs: Date.now(),
+          status: null,
+          fromDiskCache: false,
+          servedFromCache: false,
+          encodedDataLength: 0,
+          headers: null,
+          failed: null,
+          finishedAtMs: null,
+        });
+      }
+    } else if (method === 'Network.responseReceived') {
+      const r = this.requests.get(key);
+      if (r) {
+        r.status = params.response.status;
+        r.fromDiskCache = Boolean(params.response.fromDiskCache);
+        r.headers = params.response.headers || {};
+      }
+    } else if (method === 'Network.requestServedFromCache') {
+      // Fires with NO responseReceived at all for some cache hits (e.g. the
+      // memory cache), which is why this is checked as well as fromDiskCache
+      // rather than instead of it.
+      const r = this.requests.get(key);
+      if (r) r.servedFromCache = true;
+    } else if (method === 'Network.loadingFinished') {
+      const r = this.requests.get(key);
+      if (r) {
+        r.encodedDataLength = params.encodedDataLength;
+        r.finishedAtMs = Date.now();
+      }
+    } else if (method === 'Network.loadingFailed') {
+      const r = this.requests.get(key);
+      if (r) r.failed = params.errorText;
+    }
+  }
+
+  /** Every recorded request whose URL contains `needle`, in the order first seen. */
+  byUrl(needle) {
+    return Array.from(this.requests.values())
+      .filter((r) => r.url.includes(needle))
+      .sort((a, b) => a.startedAtMs - b.startedAtMs);
+  }
+}
+
+/**
+ * Auto-attach to every worker target a page spawns (Pyodide runs in a blob
+ * Worker, so this is where its own fetches happen and the page's own Network
+ * domain never sees them), and feed the page's and each worker's Network.*
+ * events into `recorder`.
+ *
+ * @param {ReturnType<typeof connect>} cdp
+ * @param {string} pageSessionId
+ * @param {NetworkRecorder} recorder
+ */
+async function attachWithNetwork(cdp, pageSessionId, recorder) {
+  const tracked = new Set([pageSessionId]);
+  cdp.on((message) => {
+    // Target.attachedToTarget for a CHILD of this page arrives on the PAGE's
+    // own session (the one that called setAutoAttach); the child's own
+    // session id is inside params, not the message's outer sessionId.
+    if (message.method === 'Target.attachedToTarget' && message.sessionId === pageSessionId) {
+      const { sessionId: childSessionId, targetInfo } = message.params;
+      if (targetInfo.type !== 'worker') return;
+      tracked.add(childSessionId);
+      // Paused on start (waitForDebuggerOnStart), so nothing the worker does
+      // is missed between it existing and Network being enabled on it.
+      cdp
+        .send('Network.enable', {}, childSessionId)
+        .then(() => cdp.send('Runtime.runIfWaitingForDebugger', {}, childSessionId))
+        .catch(() => {});
+      return;
+    }
+    if (tracked.has(message.sessionId)) recorder.handle(message);
+  });
+  await cdp.send('Network.enable', {}, pageSessionId);
+  await cdp.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, pageSessionId);
+}
+
+/**
+ * Open a page, echo its console, and return window.__harness once it is done.
+ *
+ * @param {ReturnType<typeof connect>} cdp
+ * @param {string} url
+ * @param {number} timeoutMs
+ * @param {{recorder?: NetworkRecorder}} [options] - When given, every worker
+ *   the page starts is auto-attached and its (and the page's own) network
+ *   traffic is recorded into it; see NetworkRecorder and attachWithNetwork.
+ */
+async function runPage(cdp, url, timeoutMs, { recorder } = {}) {
   const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
   const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
   cdp.on((message) => {
@@ -131,6 +243,7 @@ async function runPage(cdp, url, timeoutMs) {
     }
   });
   await cdp.send('Runtime.enable', {}, sessionId);
+  if (recorder) await attachWithNetwork(cdp, sessionId, recorder);
   await cdp.send('Page.navigate', { url }, sessionId);
 
   const deadline = Date.now() + timeoutMs;
@@ -148,6 +261,29 @@ async function runPage(cdp, url, timeoutMs) {
   } finally {
     await cdp.send('Target.closeTarget', { targetId });
   }
+}
+
+/**
+ * The wheel requests a NetworkRecorder saw under a path, reduced to what the
+ * cache measurement and the report both need.
+ *
+ * @param {NetworkRecorder} recorder
+ * @param {string} pathSubstring - e.g. '/runtime/nemar/'.
+ * @returns {{fileName: string, url: string, fromDiskCache: boolean, servedFromCache: boolean, cacheHit: boolean, encodedDataLength: number, status: number|null, failed: string|null, startedAtMs: number, finishedAtMs: number|null}[]}
+ */
+function wheelRequests(recorder, pathSubstring) {
+  return recorder.byUrl(pathSubstring).map((r) => ({
+    fileName: decodeURIComponent(r.url.split('/').pop()),
+    url: r.url,
+    fromDiskCache: r.fromDiskCache,
+    servedFromCache: r.servedFromCache,
+    cacheHit: r.fromDiskCache || r.servedFromCache,
+    encodedDataLength: r.encodedDataLength,
+    status: r.status,
+    failed: r.failed,
+    startedAtMs: r.startedAtMs,
+    finishedAtMs: r.finishedAtMs,
+  }));
 }
 
 async function main() {
@@ -173,8 +309,14 @@ async function main() {
     const base = `http://127.0.0.1:${server.port}`;
     let failed = 0;
 
+    const { product: chromeVersion } = await cdp.send('Browser.getVersion');
+    console.log(`Chrome: ${chromeVersion}`);
+
     console.log('nemarlike: the production policy, where every check must pass');
-    const nemarlike = await runPage(cdp, `${base}/nemarlike/browser-harness/index.html`, PAGE_TIMEOUT_MS.nemarlike);
+    const coldRecorder = new NetworkRecorder();
+    const nemarlike = await runPage(cdp, `${base}/nemarlike/browser-harness/index.html`, PAGE_TIMEOUT_MS.nemarlike, {
+      recorder: coldRecorder,
+    });
     const failing = nemarlike.results.filter((r) => !r.ok);
     if (!nemarlike.done || nemarlike.error || failing.length > 0 || nemarlike.results.length === 0) {
       failed++;
@@ -193,6 +335,83 @@ async function main() {
     } else {
       console.log(`ok: control, the boot failed as it must (${boot.detail})`);
     }
+
+    // warm: NEMAR's runtime, booted a SECOND time on a fresh page. Same
+    // server, same port, same browser (Chrome partitions its HTTP cache by
+    // top-level site), and the same /nemarlike/ path prefix as the cold run
+    // above, so this is the same origin and the same cache partition.
+    console.log('warm: NEMAR\'s runtime booted again, where every overlay wheel must come from cache');
+    const warmRecorder = new NetworkRecorder();
+    const warm = await runPage(cdp, `${base}/nemarlike/browser-harness/cache-boot.html?variant=nemar`, PAGE_TIMEOUT_MS.warm, {
+      recorder: warmRecorder,
+    });
+    const warmWheels = wheelRequests(warmRecorder, '/runtime/nemar/');
+    const warmMisses = warmWheels.filter((w) => !w.cacheHit || w.encodedDataLength > 0);
+    if (!warm.done || !warm.ok || warmWheels.length === 0 || warmMisses.length > 0) {
+      failed++;
+      console.error(`FAIL: warm ${warm.error || (warmWheels.length === 0 ? 'no overlay wheel request was observed at all' : '')}`);
+      for (const w of warmMisses) {
+        console.error(`  - ${w.fileName}: fromDiskCache=${w.fromDiskCache} servedFromCache=${w.servedFromCache} encodedDataLength=${w.encodedDataLength} status=${w.status} failed=${w.failed || ''}`);
+      }
+    } else {
+      console.log(`ok: warm, all ${warmWheels.length} overlay wheel requests were served from cache (0 bytes over the network)`);
+    }
+
+    // lock change: ONE overlay wheel (eegprep-lean) renamed with a build tag,
+    // same bytes and sha256, in the SAME browser. That new URL has never been
+    // fetched before, so it alone must be a real network fetch; everything
+    // else (zarr, and the interpreter and stock wheels) must still be cached.
+    console.log('lock change: one renamed wheel goes to the network, the rest stay cached');
+    const lockRecorder = new NetworkRecorder();
+    const lockchange = await runPage(
+      cdp,
+      `${base}/nemarlike/browser-harness/cache-boot.html?variant=nemarLockChanged`,
+      PAGE_TIMEOUT_MS.lockchange,
+      { recorder: lockRecorder }
+    );
+    const lockWheels = wheelRequests(lockRecorder, '/runtime/nemar/');
+    const changed = lockWheels.filter((w) => w.fileName.includes('eegprep_lean') && /-\d+-py3-none-any\.whl$/.test(w.fileName));
+    const unchanged = lockWheels.filter((w) => !changed.includes(w));
+    const changedProblem = changed.length !== 1 || changed[0].cacheHit || changed[0].encodedDataLength === 0;
+    const unchangedProblem = unchanged.length === 0 || unchanged.some((w) => !w.cacheHit || w.encodedDataLength > 0);
+    if (!lockchange.done || !lockchange.ok || changedProblem || unchangedProblem) {
+      failed++;
+      console.error(`FAIL: lock change ${lockchange.error || ''}`);
+      for (const w of lockWheels) {
+        console.error(`  - ${w.fileName}: cacheHit=${w.cacheHit} encodedDataLength=${w.encodedDataLength} status=${w.status} failed=${w.failed || ''}`);
+      }
+    } else {
+      console.log(`ok: lock change, only ${changed[0].fileName} went to the network; ${unchanged.length} other wheel(s) stayed cached`);
+    }
+
+    // jsDelivr's own assets (the interpreter and the stock wheels numpy and
+    // matplotlib): reported, not gated. jsDelivr's cache behavior is not
+    // ours to enforce; this is only as far as its headers let us say anything.
+    console.log('jsDelivr (interpreter and stock wheels), reported only:');
+    for (const r of warmRecorder.byUrl('cdn.jsdelivr.net')) {
+      const cacheControl = (r.headers && (r.headers['cache-control'] || r.headers['Cache-Control'])) || '(no header)';
+      console.log(`  - ${r.url.split('/').pop()}: fromDiskCache=${r.fromDiskCache} bytes=${r.encodedDataLength} cache-control=${cacheControl}`);
+    }
+
+    console.log('\ncold vs warm, per overlay wheel (bytes over the network, milliseconds):');
+    // The nemarlike page fetches each overlay wheel more than once (the
+    // overlay boot, then the tampered-digest checks re-fetching the same
+    // committed URL by plain fetch()); the FIRST sighting is the genuinely
+    // cold one; later ones are already this page's own warm hits.
+    const firstByFileName = (wheels) => {
+      const seen = new Map();
+      for (const w of wheels) if (!seen.has(w.fileName)) seen.set(w.fileName, w);
+      return [...seen.values()];
+    };
+    const coldWheels = firstByFileName(wheelRequests(coldRecorder, '/runtime/nemar/'));
+    for (const cold of coldWheels) {
+      const w = warmWheels.find((x) => x.fileName === cold.fileName);
+      console.log(
+        `  - ${cold.fileName}: cold ${cold.encodedDataLength}B in ${(cold.finishedAtMs ?? cold.startedAtMs) - cold.startedAtMs}ms` +
+          (w ? `, warm ${w.encodedDataLength}B (cacheHit=${w.cacheHit})` : ', warm (not observed)')
+      );
+    }
+
     return failed === 0 ? 0 : 1;
   } finally {
     if (cdp) cdp.close();
