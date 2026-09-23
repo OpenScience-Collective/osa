@@ -258,29 +258,47 @@ export class ClientToolController {
   }
 
   /**
-   * Stop the request being answered.
+   * Stop the assistant's tool_request being answered (the tool panel's
+   * Stop). Targeted: it never touches a reader's own run started with
+   * runLocal(), even though the two can be outstanding at the same time (an
+   * assistant call queued behind a local run still in progress). Use
+   * cancelLocal() for that one instead.
    *
    * While the person is still being asked, this counts as declining: nothing
    * ran. Once the code is running, the runtime stops it and the result says
-   * `cancelled`.
+   * `cancelled`. While the assistant's call is only queued behind a local
+   * run (waiting in answer(), before #current.stop exists), this still
+   * records the decline; it is answered once the runtime is free.
    *
    * @returns {boolean} Whether there was anything to stop.
    */
   cancel() {
     const current = this.#current;
-    if (current !== null) {
-      current.cancelled = true;
-      if (current.stop !== null) {
-        current.stop();
-        return true;
-      }
-      return this.#runtime.cancel(current.callId);
+    if (current === null) {
+      return false;
     }
+    current.cancelled = true;
+    if (current.stop !== null) {
+      current.stop();
+      return true;
+    }
+    return this.#runtime.cancel(current.callId);
+  }
+
+  /**
+   * Stop the reader's own run in progress (the editor's Stop). Targeted the
+   * same way cancel() is, in the other direction: it never touches an
+   * assistant tool_request, queued or running, even though both can be
+   * outstanding at once.
+   *
+   * @returns {boolean} Whether there was anything to stop.
+   */
+  cancelLocal() {
     const local = this.#localRun;
-    if (local !== null) {
-      return this.#runtime.cancel(local.callId);
+    if (local === null) {
+      return false;
     }
-    return false;
+    return this.#runtime.cancel(local.callId);
   }
 
   async #dispatch(request, current) {
@@ -426,15 +444,27 @@ export class ClientToolController {
    * the assistant's own runs use -- variables an earlier run defined are
    * there, which is what makes this tinkering rather than a fresh
    * interpreter. Clicking Run is the reader's own consent, so this never
-   * calls the gate. Nothing here reaches the server: no request is sent, and
-   * nothing the model is later shown changes because of it.
+   * calls the gate.
+   *
+   * Nothing about THIS CALL reaches the server: no request is sent for it.
+   * But the namespace is shared, so what it leaves behind -- a variable, a
+   * file `osa.save_artifact` wrote -- is visible to a LATER run in the same
+   * namespace, the assistant's included, and that later run's own output
+   * does reach the model the ordinary way. The run itself stays private a
+   * second way: its full output is marked in the runtime's own store so
+   * get_full_output refuses it to the model outright (see `execute`'s
+   * `local` option and `FullOutputStore`, osa-runtime.js), exactly as if the
+   * call_id had never existed, never with a distinct "that one is private"
+   * answer that would itself reveal the run happened.
    *
    * Refused outright, never queued, while the runtime is already doing
    * something else (see `busy`): a person can just click Run again once it
    * is free, and queuing silently would mean a click sits waiting with no
    * sign anything is happening. Bounded by the same egress seal, output
    * limits and execution deadline as any other run, because it is the same
-   * runtime, and by the same Stop (`cancel()`).
+   * runtime, and by its own Stop, `cancelLocal()` -- never `cancel()`, which
+   * is the assistant's tool_request's alone, even when both are outstanding
+   * at once (an assistant call queued behind this very run).
    *
    * @param {string} code
    * @param {{description?: string, session?: string}} [options] - `session`
@@ -465,7 +495,11 @@ export class ClientToolController {
     const local = { callId };
     local.done = (async () => {
       try {
-        const result = await this.#runtime.execute(code, { callId });
+        // local: true marks this execution's remembered full output as the
+        // reader's own (osa-runtime.js, FullOutputStore), so get_full_output
+        // refuses it to the model exactly the way an unknown call_id is
+        // refused, never revealing that this run happened at all.
+        const result = await this.#runtime.execute(code, { callId, local: true });
         return await this.#persist({ call_id: callId, session_id: session }, { code, description }, result, true);
       } catch (err) {
         // No result can come from the runtime: it could not boot, or it was
