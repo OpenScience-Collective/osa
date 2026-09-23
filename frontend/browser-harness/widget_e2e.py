@@ -19,9 +19,10 @@ then open http://127.0.0.1:PORT/browser-harness/widget-e2e.html and ask it to
 
 --nemar serves NEMAR's own config instead: its runtime, its lock overlay and the
 wheels its route serves, reading the live, public zarr.nemar.org. Ask it to "read"
-(read_window and a plot), for the "recipe" (the python_browser snippet), or for the
-"prompt" (the snippet NEMAR's prompt teaches, taken from its config). Its MCP
-servers are dropped, since the scripted model never calls them. --tamper-wheel serves
+(read_window and a plot), for the "recipe" (the python_browser recipe production's
+nemar_read_window hands a model, fetched from mcp.nemar.org when the server starts),
+or for the "prompt" (the snippet NEMAR's prompt teaches, taken from its config). Its
+MCP servers are dropped from the config, since the scripted model never calls them. --tamper-wheel serves
 every wheel one byte longer and still valid, the byte as the zip's comment: the
 negative control for the browser's integrity check, which alone can refuse it, so
 the runtime must then refuse to start. --widget-open boots the runtime when
@@ -32,6 +33,7 @@ the chat opens rather than at the first run, and turns on the widget's test hook
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import re
 import sys
@@ -65,9 +67,11 @@ from src.api.routers.community import (  # noqa: E402
 )
 from src.assistants.community import CommunityAssistant  # noqa: E402
 from src.assistants.registry import registry  # noqa: E402
-from src.core.config.community import CommunityConfig  # noqa: E402
+from src.core.config.community import CommunityConfig, McpServer  # noqa: E402
+from src.tools.mcp_client import discover_mcp_tools  # noqa: E402
 
 CDN = "https://cdn.jsdelivr.net"
+NEMAR_MCP_URL = "https://mcp.nemar.org/mcp"
 NEMAR_CONFIG = ROOT / "src" / "assistants" / "nemar" / "config.yaml"
 
 # nemar.org's production policy as the browser-harness README records it, with
@@ -101,16 +105,47 @@ print(f"{window.data.shape} in {window.unit} at {window.rate} Hz: {', '.join(win
 display(eegprep_lean.plot_window(window).figure)
 """
 
-RECIPE = """from eegprep_lean import open_array, read_index
 
-index = await read_index("nm000103")
-url = index.level0_url(index.stores[0])
-start_sample, end_sample = 0, 500
-arr = await open_array(url)
-window = await arr.getitem((slice(None), slice(start_sample, end_sample)))
-print(url)
-print(window.shape, window.dtype, int(window.min()), int(window.max()))
-"""
+def _live_recipe(mcp_url: str) -> str:
+    """The `python_browser` recipe `nemar_read_window` hands a model for the first two
+    seconds of nm000103's first recording, as the MCP server at `mcp_url` writes it now.
+
+    Fetched when the server starts rather than copied here, so "recipe" runs what a
+    model is actually given, and a nemar-cli release that changes the recipe changes
+    this with it. The recipe leaves `start_sample` and `end_sample` for the model to
+    bind from its `sample_slice`; they are bound here the same way, as
+    `scripts/run_python_browser_recipe.py` binds them on CPython.
+    """
+    tools = {t.name: t for t in discover_mcp_tools(McpServer(name="nemar", url=mcp_url))}
+    if not {"nemar_list_recordings", "nemar_read_window"} <= tools.keys():
+        raise SystemExit(f"{mcp_url} did not list nemar_list_recordings and nemar_read_window")
+
+    async def ask() -> object:
+        listed = await tools["nemar_list_recordings"].ainvoke(
+            {"dataset_id": "nm000103", "limit": 1}
+        )
+        if not isinstance(listed, dict) or not listed.get("recordings"):
+            raise SystemExit(f"{mcp_url} listed no recording for nm000103: {listed!r}")
+        recording = listed["recordings"][0]
+        return await tools["nemar_read_window"].ainvoke(
+            {
+                "dataset_id": "nm000103",
+                "recording": recording["path"],
+                "group": recording["groups"][0]["name"],
+                "start_s": 0,
+                "duration_s": 2,
+            }
+        )
+
+    answer = asyncio.run(ask())
+    recipe = answer.get("recipe") if isinstance(answer, dict) else None
+    if not isinstance(recipe, dict) or "python_browser" not in recipe.get("how_to", {}):
+        raise SystemExit(f"{mcp_url} gave no python_browser recipe: {answer!r}")
+    start, end = int(recipe["sample_slice"]["start"]), int(recipe["sample_slice"]["end"])
+    return (
+        f"start_sample, end_sample = {start}, {end}  # the recipe's sample_slice\n\n"
+        + recipe["how_to"]["python_browser"]
+    )
 
 
 def _prompt_snippet() -> str:
@@ -143,7 +178,6 @@ SCRIPTS = {
     "loop": ("while True:\n    pass\n", "Spin forever, to test Stop"),
     "error": ("values = [1, 2, 3]\nvalues[10]\n", "Index past the end of a list"),
     "read": (READ, "Read two seconds of nm000103 and plot four channels"),
-    "recipe": (RECIPE, "Run the python_browser recipe on nm000103"),
     "prompt": (_prompt_snippet(), "Run the snippet NEMAR's prompt teaches, on nm000103"),
 }
 
@@ -357,6 +391,11 @@ if __name__ == "__main__":
     parser.add_argument("--widget-open", action="store_true", help="boot when the chat opens")
     args = parser.parse_args()
     config = _nemar_config() if args.nemar else _config()
+    if args.nemar:
+        SCRIPTS["recipe"] = (
+            _live_recipe(NEMAR_MCP_URL),
+            "Run the python_browser recipe mcp.nemar.org hands a model, on nm000103",
+        )
     if args.widget_open:
         config = _booting_on_open(config)
     app = build_app(config, tamper_wheel=args.tamper_wheel, test_hooks=args.widget_open)

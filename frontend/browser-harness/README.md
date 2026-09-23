@@ -176,12 +176,17 @@ Measured 2026-09-22 in Chrome:
 uv run python frontend/browser-harness/widget_e2e.py 8791 --nemar [--tamper-wheel] [--widget-open]
 ```
 
-Serves NEMAR's shipped config through the real router: its runtime, its lock
-overlay in `/config`, and the wheels its own route serves. The MCP servers are
-dropped, since the scripted model never calls them. Ask it to "read" (eegprep-lean's
-`read_window` and a plot of nm000103) or for the "recipe" (the `python_browser`
-shape, `open_array` on the live array URL). The policy adds `https://zarr.nemar.org`
-to `connect-src`, as nemar.org's `*.nemar.org` does.
+Serves NEMAR's shipped config through the real router:
+its runtime, its lock overlay in `/config`, and the wheels its own route serves.
+The MCP servers are dropped from the config, since the scripted model never calls them.
+Ask it to "read" (eegprep-lean's `read_window` and a plot of nm000103),
+for the "prompt" (the snippet NEMAR's system prompt teaches, read from its config),
+or for the "recipe":
+the `python_browser` recipe production's `nemar_read_window` hands a model,
+fetched from `mcp.nemar.org` when the server starts, with `start_sample` and `end_sample` bound from its `sample_slice`.
+"prompt" and "recipe" are not copies kept here, so each runs what a model is actually given,
+and a nemar-cli release that changes the recipe changes this page with it.
+The policy adds `https://zarr.nemar.org` to `connect-src`, as nemar.org's `*.nemar.org` does.
 
 Measured 2026-09-22 in Chrome, against the live archive:
 
@@ -189,7 +194,10 @@ Measured 2026-09-22 in Chrome, against the live archive:
   figure, titled from the group, reaches both the page and the model; under 10 s
   from Run to result, with numpy and matplotlib already in the HTTP cache
 - "recipe" reads (129, 500) int16 through `open_array`, with no transport argument,
-  because NEMAR's prelude made the runtime's own client eegprep-lean's default
+  because NEMAR's prelude made the runtime's own client eegprep-lean's default;
+  re-measured 2026-09-22 with the recipe fetched live, which is nemar-cli 0.10.5's
+- "prompt" returns the same (4, 500) window as "read", in uV at 250 Hz,
+  labeled E1 to E4, with its figure
 - the overlay wheels load from the API's wheel route with their `sha256` as
   `fetch` integrity, through the egress guard; nothing is refused and the console
   is clean
