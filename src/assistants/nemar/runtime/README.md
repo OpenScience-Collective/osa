@@ -92,7 +92,8 @@ from a fresh checkout produced the identical sha256).
    sha256 checked, under a real CSP.
 4. `uv run python frontend/browser-harness/widget_e2e.py --nemar`, against the
    live archive: open the page it prints and ask it for the "recipe" (the
-   `python_browser` snippet) and the "prompt" (the snippet NEMAR's system prompt
+   `python_browser` recipe production's `nemar_read_window` serves, fetched when
+   the page's server starts) and the "prompt" (the snippet NEMAR's system prompt
    teaches) -- both run the new wheel against real, public `zarr.nemar.org` data.
 
 Only once all four pass: update `sources.toml` (repository, branch, path, commit
