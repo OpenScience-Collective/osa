@@ -229,6 +229,14 @@ class CommunityAssistant(ToolAgent):
             them. Defaults to False so a caller who does not pass it gets
             today's plain-string tool behavior; the API layer resolves
             this from the request's provider choice (Anthropic only).
+        allow_mcp_images: Whether the model in use accepts the native Anthropic
+            image content block (`src.api.tool_results.ToolResultImage.to_content_block`).
+            When True, an MCP tool result carrying a PNG (`nemar_render_overview`)
+            attaches it for the model to see; when False, every MCP image becomes a
+            text placeholder instead. Defaults to False for the same reason
+            `citations` does: the API layer resolves this from the request's
+            provider choice, and OpenRouter/LiteLLM have not been shown to accept
+            this content block.
     """
 
     def __init__(
@@ -240,6 +248,7 @@ class CommunityAssistant(ToolAgent):
         additional_tools: list[BaseTool] | None = None,
         additional_instructions: str = "",
         citations: bool = False,
+        allow_mcp_images: bool = False,
         declared_client_tools: set[str] | None = None,
         browser_runs_left: int | None = None,
     ) -> None:
@@ -296,7 +305,9 @@ class CommunityAssistant(ToolAgent):
         # plugin loader above: log and continue on failure, never raise out of
         # this constructor. An assistant that cannot start because someone
         # else's host is down is worse than one missing a few tools.
-        mcp_tools, self._degraded_mcp_servers = self._load_mcp_tools(config)
+        mcp_tools, self._degraded_mcp_servers = self._load_mcp_tools(
+            config, allow_images=allow_mcp_images
+        )
         tools.extend(mcp_tools)
 
         # Tools this server binds but never executes; the browser does. Empty unless
@@ -439,7 +450,9 @@ class CommunityAssistant(ToolAgent):
 
         return all_tools
 
-    def _load_mcp_tools(self, config: CommunityConfig) -> tuple[list[BaseTool], list[str]]:
+    def _load_mcp_tools(
+        self, config: CommunityConfig, *, allow_images: bool = False
+    ) -> tuple[list[BaseTool], list[str]]:
         """Load tools from configured Model Context Protocol (MCP) servers.
 
         Returns the tools, and the names of any configured servers that yielded
@@ -452,6 +465,10 @@ class CommunityAssistant(ToolAgent):
         swallows per-server failures, so the try here covers the import itself --
         `mcp` lives in the `server` extra, and a CLI-only install must not break
         on it.
+
+        `allow_images` is `CommunityAssistant`'s `allow_mcp_images`, passed straight
+        through to `discover_mcp_tools`; see its docstring for why this is part of
+        the tool-discovery cache key rather than a detail read later.
 
         Touches no instance state, so it stays callable as an unbound function.
         """
@@ -470,7 +487,7 @@ class CommunityAssistant(ToolAgent):
             return all_tools, [s.name for s in config.extensions.mcp_servers]
 
         for server in config.extensions.mcp_servers:
-            server_tools = discover_mcp_tools(server)
+            server_tools = discover_mcp_tools(server, allow_images=allow_images)
             if server_tools:
                 logger.info("Loaded %d tools from MCP server %s", len(server_tools), server.name)
             else:
@@ -661,6 +678,7 @@ def create_community_assistant(
     model: "BaseChatModel",
     config: CommunityConfig,
     citations: bool = False,
+    allow_mcp_images: bool = False,
     **kwargs,
 ) -> CommunityAssistant:
     """Factory function to create a generic community assistant.
@@ -671,6 +689,9 @@ def create_community_assistant(
         citations: Whether the model in use supports Anthropic's native
             search_result citations (see CommunityAssistant's `citations`
             flag). The API layer passes True only on the Anthropic path.
+        allow_mcp_images: Whether the model in use accepts the native Anthropic
+            image content block (see CommunityAssistant's `allow_mcp_images`
+            flag). The API layer passes True only on the Anthropic path.
         **kwargs: Additional arguments passed to CommunityAssistant.
             - preload_docs: Whether to preload docs (default: True)
             - page_context: PageContext for widget embedding
@@ -680,4 +701,10 @@ def create_community_assistant(
     Returns:
         Configured CommunityAssistant instance.
     """
-    return CommunityAssistant(model=model, config=config, citations=citations, **kwargs)
+    return CommunityAssistant(
+        model=model,
+        config=config,
+        citations=citations,
+        allow_mcp_images=allow_mcp_images,
+        **kwargs,
+    )

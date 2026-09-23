@@ -30,12 +30,13 @@ from __future__ import annotations
 
 import base64
 import binascii
+import struct
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal, TypedDict
 
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import BaseMessage, ToolMessage
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 from src.agents.content import CitationMark
@@ -63,6 +64,48 @@ PENDING_CALL_TTL_SECONDS = 900
 #: between 2 and 4 GB and an out-of-memory condition aborts the instance without any
 #: seconds-based deadline firing, so it is not the same failure as a raised exception.
 ResultStatus = Literal["ok", "error", "denied", "timeout", "cancelled", "oom"]
+
+#: What a PNG starts with. A source that does not open with this is not read any
+#: further: there is no directory listing to fall back on, and guessing at a
+#: malformed image's dimensions would produce a wrong-but-plausible number.
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def png_dimensions(data: bytes) -> tuple[int, int]:
+    """Width and height from a PNG's own IHDR chunk.
+
+    Used wherever an image arrives with no dimensions attached, unlike a browser
+    execution's `ToolResultImage`, which always carries them: an MCP tool's
+    `ImageContent` (`src.tools.mcp_client`) is only ever base64 bytes and a media
+    type. Reading the 24-byte header directly, rather than through Pillow or
+    matplotlib, is deliberate -- an MCP server is a third party, so this is
+    hostile input by construction, and decoding a whole image to learn two
+    integers is more surface than the task needs.
+
+    Raises:
+        ValueError: `data` does not open like a PNG, or its IHDR chunk is
+            missing or malformed. Never guesses a dimension instead.
+    """
+    if data[:8] != _PNG_SIGNATURE:
+        raise ValueError("not a valid PNG (wrong signature)")
+    if len(data) < 24 or data[12:16] != b"IHDR":
+        raise ValueError("not a valid PNG (no IHDR chunk)")
+    width, height = struct.unpack(">II", data[16:24])
+    if width <= 0 or height <= 0:
+        raise ValueError("not a valid PNG (IHDR declares a zero or negative dimension)")
+    return width, height
+
+
+def image_block_placeholder(mime: str, width: int | None = None, height: int | None = None) -> str:
+    """The text that stands in for one image block wherever history is stored.
+
+    Shared by `ToolResultImage.placeholder` (which always has both dimensions)
+    and `scrub_stored_images` (which sometimes only has the media type, when a
+    stored block's bytes cannot be read back as the image they claim to be).
+    """
+    if width is not None and height is not None:
+        return f"[image: {width}x{height} {mime}, not retained in history]"
+    return f"[image: {mime}, not retained in history]"
 
 
 class ToolResultImage(BaseModel):
@@ -116,7 +159,7 @@ class ToolResultImage(BaseModel):
 
     def placeholder(self) -> str:
         """What stands in for this image in stored history."""
-        return f"[image: {self.width}x{self.height} {self.mime}, not retained in history]"
+        return image_block_placeholder(self.mime, self.width, self.height)
 
 
 class ClientToolResult(BaseModel):
@@ -184,11 +227,23 @@ def _fence(result: ClientToolResult) -> str:
     return text
 
 
-def build_live_tool_message(result: ClientToolResult) -> ToolMessage:
-    """The message run 2 sends, images included.
+def build_live_tool_message(result: ClientToolResult, *, allow_images: bool = True) -> ToolMessage:
+    """The message run 2 sends, images included when the model path accepts them.
 
     This one is never stored. `build_history_tool_message` is what the session keeps.
+
+    `allow_images` is the caller's already-made provider decision (see
+    `src.api.routers.community._resolve_provider`), passed in rather than
+    guessed here: only the Anthropic path has been shown to accept the native
+    image content block `ToolResultImage.to_content_block` builds
+    (`tests/test_core/test_tool_result_image_transport.py`). OpenRouter and
+    LiteLLM forward `ToolMessage.content` to the wire unexamined
+    (`langchain_litellm`'s `_convert_message_to_dict`), so a caller on that
+    path gets `build_history_tool_message`'s placeholder-only shape instead of
+    a block nothing has proven that transport reads correctly.
     """
+    if not allow_images:
+        return build_history_tool_message(result)
     content: list[dict[str, Any]] = [{"type": "text", "text": _fence(result)}]
     content.extend(image.to_content_block() for image in result.images)
     return ToolMessage(
@@ -228,6 +283,91 @@ def build_unanswered_tool_message(call_id: str, reason: str) -> ToolMessage:
         tool_call_id=call_id,
         status="error",
     )
+
+
+def _image_block_meta(block: Any) -> tuple[str, str] | None:
+    """`(media_type, base64_data)` for one of the image-block spellings
+    `tests/test_core/test_tool_result_image_transport.py` proves the Anthropic
+    payload builder normalizes, or `None` for a shape none of them match.
+
+    The Anthropic-native block is the only one this repository's own code ever
+    writes (`ToolResultImage.to_content_block`); the other three are read here
+    only so a block that arrived in one of them is not left carrying its bytes
+    into storage just because it is not the shape we produce.
+    """
+    if not isinstance(block, Mapping):
+        return None
+    block_type = block.get("type")
+    if block_type == "image":
+        source = block.get("source")
+        if isinstance(source, Mapping) and source.get("type") == "base64":
+            return str(source.get("media_type", "")), str(source.get("data", ""))
+        if "base64" in block and "mime_type" in block:
+            return str(block.get("mime_type", "")), str(block.get("base64", ""))
+        if block.get("source_type") == "base64":
+            return str(block.get("mime_type", "")), str(block.get("data", ""))
+    elif block_type == "image_url":
+        image_url = block.get("image_url")
+        url = image_url.get("url") if isinstance(image_url, Mapping) else None
+        if isinstance(url, str) and url.startswith("data:") and ";base64," in url:
+            header, _, data = url.partition(",")
+            return header[len("data:") :].split(";", 1)[0], data
+    return None
+
+
+def _is_image_block(block: Any) -> bool:
+    return isinstance(block, Mapping) and block.get("type") in ("image", "image_url")
+
+
+def scrub_stored_images(messages: Sequence[BaseMessage]) -> list[BaseMessage]:
+    """Replace every image content block anywhere in `messages` with a text placeholder.
+
+    `build_history_tool_message` already keeps a freshly-built tool result out of
+    stored history. This is the second, coarser pass `ChatSession.replace_history`
+    applies to whatever a graph run's FINAL STATE hands back, because that state can
+    carry an image two other ways `build_history_tool_message` never sees:
+
+    - A run that parks a second browser call adopts the graph's state whole (see the
+      note on `replace_history`), and that state still holds the FIRST call's live
+      tool message from `initial_messages` -- the one built with `allow_images=True`
+      for the model to see. Without this pass, that image reaches stored history a
+      turn late.
+    - A real MCP tool call that returns an image is answered by LangGraph's own
+      `ToolNode`, which builds its `ToolMessage` directly from
+      `src.tools.mcp_client`'s return value. Nothing upstream of storage is a
+      `ClientToolResult`, so `build_history_tool_message` never runs on it at all.
+
+    Messages with no image block are returned unchanged (not copied), so a session
+    with nothing pictorial pays nothing extra.
+    """
+    scrubbed: list[BaseMessage] = []
+    for message in messages:
+        content = getattr(message, "content", None)
+        if not isinstance(content, list):
+            scrubbed.append(message)
+            continue
+        new_content: list[Any] = []
+        changed = False
+        for block in content:
+            if not _is_image_block(block):
+                new_content.append(block)
+                continue
+            changed = True
+            meta = _image_block_meta(block)
+            mime, width, height = "image", None, None
+            if meta is not None:
+                mime, data = meta
+                mime = mime or "image"
+                if mime == "image/png":
+                    try:
+                        width, height = png_dimensions(base64.b64decode(data, validate=False))
+                    except (ValueError, binascii.Error):
+                        width = height = None
+            new_content.append(
+                {"type": "text", "text": image_block_placeholder(mime, width, height)}
+            )
+        scrubbed.append(message.model_copy(update={"content": new_content}) if changed else message)
+    return scrubbed
 
 
 @dataclass(frozen=True)

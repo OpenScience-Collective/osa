@@ -54,6 +54,7 @@ from src.api.tool_results import (
     build_history_tool_message,
     build_live_tool_message,
     build_unanswered_tool_message,
+    scrub_stored_images,
 )
 from src.assistants import registry
 from src.assistants.community import CommunityAssistant
@@ -571,8 +572,17 @@ class ChatSession:
         The cap is enforced by trimming from the FRONT and never between an assistant
         message and the tool results that answer it, because a tool result whose call is
         gone, or a call whose result is gone, is rejected by the provider outright.
+
+        Scrubbed for images before it is kept (`scrub_stored_images`). The graph's own
+        state can still carry a LIVE, image-bearing tool message here: a run that parks
+        a second browser call was seeded with `initial_messages`, which includes the
+        first call's live `build_live_tool_message` result, and a real MCP tool result
+        with an image is built directly by LangGraph's `ToolNode` rather than through
+        `build_history_tool_message`. Neither of those two sources is a
+        `ClientToolResult` this method can hand to `build_history_tool_message` itself,
+        so the scrub runs on the adopted messages generically instead.
         """
-        adopted = list(messages)
+        adopted = scrub_stored_images(list(messages))
         if len(adopted) > MAX_MESSAGES_PER_SESSION:
             adopted = _trim_preserving_tool_turns(adopted, MAX_MESSAGES_PER_SESSION)
         self.messages = adopted
@@ -1480,6 +1490,11 @@ def create_community_assistant(
         # setting; the provider choice is already fixed per request, so
         # this satisfies that constraint for free.
         citations=provider_choice.provider == "anthropic",
+        # Same gate as citations, and for the same reason: only the Anthropic path
+        # has been shown to accept the native image content block an MCP tool result
+        # (nemar_render_overview) can now carry. See CommunityAssistant's
+        # `allow_mcp_images` and src.tools.mcp_client._content_of.
+        allow_mcp_images=provider_choice.provider == "anthropic",
         # None on the /ask path, which has no session to park a browser call in and so
         # binds no client-executed tools at all. That is decision 7 of the phase plan,
         # enforced by the default rather than by a check.
@@ -2092,8 +2107,26 @@ def create_community_router(community_id: str) -> APIRouter:
         # permanently unusable and unrepairable, because `abandon_pending_call` would
         # have nothing left to abandon. Nothing in these two builders can raise today;
         # the re-park is here so that stays true when someone adds something that can.
+        # Advisory only: this decides whether the message built below is even allowed
+        # to carry a real image, never whether the caller is authorized to be here at
+        # all. `_stream_chat_response` -> `create_community_assistant` makes that real
+        # authorization check moments later, on the same inputs, and its 403 is the
+        # one a caller actually sees; this call's only job is to run early enough to
+        # gate `build_live_tool_message` before it builds the message
+        # `_stream_chat_response` is given. So a failure here answers exactly like a
+        # non-Anthropic provider does -- no image goes out -- rather than surfacing
+        # its own error or changing which status code an unauthorized or malformed
+        # request sees first.
         try:
-            live_messages = [*session.messages, build_live_tool_message(body.result)]
+            allow_images = _resolve_provider(community_id, byok, origin).provider == "anthropic"
+        except HTTPException:
+            allow_images = False
+
+        try:
+            live_messages = [
+                *session.messages,
+                build_live_tool_message(body.result, allow_images=allow_images),
+            ]
             session.messages.append(build_history_tool_message(body.result))
         except Exception:
             session.set_pending_call(pending)
@@ -2614,6 +2647,37 @@ def create_community_router(community_id: str) -> APIRouter:
 # ---------------------------------------------------------------------------
 
 
+def _sse_safe_tool_output(tool_output: Any) -> str:
+    """Render a tool's raw `on_tool_end` output for the `tool_end` SSE event.
+
+    A bare `str(tool_output)` is safe for a plain string or dict, which is every
+    tool's output before MCP images: it never carries anything that looks like an
+    image. It stops being safe now that `src.tools.mcp_client._wrap_tool` can return
+    a content-block list carrying a real base64 PNG (`_content_of`) -- `str()` on
+    that list would embed the image's own base64 text verbatim in the SSE stream,
+    which is one of exactly the things this event must never do.
+
+    So only a list is treated specially: its text blocks are joined and each image
+    block becomes a one-line placeholder naming the media type, never touching
+    `.get("data")`/`.source.data`. Anything else (a string, a dict, `None`) renders
+    exactly as `str(tool_output) if tool_output else ""` always has.
+    """
+    if not tool_output:
+        return ""
+    if isinstance(tool_output, list):
+        parts: list[str] = []
+        for block in tool_output:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(str(block.get("text", "")))
+            elif isinstance(block, dict) and block.get("type") == "image":
+                media_type = (block.get("source") or {}).get("media_type", "image")
+                parts.append(f"[image: {media_type}, not shown in this event]")
+            else:
+                parts.append(str(block))
+        return "\n".join(parts)
+    return str(tool_output)
+
+
 def _extract_token_usage(event_data: dict) -> tuple[int, int, int, int]:
     """Extract token counts from an on_chat_model_end event.
 
@@ -2835,7 +2899,7 @@ async def _stream_ask_response(
                 sse_event = {
                     "event": "tool_end",
                     "name": event.get("name", ""),
-                    "output": str(tool_output) if tool_output else "",
+                    "output": _sse_safe_tool_output(tool_output),
                 }
                 yield f"data: {json.dumps(sse_event)}\n\n"
 
@@ -3187,7 +3251,7 @@ async def _stream_chat_response(
                 sse_event = {
                     "event": "tool_end",
                     "name": event.get("name", ""),
-                    "output": str(tool_output) if tool_output else "",
+                    "output": _sse_safe_tool_output(tool_output),
                 }
                 yield f"data: {json.dumps(sse_event)}\n\n"
 
