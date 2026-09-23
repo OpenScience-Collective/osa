@@ -93,10 +93,11 @@ runtime:
   See "`fetch_allow` is the egress control" below.
 - `index_urls`: package index URLs `allow_install` may install from.
 - `limits`: resource caps (`RuntimeLimits`, same file), and a community with no reason to deviate can omit it.
-  Four of them are also enforced by the server when a result comes back,
-  so they default to the server's own cap (`src/core/limits.py`) and cannot be raised past it:
-  `stdout_chars` (16,384), `stderr_chars` (8,192), `images` (3, and 0 turns images off),
-  and `image_px`, the longest edge of a returned image, which defaults to 1024 under the server's 8192.
+  Four of them are also enforced by the server when a result comes back (`src/api/tool_results.py`),
+  so none can be raised past the server's own cap (`src/core/limits.py`).
+  `stdout_chars`, `stderr_chars` and `images` default to that cap
+  (16,384 characters, 8,192 characters and 3 images; 0 turns images off),
+  and `image_px`, the longest edge of a returned image, defaults to 1024 under the server's 8192.
   A community cannot see those constants,
   so `RuntimeLimits`'s own field bounds enforce them at load,
   rather than letting every browser result fail with a 422 the config never warned about.
