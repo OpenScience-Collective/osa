@@ -228,15 +228,16 @@ The message schema is identical either way.
 - Worker lifecycle: boot on `preload_on: widget_open` for communities that opt in,
   otherwise on the first `tool_request`.
   Show a progress bar keyed to package downloads, by step rather than by byte
-  (see `docs/community-browser-runtime.md`'s size table for why: the browser
-  keeps the download after the first boot, so a byte figure would be
-  correct once per browser and misleading every time after).
+  (see `docs/community-browser-runtime.md`, "First-load cost, and what a warm
+  reader pays", for why: the browser keeps the download after the first boot,
+  so a byte figure would be correct once per browser and misleading every
+  time after).
   Measured on Pyodide 0.29.5, uncompressed: the interpreter alone is 5.3 MB;
   NEMAR's 23 preloaded packages (its four `preload` names plus what they pull
   in) add 13.6 MB, 18.9 MB in all; adding scipy would bring that to 35.2 MB
   (scipy alone is 16.3 MB), which is the tradeoff dropping it from `preload`
-  avoids. ADR 0049's "50 to 60 MB" figure is for a different, larger package
-  set and should not be read against this one.
+  avoids. ADR 0049's "50 to 60 MB" was an estimate, and a high one; its
+  amendment of 2026-09-22 records these measured figures.
   Keep the worker warm across turns.
 - Execution: `pyodide.loadPackagesFromImports(code)` for packages Pyodide ships,
   then `micropip.install` for imports that resolve to pure-Python wheels and are on the community allowlist,
