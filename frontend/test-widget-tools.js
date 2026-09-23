@@ -176,6 +176,204 @@ console.log('\nthe permission gate puts only our markup on the page, whatever it
   assertEqual(api.toolPanelHtml(null), '', 'no activity, no panel');
 }
 
+// ---------------------------------------------------------------------------
+// The editable re-run panel: "Edit and run" on a recorded run.
+// ---------------------------------------------------------------------------
+
+function loadWidgetWithRealBundle() {
+  const loaded = loadWidget({ bundleLoads: true });
+  // eslint-disable-next-line no-new-func
+  new Function(readFileSync(new URL('./osa-runtime.bundle.js', import.meta.url), 'utf8'))();
+  loaded.window.OSARuntime = globalThis.OSARuntime;
+  return loaded;
+}
+
+console.log('\n"Edit and run" only appears once the runtime exists on the page');
+{
+  const { window, api } = loadWidget();
+  const run = {
+    callId: 'call-1', tool: 'execute_code', description: 'load the file', code: 'print(1)',
+    status: 'ok', stdout: '', stderr: '', images: [],
+  };
+  const html = api.executionsHtml([run], 0);
+  const holder = window.document.createElement('div');
+  holder.innerHTML = html;
+  assert(!holder.querySelector('.osa-rerun-open'), 'no client tools declared: no "Edit and run" affordance at all');
+}
+
+console.log('\nthe editor opens prefilled with the run\'s code, and escapes hostile content');
+{
+  const { window, api } = loadWidgetWithRealBundle();
+  api.setUpBrowserTools({
+    client_tools: [{ name: 'execute_code', runtime: 'python', requires_permission: true }],
+    runtime: { python: { pyodide_version: '0.29.5', preload: [], fetch_allow: [], limits: {} } },
+  });
+  await api.declaredClientTools();
+  assert(api.canRunLocalCode(), 'the runtime exists on this page now');
+
+  const hostileCode = '</textarea><script>alert(1)</script>';
+  const run = {
+    callId: 'call-2', tool: 'execute_code', description: 'load the file', code: hostileCode,
+    status: 'ok', stdout: '', stderr: '', images: [],
+  };
+  const openHtml = api.executionsHtml([run], 2);
+  const { problems: openProblems, holder: openHolder } = markupProblems(window, openHtml,
+    ['details', 'summary', 'pre', 'code', 'div', 'button', 'span']);
+  assertEqual(openProblems, [], 'the closed record leaves no foreign markup');
+  const openBtn = openHolder.querySelector('.osa-rerun-open');
+  assert(openBtn, 'the "Edit and run" button is offered');
+  assertEqual(openBtn.getAttribute('data-msg-index'), '2', 'naming the reply it belongs to');
+  assertEqual(openBtn.getAttribute('data-run-index'), '0', 'and the run within it');
+
+  const editingRun = { ...run, _editing: true };
+  const editorHtml = api.executionsHtml([editingRun], 2);
+  const { problems: editorProblems, holder: editorHolder } = markupProblems(window, editorHtml,
+    ['details', 'summary', 'pre', 'code', 'div', 'label', 'textarea', 'button', 'span']);
+  assertEqual(editorProblems, [], 'the open editor leaves no foreign markup either, for hostile code');
+  const textarea = editorHolder.querySelector('.osa-rerun-textarea');
+  assert(textarea, 'the editor has a textarea');
+  assertEqual(textarea.value, hostileCode, 'prefilled with the run\'s code, read back exactly as it was, unescaped');
+  assert(!editorHolder.querySelector('.osa-rerun-open'), 'no "Edit and run" button while it is already open');
+  assert(editorHolder.querySelector('.osa-rerun-run'), 'a Run control is present');
+  assert(editorHolder.querySelector('.osa-rerun-cancel'), 'and a Cancel control');
+}
+
+console.log('\nRun is disabled, and says why, while the runtime is already answering the assistant');
+{
+  const { window, api } = loadWidgetWithRealBundle();
+  api.setUpBrowserTools({
+    client_tools: [{ name: 'execute_code', runtime: 'python', requires_permission: true }],
+    runtime: { python: { pyodide_version: '0.29.5', preload: [], fetch_allow: [], limits: {} } },
+  });
+  await api.declaredClientTools();
+
+  const container = window.document.createElement('div');
+  container.className = 'osa-chat-widget';
+  container.innerHTML = '<div class="osa-chat-messages"></div>';
+  window.document.body.appendChild(container);
+
+  const answering = api.getBrowserTools().answer({
+    call_id: 'busy-1', tool: 'execute_code', args: { code: 'print(1)', description: 'd' }, requires_permission: true,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assertEqual(api.getBrowserTools().busy, true, 'the controller reports busy while the gate is showing');
+
+  const run = {
+    callId: 'call-3', tool: 'execute_code', description: 'x', code: 'print(2)',
+    status: 'ok', stdout: '', stderr: '', images: [], _editing: true,
+  };
+  const html = api.executionsHtml([run], 0);
+  const holder = window.document.createElement('div');
+  holder.innerHTML = html;
+  const runBtn = holder.querySelector('.osa-rerun-run');
+  assert(runBtn && runBtn.hasAttribute('disabled'), 'Run is disabled while the runtime is busy');
+  const note = holder.querySelector('.osa-rerun-note');
+  assert(note && /busy/i.test(note.textContent), 'and says why');
+
+  const asking = api.getToolActivity();
+  asking.decide(window.OSARuntime.GATE_DECISION.DENY, false);
+  await answering;
+  assertEqual(api.getBrowserTools().busy, false, 'free again once the assistant\'s call is answered');
+
+  const htmlAfter = api.executionsHtml([run], 0);
+  const holderAfter = window.document.createElement('div');
+  holderAfter.innerHTML = htmlAfter;
+  const runBtnAfter = holderAfter.querySelector('.osa-rerun-run');
+  assert(runBtnAfter && !runBtnAfter.hasAttribute('disabled'), 'and Run is enabled again once the runtime is free');
+}
+
+console.log('\na finished local run renders labeled plainly as the reader\'s own, open by default');
+{
+  const { window, api } = loadWidget();
+  const run = {
+    callId: 'person-run-1', tool: 'execute_code', description: 'tweak the seed', code: 'print("mine")',
+    status: 'ok', stdout: 'mine\n', stderr: '', images: [], local: true,
+  };
+  const html = api.executionsHtml([run], 0);
+  const holder = window.document.createElement('div');
+  holder.innerHTML = html;
+  const details = holder.querySelector('details.osa-execution');
+  assert(details && details.hasAttribute('open'), 'a local run is expanded by default, not collapsed');
+  const summary = holder.querySelector('summary');
+  assert(summary && summary.textContent.startsWith('Your run: '), 'labeled as the reader\'s own in the summary');
+  const note = holder.querySelector('.osa-execution-local-note');
+  assert(note && note.textContent === 'This run is yours. The assistant has not seen it.', 'and said plainly in the body too');
+  const output = holder.querySelector('.osa-execution-output');
+  assert(output && output.textContent === 'mine\n', 'its stdout is shown, bounded the way any recorded run\'s already is');
+}
+
+console.log('\na local run is kept in the reply\'s runs and survives reloading the stored conversation');
+{
+  const { window, api } = loadWidget();
+  const localRun = {
+    callId: 'person-run-7', tool: 'execute_code', description: 'edited', code: 'print(1)',
+    status: 'ok', stdout: '1\n', stderr: '', images: [{ mime: 'image/png', data_base64: 'iVBORw0KGgo=' }],
+    local: true, _editing: true, _draft: 'print(1)  # draft', _runningLocal: false,
+    _localResult: { callId: 'person-run-7', status: 'ok', stdout: '1\n', stderr: '', images: [] },
+  };
+  api.setMessages([{ role: 'assistant', content: 'here you go', executions: [localRun] }]);
+  api.saveHistory();
+
+  const raw = JSON.parse(window.localStorage.getItem(api.getConfig().storageKey));
+  const savedRun = raw.messages[0].executions[0];
+  assert(
+    !('_editing' in savedRun) && !('_draft' in savedRun) && !('_runningLocal' in savedRun) && !('_localResult' in savedRun),
+    'every transient editing field is stripped before saving'
+  );
+  assertEqual(savedRun.local, true, 'local survives the save');
+  assertEqual(savedRun.images, [], 'images are not persisted, the same as any other run');
+
+  api.setMessages([]);
+  const needsSave = api.loadHistory();
+  const reloaded = api.getMessages();
+  assertEqual(reloaded[0].executions[0].local, true, 'local survives being read back too');
+  assert(!('_editing' in reloaded[0].executions[0]), 'and no transient field comes back either');
+  assert(!needsSave, 'a clean, current-version save needs no immediate re-save');
+}
+
+console.log('\nCancel closes the editor and the run renders exactly as it did before editing began');
+{
+  const { window, api } = loadWidgetWithRealBundle();
+  api.setUpBrowserTools({
+    client_tools: [{ name: 'execute_code', runtime: 'python', requires_permission: true }],
+    runtime: { python: { pyodide_version: '0.29.5', preload: [], fetch_allow: [], limits: {} } },
+  });
+  await api.declaredClientTools();
+
+  const run = {
+    callId: 'call-9', tool: 'execute_code', description: 'x', code: 'print(9)',
+    status: 'ok', stdout: '9\n', stderr: '', images: [],
+  };
+  api.setMessages([{ role: 'assistant', content: 'hi' }, { role: 'assistant', content: 'ok', executions: [run] }]);
+
+  const container = window.document.createElement('div');
+  container.className = 'osa-chat-widget';
+  container.innerHTML = '<div class="osa-chat-messages"></div>';
+  window.document.body.appendChild(container);
+
+  api.renderMessages(container);
+  const before = container.querySelector('.osa-chat-messages').innerHTML;
+
+  const openBtn = container.querySelector('.osa-rerun-open');
+  assert(openBtn, 'the "Edit and run" button is rendered');
+  openBtn.dispatchEvent(new window.Event('click', { bubbles: true }));
+  assertEqual(api.getMessages()[1].executions[0]._editing, true, 'clicking it opens the editor');
+
+  const textarea = container.querySelector('.osa-rerun-textarea');
+  textarea.value = 'print("something else")';
+  textarea.dispatchEvent(new window.Event('input', { bubbles: true }));
+  assertEqual(api.getMessages()[1].executions[0]._draft, 'print("something else")', 'typing updates the draft');
+
+  const cancelBtn = container.querySelector('.osa-rerun-cancel');
+  assert(cancelBtn, 'a Cancel control is present while editing');
+  cancelBtn.dispatchEvent(new window.Event('click', { bubbles: true }));
+
+  const runAfter = api.getMessages()[1].executions[0];
+  assert(!('_editing' in runAfter) && !('_draft' in runAfter), 'Cancel discards the edit');
+  const after = container.querySelector('.osa-chat-messages').innerHTML;
+  assertEqual(after, before, 'and the record renders exactly as it did before editing began');
+}
+
 console.log('\na determinate progress bar tracks a real boot sequence, and never jumps');
 {
   const { window, api } = loadWidget();
