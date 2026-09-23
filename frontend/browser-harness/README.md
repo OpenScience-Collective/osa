@@ -116,16 +116,17 @@ small):
 | wheel | cold | warm |
 |---|---|---|
 | `zarr-3.4.0-py3-none-any.whl` | 377,491 B (network) | 0 B, `fromDiskCache=true` |
-| `eegprep_lean-0.1.0.dev1-py3-none-any.whl` | 28,502 B (network) | 0 B, `fromDiskCache=true` |
+| `eegprep_lean-0.1.0.dev2-py3-none-any.whl` | 28,852 B (network) | 0 B, `fromDiskCache=true` |
 
 - **warm**: both overlay wheels came from the browser's HTTP cache on the
   second boot, 0 bytes over the network for either, cross-checked against
   `encodedDataLength` rather than trusting `fromDiskCache` alone.
 - **lock change**: booting a THIRD time with eegprep-lean renamed to
-  `eegprep_lean-0.1.0.dev1-2-py3-none-any.whl` sent exactly that one wheel to
-  the network (28,502 B, the same byte count as the cold row above, since it
-  is the same bytes under a different name) while zarr, at its unchanged URL,
-  stayed cached (0 B, `fromDiskCache=true`).
+  `eegprep_lean-0.1.0.dev2-2-py3-none-any.whl` sent exactly that one wheel to
+  the network, the same bytes under a different name, while zarr, at its
+  unchanged URL, stayed cached (0 B, `fromDiskCache=true`). Measured with
+  0.1.0.dev1 first, where the renamed wheel crossed at the cold row's exact
+  byte count; re-measured with 0.1.0.dev2 for the table above.
 - **jsDelivr's own assets** (the interpreter and the stock wheels numpy and
   matplotlib pull in) were ALSO cache hits by the warm run, `Cache-Control:
   public, max-age=31536000` on every one; this is reported, not asserted on,
