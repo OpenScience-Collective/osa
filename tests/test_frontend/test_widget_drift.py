@@ -159,9 +159,11 @@ class TestWidgetAttributeEscaping:
         "blockId",  # getCodeBlockId(), an internal "osa-code-N" counter
         "codeId",  # read back from the data-code-id this file just wrote
         "msgIndex",  # array index into messages, a number
+        "runIndex",  # array index into one reply's executions, a number
         "fb",  # compared against string literals, yields a boolean
         "progress.step",  # onRuntimeProgress only sets this from Number.isInteger checks
         "progress.steps",  # same guard; both are null or a positive integer, never a string
+        "EXECUTION_FIELD_LIMITS.code",  # a fixed numeric constant, never a string
     }
 
     def test_escape_html_escapes_both_quote_characters(self) -> None:
