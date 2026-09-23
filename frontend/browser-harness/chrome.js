@@ -110,8 +110,13 @@ function connect(wsUrl) {
           socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
           return new Promise((done, fail) => pending.set(id, { resolve: done, reject: fail }));
         },
+        /** Returns a function that removes the listener again. */
         on(listener) {
           listeners.push(listener);
+          return () => {
+            const index = listeners.indexOf(listener);
+            if (index >= 0) listeners.splice(index, 1);
+          };
         },
         close() {
           socket.close();
@@ -128,6 +133,9 @@ function connect(wsUrl) {
 class NetworkRecorder {
   constructor() {
     this.requests = new Map();
+    // Workers whose network could not be watched. A run with any is a failed
+    // measurement, whatever the requests that were seen say.
+    this.attachFailures = [];
   }
 
   handle(message) {
@@ -198,7 +206,7 @@ class NetworkRecorder {
  */
 async function attachWithNetwork(cdp, pageSessionId, recorder) {
   const tracked = new Set([pageSessionId]);
-  cdp.on((message) => {
+  const unsubscribe = cdp.on((message) => {
     // Target.attachedToTarget for a CHILD of this page arrives on the PAGE's
     // own session (the one that called setAutoAttach); the child's own
     // session id is inside params, not the message's outer sessionId.
@@ -211,14 +219,14 @@ async function attachWithNetwork(cdp, pageSessionId, recorder) {
       cdp
         .send('Network.enable', {}, childSessionId)
         .then(() => cdp.send('Runtime.runIfWaitingForDebugger', {}, childSessionId))
-        // Logged, and the cache checks then fail on the wheels nobody recorded.
-        .catch((err) => console.error(`could not watch a worker's network: ${err && err.message}`));
+        .catch((err) => recorder.attachFailures.push(`${targetInfo.url}: ${err && err.message}`));
       return;
     }
     if (tracked.has(message.sessionId)) recorder.handle(message);
   });
   await cdp.send('Network.enable', {}, pageSessionId);
   await cdp.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, pageSessionId);
+  return unsubscribe;
 }
 
 /**
@@ -234,7 +242,8 @@ async function attachWithNetwork(cdp, pageSessionId, recorder) {
 async function runPage(cdp, url, timeoutMs, { recorder } = {}) {
   const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
   const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
-  cdp.on((message) => {
+  const unsubscribers = [];
+  unsubscribers.push(cdp.on((message) => {
     if (message.sessionId !== sessionId) return;
     if (message.method === 'Runtime.consoleAPICalled') {
       const text = message.params.args.map((a) => a.value ?? a.description ?? '').join(' ');
@@ -242,9 +251,9 @@ async function runPage(cdp, url, timeoutMs, { recorder } = {}) {
     } else if (message.method === 'Runtime.exceptionThrown') {
       console.log(`    page exception: ${message.params.exceptionDetails.text}`);
     }
-  });
+  }));
   await cdp.send('Runtime.enable', {}, sessionId);
-  if (recorder) await attachWithNetwork(cdp, sessionId, recorder);
+  if (recorder) unsubscribers.push(await attachWithNetwork(cdp, sessionId, recorder));
   await cdp.send('Page.navigate', { url }, sessionId);
 
   const deadline = Date.now() + timeoutMs;
@@ -260,6 +269,7 @@ async function runPage(cdp, url, timeoutMs, { recorder } = {}) {
     }
     return { done: false, results: [], error: `the page did not finish within ${timeoutMs / 1000}s` };
   } finally {
+    for (const unsubscribe of unsubscribers) unsubscribe();
     await cdp.send('Target.closeTarget', { targetId });
   }
 }
@@ -309,100 +319,107 @@ async function main() {
     cdp = await connect(launched.wsUrl);
     const base = `http://127.0.0.1:${server.port}`;
     let failed = 0;
+    /** Prints one check's verdict; a failure prints its details and counts. */
+    const report = (ok, failMessage, okMessage, details = []) => {
+      if (ok) {
+        console.log(`ok: ${okMessage}`);
+        return;
+      }
+      failed++;
+      console.error(`FAIL: ${failMessage}`);
+      for (const line of details) console.error(`  - ${line}`);
+    };
+    /**
+     * Runs a page with its workers' network recorded. A worker whose network
+     * could not be watched fails the run: its wheels would go unobserved.
+     */
+    const runRecorded = async (url, timeoutMs) => {
+      const recorder = new NetworkRecorder();
+      const page = await runPage(cdp, url, timeoutMs, { recorder });
+      return { page, recorder, attachFailures: recorder.attachFailures.map((f) => `could not watch a worker's network: ${f}`) };
+    };
+    const describeWheel = (w) =>
+      `${w.fileName}: fromDiskCache=${w.fromDiskCache} servedFromCache=${w.servedFromCache} encodedDataLength=${w.encodedDataLength} status=${w.status} failed=${w.failed || ''}`;
 
     const { product: chromeVersion } = await cdp.send('Browser.getVersion');
     console.log(`Chrome: ${chromeVersion}`);
 
     console.log('nemarlike: the production policy, where every check must pass');
-    const coldRecorder = new NetworkRecorder();
-    const nemarlike = await runPage(cdp, `${base}/nemarlike/browser-harness/index.html`, PAGE_TIMEOUT_MS.nemarlike, {
-      recorder: coldRecorder,
-    });
+    const cold = await runRecorded(`${base}/nemarlike/browser-harness/index.html`, PAGE_TIMEOUT_MS.nemarlike);
+    const nemarlike = cold.page;
     const failing = nemarlike.results.filter((r) => !r.ok);
-    if (!nemarlike.done || nemarlike.error || failing.length > 0 || nemarlike.results.length === 0) {
-      failed++;
-      console.error(`FAIL: nemarlike ${nemarlike.error || `${failing.length} of ${nemarlike.results.length} checks failed`}`);
-      for (const r of failing) console.error(`  - ${r.name}: ${r.detail}`);
-    } else {
-      console.log(`ok: nemarlike, all ${nemarlike.results.length} checks passed`);
-    }
+    report(
+      nemarlike.done && !nemarlike.error && failing.length === 0 && nemarlike.results.length > 0 && cold.attachFailures.length === 0,
+      `nemarlike ${nemarlike.error || `${failing.length} of ${nemarlike.results.length} checks failed`}`,
+      `nemarlike, all ${nemarlike.results.length} checks passed`,
+      [...failing.map((r) => `${r.name}: ${r.detail}`), ...cold.attachFailures]
+    );
 
     console.log('control: no wasm grant, where the boot must fail');
     const control = await runPage(cdp, `${base}/control/browser-harness/index.html`, PAGE_TIMEOUT_MS.control);
     const boot = control.results[0];
-    if (!control.done || !boot || boot.ok !== false) {
-      failed++;
-      console.error(`FAIL: control ${control.error || 'booted, so the policy was never applied'}`);
-    } else {
-      console.log(`ok: control, the boot failed as it must (${boot.detail})`);
-    }
+    report(
+      control.done && boot && boot.ok === false,
+      `control ${control.error || 'booted, so the policy was never applied'}`,
+      `control, the boot failed as it must (${boot && boot.detail})`
+    );
+
+    // The overlay's own wheel names, from the config the harness pages boot
+    // from, so a request that went unobserved (a worker the recorder missed)
+    // fails the cache checks rather than passing as "every observed request
+    // was cached". An empty list would make both checks vacuous, so it throws.
+    const harnessConfig = await (await fetch(`${base}/browser-harness/harness-config.json`)).json();
+    const overlayFiles = Object.values(harnessConfig.nemar.packages).map((entry) => entry.file_name).sort();
+    if (overlayFiles.length === 0) throw new Error('harness-config.json names no overlay wheel, so the cache checks would prove nothing');
+    const sameFiles = (wheels, expected) =>
+      JSON.stringify([...new Set(wheels.map((w) => w.fileName))].sort()) === JSON.stringify([...expected].sort());
 
     // warm: NEMAR's runtime, booted a SECOND time on a fresh page. Same
     // server, same port, same browser (Chrome partitions its HTTP cache by
     // top-level site), and the same /nemarlike/ path prefix as the cold run
     // above, so this is the same origin and the same cache partition.
     console.log('warm: NEMAR\'s runtime booted again, where every overlay wheel must come from cache');
-    const warmRecorder = new NetworkRecorder();
-    const warm = await runPage(cdp, `${base}/nemarlike/browser-harness/cache-boot.html?variant=nemar`, PAGE_TIMEOUT_MS.warm, {
-      recorder: warmRecorder,
-    });
-    // The overlay's own wheel names, from the config the harness pages boot
-    // from, so a request that went unobserved (a worker the recorder missed)
-    // fails here rather than passing as "every observed request was cached".
-    const harnessConfig = await (await fetch(`${base}/browser-harness/harness-config.json`)).json();
-    const overlayFiles = Object.values(harnessConfig.nemar.packages).map((entry) => entry.file_name).sort();
-    const sameFiles = (wheels, expected) =>
-      JSON.stringify([...new Set(wheels.map((w) => w.fileName))].sort()) === JSON.stringify([...expected].sort());
-
-    const warmWheels = wheelRequests(warmRecorder, '/runtime/nemar/');
+    const warmRun = await runRecorded(`${base}/nemarlike/browser-harness/cache-boot.html?variant=nemar`, PAGE_TIMEOUT_MS.warm);
+    const warm = warmRun.page;
+    const warmWheels = wheelRequests(warmRun.recorder, '/runtime/nemar/');
     const warmMisses = warmWheels.filter((w) => !w.cacheHit || w.encodedDataLength > 0);
     const warmIncomplete = !sameFiles(warmWheels, overlayFiles);
-    if (!warm.done || !warm.ok || warmIncomplete || warmMisses.length > 0) {
-      failed++;
-      console.error(
-        `FAIL: warm ${warm.error || (warmIncomplete ? `observed ${warmWheels.map((w) => w.fileName).join(', ') || 'no wheel'}, expected ${overlayFiles.join(', ')}` : '')}`
-      );
-      for (const w of warmMisses) {
-        console.error(`  - ${w.fileName}: fromDiskCache=${w.fromDiskCache} servedFromCache=${w.servedFromCache} encodedDataLength=${w.encodedDataLength} status=${w.status} failed=${w.failed || ''}`);
-      }
-    } else {
-      console.log(`ok: warm, all ${warmWheels.length} overlay wheel requests were served from cache (0 bytes over the network)`);
-    }
+    report(
+      warm.done && warm.ok && !warmIncomplete && warmMisses.length === 0 && warmRun.attachFailures.length === 0,
+      `warm ${warm.error || (warmIncomplete ? `observed ${warmWheels.map((w) => w.fileName).join(', ') || 'no wheel'}, expected ${overlayFiles.join(', ')}` : '')}`,
+      `warm, all ${warmWheels.length} overlay wheel requests were served from cache (0 bytes over the network)`,
+      [...warmMisses.map(describeWheel), ...warmRun.attachFailures]
+    );
 
     // lock change: ONE overlay wheel (eegprep-lean) renamed with a build tag,
     // same bytes and sha256, in the SAME browser. That new URL has never been
     // fetched before, so it alone must be a real network fetch; everything
     // else (zarr, and the interpreter and stock wheels) must still be cached.
     console.log('lock change: one renamed wheel goes to the network, the rest stay cached');
-    const lockRecorder = new NetworkRecorder();
-    const lockchange = await runPage(
-      cdp,
+    const lockRun = await runRecorded(
       `${base}/nemarlike/browser-harness/cache-boot.html?variant=nemarLockChanged`,
-      PAGE_TIMEOUT_MS.lockchange,
-      { recorder: lockRecorder }
+      PAGE_TIMEOUT_MS.lockchange
     );
-    const lockWheels = wheelRequests(lockRecorder, '/runtime/nemar/');
+    const lockchange = lockRun.page;
+    const lockWheels = wheelRequests(lockRun.recorder, '/runtime/nemar/');
     const changed = lockWheels.filter((w) => w.fileName.includes('eegprep_lean') && /-\d+-py3-none-any\.whl$/.test(w.fileName));
     const unchanged = lockWheels.filter((w) => !changed.includes(w));
     const changedProblem = changed.length !== 1 || changed[0].cacheHit || changed[0].encodedDataLength === 0;
     const unchangedProblem =
       !sameFiles(unchanged, overlayFiles.filter((name) => !name.startsWith('eegprep_lean-'))) ||
       unchanged.some((w) => !w.cacheHit || w.encodedDataLength > 0);
-    if (!lockchange.done || !lockchange.ok || changedProblem || unchangedProblem) {
-      failed++;
-      console.error(`FAIL: lock change ${lockchange.error || ''}`);
-      for (const w of lockWheels) {
-        console.error(`  - ${w.fileName}: cacheHit=${w.cacheHit} encodedDataLength=${w.encodedDataLength} status=${w.status} failed=${w.failed || ''}`);
-      }
-    } else {
-      console.log(`ok: lock change, only ${changed[0].fileName} went to the network; ${unchanged.length} other wheel(s) stayed cached`);
-    }
+    report(
+      lockchange.done && lockchange.ok && !changedProblem && !unchangedProblem && lockRun.attachFailures.length === 0,
+      `lock change ${lockchange.error || ''}`,
+      `lock change, only ${changed[0]?.fileName} went to the network; ${unchanged.length} other wheel(s) stayed cached`,
+      [...lockWheels.map(describeWheel), ...lockRun.attachFailures]
+    );
 
     // jsDelivr's own assets (the interpreter and the stock wheels numpy and
     // matplotlib): reported, not gated. jsDelivr's cache behavior is not
     // ours to enforce; this is only as far as its headers let us say anything.
     console.log('jsDelivr (interpreter and stock wheels), reported only:');
-    for (const r of warmRecorder.byUrl('cdn.jsdelivr.net')) {
+    for (const r of warmRun.recorder.byUrl('cdn.jsdelivr.net')) {
       const cacheControl = (r.headers && (r.headers['cache-control'] || r.headers['Cache-Control'])) || '(no header)';
       console.log(`  - ${r.url.split('/').pop()}: fromDiskCache=${r.fromDiskCache} bytes=${r.encodedDataLength} cache-control=${cacheControl}`);
     }
@@ -417,11 +434,11 @@ async function main() {
       for (const w of wheels) if (!seen.has(w.fileName)) seen.set(w.fileName, w);
       return [...seen.values()];
     };
-    const coldWheels = firstByFileName(wheelRequests(coldRecorder, '/runtime/nemar/'));
-    for (const cold of coldWheels) {
-      const w = warmWheels.find((x) => x.fileName === cold.fileName);
+    const coldWheels = firstByFileName(wheelRequests(cold.recorder, '/runtime/nemar/'));
+    for (const first of coldWheels) {
+      const w = warmWheels.find((x) => x.fileName === first.fileName);
       console.log(
-        `  - ${cold.fileName}: cold ${cold.encodedDataLength}B in ${(cold.finishedAtMs ?? cold.startedAtMs) - cold.startedAtMs}ms` +
+        `  - ${first.fileName}: cold ${first.encodedDataLength}B in ${(first.finishedAtMs ?? first.startedAtMs) - first.startedAtMs}ms` +
           (w ? `, warm ${w.encodedDataLength}B (cacheHit=${w.cacheHit})` : ', warm (not observed)')
       );
     }
