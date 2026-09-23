@@ -58,7 +58,7 @@ and the only workload that actually matters, the real NEMAR read, marimo cannot 
 Pinning to exactly 0.29.5 is confirmed possible by building it (unlike marimo, where it is not possible at all today),
 and the real NEMAR read completes end to end under that pin.
 
-**User decision, 2026-09-23: this release's phase 4c is the editable re-run panel in the chat widget.
+**User decision, 2026-09-23: this release's tinkering surface is the editable re-run panel in the chat widget (#456).
 A hosted JupyterLite notebook surface is deferred to a follow-up epic phase, not built in this release.**
 That follow-up (#453) has four prerequisites this ADR's measurements surfaced, none of them started:
 
@@ -93,11 +93,12 @@ That follow-up (#453) has four prerequisites this ADR's measurements surfaced, n
   both cheap, dated, falsifiable checks against a specific future release rather than a redo of this whole ADR.
 - JupyterLite is confirmed workable end to end against the real, live NEMAR read at the exact package set OSA's own runtime uses,
   including a wheel-and-package-list problem the measurements note records in full, so whoever builds the follow-up does not have to rediscover it.
-- **Nothing in this release ships a notebook surface.** The chat widget's editable re-run panel is this release's phase 4c,
+- **Nothing in this release ships a notebook surface.** The chat widget's editable re-run panel (#456) is this release's tinkering surface,
   and covers "keep tinkering" on its own, at a fraction of a notebook surface's integration cost, independent of this ADR's verdict.
 - The four prerequisites above are new, concrete scope for the JupyterLite follow-up, not implied work;
-  in particular, prerequisite 3 is a cross-repository dependency (`nemarOrg/nemar-cli`) that has to land before the follow-up can reach the live archive
-  from a hosted origin, and should be sequenced accordingly.
+  in particular, prerequisite 3 decides where the site can live:
+  under `osc.earth` it needs only OSA's own wheel route widened,
+  and anywhere else it also needs a change in `nemarOrg/nemar-cli` before the follow-up can reach the live archive.
 - **Not measured, and why**, kept here because it bears on the follow-up's scope, detailed in the measurements note:
   a pruned, pinned JupyterLite build's size; marimo's undocumented-in-practice self-host flag's actual cost;
   OSA's own wheel route's live CORS headers under this epic's code (production has not deployed phases 1 to 3 yet).

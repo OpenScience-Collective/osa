@@ -96,6 +96,52 @@ jobs:
             exit 1
           fi
 
+      # /health only proves the process answers, not that a reader's browser can
+      # actually boot the runtime it was promised: NEMAR's lock overlay names each
+      # wheel by file_name and sha256 (src/core/config/runtime_lock.py), and Pyodide
+      # fetches each one by URL from GET /{community}/runtime/{file_name}. A wheel
+      # this route cannot serve, or serves with the wrong bytes, is invisible to
+      # /health and fails silently in a browser instead. This walks the same path a
+      # browser does: read the overlay from the community's own config response,
+      # fetch every wheel it names, and check the digest the overlay recorded.
+      - name: Smoke test - runtime wheel route
+        run: |
+          set -euo pipefail
+
+          config=$(curl -sf http://localhost:38528/nemar)
+          packages=$(echo "$config" | jq -c '(.runtime_lock // {}).packages // {}')
+          count=$(echo "$packages" | jq 'length')
+          if [ "$count" -eq 0 ]; then
+            echo "FAIL: nemar's runtime_lock.packages is empty; the wheel route was never exercised"
+            echo "$config"
+            exit 1
+          fi
+          echo "Checking $count runtime wheel(s) named in nemar's runtime_lock"
+
+          failed=0
+          while IFS=$'\t' read -r file_name expected_sha; do
+            url="http://localhost:38528/nemar/runtime/${file_name}"
+            status=$(curl -s -o /tmp/osa-runtime-wheel.whl -w '%{http_code}' "$url")
+            if [ "$status" != "200" ]; then
+              echo "FAIL: $url returned HTTP $status, not 200"
+              failed=1
+              continue
+            fi
+            actual_sha=$(sha256sum /tmp/osa-runtime-wheel.whl | cut -d' ' -f1)
+            if [ "$actual_sha" != "$expected_sha" ]; then
+              echo "FAIL: $file_name sha256 is $actual_sha, the overlay records $expected_sha"
+              failed=1
+              continue
+            fi
+            echo "OK: $file_name ($actual_sha)"
+          done < <(echo "$packages" | jq -r 'to_entries[] | "\(.value.file_name)\t\(.value.sha256)"')
+
+          rm -f /tmp/osa-runtime-wheel.whl
+          if [ "$failed" -ne 0 ]; then
+            echo "FAIL: one or more runtime wheels did not match nemar's lock overlay"
+            exit 1
+          fi
+
       - name: Cleanup test container
         if: always()
         run: |

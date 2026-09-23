@@ -3,7 +3,8 @@
 // Everything asserted here is invisible to the Bun suites: Pyodide needs a
 // browser, so the worker in those tests speaks the protocol and nothing more.
 // This is where the Python half of the boundary is actually measured.
-import { PyodideRuntime } from '../osa-runtime.js';
+import { PyodideRuntime, defaultWorkerFactory } from '../osa-runtime.js';
+import { buildEgressGuardSource, DENY_REASON } from '../osa-egress.js';
 
 const logEl = document.getElementById('log');
 const statusEl = document.getElementById('status');
@@ -177,6 +178,14 @@ async function main() {
   check('a refused osa.fetch is an OSError that names the egress refusal',
     refusedFetch.stdout === 'OSError True\n', `status=${refusedFetch.status} ${refusedFetch.stdout}${refusedFetch.stderr.slice(-160)}`);
 
+  // THE REDIRECT HOLE: XMLHttpRequest used to check a URL once in open() and
+  // then let the native implementation follow any redirect on its own, with
+  // no way to stop at the Location header. Only a real browser has a native
+  // XMLHttpRequest to try that against; Bun has none at all (checked: `typeof
+  // XMLHttpRequest` is undefined even inside a Bun Worker), so this is the one
+  // place a genuine redirect response is thrown at the guard.
+  await checkEgressRedirect();
+
   // OUTPUT CAPTURE (step 4). matplotlib is the reason MPLBACKEND is set before
   // anything can import it: Pyodide's default backend draws into the page's DOM,
   // and a worker has no DOM, so the import succeeds and the first plot fails
@@ -272,6 +281,88 @@ async function main() {
   statusEl.textContent = failures === 0 ? `ALL ${results.length} CHECKS PASSED` : `${failures} of ${results.length} FAILED`;
   statusEl.className = failures === 0 ? 'pass' : 'fail';
   window.__harness = { results, done: true, failures };
+}
+
+// A real redirect off the allowlist, the way native XMLHttpRequest could
+// exploit it: open() checking a URL once and then letting the browser follow
+// a 302 wherever it goes. serve.js's /egress-redirect/allowed 302s to
+// /egress-redirect/disallowed on this SAME origin; only /allowed is ever
+// sealed into fetch_allow here, so nothing reachable through the guard should
+// ever see the disallowed body. This runs the guard in its own worker,
+// independent of Pyodide, because the transports under test are its own.
+async function checkEgressRedirect() {
+  const allowedUrl = new URL('./egress-redirect/allowed', location.href).href;
+
+  // Sanity check FIRST, unguarded: prove the route really redirects and
+  // really carries the secret, before asking the guard to refuse it. Without
+  // this, a route that was never wired up correctly would look identical to
+  // a working guard -- both produce no leak, for entirely different reasons.
+  const sanity = await fetch(allowedUrl);
+  const sanityBody = await sanity.text();
+  check('the redirect route really redirects to the secret body (sanity check)',
+    sanity.redirected && sanityBody.includes('EGRESS_REDIRECT_SECRET'),
+    `redirected=${sanity.redirected} url=${sanity.url} body=${sanityBody.slice(0, 40)}`);
+
+  // (function () { ... })(), matching buildWorkerSource: the guard must not
+  // reach the worker's global scope.
+  const workerSource = `
+    (function () {
+    ${buildEgressGuardSource({ bootAllow: [] })}
+    __seal(${JSON.stringify([allowedUrl])});
+
+    self.onmessage = async function () {
+      const out = {};
+
+      try {
+        await self.fetch(${JSON.stringify(allowedUrl)});
+        out.fetchResult = 'REACHED';
+      } catch (e) {
+        out.fetchResult = e && e.name === 'EgressDenied' ? 'DENIED:' + e.reason
+          : (e && e.name === 'TypeError' ? 'network_error_after_guard' : 'other:' + (e && e.message));
+      }
+
+      // The transport this check exists for. If construction is not refused,
+      // the guard has regressed to the old open()-patch, and this actually
+      // sends the request and follows the redirect to see whether the
+      // disallowed body comes back -- the same proof a real attack needed.
+      try {
+        const xhr = new self.XMLHttpRequest();
+        await new Promise(function (resolve, reject) {
+          xhr.onload = resolve;
+          xhr.onerror = function () { reject(new Error('xhr network error')); };
+          xhr.open('GET', ${JSON.stringify(allowedUrl)}, true);
+          xhr.send();
+        });
+        out.xhrResult = (xhr.responseText || '').includes('EGRESS_REDIRECT_SECRET')
+          ? 'LEAKED:' + xhr.responseURL
+          : 'REACHED_NO_LEAK:' + xhr.status;
+      } catch (e) {
+        out.xhrResult = e && e.name === 'EgressDenied' ? 'DENIED:' + e.reason : 'other:' + (e && e.message);
+      }
+
+      self.postMessage(out);
+    };
+    })();
+  `;
+
+  const worker = defaultWorkerFactory(workerSource);
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('egress redirect probe timed out')), 15_000);
+      worker.onmessage = (e) => { clearTimeout(timer); resolve(e.data); };
+      worker.onerror = (e) => { clearTimeout(timer); reject(new Error('probe worker error: ' + (e.message || e))); };
+      worker.postMessage('go');
+    });
+    check('fetch refuses the real redirect off the allowlist (redirect: error)',
+      result.fetchResult === 'network_error_after_guard', `fetchResult=${result.fetchResult}`);
+    check('XMLHttpRequest is removed, so it cannot follow that redirect either',
+      result.xhrResult === `DENIED:${DENY_REASON.TRANSPORT}`, `xhrResult=${result.xhrResult}`);
+  } catch (err) {
+    check('fetch refuses the real redirect off the allowlist (redirect: error)', false, err.message);
+    check('XMLHttpRequest is removed, so it cannot follow that redirect either', false, err.message);
+  } finally {
+    worker.terminate();
+  }
 }
 
 // NEMAR'S LOCK OVERLAY, which only a browser can check. Under Bun, Pyodide loads

@@ -26,6 +26,8 @@
  * `fetch_allow` before any model-written code runs. Sealing is one-way.
  */
 
+import { WORKSPACE_LIMITS } from './osa-workspace.js';
+
 /** Why a request was refused. Surfaced to Python so the model can adapt. */
 export const DENY_REASON = Object.freeze({
   UNPARSEABLE: 'unparseable',
@@ -230,14 +232,18 @@ export function buildEgressGuardSource({ bootAllow = [] } = {}) {
     return __nativeFetch(new Request(request, { credentials: 'omit', redirect: 'error' }));
   });
 
-  if (self.XMLHttpRequest) {
-    const __open = self.XMLHttpRequest.prototype.open;
-    self.XMLHttpRequest.prototype.open = function (method, url, ...rest) {
-      __check(url);
-      this.withCredentials = false;
-      return __open.call(this, method, url, ...rest);
-    };
-  }
+  // XMLHttpRequest is removed entirely rather than patched like fetch above.
+  // open() can check a URL, but native XHR then follows a redirect on its own
+  // with no way to stop at the Location header: a 302 from an ALLOWED origin
+  // to a disallowed one delivered its body, proven with running code. fetch
+  // has \`redirect: 'error'\` for exactly this; XHR has no equivalent mode, so
+  // checking the URL once and letting the native implementation run is not
+  // closeable, and removal is the only correct option, the same as WebSocket
+  // and EventSource below. Nothing in the runtime needs it: Pyodide loads its
+  // wasm binary, lock file and packages with fetch, not XHR (verified against
+  // the vendored pyodide.asm.js), and the namespace seal below already removes
+  // every Python path that could reach it (js, pyodide, pyodide_http).
+  __install('XMLHttpRequest', function () { throw __denied('xmlhttprequest', DENY_REASON.TRANSPORT); });
 
   // importScripts performs a real cross-origin GET and is completely outside
   // fetch and XHR. It was previously unguarded, and the worker's own boot
@@ -434,6 +440,14 @@ export function buildNamespaceSealSource() {
  * @returns {string} Python source, run in the user namespace before the seal.
  */
 export function buildDataClientSource() {
+  // Generated from WORKSPACE_LIMITS (osa-workspace.js), not hand-written, so the
+  // model reads the SAME caps `WorkspaceStore.putFile` and `recordRun` enforce.
+  // test-output.js parses these numbers back out of the generated docstrings
+  // and compares them, the same way it already does for MAX_FILE_BYTES etc. in
+  // osa-output.js.
+  const maxFileMB = WORKSPACE_LIMITS.MAX_FILE_BYTES / (1024 * 1024);
+  const maxRunMB = WORKSPACE_LIMITS.MAX_RUN_BYTES / (1024 * 1024);
+  const maxExplicitFiles = WORKSPACE_LIMITS.MAX_EXPLICIT_FILES;
   return [
     'import collections as _collections',
     'import importlib.util as _ilu',
@@ -499,8 +513,8 @@ export function buildDataClientSource() {
     '        scripts/run-NNN.py; call this to give a script a name worth finding',
     '        later, or to save something other than the code exactly as it ran.',
     '        Returns the workspace-relative path saved to. Raises ValueError for a',
-    '        bad name, or for a file over 10 MB, or for a run that has already',
-    '        explicitly saved 32 files or 25 MB. The workspace panel in Settings',
+    `        bad name, or for a file over ${maxFileMB} MB, or for a run that has already`,
+    `        explicitly saved ${maxExplicitFiles} files or ${maxRunMB} MB. The workspace panel in Settings`,
     '        is where a reader downloads this community\'s whole workspace, or',
     '        deletes all of it; there is no per-file delete.',
     '        """',
@@ -519,8 +533,8 @@ export function buildDataClientSource() {
     '',
     '        `data` is bytes, bytearray, memoryview or str (encoded UTF-8). Returns',
     '        the workspace-relative path saved to. Raises ValueError for a bad',
-    '        path, or for a file over 10 MB, or for a run that has already',
-    '        explicitly saved 32 files or 25 MB; see save_script for where a',
+    `        path, or for a file over ${maxFileMB} MB, or for a run that has already`,
+    `        explicitly saved ${maxExplicitFiles} files or ${maxRunMB} MB; see save_script for where a`,
     '        reader finds what this saved.',
     '        """',
     '        if not isinstance(path, str) or not path:',

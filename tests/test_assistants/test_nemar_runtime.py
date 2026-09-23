@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
+import subprocess
 import tomllib
 import zipfile
 from collections.abc import Callable
@@ -93,6 +95,42 @@ class TestTheShippedConfig:
         assert IMAGES_NOT_SENT.startswith("not attached")
         assert prompt.count("says it was not attached") == 1
         assert "says the figure was not attached" in prompt
+
+    def test_the_workspace_caps_it_states_match_workspace_limits(
+        self, nemar: CommunityConfig
+    ) -> None:
+        """The description's "at most 32 files, 10 MB each and 25 MB in all per run" is
+        hand-written prose, unlike osa-egress.js's save_script/save_artifact docstrings,
+        which are generated FROM WORKSPACE_LIMITS (frontend/test-output.js checks those).
+        This is the one place this file's own numbers are checked against the same
+        constant, by running the real module rather than re-typing its values here.
+        """
+        assert nemar.extensions is not None
+        description = nemar.extensions.client_tools[0].description
+        match = re.search(
+            r"at most (\d+) files, (\d+) MB each and (\d+) MB in all per run", description
+        )
+        assert match is not None, "the description no longer states the workspace caps this way"
+        max_files, max_file_mb, max_run_mb = (int(g) for g in match.groups())
+
+        result = subprocess.run(
+            [
+                "bun",
+                "-e",
+                "import { WORKSPACE_LIMITS } from './frontend/osa-workspace.js';"
+                "console.log(JSON.stringify(WORKSPACE_LIMITS));",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, f"reading WORKSPACE_LIMITS failed: {result.stderr}"
+        limits = json.loads(result.stdout)
+
+        assert max_files == limits["MAX_EXPLICIT_FILES"]
+        assert max_file_mb == limits["MAX_FILE_BYTES"] / (1024 * 1024)
+        assert max_run_mb == limits["MAX_RUN_BYTES"] / (1024 * 1024)
 
 
 class TestTheLockOverlay:

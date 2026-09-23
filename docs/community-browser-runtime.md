@@ -89,7 +89,7 @@ runtime:
 - `preload_on`: `"first_run"` (the default) or `"widget_open"`:
   whether the runtime boots lazily, on the first execution,
   or eagerly, as soon as the chat widget opens.
-- `fetch_allow`: URL prefixes executed code may fetch from, through the runtime's own `osa.fetch` client.
+- `fetch_allow`: Uniform Resource Locator (URL) prefixes executed code may fetch from, through the runtime's own `osa.fetch` client.
   See "`fetch_allow` is the egress control" below.
 - `index_urls`: package index URLs `allow_install` may install from.
 - `limits`: resource caps (`RuntimeLimits`, same file), and a community with no reason to deviate can omit it.
@@ -98,6 +98,8 @@ runtime:
   `stdout_chars`, `stderr_chars` and `images` default to that cap
   (16,384 characters, 8,192 characters and 3 images; 0 turns images off),
   and `image_px`, the longest edge of a returned image, defaults to 1024 under the server's 8192.
+  One cap is not a community's to set: a single reply may ask the browser to run code at most 20 times
+  (`MAX_BROWSER_RUNS_PER_REPLY` in `src/core/limits.py`, which the widget mirrors and a test compares).
   A community cannot see those constants,
   so `RuntimeLimits`'s own field bounds enforce them at load,
   rather than letting every browser result fail with a 422 the config never warned about.
@@ -270,11 +272,12 @@ This is separate from `get_full_output` (`osa-runtime.js`, `FullOutputStore`):
 that store answers the model, is per tab, and is gone on reload;
 the workspace answers the reader, persists in the browser's IndexedDB storage,
 and nothing written to it is ever sent to the server.
-Python cannot reach browser storage at all --
-the namespace seal removes `js`, `mountOPFS` is unreleased, and `mountNativeFS` is Chromium-only --
-so a run's files travel back to the host in the worker's own result message,
+Python cannot reach browser storage at all:
+the namespace seal removes `js`, Pyodide's `mountOPFS` (for the Origin Private File System) is unreleased,
+and `mountNativeFS` (for the File System Access API) is Chromium-only.
+So a run's files travel back to the host in the worker's own result message,
 the way its fuller copy of the output already does
-(bounded at 262,144 characters per stream, `_FULL_CHARS`, not literally unbounded --
+(bounded at 262,144 characters per stream, `_FULL_CHARS`, not literally unbounded;
 see the note on `results/run-NNN/stdout.txt` below),
 and the host writes them to IndexedDB before that result is ever answered to the server.
 
@@ -292,7 +295,7 @@ Every executed run is saved automatically,
 whether or not the model asked to keep anything:
 `scripts/run-NNN.py` (the code as it ran),
 `results/run-NNN/stdout.txt`, `stderr.txt` and `summary.txt`
-(the same 262,144-character-bounded copy `get_full_output` keeps, `_FULL_CHARS` in `osa-output.js` --
+(the same 262,144-character-bounded copy `get_full_output` keeps, `_FULL_CHARS` in `osa-output.js`:
 far more than the model's own turn sees, but not literally untruncated),
 and a `results/run-NNN/figure-K.png` for each figure it produced.
 A `get_full_output` call is not a run and writes nothing.
@@ -323,9 +326,9 @@ and checked again on the browser side before anything is written to IndexedDB
 - One community's whole workspace is at most 250 MB,
   checked only on the browser side, since it depends on everything already stored.
 
-A write that fails for any reason --
-the file itself, the run's budget, the community's budget,
-a storage quota, private browsing, or IndexedDB being unavailable at all --
+A write that fails for any reason
+(the file itself, the run's budget, the community's budget,
+a storage quota, private browsing, or IndexedDB being unavailable at all)
 is reported IN THE RESULT, never silently:
 a line is appended to `stderr` naming each file not saved and why,
 and `artifacts` lists only the files that were actually saved.
@@ -348,7 +351,7 @@ Each session's folder inside the zip carries its derived `manifest.json`
 and a generated `notebook.ipynb`
 (nbformat 4, minor version 5, with a cell id on every cell):
 one markdown cell per run, carrying its description,
-and one code cell, carrying its code and its outputs --
+and one code cell, carrying its code and its outputs:
 stdout and stderr as `stream` outputs, each figure as a `display_data` `image/png` output.
 
 ### The one limitation worth knowing

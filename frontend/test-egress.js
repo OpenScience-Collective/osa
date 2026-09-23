@@ -219,13 +219,20 @@ console.log('\nthe generated worker guard');
 {
   const src = buildEgressGuardSource({ bootAllow: ['https://cdn.jsdelivr.net/'] });
   assert(src.includes('credentials: \'omit\''), 'fetch is forced to credentials: omit');
-  assert(src.includes('XMLHttpRequest'), 'XMLHttpRequest is shimmed, not just fetch');
-  assert(src.includes('withCredentials = false'), 'XHR credentials are disabled too');
+  // XMLHttpRequest is removed outright, not patched: open() could check a URL,
+  // but native XHR then follows a redirect on its own with no way to stop at
+  // the Location header, so a URL check on open() alone cannot close it. This
+  // pins that the old open()-patching shape is gone, not just that some
+  // reference to XMLHttpRequest remains in the source.
+  assert(!src.includes('XMLHttpRequest.prototype.open'), 'the open()-patch that let native XHR follow redirects is gone');
+  assert(!/withCredentials\s*=\s*false/.test(src), 'no leftover open()-patch sets withCredentials either');
   // Installed UNCONDITIONALLY. The runtime probe below cannot tell 'blocked'
   // from 'absent in this environment', so the unconditional install is pinned
-  // here, where an `if (self.WebSocket)` regression is visible.
+  // here, where an `if (self.WebSocket)` (or `if (self.XMLHttpRequest)`)
+  // regression is visible.
   assert(src.includes("__install('WebSocket'"), 'WebSocket is replaced');
   assert(src.includes("__install('EventSource'"), 'EventSource is replaced');
+  assert(src.includes("__install('XMLHttpRequest'"), 'XMLHttpRequest is replaced the same way, not patched');
   assert(src.includes('cdn.jsdelivr.net'), 'the boot allowlist reaches the guard');
   assert(src.includes('__egress.sealed = true'), 'sealing is present');
   assert(
@@ -280,13 +287,6 @@ console.log('\nTHE GUARD RUNNING IN A REAL WORKER, not inspected as a string');
   assert(r.__reseal === 'REFUSED',
     'sealing is ONE-SHOT: a second seal is refused rather than re-widening the allowlist');
 
-  // XHR is an independent network path and previously had zero runtime coverage:
-  // deleting its check killed no assertions at all.
-  assert(r.__xhrDenied === 'DENIED:not_in_fetch_allow' || r.__xhrDenied === 'NO_XHR_IN_ENV',
-    `XMLHttpRequest to a disallowed origin is refused at runtime (got ${r.__xhrDenied})`);
-  assert(r.__xhrAllowed === 'PASSED_GUARD' || r.__xhrAllowed === 'NO_XHR_IN_ENV',
-    `XMLHttpRequest to an allowed origin passes the guard (got ${r.__xhrAllowed})`);
-
   assert(String(r.__importScripts).startsWith('DENIED') || r.__importScripts === 'NO_IMPORTSCRIPTS_IN_ENV',
     `importScripts to a disallowed origin is refused (got ${r.__importScripts})`);
 
@@ -296,6 +296,15 @@ console.log('\nTHE GUARD RUNNING IN A REAL WORKER, not inspected as a string');
   // it is the one transport that defeats every shim above at once.
   assert(String(r.__Worker).startsWith('DENIED'), 'a nested Worker cannot be spawned to obtain an unshimmed global');
   assert(String(r.__SharedWorker).startsWith('DENIED'), 'nor a SharedWorker');
+  // XHR used to be checked-then-passed-through (proven vulnerable to a
+  // redirect off the allowlist, see the module comment in osa-egress.js), and
+  // is now removed the same way as the four transports above: constructed
+  // against the ALLOWED origin above, not a disallowed one, because the
+  // property under test is that it never gets far enough to look at the URL,
+  // and it must be denied with the TRANSPORT reason specifically, not
+  // NOT_ALLOWED, which would mean a URL check ran at all.
+  assert(r.__XMLHttpRequest === `DENIED:${DENY_REASON.TRANSPORT}`,
+    `XMLHttpRequest is refused outright, even to an allowed origin (got ${r.__XMLHttpRequest})`);
 }
 
 console.log('\nTOCTOU, decided by what the SERVER received, not by which coercion won');
