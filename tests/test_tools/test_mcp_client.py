@@ -19,6 +19,7 @@ That matters most for the two things this module actually has to get right:
 from __future__ import annotations
 
 import asyncio
+import base64
 import threading
 import time
 from collections.abc import Iterator
@@ -26,15 +27,28 @@ from typing import Any
 
 import httpx
 import pytest
+from langchain_core.messages import ToolMessage
 from mcp.server import MCPServer
-from mcp.types import CallToolResult, TextContent
+from mcp.types import CallToolResult, ImageContent, TextContent
 
 from src.core.config.community import McpServer
-from src.tools.mcp_client import discover_mcp_tools
+from src.tools.mcp_client import (
+    MCP_IMAGES_KILL_SWITCH_ENV,
+    clear_tool_cache,
+    discover_mcp_tools,
+)
+from tests.helpers.images import tiny_png
 
 # --------------------------------------------------------------------------
 # A real MCP server on a real port.
 # --------------------------------------------------------------------------
+
+
+#: The fixture server's own tiny PNG, real bytes from zlib/struct
+#: (`tests.helpers.images.tiny_png`), not a stand-in. Module-level so every test
+#: that inspects `render_overview`'s output compares against the same image.
+FIXTURE_PNG = tiny_png(width=6, height=4)
+FIXTURE_PNG_B64 = base64.b64encode(FIXTURE_PNG).decode()
 
 
 def _build_server() -> MCPServer:
@@ -64,6 +78,52 @@ def _build_server() -> MCPServer:
         return CallToolResult(
             content=[TextContent(type="text", text="declines: over the 60 s cap")],
             isError=True,
+        )
+
+    @srv.tool(structured_output=False)
+    def render_overview(dataset_id: str) -> CallToolResult:
+        """Answer the way nemar_render_overview does: structured content plus a
+        real PNG `ImageContent` block, standing in for the tool this fixture
+        server cannot actually run."""
+        return CallToolResult(
+            content=[
+                TextContent(type="text", text=f"overview of {dataset_id}"),
+                ImageContent(type="image", data=FIXTURE_PNG_B64, mimeType="image/png"),
+            ],
+            structuredContent={"dataset_id": dataset_id},
+        )
+
+    @srv.tool(structured_output=False)
+    def many_images(count: int) -> CallToolResult:
+        """`count` real PNGs in one result, to exercise MAX_IMAGES for real."""
+        return CallToolResult(
+            content=[
+                ImageContent(
+                    type="image",
+                    data=base64.b64encode(tiny_png(width=2, height=2)).decode(),
+                    mimeType="image/png",
+                )
+                for _ in range(count)
+            ],
+        )
+
+    @srv.tool(structured_output=False)
+    def undecodable_image() -> CallToolResult:
+        """Claims image/png but is not decodable as one."""
+        return CallToolResult(
+            content=[
+                ImageContent(
+                    type="image", data=base64.b64encode(b"not a png").decode(), mimeType="image/png"
+                )
+            ],
+        )
+
+    @srv.tool(structured_output=False)
+    def wrong_mime_image() -> CallToolResult:
+        """A real, valid PNG, but declared under a media type this reader refuses
+        regardless of size or validity -- only image/png is accepted here."""
+        return CallToolResult(
+            content=[ImageContent(type="image", data=FIXTURE_PNG_B64, mimeType="image/jpeg")],
         )
 
     return srv
@@ -123,6 +183,10 @@ class TestDiscovery:
             "fixture_echo_dataset",
             "fixture_text_only",
             "fixture_always_refuses",
+            "fixture_render_overview",
+            "fixture_many_images",
+            "fixture_undecodable_image",
+            "fixture_wrong_mime_image",
         }
 
     def test_names_are_prefixed_with_the_server_name(self, mcp_url: str) -> None:
@@ -157,11 +221,11 @@ class TestDiscovery:
             return discover_mcp_tools(_server(mcp_url))
 
         tools = asyncio.run(caller())
-        assert len(tools) == 3
+        assert len(tools) == 7
 
     def test_works_from_a_plain_synchronous_caller(self, mcp_url: str) -> None:
         """The other half: no loop running at all."""
-        assert len(discover_mcp_tools(_server(mcp_url))) == 3
+        assert len(discover_mcp_tools(_server(mcp_url))) == 7
 
 
 # --------------------------------------------------------------------------
@@ -214,6 +278,133 @@ class TestInvocation:
         result = await tool.ainvoke({"dataset_id": "nm000329", "limit": "not-an-int"})
         assert isinstance(result, str)
         assert "error" in result.lower()
+
+
+# --------------------------------------------------------------------------
+# Images: nemar_render_overview's PNG, real end to end against the fixture
+# server (issue #432, phase 3). Invoked through a `ToolCall` dict, never a bare
+# args dict, because only that path makes LangChain build a real `ToolMessage`
+# (`_format_output`) -- a bare args dict just returns `_call`'s raw return
+# value, which is not what proves the content-block list survives the wrapper
+# a real `ToolNode` uses.
+# --------------------------------------------------------------------------
+
+
+def _call(name: str, args: dict, call_id: str = "call_1") -> dict:
+    return {"name": name, "args": args, "id": call_id, "type": "tool_call"}
+
+
+class TestImages:
+    def setup_method(self) -> None:
+        # Discovery is cached for TOOL_CACHE_TTL_S; without this, a test earlier
+        # in the module that discovered "fixture" at one allow_images value could
+        # answer a later test's discovery call at a different one.
+        clear_tool_cache()
+
+    async def test_an_accepted_image_reaches_a_real_toolmessage_as_a_content_block(
+        self, mcp_url: str
+    ) -> None:
+        tool = next(
+            t
+            for t in discover_mcp_tools(_server(mcp_url), allow_images=True)
+            if t.name.endswith("render_overview")
+        )
+
+        result = await tool.ainvoke(_call(tool.name, {"dataset_id": "nm000103"}))
+
+        assert isinstance(result, ToolMessage)
+        assert isinstance(result.content, list), (
+            "a malformed block would make LangChain's _format_output stringify "
+            "this list wholesale; asserting the type is what catches that"
+        )
+        text_blocks = [b for b in result.content if b.get("type") == "text"]
+        image_blocks = [b for b in result.content if b.get("type") == "image"]
+        assert len(image_blocks) == 1
+        assert image_blocks[0] == {
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": FIXTURE_PNG_B64},
+        }
+        assert '"dataset_id": "nm000103"' in text_blocks[0]["text"]
+
+    async def test_disallowed_by_the_provider_gate_carries_no_image_block(
+        self, mcp_url: str
+    ) -> None:
+        """`allow_images=False` is what a non-Anthropic model path is wrapped with;
+        the refusal is baked in at wrap time, not decided per call."""
+        tool = next(
+            t
+            for t in discover_mcp_tools(_server(mcp_url), allow_images=False)
+            if t.name.endswith("render_overview")
+        )
+
+        result = await tool.ainvoke({"dataset_id": "nm000103"})
+
+        assert isinstance(result, str)
+        assert FIXTURE_PNG_B64 not in result
+        assert "not attached" in result and "not sent to this model" in result
+
+    async def test_the_kill_switch_withdraws_an_otherwise_allowed_image(
+        self, mcp_url: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Checked live inside the call, not baked in at wrap time: unlike the
+        provider gate above, this must win even on a tool wrapped with
+        allow_images=True, because it exists to be flippable without a restart."""
+        monkeypatch.setenv(MCP_IMAGES_KILL_SWITCH_ENV, "1")
+        tool = next(
+            t
+            for t in discover_mcp_tools(_server(mcp_url), allow_images=True)
+            if t.name.endswith("render_overview")
+        )
+
+        result = await tool.ainvoke({"dataset_id": "nm000103"})
+
+        assert isinstance(result, str)
+        assert FIXTURE_PNG_B64 not in result
+        assert "not sent to this model" in result
+
+    async def test_only_image_png_is_accepted(self, mcp_url: str) -> None:
+        tool = next(
+            t
+            for t in discover_mcp_tools(_server(mcp_url), allow_images=True)
+            if t.name.endswith("wrong_mime_image")
+        )
+
+        result = await tool.ainvoke({})
+
+        assert isinstance(result, str), "nothing was accepted, so this stays a plain string"
+        assert FIXTURE_PNG_B64 not in result
+        assert "only image/png is accepted" in result
+
+    async def test_data_that_does_not_decode_as_a_png_is_refused(self, mcp_url: str) -> None:
+        tool = next(
+            t
+            for t in discover_mcp_tools(_server(mcp_url), allow_images=True)
+            if t.name.endswith("undecodable_image")
+        )
+
+        result = await tool.ainvoke({})
+
+        assert isinstance(result, str)
+        assert "not a valid PNG" in result or "not attached" in result
+
+    async def test_max_images_caps_how_many_of_one_results_images_are_attached(
+        self, mcp_url: str
+    ) -> None:
+        from src.core.limits import MAX_IMAGES
+
+        tool = next(
+            t
+            for t in discover_mcp_tools(_server(mcp_url), allow_images=True)
+            if t.name.endswith("many_images")
+        )
+
+        result = await tool.ainvoke(_call(tool.name, {"count": MAX_IMAGES + 2}))
+
+        assert isinstance(result, ToolMessage)
+        image_blocks = [b for b in result.content if b.get("type") == "image"]
+        assert len(image_blocks) == MAX_IMAGES
+        text_blocks = [b for b in result.content if b.get("type") == "text"]
+        assert any("MAX_IMAGES" in b["text"] for b in text_blocks)
 
 
 # --------------------------------------------------------------------------
@@ -338,3 +529,31 @@ class TestAgainstProductionNemar:
         result = await describe.ainvoke({"dataset_id": "nm999999"})
         assert isinstance(result, str)
         assert "not found" in result.lower()
+
+    async def test_render_overview_reaches_the_model_as_an_image_block(self) -> None:
+        """The point of the whole gate: NEMAR's own PNG, through OSA's own client,
+        on the Anthropic path (`allow_images=True`, resolved once here rather than
+        per-block, exactly as `CommunityAssistant` resolves it once at wrap time)."""
+        tools = discover_mcp_tools(McpServer(name="nemar", url=self.URL), allow_images=True)
+        list_recordings = next(t for t in tools if t.name == "nemar_list_recordings")
+        recordings = await list_recordings.ainvoke({"dataset_id": "nm000103", "limit": 1})
+        recording = recordings["recordings"][0]
+
+        render_overview = next(t for t in tools if t.name == "nemar_render_overview")
+        result = await render_overview.ainvoke(
+            _call(
+                render_overview.name,
+                {
+                    "dataset_id": "nm000103",
+                    "recording": recording["path"],
+                    "group": "eeg_250hz",
+                },
+            )
+        )
+
+        assert isinstance(result, ToolMessage)
+        assert isinstance(result.content, list)
+        image_blocks = [b for b in result.content if b.get("type") == "image"]
+        assert len(image_blocks) == 1
+        assert image_blocks[0]["source"]["media_type"] == "image/png"
+        assert len(image_blocks[0]["source"]["data"]) > 0
