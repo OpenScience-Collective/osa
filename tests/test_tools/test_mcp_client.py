@@ -341,26 +341,28 @@ class TestImages:
 
         assert isinstance(result, str)
         assert FIXTURE_PNG_B64 not in result
-        assert "not attached" in result and "not sent to this model" in result
+        assert "[image 1 of 1 not attached: images are not sent to this model]" in result
 
     async def test_the_kill_switch_withdraws_an_otherwise_allowed_image(
         self, mcp_url: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Checked live inside the call, not baked in at wrap time: unlike the
         provider gate above, this must win even on a tool wrapped with
-        allow_images=True, because it exists to be flippable without a restart."""
-        monkeypatch.setenv(MCP_IMAGES_KILL_SWITCH_ENV, "1")
+        allow_images=True, because it exists to be flippable without a restart.
+        So the tool is wrapped first and the switch is set after, which a switch read
+        at wrap time would miss."""
         tool = next(
             t
             for t in discover_mcp_tools(_server(mcp_url), allow_images=True)
             if t.name.endswith("render_overview")
         )
+        monkeypatch.setenv(MCP_IMAGES_KILL_SWITCH_ENV, "1")
 
         result = await tool.ainvoke({"dataset_id": "nm000103"})
 
         assert isinstance(result, str)
         assert FIXTURE_PNG_B64 not in result
-        assert "not sent to this model" in result
+        assert "[image 1 of 1 not attached: images are not sent to this model]" in result
 
     async def test_only_image_png_is_accepted(self, mcp_url: str) -> None:
         tool = next(
@@ -385,7 +387,7 @@ class TestImages:
         result = await tool.ainvoke({})
 
         assert isinstance(result, str)
-        assert "not a valid PNG" in result or "not attached" in result
+        assert "[image 1 of 1 not attached: not a valid PNG (wrong signature)]" in result
 
     async def test_max_images_caps_how_many_of_one_results_images_are_attached(
         self, mcp_url: str
@@ -546,7 +548,7 @@ class TestAgainstProductionNemar:
                 {
                     "dataset_id": "nm000103",
                     "recording": recording["path"],
-                    "group": "eeg_250hz",
+                    "group": recording["groups"][0]["name"],
                 },
             )
         )

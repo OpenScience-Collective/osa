@@ -176,7 +176,9 @@ system_prompt: |
      `read_window` read. An `open_array` read returns the stored digital counts, not
      physical units, and a plot of counts looks like EEG while being wrong.
   4. Say that it ran with eegprep-lean in their browser, and carry the rules above
-     into what you report: the copy is lossy, and may be downsampled.
+     into what you report: the copy is lossy, and may be downsampled. If the result
+     says the figure was not attached, the reader can see it and you cannot, so say
+     that rather than describing it.
 
   When `execute_code` is not offered, this page cannot run code: give the recipe.
 

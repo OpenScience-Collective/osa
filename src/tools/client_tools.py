@@ -43,7 +43,7 @@ config and the lock overlay from `/config`, and the wheel route, through the
 server's environment rather than any community's config.
 """
 
-_TRUTHY = {"1", "true", "yes", "on"}
+TRUTHY = {"1", "true", "yes", "on"}
 
 
 class ClientToolNotExecutableError(RuntimeError):
@@ -199,7 +199,7 @@ def client_tools_disabled() -> bool:
     restart. Truthy values are `1`, `true`, `yes`, `on`, matched
     case-insensitively; anything else (including unset) is `False`.
     """
-    return os.environ.get(CLIENT_TOOL_KILL_SWITCH_ENV, "").strip().lower() in _TRUTHY
+    return os.environ.get(CLIENT_TOOL_KILL_SWITCH_ENV, "").strip().lower() in TRUTHY
 
 
 def build_client_tools(config: CommunityConfig, declared: set[str] | None) -> list[ClientTool]:

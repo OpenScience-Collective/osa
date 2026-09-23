@@ -230,9 +230,10 @@ class TestMcpImageOnTheRealProviderPaths:
         """
         from langchain_litellm import ChatLiteLLM
 
-        content = _content_of(_mcp_render_overview_result(), allow_images=False)
+        result = _mcp_render_overview_result()
+        png = result.content[0].data
+        content = _content_of(result, allow_images=False)
         assert isinstance(content, str), "everything was refused, so this is plain text"
-        assert "not attached" in content
 
         llm = ChatLiteLLM(model="openrouter/openai/gpt-oss-120b", api_key="test-key")
         message = ToolMessage(content=content, tool_call_id=TOOL_CALL_ID)
@@ -241,8 +242,8 @@ class TestMcpImageOnTheRealProviderPaths:
         assert len(message_dicts) == 1
         sent = message_dicts[0]["content"]
         assert isinstance(sent, str)
-        assert "image" not in sent or "not attached" in sent
-        assert "base64" not in sent.lower()
+        assert "[image 1 of 1 not attached: images are not sent to this model]" in sent
+        assert png not in sent
 
     def test_an_unrefused_mcp_image_would_reach_litellm_untouched(self) -> None:
         """The control for the test above, and the reason the gate exists rather

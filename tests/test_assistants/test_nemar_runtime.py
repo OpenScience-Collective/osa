@@ -79,6 +79,20 @@ class TestTheShippedConfig:
         assert "python_browser" in prompt
         assert "eegprep-lean" in prompt
 
+    def test_the_prompt_reads_the_placeholder_a_withheld_image_carries(
+        self, nemar: CommunityConfig
+    ) -> None:
+        """On a model path that takes no images, a figure or overview arrives as a
+        placeholder, and the prompt tells the model what that phrase means. Both
+        sides are pinned here so a reworded placeholder cannot leave the model
+        describing an image it never received."""
+        from src.api.tool_results import IMAGES_NOT_SENT
+
+        prompt = nemar.system_prompt
+        assert IMAGES_NOT_SENT.startswith("not attached")
+        assert prompt.count("says it was not attached") == 1
+        assert "says the figure was not attached" in prompt
+
 
 class TestTheLockOverlay:
     """NEMAR's own entries. That the overlay verifies and is what its wheels produce is

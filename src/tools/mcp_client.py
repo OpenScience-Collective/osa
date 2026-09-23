@@ -50,9 +50,9 @@ from typing import TYPE_CHECKING, Any
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import ValidationError
 
-from src.api.tool_results import ToolResultImage, png_dimensions
+from src.api.tool_results import IMAGES_NOT_SENT, ToolResultImage, png_dimensions
 from src.core.limits import MAX_IMAGES
-from src.tools.client_tools import _TRUTHY
+from src.tools.client_tools import TRUTHY
 
 if TYPE_CHECKING:
     from src.core.config.community import McpServer
@@ -61,7 +61,7 @@ logger = logging.getLogger(__name__)
 
 #: Environment variable name for the incident-control kill switch on MCP images.
 #: Modeled on `src.tools.client_tools.CLIENT_TOOL_KILL_SWITCH_ENV`: setting it to any
-#: of `_TRUTHY` withdraws every MCP image without touching a community's config.yaml,
+#: of `TRUTHY` withdraws every MCP image without touching a community's config.yaml,
 #: and without restarting anything, since it is read fresh on every call rather than
 #: baked in at tool-discovery time.
 MCP_IMAGES_KILL_SWITCH_ENV = "OSA_MCP_IMAGES_DISABLED"
@@ -73,7 +73,7 @@ def mcp_images_disabled() -> bool:
     Checked live, like `client_tools_disabled`, so a deployment can flip this without
     a restart.
     """
-    return os.environ.get(MCP_IMAGES_KILL_SWITCH_ENV, "").strip().lower() in _TRUTHY
+    return os.environ.get(MCP_IMAGES_KILL_SWITCH_ENV, "").strip().lower() in TRUTHY
 
 
 #: How long to wait for a server to list its tools before giving up and starting
@@ -222,14 +222,15 @@ def _content_of(result: Any, *, allow_images: bool) -> Any:
     accepted: list[dict[str, Any]] = []
     notes: list[str] = []
     for index, block in enumerate(image_blocks):
+        label = f"image {index + 1} of {len(image_blocks)}"
         if not allow_images:
-            content_block, reason = None, "images are not sent to this model"
-        else:
-            content_block, reason = _accept_mcp_image(block, accepted_so_far=len(accepted))
+            notes.append(f"[{label} {IMAGES_NOT_SENT}]")
+            continue
+        content_block, reason = _accept_mcp_image(block, accepted_so_far=len(accepted))
         if content_block is not None:
             accepted.append(content_block)
         else:
-            notes.append(f"[image {index + 1} of {len(image_blocks)} not attached: {reason}]")
+            notes.append(f"[{label} not attached: {reason}]")
 
     if notes:
         text = f"{text}\n\n" + "\n".join(notes)
