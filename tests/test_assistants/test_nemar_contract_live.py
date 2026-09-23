@@ -21,10 +21,12 @@ the wheel actually committed beside the prompt.
 from __future__ import annotations
 
 import ast
+import re
 import zipfile
 from pathlib import Path
 
 import pytest
+from packaging.version import Version
 
 from src.core.config.community import CommunityConfig, McpServer
 from src.core.config.runtime_lock import WHEELS_DIR_NAME, load_runtime_lock
@@ -90,27 +92,125 @@ def eegprep_lean_exported_names(wheel_path: Path) -> set[str]:
     return names
 
 
+def _eegprep_lean_bindings(tree: ast.AST) -> tuple[set[str], dict[str, str]]:
+    """How a snippet refers to eegprep_lean: the names bound to the module itself
+    (`import eegprep_lean`, `import eegprep_lean as epl`), and each name imported
+    from it, local name to real name (`from eegprep_lean import read_index as ri`)."""
+    modules: set[str] = set()
+    imported: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "eegprep_lean":
+                    modules.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module == "eegprep_lean":
+            for alias in node.names:
+                imported[alias.asname or alias.name] = alias.name
+    return modules, imported
+
+
 def eegprep_lean_names_used(code: str) -> set[str]:
     """Every `eegprep_lean` name a python snippet actually reads: the names of a
-    `from eegprep_lean import ...` statement, and the attribute of an
-    `eegprep_lean.<name>` access. Read with `ast`, so a name mentioned only in a
-    comment or a string (the live recipe's `how_to.python_browser` describes
-    `read_window(index, store, ...)` in a comment, which is prose, not a second
-    import) is never counted as used.
+    `from eegprep_lean import ...` statement, and the attribute of an access on
+    the module under any alias. Read with `ast`, so a name mentioned only in a
+    comment or a string is never counted as used.
     """
     tree = ast.parse(code)
-    names: set[str] = set()
+    modules, imported = _eegprep_lean_bindings(tree)
+    names = set(imported.values())
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "eegprep_lean":
-            for alias in node.names:
-                names.add(alias.name)
-        elif (
+        if (
             isinstance(node, ast.Attribute)
             and isinstance(node.value, ast.Name)
-            and node.value.id == "eegprep_lean"
+            and node.value.id in modules
         ):
             names.add(node.attr)
     return names
+
+
+def eegprep_lean_calls(code: str) -> list[tuple[str, frozenset[str]]]:
+    """Each call a snippet makes to an eegprep_lean function, as its real name and
+    the keyword arguments passed. A call through a returned object
+    (`arr.getitem(...)`) is not eegprep_lean's own name and is not listed."""
+    tree = ast.parse(code)
+    modules, imported = _eegprep_lean_bindings(tree)
+    calls: list[tuple[str, frozenset[str]]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Name)
+            and func.value.id in modules
+        ):
+            name = func.attr
+        elif isinstance(func, ast.Name) and func.id in imported:
+            name = imported[func.id]
+        else:
+            continue
+        keywords = frozenset(k.arg for k in node.keywords if k.arg is not None)
+        calls.append((name, keywords))
+    return calls
+
+
+def eegprep_lean_keywords(wheel_path: Path) -> dict[str, frozenset[str] | None]:
+    """For each function eegprep_lean exports, the parameter names a caller may
+    pass by keyword, read from the wheel's source; None when it takes `**kwargs`.
+    Found where `__init__.py` says each name lives: a `from .module import` or an
+    `_EXTRA_NAMES` entry. A class or constant has no entry here."""
+    with zipfile.ZipFile(wheel_path) as archive:
+        init = ast.parse(archive.read("eegprep_lean/__init__.py").decode("utf-8"))
+        homes: dict[str, str] = {}
+        for node in ast.walk(init):
+            if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module:
+                for alias in node.names:
+                    homes[alias.asname or alias.name] = f"eegprep_lean/{node.module}.py"
+            elif (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == "_EXTRA_NAMES"
+                and isinstance(node.value, ast.Dict)
+            ):
+                for key, value in zip(node.value.keys, node.value.values, strict=True):
+                    if isinstance(key, ast.Constant) and isinstance(value, ast.Tuple):
+                        module = value.elts[0]
+                        if isinstance(module, ast.Constant):
+                            homes[key.value] = module.value.replace(".", "/") + ".py"
+        modules = {
+            path: ast.parse(archive.read(path).decode("utf-8")) for path in set(homes.values())
+        }
+
+    keywords: dict[str, frozenset[str] | None] = {}
+    for name, path in homes.items():
+        for node in modules[path].body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+                arguments = node.args
+                if arguments.kwarg is not None:
+                    keywords[name] = None
+                else:
+                    keywords[name] = frozenset(
+                        a.arg for a in [*arguments.args, *arguments.kwonlyargs]
+                    )
+    return keywords
+
+
+def recipe_problems(code: str, wheel_path: Path) -> list[str]:
+    """What in `code` the wheel cannot run: a name it does not export, or a keyword
+    argument its function does not take. Empty when every eegprep_lean call fits."""
+    problems = [
+        f"eegprep_lean.{name} is not exported"
+        for name in sorted(eegprep_lean_names_used(code) - eegprep_lean_exported_names(wheel_path))
+    ]
+    accepted = eegprep_lean_keywords(wheel_path)
+    for name, passed in eegprep_lean_calls(code):
+        allowed = accepted.get(name)
+        if allowed is None:
+            continue
+        for keyword in sorted(passed - allowed):
+            problems.append(f"eegprep_lean.{name} takes no keyword {keyword!r}")
+    return problems
 
 
 class TestEegprepLeanExportedNames:
@@ -188,6 +288,63 @@ class TestEegprepLeanNamesUsed:
         code = "from eegprep_lean import open_array\narr = await open_array('url')\n"
         assert eegprep_lean_names_used(code) == {"open_array"}
 
+    def test_an_aliased_module_is_counted(self) -> None:
+        code = "import eegprep_lean as epl\nw = await epl.read_window(i, s)\n"
+        assert eegprep_lean_names_used(code) == {"read_window"}
+
+
+def _prompt_snippet() -> str:
+    """NEMAR's canonical snippet, as the prompt teaches it."""
+    prompt = CommunityConfig.from_yaml(NEMAR_DIR / "config.yaml").system_prompt
+    heading = prompt.index("## Running code in the reader's browser")
+    fence = re.search(r"```python\n(.*?)\n```", prompt[heading:], re.DOTALL)
+    assert fence is not None, "the prompt's browser section has no python snippet"
+    return fence.group(1)
+
+
+class TestRecipeProblems:
+    """Names alone cannot see a keyword the wheel does not take, which is how a
+    recipe written for a newer eegprep-lean fails on an older one."""
+
+    def test_the_prompts_own_snippet_fits_the_vendored_wheel(self) -> None:
+        assert recipe_problems(_prompt_snippet(), WHEEL_PATH) == []
+
+    def test_a_keyword_the_function_does_not_take_is_named(self) -> None:
+        code = (
+            'import eegprep_lean\nindex = await eegprep_lean.read_index("x", no_such_keyword=1)\n'
+        )
+
+        assert recipe_problems(code, WHEEL_PATH) == [
+            "eegprep_lean.read_index takes no keyword 'no_such_keyword'"
+        ]
+
+    def test_a_keyword_is_checked_through_an_imported_alias(self) -> None:
+        code = 'from eegprep_lean import read_index as ri\nindex = await ri("x", bogus=1)\n'
+
+        assert recipe_problems(code, WHEEL_PATH) == [
+            "eegprep_lean.read_index takes no keyword 'bogus'"
+        ]
+
+    def test_a_name_the_wheel_does_not_export_is_named(self) -> None:
+        code = "import eegprep_lean\neegprep_lean.read_everything()\n"
+
+        assert recipe_problems(code, WHEEL_PATH) == ["eegprep_lean.read_everything is not exported"]
+
+    def test_the_check_agrees_with_the_wheels_version_about_index_url(self) -> None:
+        """Two independent sources for one fact: eegprep-lean added `index_url` in
+        0.1.0.dev2, and nemar-cli's recipe needs it. The check must read the vendored
+        wheel's signature the way its version says it should."""
+        overlay = load_runtime_lock(NEMAR_DIR, "runtime/nemar-pyodide-lock.json")
+        version = Version(overlay.packages["eegprep-lean"].version)
+        code = (
+            "import eegprep_lean\n"
+            'index = await eegprep_lean.read_index("x", index_url="https://example.org/index.json")\n'
+        )
+
+        refused = recipe_problems(code, WHEEL_PATH) != []
+
+        assert refused == (version < Version("0.1.0.dev2"))
+
 
 # ---------------------------------------------------------------------------
 # Against the real NEMAR server. Deselected by default; see
@@ -249,12 +406,11 @@ class TestReadWindowContract:
         assert isinstance(sample_slice["start"], int) and sample_slice["start"] >= 0
         assert isinstance(sample_slice["end"], int) and sample_slice["end"] > sample_slice["start"]
 
-    async def test_every_eegprep_lean_name_the_live_recipe_uses_is_exported(self) -> None:
+    async def test_the_live_recipe_fits_the_vendored_wheel(self) -> None:
         """The guard that can go red: if `mcp.nemar.org` starts handing out a
-        `python_browser` recipe that calls something `eegprep_lean` does not
-        export -- a rename on the server side, or a wheel bump here that drops a
-        name -- this fails without needing a person to notice the browser lane
-        silently broke.
+        `python_browser` recipe that calls a name the vendored wheel does not
+        export, or passes a keyword its function does not take, this fails before
+        a reader's browser does.
         """
         tools = discover_mcp_tools(McpServer(name="nemar", url=NEMAR_MCP_URL))
         list_recordings = next(t for t in tools if t.name == "nemar_list_recordings")
@@ -275,12 +431,12 @@ class TestReadWindowContract:
         )
 
         snippet = result["recipe"]["how_to"]["python_browser"]
-        used = eegprep_lean_names_used(snippet)
-        assert used, "the live recipe named no eegprep_lean names at all; that is itself a break"
+        assert eegprep_lean_names_used(snippet), (
+            "the live recipe named no eegprep_lean names at all; that is itself a break"
+        )
 
-        exported = eegprep_lean_exported_names(WHEEL_PATH)
-        missing = used - exported
-        assert not missing, (
-            f"the live python_browser recipe uses {missing}, which the vendored wheel "
-            f"({WHEEL_PATH.name}) does not export: {snippet!r}"
+        problems = recipe_problems(snippet, WHEEL_PATH)
+        assert not problems, (
+            f"the live python_browser recipe cannot run on the vendored wheel "
+            f"({WHEEL_PATH.name}): {problems}\n{snippet}"
         )
