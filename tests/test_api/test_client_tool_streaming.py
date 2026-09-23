@@ -437,7 +437,7 @@ class TestToolEndEventNeverCarriesBase64:
         assert tool_end_events, "render_with_image's on_tool_end never fired"
         rendered = next(e for e in tool_end_events if e["name"] == "render_with_image")
         assert RENDER_PNG_B64 not in rendered["output"]
-        assert "image/png" in rendered["output"]
+        assert "[image, not shown in this event]" in rendered["output"]
 
     @pytest.mark.asyncio
     async def test_an_ordinary_text_tools_output_is_unaffected(self) -> None:
@@ -573,7 +573,7 @@ class TestRunTwo:
         )
         from src.api.tool_results import build_history_tool_message, build_live_tool_message
 
-        live = [*session.messages, build_live_tool_message(result)]
+        live = [*session.messages, build_live_tool_message(result, allow_images=True)]
         session.messages.append(build_history_tool_message(result))
 
         assistant, model = _assistant([AIMessage(content="The peak is at 10.2 Hz.")])

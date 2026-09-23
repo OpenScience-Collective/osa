@@ -443,7 +443,10 @@ tool so the model can pull detail on demand: the common path stays cheap and the
 reaches the model as a real Anthropic image content block, but only on the Anthropic path: OpenRouter and
 LiteLLM have not been shown to accept that block shape, so `CommunityAssistant`'s `allow_mcp_images` (resolved
 once from the request's provider choice, the same way `citations` is) gates it at tool-wrap time, and a
-non-Anthropic run gets a text placeholder instead of a silently-dropped image. Within one run the image is
+non-Anthropic run gets a text placeholder instead of a silently-dropped image. The same gate now covers a
+browser execution's figures in run 2: `/chat/resume` resolves the provider before it builds the live
+message, and on a non-Anthropic path each figure arrives as "not attached: images are not sent to this
+model", which NEMAR's prompt tells the model to relay rather than describe. Within one run the image is
 re-sent with every later model call -- there is no per-call "most recent" trimming inside a single run, only
 across runs -- and stored history never keeps it: `scrub_stored_images` replaces every image block it finds
 (a client-tool result's live message that rode along into a second parked call, and a real MCP `ToolMessage`

@@ -96,16 +96,32 @@ def png_dimensions(data: bytes) -> tuple[int, int]:
     return width, height
 
 
-def image_block_placeholder(mime: str, width: int | None = None, height: int | None = None) -> str:
-    """The text that stands in for one image block wherever history is stored.
+#: Why an image in stored history is text: it was seen once and not kept.
+NOT_RETAINED = "not retained in history"
+
+#: Why an image in a LIVE message is text: the model path in use has not been shown
+#: to accept an image block, so the model never saw it. Worded so the model can tell
+#: the two apart, and with "not attached", which NEMAR's prompt tells it to relay as
+#: "I could not see it" rather than describe. `src.tools.mcp_client` uses it too.
+IMAGES_NOT_SENT = "not attached: images are not sent to this model"
+
+
+def image_block_placeholder(
+    mime: str,
+    width: int | None = None,
+    height: int | None = None,
+    *,
+    reason: str = NOT_RETAINED,
+) -> str:
+    """The text that stands in for one image block.
 
     Shared by `ToolResultImage.placeholder` (which always has both dimensions)
     and `scrub_stored_images` (which sometimes only has the media type, when a
     stored block's bytes cannot be read back as the image they claim to be).
     """
     if width is not None and height is not None:
-        return f"[image: {width}x{height} {mime}, not retained in history]"
-    return f"[image: {mime}, not retained in history]"
+        return f"[image: {width}x{height} {mime}, {reason}]"
+    return f"[image: {mime}, {reason}]"
 
 
 class ToolResultImage(BaseModel):
@@ -157,9 +173,10 @@ class ToolResultImage(BaseModel):
             "source": {"type": "base64", "media_type": self.mime, "data": self.data_base64},
         }
 
-    def placeholder(self) -> str:
-        """What stands in for this image in stored history."""
-        return image_block_placeholder(self.mime, self.width, self.height)
+    def placeholder(self, reason: str = NOT_RETAINED) -> str:
+        """What stands in for this image in stored history, or in a live message
+        whose model path takes no images (`IMAGES_NOT_SENT`)."""
+        return image_block_placeholder(self.mime, self.width, self.height, reason=reason)
 
 
 class ClientToolResult(BaseModel):
@@ -227,23 +244,20 @@ def _fence(result: ClientToolResult) -> str:
     return text
 
 
-def build_live_tool_message(result: ClientToolResult, *, allow_images: bool = True) -> ToolMessage:
+def build_live_tool_message(result: ClientToolResult, *, allow_images: bool) -> ToolMessage:
     """The message run 2 sends, images included when the model path accepts them.
 
     This one is never stored. `build_history_tool_message` is what the session keeps.
 
-    `allow_images` is the caller's already-made provider decision (see
-    `src.api.routers.community._resolve_provider`), passed in rather than
-    guessed here: only the Anthropic path has been shown to accept the native
-    image content block `ToolResultImage.to_content_block` builds
-    (`tests/test_core/test_tool_result_image_transport.py`). OpenRouter and
-    LiteLLM forward `ToolMessage.content` to the wire unexamined
-    (`langchain_litellm`'s `_convert_message_to_dict`), so a caller on that
-    path gets `build_history_tool_message`'s placeholder-only shape instead of
-    a block nothing has proven that transport reads correctly.
+    `allow_images` is the caller's provider decision, and it has no default so that
+    no caller sends images by omission. Only the Anthropic path has been shown to
+    accept the image block `ToolResultImage.to_content_block` builds
+    (`tests/test_core/test_tool_result_image_transport.py`). LiteLLM forwards
+    `ToolMessage.content` to the wire unexamined, so on that path each image becomes
+    a placeholder that tells the model it never saw the image.
     """
     if not allow_images:
-        return build_history_tool_message(result)
+        return _placeholder_tool_message(result, reason=IMAGES_NOT_SENT)
     content: list[dict[str, Any]] = [{"type": "text", "text": _fence(result)}]
     content.extend(image.to_content_block() for image in result.images)
     return ToolMessage(
@@ -260,9 +274,13 @@ def build_history_tool_message(result: ClientToolResult) -> ToolMessage:
     stored shape matches the live one and a reader is not misled into thinking a result
     with no images and a result whose images were dropped are different kinds of thing.
     """
+    return _placeholder_tool_message(result, reason=NOT_RETAINED)
+
+
+def _placeholder_tool_message(result: ClientToolResult, *, reason: str) -> ToolMessage:
     text = _fence(result)
     if result.images:
-        placeholders = "\n".join(image.placeholder() for image in result.images)
+        placeholders = "\n".join(image.placeholder(reason) for image in result.images)
         text = f"{text}\n\n{placeholders}"
     return ToolMessage(
         content=[{"type": "text", "text": text}],
@@ -315,7 +333,8 @@ def _image_block_meta(block: Any) -> tuple[str, str] | None:
     return None
 
 
-def _is_image_block(block: Any) -> bool:
+def is_image_block(block: Any) -> bool:
+    """True for a content block of any image spelling `scrub_stored_images` knows."""
     return isinstance(block, Mapping) and block.get("type") in ("image", "image_url")
 
 
@@ -349,7 +368,7 @@ def scrub_stored_images(messages: Sequence[BaseMessage]) -> list[BaseMessage]:
         new_content: list[Any] = []
         changed = False
         for block in content:
-            if not _is_image_block(block):
+            if not is_image_block(block):
                 new_content.append(block)
                 continue
             changed = True

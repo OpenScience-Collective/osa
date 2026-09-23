@@ -54,6 +54,7 @@ from src.api.tool_results import (
     build_history_tool_message,
     build_live_tool_message,
     build_unanswered_tool_message,
+    is_image_block,
     scrub_stored_images,
 )
 from src.assistants import registry
@@ -2081,6 +2082,17 @@ def create_community_router(community_id: str) -> APIRouter:
         origin = http_request.headers.get("origin")
         byok = resolve_byok(x_anthropic_key, x_openrouter_key)
 
+        # Whether run 2 may carry the result's images, decided the same way
+        # `create_community_assistant` decides citations. Not an authorization
+        # check: `_stream_chat_response` makes that one, on the same inputs, and its
+        # 403 is the one a caller sees. So a refusal here only means no images. It
+        # runs before the call is claimed, because anything raised after the claim
+        # would leave the session unanswerable (see the note on the re-park below).
+        try:
+            allow_images = _resolve_provider(community_id, byok, origin).provider == "anthropic"
+        except HTTPException:
+            allow_images = False
+
         session = get_session(community_id, body.session_id)
         if session is None:
             raise HTTPException(status_code=404, detail="Session not found or expired.")
@@ -2107,21 +2119,6 @@ def create_community_router(community_id: str) -> APIRouter:
         # permanently unusable and unrepairable, because `abandon_pending_call` would
         # have nothing left to abandon. Nothing in these two builders can raise today;
         # the re-park is here so that stays true when someone adds something that can.
-        # Advisory only: this decides whether the message built below is even allowed
-        # to carry a real image, never whether the caller is authorized to be here at
-        # all. `_stream_chat_response` -> `create_community_assistant` makes that real
-        # authorization check moments later, on the same inputs, and its 403 is the
-        # one a caller actually sees; this call's only job is to run early enough to
-        # gate `build_live_tool_message` before it builds the message
-        # `_stream_chat_response` is given. So a failure here answers exactly like a
-        # non-Anthropic provider does -- no image goes out -- rather than surfacing
-        # its own error or changing which status code an unauthorized or malformed
-        # request sees first.
-        try:
-            allow_images = _resolve_provider(community_id, byok, origin).provider == "anthropic"
-        except HTTPException:
-            allow_images = False
-
         try:
             live_messages = [
                 *session.messages,
@@ -2660,27 +2657,24 @@ def _sse_safe_tool_output(tool_output: Any) -> str:
     verbatim, and `str()` would embed the image's own base64 text in the SSE stream,
     which is one of exactly the things this event must never do.
 
-    So only a block LIST containing an actual image block is treated specially:
-    text blocks are joined and each image block becomes a one-line placeholder
-    naming the media type, never touching `.get("data")`/`.source.data`. Everything
-    else, including a `ToolMessage` whose content is a plain string, renders exactly
-    as `str(tool_output) if tool_output else ""` always has -- unchanged, not merely
-    equivalent, so no existing consumer of this field sees a different string for a
-    tool that has nothing pictorial to hide.
+    So only a block LIST containing an image block, in any spelling
+    `scrub_stored_images` knows, is treated specially: text blocks are joined and
+    each image block becomes a one-line placeholder, never reading its data.
+    Everything else, including a `ToolMessage` whose content is a plain string,
+    renders exactly as `str(tool_output) if tool_output else ""` always has, so no
+    existing consumer of this field sees a different string for a tool that has
+    nothing pictorial to hide.
     """
     if not tool_output:
         return ""
     content = getattr(tool_output, "content", tool_output)
-    if isinstance(content, list) and any(
-        isinstance(block, dict) and block.get("type") == "image" for block in content
-    ):
+    if isinstance(content, list) and any(is_image_block(block) for block in content):
         parts: list[str] = []
         for block in content:
-            if isinstance(block, dict) and block.get("type") == "text":
+            if is_image_block(block):
+                parts.append("[image, not shown in this event]")
+            elif isinstance(block, dict) and block.get("type") == "text":
                 parts.append(str(block.get("text", "")))
-            elif isinstance(block, dict) and block.get("type") == "image":
-                media_type = (block.get("source") or {}).get("media_type", "image")
-                parts.append(f"[image: {media_type}, not shown in this event]")
             else:
                 parts.append(str(block))
         return "\n".join(parts)
