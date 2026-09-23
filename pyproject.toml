@@ -186,3 +186,8 @@ python_version = "3.11"
 warn_return_any = true
 warn_unused_ignores = true
 disallow_untyped_defs = true
+
+[dependency-groups]
+dev = [
+    "nbformat>=5.11.1",
+]
