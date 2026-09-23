@@ -21,6 +21,7 @@ import pyodidePackage from 'pyodide/package.json';
 import { buildDataClientSource, buildNamespaceSealSource } from './osa-egress.js';
 import { buildHelpersSource, buildOutputCaptureSource, resolveLimits } from './osa-output.js';
 import { createWorkerRuntime } from './osa-worker-core.js';
+import { rangeResponse } from './test-support/byte-range.js';
 
 let passed = 0;
 let failed = 0;
@@ -55,6 +56,16 @@ const PACKAGE_CACHE = new URL('../.cache/pyodide-packages/', import.meta.url).pa
 
 const createFromSource = new Function(`return (${createWorkerRuntime.toString()});`)();
 
+// A request that gets no response at all. A browser rejects one with an ordinary
+// TypeError; Bun's own rejection is an object Pyodide's future helper refuses, so
+// an await on it never settles (measured 2026-09-22 on 0.29.5). This host is
+// refused the way a browser refuses it, which is the one thing that stands in
+// here: installed before any runtime boots, since the data client captures fetch.
+const UNREACHABLE = 'http://unreachable.invalid/';
+const bunFetch = globalThis.fetch;
+globalThis.fetch = (input, init) =>
+  String(input).startsWith(UNREACHABLE) ? Promise.reject(new TypeError('Failed to fetch')) : bunFetch(input, init);
+
 /**
  * Boot a runtime exactly as the worker does, recording what it sends and seals.
  */
@@ -64,6 +75,8 @@ async function bootRuntime({
   limits = {},
   lockPackages = {},
   prelude = '',
+  // The lock the installed package ships, which is the one its version serves.
+  readStockLock = async () => stockLock,
 } = {}) {
   const messages = [];
   const sealed = [];
@@ -87,8 +100,7 @@ async function bootRuntime({
   const runtime = createFromSource(config, {
     load: (indexURL, options) =>
       loadPyodide({ packageCacheDir: PACKAGE_CACHE, stdout: () => {}, stderr: () => {}, ...options }),
-    // The lock the installed package ships, which is the one its version serves.
-    stockLock: async () => stockLock,
+    stockLock: readStockLock,
     seal: (prefixes) => sealed.push({ prefixes, sentBefore: messages.length }),
     send: (message) => messages.push(message),
   });
@@ -444,6 +456,29 @@ console.log('\na lock overlay may add packages and never replace one');
   const failure = shadowed.messages.find((m) => m.type === 'error');
   assert(failure && /lock entry numpy would replace the Pyodide distribution's own/.test(failure.message),
     `and the refusal names the entry (got ${JSON.stringify(failure && failure.message)})`);
+  assertEqual(failure && failure.kind, 'lock', 'as a lock failure, not one of Pyodide itself');
+}
+
+console.log('\na distribution lock that cannot be read or has no packages fails the boot as a lock failure');
+{
+  const zarr = { name: 'zarr', file_name: '/nowhere/zarr-3.4.0-py3-none-any.whl' };
+  const unread = await bootRuntime({
+    lockPackages: { zarr },
+    readStockLock: async () => {
+      throw new TypeError('Failed to fetch');
+    },
+  });
+  const unreadFailure = unread.messages.find((m) => m.type === 'error');
+  assertEqual(unread.ready, undefined, 'an unreadable lock does not boot');
+  assertEqual(JSON.stringify([unreadFailure && unreadFailure.kind, unreadFailure && unreadFailure.message]),
+    JSON.stringify(['lock', "the Pyodide distribution's lock could not be read: Failed to fetch"]),
+    'and says it was the distribution\'s lock that could not be read');
+  assertEqual(unread.messages.some((m) => m.phase === 'runtime_loaded'), false, 'before Pyodide was ever loaded');
+
+  const empty = await bootRuntime({ lockPackages: { zarr }, readStockLock: async () => ({}) });
+  const emptyFailure = empty.messages.find((m) => m.type === 'error');
+  assertEqual(JSON.stringify([emptyFailure && emptyFailure.kind, emptyFailure && emptyFailure.message]),
+    JSON.stringify(['lock', "the Pyodide distribution's lock has no packages"]), 'a lock with no packages is named for what it is');
 }
 
 console.log('\nthe data client reads through fetch, inside the same interpreter');
@@ -471,11 +506,7 @@ console.log('\nosa.fetch reads byte ranges, and reports a status rather than rai
       const range = request.headers.get('range');
       seen.push({ path: new URL(request.url).pathname, range, other: request.headers.get('x-extra') });
       if (new URL(request.url).pathname === '/missing') return new Response('gone', { status: 404 });
-      const suffix = range && /^bytes=-(\d+)$/.exec(range);
-      const closed = range && /^bytes=(\d+)-(\d+)$/.exec(range);
-      if (suffix) return new Response(body.slice(body.length - Number(suffix[1])), { status: 206 });
-      if (closed) return new Response(body.slice(Number(closed[1]), Number(closed[2]) + 1), { status: 206 });
-      return new Response(body);
+      return rangeResponse(body, range);
     },
   });
   const base = `http://127.0.0.1:${server.port}`;
@@ -513,12 +544,17 @@ console.log('\nosa.fetch reads byte ranges, and reports a status rather than rai
     assertEqual(typed.stdout, 'TypeError the Range header must be a str, not int\n', 'a Range value that is not a string is refused');
     assertEqual(seen.length, before, 'and neither refused call reached the network');
 
-    // No response at all (the OSError branch) is checked in the browser harness,
-    // through a URL the egress guard refuses, and cannot be checked here.
-    // Measured 2026-09-22 on Pyodide 0.29.5: Bun's own fetch rejects a refused
-    // connection with an error Pyodide's future helper will not accept
-    // ("invalid exception object"), so the await never settles. An ordinary
-    // TypeError converts, and a browser rejects with one.
+    // No response at all, through the host that is refused the way a browser
+    // refuses it (see UNREACHABLE). The egress guard's refusal of a URL outside
+    // fetch_allow is checked in the browser harness, where the guard is real.
+    const lost = await plain.run(
+      `try:\n    await osa.fetch(${JSON.stringify(`${UNREACHABLE}x`)})\nexcept OSError as e:\n` +
+        '    print(type(e.__cause__).__name__)\n    print(e)'
+    );
+    const [cause, message] = lost.stdout.split('\n');
+    assertEqual(cause, 'JsException', 'a fetch the browser rejects is an OSError, chained to what the browser raised');
+    assert(/^no response from http:\/\/unreachable\.invalid\/x: a network failure, a redirect .* or a URL outside fetch_allow\. The browser said: TypeError: Failed to fetch$/.test(message),
+      `and it lists what "no response" can mean, since the browser says so little (got ${JSON.stringify(message)})`);
   } finally {
     server.stop(true);
   }

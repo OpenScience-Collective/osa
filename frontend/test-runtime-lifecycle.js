@@ -21,6 +21,7 @@ import {
   PyodideRuntime,
   RUNTIME_STATE,
   buildWorkerSource,
+  createWorkerEnv,
   resolveLockPackages,
   toClientToolResult,
 } from './osa-runtime.js';
@@ -125,7 +126,14 @@ console.log('\na lock overlay\'s wheels resolve on the API, and only they are op
   assertEqual(resolved.zarr.sha256, entry.sha256, 'and the rest of the entry, the hash included, is kept as sent');
   assertEqual(entry.file_name, 'zarr-3.4.0-py3-none-any.whl', 'without changing the entry it was given');
 
-  for (const name of ['../zarr-3.4.0-py3-none-any.whl', 'https://evil.example/zarr.whl', 'zarr.tar.gz', 7]) {
+  for (const name of [
+    '../zarr-3.4.0-py3-none-any.whl',
+    'https://evil.example/zarr.whl',
+    'zarr.tar.gz',
+    // A compiled wheel, which the server refuses too: Pyodide cannot build one.
+    'zarr-3.4.0-cp313-cp313-pyemscripten_2025_0_wasm32.whl',
+    7,
+  ]) {
     let threw = null;
     try {
       resolveLockPackages({ packages: { zarr: { ...entry, file_name: name } }, baseUrl: BASE });
@@ -156,6 +164,35 @@ console.log('\na lock overlay\'s wheels resolve on the API, and only they are op
     malformed = err;
   }
   assert(malformed instanceof TypeError, 'a malformed lock fails construction, where the widget reports it, not the boot');
+}
+
+console.log('\nthe worker reads the distribution\'s lock, and a failure names the URL');
+{
+  // The same text the worker embeds, rebuilt from its source, so a reference to a
+  // module-level name fails here rather than only inside a worker.
+  // eslint-disable-next-line no-new-func
+  const envFromSource = new Function(`return (${createWorkerEnv.toString()});`)();
+  const lock = { info: { version: '0.29.5' }, packages: { numpy: {} } };
+  const server = Bun.serve({
+    port: 0,
+    fetch: (request) =>
+      new URL(request.url).pathname === '/full/pyodide-lock.json' ? Response.json(lock) : new Response('gone', { status: 404 }),
+  });
+  try {
+    const env = envFromSource(() => {});
+    const base = `http://127.0.0.1:${server.port}`;
+    assertEqual(JSON.stringify(await env.stockLock(`${base}/full/`)), JSON.stringify(lock), 'it reads the lock beside the loader');
+    let refused = null;
+    try {
+      await env.stockLock(`${base}/missing/`);
+    } catch (err) {
+      refused = err;
+    }
+    assertEqual(refused && refused.message, `HTTP 404 for ${base}/missing/pyodide-lock.json`,
+      'an HTTP failure rejects, naming the status and the lock it could not read');
+  } finally {
+    server.stop(true);
+  }
 }
 
 console.log('\nthe worker template does not consume its own escape sequences');
@@ -198,7 +235,8 @@ console.log('\nthe worker carries the egress guard, installed before anything is
   // against the real interpreter (test-worker-core.js), which records the call.
   // What is checkable here is that the runtime is handed the sealing function
   // at all, since a worker built without it would boot and never narrow.
-  assert(/seal:\s*__seal/.test(src), 'the runtime is handed the guard\'s own sealing function');
+  assert(src.includes(`(${createWorkerEnv.toString()})(__seal)`),
+    'the runtime is handed the guard\'s own sealing function');
 
   // The distinction the two allowlists exist for: during boot the runtime may
   // reach the CDN it is assembled from, and executed code may reach the data

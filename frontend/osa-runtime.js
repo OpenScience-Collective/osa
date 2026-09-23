@@ -58,8 +58,14 @@ export const BOOT_FAILURE = Object.freeze({
   RUNTIME_ERROR: 'runtime_error',
 });
 
-/** A wheel file name as the server's lock overlay may list one: bare, no path. */
-const WHEEL_FILE_NAME = /^[A-Za-z0-9_.+-]+\.whl$/;
+/**
+ * A wheel file name as the server's lock overlay may list one: bare, no path, and
+ * pure Python. The same pattern as `_WHEEL_FILE_NAME` in
+ * `src/core/config/runtime_lock.py`, which the server enforces on every entry;
+ * checked again here because a name that is not bare would resolve outside the
+ * wheel base.
+ */
+const WHEEL_FILE_NAME = /^[A-Za-z0-9_.+-]+-py3-none-any\.whl$/;
 
 /**
  * The community's lock entries, each wheel's file name made the URL it is served at.
@@ -117,6 +123,35 @@ export function buildWorkerConfig(runtime, lock = null) {
 }
 
 /**
+ * The worker's side of the platform: loading Pyodide, reading the distribution's
+ * lock, sealing egress and reporting to the page.
+ *
+ * Embedded by value like createWorkerRuntime, so it must be self-contained too:
+ * every name it uses is a worker global or its argument. Exported so a test can
+ * run the same text against a real server.
+ *
+ * @param {(fetchAllow: string[]) => void} seal - The egress guard's one-shot seal.
+ * @returns {{load: Function, stockLock: Function, seal: Function, send: Function}}
+ */
+export function createWorkerEnv(seal) {
+  return {
+    load(indexURL, options) {
+      importScripts(`${indexURL}pyodide.js`);
+      return loadPyodide({ indexURL, stdout: () => {}, stderr: () => {}, ...options });
+    },
+    async stockLock(indexURL) {
+      const response = await fetch(`${indexURL}pyodide-lock.json`);
+      if (!response.ok) throw new Error(`HTTP ${response.status} for ${response.url || indexURL}`);
+      return response.json();
+    },
+    seal,
+    send(message) {
+      self.postMessage(message);
+    },
+  };
+}
+
+/**
  * Build the worker's source as a string, for a blob URL.
  *
  * Returned as source rather than shipped as a file because embedders pin this
@@ -160,20 +195,10 @@ export function buildWorkerSource(runtime, lock = null) {
     (function () {
     ${guard}
 
-    const runtime = (${createWorkerRuntime.toString()})(${JSON.stringify(config)}, {
-      load: function (indexURL, options) {
-        importScripts(indexURL + 'pyodide.js');
-        return loadPyodide(Object.assign({ indexURL: indexURL, stdout: function () {}, stderr: function () {} }, options));
-      },
-      stockLock: function (indexURL) {
-        return fetch(indexURL + 'pyodide-lock.json').then(function (response) {
-          if (!response.ok) throw new Error('HTTP ' + response.status + " for the Pyodide distribution's lock");
-          return response.json();
-        });
-      },
-      seal: __seal,
-      send: function (message) { self.postMessage(message); },
-    });
+    const runtime = (${createWorkerRuntime.toString()})(
+      ${JSON.stringify(config)},
+      (${createWorkerEnv.toString()})(__seal)
+    );
 
     self.onmessage = function (event) {
       runtime.handle(event.data || {});

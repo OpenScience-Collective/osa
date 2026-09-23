@@ -455,6 +455,29 @@ console.log('\nwithout a lock overlay, the runtime gets none');
   assertEqual(api.getBrowserRuntime() && api.getBrowserRuntime().lock, null, 'lock is null, and the stock lock is used as it is');
 }
 
+console.log('\na lock overlay the runtime cannot use is reported, and nothing is declared');
+{
+  const { window, api, widget } = loadWidget({ bundleLoads: true });
+  // eslint-disable-next-line no-new-func
+  new Function(readFileSync(new URL('./osa-runtime.bundle.js', import.meta.url), 'utf8'))();
+  window.OSARuntime = globalThis.OSARuntime;
+  api.setUpBrowserTools({
+    client_tools: [{ name: 'execute_code', runtime: 'python', requires_permission: true }],
+    runtime: { python: { pyodide_version: '0.29.5', preload: ['zarr'], fetch_allow: [], limits: {} } },
+    runtime_lock: {
+      packages: {
+        zarr: {
+          name: 'zarr', version: '3.4.0', file_name: '../zarr-3.4.0-py3-none-any.whl', package_type: 'package',
+          install_dir: 'site', sha256: 'a'.repeat(64), imports: ['zarr'], depends: ['numpy'],
+        },
+      },
+    },
+  });
+  assertEqual(await api.declaredClientTools(), [], 'nothing is declared, so the model is never offered a tool that cannot start');
+  const status = widget.getBrowserRuntimeStatus();
+  assertEqual([status.state, status.reason], ['unavailable', 'setup-failed'], 'and the status says why');
+}
+
 console.log('\na bundle that loads but defines nothing is reported, not ignored');
 {
   const { api, widget } = loadWidget({ bundleLoads: true });

@@ -152,11 +152,27 @@ export function createWorkerRuntime(config, env) {
       env.send({ type: 'progress', phase: 'loading_runtime' });
       let loadOptions;
       if (Object.keys(config.lockPackages).length > 0) {
+        // Reported apart from a failure of Pyodide itself, since the fault is in
+        // the distribution's lock or the community's overlay, and each message
+        // names which.
+        let stock;
+        try {
+          stock = await env.stockLock(config.indexURL);
+        } catch (err) {
+          env.send({ type: 'error', kind: 'lock', message: `the Pyodide distribution's lock could not be read: ${describe(err)}` });
+          return;
+        }
+        let lockFileContents;
+        try {
+          lockFileContents = mergeLock(stock, config.lockPackages);
+        } catch (err) {
+          env.send({ type: 'error', kind: 'lock', message: describe(err) });
+          return;
+        }
         // packageBaseUrl because the stock entries name their wheels relative
         // to the distribution, and Pyodide stops inferring it once it is handed
         // a lock rather than a URL to one.
-        const stock = await env.stockLock(config.indexURL);
-        loadOptions = { lockFileContents: mergeLock(stock, config.lockPackages), packageBaseUrl: config.indexURL };
+        loadOptions = { lockFileContents, packageBaseUrl: config.indexURL };
       }
       pyodide = await env.load(config.indexURL, loadOptions);
       env.send({ type: 'progress', phase: 'runtime_loaded' });

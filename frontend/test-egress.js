@@ -375,7 +375,7 @@ console.log('\nthe data client is real Python, checked by a real compiler');
     'it offers a ranged read, a bytes read and a text read');
   assert(/module.__spec__ = _ilu.spec_from_loader/.test(py),
     'it carries a real __spec__, without which find_spec RAISES and the import gate denies `import osa`');
-  assert(/del _collections, _ilu, _sys, _types, _js, _to_js, _build_osa_client/.test(py),
+  assert(/del _collections, _ilu, _sys, _types, _js, _to_js, _JsException, _build_osa_client/.test(py),
     'the bridge it was built from is not left lying in the namespace');
 }
 
