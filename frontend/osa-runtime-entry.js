@@ -8,6 +8,14 @@ import { ClientToolController, FULL_OUTPUT_TOOL_NAME, GATE_DECISION } from './os
 import { highlightPython } from './osa-highlight.js';
 import { buildWorkerConfig, buildWorkerSource, PyodideRuntime, RUNTIME_STATE } from './osa-runtime.js';
 import { createWorkerRuntime } from './osa-worker-core.js';
+import {
+  buildNotebook,
+  buildWorkspaceZip,
+  deriveManifest,
+  validateWorkspacePath,
+  WORKSPACE_LIMITS,
+  WorkspaceStore,
+} from './osa-workspace.js';
 
 globalThis.OSARuntime = Object.freeze({
   PyodideRuntime,
@@ -22,4 +30,14 @@ globalThis.OSARuntime = Object.freeze({
   // exactly what could break the core's self-containment, and the source copy
   // cannot show that.
   createWorkerRuntime,
+  // The workspace (#433): persistence is WorkspaceStore, and the rest are the
+  // pure functions the widget's Settings panel and export button also need
+  // directly (path validation for its own defense-in-depth, size constants
+  // for the panel's usage display).
+  WorkspaceStore,
+  deriveManifest,
+  buildNotebook,
+  buildWorkspaceZip,
+  validateWorkspacePath,
+  WORKSPACE_LIMITS,
 });
