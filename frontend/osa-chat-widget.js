@@ -2316,6 +2316,10 @@
           CONFIG.themeColor = w.theme_color;
           changed = true;
         }
+        if (w.user_bubble_color != null && !_userSetKeys.has('userBubbleColor')) {
+          CONFIG.userBubbleColor = w.user_bubble_color;
+          changed = true;
+        }
         if (w.logo_url != null && !_userSetKeys.has('logo')) {
           // Resolve path-only logo URLs (starting with '/') against the API endpoint
           if (w.logo_url.startsWith('/')) {
@@ -3255,6 +3259,12 @@
         Math.max(0, g - 25).toString(16).padStart(2, '0') +
         Math.max(0, b - 25).toString(16).padStart(2, '0');
       container.style.setProperty('--osa-primary-dark', darker);
+    }
+
+    // The reader's bubbles have their own color, so a theme_color alone leaves
+    // them the platform blue every community has had (must be valid #RRGGBB hex).
+    if (CONFIG.userBubbleColor && /^#[0-9a-fA-F]{6}$/.test(CONFIG.userBubbleColor)) {
+      container.style.setProperty('--osa-user-bg', CONFIG.userBubbleColor);
     }
 
     // Apply disclaimer colors if configured (must be valid CSS color: hex, named, rgb, hsl)

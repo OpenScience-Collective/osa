@@ -313,6 +313,9 @@ class WidgetConfigResponse(BaseModel):
         default=None, description="URL for community logo/icon in widget header"
     )
     theme_color: str | None = Field(default=None, description="Primary theme color as hex #RRGGBB")
+    user_bubble_color: str | None = Field(
+        default=None, description="The reader's own message bubbles, as hex #RRGGBB"
+    )
 
 
 class OfferedModelResponse(BaseModel):

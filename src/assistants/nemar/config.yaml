@@ -19,6 +19,11 @@ widget:
   title: NEMAR Assistant
   initial_message: "Hi! I'm the NEMAR Assistant. I can help you discover and explore BIDS-formatted EEG, MEG, and iEEG datasets from the NEMAR archive. What are you looking for?"
   placeholder: Search for datasets...
+  # NEMAR's brand teal (#5bbad5, nemar.org's --brand-teal) darkened in lightness only, to
+  # 4.9:1 against the widget's white header and bubble text; the brand teal itself is 2.2:1.
+  theme_color: "#257a92"
+  # The reader's own bubbles in the same teal, rather than the platform blue.
+  user_bubble_color: "#257a92"
   suggested_questions:
     - Find EEG datasets with resting state recordings
     - What datasets have HED annotations?

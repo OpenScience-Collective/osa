@@ -1356,6 +1356,31 @@ console.log('\nthe Settings workspace panel: size formatting, visibility, and de
   assert(!deleteBtn.classList.contains('osa-workspace-confirm'), 'and clears the visual mark too');
 }
 
+console.log('\nthe reader\'s bubbles take a community color only when its config names one');
+{
+  // Its own key, never derived from theme_color: a community that sets only a
+  // theme keeps the platform-blue bubbles it has always had.
+  assert(SOURCE.includes('--osa-user-bg: #2563eb;'), 'the stylesheet default for the bubbles stays the platform blue');
+  const cases = [
+    { label: 'both colors', widget: { theme_color: '#257a92', user_bubble_color: '#257a92' }, bubble: '#257a92' },
+    { label: 'theme only', widget: { theme_color: '#008a79' }, bubble: '' },
+    { label: 'a malformed bubble color', widget: { theme_color: '#257a92', user_bubble_color: 'red;x:y' }, bubble: '' },
+  ];
+  for (const [index, { label, widget: widgetConfig, bubble }] of cases.entries()) {
+    const config = { default_model: 'm', offered_models: [], widget: widgetConfig, client_tools: [], runtime: null };
+    const fetch = async (url) => {
+      if (String(url).endsWith('/health')) return new Response(JSON.stringify({ status: 'healthy' }));
+      return new Response(JSON.stringify(config), { headers: { 'content-type': 'application/json' } });
+    };
+    const { window, widget } = loadWidget({ fetch });
+    widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: `osa-test-bubble-${index}` });
+    widget.init();
+    const container = window.document.querySelector('.osa-chat-widget');
+    await waitUntil(() => container.style.getPropertyValue('--osa-primary') === widgetConfig.theme_color, `the theme is applied (${label})`);
+    assertEqual(container.style.getPropertyValue('--osa-user-bg'), bubble, `${label}: the bubbles are ${bubble || 'left at the default'}`);
+  }
+}
+
 console.log('\n' + '='.repeat(60));
 console.log(`Total: ${passed + failed}   Passed: ${passed}   Failed: ${failed}`);
 clearTimeout(watchdog);
