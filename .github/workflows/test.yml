@@ -61,6 +61,15 @@ jobs:
         run: |
           uv sync --frozen --extra dev
 
+      # tests/test_frontend/test_workspace_export.py spawns a small Bun
+      # script (build_workspace_export_fixture.js) that calls the real
+      # frontend/osa-workspace.js; it has no external package dependencies,
+      # so `bun` on PATH is enough here, with no `bun install` needed.
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
       - name: Run unit tests
         run: |
           uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=term \
@@ -115,6 +124,13 @@ jobs:
 
       - name: Run tool_request controller and highlighter tests
         run: bun frontend/test-controller.js
+
+      # Path validation, manifest derivation, the .ipynb builder and the zip
+      # writer, none of which touch IndexedDB (it does not exist under Bun);
+      # the zip is checked by unzip and Python's zipfile, both preinstalled
+      # on ubuntu-latest.
+      - name: Run workspace tests
+        run: bun frontend/test-workspace.js
 
       # The worker core runs against the REAL Pyodide from npm, so the Python half
       # of the runtime is tested in CI rather than only by hand in a browser. The
