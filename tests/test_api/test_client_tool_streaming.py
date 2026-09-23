@@ -18,6 +18,7 @@ the root graph's `on_chain_end` carries `pending_client_call`, and a canned even
 proves nothing about that.
 """
 
+import base64
 import json
 from typing import Any
 from unittest.mock import patch
@@ -31,7 +32,12 @@ from src.api.routers.community import (
     ChatSession,
     _stream_chat_response,
 )
-from src.api.tool_results import ClientToolResult, ToolResultImage
+from src.api.tool_results import (
+    ClientToolResult,
+    ToolResultImage,
+    build_history_tool_message,
+    build_live_tool_message,
+)
 from src.assistants.community import CommunityAssistant
 from src.core.config.community import FULL_OUTPUT_TOOL_NAME, CommunityConfig
 from src.tools.client_tools import CLIENT_TOOL_KILL_SWITCH_ENV
@@ -40,7 +46,7 @@ from tests.helpers.chat_models import (
     multi_tool_call_response,
     tool_call_response,
 )
-from tests.helpers.images import bar_chart_png
+from tests.helpers.images import bar_chart_png, tiny_png
 
 CALL_ID = "toolu_01aaaaaaaaaaaaaaaaaaaaaa"
 SECOND_CALL_ID = "toolu_01bbbbbbbbbbbbbbbbbbbbbb"
@@ -51,6 +57,27 @@ COMMUNITY = "browsertest"
 def lookup_docs(query: str) -> str:
     """Look something up. A real, server-executed tool, for the mixed-batch test."""
     return f"documentation for {query}"
+
+
+#: A real PNG, real base64 -- what render_with_image below actually returns, and
+#: what every test in this file asserts never reaches a session or an SSE event.
+RENDER_PNG_B64 = base64.b64encode(tiny_png(width=4, height=3)).decode()
+
+
+@tool
+def render_with_image(dataset_id: str) -> list[dict]:
+    """A real, server-executed tool whose result carries an image content block,
+    in exactly the shape `src.tools.mcp_client._wrap_tool`'s coroutine returns for
+    an accepted `nemar_render_overview` image (issue #432). LangGraph's own
+    `ToolNode` builds the real `ToolMessage` from this return value -- nothing
+    here stands in for that step."""
+    return [
+        {"type": "text", "text": f"overview of {dataset_id}"},
+        {
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": RENDER_PNG_B64},
+        },
+    ]
 
 
 def _config(**overrides: Any) -> CommunityConfig:
@@ -384,6 +411,59 @@ class TestBatches:
         assert called == answered | pending
 
 
+class TestToolEndEventNeverCarriesBase64:
+    """`on_tool_end`'s `output` field is `str(tool_output)` for every ordinary
+    tool, and `render_with_image`'s raw return value is a content-block list
+    (the shape `src.tools.mcp_client._wrap_tool`'s coroutine returns for an
+    accepted image) -- exactly what a bare `str()` would embed verbatim,
+    base64 and all, into the SSE stream.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_image_becomes_a_placeholder_not_its_base64(self) -> None:
+        session = _session()
+        assistant, _ = _assistant(
+            [
+                tool_call_response("render_with_image", {"dataset_id": "nm000103"}, "call_render"),
+                AIMessage(content="Here is the overview."),
+            ],
+            declared=set(),
+            server_tools=[render_with_image],
+        )
+
+        events = await _run(session, assistant)
+
+        tool_end_events = [e for e in events if e["event"] == "tool_end"]
+        assert tool_end_events, "render_with_image's on_tool_end never fired"
+        rendered = next(e for e in tool_end_events if e["name"] == "render_with_image")
+        assert RENDER_PNG_B64 not in rendered["output"]
+        assert "image/png" in rendered["output"]
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_text_tools_output_is_unaffected(self) -> None:
+        """The control: a tool with nothing pictorial to hide is rendered by the
+        exact same `str(tool_output)` this event always used, so this file's other
+        tests -- and any existing consumer of `tool_end` -- see no different a
+        string for a tool that never carried an image."""
+        session = _session()
+        assistant, _ = _assistant(
+            [
+                tool_call_response("lookup_docs", {"query": "alpha"}, "call_docs"),
+                AIMessage(content="Found it."),
+            ],
+            declared=set(),
+            server_tools=[lookup_docs],
+        )
+
+        events = await _run(session, assistant)
+
+        rendered = next(
+            e for e in events if e["event"] == "tool_end" and e["name"] == "lookup_docs"
+        )
+        assert "documentation for alpha" in rendered["output"]
+        assert "image" not in rendered["output"]
+
+
 class TestNothingHappensWithoutAClientTool:
     @pytest.mark.asyncio
     async def test_an_ordinary_turn_still_ends_in_done(self) -> None:
@@ -525,6 +605,81 @@ class TestRunTwo:
         session.messages.append(build_history_tool_message(result))
 
         assert png not in json.dumps([str(m.content) for m in session.messages])
+
+    @pytest.mark.asyncio
+    async def test_a_second_parked_call_scrubs_the_first_calls_live_image(self) -> None:
+        """The leak `scrub_stored_images` closes: a run that parks a SECOND
+        browser call adopts the graph's final state whole
+        (`ChatSession.replace_history`), and that state still carries the FIRST
+        call's LIVE tool message from `initial_messages` -- built with the real
+        image attached, precisely so the model could see it that turn.
+        """
+        png = base64.b64encode(bar_chart_png([0.35, 0.60, 1.0, 0.12])).decode()
+        session = _session()
+        session.messages.append(
+            AIMessage(content="", tool_calls=[{"name": "execute_code", "args": {}, "id": CALL_ID}])
+        )
+        result = ClientToolResult(
+            call_id=CALL_ID,
+            images=[ToolResultImage(mime="image/png", data_base64=png, width=640, height=480)],
+        )
+        live = [*session.messages, build_live_tool_message(result, allow_images=True)]
+        session.messages.append(build_history_tool_message(result))
+
+        assistant, _ = _assistant(
+            [
+                tool_call_response(
+                    "execute_code", {"code": "y", "description": "run y"}, SECOND_CALL_ID
+                )
+            ]
+        )
+        await _run(
+            session,
+            assistant,
+            declared_client_tools={"execute_code"},
+            initial_messages=live,
+        )
+
+        assert session.pending_call is not None
+        assert session.pending_call.call_id == SECOND_CALL_ID
+        dumped = json.dumps([str(m.content) for m in session.messages])
+        assert png not in dumped, "the first call's live image leaked into stored history"
+
+    @pytest.mark.asyncio
+    async def test_a_batch_with_a_real_mcp_style_image_result_stores_no_base64(self) -> None:
+        """The other source `scrub_stored_images` exists for: a real MCP-shaped
+        tool result carrying an image is built by LangGraph's own `ToolNode`
+        directly from the tool's return value, never through
+        `build_history_tool_message`, so nothing upstream of storage would
+        otherwise strip it.
+        """
+        session = _session()
+        assistant, _ = _assistant(
+            [
+                multi_tool_call_response(
+                    [
+                        ("render_with_image", {"dataset_id": "nm000103"}, "call_render"),
+                        ("execute_code", {"code": "x", "description": "run x"}, CALL_ID),
+                    ]
+                )
+            ],
+            server_tools=[render_with_image],
+        )
+
+        await _run(session, assistant, declared_client_tools={"execute_code"})
+
+        assert session.pending_call is not None
+        assert session.pending_call.call_id == CALL_ID
+        rendered = next(
+            m
+            for m in session.messages
+            if isinstance(m, ToolMessage) and m.tool_call_id == "call_render"
+        )
+        assert isinstance(rendered.content, list)
+        assert not any(b.get("type") == "image" for b in rendered.content), (
+            "scrub_stored_images should have replaced the real MCP-style image block"
+        )
+        assert RENDER_PNG_B64 not in json.dumps([str(m.content) for m in session.messages])
 
 
 def _pending():

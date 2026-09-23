@@ -2650,23 +2650,32 @@ def create_community_router(community_id: str) -> APIRouter:
 def _sse_safe_tool_output(tool_output: Any) -> str:
     """Render a tool's raw `on_tool_end` output for the `tool_end` SSE event.
 
-    A bare `str(tool_output)` is safe for a plain string or dict, which is every
-    tool's output before MCP images: it never carries anything that looks like an
-    image. It stops being safe now that `src.tools.mcp_client._wrap_tool` can return
-    a content-block list carrying a real base64 PNG (`_content_of`) -- `str()` on
-    that list would embed the image's own base64 text verbatim in the SSE stream,
+    A bare `str(tool_output)` was always safe before MCP images, for a reason worth
+    being explicit about: `tool_output` here is not a tool's raw return value, it is
+    the `ToolMessage` LangGraph's `ToolNode` built from it, and `str()` on a
+    `ToolMessage` prints its `content` in full. That was harmless when `content` was
+    only ever a plain string. It stops being harmless now that
+    `src.tools.mcp_client._wrap_tool` can return a content-block list carrying a
+    real base64 PNG (`_content_of`): that list becomes `ToolMessage.content`
+    verbatim, and `str()` would embed the image's own base64 text in the SSE stream,
     which is one of exactly the things this event must never do.
 
-    So only a list is treated specially: its text blocks are joined and each image
-    block becomes a one-line placeholder naming the media type, never touching
-    `.get("data")`/`.source.data`. Anything else (a string, a dict, `None`) renders
-    exactly as `str(tool_output) if tool_output else ""` always has.
+    So only a block LIST containing an actual image block is treated specially:
+    text blocks are joined and each image block becomes a one-line placeholder
+    naming the media type, never touching `.get("data")`/`.source.data`. Everything
+    else, including a `ToolMessage` whose content is a plain string, renders exactly
+    as `str(tool_output) if tool_output else ""` always has -- unchanged, not merely
+    equivalent, so no existing consumer of this field sees a different string for a
+    tool that has nothing pictorial to hide.
     """
     if not tool_output:
         return ""
-    if isinstance(tool_output, list):
+    content = getattr(tool_output, "content", tool_output)
+    if isinstance(content, list) and any(
+        isinstance(block, dict) and block.get("type") == "image" for block in content
+    ):
         parts: list[str] = []
-        for block in tool_output:
+        for block in content:
             if isinstance(block, dict) and block.get("type") == "text":
                 parts.append(str(block.get("text", "")))
             elif isinstance(block, dict) and block.get("type") == "image":
