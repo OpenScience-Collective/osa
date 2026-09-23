@@ -13,6 +13,35 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ## [Unreleased]
 
+### Added
+
+- **An assistant can run Python in the reader's browser** (epic #429). A community that
+  declares `client_tools` and a `runtime` block offers the model `execute_code`: the
+  server ends the run with a `tool_request`, the widget runs the code in a sealed Pyodide
+  0.29.5 worker behind a per-call permission gate, and `/{community}/chat/resume` carries
+  a bounded result back, figures included, into a second run (#430, #431). There is no
+  checkpointer; the session store parks one call and closes it out if it goes
+  unanswered. Executed code reaches the network only through `fetch_allow`, cannot
+  install packages outside `allow_install`, and loads only wheels pinned by sha256 in the
+  community's lock overlay. NEMAR is the first community to use it, reading
+  `zarr.nemar.org` through a vendored `eegprep-lean` 0.1.0.dev2 that the API serves
+  itself (#432). Every other community's behavior is unchanged.
+- **A workspace in the browser** (#433). Every run's script, output and figures are kept
+  in IndexedDB per community and session, `osa.save_script` and `osa.save_artifact` keep
+  something under its own name (only these are reported to the model as artifacts), and
+  Settings offers a zip of the whole workspace with a `manifest.json` and a
+  `notebook.ipynb` per session. Nothing in the workspace is sent to the server.
+- **"Edit and run"** on any recorded run re-runs the reader's edit in the same warm
+  runtime, without the permission gate and without anything reaching the server or the
+  model (#456). ADR 0010 records why this, and not marimo or a hosted JupyterLite, is the
+  notebook surface for now; a hosted JupyterLite is #453.
+- `docs/community-browser-runtime.md`, a guide for a community adopting the runtime.
+
+### Changed
+
+- The widget's own bytes, and so its integrity hash, changed: a page that pins the widget
+  by Subresource Integrity (SRI) must re-pin to this release.
+
 ## [0.8.12] - 2026-09-21
 
 ### Added
