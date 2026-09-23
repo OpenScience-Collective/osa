@@ -211,7 +211,8 @@ async function attachWithNetwork(cdp, pageSessionId, recorder) {
       cdp
         .send('Network.enable', {}, childSessionId)
         .then(() => cdp.send('Runtime.runIfWaitingForDebugger', {}, childSessionId))
-        .catch(() => {});
+        // Logged, and the cache checks then fail on the wheels nobody recorded.
+        .catch((err) => console.error(`could not watch a worker's network: ${err && err.message}`));
       return;
     }
     if (tracked.has(message.sessionId)) recorder.handle(message);
@@ -345,11 +346,22 @@ async function main() {
     const warm = await runPage(cdp, `${base}/nemarlike/browser-harness/cache-boot.html?variant=nemar`, PAGE_TIMEOUT_MS.warm, {
       recorder: warmRecorder,
     });
+    // The overlay's own wheel names, from the config the harness pages boot
+    // from, so a request that went unobserved (a worker the recorder missed)
+    // fails here rather than passing as "every observed request was cached".
+    const harnessConfig = await (await fetch(`${base}/browser-harness/harness-config.json`)).json();
+    const overlayFiles = Object.values(harnessConfig.nemar.packages).map((entry) => entry.file_name).sort();
+    const sameFiles = (wheels, expected) =>
+      JSON.stringify([...new Set(wheels.map((w) => w.fileName))].sort()) === JSON.stringify([...expected].sort());
+
     const warmWheels = wheelRequests(warmRecorder, '/runtime/nemar/');
     const warmMisses = warmWheels.filter((w) => !w.cacheHit || w.encodedDataLength > 0);
-    if (!warm.done || !warm.ok || warmWheels.length === 0 || warmMisses.length > 0) {
+    const warmIncomplete = !sameFiles(warmWheels, overlayFiles);
+    if (!warm.done || !warm.ok || warmIncomplete || warmMisses.length > 0) {
       failed++;
-      console.error(`FAIL: warm ${warm.error || (warmWheels.length === 0 ? 'no overlay wheel request was observed at all' : '')}`);
+      console.error(
+        `FAIL: warm ${warm.error || (warmIncomplete ? `observed ${warmWheels.map((w) => w.fileName).join(', ') || 'no wheel'}, expected ${overlayFiles.join(', ')}` : '')}`
+      );
       for (const w of warmMisses) {
         console.error(`  - ${w.fileName}: fromDiskCache=${w.fromDiskCache} servedFromCache=${w.servedFromCache} encodedDataLength=${w.encodedDataLength} status=${w.status} failed=${w.failed || ''}`);
       }
@@ -373,7 +385,9 @@ async function main() {
     const changed = lockWheels.filter((w) => w.fileName.includes('eegprep_lean') && /-\d+-py3-none-any\.whl$/.test(w.fileName));
     const unchanged = lockWheels.filter((w) => !changed.includes(w));
     const changedProblem = changed.length !== 1 || changed[0].cacheHit || changed[0].encodedDataLength === 0;
-    const unchangedProblem = unchanged.length === 0 || unchanged.some((w) => !w.cacheHit || w.encodedDataLength > 0);
+    const unchangedProblem =
+      !sameFiles(unchanged, overlayFiles.filter((name) => !name.startsWith('eegprep_lean-'))) ||
+      unchanged.some((w) => !w.cacheHit || w.encodedDataLength > 0);
     if (!lockchange.done || !lockchange.ok || changedProblem || unchangedProblem) {
       failed++;
       console.error(`FAIL: lock change ${lockchange.error || ''}`);
