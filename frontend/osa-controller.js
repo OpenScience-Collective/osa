@@ -13,7 +13,7 @@
  * resolves with a decision, and renders the code with highlightPython.
  */
 
-import { toClientToolResult } from './osa-runtime.js';
+import { clipText, toClientToolResult } from './osa-runtime.js';
 
 /**
  * Bound by the server beside any python tool the caller declares
@@ -35,6 +35,54 @@ export const DENIED_SUMMARY =
   'answer without running code, or say what the code would have done.';
 
 const describe = (err) => String((err && err.message) || err || 'unknown error');
+
+/**
+ * Fit as many whole `lines` as possible in `remaining` characters, joined by
+ * "\n". The full note is returned unchanged when it already fits. Otherwise
+ * whole lines are dropped from the END until what remains, plus a final
+ * "and N more" line naming how many were cut, fits; when even that does not
+ * fit, the empty string is returned rather than a truncated line (#433, E4:
+ * a line here is a workspace path plus a reason, and a mid-line cut reads as
+ * a different, wrong path).
+ *
+ * @param {string[]} lines
+ * @param {number} remaining
+ * @returns {string}
+ */
+function fitFailureNote(lines, remaining) {
+  if (remaining <= 0 || lines.length === 0) return '';
+  const full = lines.join('\n');
+  if (full.length <= remaining) return full;
+  for (let keep = lines.length - 1; keep >= 0; keep--) {
+    const omitted = lines.length - keep;
+    const candidate = lines
+      .slice(0, keep)
+      .concat([`and ${omitted} more`])
+      .join('\n');
+    if (candidate.length <= remaining) return candidate;
+  }
+  return '';
+}
+
+/**
+ * Append a workspace note to a run's own stderr, WITHOUT letting
+ * `toClientToolResult`'s stderr clipping cut it away (#433, E4): a
+ * community can set `stderr_chars` as low as 256, and the run's own output
+ * is clipped to fit FIRST, reserving whatever room is left for the note as
+ * whole lines. `toClientToolResult` still clips the combined string
+ * afterward, which is a no-op here since it is already within `limit`.
+ *
+ * @param {string} stderr - The run's own stderr, unclipped.
+ * @param {string[]} noteLines - Whole lines to append, already ordered.
+ * @param {number} limit - The community's `stderr_chars` limit.
+ * @returns {string}
+ */
+function appendWorkspaceNote(stderr, noteLines, limit) {
+  const clippedStderr = clipText(stderr, limit);
+  const prefix = clippedStderr ? `${clippedStderr}\n` : '';
+  const note = fitFailureNote(noteLines, limit - prefix.length);
+  return note ? `${prefix}${note}` : clippedStderr;
+}
 
 export class ClientToolController {
   #runtime;
@@ -101,8 +149,9 @@ export class ClientToolController {
   }
 
   /**
-   * Run code without asking, for the rest of this page's life. Deliberately not
-   * persisted anywhere (#431 decision 4): it is off again after a reload.
+   * Run code without asking, for the rest of this page's life. Deliberately
+   * kept in memory only, never written to storage: it is off again after a
+   * reload, so a person always starts a fresh page back at "ask first".
    */
   get autoRun() {
     return this.#autoRun;
@@ -259,11 +308,24 @@ export class ClientToolController {
         explicitFiles,
       });
     } catch (err) {
-      // recordRun reports every save failure as a VALUE, never a rejection
-      // (WorkspaceStore's own contract); this catch is only for a genuinely
-      // unexpected throw, so a bug here costs the workspace write, never the
-      // model's answer.
-      return result;
+      // recordRun reports every ORDINARY save failure -- a bad path, a quota,
+      // even its own 10s deadline expiring -- as a VALUE, never a rejection
+      // (WorkspaceStore's own contract). A rejection reaching here is
+      // therefore a genuine bug in this module or in WorkspaceStore, not a
+      // storage failure, so it is logged for whoever is watching the
+      // console rather than left silent. It must not cost the model its
+      // answer, and it must not let the model believe an unverifiable save
+      // succeeded: every explicit save for this run is dropped from
+      // `artifacts`, since recordRun never told us which (if any) landed.
+      console.error('[OSA] Workspace persist failed unexpectedly:', err);
+      const explicitPaths = new Set(explicitFiles.map((f) => f.path));
+      const artifacts = explicitPaths.size > 0 ? (result.artifacts || []).filter((a) => !explicitPaths.has(a)) : result.artifacts;
+      const stderr = appendWorkspaceNote(
+        result.stderr,
+        ["[workspace] could not save this run's files: the workspace failed unexpectedly"],
+        this.#runtime.limits.stderr_chars
+      );
+      return toClientToolResult({ ...result, artifacts, stderr }, this.#runtime.limits);
     }
     if (persisted.failures.length === 0) return result;
 
@@ -278,12 +340,11 @@ export class ClientToolController {
     // One deterministic line per file not saved, sorted by path: the same
     // set of failures must always read back as the same bytes, since the
     // prompt cache is a byte-exact prefix match.
-    const note = persisted.failures
+    const lines = persisted.failures
       .slice()
       .sort((a, b) => a.path.localeCompare(b.path))
-      .map((f) => `[workspace] could not save ${f.path}: ${f.reason}`)
-      .join('\n');
-    const stderr = result.stderr ? `${result.stderr}\n${note}` : note;
+      .map((f) => `[workspace] could not save ${f.path}: ${f.reason}`);
+    const stderr = appendWorkspaceNote(result.stderr, lines, this.#runtime.limits.stderr_chars);
     return toClientToolResult({ ...result, artifacts, stderr }, this.#runtime.limits);
   }
 
