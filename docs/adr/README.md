@@ -23,6 +23,7 @@ letting the reasoning stay buried in a PR nobody will reread.
 | [0007](0007-simple-storage-no-external-database.md) | In-memory state, direct document fetching, SQLite+FTS5 - no PostgreSQL/Redis/vector DB |
 | [0008](0008-byok-bring-your-own-key.md) | Support BYOK (bring your own key) alongside platform-funded requests |
 | [0009](0009-astral-tooling-uv-ruff.md) | Astral tooling (uv, ruff) for Python dependency management and linting |
+| [0010](0010-the-notebook-surface.md) | Skip marimo as the notebook surface; adopt JupyterLite pinned to Pyodide 0.29.5, built third |
 
 ## Adding a new ADR
 
