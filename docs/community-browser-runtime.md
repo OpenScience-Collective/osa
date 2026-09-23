@@ -261,6 +261,100 @@ and one for the prelude when there is one (`osa-worker-core.js`, `boot()`).
 A byte figure would be accurate on a reader's very first visit and misleading on every one after,
 since the browser already has most or all of it cached.
 
+## Workspace
+
+Once a community's runtime executes code,
+every run's code and output are kept in the reader's own browser, across a reload,
+in a per-community workspace (`frontend/osa-workspace.js`).
+This is separate from `get_full_output` (`osa-runtime.js`, `FullOutputStore`):
+that store answers the model, is per tab, and is gone on reload;
+the workspace answers the reader, persists in the browser's IndexedDB storage,
+and nothing written to it is ever sent to the server.
+Python cannot reach browser storage at all --
+the namespace seal removes `js`, `mountOPFS` is unreleased, and `mountNativeFS` is Chromium-only --
+so a run's files travel back to the host in the worker's own result message,
+the way its full, untruncated output already does,
+and the host writes them to IndexedDB before that result is ever answered to the server.
+
+### Layout
+
+Every file lives at `<community>/<session>/{scripts,results,artifacts}/<path>`,
+where `session` is the server session ID the tool request carries.
+A session's `manifest.json` is DERIVED from what is stored, whenever it is needed
+(`deriveManifest`, `frontend/osa-workspace.js`),
+and is never itself stored, so it cannot drift from what is actually there.
+It names each run: its ordinal, `call_id`, status, description, the files it wrote,
+and an ISO 8601 timestamp.
+
+Every executed run is saved automatically,
+whether or not the model asked to keep anything:
+`scripts/run-NNN.py` (the code as it ran),
+`results/run-NNN/stdout.txt`, `stderr.txt` and `summary.txt`
+(the full, untruncated text, not the bounded copy the model saw),
+and a `results/run-NNN/figure-K.png` for each figure it produced.
+A `get_full_output` call is not a run and writes nothing.
+
+Only an explicit save is told to the model.
+`osa.save_script(name, code)` writes `scripts/<name>` (adding `.py` when `name` has no extension),
+and `osa.save_artifact(path, data)` writes `artifacts/<path>`,
+where `data` is `bytes`, `bytearray`, `memoryview`, or `str` (encoded UTF-8).
+Both return the workspace-relative path they wrote,
+and both add that path to the run's `ClientToolResult.artifacts` (`src/api/tool_results.py`),
+sorted and de-duplicated,
+so the model's prompt cache prefix stays stable across turns that save the same files.
+
+### Limits
+
+Checked in Python at call time,
+so a call over any limit raises a `ValueError` the model reads like any other exception
+(`_validate_workspace_path` and `_record_saved_file`, `frontend/osa-output.js`),
+and checked again on the browser side before anything is written to IndexedDB
+(`validateWorkspacePath` and `WorkspaceStore.putFile`, `frontend/osa-workspace.js`):
+
+- A path is relative; each `/`-separated segment matches `[A-Za-z0-9._-]+`;
+  no segment is `.` or `..`; depth is at most 4 segments; length is at most 200 characters.
+- A single file is at most 10 MB.
+- One run's files together are at most 25 MB.
+- One community's whole workspace is at most 250 MB,
+  checked only on the browser side, since it depends on everything already stored.
+
+A write that fails for any reason --
+the file itself, the run's budget, the community's budget,
+a storage quota, private browsing, or IndexedDB being unavailable at all --
+is reported IN THE RESULT, never silently:
+a line is appended to `stderr` naming each file not saved and why,
+and `artifacts` lists only the files that were actually saved.
+The model is never told a file exists when it does not.
+A failure to save the automatic files a run always writes is reported the same way,
+but never fails the run itself.
+
+### Export
+
+The Settings panel, shown only for a community that declares client tools
+(`osa-chat-widget.js`, the workspace section inside the existing settings modal),
+shows the space used and offers "Download workspace (.zip)" and "Delete workspace",
+the second confirmed with a second click on the button itself, never a browser dialog.
+
+The download is one zip of the whole community's workspace, built entirely in the browser
+(`frontend/osa-zip.js`, a small STORED-entry zip writer with no compression library
+and no external tool; the same module `test-support/minimal-wheel.js` uses to build a wheel).
+Nothing leaves the browser to build it.
+Each session's folder inside the zip carries its derived `manifest.json`
+and a generated `notebook.ipynb`
+(nbformat 4, minor version 5, with a cell id on every cell):
+one markdown cell per run, carrying its description,
+and one code cell, carrying its code and its outputs --
+stdout and stderr as `stream` outputs, each figure as a `display_data` `image/png` output.
+
+### The one limitation worth knowing
+
+IndexedDB is scoped to the page's origin.
+The widget's pop-out window can run on a different origin than the page that embeds it,
+and a pop-out on another origin sees neither the chat history (already true before this feature)
+nor the workspace.
+This is documented, not engineered around:
+there is no cross-origin storage bridge here, and none is planned.
+
 ## Known blockers
 
 `pybids` cannot be preloaded today:
