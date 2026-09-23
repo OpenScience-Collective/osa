@@ -1,0 +1,96 @@
+name: eegprep-lean Drift Watch
+
+# Watches sccn/eegprep's develop branch for a newer commit touching
+# packages/eegprep-lean than the one vendored beside NEMAR's prompt (#432).
+# Nothing else watches upstream for this package: a re-vendor only happens when
+# someone remembers to check by hand, and this is that memory.
+#
+# scripts/eegprep_lean_drift.py does the actual comparison, by commit rather than
+# by version string alone (a version can sit still across more than one upstream
+# commit). See that script's module docstring, and
+# src/assistants/nemar/runtime/README.md for the refresh procedure this points at.
+
+on:
+  schedule:
+    # Weekly. eegprep-lean changes rarely enough that this needn't be more
+    # frequent, and the refresh itself is a deliberate, reviewed pull request,
+    # not something to rush into on a tighter schedule.
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch:
+    name: Check eegprep-lean against upstream
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: |
+          uv sync --frozen --extra dev
+
+      - name: Run the drift watcher
+        id: drift
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          output="$(uv run python scripts/eegprep_lean_drift.py)"
+          code=$?
+          echo "$output"
+
+          # A random delimiter, so no line of the report can end the value early.
+          delimiter="report_$(openssl rand -hex 8)"
+          {
+            echo "report<<$delimiter"
+            echo "$output"
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "$code" -eq 0 ]; then
+            echo "status=current" >> "$GITHUB_OUTPUT"
+          elif [ "$code" -eq 1 ]; then
+            echo "status=behind" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=unknown" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Also on any earlier failure (checkout, Python, `uv sync`): a watcher that
+      # never ran told us nothing, and unknown is never current.
+      - name: Track the drift watcher's issue
+        if: always()
+        uses: ./.github/actions/track-issue
+        with:
+          label: eegprep-lean-drift
+          title: 'eegprep-lean: vendored wheel is behind upstream'
+          failed: ${{ job.status == 'failure' || steps.drift.outputs.status == 'behind' || steps.drift.outputs.status == 'unknown' }}
+          recovery_message: 'the eegprep-lean drift check'
+          report: |
+            The weekly eegprep-lean drift watcher's status: **${{ steps.drift.outputs.status || 'unknown' }}**.
+
+            ```
+            ${{ steps.drift.outputs.report || 'The job failed before the watcher could run (checkout, Python or `uv sync`); nothing was checked.' }}
+            ```
+
+            Refresh procedure: `src/assistants/nemar/runtime/README.md`.
+
+            `unknown` means the watcher itself could not tell -- a GitHub fetch or a parse
+            failed (the report above says which), or the job never reached it at all --
+            and needs a look, never read as "no drift". `behind` means the watcher
+            fetched successfully and upstream has a newer commit than the one vendored.
+
+      - name: Fail the run so the schedule surfaces it
+        if: steps.drift.outputs.status == 'behind' || steps.drift.outputs.status == 'unknown'
+        run: exit 1
