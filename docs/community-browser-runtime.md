@@ -358,6 +358,39 @@ nor the workspace.
 This is documented, not engineered around:
 there is no cross-origin storage bridge here, and none is planned.
 
+## The editable re-run panel
+
+Each recorded run in the chat gets an "Edit and run" control,
+once the runtime exists on that page.
+It opens an inline editor holding the run's code,
+bounded by the same length limit a recorded run's code already has,
+with Run and Cancel controls.
+Clicking Run is the reader's own consent,
+so it skips the permission gate entirely
+(`ClientToolController.runLocal`, `frontend/osa-controller.js`),
+and it runs in the SAME runtime and namespace as the assistant's own runs:
+a variable an earlier run defined is still there,
+which is what makes this tinkering rather than a fresh interpreter.
+Nothing about it reaches the server:
+no request is sent,
+and nothing the model is later shown changes because of it.
+
+The runtime accepts one execution at a time,
+so Run is refused outright, not queued,
+while the runtime is already busy with the assistant's own code or still booting.
+An assistant tool call that arrives while the reader's own run is in progress waits for it instead,
+so it is still answered correctly once the runtime is free, rather than refused.
+The same egress seal, output limits, execution deadline and Stop apply,
+because it is the same runtime.
+
+The result becomes its own entry among the reply's other runs,
+so it survives a reload,
+and is labeled plainly as the reader's own: the assistant never sees it.
+It is stored in the workspace the same way any other run is,
+marked `local` in the stored run record,
+so the derived `manifest.json` and the exported `notebook.ipynb` (see "Workspace" above)
+can say so too.
+
 ## Known blockers
 
 `pybids` cannot be preloaded today:
