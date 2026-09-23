@@ -13,6 +13,7 @@
 
 import { readFileSync } from 'node:fs';
 import { Window } from 'happy-dom';
+import { RUNTIME_STATE } from './osa-runtime.js';
 
 let passed = 0;
 let failed = 0;
@@ -257,23 +258,56 @@ console.log('\na determinate progress bar tracks a real boot sequence, and never
   api.onRuntimeProgress({ phase: 'loading_runtime', step: 1, steps: 1 });
   assertEqual(api.getToolActivity().phase, 'asking', 'and never overwrites the asking panel either');
 
-  // Once the runtime is ready the boot is over and the reader's code is running,
-  // so its last label and full bar stop describing anything.
+  // Once the runtime leaves `booting` the boot is over, whether it finished,
+  // failed, was stopped or was recycled, so its last label and bar stop
+  // describing anything. Every state the runtime declares is walked, so a new
+  // one cannot arrive unconsidered.
+  assertEqual(Object.values(RUNTIME_STATE).sort(), ['booting', 'failed', 'idle', 'ready', 'terminated'],
+    'the states this test walks are the ones the runtime declares');
   api.setToolActivity(api.runningActivity({ code: 'x', description: '' }));
   api.onRuntimeProgress({ phase: 'prelude', step: 3, steps: 3 });
   api.onRuntimeStateChange('booting');
-  assert(api.getToolActivity().progress !== null, 'a state other than ready leaves the boot progress');
-  api.onRuntimeStateChange('ready');
-  {
+  assert(api.getToolActivity().progress !== null, 'booting leaves the boot progress in place');
+  for (const state of ['ready', 'failed', 'terminated', 'idle']) {
+    api.setToolActivity(api.runningActivity({ code: 'x', description: '' }));
+    api.onRuntimeProgress({ phase: 'prelude', step: 3, steps: 3 });
+    api.onRuntimeStateChange(state);
     const holder = window.document.createElement('div');
     holder.innerHTML = api.toolPanelHtml(api.getToolActivity());
-    assertEqual(holder.querySelector('.osa-tool-progress'), null, 'ready clears the bar');
+    assertEqual(holder.querySelector('.osa-tool-progress'), null, `${state} clears the bar`);
     assertEqual(holder.querySelector('.osa-tool-status').textContent, 'Running Python in your browser...',
-      'and the panel says the code is running');
+      `and after ${state} the panel says the code is running`);
   }
   api.setToolActivity({ phase: 'asking', prompt: { code: '', description: '' }, decide() {} });
   api.onRuntimeStateChange('ready');
-  assertEqual(api.getToolActivity().phase, 'asking', 'ready never touches the asking panel');
+  api.onRuntimeStateChange('failed');
+  assertEqual(api.getToolActivity().phase, 'asking', 'a state change never touches the asking panel');
+
+  // A step or step count that is not a positive integer, or a step past the
+  // count, draws no bar: the label still shows, and a wrong bar is worse than
+  // none.
+  const malformed = [
+    { step: 5, steps: 3 },
+    { step: '2', steps: 3 },
+    { step: 2, steps: '3' },
+    { step: 0, steps: 3 },
+    { step: -1, steps: 3 },
+    { step: 1.5, steps: 3 },
+    { step: 1, steps: 0 },
+    { step: null, steps: 3 },
+  ];
+  for (const fields of malformed) {
+    api.setToolActivity(api.runningActivity({ code: 'x', description: '' }));
+    api.onRuntimeProgress({ phase: 'loading_package', package: 'zarr', ...fields });
+    const activity = api.getToolActivity();
+    const holder = window.document.createElement('div');
+    holder.innerHTML = api.toolPanelHtml(activity);
+    assertEqual(
+      [activity.progress.text, activity.progress.step, activity.progress.steps, holder.querySelector('.osa-tool-progress')],
+      ['Loading zarr...', null, null, null],
+      `step ${JSON.stringify(fields.step)} of ${JSON.stringify(fields.steps)} keeps the label and draws no bar`
+    );
+  }
 }
 
 console.log('\nwhat is stored is what is read back, within the same bounds');

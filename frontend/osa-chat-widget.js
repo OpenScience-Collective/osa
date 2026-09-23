@@ -2470,11 +2470,12 @@
     renderIfMounted();
   }
 
-  // Once the runtime is ready, the boot's last label and full bar no longer
-  // describe what is happening: the reader's code is running, so the panel
-  // goes back to saying that.
+  // Boot progress describes a boot. Once the runtime leaves `booting`, for
+  // ready, failed, terminated or idle, the boot's last label and bar no longer
+  // say what is happening, so the panel goes back to its running label until
+  // the answer ends it.
   function onRuntimeStateChange(state) {
-    if (state !== 'ready' || !toolActivity || toolActivity.phase !== 'running') return;
+    if (state === 'booting' || !toolActivity || toolActivity.phase !== 'running') return;
     if (!toolActivity.progress) return;
     toolActivity.progress = null;
     renderIfMounted();
