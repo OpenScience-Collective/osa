@@ -108,7 +108,6 @@ export function createWorkerRuntime(config, env) {
 
   function nextStep() {
     step += 1;
-    return step;
   }
 
   function sendProgress(fields) {
