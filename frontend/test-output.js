@@ -4,6 +4,7 @@
 // regex. A malformed f-string in an earlier generated module passed every regex
 // assertion in this repository and only failed when something ran it.
 import { buildOutputCaptureSource, RUNTIME_LIMITS, resolveLimits, SERVER_LIMITS } from './osa-output.js';
+import { WORKSPACE_LIMITS } from './osa-workspace.js';
 
 let passed = 0;
 let failed = 0;
@@ -72,6 +73,41 @@ console.log('\nthe mirrored caps have not drifted from the server');
     const fromPython = readConstant(name);
     assert(fromPython !== null, `${name} is still declared in src/core/limits.py`);
     assertEqual(SERVER_LIMITS[name], fromPython, `${name} matches the server's value`);
+  }
+}
+
+console.log('\nWORKSPACE_LIMITS has not drifted from the Python it is generated to mirror (D6, #433)');
+{
+  // osa-workspace.js's WORKSPACE_LIMITS mirrors five constants that live in
+  // the GENERATED Python text (buildOutputCaptureSource's own output, not a
+  // separate source file this time: the workspace helpers have no file of
+  // their own to read, they are emitted into the same module this file
+  // already runs a real interpreter over). MAX_COMMUNITY_BYTES has no
+  // Python counterpart at all -- a community's total usage across every
+  // session is something only the host can see -- so it is deliberately
+  // left out of this comparison.
+  const generatedPython = buildOutputCaptureSource(RUNTIME_LIMITS);
+  const readPythonConstant = (name) => {
+    const match = generatedPython.match(new RegExp(`^${name}\\s*=\\s*([0-9 *]+)$`, 'm'));
+    if (!match) return null;
+    // The captured text is restricted to digits, spaces and `*` by the
+    // regex itself; evaluating it folds `10 * 1024 * 1024` into a number
+    // without hand-duplicating the arithmetic here, where it could drift
+    // from the Python on its own.
+    return Function(`"use strict"; return (${match[1]});`)();
+  };
+
+  const MIRRORED_FROM_PYTHON = {
+    MAX_PATH_CHARS: '_MAX_PATH_CHARS',
+    MAX_PATH_DEPTH: '_MAX_PATH_DEPTH',
+    MAX_FILE_BYTES: '_MAX_FILE_BYTES',
+    MAX_RUN_BYTES: '_MAX_RUN_BYTES',
+    MAX_EXPLICIT_FILES: '_MAX_EXPLICIT_FILES',
+  };
+  for (const [jsName, pyName] of Object.entries(MIRRORED_FROM_PYTHON)) {
+    const fromPython = readPythonConstant(pyName);
+    assert(fromPython !== null, `${pyName} is still declared in the generated Python`);
+    assertEqual(WORKSPACE_LIMITS[jsName], fromPython, `WORKSPACE_LIMITS.${jsName} matches the generated Python's ${pyName}`);
   }
 }
 
