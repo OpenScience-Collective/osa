@@ -351,14 +351,19 @@ export class FullOutputStore {
   }
 
   static #sizeOf(entry) {
-    let n = entry.stdout.length + entry.stderr.length + entry.traceback.length;
+    let n = entry.stdout.length + entry.stderr.length + entry.traceback.length + entry.summary.length;
     for (const image of entry.images) n += image.data_base64.length;
     return n;
   }
 
   /**
    * @param {string} callId
-   * @param {{stdout?: string, stderr?: string, traceback?: string}} full
+   * @param {{stdout?: string, stderr?: string, traceback?: string, summary?: string}} full -
+   *   `summary` is the UNCLIPPED summary text (osa-output.js's `_summary`,
+   *   clipped only to `_FULL_CHARS`, unlike the copy sent to the model),
+   *   kept for the workspace's results/run-NNN/summary.txt (#433); it is not
+   *   one of `FULL_OUTPUT_STREAMS`, since the model's own `summary` field is
+   *   already usually complete and get_full_output never reads this copy.
    * @param {object[]} images - The images the run returned.
    */
   remember(callId, full, images) {
@@ -366,6 +371,7 @@ export class FullOutputStore {
       stdout: String((full && full.stdout) || ''),
       stderr: String((full && full.stderr) || ''),
       traceback: String((full && full.traceback) || ''),
+      summary: String((full && full.summary) || ''),
       images: Array.isArray(images) ? images : [],
     };
     this.forget(callId);
@@ -482,6 +488,12 @@ export class PyodideRuntime {
     // is still the person's after the instance that produced it is gone, and a
     // timeout is exactly when someone wants to read what was printed first.
     this.outputs = new FullOutputStore();
+    // call_id -> files, for a completed execution whose caller has not yet
+    // called takeFiles(). Unlike `outputs`, this is not a store meant to be
+    // read repeatedly or to outlive the run: it exists only for the short
+    // window between a result settling and the workspace write that consumes
+    // it, so takeFiles() deletes what it returns.
+    this._files = new Map();
   }
 
   /** True when the runtime can accept work. */
@@ -591,6 +603,14 @@ export class PyodideRuntime {
       // server by accident: ClientToolResult is extra="forbid" and would refuse
       // the whole result, and the point is that bulk output never leaves.
       const full = msg.full;
+      // Explicitly saved files, split off the same way and for the same
+      // reason (#433): `files` is not a ClientToolResult field, so
+      // toClientToolResult already drops it, but the bytes still have to
+      // reach whoever persists them. Held briefly in `_files`, keyed by
+      // call_id, and handed out exactly once by takeFiles(); never folded
+      // into `outputs`, which is long-lived and sized for text, not for up
+      // to 25 MB of file bytes per run.
+      const files = Array.isArray(msg.files) ? msg.files : [];
       const result = toClientToolResult(msg, this.limits);
       // A result for a call nobody is waiting on is dropped rather than thrown:
       // the execution was abandoned, or its deadline already settled it. Never
@@ -599,6 +619,9 @@ export class PyodideRuntime {
       const waiting = this._pending.has(msg.call_id);
       if (waiting && full) {
         this.outputs.remember(msg.call_id, full, result.images);
+      }
+      if (waiting && files.length > 0) {
+        this._files.set(msg.call_id, files);
       }
       const settled = this._settleExecution(msg.call_id, result);
       // An instance that reported its own out-of-memory is still the instance
@@ -1011,6 +1034,25 @@ export class PyodideRuntime {
           ? `get_full_output: ${stream} of call_id ${quoted} is empty.`
           : `get_full_output: ${stream} of call_id ${quoted}, characters ${offset} to ${end} of ${text.length}.${more}`,
     });
+  }
+
+  /**
+   * The files an execution explicitly saved (osa.save_script/save_artifact),
+   * as `{path, data_base64}`, and forget them.
+   *
+   * A one-shot read, not a lookup: whoever persists a run's files is meant to
+   * call this exactly once, right after `execute()` resolves for that
+   * call_id, and the workspace write is the only reason this exists. Unlike
+   * `getFullOutput`, there is no "read it again later": the bytes are not
+   * kept once taken, or once the call they belonged to is superseded.
+   *
+   * @param {string} callId
+   * @returns {Array<{path: string, data_base64: string}>} Possibly empty.
+   */
+  takeFiles(callId) {
+    const files = this._files.get(callId);
+    this._files.delete(callId);
+    return files || [];
   }
 
   /**
