@@ -1469,6 +1469,15 @@
       margin: 6px 0;
     }
 
+    .osa-execution-workspace-note {
+      color: #dc2626;
+      background: #fef2f2;
+      border-radius: 6px;
+      padding: 6px 8px;
+      margin: 6px 0 0 0;
+      font-size: 12px;
+    }
+
     .osa-rerun-actions {
       margin-top: 6px;
     }
@@ -1870,6 +1879,7 @@
         // assistant: always a real boolean, never left undefined, so a run
         // read back from storage renders identically to one just produced.
         local: run.local === true,
+        workspaceNote: clipField(run.workspaceNote, 'workspaceNote'),
       }));
   }
 
@@ -2367,6 +2377,9 @@
     status: 32,
     stdout: 4000,
     stderr: 4000,
+    // A save-failure note (see withWorkspaceNote, osa-controller.js), shown
+    // regardless of the run's own status, unlike stderr below.
+    workspaceNote: 2000,
   });
 
   // The heading of a run's record, by result status.
@@ -2756,6 +2769,10 @@
       stderr: clipField(result && result.stderr, 'stderr'),
       images: result && Array.isArray(result.images) ? result.images : [],
       local: false,
+      // Non-enumerable on `result` (osa-controller.js's withWorkspaceNote),
+      // so a plain property read is the only way to see it; it never rode
+      // along in what was sent to the server.
+      workspaceNote: clipField(result && result.workspaceFailureNote, 'workspaceNote'),
     };
   }
 
@@ -2774,6 +2791,9 @@
       stderr: clipField(result && result.stderr, 'stderr'),
       images: result && Array.isArray(result.images) ? result.images : [],
       local: true,
+      // The reader's own run never reaches the server at all, so this note
+      // is the ONLY place a save failure on it is ever visible to anyone.
+      workspaceNote: clipField(result && result.workspaceFailureNote, 'workspaceNote'),
     };
   }
 
@@ -3089,11 +3109,18 @@
     const stderr = run.stderr && run.status !== 'ok'
       ? `<pre class="osa-execution-output">${escapeHtml(run.stderr)}</pre>`
       : '';
+    // Shown regardless of status, unlike stderr above: a save failure matters
+    // most on a run whose Python succeeded (status ok), and for the reader's
+    // own runs this is the ONLY place it is ever visible to anyone, since
+    // that call never reaches the server for the model to mention it from.
+    const workspaceNote = run.workspaceNote
+      ? `<div class="osa-execution-workspace-note">${escapeHtml(run.workspaceNote)}</div>`
+      : '';
     const images = (Array.isArray(run.images) ? run.images : [])
       .filter(isShowableImage)
       .map((image) => `<img alt="Figure produced by the code" src="data:image/png;base64,${image.data_base64}">`)
       .join('');
-    return `${stdout}${stderr}${images}`;
+    return `${stdout}${stderr}${workspaceNote}${images}`;
   }
 
   // The inline "Edit and run" editor for one run record: a labeled textarea
