@@ -40,6 +40,7 @@ export class ClientToolController {
   #runtime;
   #tools;
   #gate;
+  #workspace;
   #autoRun = false;
   // {callId, cancelled, stop} while a request is being answered, else null.
   #current = null;
@@ -51,8 +52,15 @@ export class ClientToolController {
    *   The community config's `client_tools`.
    * @param {(prompt: {callId: string, tool: string, code: string, description: string}) => Promise<string>} options.gate -
    *   Asks the person whether to run the code; resolves with a GATE_DECISION.
+   * @param {import('./osa-workspace.js').WorkspaceStore} [options.workspace] - When
+   *   given, every executed run is persisted here (#433) before its result is
+   *   returned: `answer()` is where the request's session id, call id, code
+   *   and description are all in hand and the result has not yet gone
+   *   anywhere, so this is where the write belongs. Omitted entirely (as it
+   *   is for a page with no client tools), nothing is persisted and every
+   *   result is exactly what the runtime returned, unchanged.
    */
-  constructor({ runtime, tools, gate }) {
+  constructor({ runtime, tools, gate, workspace = null }) {
     for (const method of ['execute', 'getFullOutput', 'cancel']) {
       if (!runtime || typeof runtime[method] !== 'function') {
         throw new TypeError(`ClientToolController needs a runtime with ${method}()`);
@@ -66,8 +74,12 @@ export class ClientToolController {
       // gate exists to prevent, and refusing everything would look like a bug.
       throw new TypeError('ClientToolController needs a gate to ask the person with');
     }
+    if (workspace !== null && typeof workspace.recordRun !== 'function') {
+      throw new TypeError('ClientToolController needs a workspace with recordRun(), or none at all');
+    }
     this.#runtime = runtime;
     this.#gate = gate;
+    this.#workspace = workspace;
     this.#tools = new Map(
       tools
         .filter((tool) => tool && typeof tool.name === 'string' && RUNNABLE_RUNTIMES.includes(tool.runtime))
@@ -198,12 +210,81 @@ export class ClientToolController {
     }
 
     try {
-      return await this.#runtime.execute(args.code, { callId });
+      const result = await this.#runtime.execute(args.code, { callId });
+      return await this.#persist(request, args, result);
     } catch (err) {
       // No result can come from the runtime: it could not boot, or it was torn
       // down. The call still needs one.
       return this.#result(callId, 'error', `[runtime] the code could not be run: ${describe(err)}`);
     }
+  }
+
+  /**
+   * Persist a run's workspace files, and correct `result` for whatever could
+   * not be saved (#433).
+   *
+   * Only a call that actually ran Python is persisted: `this.#runtime.outputs`
+   * holds an entry for a call_id only once the worker's `full` payload
+   * arrived, which happens for status `ok` or `error` and never for
+   * `denied`, `cancelled`, `timeout` or `oom` (see the comment on
+   * `FullOutputStore.remember` in osa-runtime.js) -- and never for
+   * get_full_output, which never reaches this method at all. A run that
+   * saved nothing still gets no `files` from `takeFiles`, so `recordRun`
+   * still writes its automatic files and the run record, and reports no
+   * failures.
+   *
+   * @param {{call_id: string, session_id?: string}} request
+   * @param {{code: string, description?: string}} args
+   * @param {object} result - What `this.#runtime.execute` resolved with.
+   * @returns {Promise<object>}
+   */
+  async #persist(request, args, result) {
+    if (this.#workspace === null) return result;
+    const kept = typeof this.#runtime.outputs?.get === 'function' ? this.#runtime.outputs.get(request.call_id) : undefined;
+    const explicitFiles = typeof this.#runtime.takeFiles === 'function' ? this.#runtime.takeFiles(request.call_id) : [];
+    if (!kept) return result;
+
+    let persisted;
+    try {
+      persisted = await this.#workspace.recordRun({
+        session: typeof request.session_id === 'string' && request.session_id ? request.session_id : 'unknown-session',
+        callId: request.call_id,
+        status: result.status,
+        description: typeof args.description === 'string' ? args.description : '',
+        code: args.code,
+        stdout: kept.stdout,
+        stderr: kept.stderr,
+        summary: kept.summary,
+        images: kept.images,
+        explicitFiles,
+      });
+    } catch (err) {
+      // recordRun reports every save failure as a VALUE, never a rejection
+      // (WorkspaceStore's own contract); this catch is only for a genuinely
+      // unexpected throw, so a bug here costs the workspace write, never the
+      // model's answer.
+      return result;
+    }
+    if (persisted.failures.length === 0) return result;
+
+    // The model must never be told a file exists when it does not: an
+    // explicit save that failed is dropped from `artifacts`, the list the
+    // model reads. An automatic file's failure has nothing to drop, since
+    // automatic files were never listed there.
+    const explicitPaths = new Set(explicitFiles.map((f) => f.path));
+    const failedExplicit = new Set(persisted.failures.filter((f) => explicitPaths.has(f.path)).map((f) => f.path));
+    const artifacts = failedExplicit.size > 0 ? (result.artifacts || []).filter((a) => !failedExplicit.has(a)) : result.artifacts;
+
+    // One deterministic line per file not saved, sorted by path: the same
+    // set of failures must always read back as the same bytes, since the
+    // prompt cache is a byte-exact prefix match.
+    const note = persisted.failures
+      .slice()
+      .sort((a, b) => a.path.localeCompare(b.path))
+      .map((f) => `[workspace] could not save ${f.path}: ${f.reason}`)
+      .join('\n');
+    const stderr = result.stderr ? `${result.stderr}\n${note}` : note;
+    return toClientToolResult({ ...result, artifacts, stderr }, this.#runtime.limits);
   }
 
   /** Ask the person, and let cancel() answer for them. */
