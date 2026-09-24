@@ -593,40 +593,60 @@ window = await read_window(index, index.stores[0], start_sample=0, n_samples=2)
 
   // The low-pass the prompt's ERP section teaches, run as the prompt writes it. A
   // model copies it, so a kernel that stops filtering (np.sinc without the cutoff is
-  // a single spike) would put unfiltered epochs into every ERP image it draws.
-  console.log('\nthe prompt\'s ERP low-pass keeps 5 Hz and removes 50 Hz');
+  // a single spike, and so is a cutoff at the Nyquist frequency) would put unfiltered
+  // epochs into every ERP image it draws.
+  console.log('\nthe prompt\'s ERP low-pass keeps 5 Hz and removes the high tone, at 60 to 5000 Hz');
   {
     const erpAt = NEMAR.system_prompt.indexOf('**Epochs and ERP images.**');
     const fence = erpAt === -1 ? null : NEMAR.system_prompt.slice(erpAt).match(/```python\n([\s\S]*?)\n\s*```/);
     assert(fence !== null, 'the ERP section carries a python block');
+    // The block belongs to the sentence that introduces it, not to a later section.
+    assert(fence !== null && fence.index < 400, `it follows the bullet's opening lines (at ${fence && fence.index})`);
     if (fence) {
       const lines = fence[1].split('\n');
       const indent = Math.min(...lines.filter((l) => l.trim()).map((l) => l.match(/^ */)[0].length));
-      const kernelCode = lines.map((l) => l.slice(indent)).join('\n');
+      const filterCode = lines.map((l) => l.slice(indent)).join('\n');
+      // Defined as a function so each rate runs the block exactly as written, with
+      // only `rate` and `x` bound, the two names the prompt says it takes.
+      const body = filterCode.split('\n').map((l) => `    ${l}`).join('\n');
       const result = await run(`import json
 import numpy as np
-rate = 250.0
-t = np.arange(int(4 * rate)) / rate
-slow = np.sin(2 * np.pi * 5 * t)
-channel = slow + np.sin(2 * np.pi * 50 * t)
-${kernelCode}
-f = np.fft.rfftfreq(8192, 1 / rate)
-H = np.abs(np.fft.rfft(kernel, 8192))
-gain = lambda hz: float(H[np.argmin(np.abs(f - hz))])
-edge = taps
-print(json.dumps({
-    "taps": int(taps),
-    "gain_5": gain(5), "gain_50": gain(50),
-    "residual": float(np.max(np.abs(filtered[edge:-edge] - slow[edge:-edge]))),
-}))
+
+def prompt_lowpass(x, rate):
+${body}
+    return filtered, kernel, taps, cutoff
+
+out = []
+for rate in (60.0, 125.0, 250.0, 1000.0, 5000.0):
+    t = np.arange(int(4 * rate)) / rate
+    high = min(50.0, 0.45 * rate)
+    slow = np.sin(2 * np.pi * 5 * t)
+    x = slow + np.sin(2 * np.pi * high * t)
+    filtered, kernel, taps, cutoff = prompt_lowpass(x, rate)
+    f = np.fft.rfftfreq(16384, 1 / rate)
+    H = np.abs(np.fft.rfft(kernel, 16384))
+    gain = lambda hz: float(H[np.argmin(np.abs(f - hz))])
+    both, _, _, _ = prompt_lowpass(np.vstack([x, 2 * x]), rate)
+    out.append({
+        "rate": rate, "taps": int(taps), "high": high,
+        "gain_5": gain(5), "gain_high": gain(high),
+        "residual": float(np.max(np.abs(filtered[taps:-taps] - slow[taps:-taps]))),
+        "vs_convolve": float(np.max(np.abs(filtered - np.convolve(x, kernel, mode="same")))),
+        "vs_rows": float(max(np.max(np.abs(both[0] - filtered)), np.max(np.abs(both[1] - 2 * filtered)))),
+    })
+print(json.dumps(out))
 `);
       assertEqual(result.status, 'ok', `it runs (stderr: ${result.stderr.slice(-300)})`);
-      const out = JSON.parse(result.stdout || '{}');
-      assert(out.taps % 2 === 1, `an odd number of taps (${out.taps})`);
-      assert(Math.abs(out.gain_5 - 1) < 0.01, `unity gain at 5 Hz (${out.gain_5})`);
-      assert(out.gain_50 < 0.01, `under 1% at 50 Hz (${out.gain_50})`);
-      assert(out.residual < 0.02,
-        `a 5 Hz sine plus a 50 Hz sine comes out as the 5 Hz sine, unshifted (largest difference ${out.residual})`);
+      for (const r of JSON.parse(result.stdout || '[]')) {
+        const at = `at ${r.rate} Hz`;
+        assert(r.taps % 2 === 1, `${at}: an odd number of taps (${r.taps})`);
+        assert(Math.abs(r.gain_5 - 1) < 0.01, `${at}: unity gain at 5 Hz (${r.gain_5})`);
+        assert(r.gain_high < 0.01, `${at}: under 1% at ${r.high} Hz (${r.gain_high})`);
+        assert(r.residual < 0.02,
+          `${at}: 5 Hz plus ${r.high} Hz comes out as the 5 Hz sine, unshifted (largest difference ${r.residual})`);
+        assert(r.vs_convolve < 1e-9, `${at}: the same values as np.convolve(x, kernel, "same") (${r.vs_convolve})`);
+        assert(r.vs_rows < 1e-9, `${at}: a channels-by-samples array filters row by row (${r.vs_rows})`);
+      }
     }
   }
 } finally {

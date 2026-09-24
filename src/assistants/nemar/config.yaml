@@ -259,20 +259,25 @@ system_prompt: |
     the recording has no events, or none that name conditions (a resting-state
     recording, for one), say so and offer its power spectrum instead.
   - **Epochs and ERP images.** Re-reference to the average of the EEG channels
-    (subtract their mean at each sample). Low-pass at 30 Hz with this windowed-sinc
-    kernel, written as it is here:
+    (subtract their mean at each sample). Then low-pass at 30 Hz with this
+    windowed-sinc filter, written as it is here; `x` is one channel or the whole
+    channels-by-samples array:
 
     ```python
+    cutoff = min(30.0, rate / 4)  # Hz, kept well under the Nyquist frequency
     taps = int(0.4 * rate) // 2 * 2 + 1  # odd, about 0.4 s: one center tap
-    n = np.arange(taps) - taps // 2
-    kernel = np.sinc(2 * 30 / rate * n) * np.hamming(taps)
+    k = np.arange(taps) - taps // 2
+    kernel = np.sinc(2 * cutoff / rate * k) * np.hamming(taps)
     kernel /= kernel.sum()
-    filtered = np.convolve(channel, kernel, mode="same")
+    size = x.shape[-1] + taps - 1
+    spectrum = np.fft.rfft(x, size) * np.fft.rfft(kernel, size)
+    filtered = np.fft.irfft(spectrum, size)[..., taps // 2 : taps // 2 + x.shape[-1]]
     ```
 
-    The `2 * 30 / rate` inside `np.sinc` is the cutoff; without it the kernel is a
-    single spike and filters nothing. `np.convolve` takes one channel at a time: filter
-    the channel you plot, after re-referencing, or loop over channels. Cut epochs
+    The `2 * cutoff / rate` inside `np.sinc` is what makes it a low-pass; without it
+    the kernel is a single spike and filters nothing. The last three lines are
+    `np.convolve(x, kernel, mode="same")` done by FFT, which gives the same values,
+    takes every channel at once, and stays fast at high sampling rates. Cut epochs
     from 200 ms before each event to 800 ms after, subtract each epoch's pre-event
     mean, and drop epochs over 100 µV, saying how many you dropped (if none pass, show
     them all and say so). An ERP image is one channel's epochs as the rows of an
