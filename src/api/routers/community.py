@@ -300,6 +300,15 @@ class SessionInfo(BaseModel):
     last_active: str = Field(..., description="ISO timestamp of last activity")
 
 
+class DatasetQuestionResponse(BaseModel):
+    """A dataset-page question template, as the widget fills it."""
+
+    text: str = Field(
+        ..., description="The question, with {dataset_id}, {subject} or {task} blanks"
+    )
+    needs_zarr: bool = Field(..., description="Shown only when the dataset has a Zarr copy")
+
+
 class WidgetConfigResponse(BaseModel):
     """Widget display configuration returned to the frontend."""
 
@@ -308,6 +317,13 @@ class WidgetConfigResponse(BaseModel):
     placeholder: str = Field(..., description="Input placeholder text")
     suggested_questions: list[str] = Field(
         default_factory=list, description="Clickable suggestion buttons"
+    )
+    dataset_suggested_questions: list[DatasetQuestionResponse] | None = Field(
+        default=None,
+        description=(
+            "Question templates for a page that names a dataset with setDataset, in place "
+            "of suggested_questions; omitted when the community sets none"
+        ),
     )
     logo_url: str | None = Field(
         default=None, description="URL for community logo/icon in widget header"
