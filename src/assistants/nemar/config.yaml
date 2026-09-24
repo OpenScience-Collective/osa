@@ -302,7 +302,10 @@ runtime:
     # eegprep-lean's lock entry pulls in zarr and zarr's dependencies. numpy and
     # matplotlib are listed first so progress names the large downloads.
     preload: [numpy, matplotlib, zarr, eegprep-lean]
-    preload_on: first_run
+    # Boots on the reader's first message rather than the first run: overlaps the
+    # download with the model's own first turn, and never charges a reader who only
+    # opens the chat.
+    preload_on: first_message
     fetch_allow:
       - https://zarr.nemar.org/
     # eegprep-lean reads through pyodide.http by default, which the sealed runtime

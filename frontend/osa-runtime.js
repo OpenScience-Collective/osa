@@ -540,6 +540,15 @@ export class PyodideRuntime {
     return this.runtime.preload_on === 'widget_open';
   }
 
+  /**
+   * Whether this community wants the runtime booted as soon as the reader sends
+   * their first message, rather than waiting for the first execution or the widget
+   * opening. Overlaps the download with the model's first turn.
+   */
+  get preloadsOnFirstMessage() {
+    return this.runtime.preload_on === 'first_message';
+  }
+
   _setState(state, detail) {
     this.state = state;
     this.onStateChange(state, detail);

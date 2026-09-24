@@ -175,6 +175,18 @@
   // {phase: 'asking', prompt, decide} while the person is asked,
   // {phase: 'running', prompt, progress} while code runs, else null.
   let toolActivity = null;
+  // The runtime's own last boot-progress display, kept independent of toolActivity:
+  // a preload_on: first_message boot can advance through several steps before the
+  // reader ever sees a Run gate, and toolActivity does not exist yet to receive them
+  // (onRuntimeProgress only writes into a 'running' toolActivity). Seeded onto a
+  // freshly-created running activity so the panel shows the real current step
+  // instead of a blank bar; cleared whenever the runtime leaves `booting`, so a
+  // later run never inherits a stale step from an earlier boot.
+  let lastBootProgress = null;
+  // True once this session's reader has sent a message, so a runtime bundle or
+  // config that finishes loading afterward still knows to boot immediately under
+  // preload_on: first_message rather than waiting for a run.
+  let firstMessageSent = false;
   const CHAT_HISTORY_VERSION = 2;
   let responseSequence = 0;
 
@@ -216,7 +228,7 @@
   // browser before any of it runs. Written by scripts/build-runtime-bundle.js;
   // CI rebuilds and fails if the committed bundle or this line is stale.
   // BEGIN GENERATED: runtime bundle integrity
-  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-1WTZYJoWjK+pyL4w+fDBxetGp01oU02sco1CPqsCTRP7WoX8bVfLNPqSddEC46dm';
+  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-MpNwiHNmaJuDp3ZsjArh0vZEHgyyVupVlc3K8yMs+s0wq+FAn3X5TYWAlaLXp+SK';
   // END GENERATED: runtime bundle integrity
 
   // Icons (SVG)
@@ -2518,6 +2530,10 @@
         return null;
       }
       if (isOpen) preloadRuntime();
+      // The reader may have already sent their first message while this bundle
+      // was still loading (the runtime object did not exist yet to boot then);
+      // catch up now that it does.
+      if (firstMessageSent) preloadRuntimeOnFirstMessage();
       return browserTools;
     });
   }
@@ -2652,6 +2668,19 @@
     });
   }
 
+  // Boot as soon as the reader's first message is sent, rather than waiting for a
+  // run, for a community configured with preload_on: first_message. Overlaps the
+  // Python download with the model's first turn instead of paying for it serially.
+  // Fire-and-forget exactly like preloadRuntime(): boot() is idempotent, so calling
+  // this more than once (open + first message, or a retry once the bundle loads)
+  // never starts a second boot.
+  function preloadRuntimeOnFirstMessage() {
+    if (!browserRuntime || !browserRuntime.preloadsOnFirstMessage) return;
+    browserRuntime.boot().catch((err) => {
+      console.warn('[OSA] Preloading the browser runtime on first message failed:', err && err.message);
+    });
+  }
+
   // The client tools this page can run, once known. Waits briefly for the
   // config and the runtime, so a question typed the moment the page opens is
   // not sent without them; after that it resolves at once.
@@ -2699,7 +2728,14 @@
   }
 
   function runningActivity(prompt) {
-    return { phase: 'running', prompt, progress: null };
+    // A preload_on: first_message boot can already be under way when the reader
+    // clicks Run, having advanced past steps this panel never existed to receive
+    // (onRuntimeProgress only writes into a 'running' toolActivity, and there was
+    // none until now). Seed the panel with the runtime's last known step instead
+    // of a blank bar; null whenever the runtime is not actually mid-boot, so a
+    // run that starts with no preload under way behaves exactly as before.
+    const progress = (browserRuntime && browserRuntime.state === 'booting') ? lastBootProgress : null;
+    return { phase: 'running', prompt, progress };
   }
 
   // Shown when the interpreter has loaded and its packages are about to: the
@@ -2719,7 +2755,6 @@
   }
 
   function onRuntimeProgress(event) {
-    if (!toolActivity || toolActivity.phase !== 'running') return;
     const phase = event && event.phase;
     let text;
     if (phase === 'loading_runtime') {
@@ -2736,15 +2771,23 @@
     const rawStep = Number.isInteger(event.step) && event.step > 0 ? event.step : null;
     const rawSteps = Number.isInteger(event.steps) && event.steps > 0 ? event.steps : null;
     const hasBar = rawStep !== null && rawSteps !== null && rawStep <= rawSteps;
-    toolActivity.progress = { text, step: hasBar ? rawStep : null, steps: hasBar ? rawSteps : null };
+    const progress = { text, step: hasBar ? rawStep : null, steps: hasBar ? rawSteps : null };
+    // Cached independent of toolActivity (see runningActivity()): a
+    // preload_on: first_message boot can emit several of these before any
+    // 'running' panel exists to show them.
+    lastBootProgress = progress;
+    if (!toolActivity || toolActivity.phase !== 'running') return;
+    toolActivity.progress = progress;
     renderIfMounted();
   }
 
   // Boot progress describes a boot. Once the runtime leaves `booting`, for
   // ready, failed, terminated or idle, the boot's last label and bar no longer
   // say what is happening, so the panel goes back to its running label until
-  // the answer ends it.
+  // the answer ends it, and a later boot's runningActivity() has nothing stale
+  // to inherit.
   function onRuntimeStateChange(state) {
+    if (state !== 'booting') lastBootProgress = null;
     if (state === 'booting' || !toolActivity || toolActivity.phase !== 'running') return;
     if (!toolActivity.progress) return;
     toolActivity.progress = null;
@@ -4643,6 +4686,15 @@
 
     isLoading = true;
     isThinking = false;
+
+    // Boot the browser runtime now if this community preloads on first message,
+    // so the Python download overlaps this turn instead of waiting for a Run gate.
+    // Fires once per session; a runtime that is not built yet catches up in
+    // startBrowserTools() once it is (see firstMessageSent there).
+    if (!firstMessageSent) {
+      firstMessageSent = true;
+      preloadRuntimeOnFirstMessage();
+    }
 
     // Track message indices to avoid corruption on error
     const userMessageIndex = messages.length;

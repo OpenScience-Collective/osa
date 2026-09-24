@@ -728,9 +728,15 @@ class PythonRuntimeConfig(BaseModel):
     allowed. If it raises, the runtime fails to start, because every later execution
     would otherwise fail in a way that names the wrong cause."""
 
-    preload_on: Literal["first_run", "widget_open"] = "first_run"
-    """When to trigger preloading: at the first execution, or as soon as the
-    widget opens."""
+    preload_on: Literal["first_run", "widget_open", "first_message"] = "first_run"
+    """When to trigger preloading: at the first execution, as soon as the widget opens, or
+    as soon as the reader sends their first message.
+
+    `first_message` overlaps the Python download with the model's first turn, without
+    charging a reader who only opens the chat: the boot starts the moment the reader sends
+    something, before the model has answered and well before any code execution asks for a
+    Run gate.
+    """
 
     fetch_allow: list[str] = Field(default_factory=list)
     """URL prefixes the runtime is allowed to fetch from."""

@@ -413,8 +413,16 @@ console.log('\npreload_on is read from config, not guessed');
     workerFactory: workerFrom('happy'),
   });
   assert(eager.preloadsOnOpen, 'widget_open means boot eagerly');
+  assert(!eager.preloadsOnFirstMessage, 'and not on the first message');
   const lazy = new PyodideRuntime({ runtime: RUNTIME, workerFactory: workerFrom('happy') });
   assert(!lazy.preloadsOnOpen, 'first_run means boot lazily');
+  assert(!lazy.preloadsOnFirstMessage, 'and not on the first message either');
+  const onMessage = new PyodideRuntime({
+    runtime: { ...RUNTIME, preload_on: 'first_message' },
+    workerFactory: workerFrom('happy'),
+  });
+  assert(onMessage.preloadsOnFirstMessage, 'first_message means boot when the reader sends one');
+  assert(!onMessage.preloadsOnOpen, 'and not merely on open');
 }
 
 console.log('\na runtime config without a version is refused at construction');

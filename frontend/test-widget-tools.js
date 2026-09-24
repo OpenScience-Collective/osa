@@ -196,8 +196,8 @@ console.log('\nthe permission gate puts only our markup on the page, whatever it
 // The editable re-run panel: "Edit and run" on a recorded run.
 // ---------------------------------------------------------------------------
 
-function loadWidgetWithRealBundle() {
-  const loaded = loadWidget({ bundleLoads: true });
+function loadWidgetWithRealBundle({ fetch = noNetwork } = {}) {
+  const loaded = loadWidget({ bundleLoads: true, fetch });
   // eslint-disable-next-line no-new-func
   new Function(readFileSync(new URL('./osa-runtime.bundle.js', import.meta.url), 'utf8'))();
   loaded.window.OSARuntime = globalThis.OSARuntime;
@@ -899,6 +899,89 @@ console.log('\na determinate progress bar tracks a real boot sequence, and never
       `step ${JSON.stringify(fields.step)} of ${JSON.stringify(fields.steps)} keeps the label and draws no bar`
     );
   }
+}
+
+console.log('\na freshly-opened run panel shows the boot progress a first_message preload already made, not a blank bar');
+{
+  // preload_on: first_message boots on the reader's first message, well before the
+  // model answers and asks to run code, so the boot can advance through several
+  // steps before any tool_request (and so any 'running' toolActivity) exists to
+  // receive them via onRuntimeProgress. Without a fix, the panel that opens once
+  // Run is finally clicked starts at progress: null and stays that way until the
+  // NEXT event arrives, which reads as a frozen or missing bar for however much of
+  // the boot already happened silently.
+  const { window, api } = loadWidgetWithRealBundle();
+  const { runtime } = await useLocalController({ api, window }, { worker: 'happy' });
+
+  const bootPromise = runtime.boot();
+  assertEqual(runtime.state, 'booting', 'boot() takes effect synchronously, before any worker message can arrive');
+  assertEqual(api.getToolActivity(), null, 'no panel exists yet to receive a progress event');
+
+  // Capture the shape onRuntimeProgress computes, the same way every other test
+  // above does: seed a running activity, feed it the event, and read what it
+  // wrote. This is the panel state the reader would have seen, had one existed.
+  api.setToolActivity(api.runningActivity({ code: 'x', description: '' }));
+  api.onRuntimeProgress({ phase: 'loading_runtime', step: 1, steps: 2 });
+  const expected = api.getToolActivity().progress;
+  api.setToolActivity(null);
+
+  // The model now asks to run code and the reader clicks Run: a FRESH running
+  // activity is created, well after the boot (and its progress) began.
+  const activity = api.runningActivity({ code: 'x', description: '' });
+  assertEqual(activity.progress, expected, 'the panel opens already showing the step under way, not a blank bar');
+
+  await bootPromise;
+  api.onRuntimeStateChange('ready');
+  const after = api.runningActivity({ code: 'x', description: '' });
+  assertEqual(after.progress, null, 'once the runtime is no longer booting, a later run seeds no stale step');
+}
+
+console.log('\nsending the first message boots the runtime under preload_on: first_message, and not under first_run');
+{
+  async function stateRightAfterFirstMessage(preloadOn) {
+    const config = {
+      default_model: 'm',
+      offered_models: [],
+      widget: {},
+      client_tools: [{ name: 'execute_code', runtime: 'python', requires_permission: true }],
+      runtime: { python: { ...LOCAL_RUNTIME_CONFIG, preload_on: preloadOn } },
+    };
+    const fetch = async (url) => {
+      const s = String(url);
+      if (s.endsWith('/health')) return new Response(JSON.stringify({ status: 'healthy' }));
+      if (s.endsWith('/chat')) {
+        return new Response(JSON.stringify({ message: { content: 'hi' }, session_id: 's1' }),
+          { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify(config), { headers: { 'content-type': 'application/json' } });
+    };
+    const { window, api, widget } = loadWidgetWithRealBundle({ fetch });
+    widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: `osa-test-first-msg-${preloadOn}` });
+    widget.init();
+    // Swap in a runtime over the real test worker, with the preload_on under test.
+    // Its own two setter calls at the end unconditionally replace whatever
+    // setUpBrowserTools's own (never-booted, so harmless) real construction built.
+    await useLocalController({ api, window }, { worker: 'happy', runtimeConfig: { ...LOCAL_RUNTIME_CONFIG, preload_on: preloadOn } });
+
+    const container = window.document.querySelector('.osa-chat-widget');
+    const input = container.querySelector('.osa-chat-input input');
+    input.value = 'hello';
+    click(window, container.querySelector('.osa-send-btn'));
+
+    // sendMessage is async but calls boot() (fire-and-forget) in its synchronous
+    // prefix, before its first await, so the state change (if any) has already
+    // happened by the time dispatchEvent returns control here.
+    const state = api.getBrowserRuntime().state;
+    // Let the rest of the send (the fetch, the reply, saveHistory) finish before
+    // this window is abandoned for the next case, so nothing dangles across it.
+    await waitUntil(() => !container.querySelector('.osa-send-btn').disabled, 'the send settles', 3000);
+    return state;
+  }
+
+  assertEqual(await stateRightAfterFirstMessage('first_message'), 'booting',
+    'preload_on: first_message boots the moment the first message is sent');
+  assertEqual(await stateRightAfterFirstMessage('first_run'), RUNTIME_STATE.IDLE,
+    'preload_on: first_run does not boot on send; only an actual execution does');
 }
 
 console.log('\nwhat is stored is what is read back, within the same bounds');

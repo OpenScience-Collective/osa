@@ -2214,6 +2214,17 @@ class TestPythonRuntimeConfig:
         )
         assert config.preload_on == "widget_open"
 
+    def test_preload_on_accepts_first_message(self) -> None:
+        """preload_on should accept 'first_message': boot as soon as the reader
+        sends their first message, overlapping the download with the model's turn."""
+        config = PythonRuntimeConfig(
+            pyodide_version="0.29.5",
+            lockfile="pyodide-lock-2026-01.json",
+            preload_on="first_message",
+            limits=RuntimeLimits(),
+        )
+        assert config.preload_on == "first_message"
+
     def test_rejects_unknown_preload_on(self) -> None:
         """Should reject a preload_on value outside the known literal set."""
         with pytest.raises(ValidationError):
