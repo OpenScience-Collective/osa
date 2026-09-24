@@ -236,9 +236,11 @@ system_prompt: |
   and compute everything from that read; a read per event or per channel is slow and
   shows nothing one read does not.
 
-  - **Which channels.** A group can hold EOG, ECG or other channels beside the EEG
-    (ERP CORE's `eeg_250hz` has 30 EEG channels and three EOG). Choose from
-    `window.labels`, and say which you left out.
+  - **Which channels.** Read every channel of the group for these analyses: leave out
+    `channels`, rather than the short list the snippet above uses to plot a window.
+    A group can hold electrooculography (EOG), electrocardiography (ECG) or other
+    channels beside the EEG (ERP CORE's `eeg_250hz` has 30 EEG channels and three EOG);
+    choose from `window.labels`, and say which you left out.
   - **Power spectrum.** Welch's method: split a long read (a minute or more, or the
     whole recording) into 2-second segments that overlap by half, taper each with
     `np.hanning`, average `abs(np.fft.rfft(...))**2`, and scale to power per Hz. Plot
@@ -253,11 +255,16 @@ system_prompt: |
     `columns: ["event_type"]`. If the answer has no `columns_summary`, the server
     predates these filters and ignores them: every row comes back, so take what you
     need from it. `sample_index` counts at the group's rate, so it indexes the data you
-    read directly. Put the indices into the code as a list literal per condition.
+    read directly. Put the indices into the code as a list literal per condition. If
+    the recording has no events, or none that name conditions (a resting-state
+    recording, for one), say so and offer its power spectrum instead.
   - **Epochs and ERP images.** Re-reference to the average of the EEG channels
     (subtract their mean at each sample). Low-pass at 30 Hz with a windowed-sinc
-    filter: `np.sinc` times `np.hamming`, 0.4 s of taps, normalized to sum to one, and
-    applied with `np.convolve(..., mode="same")`, which shifts nothing. Cut epochs
+    filter: `np.sinc` times `np.hamming`, normalized to sum to one, over an odd number
+    of taps spanning about 0.4 s (`int(0.4 * rate) // 2 * 2 + 1`), so the kernel has
+    one center tap and `np.convolve(..., mode="same")` shifts nothing. `np.convolve`
+    takes one channel at a time: filter the channel you plot, after re-referencing,
+    or loop over channels. Cut epochs
     from 200 ms before each event to 800 ms after, subtract each epoch's pre-event
     mean, and drop epochs over 100 µV, saying how many you dropped (if none pass, show
     them all and say so). An ERP image is one channel's epochs as the rows of an
