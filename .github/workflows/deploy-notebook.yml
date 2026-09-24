@@ -55,13 +55,17 @@ jobs:
         id: site
         run: |
           if [ "${{ github.ref_name }}" = "main" ]; then
-            echo "url=https://notebook.osc.earth/osa" >> "$GITHUB_OUTPUT"
-            echo "subdomain=notebook" >> "$GITHUB_OUTPUT"
-            echo "pages_target=osa-notebook.pages.dev" >> "$GITHUB_OUTPUT"
+            {
+              echo "url=https://notebook.osc.earth/osa"
+              echo "subdomain=notebook"
+              echo "pages_target=osa-notebook.pages.dev"
+            } >> "$GITHUB_OUTPUT"
           else
-            echo "url=https://develop-notebook.osc.earth/osa" >> "$GITHUB_OUTPUT"
-            echo "subdomain=develop-notebook" >> "$GITHUB_OUTPUT"
-            echo "pages_target=develop.osa-notebook.pages.dev" >> "$GITHUB_OUTPUT"
+            {
+              echo "url=https://develop-notebook.osc.earth/osa"
+              echo "subdomain=develop-notebook"
+              echo "pages_target=develop.osa-notebook.pages.dev"
+            } >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build the notebook site

@@ -36,6 +36,18 @@ jobs:
       - name: Run ruff format check
         run: uv run ruff format --check src tests
 
+      # Scoped to the notebook site's own workflows (PR review finding, #465):
+      # a hand-written run: block there is exactly the kind of shell mistake
+      # actionlint's embedded shellcheck catches, and nothing else in this
+      # repository's CI statically checks a workflow file at all. Not run
+      # against every workflow in .github/workflows/ -- fixing whatever that
+      # would surface elsewhere is a separate change. Version pinned so a new
+      # actionlint release cannot silently change what this step accepts.
+      - name: Check the notebook site workflows with actionlint
+        run: |
+          bash <(curl -s https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.12
+          ./actionlint .github/workflows/deploy-notebook.yml .github/workflows/notebook-site-check.yml
+
   unit-tests:
     name: Unit Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
