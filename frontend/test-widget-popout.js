@@ -16,10 +16,15 @@
  * and crossorigin, and nothing else of the tag's; the widget source is never
  * fetched by the opener; a script that does not load says so in the pop-out; later
  * setColorScheme and setDataset calls reach an open pop-out, and one still loading.
+ * And a capsule community's pop-out has the panel's Chat and Notebook tabs as a
+ * strip under its header, opens on the tab the page was on, makes a notebook frame
+ * of its own, and follows the page's dataset; a bubble community's has none of it.
  *
  * What stands in: the community config and health endpoints, answered with HTTP
  * fixtures through happy-dom's fetch interceptor (never a mock of the widget's own
- * logic), and window.alert, recorded. happy-dom does not check Subresource
+ * logic); window.alert, recorded; and the notebook's side of the bridge, messages
+ * dispatched as if from the frame, which never loads (child-frame navigation is
+ * off). A real notebook in a frame is notebook-tab-check.mjs's. happy-dom does not check Subresource
  * Integrity (SRI) or a Content Security Policy (CSP); that the browser enforces
  * both in the pop-out is frontend/browser-harness/popout-check.mjs's, in Chrome.
  *
@@ -330,6 +335,154 @@ console.log('\n... and one whose widget has not started yet');
   const pop = await popoutReady(page, popup);
   assert(isDark(pop.container), 'a scheme chosen before it started is the one it starts in');
   assertEqual(suggestions(pop.q)[0], 'What is nm000132 about?', 'and so is a dataset named before it started');
+}
+
+const isOn = (view) => view.classList.contains('osa-view-on') && !view.hasAttribute('inert');
+const isOff = (view) => view.classList.contains('osa-view-off') && view.hasAttribute('inert');
+const NOTEBOOK_ORIGIN = new URL(NOTEBOOK_URL).origin;
+const frameUrl = (id) => `${NOTEBOOK_URL}open.html?community=nemar&dataset=${id}`;
+const pressed = (button) => button.getAttribute('aria-pressed') === 'true';
+
+// A message as notebook/osa-bridge.js posts it, from the frame, to the window it is in.
+function bridgeMessage(popup, frame, data) {
+  popup.dispatchEvent(new popup.MessageEvent('message', { data: { source: 'osa-notebook', ...data }, origin: NOTEBOOK_ORIGIN, source: frame.contentWindow }));
+}
+
+console.log('\na capsule community\'s pop-out has the panel\'s tabs, as a strip under its header');
+{
+  const page = await hostPage({ dataset: { id: 'nm000103', zarr: true } });
+  page.click('.osa-chat-button');
+  const { popup, container, q } = await openPopout(page);
+  assertEqual(popup.__OSA_TAB__, 'chat', 'opened from chat: the pop-out is told so');
+  assert(container.classList.contains('osa-capsule'), 'the pop-out is a capsule community\'s widget');
+  const strip = q('.osa-tab-strip');
+  assert(!!strip, 'with a tab strip');
+  assert(strip.previousElementSibling === q('.osa-chat-header') && strip.nextElementSibling === q('.osa-views'), 'between the header and the views');
+  for (const selector of ['.osa-launcher-capsule', '.osa-notebook-btn', '.osa-hpc-btn', '.osa-capsule-indicator']) {
+    assert(!q(selector), `and no launcher: no ${selector}`);
+  }
+  const chatTab = q('.osa-strip-chat');
+  const notebookTab = q('.osa-strip-notebook');
+  assertEqual([chatTab.textContent.trim(), notebookTab.textContent.trim()], ['Chat', 'Notebook'], 'the tabs are Chat and Notebook');
+  assert(pressed(chatTab) && !pressed(notebookTab), 'it opens on chat, the tab it was opened from');
+  assert(isOn(q('.osa-view-chat')) && isOff(q('.osa-view-notebook')), 'the chat view on, the notebook view off and inert');
+  assertEqual(notebookTab.getAttribute('aria-disabled'), 'false', 'the notebook tab can open: the page\'s dataset has a Zarr copy');
+  assertEqual(notebookTab.title, 'Open nm000103 in a Python notebook', 'and its tooltip says what it opens');
+  assert(!q('.osa-notebook-frame'), 'no notebook frame until the notebook tab opens');
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert(popup.document.activeElement === q('.osa-chat-input input'), 'the chat input has focus');
+
+  notebookTab.click();
+  assert(pressed(notebookTab) && !pressed(chatTab), 'the notebook tab opens it');
+  assert(isOn(q('.osa-view-notebook')) && isOff(q('.osa-view-chat')), 'the notebook view on, chat off and inert');
+  const frame = q('.osa-view-notebook .osa-notebook-frame');
+  assertEqual(frame && frame.getAttribute('src'), frameUrl('nm000103'), 'the frame is at the notebook site\'s contract address, from the page\'s notebookUrl');
+  assert(!q('.osa-ttl-notebook').classList.contains('osa-ttl-off') && q('.osa-ttl-chat').classList.contains('osa-ttl-off'), 'the header shows the notebook\'s title');
+  assertEqual(q('.osa-notebook-status-text').textContent, 'nm000103 · Opening the notebook…', 'with the notebook\'s status line');
+  for (const selector of ['.osa-settings-btn-open', '.osa-reset-btn']) {
+    assertEqual(popup.getComputedStyle(q(selector)).visibility, 'hidden', `${selector} is hidden on the notebook tab, as in the panel`);
+  }
+  assert(!notebookTab.hasAttribute('title'), 'the open tab carries no tooltip');
+  notebookTab.click();
+  assert(pressed(notebookTab) && q('.osa-notebook-frame') === frame, 'the open tab\'s own button does nothing: the pop-out\'s panel has no closed state');
+  assert(q('.osa-chat-window').classList.contains('open'), 'and the panel stays open');
+
+  chatTab.click();
+  assert(pressed(chatTab) && isOn(q('.osa-view-chat')), 'the chat tab goes back to chat');
+  assert(q('.osa-notebook-frame') === frame && frame.isConnected, 'keeping the same frame, so its Python keeps running');
+  assert(popup.document.activeElement === q('.osa-chat-input input'), 'and gives the chat input focus');
+}
+
+console.log('\nopened from the notebook tab, the pop-out opens on the notebook tab, with a frame of its own');
+{
+  const page = await hostPage({ dataset: { id: 'nm000103', zarr: true } });
+  page.click('.osa-notebook-btn');
+  assert(page.container.classList.contains('osa-tab-notebook'), 'sanity: the page\'s panel is on the notebook tab');
+  const pageFrame = page.q('.osa-notebook-frame');
+  assert(page.window.getComputedStyle(page.q('.osa-popout-btn')).visibility !== 'hidden', 'the page\'s pop-out button is there on the notebook tab');
+  const { popup, container, q } = await openPopout(page);
+  assertEqual(popup.__OSA_TAB__, 'notebook', 'the pop-out is told the tab');
+  assert(pressed(q('.osa-strip-notebook')) && !pressed(q('.osa-strip-chat')), 'and opens on it');
+  assert(container.classList.contains('osa-tab-notebook'), 'the pop-out\'s notebook is its open tab');
+  assert(isOn(q('.osa-view-notebook')) && isOff(q('.osa-view-chat')), 'the notebook view on, chat off and inert');
+  const frame = q('.osa-notebook-frame');
+  assertEqual(frame && frame.getAttribute('src'), frameUrl('nm000103'), 'its frame is at the same address');
+  assert(frame.ownerDocument === popup.document && frame !== pageFrame, 'a frame of its own, in the pop-out: a fresh notebook session');
+  assert(pageFrame.isConnected && page.q('.osa-notebook-frame') === pageFrame, 'the page\'s frame stays where it was');
+  assertEqual(q('.osa-notebook-status-text').textContent, 'nm000103 · Opening the notebook…', 'the header shows the notebook\'s status');
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert(popup.document.activeElement !== q('.osa-chat-input input'), 'the hidden chat input does not take focus');
+
+  // The bridge speaks to the pop-out's frame as it does to the panel's.
+  bridgeMessage(popup, frame, { type: 'ready' });
+  bridgeMessage(popup, frame, { type: 'setup', status: 'done' });
+  assertEqual(q('.osa-notebook-status-text').textContent, 'nm000103 · Python ready', 'the pop-out\'s notebook reports ready in its own header');
+}
+
+console.log('\nthe strip\'s notebook tab carries the notebook\'s cues while the reader is on chat');
+{
+  const page = await hostPage({ dataset: { id: 'nm000103', zarr: true } });
+  const { popup, q } = await openPopout(page);
+  const notebookTab = q('.osa-strip-notebook');
+  notebookTab.click();
+  const frame = q('.osa-notebook-frame');
+  q('.osa-strip-chat').click();
+  assert(notebookTab.classList.contains('osa-notebook-busy'), 'loading, from chat: the busy cue');
+  bridgeMessage(popup, frame, { type: 'ready' });
+  bridgeMessage(popup, frame, { type: 'setup', status: 'running' });
+  assert(notebookTab.classList.contains('osa-notebook-busy'), 'Python starting: still busy');
+  bridgeMessage(popup, frame, { type: 'setup', status: 'error' });
+  assert(!notebookTab.classList.contains('osa-notebook-busy') && notebookTab.classList.contains('osa-notebook-attention'), 'setup did not finish: the attention cue instead');
+  assertEqual(notebookTab.title, 'Setup did not finish in the nm000103 notebook', 'and the tooltip says why');
+  notebookTab.click();
+  assert(!notebookTab.classList.contains('osa-notebook-attention') && !notebookTab.classList.contains('osa-notebook-busy'), 'on the notebook tab, neither cue: the notebook is on screen');
+}
+
+console.log('\nthe strip follows the dataset the page names');
+{
+  const page = await hostPage({ dataset: { id: 'nm000103', zarr: false } });
+  const { q } = await openPopout(page);
+  const notebookTab = q('.osa-strip-notebook');
+  assertEqual(notebookTab.getAttribute('aria-disabled'), 'true', 'a dataset with no Zarr copy: the notebook tab cannot open');
+  assertEqual(notebookTab.title, 'This dataset has no Zarr copy yet, so there is nothing to open in a notebook', 'and says why');
+  notebookTab.click();
+  assert(pressed(q('.osa-strip-chat')) && !q('.osa-notebook-frame'), 'clicking it opens nothing');
+
+  page.api.setDataset({ id: 'nm000103', zarr: true });
+  assertEqual(notebookTab.getAttribute('aria-disabled'), 'false', 'the page learning of a Zarr copy: the pop-out\'s notebook tab can open');
+  notebookTab.click();
+  const first = q('.osa-notebook-frame');
+  page.api.setDataset({ id: 'nm000132', zarr: true });
+  const second = q('.osa-notebook-frame');
+  assert(pressed(notebookTab) && second && second !== first && !first.isConnected, 'another dataset on the page: the pop-out\'s frame is replaced, on the notebook tab');
+  assertEqual(second.getAttribute('src'), frameUrl('nm000132'), 'with the new dataset\'s address');
+  page.api.setDataset(null);
+  assert(pressed(q('.osa-strip-chat')) && !q('.osa-notebook-frame'), 'no dataset: back to chat, the frame dropped');
+  assertEqual(notebookTab.getAttribute('aria-disabled'), 'true', 'and the notebook tab cannot open');
+}
+
+console.log('\na bubble community\'s pop-out is unchanged: chat only, no tab strip');
+{
+  const config = configResponse();
+  delete config.widget.launcher;
+  const page = await hostPage({ config, dataset: { id: 'nm000103', zarr: true } });
+  assert(!page.q('.osa-launcher-capsule'), 'sanity: the page has the bubble');
+  const { popup, container, q } = await openPopout(page);
+  assertEqual(popup.__OSA_TAB__, 'chat', 'the pop-out is told chat');
+  assert(!container.classList.contains('osa-capsule'), 'no capsule class');
+  assert(!q('.osa-tab-strip') && !q('.osa-views') && !q('.osa-view-notebook'), 'no tab strip, no views, no notebook');
+  assert(q('.osa-chat-messages').parentElement === q('.osa-chat-window'), 'the chat\'s elements are the panel\'s own, as before');
+}
+
+console.log('\na pop-out whose community config no longer asks for the capsule goes back to the bubble\'s markup');
+{
+  const page = await hostPage({ dataset: { id: 'nm000103', zarr: true } });
+  // The community changed its launcher after the page loaded: the pop-out starts
+  // from the page's capsule, and its own config says bubble.
+  page.config.widget.launcher = 'bubble';
+  const { container, q } = await openPopout(page);
+  assert(!container.classList.contains('osa-capsule'), 'no capsule class');
+  assert(!q('.osa-tab-strip') && !q('.osa-views'), 'and no tab strip or views left behind');
 }
 
 console.log('\n' + '='.repeat(60));

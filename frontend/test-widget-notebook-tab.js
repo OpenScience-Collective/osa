@@ -200,10 +200,11 @@ console.log('\nthe notebook circle opens the panel on the notebook tab, with its
   assert(q('.osa-ttl-chat').classList.contains('osa-ttl-off'), 'and not the chat title');
   assertEqual(q('.osa-ttl-chat').getAttribute('aria-hidden'), 'true', 'the hidden title is hidden from assistive technology');
   assertEqual(q('.osa-notebook-status-text').textContent, 'nm000103 · Opening the notebook…', 'the status line names the dataset and says it is opening');
-  for (const selector of ['.osa-settings-btn-open', '.osa-reset-btn', '.osa-popout-btn']) {
+  for (const selector of ['.osa-settings-btn-open', '.osa-reset-btn']) {
     assertEqual(window.getComputedStyle(q(selector)).visibility, 'hidden', `${selector} is hidden on the notebook tab`);
   }
   assert(window.getComputedStyle(q('.osa-close-btn')).visibility !== 'hidden', 'the close button stays');
+  assert(window.getComputedStyle(q('.osa-popout-btn')).visibility !== 'hidden', 'and so does the pop-out button, which opens the pop-out on this tab');
   assert(!q('.osa-notebook-loading').classList.contains('osa-overlay-hidden'), 'the loading overlay covers the frame while it loads');
   assert(q('.osa-notebook-fallback').classList.contains('osa-overlay-hidden'), 'the fallback does not');
 }
