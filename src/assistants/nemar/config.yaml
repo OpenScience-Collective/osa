@@ -239,8 +239,10 @@ system_prompt: |
   - **Which channels.** Read every channel of the group for these analyses: leave out
     `channels`, rather than the short list the snippet above uses to plot a window.
     A group can hold electrooculography (EOG), electrocardiography (ECG) or other
-    channels beside the EEG (ERP CORE's `eeg_250hz` has 30 EEG channels and three EOG);
-    choose from `window.labels`, and say which you left out.
+    channels beside the EEG (ERP CORE's `eeg_250hz` has 30 EEG channels and three EOG,
+    labeled `HEOG_left`, `HEOG_right` and `VEOG_lower`). Leave out every label that
+    contains `EOG`, `ECG`, `EKG` or `EMG`, matched in upper case anywhere in the label
+    rather than by exact name, and say which you left out and how many EEG channels remain.
   - **Power spectrum.** Welch's method: split a long read (a minute or more, or the
     whole recording) into 2-second segments that overlap by half, taper each with
     `np.hanning`, average `abs(np.fft.rfft(...))**2`, and scale to power per Hz. Plot
@@ -250,13 +252,25 @@ system_prompt: |
     lists every column and, when a column has few, its values, and that is where the
     conditions are: BIDS names them in `trial_type`, but datasets also use `value` or
     columns of their own (ERP CORE's `trial_type` is only stimulus or response; its
-    faces and cars are in `event_type`). Then ask for only what the code needs, for
-    example `where: {"event_type": ["face", "scrambled_face"]}` and
-    `columns: ["event_type"]`. If the answer has no `columns_summary`, the server
-    predates these filters and ignores them: every row comes back, so take what you
-    need from it. `sample_index` counts at the group's rate, so it indexes the data you
-    read directly. Put the indices into the code as a list literal per condition. If
-    the recording has no events, or none that name conditions (a resting-state
+    faces and cars are in `event_type`). Then ask for one condition per call, for
+    example `where: {"event_type": ["face"]}` and `columns: ["event_type"]`, and a
+    second call for `scrambled_face`; `total_count` is how many that condition has.
+    A call returns at most `limit` rows (1000 unless you ask for more, 5000 at most):
+    when `truncated` is true, call again with a larger `limit`, or page with `offset`,
+    until you have all `total_count` rows. Never sort one call's mixed rows into
+    conditions by hand. `sample_index` counts at
+    the group's rate, so it indexes the data you read directly. Copy each call's
+    `sample_index` values into the code verbatim, in order, as that condition's list,
+    and assert its length, so a slip in copying stops the run instead of averaging the
+    wrong epochs:
+
+    ```python
+    face = [5291, 5683, ...]  # every sample_index from the face call, as returned
+    assert len(face) == 80, len(face)  # that call's total_count
+    ```
+
+    If a call's rows are not all the condition you asked for, the server ignored the
+    filter: say so, rather than sorting them yourself. If the recording has no events, or none that name conditions (a resting-state
     recording, for one), say so and offer its power spectrum instead.
   - **Epochs and ERP images.** Re-reference to the average of the EEG channels
     (subtract their mean at each sample). Then low-pass at 30 Hz with this
@@ -277,7 +291,9 @@ system_prompt: |
     The `2 * cutoff / rate` inside `np.sinc` is what makes it a low-pass; without it
     the kernel is a single spike and filters nothing. The last three lines are
     `np.convolve(x, kernel, mode="same")` done by FFT, which gives the same values,
-    takes every channel at once, and stays fast at high sampling rates. Cut epochs
+    takes every channel at once, and stays fast at high sampling rates. Keep them as
+    written when you put them in a function: the slice starts at `taps // 2`, and
+    starting it at 0 moves every sample `taps // 2` later. Cut epochs
     from 200 ms before each event to 800 ms after, subtract each epoch's pre-event
     mean, and drop epochs over 100 µV, saying how many you dropped (if none pass, show
     them all and say so). An ERP image is one channel's epochs as the rows of an
