@@ -271,11 +271,9 @@ def environment_bases(
 ) -> tuple[str, str]:
     """``(zarr_base, dataset_page_base)`` for `community_id` at `environment`.
 
-    Raises :class:`NotebookSiteBuildError` if the community's own ``notebook:``
-    block never declared that environment for either -- a build for an
-    environment a community has not opted into fails clearly here, rather
-    than silently filling in nothing (leaving the literal token in the
-    starter) or reading the wrong host.
+    Raises :class:`NotebookSiteBuildError` if the community's ``notebook:`` block
+    does not declare that environment in either map, rather than leaving a
+    token unfilled or reading another environment's host.
     """
     assert config.notebook is not None
     zarr_base = config.notebook.zarr_base.get(environment)
@@ -379,12 +377,10 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         required=True,
         choices=NOTEBOOK_ENVIRONMENTS,
         help=(
-            "which deployment this build is for -- production or develop. No "
-            "default: a notebook deployment is paired with exactly one website "
-            "environment (staging's dataset pages read a different Zarr host "
-            "than production's), so a build must never be able to silently "
-            "pick the wrong one. Selects each notebook-enabled community's own "
-            "zarr_base/dataset_page_base entry."
+            "which deployment this build is for: production or develop. It "
+            "selects each community's zarr_base and dataset_page_base entry, "
+            "and has no default because a build for the wrong one still builds "
+            "(docs/adr/0011-the-notebook-site.md)."
         ),
     )
     parser.add_argument(

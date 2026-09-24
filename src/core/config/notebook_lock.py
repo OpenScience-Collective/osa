@@ -14,12 +14,11 @@ notebook.osc.earth/osa (issue #453, docs/adr/0011-the-notebook-site.md; ADR
   wherever a config is loaded from a real checkout: ``scripts/build-notebook-
   site.py`` and the tests under ``tests/test_core/test_config/``.
 - ``ZARR_BASE_TOKEN``, ``DATASET_PAGE_BASE_TOKEN``, ``NOTEBOOK_ENVIRONMENTS``,
-  ``environment_base_url_problem`` and ``fill_build_time_tokens``: a second,
-  BUILD-time substitution, for a data host that differs per deployment
-  (staging's dataset pages read a different Zarr host than production's, and
-  each notebook deployment is already paired with one environment). Unlike
-  ``NOTEBOOK_TOKEN``, these two tokens are filled once, by the build itself,
-  before the starter ever reaches a reader's browser.
+  ``environment_base_url_problem`` and ``fill_build_time_tokens``: a second
+  substitution, done by the build for one environment, for the hosts that
+  differ per deployment (docs/adr/0011-the-notebook-site.md). Unlike
+  ``NOTEBOOK_TOKEN``, these two tokens are filled before the starter ever
+  reaches a reader's browser.
 - ``merge_site_lock``: the site build's own step, merging every notebook-enabled
   community's lock overlay into ONE Pyodide lock for the whole site. This is the
   same rule ``frontend/osa-worker-core.js``'s ``mergeLock`` enforces for a single
@@ -30,9 +29,8 @@ notebook.osc.earth/osa (issue #453, docs/adr/0011-the-notebook-site.md; ADR
 
 ``NOTEBOOK_TOKEN`` substitution itself (writing ``{{dataset_id}}`` into a cell)
 is NOT here: it happens client-side, in the reader's own browser, in
-``notebook/open.js`` -- this module never touches a dataset id, only the
-community-authored template and, separately, the per-environment host it reads
-from.
+``notebook/open.js``. This module never touches a dataset id, only the
+community-authored template and the per-environment hosts it reads from.
 """
 
 from __future__ import annotations
@@ -63,8 +61,7 @@ NOTEBOOK_SITE_PYODIDE_VERSION = "0.29.5"
 NOTEBOOK_TOKEN = "{{dataset_id}}"
 
 #: Filled in at build time for one environment (``--environment``), never by
-#: ``notebook/open.js``: staging's dataset pages read a different Zarr host than
-#: production's, and each notebook deployment is paired with one of them.
+#: ``notebook/open.js``; see docs/adr/0011-the-notebook-site.md for why.
 ZARR_BASE_TOKEN = "{{zarr_base}}"
 
 #: The same, for the starter's link back to the dataset's page on the website.

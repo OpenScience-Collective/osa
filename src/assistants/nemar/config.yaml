@@ -325,15 +325,13 @@ runtime:
 # (0.29.5, matching runtime.python.pyodide_version above): one site loads one Pyodide.
 notebook:
   starter: notebook/starter.ipynb
-  # nm/ds/on/xx ids, six digits: the same identifiers nemar.org's dataset pages
-  # use, plus xx (the sandbox and fixture bands: xx099901 is a staging fixture
-  # with no production Zarr copy at all).
+  # Six-digit nm, ds, on and xx ids: the identifiers nemar.org's dataset pages
+  # use. xx is the sandbox and fixture band; xx099903 is a staging fixture with
+  # no production Zarr copy at all.
   dataset_pattern: "^(nm|ds|on|xx)[0-9]{6}$"
-  # Each notebook deployment is paired with one website environment (staging
-  # embeds develop-notebook.osc.earth, production embeds notebook.osc.earth),
-  # so the starter reads a different Zarr host per environment -- filled into
-  # {{zarr_base}} at build time (--environment), never decided by the widget
-  # or the website at request time.
+  # One host per notebook deployment: staging embeds develop-notebook.osc.earth
+  # and production embeds notebook.osc.earth. The build fills the matching entry
+  # into the starter (--environment); docs/adr/0011-the-notebook-site.md says why.
   zarr_base:
     production: https://zarr.nemar.org
     develop: https://zarr-test.nemar.org

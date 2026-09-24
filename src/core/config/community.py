@@ -821,10 +821,9 @@ class NotebookConfig(BaseModel):
     pyodide`` on ``CommunityConfig``): one site loads one Pyodide, so a starter
     that ran under a different pin would be untested by anything that runs it.
 
-    Also declares ``zarr_base``/``dataset_page_base``, each environment
-    (production, staging) is its own deployment, so the data and website
-    hosts a starter reads are a build input, not something the widget or the
-    website decide at request time.
+    Also declares ``zarr_base`` and ``dataset_page_base``: the data host and
+    website a starter reads, one per environment (production, develop), filled
+    in at build time. Why they are build inputs: docs/adr/0011-the-notebook-site.md.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -847,18 +846,13 @@ class NotebookConfig(BaseModel):
     writing into the reader's own browser storage."""
 
     zarr_base: dict[str, str]
-    """Per-environment base URL for this community's Zarr host, keyed by
-    entries of ``NOTEBOOK_ENVIRONMENTS`` (``"production"``, ``"develop"``).
+    """This community's Zarr host for each environment, keyed by
+    ``NOTEBOOK_ENVIRONMENTS`` (``"production"``, ``"develop"``).
 
-    A notebook deployment is always paired with exactly one website
-    environment (staging's dataset pages read a different Zarr host than
-    production's), so this makes the host a BUILD input rather than widget or
-    website plumbing: ``scripts/build_notebook_site.py --environment`` picks
-    one entry and fills it into the starter's ``{{zarr_base}}`` token at
-    build time (``src.core.config.notebook_lock.fill_build_time_tokens``),
-    never client-side. A build for an environment this community has not
-    declared here is refused (``build()``'s own check), not silently built
-    with the wrong host.
+    ``scripts/build_notebook_site.py --environment`` fills one entry into the
+    starter's ``{{zarr_base}}`` token
+    (``src.core.config.notebook_lock.fill_build_time_tokens``), and refuses an
+    environment this map does not declare.
 
     Example::
 
@@ -868,10 +862,9 @@ class NotebookConfig(BaseModel):
     """
 
     dataset_page_base: dict[str, str]
-    """Per-environment base URL for this community's own website, for a
-    starter's link to a dataset's own page (filled into the starter's
-    ``{{dataset_page_base}}`` token at build time, same rule as
-    ``zarr_base``: production and staging name different sites)."""
+    """This community's website for each environment, for the starter's link to
+    a dataset's page; filled into ``{{dataset_page_base}}`` the same way as
+    ``zarr_base``."""
 
     @field_validator("zarr_base", "dataset_page_base")
     @classmethod
@@ -1606,7 +1599,13 @@ class CommunityConfig(BaseModel):
     Example:
         notebook:
           starter: notebook/starter.ipynb
-          dataset_pattern: "^(nm|ds|on)[0-9]{6}$"
+          dataset_pattern: "^(nm|ds|on|xx)[0-9]{6}$"
+          zarr_base:
+            production: https://zarr.nemar.org
+            develop: https://zarr-test.nemar.org
+          dataset_page_base:
+            production: https://nemar.org
+            develop: https://test.nemar.org
     """
 
     enable_page_context: bool = True
