@@ -250,9 +250,9 @@ either way.
 Bottom to top: chat, notebook, HPC.
 With the panel open, every circle is 46px, about 15% larger than the panel's 40px Send button.
 At rest the chat circle is 25% larger, 58px with a 26px icon.
-It is drawn larger rather than laid out larger (CSS `scale` and `translate`), so its
-box stays 46px and nothing else in the capsule, the indicator, the pill or the panel's
-place beside it, depends on whether the panel is open.
+It is drawn larger rather than laid out larger, with CSS `scale` and `translate`, so its box stays 46px.
+Nothing else in the capsule depends on whether the panel is open: not the indicator, not the pill, and not the panel's place beside it.
+Its bottom-right corner stays 20px from the window's edges while it resizes, and while it is hovered at rest, when it grows 5% as every launcher does.
 A browser without those two properties draws it at 46px at rest too.
 The collapsed launcher's tooltip sits 10px to the left of the 58px circle, centered on it.
 Each is an accessible button with an `aria-label` naming its current state and a
@@ -386,9 +386,11 @@ config for a manual or scripted Chrome check (`widget-e2e-dataset.js` drives
 console), and `frontend/browser-harness/notebook-tab-check.mjs` drives the notebook
 tab in Chrome against the live develop notebook; it needs the network, so it is not
 in CI.
-`frontend/browser-harness/first-paint-check.mjs` (below) also opens and closes NEMAR's
-panel in Chrome, sampling the chat button on every frame: 58px to 46px and back, with
-its corner 20px from the window's edges in every frame.
+`frontend/browser-harness/first-paint-check.mjs` (below) also hovers and presses NEMAR's
+resting chat button in Chrome with a real pointer, including on the part of the 58px
+circle outside its 46px box, and opens and closes the panel at 1440px and 390px wide,
+sampling the chat button on every frame: 58px to 46px and back, with its corner 20px
+from the window's edges in every frame.
 
 ## The pop-out window
 
