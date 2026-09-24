@@ -1681,6 +1681,50 @@ console.log('\napplyWidgetConfig() warns on a malformed color instead of droppin
   }
 }
 
+console.log('\nan embedder\'s own color survives the server config, for every color field');
+{
+  // _userSetKeys (set by setConfig, read by the config loader) means an embedder's
+  // explicit value is never overwritten by whatever the server sends for the same
+  // field. Table-driven over every color field the loader gates this way, old and
+  // new, each proven against the actual rendered CSS custom property, not just the
+  // in-memory CONFIG object.
+  const cases = [
+    { camelKey: 'themeColor', snakeKey: 'theme_color', property: '--osa-primary' },
+    { camelKey: 'userBubbleColor', snakeKey: 'user_bubble_color', property: '--osa-user-bg' },
+    { camelKey: 'themeTextColor', snakeKey: 'theme_text_color', property: '--osa-on-primary' },
+    { camelKey: 'accentColor', snakeKey: 'accent_color', property: '--osa-accent' },
+    { camelKey: 'userBubbleTextColor', snakeKey: 'user_bubble_text_color', property: '--osa-user-text' },
+  ];
+  const EMBEDDER_VALUE = '#111111';
+  const SERVER_VALUE = '#222222';
+  for (const [index, { camelKey, snakeKey, property }] of cases.entries()) {
+    // placeholder is a field the embedder never sets here, so the loader always
+    // has a reason to call applyWidgetConfig() even when the field under test is
+    // fully guarded away (each of these five applies independently of the others).
+    const widget = {
+      [snakeKey]: SERVER_VALUE,
+      placeholder: `server placeholder ${index}`,
+    };
+    const config = { default_model: 'm', offered_models: [], widget, client_tools: [], runtime: null };
+    const fetch = async (url) => {
+      if (String(url).endsWith('/health')) return new Response(JSON.stringify({ status: 'healthy' }));
+      return new Response(JSON.stringify(config), { headers: { 'content-type': 'application/json' } });
+    };
+    const { window, widget: widgetApi } = loadWidget({ fetch });
+    widgetApi.setConfig({
+      apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: `osa-test-usersetkeys-${index}`,
+      [camelKey]: EMBEDDER_VALUE,
+    });
+    widgetApi.init();
+    const container = window.document.querySelector('.osa-chat-widget');
+    await waitUntil(() => container.querySelector('.osa-chat-input input').placeholder === widget.placeholder,
+      `the server config has loaded (${camelKey})`);
+    assertEqual(widgetApi.getConfig()[camelKey], EMBEDDER_VALUE, `${camelKey}: the embedder's own value is never overwritten in CONFIG`);
+    assertEqual(container.style.getPropertyValue(property), EMBEDDER_VALUE,
+      `${camelKey}: the rendered ${property} is the embedder's value, not the server's`);
+  }
+}
+
 console.log('\n' + '='.repeat(60));
 console.log(`Total: ${passed + failed}   Passed: ${passed}   Failed: ${failed}`);
 clearTimeout(watchdog);
