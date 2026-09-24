@@ -1,0 +1,129 @@
+name: Notebook site check
+
+# The two checks that would actually catch a real regression in the hosted
+# JupyterLite notebook site (issue #453, docs/adr/0011-the-notebook-site.md),
+# neither of which gates anything today: TestFullBuildEndToEnd is network-
+# marked and runs only in test.yml's post-merge Integration Tests job, with
+# continue-on-error; notebook/e2e-check.js runs in no workflow at all. A PR
+# review demonstrated this concretely -- writing _headers/_redirects into the
+# site subdirectory instead of the true publish root, and removing the
+# no-overwrite rule, both passed every offline test that runs on a PR.
+#
+# This workflow runs both for real, with no continue-on-error, on:
+#   - a pull request touching the notebook site's own paths (same list
+#     deploy-notebook.yml triggers a deploy on);
+#   - a weekly schedule, so a jsDelivr/CDN-side or Pyodide-release change is
+#     caught even with no PR open to run this against;
+#   - workflow_dispatch.
+
+on:
+  pull_request:
+    paths:
+      - 'notebook/**'
+      - 'scripts/build_notebook_site.py'
+      - 'src/core/config/notebook_lock.py'
+      - 'src/core/config/community.py'
+      - 'src/core/config/runtime_lock.py'
+      - 'src/assistants/*/notebook/**'
+      - 'src/assistants/*/runtime/**'
+      - 'src/assistants/*/config.yaml'
+      - '.github/workflows/notebook-site-check.yml'
+  schedule:
+    - cron: '0 6 * * 1' # weekly, Monday 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Build and open the notebook site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
+      - name: Install JavaScript dependencies
+        run: bun install
+
+      # The runner ships Chrome; notebook/e2e-check.js finds it through the
+      # same frontend/browser-harness/chrome.js findChrome() that test.yml's
+      # Frontend Tests job relies on for the browser harness. Checked here,
+      # separately and first, so a missing Chrome fails with its own clear
+      # step rather than surfacing as a confusing e2e-check.js failure.
+      - name: Confirm Chrome is available
+        run: |
+          bun -e "
+            import { findChrome } from './frontend/browser-harness/chrome.js';
+            const path = findChrome();
+            if (!path) { console.error('no Chrome found on this runner'); process.exit(1); }
+            console.log('found Chrome at', path);
+          "
+
+      # The real jupyterlite build and the real Pyodide lock fetch -- the one
+      # piece TestFullBuildEndToEnd needs the network for. No continue-on-
+      # error: a broken build must fail this job, not merely warn.
+      - name: Run the full build end-to-end check
+        run: uv run pytest tests/test_scripts/test_build_notebook_site.py -k TestFullBuildEndToEnd -v -m network
+
+      # A real headless-Chrome run through open.html into a working notebook:
+      # cold read, screenshot, edit-and-save, warm reopen (no overwrite), warm
+      # re-run, and both refusal paths. See notebook/README.md.
+      - name: Run the real headless-Chrome open-to-notebook check
+        run: bun notebook/e2e-check.js
+
+  # A separate job, so the issue opens even when the check job fails before
+  # its own checks run (checkout included). Only on the schedule trigger: a
+  # pull_request failure already surfaces as a failing PR check, and opening
+  # or commenting on a shared tracking issue for every failing PR would be
+  # noise, not signal. Follows widget-route-health.yml's own convention.
+  track:
+    name: Track the issue
+    needs: check
+    if: ${{ !cancelled() && github.event_name == 'schedule' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/actions
+
+      - uses: ./.github/actions/track-issue
+        with:
+          label: notebook-site-check
+          title: 'Notebook site check failing'
+          failed: ${{ needs.check.result == 'failure' }}
+          recovery_message: 'the notebook site build-and-open check'
+          report: |
+            The scheduled build-and-open check for the hosted JupyterLite notebook
+            site is failing (docs/adr/0011-the-notebook-site.md).
+
+            Likely causes, cheapest first:
+
+            - jsDelivr no longer serves Pyodide at the pinned version/path, or its
+              sha256 changed.
+            - A community's lock overlay or starter notebook no longer validates.
+            - JupyterLite's own pinned versions moved or broke compatibility with
+              the pinned Pyodide.
+            - A genuine regression in open.js's bootstrap or the built site's own
+              JavaScript, caught by the real headless-Chrome run.
+
+            See the failing run to tell which of the two checks (the pytest
+            build, or the Chrome open) failed.
