@@ -7,7 +7,7 @@ own entries are tested in test_nemar_runtime.py; the overlay against Pyodide's o
 is frontend/test-data-lane.js, which has it.
 
 Every shipped community that names a ``notebook:`` block (issue #453) gets the same
-treatment for its starter: this is what ``scripts/build-notebook-site.py`` checks
+treatment for its starter: this is what ``scripts/build_notebook_site.py`` checks
 before serving it, run here for every community so a broken starter fails a fast,
 offline test rather than a live build.
 """

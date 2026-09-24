@@ -64,9 +64,10 @@ the version being released and start a new `[Unreleased]` section above it.
   community, following the same "an overlay may only add, never replace" rule the
   chat-widget runtime already enforces. NEMAR ships the first starter
   (`src/assistants/nemar/notebook/starter.ipynb`). `docs/community-notebook.md` is the
-  adopter guide; `scripts/build_notebook_site.py` and `.github/workflows/deploy-
-  notebook.yml` build and deploy it. The widget's own IndexedDB workspace does not hand
-  off to the notebook yet (ADR 0010's fourth prerequisite; still open).
+  adopter guide; `scripts/build_notebook_site.py` and
+  `.github/workflows/deploy-notebook.yml` build and deploy it. The widget's own
+  IndexedDB workspace does not hand off to the notebook yet (ADR 0010's fourth
+  prerequisite; still open).
 
 ### Changed
 

@@ -1,6 +1,6 @@
 """A community's browser-run notebook starter, and the notebook site's merged lock.
 
-Two independent pieces live here, both about the separate site at notebook.osc.earth
+Two independent pieces live here, both about the separate site at notebook.osc.earth/osa
 (issue #453, docs/adr/0011-the-notebook-site.md; ADR 0010 deferred building it):
 
 - ``NOTEBOOK_SITE_PYODIDE_VERSION``, ``NOTEBOOK_TOKEN`` and

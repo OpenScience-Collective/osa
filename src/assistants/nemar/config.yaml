@@ -318,8 +318,8 @@ runtime:
 
       eegprep_lean.set_default_transport(eegprep_lean.FetchTransport(osa.fetch))
 
-# The separate notebook.osc.earth site (issue #453, docs/adr/0011-the-notebook-site.md):
-# a widget button (built separately) opens notebook.osc.earth/open.html?community=nemar&
+# The separate notebook.osc.earth/osa site (issue #453, docs/adr/0011-the-notebook-site.md):
+# a widget button (built separately) opens notebook.osc.earth/osa/open.html?community=nemar&
 # dataset=<id> in a new tab, which drops this starter -- with {{dataset_id}} filled in --
 # into JupyterLite's own storage. Must stay pinned to the notebook site's own Pyodide
 # (0.29.5, matching runtime.python.pyodide_version above): one site loads one Pyodide.
