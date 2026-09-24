@@ -287,6 +287,10 @@
       --osa-user-text: #ffffff;
       --osa-assistant-bg: #f3f4f6;
       --osa-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+      /* The widget draws its own light surfaces, so the
+         browser's own parts (scrollbars, native inputs, checkboxes) have to match
+         them rather than a dark host page's color-scheme (#469). */
+      color-scheme: light;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       font-size: 14px;
       line-height: 1.5;
@@ -531,6 +535,9 @@
       min-width: 300px;
       min-height: 350px;
       background: var(--osa-bg);
+      /* Text with no color of its own would otherwise inherit the host page's,
+         unreadable on this panel when the page is dark (#469). */
+      color: var(--osa-text);
       border-radius: 16px;
       box-shadow: var(--osa-shadow);
       display: none;
@@ -1091,6 +1098,10 @@
       border-radius: 20px;
       outline: none;
       font-size: 14px;
+      /* Explicit, never the browser's: a dark host page otherwise paints this
+         field dark inside the light panel (#469). */
+      background: var(--osa-bg);
+      color: var(--osa-text);
       transition: border-color 0.2s;
     }
 
@@ -1418,6 +1429,8 @@
       font-size: 13px;
       font-family: 'SF Mono', Monaco, 'Courier New', monospace;
       outline: none;
+      background: var(--osa-bg);
+      color: var(--osa-text);
       transition: border-color 0.2s;
       box-sizing: border-box;
     }
@@ -1437,6 +1450,7 @@
       box-sizing: border-box;
       transition: border-color 0.2s;
       background: var(--osa-bg);
+      color: var(--osa-text);
     }
 
     .osa-settings-select:focus {
