@@ -106,16 +106,20 @@ widget:
   accent_color: "#257a92"         # the same hue, darkened for foreground use on white
 ```
 
-## Launcher: the capsule, the notebook icon, and the HPC placeholder
+## Launcher: the capsule, the notebook icon, and the high-performance computing (HPC) placeholder
 
-The floating launcher has two shapes: `bubble`, a single chat button (today's
-only behavior), and `capsule`, a vertical stack of three circular icons
-(issue #436). Collapsed, a `capsule` widget looks identical to a `bubble`
-one: one chat button, bottom right. Clicking it opens the chat panel and
-expands the capsule upward, revealing a notebook icon and an HPC placeholder
-above the chat button; the chat button itself never moves. A community that
-never sets `launcher` renders exactly as it did before this field existed,
-markup and computed styles included; that equivalence is asserted in
+The floating launcher has two shapes: `bubble`, a single chat button (today's only
+behavior), and `capsule`, a vertical stack of three circular icons (issue #436).
+Collapsed, a `capsule` widget looks identical to a `bubble` one: one chat button,
+bottom right.
+Clicking it opens the chat panel and expands the capsule, revealing a notebook icon
+and an HPC placeholder; the chat button itself never moves.
+Above 600px wide, the capsule expands upward into a vertical stack, and the chat
+panel opens to the button's left instead of above it.
+At 600px and narrower, the capsule instead expands into a row beside the chat
+button, and the panel opens above it, exactly as it always has.
+A community that never sets `launcher` renders exactly as it did before this field
+existed, markup and computed styles included; that equivalence is asserted in
 `frontend/test-widget-capsule.js`.
 
 | Field | Type | Default | What it changes |
