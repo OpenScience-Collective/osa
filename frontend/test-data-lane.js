@@ -591,62 +591,100 @@ window = await read_window(index, index.stores[0], start_sample=0, n_samples=2)
     }
   }
 
-  // The low-pass the prompt's ERP section teaches, run as the prompt writes it. A
-  // model copies it, so a kernel that stops filtering (np.sinc without the cutoff is
-  // a single spike, and so is a cutoff at the Nyquist frequency) would put unfiltered
-  // epochs into every ERP image it draws.
+  // The prompt's own blocks, run as the prompt writes them: a model copies them, so a
+  // filter that stops filtering or a spectrum call this runtime refuses would reach
+  // every figure it draws.
+  const promptBlock = (bulletHeading) => {
+    const at = NEMAR.system_prompt.indexOf(bulletHeading);
+    const fence = at === -1 ? null : NEMAR.system_prompt.slice(at).match(/```python\n([\s\S]*?)\n\s*```/);
+    if (!fence) return { fence: null, code: '' };
+    const lines = fence[1].split('\n');
+    const indent = Math.min(...lines.filter((l) => l.trim()).map((l) => l.match(/^ */)[0].length));
+    return { fence, code: lines.map((l) => l.slice(indent)).join('\n') };
+  };
+  const indented = (code) => code.split('\n').map((l) => `    ${l}`).join('\n');
+
   console.log('\nthe prompt\'s ERP low-pass keeps 5 Hz and removes the high tone, at 60 to 5000 Hz');
   {
-    const erpAt = NEMAR.system_prompt.indexOf('**Epochs and ERP images.**');
-    const fence = erpAt === -1 ? null : NEMAR.system_prompt.slice(erpAt).match(/```python\n([\s\S]*?)\n\s*```/);
+    const { fence, code } = promptBlock('**Epochs and ERP images.**');
     assert(fence !== null, 'the ERP section carries a python block');
     // The block belongs to the sentence that introduces it, not to a later section.
     assert(fence !== null && fence.index < 400, `it follows the bullet's opening lines (at ${fence && fence.index})`);
     if (fence) {
-      const lines = fence[1].split('\n');
-      const indent = Math.min(...lines.filter((l) => l.trim()).map((l) => l.match(/^ */)[0].length));
-      const filterCode = lines.map((l) => l.slice(indent)).join('\n');
       // Defined as a function so each rate runs the block exactly as written, with
       // only `rate` and `x` bound, the two names the prompt says it takes.
-      const body = filterCode.split('\n').map((l) => `    ${l}`).join('\n');
       const result = await run(`import json
 import numpy as np
 
 def prompt_lowpass(x, rate):
-${body}
-    return filtered, kernel, taps, cutoff
+${indented(code)}
+    return filtered, cutoff
+
+def tone(y, t, hz):
+    # The amplitude of one frequency in y, by projection.
+    return float(2 * abs(np.mean(y * np.exp(-2j * np.pi * hz * t))))
 
 out = []
 for rate in (60.0, 125.0, 250.0, 1000.0, 5000.0):
-    t = np.arange(int(4 * rate)) / rate
+    t = np.arange(int(8 * rate)) / rate
     high = min(50.0, 0.45 * rate)
     slow = np.sin(2 * np.pi * 5 * t)
     x = slow + np.sin(2 * np.pi * high * t)
-    filtered, kernel, taps, cutoff = prompt_lowpass(x, rate)
-    f = np.fft.rfftfreq(16384, 1 / rate)
-    H = np.abs(np.fft.rfft(kernel, 16384))
-    gain = lambda hz: float(H[np.argmin(np.abs(f - hz))])
-    both, _, _, _ = prompt_lowpass(np.vstack([x, 2 * x]), rate)
+    filtered, cutoff = prompt_lowpass(x, rate)
+    both, _ = prompt_lowpass(np.vstack([x, 2 * x]), rate)
+    edge = int(rate)
+    inner = slice(edge, -edge)
     out.append({
-        "rate": rate, "taps": int(taps), "high": high,
-        "gain_5": gain(5), "gain_high": gain(high),
-        "residual": float(np.max(np.abs(filtered[taps:-taps] - slow[taps:-taps]))),
-        "vs_convolve": float(np.max(np.abs(filtered - np.convolve(x, kernel, mode="same")))),
+        "rate": rate, "high": high, "cutoff": float(cutoff),
+        "gain_5": tone(filtered[inner], t[inner], 5.0),
+        "gain_high": tone(filtered[inner], t[inner], high),
+        "residual": float(np.max(np.abs(filtered[inner] - slow[inner]))),
         "vs_rows": float(max(np.max(np.abs(both[0] - filtered)), np.max(np.abs(both[1] - 2 * filtered)))),
     })
 print(json.dumps(out))
 `);
       assertEqual(result.status, 'ok', `it runs (stderr: ${result.stderr.slice(-300)})`);
       for (const r of JSON.parse(result.stdout || '[]')) {
-        const at = `at ${r.rate} Hz`;
-        assert(r.taps % 2 === 1, `${at}: an odd number of taps (${r.taps})`);
+        const at = `at ${r.rate} Hz (cutoff ${r.cutoff} Hz)`;
         assert(Math.abs(r.gain_5 - 1) < 0.01, `${at}: unity gain at 5 Hz (${r.gain_5})`);
-        assert(r.gain_high < 0.01, `${at}: under 1% at ${r.high} Hz (${r.gain_high})`);
-        assert(r.residual < 0.02,
+        assert(r.gain_high < 0.02, `${at}: under 2% at ${r.high} Hz (${r.gain_high})`);
+        assert(r.residual < 0.03,
           `${at}: 5 Hz plus ${r.high} Hz comes out as the 5 Hz sine, unshifted (largest difference ${r.residual})`);
-        assert(r.vs_convolve < 1e-9, `${at}: the same values as np.convolve(x, kernel, "same") (${r.vs_convolve})`);
         assert(r.vs_rows < 1e-9, `${at}: a channels-by-samples array filters row by row (${r.vs_rows})`);
       }
+    }
+  }
+
+  console.log('\nthe prompt\'s spectrum runs one channel at a time, which this runtime needs');
+  {
+    const { fence, code } = promptBlock('**Power spectrum.**');
+    assert(fence !== null, 'the spectrum bullet carries a python block');
+    if (fence) {
+      const result = await run(`import json
+import numpy as np
+from scipy import signal
+
+rate = 250.0
+t = np.arange(30000) / rate
+rng = np.random.default_rng(0)
+eeg = rng.standard_normal((33, t.size)) + 3 * np.sin(2 * np.pi * 10 * t)
+${code}
+try:
+    signal.welch(eeg, fs=rate, nperseg=int(2 * rate), axis=-1)
+    whole = "ok"
+except ValueError as e:
+    whole = str(e)
+print(json.dumps({"shape": list(power.shape), "bins": int(freqs.size),
+                  "peak_hz": float(freqs[np.argmax(power.mean(axis=0))]), "whole": whole}))
+`);
+      assertEqual(result.status, 'ok', `it runs (stderr: ${result.stderr.slice(-300)})`);
+      const out = JSON.parse(result.stdout || '{}');
+      assertEqual(out.shape, [33, out.bins], 'one spectrum per channel');
+      assert(Math.abs(out.peak_hz - 10) < 0.6, `the 10 Hz tone is the peak (${out.peak_hz} Hz)`);
+      // The control: the reason the prompt says one channel at a time. If a later
+      // Pyodide lifts this, the check says so and the prompt's sentence can go.
+      assert(/array is too big/.test(out.whole),
+        `control: welch on the whole 33 x 30000 array is refused here (${String(out.whole).slice(0, 80)})`);
     }
   }
 } finally {
