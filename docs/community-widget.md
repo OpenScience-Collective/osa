@@ -334,6 +334,41 @@ console), and `frontend/browser-harness/notebook-tab-check.mjs` drives the noteb
 tab in Chrome against the live develop notebook; it needs the network, so it is not
 in CI.
 
+## The first paint: remembering the community's look
+
+The `widget:` block reaches the page with the community config request, some
+hundreds of milliseconds after the widget script runs.
+Until then the widget has only its built-in defaults, so it used to draw the
+launcher in the platform blue, at the bubble's 56px, and then change: to the
+community's colors, and for a capsule community, to the 46px capsule (issue #475).
+It no longer does, for any community:
+
+- **The look is remembered.** Each time the config arrives, the widget keeps its
+  `widget` block, exactly as the server sent it, in the page's own `localStorage`
+  under `osa-widget-config-<communityId>`, with the API endpoint it came from.
+  The next load applies it before anything is drawn, through the same checks as a
+  fresh config, so the launcher appears in the community's look from the first
+  frame.
+  The fresh config still arrives, wins, and replaces what is remembered, so a
+  community that changes its look shows the old one for one more page load.
+  An embedder's own `setConfig` keys outrank both, as they outrank a fresh config.
+  A remembered entry for another API endpoint, or one that cannot be read, is
+  ignored.
+- **A first visit waits for the config.** With nothing remembered, the launcher
+  stays hidden until the config arrives, and nothing animates while it waits, so
+  it appears already in the community's look.
+  If the config takes longer than 1.5 seconds, or the request fails, the launcher
+  is shown in the defaults then, as before.
+  The pop-out has no launcher, so it never waits.
+
+Storage that is blocked or full costs only the remembering: the widget warns in
+the console, and every load behaves as a first visit.
+
+Testing: `frontend/test-widget-first-paint.js` runs the real widget source in a
+happy-dom window, and `frontend/browser-harness/first-paint-check.mjs --serve`
+records the launcher on every animation frame in Chrome, with the config request
+held for 600 ms; both run in CI.
+
 ## Embedder `setConfig` keys
 
 A page that embeds the widget directly (rather than only through a
