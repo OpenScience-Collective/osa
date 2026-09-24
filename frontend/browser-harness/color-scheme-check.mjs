@@ -29,11 +29,11 @@
  */
 
 import { connect, findChrome, launch } from './chrome.js';
+import { startServer, waitForServer } from './harness-server.js';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const REPO_ROOT = new URL('../..', import.meta.url).pathname;
 const MODES = ['light', 'auto'];
 
 let failed = 0;
@@ -290,47 +290,16 @@ async function check(url, mode) {
   }
 }
 
-// A widget_e2e.py server on a free port, its output kept for a failure report.
-function startServer(extraArgs) {
-  const probe = Bun.listen({ hostname: '127.0.0.1', port: 0, socket: { data() {} } });
-  const port = probe.port;
-  probe.stop(true);
-  const proc = Bun.spawn(['uv', 'run', 'python', 'frontend/browser-harness/widget_e2e.py', String(port), ...extraArgs], {
-    cwd: REPO_ROOT, stdout: 'pipe', stderr: 'pipe',
-  });
-  const server = { port, proc, output: '' };
-  for (const stream of [proc.stdout, proc.stderr]) {
-    (async () => {
-      const decoder = new TextDecoder();
-      for await (const chunk of stream) server.output += decoder.decode(chunk);
-    })();
-  }
-  return server;
-}
-
-async function waitForServer(server, timeoutMs = 120_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (server.proc.exitCode !== null) break;
-    try {
-      const response = await fetch(`http://127.0.0.1:${server.port}/browser-harness/widget-e2e-config.js`);
-      if (response.ok) return true;
-    } catch {
-      // not listening yet
-    }
-    await Bun.sleep(250);
-  }
-  report(false, `the widget_e2e.py server on port ${server.port} did not start`, server.output.slice(-2000));
-  return false;
-}
-
 async function main() {
   const args = process.argv.slice(2);
   if (args.length === 1 && args[0] === '--serve') {
     const servers = { light: startServer([]), auto: startServer(['--color-scheme', 'auto']) };
     try {
       for (const mode of MODES) {
-        if (!(await waitForServer(servers[mode]))) continue;
+        if (!(await waitForServer(servers[mode]))) {
+          report(false, `the widget_e2e.py server on port ${servers[mode].port} did not start`, servers[mode].output.slice(-2000));
+          continue;
+        }
         await check(`http://127.0.0.1:${servers[mode].port}/browser-harness/widget-e2e.html`, mode);
       }
     } finally {
