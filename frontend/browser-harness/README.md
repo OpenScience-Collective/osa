@@ -236,5 +236,35 @@ The Bun test for this lane is `frontend/test-data-lane.js`, which cannot load a
 wheel by URL or check its digest (Pyodide's Node loader does neither). Those two
 run in CI through `chrome.js`; this page adds the widget and the live archive.
 
+### Light and dark
+
+```bash
+uv run python frontend/browser-harness/widget_e2e.py 8795            # a community that never set color_scheme
+uv run python frontend/browser-harness/widget_e2e.py 8796 --nemar    # color_scheme: auto
+bun frontend/browser-harness/color-scheme-check.mjs http://127.0.0.1:8795/browser-harness/widget-e2e.html light
+bun frontend/browser-harness/color-scheme-check.mjs http://127.0.0.1:8796/browser-harness/widget-e2e.html nemar
+```
+
+The bug behind issue #469 is the browser's own:
+on a host page that declares `color-scheme: dark`, Chrome draws a form control with no colors of its own in its dark field colors.
+happy-dom has no such stylesheet, so `frontend/test-widget-color-scheme.js` cannot show it; this check can.
+It gives the page a dark theme through the CSSOM, emulates the device's setting with `Emulation.setEmulatedMedia`,
+and starts with a **control**: a plain input on that page must come out dark, or the page is not reproducing the bug.
+
+Measured 2026-09-24 in Chrome 153:
+
+- `light`: on a dark host page and a dark device, the widget stays light, and the chat input,
+  the Settings key field and the model menu keep a white background and `#1f2937` text;
+  panel text does not take the host page's color, and the widget's `color-scheme` is `light`
+- `nemar`: `auto` follows the device, including a switch while the panel is open;
+  `setColorScheme('light')` outranks a dark device;
+  a pop-out opened after that keeps the host's light after its own community config arrives,
+  and the host switching to dark reaches the open pop-out
+- each of those fails when the widget line it depends on is removed (seven mutations)
+
+The pop-out step reloads the page with `'unsafe-inline'` added to `script-src`, which nemar.org's live policy allows and this harness's stricter one does not.
+Today's pop-out is written into `about:blank`, inherits its opener's policy and runs its scripts inline,
+so on a host page without `'unsafe-inline'` it opens blank: a limitation of the pop-out itself, left for its redesign (#470).
+
 `notebook-bench.js` times any page's boot, cold and warm, reusing `chrome.js`'s own Chrome-driving primitives;
 see ADR 0010 (`docs/adr/0010-the-notebook-surface.md`) and `.context/notebook-surface-measurements.md` for what it was built to measure.
