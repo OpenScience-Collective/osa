@@ -441,6 +441,36 @@ with the widget loaded by its script tag in both,
 and `frontend/browser-harness/popout-check.mjs --serve` opens the pop-out in Chrome under a policy without `'unsafe-inline'`,
 from both tabs, on a plain and a pinned widget tag (see the harness README); both run in CI.
 
+## A run in the chat
+
+A community whose model runs code in the reader's browser (`execute_code`, [`docs/community-browser-runtime.md`](community-browser-runtime.md)) shows each run in the reply that asked for it.
+A community without it never has a run, and renders none of this.
+
+Each run is two disclosures, one under the other, joined by a rule down their left (issue #491):
+
+- **The run**, titled by how it ended and what the model said it does (`Ran Python: plot ten seconds of Cz`): its printed output, its figures, and "Edit and run".
+  It opens by default when the run drew a figure, when the reader ran it, or while its editor is open, as it always has.
+- **Its code**, labeled with its length (`Code · 14 lines`) and closed until the reader opens it, so the code opens without the output, and a figure is not pushed down the page by the script that drew it.
+  It stays open while the reply keeps updating; a reload shows it closed again.
+
+The code's bar has two buttons:
+
+- **Copy** puts the code on the clipboard exactly as the run's record holds it, not the highlighted text on the page, and shows "Copied" for two seconds.
+  Where the page may not use the Clipboard API (an insecure page, a frame without `clipboard-write`, or a browser that refuses), it tries the browser's older copy command;
+  where that fails too, it opens the code, selects it, and says which keys copy it.
+  It never opens a browser dialog.
+- **Download** saves the code as a `.py` file built in the page, named for the dataset the question was about and the run's place in the conversation, counted from 1: `nm000132-run-3.py`.
+  The dataset is the one the page named with `setDataset` when the reader sent the question; a question sent from a page that named none takes the community's id instead (`nemar-run-3.py`).
+  The count is of every run the conversation shows, one that was declined or stopped included, so it can differ from the `run-NNN` numbering of the workspace download, which counts only the runs whose Python finished, with or without an error.
+
+The permission gate ("Run this Python in your browser?") has the same Copy over the code it asks about, and copying it neither runs nor denies it; Download waits until the code has run.
+
+Both copy and download the code the run's record keeps, its first 20,000 characters; the workspace download in Settings keeps every script whole ([`docs/community-browser-runtime.md`](community-browser-runtime.md), "Workspace").
+The code is the model's, so it is escaped wherever it is shown, highlighted or not.
+
+Testing: `frontend/test-widget-tools.js` runs the real widget source in a happy-dom window:
+the two disclosures and their markup for hostile code, Copy through happy-dom's own clipboard, when it refuses and without it, Download's Blob and file name, the gate's Copy, the code's open state across a re-render, and a reply that ran no code rendering none of it.
+
 ## The first paint: remembering the community's look
 
 The `widget:` block reaches the page with the community config request, some
