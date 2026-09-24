@@ -143,8 +143,15 @@ for (const [path, opts] of ROUTES) {
   assert(prefixedStatus !== 404, `/osa${path} does not fall through to the 404 default`);
 }
 
-console.log('\nThe bare mount root and root-level absolute routes behave the same prefixed and not');
-assertEqual(await statusOf('/osa'), await statusOf('/'), '/osa (bare) matches / (root)');
+console.log('\nThe bare mount path redirects to its slash form (#500), and root-level routes behave the same prefixed and not');
+for (const host of [MOUNTED_HOST, 'develop-widget.osc.earth']) {
+  const bare = await call('/osa', { host });
+  assertEqual(bare.status, 308, `${host}/osa (bare) answers 308`);
+  assertEqual(bare.headers.get('Location'), '/osa/', `${host}/osa redirects to /osa/`);
+  const withQuery = await call('/osa?community=nemar&x=1', { host });
+  assertEqual(withQuery.headers.get('Location'), '/osa/?community=nemar&x=1', `${host}/osa keeps its query string`);
+}
+assertEqual(await statusOf('/osa/'), await statusOf('/'), '/osa/ (the redirect target) is the API root');
 await assertReachesHandler('/osa/feedback', { method: 'POST', body: {} }, 'POST /osa/feedback reaches the feedback handler');
 
 // The resume route is where the epic branch and the widget branch collided:
@@ -237,15 +244,19 @@ assertEqual(
   await statusOf('/hed/', { host: UNMOUNTED_HOST }),
   '/osa/ on the unmounted host is read as community "osa", matching any other community route'
 );
-// On the mounted host a bare /osa IS the mount root and answers the API root
-// (200). On the unmounted host the same path is community "osa", so it
-// proxies and returns 503 here only because this env has no BACKEND_URL. The
-// point is that the two hosts must NOT agree: agreement would mean the strip
-// fired where no prefix exists.
+// On the mounted host a bare /osa IS the mount root, and redirects to /osa/,
+// the API root (#500). On the unmounted host the same path is community "osa",
+// so it proxies and returns 503 here only because this env has no BACKEND_URL.
+// The point is that the two hosts must NOT agree: agreement would mean the
+// mount handling fired where no prefix exists.
 assertEqual(
   await statusOf('/osa', { host: MOUNTED_HOST }),
-  await statusOf('/', { host: MOUNTED_HOST }),
-  '/osa (bare) on the mounted host is the API root'
+  308,
+  '/osa (bare) on the mounted host redirects to the API root'
+);
+assert(
+  (await statusOf('/osa', { host: UNMOUNTED_HOST })) !== 308,
+  '/osa (bare) on the unmounted host is NOT redirected'
 );
 assert(
   (await statusOf('/osa', { host: UNMOUNTED_HOST })) !== (await statusOf('/', { host: UNMOUNTED_HOST })),

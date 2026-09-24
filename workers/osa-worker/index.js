@@ -559,6 +559,16 @@ export default {
 
     try {
       const url = new URL(request.url);
+      // The bare mount path (#500) has one canonical form, with its slash, as
+      // the notebook host's "/osa" already does: redirect rather than serve the
+      // root at two addresses. Only on a mounted host, where "/osa" is the mount
+      // and not a path of its own (see MOUNTED_HOSTS).
+      if (MOUNTED_HOSTS.has(url.hostname) && url.pathname === MOUNT_PREFIX) {
+        return new Response(null, {
+          status: 308,
+          headers: { ...corsHeaders, Location: `${MOUNT_PREFIX}/${url.search}` },
+        });
+      }
       // Strip the widget.osc.earth/osa mount prefix (#437) once, up front.
       // Every matcher below is written unprefixed and sees this pathname,
       // never url.pathname directly, so it works the same reached via the

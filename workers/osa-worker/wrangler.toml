@@ -55,6 +55,13 @@ ENVIRONMENT = "production"
 pattern = "widget.osc.earth/osa/*"
 zone_name = "osc.earth"
 
+# The bare mount path, which "/osa/*" does not match (#500): without this,
+# "widget.osc.earth/osa" reaches the placeholder AAAA 100:: origin and
+# Cloudflare answers 522. The worker answers it with a 308 to "/osa/".
+[[routes]]
+pattern = "widget.osc.earth/osa"
+zone_name = "osc.earth"
+
 # Hybrid rate limiting approach:
 # - Per-minute (bot protection): Built-in API (fast, in-memory)
 # - Per-hour (human abuse): KV (global consistency)
@@ -98,6 +105,11 @@ head_sampling_rate = 1.0
 # [[routes]] comment above for why.
 [[env.dev.routes]]
 pattern = "develop-widget.osc.earth/osa/*"
+zone_name = "osc.earth"
+
+# The bare mount path (#500); see the production routes above.
+[[env.dev.routes]]
+pattern = "develop-widget.osc.earth/osa"
 zone_name = "osc.earth"
 
 # Per-minute rate limiter (dev has higher limit: 60/min)

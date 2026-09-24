@@ -15,6 +15,9 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Fixed
 
+- **An OSA address without its trailing slash works** (issue #500). `widget.osc.earth/osa` and `develop-widget.osc.earth/osa` answered 522,
+  because the Worker's `/osa/*` routes do not match the bare path; each host now also routes `/osa`, which the Worker answers with a 308 to `/osa/`, keeping the query string.
+  `deploy/apache-api.osc.earth.conf` redirects `api.osc.earth/osa` and `/osa-dev` the same way; the server's copy is applied by hand.
 - **NEMAR's ERP images use the events they name.** On nemar.org a model asked for every stimulus of ERP CORE's N170 recording in one call,
   sorted the rows into faces and scrambled faces while copying them into code, and averaged 282 "faces" of a recording that has 80.
   The prompt now asks for one condition per `nemar_get_events` call, has the code assert each list's length against that call's `total_count`,
