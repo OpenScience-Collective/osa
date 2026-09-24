@@ -61,6 +61,7 @@ Because the bridge posts to any origin, the widget does the filtering: it acts o
 A frame that loads but has not said it is ready within 12 seconds, or has not said so within 45 seconds of being created, or whose bridge reports a startup error before it is ready, is covered by a fallback that retries in a fresh frame or opens the same address in a browser tab.
 A page whose own `frame-src` refuses the notebook still fires the frame's load event, for the error page, and then hears nothing (measured in Chrome 153: one load, no messages; an allowed frame loads twice, through `open.html`'s redirect, and speaks), which is why the shorter timeout counts from the load.
 A startup error after ready is ignored, because the bridge's error path also covers the work it does after the notebook is on screen.
+A failed frame is kept until the reader asks for another with "Try again", so returning to the tab shows the same fallback instead of quietly spending another load, and a notebook that was only slow recovers when it reports ready.
 `launcher: capsule` now requires a `notebook` section, because without one the notebook icon could open only an error.
 
 A browser tab as the notebook's primary surface (#468's behavior) was rejected: moving between the assistant and the notebook meant leaving the page.

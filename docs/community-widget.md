@@ -269,7 +269,7 @@ re-renders immediately.
 
 ### The notebook tab
 
-Clicking the active notebook icon opens the panel on its Notebook tab (issue #470),
+Clicking the available notebook icon opens the panel on its Notebook tab (issue #470),
 or switches to it if the panel is already open on chat.
 The tab is a frame at
 `${notebookUrl}open.html?community=${encodeURIComponent(communityId)}&dataset=${encodeURIComponent(id)}`,
@@ -303,9 +303,16 @@ close button, closes the panel.
   covered by a message with "Try again" (a fresh frame) and "Open in a new tab" (the
   same address in a browser tab of its own).
   The usual cause is the host page's own policy, below.
-- **Resizing.** The capsule's panel resizes up to 1400px wide (never closer than
-  120px to the window's left edge) and to the window's full height less 40px, where
-  a bubble's stops at 600 by 800.
+  The failed frame is kept: coming back to the tab shows the same message rather than
+  starting over, and the message goes away if a notebook that was only slow reports
+  ready after all.
+  A notebook that failed, or whose setup cell did not finish, while the reader is on
+  chat puts a small red dot on the notebook circle, and its tooltip says which.
+  The widget also logs to the console a theme the notebook could not apply, and any
+  message from the notebook it does not recognize.
+- **Resizing.** The capsule's panel resizes up to 1400px wide, stopping 120px short of
+  the window's left edge, and to the window's full height less 40px; it can always
+  reach a bubble's 600 by 800, even on a window too small for those margins.
 
 **A host page with a Content Security Policy (CSP)** must allow the notebook host in
 `frame-src` (or, lacking `frame-src`, in `child-src` or `default-src`):
