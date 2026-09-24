@@ -18,8 +18,10 @@
  * device and on a dark one, whose first frame must already be dark; and the
  * harness's own bubble community with color_scheme auto on a dark device, so the
  * bubble's path is drawn and timed in a real browser too. Each NEMAR run then
- * opens and closes the panel, sampling the capsule's chat circle on every frame
- * as it goes from its resting 58px to 46px and back (#490).
+ * hovers the capsule's resting chat circle and presses it with a real pointer,
+ * outside its 46px box but inside the 58px circle, and opens and closes the panel,
+ * sampling the circle on every frame as it goes from 58px to 46px and back (#490),
+ * at 1440px wide and again at 390px, where the capsule is a row.
  *
  * Usage:
  *   bun frontend/browser-harness/first-paint-check.mjs --serve
@@ -96,7 +98,83 @@ const SAMPLE_CLICK = `(async () => {
     indicator: { dx: +(indicator.left - r.left).toFixed(2), dy: +(indicator.top - r.top).toFixed(2), w: +indicator.width.toFixed(2) } };
 })()`;
 
-async function checkOpenAndClose(evaluate, label) {
+// The chat circle on every frame for `ms`, from at once: its width and how far its
+// bottom-right corner is from the window's edges.
+const sampleFor = (ms) => `(async () => {
+  const button = document.querySelector('.osa-launcher-capsule .osa-chat-button');
+  const samples = [];
+  const t0 = performance.now();
+  const sample = () => {
+    const r = button.getBoundingClientRect();
+    samples.push({ t: Math.round(performance.now() - t0), w: +r.width.toFixed(2),
+      right: +(innerWidth - r.right).toFixed(2), bottom: +(innerHeight - r.bottom).toFixed(2) });
+  };
+  sample();
+  await new Promise((resolve) => {
+    const tick = () => {
+      sample();
+      if (performance.now() - t0 < ${ms}) requestAnimationFrame(tick); else resolve();
+    };
+    requestAnimationFrame(tick);
+  });
+  return samples;
+})()`;
+
+const BUTTON_BOX = `(() => {
+  const button = document.querySelector('.osa-launcher-capsule .osa-chat-button');
+  const r = button.getBoundingClientRect();
+  return { cx: r.left + r.width / 2, cy: r.top + r.height / 2, w: r.width,
+    layoutLeft: innerWidth - 20 - button.offsetWidth, open: document.querySelector('.osa-chat-window').classList.contains('open') };
+})()`;
+
+// A real pointer, through the browser's own hit testing, as a reader's: hovering the
+// resting circle grows it 5% with its corner held, and a press on the part of the
+// 58px circle that lies outside its 46px box still reaches the button. The clicks
+// the sampling below makes are the button's own click(), which no hit test sees.
+async function checkPointer(evaluate, send, label) {
+  const near = (a, b) => Math.abs(a - b) <= 0.6;
+  const mouse = (type, x, y) => send('Input.dispatchMouseEvent', { type, x, y, button: type === 'mouseMoved' ? 'none' : 'left', clickCount: type === 'mouseMoved' ? 0 : 1 });
+  const click = async (x, y) => {
+    await mouse('mouseMoved', x, y);
+    await mouse('mousePressed', x, y);
+    await mouse('mouseReleased', x, y);
+  };
+  const rest = await evaluate(BUTTON_BOX);
+  report(!rest.open && near(rest.w, 58), `${label}, pointer: sanity: closed, the circle drawn at 58px`, rest);
+
+  for (const [step, x, y, to] of [['hover', rest.cx, rest.cy, 46 * 1.3239], ['leave', 5, 5, 58]]) {
+    const pending = evaluate(sampleFor(500));
+    await mouse('mouseMoved', x, y);
+    const samples = await pending;
+    report(near(samples.at(-1).w, to), `${label}, ${step}: the resting circle ends at ${to.toFixed(1)}px`, samples.at(-1));
+    const drifted = samples.filter((sample) => !near(sample.right, 20) || !near(sample.bottom, 20));
+    report(drifted.length === 0, `${label}, ${step}: its corner stays 20px from the window's edges in every one of ${samples.length} frames`, drifted.slice(0, 5));
+  }
+
+  // 26px left of the circle's center: 3px inside the 58px circle, 9px outside the
+  // 46px box the button is laid out in.
+  const x = rest.cx - 26;
+  const y = rest.cy;
+  const target = await evaluate(`(() => {
+    const el = document.elementFromPoint(${x}, ${y});
+    return { onButton: !!el && !!el.closest('.osa-launcher-capsule .osa-chat-button'), what: el ? el.className && String(el.className.baseVal ?? el.className) : null };
+  })()`);
+  report(x < rest.layoutLeft, `${label}, pointer: sanity: the press is outside the 46px box (${x.toFixed(1)} < ${rest.layoutLeft})`);
+  report(target.onButton, `${label}, pointer: the browser's hit test finds the chat button there`, target);
+  await click(x, y);
+  const opened = await evaluate(BUTTON_BOX);
+  report(opened.open, `${label}, pointer: a real press there opens the panel`, opened);
+  await Bun.sleep(400);
+  const open = await evaluate(BUTTON_BOX);
+  await click(open.cx, open.cy);
+  report(!(await evaluate(BUTTON_BOX)).open, `${label}, pointer: and a real press on the open 46px circle closes it`);
+  await mouse('mouseMoved', 5, 5);
+  await Bun.sleep(400);
+}
+
+// `panelRight` is where the open panel's right edge must be: beside the capsule
+// past 600px, above it at 600px and under.
+async function checkOpenAndClose(evaluate, label, { panelRight }) {
   const near = (a, b) => Math.abs(a - b) <= 0.6;
   for (const step of ['open', 'close']) {
     const result = await evaluate(SAMPLE_CLICK);
@@ -109,7 +187,7 @@ async function checkOpenAndClose(evaluate, label) {
     const drifted = samples.filter((s) => !near(s.right, 20) || !near(s.bottom, 20));
     report(drifted.length === 0, `${label}, ${step}: its bottom-right corner stays 20px from the window's edges in every one of ${samples.length} frames`, drifted.slice(0, 5));
     if (step === 'open') {
-      report(near(result.panelRight, 20 + 46 + 7 + 12), `${label}, open: the panel sits beside the 46px capsule, where it always has`, result.panelRight);
+      report(near(result.panelRight, panelRight), `${label}, open: the panel's right edge is ${panelRight}px from the window's, where it always has been`, result.panelRight);
       report(near(result.indicator.dx, 0) && near(result.indicator.dy, 0) && near(result.indicator.w, 46), `${label}, open: the indicator is exactly behind the chat circle`, result.indicator);
     }
   }
@@ -192,7 +270,17 @@ async function check(base, { label, community, capsule, device }) {
       }
     }
     report(heldCount >= 2, `${label}: the config request was held on both loads (${heldCount})`);
-    if (capsule) await checkOpenAndClose(evaluate, label);
+    if (capsule) {
+      await checkPointer(evaluate, (method, params) => cdp.send(method, params, s), label);
+      await checkOpenAndClose(evaluate, label, { panelRight: 20 + 46 + 7 + 12 });
+      // At 600px and under the capsule lays its circles out in a row and the panel
+      // opens above it, rather than beside it; the resting size is the same.
+      await cdp.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 800, deviceScaleFactor: 1, mobile: false }, s);
+      await Bun.sleep(300);
+      const narrow = `${label}, 390px wide`;
+      report(await evaluate(`getComputedStyle(document.querySelector('.osa-launcher-capsule')).flexDirection === 'row'`), `${narrow}: sanity: the capsule is a row`);
+      await checkOpenAndClose(evaluate, narrow, { panelRight: 20 });
+    }
     await cdp.send('Target.closeTarget', { targetId });
   } finally {
     cdp?.close();
