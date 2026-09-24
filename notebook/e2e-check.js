@@ -86,7 +86,7 @@ function log(msg) {
  * already has its ephemeral port is what avoids that mismatch here.
  */
 async function buildSite(outputDir, siteUrl) {
-  log(`building the site into ${outputDir} (--site-url ${siteUrl}, --environment ${ARGS.environment}, --expose-app)`);
+  log(`building the site into ${outputDir} (--site-url ${siteUrl}, --environment ${ARGS.environment})`);
   const proc = Bun.spawn(
     [
       'uv',
@@ -99,7 +99,6 @@ async function buildSite(outputDir, siteUrl) {
       ARGS.environment,
       '--output-dir',
       outputDir,
-      '--expose-app',
     ],
     { stdout: 'inherit', stderr: 'inherit' }
   );
@@ -107,23 +106,74 @@ async function buildSite(outputDir, siteUrl) {
   if (code !== 0) throw new Error(`build failed with exit code ${code}`);
 }
 
+/** The rules in the build's own `_headers` (Cloudflare Pages' format: a path
+ * pattern line, then indented `Name: value` lines), so this server sends what a
+ * deployment sends. Cache-Control is left out: this server never lets Chrome
+ * cache, so a warm run measures storage, not the HTTP cache. */
+function parseHeaders(text) {
+  const rules = [];
+  let current = null;
+  for (const line of text.split('\n')) {
+    if (line.startsWith('/')) {
+      const pattern = line.trim().replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+      current = { match: new RegExp(`^${pattern}$`), headers: {} };
+      rules.push(current);
+    } else if (current && /^\s+\S/.test(line)) {
+      const colon = line.indexOf(':');
+      const name = line.slice(0, colon).trim();
+      if (name.toLowerCase() !== 'cache-control') current.headers[name] = line.slice(colon + 1).trim();
+    }
+  }
+  return rules;
+}
+
 /** A minimal static file server for the built site: application/wasm for .wasm,
  * since Pyodide's OWN interpreter loads from jsDelivr, but a locally-served
  * .wasm anywhere in the tree needs the right type if a plain guess-by-extension
- * server gets it wrong. */
+ * server gets it wrong. It applies the build's `_headers` once the build has
+ * written them, so frame-ancestors is enforced here as it is when deployed. */
 function serveStatic(root) {
+  let rules = null;
   return Bun.serve({
     hostname: '127.0.0.1',
     port: 0,
     async fetch(request) {
       const { pathname } = new URL(request.url);
+      if (rules === null) {
+        const headersFile = Bun.file(join(root, '_headers'));
+        if (await headersFile.exists()) rules = parseHeaders(await headersFile.text());
+      }
       const rel = pathname === '/' ? '/index.html' : pathname;
       const file = new URL(`.${rel}`, `file://${root}/`);
       const found = Bun.file(file);
       if (!(await found.exists())) return new Response('Not Found', { status: 404 });
       const type = rel.endsWith('.wasm') ? 'application/wasm' : found.type;
-      return new Response(found, { headers: { 'Content-Type': type, 'Cache-Control': 'no-store' } });
+      const headers = { 'Content-Type': type, 'Cache-Control': 'no-store' };
+      for (const rule of rules ?? []) if (rule.match.test(pathname)) Object.assign(headers, rule.headers);
+      return new Response(found, { headers });
     },
+  });
+}
+
+/** A page on another site that embeds `?src=` in an iframe, the way the chat
+ * widget's notebook tab will, and records every message the frame posts in
+ * window.__messages. */
+function serveHost(hostname) {
+  const page = `<!doctype html><html><body style="margin:0">
+<iframe id="notebook" style="width:1000px;height:760px;border:0"></iframe>
+<script>
+  window.__messages = [];
+  const frame = document.getElementById('notebook');
+  window.addEventListener('message', (event) => {
+    if (event.source === frame.contentWindow) window.__messages.push(event.data);
+  });
+  window.__send = (message) => frame.contentWindow.postMessage(message, '*');
+  frame.src = new URLSearchParams(location.search).get('src');
+</script></body></html>`;
+  return Bun.serve({
+    hostname,
+    port: 0,
+    fetch: () => new Response(page, { headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-store' } }),
   });
 }
 
@@ -345,7 +395,11 @@ async function main() {
     const { product: chromeVersion } = await cdp.send('Browser.getVersion');
     log(`Chrome: ${chromeVersion}`);
 
-    async function openPage(url) {
+    // childTypes: which auto-attached children to follow. attachWithNetwork
+    // pauses every child until it is followed, so a page that embeds the
+    // notebook (a cross-site iframe, its own target) has to follow 'iframe'
+    // too, or the frame never runs. Each frame's session lands in page.frames.
+    async function openPage(url, { childTypes = ['worker'] } = {}) {
       const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
       const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
       // Pyodide's kernel runs in a Worker; whether one has even been spawned
@@ -354,9 +408,11 @@ async function main() {
       // 'idle'). Target.attachedToTarget for a child of this page arrives on
       // THIS page's own session, same as attachWithNetwork below relies on.
       const workerTargets = [];
+      const frames = [];
       cdp.on((message) => {
         if (message.method === 'Target.attachedToTarget' && message.sessionId === sessionId) {
           if (message.params.targetInfo.type === 'worker') workerTargets.push(message.params.targetInfo.url);
+          if (message.params.targetInfo.type === 'iframe') frames.push(message.params.sessionId);
           return;
         }
         if (message.sessionId !== sessionId) return;
@@ -383,9 +439,9 @@ async function main() {
       // attachWithNetwork follows every worker the page spawns and folds
       // both into one recorder (frontend/browser-harness/chrome.js).
       const recorder = new NetworkRecorder();
-      await attachWithNetwork(cdp, sessionId, recorder);
+      await attachWithNetwork(cdp, sessionId, recorder, childTypes);
       await cdp.send('Page.navigate', { url }, sessionId);
-      const page = { targetId, sessionId, recorder, workerTargets };
+      const page = { targetId, sessionId, recorder, workerTargets, frames };
       currentPage = page;
       return page;
     }
@@ -444,11 +500,13 @@ async function main() {
       );
     }
 
-    /** True once Run All has queued at least one cell: some code prompt is no
+    /** True once Run All has queued its cells: the LAST code prompt is no
      * longer the never-executed placeholder '[ ]:' (queued '[*]:' and
-     * numbered '[n]:' both count). Distinct from promptsDone, which requires
-     * EVERY prompt numbered and none busy -- this only asks whether anything
-     * moved at all, so a slow run and a run that queued nothing are told apart. */
+     * numbered '[n]:' both count). The last one, because the setup cell has
+     * already run by itself by now, so "any prompt moved" would be true before
+     * Run All did anything. Distinct from promptsDone, which requires EVERY
+     * prompt numbered and none busy, so a slow run and a run that queued
+     * nothing are told apart. */
     async function runStarted(sessionId) {
       return evaluate(
         cdp,
@@ -456,9 +514,29 @@ async function main() {
         `(() => {
           const prompts = Array.from(document.querySelectorAll('.jp-InputPrompt')).map((el) => el.textContent.trim());
           const codePrompts = prompts.filter((p) => p.includes('['));
-          return codePrompts.length > 0 && codePrompts.some((p) => p !== '[ ]:');
+          return codePrompts.length > 0 && codePrompts[codePrompts.length - 1] !== '[ ]:';
         })()`
       );
+    }
+
+    /** The first code cell (the starter's setup cell): its prompt and output. */
+    async function setupCell(sessionId) {
+      return evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const cell = document.querySelector('.jp-CodeCell');
+          return cell && {
+            prompt: (cell.querySelector('.jp-InputPrompt')?.textContent || '').trim(),
+            output: (cell.querySelector('.jp-OutputArea')?.innerText || '').trim(),
+          };
+        })()`
+      );
+    }
+
+    async function setupReady(sessionId, prompt) {
+      const cell = await setupCell(sessionId);
+      return !!cell && cell.prompt === prompt && cell.output.includes('Ready: eegprep-lean');
     }
 
     /**
@@ -501,6 +579,11 @@ async function main() {
         300
       );
       await waitForNotebookReady(first.sessionId, 30_000);
+      // Nothing has been run yet: osa-bridge.js runs the setup cell by itself.
+      const setupRanByItself = await pollUntil(() => setupReady(first.sessionId, '[1]:'), 120_000, 300).catch(() => false);
+      const setupSeconds = (Date.now() - coldStart) / 1000;
+      report(setupRanByItself, `the setup cell ran by itself and printed its Ready line (${setupSeconds.toFixed(1)}s after opening)`);
+      if (!setupRanByItself) throw new Error(`the setup cell never ran by itself: ${JSON.stringify(await setupCell(first.sessionId))}`);
       await waitForKernelIdle(first.sessionId, 90_000);
       await runAllCellsAndConfirmQueued(first.sessionId);
       await pollUntil(
@@ -588,6 +671,29 @@ async function main() {
         300
       );
 
+      // An edit with no Save reaches storage by itself: the build sets autosave
+      // to every 5 seconds (JupyterLab's default is 2 minutes).
+      const autosaveMarker = `AUTOSAVE_MARKER_${Date.now()}`;
+      const beforeAutosave = await contentsLastModified(cdp, first.sessionId, NOTEBOOK_PATH);
+      await evaluate(
+        cdp,
+        first.sessionId,
+        `(() => {
+          const cell = window.jupyterapp.shell.currentWidget.content.model.cells.get(0);
+          cell.sharedModel.setSource(cell.sharedModel.getSource() + '\\n\\n${autosaveMarker}');
+          return true;
+        })()`
+      );
+      const autosaved = await pollUntil(
+        async () => {
+          const modified = await contentsLastModified(cdp, first.sessionId, NOTEBOOK_PATH);
+          return modified !== null && modified !== beforeAutosave;
+        },
+        20_000,
+        300
+      ).catch(() => false);
+      report(autosaved, 'an edit with no Save reached storage within 20s (autosave)');
+
       log('warm run: opening the same dataset link again');
       const warmStart = Date.now();
       const second = await openPage(`${base}/open.html?community=${COMMUNITY}&dataset=${DATASET}`);
@@ -612,6 +718,12 @@ async function main() {
         300
       ).catch(() => false);
       report(editSurvived, 'the edit survived opening the same dataset again (no overwrite)');
+      const autosaveSurvived = await evaluate(
+        cdp,
+        second.sessionId,
+        `document.body.innerText.includes(${JSON.stringify(autosaveMarker)})`
+      );
+      report(autosaveSurvived, 'the autosaved edit survived too');
 
       // --- 3. Re-run in the warm profile, to measure a genuinely warm cell run too ---
       const rerunStart = Date.now();
@@ -624,6 +736,17 @@ async function main() {
       );
       const warmRerunSeconds = (Date.now() - rerunStart) / 1000;
       log(`warm (re-run all cells): ${warmRerunSeconds.toFixed(1)}s`);
+
+      // A restart starts a fresh Python, so the bridge runs setup again. The
+      // setup cell ran twice on this page (by itself, then Run All), so its
+      // prompt going back to [1] is the rerun, not the earlier output.
+      const beforeRestart = await setupCell(second.sessionId);
+      await evaluate(cdp, second.sessionId, 'window.jupyterapp.shell.currentWidget.sessionContext.restartKernel(); true');
+      const rerunAfterRestart = await pollUntil(() => setupReady(second.sessionId, '[1]:'), 90_000, 300).catch(() => false);
+      report(
+        beforeRestart?.prompt !== '[1]:' && rerunAfterRestart,
+        `a kernel restart ran the setup cell again (prompt ${beforeRestart?.prompt} before, [1]: after)`
+      );
 
       // --- 4. Refusals: unknown community and malformed dataset write nothing ---
       log('checking refusals');
@@ -678,10 +801,99 @@ async function main() {
       );
       report(badCommunityWroteNothing, 'the unknown-community link wrote no directory entry to IndexedDB');
 
+      // --- 5. Embedded: the notebook as the chat widget's tab ---
+      // Each host page is served from another site than the notebook's own
+      // (127.0.0.1), so the frame is cross-site: frame-ancestors decides whether
+      // it loads, and a loaded one runs with third-party (partitioned) storage.
+      // Loopback may embed a develop build only, so production checks only that
+      // loopback is refused.
+      const notebookLink = `${base}/open.html?community=${COMMUNITY}&dataset=${DATASET}`;
+      const allowedHost = ARGS.environment === 'develop' ? serveHost('localhost') : null;
+      const refusedHost = ARGS.environment === 'develop' ? serveHost('::1') : serveHost('localhost');
+      const refusedOrigin =
+        ARGS.environment === 'develop' ? `http://[::1]:${refusedHost.port}` : `http://localhost:${refusedHost.port}`;
+      const messagesOf = (page) => evaluate(cdp, page.sessionId, 'window.__messages ?? []');
+      const hasMessage = async (page, type, fields = {}) =>
+        (await messagesOf(page)).some(
+          (m) => m?.source === 'osa-notebook' && m.type === type && Object.entries(fields).every(([k, v]) => m[k] === v)
+        );
+      let embedSeconds = null;
+      try {
+        if (allowedHost) {
+          log('embedded: opening the notebook in a frame on an allowed site');
+          const embedStart = Date.now();
+          const host = await openPage(
+            `http://localhost:${allowedHost.port}/host.html?src=${encodeURIComponent(notebookLink)}`,
+            { childTypes: ['worker', 'iframe'] }
+          );
+          const setupDone = await pollUntil(
+            async () => (await hasMessage(host, 'ready')) && (await hasMessage(host, 'setup', { status: 'done' })),
+            120_000,
+            300
+          ).catch(() => false);
+          embedSeconds = (Date.now() - embedStart) / 1000;
+          report(setupDone, `framed on an allowed site, the notebook reported ready and setup done (${embedSeconds.toFixed(1)}s)`);
+
+          const frameSession = host.frames.at(-1);
+          report(!!frameSession, 'the framed notebook is its own cross-site frame');
+          if (frameSession) {
+            const setDevice = (value) =>
+              cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value }] }, frameSession);
+            const shows = (scheme) =>
+              evaluate(cdp, frameSession, `document.body.dataset.jpThemeLight === '${scheme === 'light' ? 'true' : 'false'}'`);
+            const sendTheme = async (scheme) => {
+              const before = (await messagesOf(host)).length;
+              await evaluate(cdp, host.sessionId, `window.__send({ target: 'osa-notebook', type: 'theme', scheme: '${scheme}' }); true`);
+              return pollUntil(
+                async () => {
+                  const acked = (await messagesOf(host))
+                    .slice(before)
+                    .some((m) => m?.source === 'osa-notebook' && m.type === 'theme' && m.scheme === scheme);
+                  return acked && (await shows(scheme));
+                },
+                15_000,
+                300
+              ).catch(() => false);
+            };
+            // Opened on its own the notebook follows the device, so on a light
+            // device it starts light. The widget's FIRST message is the one
+            // JupyterLab drops if "follow the device" is still on (measured:
+            // the theme change then only turns that setting off), so the first
+            // one sent differs from what the device shows.
+            await setDevice('light');
+            const followsDevice = await pollUntil(() => shows('light'), 10_000, 300).catch(() => false);
+            report(followsDevice, 'before any message, the framed notebook follows the device (light)');
+            report(await sendTheme('dark'), "the widget's first theme message (dark, on a light device) was applied inside the frame");
+            report(await sendTheme('light'), "the widget's next theme message (light) was applied inside the frame");
+            await setDevice('dark');
+            await Bun.sleep(2_000);
+            report(await shows('light'), 'after the widget chose light, the device switching to dark left the notebook light');
+          }
+        }
+
+        log(`embedded: a site that may not embed the notebook (${refusedOrigin})`);
+        const refused = await openPage(`${refusedOrigin}/host.html?src=${encodeURIComponent(notebookLink)}`, {
+          childTypes: ['worker', 'iframe'],
+        });
+        await Bun.sleep(15_000);
+        const refusedMessages = await messagesOf(refused);
+        report(
+          refusedMessages.length === 0,
+          `framed on ${refusedOrigin}, the notebook never loaded (messages: ${JSON.stringify(refusedMessages)})`
+        );
+      } finally {
+        allowedHost?.stop(true);
+        refusedHost.stop(true);
+      }
+
       report(exceptions.length === 0, `no page exceptions (got ${exceptions.length}: ${exceptions.join(' | ')})`);
 
       console.log('');
-      console.log(`Timings: cold ${coldSeconds.toFixed(1)}s, warm-open ${warmSeconds.toFixed(1)}s, warm-rerun ${warmRerunSeconds.toFixed(1)}s`);
+      console.log(
+        `Timings: setup-by-itself ${setupSeconds.toFixed(1)}s, cold ${coldSeconds.toFixed(1)}s, ` +
+          `warm-open ${warmSeconds.toFixed(1)}s, warm-rerun ${warmRerunSeconds.toFixed(1)}s` +
+          (embedSeconds === null ? '' : `, embedded ${embedSeconds.toFixed(1)}s`)
+      );
       console.log(`${failed === 0 ? 'ALL CHECKS PASSED' : `${failed} CHECK(S) FAILED`}`);
       return failed === 0 ? 0 : 1;
     } catch (err) {
