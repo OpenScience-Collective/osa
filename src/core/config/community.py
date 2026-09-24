@@ -33,6 +33,7 @@ from urllib.parse import urlparse
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
+from src.core.config.notebook_lock import NOTEBOOK_SITE_PYODIDE_VERSION, starter_path_problem
 from src.core.config.runtime_lock import lockfile_path_problem
 from src.core.limits import (
     MAX_IMAGE_EDGE_PX,
@@ -781,6 +782,63 @@ class RuntimeConfig(BaseModel):
     """The browser-side Python (Pyodide) runtime, if configured."""
 
 
+class NotebookConfig(BaseModel):
+    """A community's starter notebook for the separate notebook.osc.earth site.
+
+    Optional, and unrelated to ``extensions.client_tools``/``runtime.python``
+    above: those run model-written code in the chat widget, in the reader's
+    browser, on the embedding page's own origin. This is a link a widget's own
+    button (built separately, not by this config) can open into a NEW tab, on
+    the notebook site's own origin, that drops a starter notebook -- this
+    community's own template, with ``{{dataset_id}}`` filled in -- into
+    JupyterLite's storage and opens it (issue #453,
+    docs/adr/0011-the-notebook-site.md; ADR 0010 is what deferred building it).
+
+    A community that sets this MUST pin ``runtime.python.pyodide_version`` to
+    the notebook site's own Pyodide (see ``validate_notebook_needs_matching_
+    pyodide`` on ``CommunityConfig``): one site loads one Pyodide, so a starter
+    that ran under a different pin would be untested by anything that runs it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    starter: str
+    """Path to an ``.ipynb`` template, relative to the community's own folder.
+
+    Must contain the literal token ``{{dataset_id}}`` in at least one cell's
+    source (checked by ``src.core.config.notebook_lock.validate_notebook_
+    starter``, not here: that check reads the file, and this model's own
+    validator only checks the path's shape, the same split ``lockfile`` above
+    draws against ``runtime_lock.py``)."""
+
+    dataset_pattern: str
+    """A regular expression a dataset id must match for this starter to open.
+
+    Must be anchored (``^...$``): an unanchored pattern would match a dataset
+    id that merely contains a valid-looking substring, and ``notebook/open.js``
+    uses this pattern as the whole gate between an arbitrary query string and
+    writing into the reader's own browser storage."""
+
+    @field_validator("starter")
+    @classmethod
+    def _starter_stays_in_the_community_folder(cls, value: str) -> str:
+        problem = starter_path_problem(value)
+        if problem is not None:
+            raise ValueError(f"starter {value!r}: {problem}")
+        return value
+
+    @field_validator("dataset_pattern")
+    @classmethod
+    def _dataset_pattern_is_anchored_and_compiles(cls, value: str) -> str:
+        if not (value.startswith("^") and value.endswith("$")):
+            raise ValueError(f"dataset_pattern must be anchored with ^...$: {value!r}")
+        try:
+            re.compile(value)
+        except re.error as err:
+            raise ValueError(f"dataset_pattern does not compile: {err}") from err
+        return value
+
+
 class ExtensionsConfig(BaseModel):
     """Extension points for specialized tools."""
 
@@ -1446,6 +1504,19 @@ class CommunityConfig(BaseModel):
               memory_mb: 1536
     """
 
+    notebook: NotebookConfig | None = None
+    """A starter notebook for the separate notebook.osc.earth site (issue #453).
+
+    Requires ``runtime.python.pyodide_version`` to equal the notebook site's own
+    pin (``validate_notebook_needs_matching_pyodide`` below), the same way
+    ``extensions.client_tools`` requires a matching ``runtime`` section.
+
+    Example:
+        notebook:
+          starter: notebook/starter.ipynb
+          dataset_pattern: "^(nm|ds|on)[0-9]{6}$"
+    """
+
     enable_page_context: bool = True
     """Enable page context tool for widget embedding (default: True).
 
@@ -1872,6 +1943,27 @@ class CommunityConfig(BaseModel):
                     f"{entry.runtime}, but runtime.{section} is not configured."
                 )
 
+        return self
+
+    @model_validator(mode="after")
+    def validate_notebook_needs_matching_pyodide(self) -> "CommunityConfig":
+        """A community with a notebook starter must be pinned to the notebook
+        site's own Pyodide, because one site loads one Pyodide (docs/adr/
+        0011-the-notebook-site.md). A community pinned to a different version
+        would parse, and its own widget runtime would work fine, while its
+        notebook starter ran under an interpreter nothing tested it against --
+        exactly the failure mode that stays invisible until a reader opens it.
+        """
+        if self.notebook is None:
+            return self
+        python = self.runtime.python if self.runtime else None
+        pinned = python.pyodide_version if python else None
+        if pinned != NOTEBOOK_SITE_PYODIDE_VERSION:
+            raise ValueError(
+                "notebook is configured but runtime.python.pyodide_version is "
+                f"{pinned!r}, not {NOTEBOOK_SITE_PYODIDE_VERSION!r}, the notebook "
+                "site's own pin. One notebook site loads one Pyodide."
+            )
         return self
 
     def get_sync_config(self) -> dict[str, Any]:

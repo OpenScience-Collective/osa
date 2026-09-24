@@ -113,23 +113,34 @@ class RuntimeLockError(ValueError):
     """A community's lock overlay cannot be used as committed."""
 
 
-def lockfile_path_problem(lockfile: str) -> str | None:
-    """Why ``lockfile`` cannot name a file inside a community folder, or None.
+def relative_community_path_problem(path: str, suffix: str) -> str | None:
+    """Why ``path`` cannot name a ``suffix`` file inside a community folder, or None.
 
     Checked on the string, so a config is refused before anything touches the disk:
     the path is joined to a folder on the server, and a config must not be able to
-    point it anywhere else.
+    point it anywhere else. Shared by ``lockfile_path_problem`` (``.json``) and
+    ``src.core.config.notebook_lock.starter_path_problem`` (``.ipynb``): both name a
+    file relative to a community's own folder, and a path can escape it the same way
+    regardless of what kind of file it names.
     """
-    if "\\" in lockfile:
+    if "\\" in path:
         return "use forward slashes"
-    if PurePosixPath(lockfile).is_absolute():
+    if PurePosixPath(path).is_absolute():
         return "it must be relative to the community's folder"
     # The raw segments, since PurePosixPath would quietly drop a "." or an empty one.
-    if any(segment in ("", ".", "..") for segment in lockfile.split("/")):
+    if any(segment in ("", ".", "..") for segment in path.split("/")):
         return "it must be a plain relative path, with no empty, '.' or '..' segments"
-    if PurePosixPath(lockfile).suffix != ".json":
-        return "it must be a .json file"
+    if PurePosixPath(path).suffix != suffix:
+        return f"it must be a {suffix} file"
     return None
+
+
+def lockfile_path_problem(lockfile: str) -> str | None:
+    """Why ``lockfile`` cannot name a file inside a community folder, or None.
+
+    See ``relative_community_path_problem``.
+    """
+    return relative_community_path_problem(lockfile, ".json")
 
 
 @dataclass(frozen=True)
