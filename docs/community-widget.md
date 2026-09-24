@@ -129,7 +129,7 @@ field: once an embedder sets `themeColor`, no community config value for
 | `user_bubble_text_color` | `userBubbleTextColor` |
 
 ```html
-<script src="https://widget.osc.earth/osa/osa-chat-widget.js" data-no-auto-init></script>
+<script src="https://demo.osc.earth/osa-chat-widget.js" data-no-auto-init></script>
 <script>
   OSAChatWidget.setConfig({
     communityId: 'my-tool',
