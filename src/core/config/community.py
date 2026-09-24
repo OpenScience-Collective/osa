@@ -1188,8 +1188,9 @@ class WidgetConfig(BaseModel):
     """The floating launcher's shape (#436).
 
     "bubble" (default) is today's single chat button. "capsule" adds two more circular
-    icons, a notebook and an HPC placeholder, that expand upward above the chat button
-    once it is clicked; the chat button itself never moves and keeps its own behavior.
+    icons, a notebook and a high-performance computing (HPC) placeholder, that expand
+    upward above the chat button once it is clicked; the chat button itself never moves
+    and keeps its own behavior.
     A community that never sets this renders exactly as it did before this field existed.
     """
 
