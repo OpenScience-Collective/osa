@@ -85,7 +85,12 @@ jobs:
       # cold read, screenshot, edit-and-save, warm reopen (no overwrite), warm
       # re-run, and both refusal paths. See notebook/README.md.
       - name: Run the real headless-Chrome open-to-notebook check
-        run: bun notebook/e2e-check.js
+        run: bun notebook/e2e-check.js --environment production
+
+      # The develop build reads zarr-test.nemar.org and opens a staging fixture
+      # that exists only there, so a wrong zarr_base fails here too.
+      - name: Run the same check against a develop build
+        run: bun notebook/e2e-check.js --environment develop
 
   # A separate job, so the issue opens even when the check job fails before
   # its own checks run (checkout included). Only on the schedule trigger: a

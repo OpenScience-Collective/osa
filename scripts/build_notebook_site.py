@@ -2,7 +2,8 @@
 """Build the notebook.osc.earth/osa static site (issue #453, docs/adr/0011-the-notebook-site.md).
 
     uv run python scripts/build_notebook_site.py \\
-        --site-url https://notebook.osc.earth/osa --output-dir dist/notebook-site
+        --site-url https://notebook.osc.earth/osa --output-dir dist/notebook-site \\
+        --environment production
 
 Needs no secrets, and can run in CI: it fetches Pyodide's own build tooling from
 PyPI and its lock from jsDelivr (both public, and the lock is pinned and verified
@@ -19,8 +20,12 @@ that names a ``notebook:`` block in its ``config.yaml``:
 3. ``wheels/<community>/<file>``: each overlay wheel, copied from the community's own
    ``runtime/wheels/`` folder, its sha256 already verified by ``load_runtime_lock``.
 4. ``starters/<community>.ipynb`` and ``starters/index.json``: each community's
-   starter notebook, validated (``validate_notebook_starter``), and the dataset id
-   pattern ``notebook/open.js`` gates a request against.
+   starter notebook, validated (``validate_notebook_starter``), with ``{{zarr_base}}``
+   and ``{{dataset_page_base}}`` filled in for ``--environment`` (``fill_build_time_
+   tokens``; a build for an environment a community has not declared either for is
+   refused, ``environment_bases``), and the dataset id pattern ``notebook/open.js``
+   gates a request against. ``{{dataset_id}}`` is left for ``open.js`` to fill
+   client-side, per reader.
 5. The same-origin bootstrap (``open.html``, ``open.js``, vendored ``localforage``),
    copied verbatim from ``notebook/`` at the repository root.
 
@@ -61,7 +66,9 @@ sys.path.insert(0, str(ROOT))
 
 from src.core.config.community import CommunityConfig  # noqa: E402
 from src.core.config.notebook_lock import (  # noqa: E402
+    NOTEBOOK_ENVIRONMENTS,
     NOTEBOOK_SITE_PYODIDE_VERSION,
+    fill_build_time_tokens,
     merge_site_lock,
     validate_notebook_starter,
 )
@@ -259,14 +266,48 @@ def build_merged_lock_and_wheels(
             (dest_dir / entry.file_name).write_bytes(data)
 
 
-def write_starters(output_dir: Path, communities: dict[str, CommunityConfig]) -> None:
-    """starters/<community>.ipynb (validated, byte-identical to the source) and index.json."""
+def environment_bases(
+    community_id: str, config: CommunityConfig, environment: str
+) -> tuple[str, str]:
+    """``(zarr_base, dataset_page_base)`` for `community_id` at `environment`.
+
+    Raises :class:`NotebookSiteBuildError` if the community's own ``notebook:``
+    block never declared that environment for either -- a build for an
+    environment a community has not opted into fails clearly here, rather
+    than silently filling in nothing (leaving the literal token in the
+    starter) or reading the wrong host.
+    """
+    assert config.notebook is not None
+    zarr_base = config.notebook.zarr_base.get(environment)
+    if zarr_base is None:
+        raise NotebookSiteBuildError(
+            f"{community_id}: no zarr_base declared for environment {environment!r} "
+            f"(has: {sorted(config.notebook.zarr_base)})"
+        )
+    dataset_page_base = config.notebook.dataset_page_base.get(environment)
+    if dataset_page_base is None:
+        raise NotebookSiteBuildError(
+            f"{community_id}: no dataset_page_base declared for environment {environment!r} "
+            f"(has: {sorted(config.notebook.dataset_page_base)})"
+        )
+    return zarr_base, dataset_page_base
+
+
+def write_starters(
+    output_dir: Path, communities: dict[str, CommunityConfig], environment: str
+) -> None:
+    """starters/<community>.ipynb (validated, with ``{{zarr_base}}``/``{{dataset_
+    page_base}}`` filled in for `environment`) and index.json."""
     starters_dir = output_dir / "starters"
     starters_dir.mkdir(parents=True, exist_ok=True)
     index: dict[str, dict[str, str]] = {}
     for community_id, config in communities.items():
         assert config.notebook is not None  # discover_notebook_communities guarantees this
         notebook = validate_notebook_starter(ASSISTANTS_DIR / community_id, config.notebook.starter)
+        zarr_base, dataset_page_base = environment_bases(community_id, config, environment)
+        notebook = fill_build_time_tokens(
+            notebook, zarr_base=zarr_base, dataset_page_base=dataset_page_base
+        )
         (starters_dir / f"{community_id}.ipynb").write_text(
             json.dumps(notebook, indent=2) + "\n", encoding="utf-8"
         )
@@ -334,6 +375,19 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument(
+        "--environment",
+        required=True,
+        choices=NOTEBOOK_ENVIRONMENTS,
+        help=(
+            "which deployment this build is for -- production or develop. No "
+            "default: a notebook deployment is paired with exactly one website "
+            "environment (staging's dataset pages read a different Zarr host "
+            "than production's), so a build must never be able to silently "
+            "pick the wrong one. Selects each notebook-enabled community's own "
+            "zarr_base/dataset_page_base entry."
+        ),
+    )
+    parser.add_argument(
         "--expose-app",
         action="store_true",
         help="set JupyterLite's exposeAppInBrowser (window.jupyterapp); test builds only",
@@ -359,8 +413,17 @@ def finalize_publish_root(output_dir: Path, subdir: str) -> None:
         write_root_redirect(output_dir, subdir)
 
 
-def build(site_url: str, output_dir: Path, expose_app: bool = False) -> None:
-    """The whole build, callable directly (tests use this; main() is the CLI wrapper)."""
+def build(site_url: str, output_dir: Path, environment: str, expose_app: bool = False) -> None:
+    """The whole build, callable directly (tests use this; main() is the CLI wrapper).
+
+    ``environment`` has no default (see ``--environment``'s own help): every
+    caller, including a test, must say which deployment this is.
+    """
+    if environment not in NOTEBOOK_ENVIRONMENTS:
+        raise NotebookSiteBuildError(
+            f"--environment must be one of {NOTEBOOK_ENVIRONMENTS}, got {environment!r}"
+        )
+
     site_url = site_url.rstrip("/")
     if not site_url:
         raise NotebookSiteBuildError("--site-url must not be empty")
@@ -384,11 +447,16 @@ def build(site_url: str, output_dir: Path, expose_app: bool = False) -> None:
             )
         assert config.notebook is not None
         validate_notebook_starter(ASSISTANTS_DIR / community_id, config.notebook.starter)
+        # Fail before the expensive jupyterlite build below, not deep inside
+        # write_starters: a build for an environment a community has not
+        # declared a data/website host for is a config problem, not a build
+        # problem, and should be reported as fast as the pyodide-version check.
+        environment_bases(community_id, config, environment)
 
     print(
         f"building JupyterLite {JUPYTERLITE_CORE_VERSION} "
         f"(kernel {JUPYTERLITE_PYODIDE_KERNEL_VERSION}) for {sorted(communities)} "
-        f"into {site_root} (site url {site_url})"
+        f"into {site_root} (site url {site_url}, environment {environment})"
     )
     run_jupyterlite_build(site_root)
     patch_root_config(site_root, expose_app)
@@ -397,7 +465,7 @@ def build(site_url: str, output_dir: Path, expose_app: bool = False) -> None:
     stock_lock = fetch_pyodide_lock(PYODIDE_VERSION, PYODIDE_LOCK_SHA256)
     build_merged_lock_and_wheels(site_root, communities, stock_lock, site_url)
 
-    write_starters(site_root, communities)
+    write_starters(site_root, communities, environment)
     copy_bootstrap_files(site_root)
 
     finalize_publish_root(output_dir, subdir)
@@ -410,7 +478,7 @@ def build(site_url: str, output_dir: Path, expose_app: bool = False) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
-        build(args.site_url, args.output_dir, expose_app=args.expose_app)
+        build(args.site_url, args.output_dir, args.environment, expose_app=args.expose_app)
     except NotebookSiteBuildError as err:
         print(f"error: {err}", file=sys.stderr)
         return 1

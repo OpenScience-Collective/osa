@@ -1,7 +1,8 @@
 """A community's browser-run notebook starter, and the notebook site's merged lock.
 
-Two independent pieces live here, both about the separate site at notebook.osc.earth/osa
-(issue #453, docs/adr/0011-the-notebook-site.md; ADR 0010 deferred building it):
+Three independent pieces live here, all about the separate site at
+notebook.osc.earth/osa (issue #453, docs/adr/0011-the-notebook-site.md; ADR
+0010 deferred building it):
 
 - ``NOTEBOOK_SITE_PYODIDE_VERSION``, ``NOTEBOOK_TOKEN`` and
   ``validate_notebook_starter``: the config-time shape and content checks a
@@ -12,6 +13,13 @@ Two independent pieces live here, both about the separate site at notebook.osc.e
   it carry the token) is checked here, against a community folder, so it can run
   wherever a config is loaded from a real checkout: ``scripts/build-notebook-
   site.py`` and the tests under ``tests/test_core/test_config/``.
+- ``ZARR_BASE_TOKEN``, ``DATASET_PAGE_BASE_TOKEN``, ``NOTEBOOK_ENVIRONMENTS``,
+  ``environment_base_url_problem`` and ``fill_build_time_tokens``: a second,
+  BUILD-time substitution, for a data host that differs per deployment
+  (staging's dataset pages read a different Zarr host than production's, and
+  each notebook deployment is already paired with one environment). Unlike
+  ``NOTEBOOK_TOKEN``, these two tokens are filled once, by the build itself,
+  before the starter ever reaches a reader's browser.
 - ``merge_site_lock``: the site build's own step, merging every notebook-enabled
   community's lock overlay into ONE Pyodide lock for the whole site. This is the
   same rule ``frontend/osa-worker-core.js``'s ``mergeLock`` enforces for a single
@@ -20,9 +28,11 @@ Two independent pieces live here, both about the separate site at notebook.osc.e
   the same package must agree on it byte-for-byte, or the build fails rather than
   silently keeping one and dropping the other.
 
-Notebook substitution itself (writing ``{{dataset_id}}`` into a cell) is NOT here:
-it happens client-side, in the reader's own browser, in ``notebook/open.js`` --
-this module never touches a dataset id, only the community-authored template.
+``NOTEBOOK_TOKEN`` substitution itself (writing ``{{dataset_id}}`` into a cell)
+is NOT here: it happens client-side, in the reader's own browser, in
+``notebook/open.js`` -- this module never touches a dataset id, only the
+community-authored template and, separately, the per-environment host it reads
+from.
 """
 
 from __future__ import annotations
@@ -31,6 +41,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from src.core.config.runtime_lock import (
     RuntimeLockOverlay,
@@ -50,6 +61,61 @@ NOTEBOOK_SITE_PYODIDE_VERSION = "0.29.5"
 #: common in the Python a starter cell contains (an f-string, a dict literal) and
 #: would be a false match; ``{{dataset_id}}`` is not.
 NOTEBOOK_TOKEN = "{{dataset_id}}"
+
+#: Filled in at build time for one environment (``--environment``), never by
+#: ``notebook/open.js``: staging's dataset pages read a different Zarr host than
+#: production's, and each notebook deployment is paired with one of them.
+ZARR_BASE_TOKEN = "{{zarr_base}}"
+
+#: The same, for the starter's link back to the dataset's page on the website.
+DATASET_PAGE_BASE_TOKEN = "{{dataset_page_base}}"
+
+#: The only keys ``NotebookConfig.zarr_base`` and ``.dataset_page_base`` accept, and
+#: the only values ``--environment`` accepts; a typo is refused at config load.
+NOTEBOOK_ENVIRONMENTS = ("production", "develop")
+
+
+def environment_base_url_problem(url: str) -> str | None:
+    """Why ``url`` cannot be a ``zarr_base`` or ``dataset_page_base`` value, or None.
+
+    The starter template writes ``{{zarr_base}}/{{dataset_id}}/...``, so a value must
+    be exactly an https scheme and a host: a path, even a bare ``/``, would double
+    or misplace the slash, and a query or fragment would end up mid-URL.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        return f"must be an absolute https:// URL, got {url!r}"
+    if not parsed.netloc:
+        return f"must name a host, got {url!r}"
+    if parsed.path:
+        return f"must have no path, not even a trailing slash, got {url!r}"
+    if parsed.query or parsed.fragment:
+        return f"must have no query or fragment, got {url!r}"
+    return None
+
+
+def fill_build_time_tokens(
+    notebook: dict[str, Any], *, zarr_base: str, dataset_page_base: str
+) -> dict[str, Any]:
+    """A copy of ``notebook`` with ``ZARR_BASE_TOKEN`` and ``DATASET_PAGE_BASE_TOKEN``
+    filled in every cell, for one environment's build.
+
+    ``NOTEBOOK_TOKEN`` is left alone: ``notebook/open.js`` fills it per reader.
+    """
+
+    def fill(text: str) -> str:
+        return text.replace(ZARR_BASE_TOKEN, zarr_base).replace(
+            DATASET_PAGE_BASE_TOKEN, dataset_page_base
+        )
+
+    filled = json.loads(json.dumps(notebook))
+    for cell in filled.get("cells") or []:
+        source = cell.get("source")
+        if isinstance(source, list):
+            cell["source"] = [fill(line) for line in source]
+        elif isinstance(source, str):
+            cell["source"] = fill(source)
+    return filled
 
 
 def starter_path_problem(path: str) -> str | None:

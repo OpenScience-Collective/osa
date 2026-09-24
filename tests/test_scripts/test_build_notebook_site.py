@@ -48,6 +48,9 @@ def _write_community(
     *,
     with_notebook: bool = True,
     with_overlay: bool = True,
+    starter_source: str = "# {{dataset_id}}",
+    zarr_base: dict[str, str] | None = None,
+    dataset_page_base: dict[str, str] | None = None,
 ) -> None:
     community_dir = assistants_dir / community_id
     community_dir.mkdir(parents=True)
@@ -63,7 +66,7 @@ def _write_community(
                         {
                             "cell_type": "markdown",
                             "metadata": {},
-                            "source": "# {{dataset_id}}",
+                            "source": starter_source,
                         }
                     ],
                     "metadata": {},
@@ -72,8 +75,29 @@ def _write_community(
                 }
             )
         )
+        zarr_base = (
+            zarr_base
+            if zarr_base is not None
+            else {
+                "production": "https://zarr.example.org",
+                "develop": "https://zarr-test.example.org",
+            }
+        )
+        dataset_page_base = (
+            dataset_page_base
+            if dataset_page_base is not None
+            else {"production": "https://example.org", "develop": "https://test.example.org"}
+        )
+        zarr_base_yaml = "".join(f"    {env}: {url}\n" for env, url in zarr_base.items())
+        dataset_page_base_yaml = "".join(
+            f"    {env}: {url}\n" for env, url in dataset_page_base.items()
+        )
         notebook_block = (
-            'notebook:\n  starter: notebook/starter.ipynb\n  dataset_pattern: "^nm[0-9]{6}$"\n'
+            "notebook:\n"
+            "  starter: notebook/starter.ipynb\n"
+            '  dataset_pattern: "^nm[0-9]{6}$"\n'
+            f"  zarr_base:\n{zarr_base_yaml}"
+            f"  dataset_page_base:\n{dataset_page_base_yaml}"
         )
 
     runtime_block = f'    pyodide_version: "{site.PYODIDE_VERSION}"\n'
@@ -238,12 +262,57 @@ class TestWriteStarters:
         output_dir = tmp_path / "out"
         output_dir.mkdir()
 
-        site.write_starters(output_dir, communities)
+        site.write_starters(output_dir, communities, "production")
 
         starter = json.loads((output_dir / "starters" / "nemarlike.ipynb").read_text())
         assert starter["nbformat"] == 4
         index = json.loads((output_dir / "starters" / "index.json").read_text())
         assert index == {"nemarlike": {"dataset_pattern": "^nm[0-9]{6}$"}}
+
+    def test_fills_zarr_base_and_dataset_page_base_for_the_given_environment(
+        self, assistants_dir: Path, tmp_path: Path
+    ) -> None:
+        """The served starter carries the right host per environment (PR review
+        finding, staging's dataset pages read a different Zarr host than
+        production's)."""
+        _write_community(
+            assistants_dir,
+            "nemarlike",
+            with_overlay=False,
+            starter_source="[{{dataset_id}}]({{dataset_page_base}}/dataset/{{dataset_id}}) {{zarr_base}}",
+        )
+        communities = site.discover_notebook_communities()
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        site.write_starters(output_dir, communities, "develop")
+
+        starter = json.loads((output_dir / "starters" / "nemarlike.ipynb").read_text())
+        text = "".join(starter["cells"][0]["source"])
+        assert "https://zarr-test.example.org" in text
+        assert "https://test.example.org/dataset/{{dataset_id}}" in text
+        # The client-side token is left alone for open.js to fill per reader.
+        assert "{{zarr_base}}" not in text
+        assert "{{dataset_page_base}}" not in text
+        assert "{{dataset_id}}" in text
+
+    def test_refuses_an_environment_the_community_never_declared(
+        self, assistants_dir: Path, tmp_path: Path
+    ) -> None:
+        _write_community(
+            assistants_dir,
+            "nemarlike",
+            with_overlay=False,
+            zarr_base={"production": "https://zarr.example.org"},  # no "develop"
+        )
+        communities = site.discover_notebook_communities()
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        with pytest.raises(
+            site.NotebookSiteBuildError, match="no zarr_base declared for environment 'develop'"
+        ):
+            site.write_starters(output_dir, communities, "develop")
 
 
 class TestCopyBootstrapFiles:
@@ -427,7 +496,7 @@ class TestFullBuildEndToEnd:
         output_dir = tmp_path / "site"
         site_root = output_dir / "osa"
 
-        site.build("https://notebook.osc.earth/osa", output_dir, expose_app=True)
+        site.build("https://notebook.osc.earth/osa", output_dir, "production", expose_app=True)
 
         assert (site_root / "jupyter-lite.json").exists()
         assert (site_root / "notebooks" / "index.html").exists()
@@ -461,6 +530,15 @@ class TestFullBuildEndToEnd:
 
         notebook = nbformat.read(site_root / "starters" / "nemar.ipynb", as_version=4)
         nbformat.validate(notebook)
+
+        # zarr_base/dataset_page_base filled in for "production"; {{dataset_id}}
+        # left alone for open.js to fill client-side per reader.
+        starter_text = json.dumps(notebook)
+        assert "https://zarr.nemar.org" in starter_text
+        assert "https://nemar.org/dataset/" in starter_text
+        assert "{{zarr_base}}" not in starter_text
+        assert "{{dataset_page_base}}" not in starter_text
+        assert "{{dataset_id}}" in starter_text
 
         assert not list(output_dir.rglob("*.map")), "sourcemaps should have been stripped"
 

@@ -2373,6 +2373,17 @@ def _python_runtime_config() -> RuntimeConfig:
     )
 
 
+def _notebook_kwargs(**overrides: object) -> dict[str, object]:
+    """Minimal valid zarr_base/dataset_page_base, for reuse below: only their
+    shape matters to these tests, never a real host."""
+    kwargs: dict[str, object] = {
+        "zarr_base": {"production": "https://zarr.example.org"},
+        "dataset_page_base": {"production": "https://example.org"},
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
 class TestCommunityConfigClientTools:
     """Tests for CommunityConfig's client_tools/runtime cross-field validator."""
 
@@ -2464,26 +2475,44 @@ class TestNotebookConfig:
     """Tests for the notebook.osc.earth starter config block (issue #453)."""
 
     def test_a_minimal_notebook_config_validates(self) -> None:
-        config = NotebookConfig(starter="notebook/starter.ipynb", dataset_pattern="^nm[0-9]{6}$")
+        config = NotebookConfig(
+            starter="notebook/starter.ipynb", dataset_pattern="^nm[0-9]{6}$", **_notebook_kwargs()
+        )
         assert config.dataset_pattern == "^nm[0-9]{6}$"
 
     def test_an_unanchored_pattern_is_rejected(self) -> None:
         with pytest.raises(ValidationError, match="anchored"):
-            NotebookConfig(starter="notebook/starter.ipynb", dataset_pattern="nm[0-9]{6}")
+            NotebookConfig(
+                starter="notebook/starter.ipynb", dataset_pattern="nm[0-9]{6}", **_notebook_kwargs()
+            )
 
     def test_a_pattern_missing_only_the_trailing_dollar_is_rejected(self) -> None:
         with pytest.raises(ValidationError, match="anchored"):
-            NotebookConfig(starter="notebook/starter.ipynb", dataset_pattern="^nm[0-9]{6}")
+            NotebookConfig(
+                starter="notebook/starter.ipynb",
+                dataset_pattern="^nm[0-9]{6}",
+                **_notebook_kwargs(),
+            )
 
     def test_a_pattern_that_does_not_compile_is_rejected(self) -> None:
         with pytest.raises(ValidationError, match="does not compile"):
-            NotebookConfig(starter="notebook/starter.ipynb", dataset_pattern="^nm[0-9{6}$")
+            NotebookConfig(
+                starter="notebook/starter.ipynb",
+                dataset_pattern="^nm[0-9{6}$",
+                **_notebook_kwargs(),
+            )
 
     def test_starter_must_be_a_relative_ipynb_path(self) -> None:
         with pytest.raises(ValidationError):
-            NotebookConfig(starter="/etc/passwd", dataset_pattern="^nm[0-9]{6}$")
+            NotebookConfig(
+                starter="/etc/passwd", dataset_pattern="^nm[0-9]{6}$", **_notebook_kwargs()
+            )
         with pytest.raises(ValidationError):
-            NotebookConfig(starter="notebook/starter.json", dataset_pattern="^nm[0-9]{6}$")
+            NotebookConfig(
+                starter="notebook/starter.json",
+                dataset_pattern="^nm[0-9]{6}$",
+                **_notebook_kwargs(),
+            )
 
     def test_extra_fields_are_forbidden(self) -> None:
         with pytest.raises(ValidationError):
@@ -2491,6 +2520,7 @@ class TestNotebookConfig:
                 starter="notebook/starter.ipynb",
                 dataset_pattern="^nm[0-9]{6}$",
                 extra_field="nope",
+                **_notebook_kwargs(),
             )
 
     @pytest.mark.parametrize(
@@ -2510,15 +2540,57 @@ class TestNotebookConfig:
         this loose must never ship, independent of notebook/open.js's own
         client-side generic shape guard."""
         with pytest.raises(ValidationError, match="hostile probe"):
-            NotebookConfig(starter="notebook/starter.ipynb", dataset_pattern=hostile_pattern)
+            NotebookConfig(
+                starter="notebook/starter.ipynb",
+                dataset_pattern=hostile_pattern,
+                **_notebook_kwargs(),
+            )
 
     def test_nemars_own_pattern_accepts_no_hostile_probe(self) -> None:
         """The one pattern actually shipped today; a regression here would be
         NEMAR's own config failing to load, not merely a test fixture."""
         config = NotebookConfig(
-            starter="notebook/starter.ipynb", dataset_pattern="^(nm|ds|on)[0-9]{6}$"
+            starter="notebook/starter.ipynb",
+            dataset_pattern="^(nm|ds|on|xx)[0-9]{6}$",
+            **_notebook_kwargs(),
         )
-        assert config.dataset_pattern == "^(nm|ds|on)[0-9]{6}$"
+        assert config.dataset_pattern == "^(nm|ds|on|xx)[0-9]{6}$"
+
+    def test_an_unrecognized_environment_key_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="unrecognized environment 'staging'"):
+            NotebookConfig(
+                starter="notebook/starter.ipynb",
+                dataset_pattern="^nm[0-9]{6}$",
+                zarr_base={"staging": "https://zarr-staging.example.org"},
+                dataset_page_base={"production": "https://example.org"},
+            )
+
+    @pytest.mark.parametrize(
+        "malformed",
+        [
+            "http://zarr.example.org",  # not https
+            "https://zarr.example.org/zarr",  # has a path
+            "https://zarr.example.org?x=1",  # has a query
+            "not-a-url",
+        ],
+    )
+    def test_a_malformed_zarr_base_is_rejected(self, malformed: str) -> None:
+        with pytest.raises(ValidationError, match="zarr_base"):
+            NotebookConfig(
+                starter="notebook/starter.ipynb",
+                dataset_pattern="^nm[0-9]{6}$",
+                zarr_base={"production": malformed},
+                dataset_page_base={"production": "https://example.org"},
+            )
+
+    def test_a_malformed_dataset_page_base_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="dataset_page_base"):
+            NotebookConfig(
+                starter="notebook/starter.ipynb",
+                dataset_pattern="^nm[0-9]{6}$",
+                zarr_base={"production": "https://zarr.example.org"},
+                dataset_page_base={"production": "https://example.org/dataset"},
+            )
 
 
 class TestCommunityConfigNotebook:
@@ -2534,7 +2606,9 @@ class TestCommunityConfigNotebook:
             name="Test",
             description="Test",
             notebook=NotebookConfig(
-                starter="notebook/starter.ipynb", dataset_pattern="^nm[0-9]{6}$"
+                starter="notebook/starter.ipynb",
+                dataset_pattern="^nm[0-9]{6}$",
+                **_notebook_kwargs(),
             ),
             runtime=_python_runtime_config(),
         )
@@ -2548,7 +2622,9 @@ class TestCommunityConfigNotebook:
                 name="Test",
                 description="Test",
                 notebook=NotebookConfig(
-                    starter="notebook/starter.ipynb", dataset_pattern="^nm[0-9]{6}$"
+                    starter="notebook/starter.ipynb",
+                    dataset_pattern="^nm[0-9]{6}$",
+                    **_notebook_kwargs(),
                 ),
             )
 
@@ -2562,7 +2638,9 @@ class TestCommunityConfigNotebook:
                 name="Test",
                 description="Test",
                 notebook=NotebookConfig(
-                    starter="notebook/starter.ipynb", dataset_pattern="^nm[0-9]{6}$"
+                    starter="notebook/starter.ipynb",
+                    dataset_pattern="^nm[0-9]{6}$",
+                    **_notebook_kwargs(),
                 ),
                 runtime=mismatched,
             )

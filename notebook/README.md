@@ -12,7 +12,7 @@ See `docs/community-notebook.md` for how a community adds a starter, and `docs/a
   Its own license header is intact at the top of the file; do not strip it.
 - `_headers`: a TEMPLATE for Cloudflare Pages headers (immutable caching for wheels, no-cache for everything a reader's session depends on being fresh, and the site-wide Content Security Policy (CSP)/Referrer-Policy). The build (`write_headers`) prefixes every path pattern with the site's own path (`/osa`) and writes the result at the true publish root, since Cloudflare Pages only reads `_headers` from exactly there, never a subdirectory.
 - `test-open.js`: `open.js`'s pure logic (input validation, token filling, entry shape), run under Bun -- no browser, no network.
-- `e2e-check.js`: the full flow in a real, headless Chrome: builds the site, serves it, opens a dataset link, runs every cell, and checks the result. Needs the network (reads `zarr.nemar.org`).
+- `e2e-check.js`: the full flow in a real, headless Chrome: builds the site, serves it, opens a dataset link, runs every cell, and checks the result. Needs the network (reads `zarr.nemar.org`, or `zarr-test.nemar.org` with `--environment develop`).
 
 The actual build script lives at the repository root, `scripts/build_notebook_site.py` (Python, alongside every other community-config-reading script), not in this folder: it reads every community's `config.yaml` under `src/assistants/`, which is easiest from the same place `scripts/build_runtime_lock.py` already reads them from.
 
@@ -21,8 +21,13 @@ The actual build script lives at the repository root, `scripts/build_notebook_si
 ```bash
 uv run python scripts/build_notebook_site.py \
   --site-url https://notebook.osc.earth/osa \
+  --environment production \
   --output-dir dist/notebook-site
 ```
+
+`--environment` is required, `production` or `develop`.
+It picks each community's `zarr_base` and `dataset_page_base` from its `notebook:` block, so a develop build's starter reads the staging data host (for NEMAR, `zarr-test.nemar.org`) and links to the staging website.
+There is no default, because a build aimed at the wrong data host still builds and only fails in a reader's browser.
 
 Needs no secrets. Fetches: JupyterLite's own build tooling from PyPI (via `uv tool run`, pinned to `jupyterlite-core==0.8.4` / `jupyterlite-pyodide-kernel==0.8.0`), and Pyodide 0.29.5's own lock from jsDelivr (pinned and sha256-verified; the build fails loudly on a mismatch rather than silently building against an unreviewed lock).
 Add `--expose-app` for a test build that exposes JupyterLite's `Application` instance as `window.jupyterapp` (used by `e2e-check.js` to drive "Run All Cells" without clicking through the UI); a production build omits it.
@@ -43,6 +48,9 @@ bun notebook/test-open.js
 # opens a dataset link, and checks the result end to end. Reads the real,
 # live zarr.nemar.org, so it needs the network and is slower (10+ seconds).
 bun notebook/e2e-check.js
+# the same against a develop build, which reads zarr-test.nemar.org and opens
+# the staging fixture xx099903
+bun notebook/e2e-check.js --environment develop
 ```
 
 `e2e-check.js` reuses `frontend/browser-harness/chrome.js`'s Chrome-driving primitives (`findChrome`, `launch`, `connect`) rather than duplicating them, the same way `frontend/browser-harness/notebook-bench.js` already does for the surface-comparison measurements behind ADR 0010.

@@ -57,12 +57,14 @@ jobs:
           if [ "${{ github.ref_name }}" = "main" ]; then
             {
               echo "url=https://notebook.osc.earth/osa"
+              echo "environment=production"
               echo "subdomain=notebook"
               echo "pages_target=osa-notebook.pages.dev"
             } >> "$GITHUB_OUTPUT"
           else
             {
               echo "url=https://develop-notebook.osc.earth/osa"
+              echo "environment=develop"
               echo "subdomain=develop-notebook"
               echo "pages_target=develop.osa-notebook.pages.dev"
             } >> "$GITHUB_OUTPUT"
@@ -72,6 +74,7 @@ jobs:
         run: |
           uv run python scripts/build_notebook_site.py \
             --site-url "${{ steps.site.outputs.url }}" \
+            --environment "${{ steps.site.outputs.environment }}" \
             --output-dir dist/notebook-site
 
       - name: Report the built site's size

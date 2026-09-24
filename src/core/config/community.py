@@ -31,9 +31,22 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from urllib.parse import urlparse
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
-from src.core.config.notebook_lock import NOTEBOOK_SITE_PYODIDE_VERSION, starter_path_problem
+from src.core.config.notebook_lock import (
+    NOTEBOOK_ENVIRONMENTS,
+    NOTEBOOK_SITE_PYODIDE_VERSION,
+    environment_base_url_problem,
+    starter_path_problem,
+)
 from src.core.config.runtime_lock import lockfile_path_problem
 from src.core.limits import (
     MAX_IMAGE_EDGE_PX,
@@ -807,6 +820,11 @@ class NotebookConfig(BaseModel):
     the notebook site's own Pyodide (see ``validate_notebook_needs_matching_
     pyodide`` on ``CommunityConfig``): one site loads one Pyodide, so a starter
     that ran under a different pin would be untested by anything that runs it.
+
+    Also declares ``zarr_base``/``dataset_page_base``, each environment
+    (production, staging) is its own deployment, so the data and website
+    hosts a starter reads are a build input, not something the widget or the
+    website decide at request time.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -827,6 +845,49 @@ class NotebookConfig(BaseModel):
     id that merely contains a valid-looking substring, and ``notebook/open.js``
     uses this pattern as the whole gate between an arbitrary query string and
     writing into the reader's own browser storage."""
+
+    zarr_base: dict[str, str]
+    """Per-environment base URL for this community's Zarr host, keyed by
+    entries of ``NOTEBOOK_ENVIRONMENTS`` (``"production"``, ``"develop"``).
+
+    A notebook deployment is always paired with exactly one website
+    environment (staging's dataset pages read a different Zarr host than
+    production's), so this makes the host a BUILD input rather than widget or
+    website plumbing: ``scripts/build_notebook_site.py --environment`` picks
+    one entry and fills it into the starter's ``{{zarr_base}}`` token at
+    build time (``src.core.config.notebook_lock.fill_build_time_tokens``),
+    never client-side. A build for an environment this community has not
+    declared here is refused (``build()``'s own check), not silently built
+    with the wrong host.
+
+    Example::
+
+        zarr_base:
+          production: https://zarr.nemar.org
+          develop: https://zarr-test.nemar.org
+    """
+
+    dataset_page_base: dict[str, str]
+    """Per-environment base URL for this community's own website, for a
+    starter's link to a dataset's own page (filled into the starter's
+    ``{{dataset_page_base}}`` token at build time, same rule as
+    ``zarr_base``: production and staging name different sites)."""
+
+    @field_validator("zarr_base", "dataset_page_base")
+    @classmethod
+    def _environment_url_maps_are_well_formed(
+        cls, value: dict[str, str], info: ValidationInfo
+    ) -> dict[str, str]:
+        for environment, url in value.items():
+            if environment not in NOTEBOOK_ENVIRONMENTS:
+                raise ValueError(
+                    f"{info.field_name} names an unrecognized environment {environment!r}; "
+                    f"must be one of {NOTEBOOK_ENVIRONMENTS}"
+                )
+            problem = environment_base_url_problem(url)
+            if problem is not None:
+                raise ValueError(f"{info.field_name}[{environment!r}] {problem}")
+        return value
 
     @field_validator("starter")
     @classmethod

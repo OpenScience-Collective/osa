@@ -15,9 +15,13 @@ from pathlib import Path
 import pytest
 
 from src.core.config.notebook_lock import (
+    DATASET_PAGE_BASE_TOKEN,
     NOTEBOOK_TOKEN,
+    ZARR_BASE_TOKEN,
     NotebookConfigError,
     NotebookLockError,
+    environment_base_url_problem,
+    fill_build_time_tokens,
     merge_site_lock,
     starter_path_problem,
     validate_notebook_starter,
@@ -130,6 +134,73 @@ class TestValidateNotebookStarter:
 
         with pytest.raises(NotebookConfigError, match="cell_type"):
             validate_notebook_starter(tmp_path, path)
+
+
+class TestEnvironmentBaseUrl:
+    @pytest.mark.parametrize("url", ["https://zarr.nemar.org", "https://zarr-test.nemar.org"])
+    def test_a_bare_https_host_is_fine(self, url: str) -> None:
+        assert environment_base_url_problem(url) is None
+
+    @pytest.mark.parametrize(
+        ("url", "reason"),
+        [
+            ("http://zarr.nemar.org", "https"),
+            ("zarr.nemar.org", "https"),
+            ("https://", "host"),
+            ("https://zarr.nemar.org/", "trailing slash"),
+            ("https://zarr.nemar.org/zarr", "no path"),
+            ("https://zarr.nemar.org?v=1", "query"),
+            ("https://zarr.nemar.org#top", "fragment"),
+        ],
+    )
+    def test_anything_but_a_bare_https_host_is_refused(self, url: str, reason: str) -> None:
+        problem = environment_base_url_problem(url)
+        assert problem is not None
+        assert reason in problem
+
+
+class TestFillBuildTimeTokens:
+    def test_fills_both_tokens_in_list_and_string_sources_and_leaves_the_dataset_token(
+        self,
+    ) -> None:
+        notebook = _notebook(
+            [
+                _cell(
+                    "markdown",
+                    f"[{NOTEBOOK_TOKEN}]({DATASET_PAGE_BASE_TOKEN}/dataset/{NOTEBOOK_TOKEN})",
+                    "md",
+                ),
+                _cell(
+                    "code",
+                    [f'url = "{ZARR_BASE_TOKEN}/{NOTEBOOK_TOKEN}/zarr/index.json"\n', "print(url)"],
+                    "py",
+                ),
+            ]
+        )
+
+        filled = fill_build_time_tokens(
+            notebook,
+            zarr_base="https://zarr-test.nemar.org",
+            dataset_page_base="https://test.nemar.org",
+        )
+
+        assert (
+            filled["cells"][0]["source"]
+            == f"[{NOTEBOOK_TOKEN}](https://test.nemar.org/dataset/{NOTEBOOK_TOKEN})"
+        )
+        assert filled["cells"][1]["source"] == [
+            f'url = "https://zarr-test.nemar.org/{NOTEBOOK_TOKEN}/zarr/index.json"\n',
+            "print(url)",
+        ]
+
+    def test_the_input_notebook_is_not_modified(self) -> None:
+        notebook = _notebook([_cell("code", [f"{ZARR_BASE_TOKEN}\n"])])
+
+        fill_build_time_tokens(
+            notebook, zarr_base="https://zarr.nemar.org", dataset_page_base="https://nemar.org"
+        )
+
+        assert notebook["cells"][0]["source"] == [f"{ZARR_BASE_TOKEN}\n"]
 
 
 def _entry(name: str, file_name: str, sha256: str, **overrides) -> dict:

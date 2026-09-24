@@ -29,6 +29,12 @@ and writes `_headers` (path-prefixed) and a root `_redirects` (`/` -> `/osa/`) a
 since Cloudflare Pages reads both only from exactly there.
 A community opts in with a `notebook:` block in its own `config.yaml` (`starter`, `dataset_pattern`); only NEMAR has one today.
 
+**Each deployment reads its own environment's data host, fixed at build time.**
+The develop site is embedded by the staging website, whose dataset pages read `zarr-test.nemar.org`, and the production site by nemar.org, which reads `zarr.nemar.org`; a dataset that exists on one is absent from the other (measured 2026-09-24: `xx099903` returns 404 on `zarr.nemar.org` and 200 on `zarr-test.nemar.org`, and `nm000103` the reverse).
+So a community declares `zarr_base` and `dataset_page_base` per environment, and `scripts/build_notebook_site.py --environment` fills them into the starter.
+Passing the host from the widget or the website at request time was rejected: it would make a query parameter decide where a reader's browser fetches data from, when each deployment already has exactly one right answer.
+The buckets behind those hosts do not allow the notebook origins (the `nemar` and `nemar-dev` buckets answer `https://notebook.osc.earth` and `https://develop-notebook.osc.earth` with no `Access-Control-Allow-Origin`), and that does not matter: eegprep-lean builds every URL on the index's `contract_base`, never on `data_base`, and both Zarr hosts serve array files themselves with the origin allowed (measured 2026-09-24).
+
 **Pyodide 0.29.5 loads from jsDelivr through `pyodideUrl`, not self-hosted.**
 `jupyter lite build --pyodide=<tarball>` was measured, in 0010, at 529-531 MB total because the full Pyodide distribution is extracted and copied into the site rather than referenced.
 Patching the built `jupyter-lite.json`'s `litePluginSettings["@jupyterlite/pyodide-kernel-extension:kernel"]` with an explicit `pyodideUrl` and `loadPyodideOptions` (`lockFileURL`, `packageBaseUrl`) keeps the interpreter a content delivery network (CDN) reference: 67 MB versus 530 MB for what is otherwise the identical build.

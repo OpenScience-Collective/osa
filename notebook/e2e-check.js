@@ -1,14 +1,15 @@
 #!/usr/bin/env bun
 /**
  * The full notebook-site flow, in real, headless Chrome (issue #453,
- * docs/adr/0011-the-notebook-site.md). Reads the real, live zarr.nemar.org, the
- * same reason frontend/browser-harness/widget_e2e.py is a manual/workflow_dispatch
- * check rather than a required gate (see notebook/README.md).
+ * docs/adr/0011-the-notebook-site.md). Reads the environment's real, live Zarr
+ * host (zarr.nemar.org, or zarr-test.nemar.org for develop), the same reason
+ * frontend/browser-harness/widget_e2e.py is a manual/workflow_dispatch check
+ * rather than a required gate (see notebook/README.md).
  *
  * Reuses frontend/browser-harness/chrome.js's Chrome-driving primitives
  * (findChrome, launch, connect) rather than duplicating them.
  *
- * Usage: bun notebook/e2e-check.js [screenshot-path]
+ * Usage: bun notebook/e2e-check.js [--environment production|develop] [screenshot-path]
  */
 
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -17,15 +18,37 @@ import { join } from 'node:path';
 import { attachWithNetwork, connect, findChrome, launch, NetworkRecorder } from '../frontend/browser-harness/chrome.js';
 
 const COMMUNITY = 'nemar';
-const DATASET = 'nm000103';
+// One dataset per environment, each present only on that environment's Zarr host,
+// so a build that fills in the wrong zarr_base fails here rather than in a reader's
+// browser. SENTINEL never appears in the starter's source, only in its runtime
+// output: window.data.shape, window.unit and window.rate for the first two seconds
+// of four channels of the dataset's first store.
+const ENVIRONMENTS = {
+  production: { dataset: 'nm000103', sentinel: '(4, 500) uV 250.0' },
+  develop: { dataset: 'xx099903', sentinel: '(4, 2000) mV 1000.0' },
+};
+
+function parseArgs(argv) {
+  let environment = 'production';
+  let screenshotPath = null;
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--environment') environment = argv[++i];
+    else if (screenshotPath === null) screenshotPath = argv[i];
+  }
+  if (!Object.hasOwn(ENVIRONMENTS, environment)) {
+    throw new Error(`--environment must be one of ${Object.keys(ENVIRONMENTS).join(', ')}, got ${environment}`);
+  }
+  return { environment, screenshotPath };
+}
+
+const ARGS = parseArgs(process.argv.slice(2));
+const DATASET = ENVIRONMENTS[ARGS.environment].dataset;
 // OSC's naming rule: a subdomain is a plane serving several projects, and the
 // project is the path (api.osc.earth/osa, widget.osc.earth/osa, ...), so the
 // real site is notebook.osc.earth/osa, not the bare host -- and this check
 // builds and serves under that same prefix so it matches production exactly.
 const SITE_SUBDIR = 'osa';
-// Never appears in the starter's own source, only in its runtime output
-// (window.data.shape, window.unit, window.rate on nm000103's first store).
-const SENTINEL = '(4, 500) uV 250.0';
+const SENTINEL = ENVIRONMENTS[ARGS.environment].sentinel;
 // Matches open.js's own notebookPath(community, dataset); this is the one
 // file whose save the edit/reopen step below has to confirm.
 const NOTEBOOK_PATH = `${COMMUNITY}/${DATASET}.ipynb`;
@@ -48,7 +71,7 @@ function log(msg) {
  * already has its ephemeral port is what avoids that mismatch here.
  */
 async function buildSite(outputDir, siteUrl) {
-  log(`building the site into ${outputDir} (--site-url ${siteUrl}, --expose-app)`);
+  log(`building the site into ${outputDir} (--site-url ${siteUrl}, --environment ${ARGS.environment}, --expose-app)`);
   const proc = Bun.spawn(
     [
       'uv',
@@ -57,6 +80,8 @@ async function buildSite(outputDir, siteUrl) {
       'scripts/build_notebook_site.py',
       '--site-url',
       siteUrl,
+      '--environment',
+      ARGS.environment,
       '--output-dir',
       outputDir,
       '--expose-app',
@@ -254,7 +279,7 @@ async function diagnose(cdp, page, consoleErrors, exceptions) {
 }
 
 async function main() {
-  const screenshotPath = process.argv[2] || null;
+  const screenshotPath = ARGS.screenshotPath;
   const chromePath = findChrome();
   if (!chromePath) {
     if (process.env.CI) {

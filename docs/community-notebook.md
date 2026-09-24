@@ -18,7 +18,13 @@ A community opts in with a top-level `notebook:` block in its own `config.yaml`:
 ```yaml
 notebook:
   starter: notebook/starter.ipynb
-  dataset_pattern: "^(nm|ds|on)[0-9]{6}$"
+  dataset_pattern: "^(nm|ds|on|xx)[0-9]{6}$"
+  zarr_base:
+    production: https://zarr.nemar.org
+    develop: https://zarr-test.nemar.org
+  dataset_page_base:
+    production: https://nemar.org
+    develop: https://test.nemar.org
 ```
 
 `NotebookConfig` (`src/core/config/community.py`) defines the shape:
@@ -29,6 +35,10 @@ notebook:
 - `dataset_pattern`: a regular expression a dataset id must match for this starter to open.
   Must be anchored (`^...$`) and must compile, checked at config load.
   `notebook/open.js` uses this pattern, verbatim, as the entire gate between an arbitrary query string and writing into a reader's browser storage, so an unanchored pattern would let a substring match through.
+- `zarr_base` and `dataset_page_base`: the community's data host and website, one entry per environment (`production`, `develop`).
+  Each must be a bare `https://` host with no path, not even a trailing slash, because the starter appends the path itself.
+  The site build takes a required `--environment` and fills the matching entries into the starter's `{{zarr_base}}` and `{{dataset_page_base}}` tokens, so the develop site (`develop-notebook.osc.earth/osa/`, which staging embeds) reads the same data host as the staging website's dataset pages.
+  A build for an environment a community has not declared fails before anything is built.
 
 ### The token
 
