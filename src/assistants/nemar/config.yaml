@@ -398,9 +398,12 @@ extensions:
         is in physical units, with channel labels. An open_array read returns stored
         digital counts, so never plot from it, and never use a python_zarr snippet,
         boto3, s3fs or zarr.open, none of which can work here. Anything that touches
-        the network is async, so use await at the top level. numpy, matplotlib, zarr
-        and eegprep_lean are installed and nothing else can be; only
-        NEMAR's Zarr host is reachable. eegprep_lean draws on its own figure
+        the network is async, so use await at the top level. numpy, SciPy, matplotlib,
+        zarr and eegprep_lean are installed and nothing else can be; only
+        NEMAR's Zarr host is reachable. Call scipy.signal.welch one channel at a time,
+        on at most 2**28 // nperseg samples, as your instructions show: past either
+        it raises "array is too big" in this runtime.
+        eegprep_lean draws on its own figure
         rather than pyplot's, so hand the figure over with
         display(eegprep_lean.plot_window(window).figure). Print a few summary lines
         rather than whole arrays. Every run's code and output are saved automatically
