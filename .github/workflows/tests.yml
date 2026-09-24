@@ -82,6 +82,15 @@ jobs:
         run: |
           uv run pytest --ignore=tests/test_integration -v --cov=src --cov-report=xml -m "not network"
 
+      # The widget's light and dark appearance in real Chrome (#469). The bug is the
+      # browser's own drawing of form controls on a dark host page, which the happy-dom
+      # suite cannot show. The check starts its own two widget_e2e.py servers (the
+      # default config, and the same with color_scheme: auto), so it needs this job's
+      # Python environment as well as Bun; the runner ships Chrome.
+      - name: Check the widget's light and dark appearance in headless Chrome
+        if: matrix.python-version == '3.12'
+        run: bun frontend/browser-harness/color-scheme-check.mjs --serve
+
       - name: Upload coverage
         uses: codecov/codecov-action@v4
         if: matrix.python-version == '3.12'
