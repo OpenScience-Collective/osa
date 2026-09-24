@@ -231,12 +231,14 @@ def build_merged_lock_and_wheels(
 ) -> None:
     """Write lock/pyodide-lock.json and copy every overlay wheel beside it."""
     overlays = {}
+    lockfiles: dict[str, str] = {}
     for community_id, config in communities.items():
         python = config.runtime.python if config.runtime else None
         lockfile = python.lockfile if python else None
         if lockfile is None:
             continue  # this community's starter needs nothing beyond stock Pyodide
         overlays[community_id] = load_runtime_lock(ASSISTANTS_DIR / community_id, lockfile)
+        lockfiles[community_id] = lockfile
 
     merged = merge_site_lock(stock_lock, overlays, site_url)
     lock_dir = output_dir / "lock"
@@ -244,8 +246,7 @@ def build_merged_lock_and_wheels(
     (lock_dir / "pyodide-lock.json").write_text(json.dumps(merged, indent=2) + "\n")
 
     for community_id, overlay in overlays.items():
-        python = communities[community_id].runtime.python
-        lockfile = python.lockfile
+        lockfile = lockfiles[community_id]
         dest_dir = output_dir / "wheels" / community_id
         dest_dir.mkdir(parents=True, exist_ok=True)
         for entry in overlay.packages.values():
