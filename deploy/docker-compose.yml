@@ -22,7 +22,13 @@ services:
     volumes:
       # Persist knowledge database across container restarts
       - osa-data:/app/data
-    # No environment: block here on purpose. Every variable this service
+    # One literal, which is meant to win over env_file: this is the production
+    # container, and the .env it reads is the one develop's container shares, so
+    # which deployment's config values it resolves is named here rather than
+    # inferred from whatever ROOT_PATH that file holds (ADR 0013).
+    environment:
+      - OSA_DEPLOYMENT=production
+    # No other environment: entries, on purpose. Every variable this service
     # needs (API keys, ANTHROPIC_*, sync/observability settings, etc.) is
     # already supplied by env_file above, and every one of them has a
     # default on Settings (src/api/config.py) for when it is absent.

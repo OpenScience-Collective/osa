@@ -30,7 +30,9 @@ The MCP client connects to `McpServer.resolved_url`; the public config response 
 
 **The deployment is `OSA_DEPLOYMENT` when set, and otherwise `develop` for the container mounted at `/osa-dev` and `production` for anything else** (`src/core/config/deployment.py`).
 The fallback is deliberate, not a convenience: the develop container's launch script runs from the host, so a deploy of this repository does not change what it passes, and it already passes `ROOT_PATH=/osa-dev`.
-`deploy/auto-update-dev.sh` now also passes `OSA_DEPLOYMENT=develop`, which takes effect whenever the host's copy is updated; until then the mount decides.
+Every launch path in `deploy/` now names the deployment: `deploy/auto-update-dev.sh` passes `OSA_DEPLOYMENT=develop`, `deploy/auto-update.sh` and `deploy/deploy.sh` pass whichever their `ENVIRONMENT` selects, and `deploy/docker-compose.yml` sets `production`.
+Production is named rather than left to the fallback because the `.env` both containers read is shared: a `ROOT_PATH=/osa-dev` left in it must not be able to send production's readers to staging hosts.
+The host runs its own copies of these scripts, so the names take effect when those copies are updated; until then the mount decides, which is what it did before this record.
 A value other than the two names is a startup error, never a silent production.
 Local runs and tests set neither, and read production, as they did before.
 

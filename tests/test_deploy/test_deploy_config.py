@@ -5,8 +5,10 @@ runs deploy/docker-compose.yml or .env.example until a deploy breaks.
 """
 
 import re
+import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 from src.api.config import Settings
@@ -113,3 +115,46 @@ class TestEnvExampleCoversAnthropicSettings:
 
         assert values.get("DEFAULT_MODEL") in OFFERED_MODELS
         assert values.get("TEST_MODEL") in OFFERED_MODELS
+
+
+class TestEveryLaunchPathNamesItsDeployment:
+    """Production is named, never inferred (docs/adr/0013-the-chat-follows-its-deployment.md).
+
+    Both containers read one shared .env, so a production container that left its
+    deployment to ROOT_PATH would resolve develop's staging hosts the day that file
+    held ``ROOT_PATH=/osa-dev``.
+    """
+
+    @staticmethod
+    def _selected(script: str, environment: str) -> str:
+        """Run the script's own environment-selection block, and nothing else of it."""
+        text = (REPO_ROOT / "deploy" / script).read_text()
+        start = text.index('if [ "$ENVIRONMENT" = "dev" ]; then')
+        block = text[start : text.index("\nfi\n", start) + len("\nfi\n")]
+        result = subprocess.run(
+            ["bash", "-c", f'{block}\nprintf %s "$OSA_DEPLOYMENT_NAME"'],
+            env={"ENVIRONMENT": environment, "PATH": "/usr/bin:/bin"},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout
+
+    @pytest.mark.parametrize("script", ["auto-update.sh", "deploy.sh"])
+    def test_each_branch_names_its_deployment(self, script: str) -> None:
+        assert self._selected(script, "dev") == "develop"
+        assert self._selected(script, "prod") == "production"
+
+    @pytest.mark.parametrize("script", ["auto-update.sh", "deploy.sh"])
+    def test_the_container_is_started_with_it(self, script: str) -> None:
+        text = (REPO_ROOT / "deploy" / script).read_text()
+        assert 'ENV_OVERRIDE="-e OSA_DEPLOYMENT=${OSA_DEPLOYMENT_NAME}"' in text
+        assert "${ENV_OVERRIDE}" in text[text.index("docker run -d") :]
+
+    def test_the_dev_script_names_develop(self) -> None:
+        text = (REPO_ROOT / "deploy" / "auto-update-dev.sh").read_text()
+        assert "-e OSA_DEPLOYMENT=develop" in text[text.index("docker run -d") :]
+
+    def test_compose_names_production(self) -> None:
+        compose = yaml.safe_load((REPO_ROOT / "deploy" / "docker-compose.yml").read_text())
+        assert "OSA_DEPLOYMENT=production" in compose["services"]["osa"]["environment"]
