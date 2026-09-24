@@ -15,6 +15,15 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Added
 
+- **Questions about the dataset on screen** (issue #477):
+  `widget.dataset_suggested_questions` holds question templates with `{dataset_id}`, `{subject}` and `{task}` blanks,
+  and `needs_zarr` on the ones that run code against a recording.
+  On a page that names a dataset with `setDataset`, which now also takes `subject` and `task` labels,
+  the opening screen shows up to three that the page's facts fill, in place of the general list;
+  mid-conversation, a dataset the conversation has not been on yet gets a compact row of two.
+  A community that sets none is unchanged.
+  NEMAR is the first, and its example dataset is now nm000132 (ERP CORE).
+  See "Questions about the dataset on screen" in `docs/community-widget.md`.
 - **A three-icon capsule launcher** (issue #436): `launcher: capsule` replaces the
   single chat bubble with a vertical stack of three circular icons -- chat (unchanged),
   notebook, and a high-performance computing (HPC) placeholder -- that expand upward

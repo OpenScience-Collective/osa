@@ -37,7 +37,8 @@ widget:
 
 ### Questions about the dataset on screen
 
-A host page that names the dataset on screen with [`setDataset`](#osachatwidgetsetdatasetvalue) can be offered questions about that dataset rather than the general list (#477).
+A host page that names the dataset on screen with [`setDataset`](#osachatwidgetsetdatasetvalue)
+can be offered questions about that dataset rather than the general list (#477).
 Each entry of `dataset_suggested_questions` is a template:
 
 ```yaml
@@ -49,19 +50,29 @@ widget:
     - text: "How do I download {dataset_id}?"
 ```
 
-- `text` is plain text, up to 200 characters, and must name its dataset with `{dataset_id}`, so the question the reader sends is about a dataset the model can look up.
-  It may also use `{subject}` and `{task}`, the BIDS labels the page passes in `setDataset`; no other blank is accepted, and a config with one fails to load.
+- `text` is plain text, up to 200 characters, and must name its dataset with `{dataset_id}`,
+  so the question the reader sends is about a dataset the model can look up.
+  It may also use `{subject}` and `{task}`, the Brain Imaging Data Structure (BIDS) labels the page passes in `setDataset`;
+  no other blank is accepted, and a config with one fails to load.
 - `needs_zarr: true` shows the question only when `setDataset` says the dataset has a Zarr copy.
   Set it on a question that runs code against a recording, since the browser runtime reads recordings from Zarr.
-- On the opening screen of a dataset page, the widget shows up to three templates, in this order, skipping one marked `needs_zarr` that the dataset cannot answer and one with a blank the page did not fill.
-  When none fits, the general `suggested_questions` show instead, as they do on every page that names no dataset.
-- Mid-conversation, a dataset the conversation has not been on yet gets a compact row of up to two, labeled with the dataset, above the input.
-  The widget records the dataset on screen with each message the reader sends, so the row goes once the reader sends from that page and stays gone after a reload.
+- On the opening screen of a dataset page, the widget shows up to three templates, in this order,
+  skipping one marked `needs_zarr` that the dataset cannot answer and one with a blank the page did not fill.
+  When none fits, the general `suggested_questions` show instead,
+  as they do on every page that names no dataset.
+- Mid-conversation, a dataset the conversation has not been on yet gets a compact row of up to two,
+  labeled with the dataset, above the input.
+  The widget records the dataset on screen with each message the reader sends,
+  so the row goes once the reader sends from that page and stays gone after a reload.
+- A pop-out window is told the dataset its opener has on screen, and every later `setDataset` on the opener, so its suggestions follow the page.
 - Questions are never written by the model: they are the community's own text, with the page's facts filled in.
 - A community that sets none, which is every community but NEMAR today, keeps `suggested_questions` on every page.
 
-A question that runs code should stay within what the community's browser runtime preloads ([`docs/community-browser-runtime.md`](community-browser-runtime.md)).
-NEMAR's preloads numpy, matplotlib, zarr and eegprep-lean, not scipy, so its power-spectrum question is answered with a numpy FFT; work that needs scipy belongs in the notebook, which can `%pip install` it.
+A question that runs code should stay within what the community's browser runtime preloads
+([`docs/community-browser-runtime.md`](community-browser-runtime.md)).
+NEMAR's preloads numpy, matplotlib, zarr and eegprep-lean, not scipy,
+so its power-spectrum question is answered with a numpy FFT.
+Work that needs scipy belongs in the notebook, which can `%pip install` it.
 
 ## Color roles
 
@@ -289,10 +300,13 @@ OSAChatWidget.setDataset(null); // not a dataset page
   (not known yet, e.g. the check is still in flight).
 - `subject` and `task` are optional BIDS labels, without the `sub-` or `task-` prefix (`001`, `N170`),
   matching `^[A-Za-z0-9]{1,64}$`: the recording the page would point a reader at first.
-  They fill the `{subject}` and `{task}` blanks of the dataset questions above (#477), and nothing else reads them.
-- Invalid input (a malformed `id`, a `zarr` that is not `true`/`false`/absent, or a
-  `subject` or `task` that is not a label) is ignored with a `console.warn`; it never throws, and it never changes the
+  They fill the `{subject}` and `{task}` blanks of the dataset questions above (#477),
+  and nothing else reads them.
+- Invalid input (a malformed `id`, or a `zarr` that is not `true`/`false`/absent) is
+  ignored with a `console.warn`; it never throws, and it never changes the
   previously-set state.
+  A `subject` or `task` that is not a label is dropped alone, with a `console.warn`, and the rest of the call applies:
+  it only fills question blanks, so it should not keep the previous dataset, and its notebook icon, on screen.
 
 `setDataset` can be called before `OSAChatWidget.init()` runs, since the embedder's own
 dataset-detection script may load before or after the widget script.
