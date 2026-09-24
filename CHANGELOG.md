@@ -143,6 +143,12 @@ the version being released and start a new `[Unreleased]` section above it.
   It wrote the widget's source into itself as inline script, which the host page's Content Security Policy, inherited by the pop-out, refused.
   It now loads the widget by its address, with the widget tag's `integrity` and `crossorigin`, so a policy that loads the widget allows its pop-out too,
   and a pop-out whose script the browser refuses says so in its window.
+- **NEMAR's ERP images are low-passed.** The prompt described the 30 Hz windowed-sinc filter in prose,
+  and a model on staging wrote it as `np.sinc(n)`, a single spike that filters nothing.
+  The prompt now carries the filter as code: the cutoff inside `np.sinc`, clamped to a quarter of the sampling rate,
+  and the convolution done by FFT, so it takes every channel at once and stays fast at 5000 Hz.
+  `frontend/test-data-lane.js` runs that code in Pyodide at 60 to 5000 Hz and checks it keeps 5 Hz, removes the high tone, and equals `np.convolve(..., "same")`.
+  The ERP image's time axis is in milliseconds, and the model names a component only when the dataset or its paper says the task evokes it.
 
 ## [0.8.12] - 2026-09-21
 
