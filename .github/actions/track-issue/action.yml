@@ -1,0 +1,127 @@
+name: Track a scheduled check's issue
+description: >
+  Open or comment on a labeled issue when a scheduled check is failing, and close
+  it with a comment on the next green run. Three near-identical copies of this
+  (widget-route-health.yml, nemar-mcp-contract.yml, and the eegprep-lean watcher)
+  is why this was pulled out. Each caller runs it in a job of its own after the
+  check job, so a check job that fails before its check (checkout included) still
+  counts, and hands the decision in as `failed`. This action does no checking of
+  its own, only the issue plumbing.
+
+inputs:
+  label:
+    description: The label that identifies this check's tracking issue.
+    required: true
+  title:
+    description: The issue title, used only when a new issue is opened.
+    required: true
+  failed:
+    description: >
+      'true' if this run should be treated as failing (a check that ran and
+      failed, OR a setup failure before it could run), 'false' if it is green.
+    required: true
+  report:
+    description: >
+      The failure body, in the caller's own words: what failed, and its likely
+      causes. Used only when failed is 'true'. May be empty (a setup failure often
+      has nothing more specific to say than the job log itself).
+    required: false
+    default: ''
+  recovery_message:
+    description: >
+      A short clause naming what recovered, e.g. "all NEMAR MCP contract checks"
+      or "all probes". Used only when failed is 'false'.
+    required: false
+    default: 'the check'
+
+runs:
+  using: composite
+  steps:
+    # Neither branch below runs for any other value, so an unset or misspelled
+    # `failed` would otherwise do nothing and look like a quiet week.
+    - name: Refuse a failed value that is neither true nor false
+      if: inputs.failed != 'true' && inputs.failed != 'false'
+      shell: bash
+      env:
+        FAILED: ${{ inputs.failed }}
+      run: |
+        echo "track-issue: failed must be 'true' or 'false', got '${FAILED}'" >&2
+        exit 1
+
+    # Passed through env rather than interpolated into the script body: `report`
+    # is caller-controlled free text (a rendered check report), and interpolating
+    # any such text into a github-script body is the wrong habit to establish in
+    # an action that holds issues:write.
+    - name: Open or update the tracking issue
+      if: inputs.failed == 'true'
+      uses: actions/github-script@v7
+      env:
+        ISSUE_LABEL: ${{ inputs.label }}
+        ISSUE_TITLE: ${{ inputs.title }}
+        ISSUE_REPORT: ${{ inputs.report }}
+      with:
+        script: |
+          const label = process.env.ISSUE_LABEL;
+          const title = process.env.ISSUE_TITLE;
+          const report = process.env.ISSUE_REPORT;
+          const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+          const body = [report, '', `Run: ${runUrl}`, '', 'This closes itself on the next green run.'].join(
+            '\n'
+          );
+
+          const existing = await github.rest.issues.listForRepo({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            state: 'open',
+            labels: label,
+          });
+
+          if (existing.data.length > 0) {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: existing.data[0].number,
+              body,
+            });
+          } else {
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: [label],
+            });
+          }
+
+    - name: Close the tracking issue on recovery
+      if: inputs.failed == 'false'
+      uses: actions/github-script@v7
+      env:
+        ISSUE_LABEL: ${{ inputs.label }}
+        RECOVERY_MESSAGE: ${{ inputs.recovery_message }}
+      with:
+        script: |
+          const label = process.env.ISSUE_LABEL;
+          const recoveryMessage = process.env.RECOVERY_MESSAGE;
+          const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+          const existing = await github.rest.issues.listForRepo({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            state: 'open',
+            labels: label,
+          });
+          for (const issue of existing.data) {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              body: `Recovered: ${recoveryMessage} green as of ${runUrl}`,
+            });
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              state: 'closed',
+            });
+          }

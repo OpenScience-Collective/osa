@@ -51,6 +51,7 @@ if [ "$RUNNING_ID" != "$NEW_ID" ]; then
         -v "${DATA_DIR}:/app/data" \
         $ENV_ARGS \
         -e ROOT_PATH="${ROOT_PATH_OVERRIDE}" \
+        -e OSA_DEPLOYMENT=develop \
         "$REGISTRY_IMAGE" > /dev/null
 
     echo "[$(date '+%Y-%m-%d %H:%M')] Dev updated: ${NEW_ID:7:12}"

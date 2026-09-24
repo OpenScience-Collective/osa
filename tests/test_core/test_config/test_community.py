@@ -13,18 +13,33 @@ from tempfile import NamedTemporaryFile
 import pytest
 from pydantic import ValidationError
 
+from src.api.tool_results import (
+    MAX_IMAGE_EDGE_PX,
+    MAX_IMAGES,
+    MAX_STDERR_CHARS,
+    MAX_STDOUT_CHARS,
+)
 from src.core.config.community import (
+    MAX_CONFIGURED_CLIENT_TOOLS,
+    MAX_PRELUDE_CHARS,
     BudgetConfig,
     CitationConfig,
+    ClientToolConfig,
     CommunitiesConfig,
     CommunityConfig,
+    DatasetSuggestedQuestion,
     DocSource,
     ExtensionsConfig,
     GitHubConfig,
     McpServer,
+    NotebookConfig,
     PythonPlugin,
+    PythonRuntimeConfig,
+    RuntimeConfig,
+    RuntimeLimits,
     WidgetConfig,
 )
+from src.core.config.notebook_lock import NOTEBOOK_SITE_PYODIDE_VERSION
 
 
 class TestDocSource:
@@ -554,6 +569,212 @@ class TestWidgetConfig:
         result = widget.resolve("Test")
         assert "theme_color" not in result
 
+    def test_user_bubble_color_valid(self) -> None:
+        """Should accept a valid hex color for the reader's bubbles."""
+        widget = WidgetConfig(user_bubble_color="#257a92")
+        assert widget.user_bubble_color == "#257a92"
+
+    def test_user_bubble_color_rejects_invalid_format(self) -> None:
+        """Should reject the same non-hex values theme_color does."""
+        for bad in ("teal", "257a92", "#abc", "#257a92;background:red"):
+            with pytest.raises(ValidationError):
+                WidgetConfig(user_bubble_color=bad)
+
+    def test_theme_color_alone_sets_no_bubble_color(self) -> None:
+        """A community that sets only theme_color keeps the platform bubbles: resolve()
+        adds no user_bubble_color, so the widget never derives one from the theme."""
+        result = WidgetConfig(theme_color="#008a79").resolve("Test")
+        assert result["theme_color"] == "#008a79"
+        assert "user_bubble_color" not in result
+
+    def test_resolve_includes_user_bubble_color_when_set(self) -> None:
+        """resolve() should include user_bubble_color when specified."""
+        result = WidgetConfig(user_bubble_color="#257a92").resolve("Test")
+        assert result["user_bubble_color"] == "#257a92"
+
+    def test_theme_text_color_valid(self) -> None:
+        """Should accept a valid hex color for text drawn on theme_color surfaces."""
+        widget = WidgetConfig(theme_text_color="#04121f")
+        assert widget.theme_text_color == "#04121f"
+
+    def test_theme_text_color_rejects_invalid_format(self) -> None:
+        """Should reject the same non-hex values theme_color does."""
+        for bad in ("navy", "04121f", "#abc", "#04121f;background:red"):
+            with pytest.raises(ValidationError):
+                WidgetConfig(theme_text_color=bad)
+
+    def test_theme_text_color_defaults_to_none(self) -> None:
+        """Should default to None when not specified."""
+        widget = WidgetConfig()
+        assert widget.theme_text_color is None
+
+    def test_theme_color_alone_sets_no_theme_text_color(self) -> None:
+        """A community that sets only theme_color keeps the widget's white on-primary
+        text: resolve() adds no theme_text_color, so the widget never derives one."""
+        result = WidgetConfig(theme_color="#008a79").resolve("Test")
+        assert result["theme_color"] == "#008a79"
+        assert "theme_text_color" not in result
+
+    def test_resolve_includes_theme_text_color_when_set(self) -> None:
+        """resolve() should include theme_text_color when specified."""
+        result = WidgetConfig(theme_text_color="#04121f").resolve("Test")
+        assert result["theme_text_color"] == "#04121f"
+
+    def test_accent_color_valid(self) -> None:
+        """Should accept a valid hex color for theme_color used as a foreground."""
+        widget = WidgetConfig(accent_color="#257a92")
+        assert widget.accent_color == "#257a92"
+
+    def test_accent_color_rejects_invalid_format(self) -> None:
+        """Should reject the same non-hex values theme_color does."""
+        for bad in ("teal", "257a92", "#abc", "#257a92;background:red"):
+            with pytest.raises(ValidationError):
+                WidgetConfig(accent_color=bad)
+
+    def test_accent_color_defaults_to_none(self) -> None:
+        """Should default to None when not specified."""
+        widget = WidgetConfig()
+        assert widget.accent_color is None
+
+    def test_theme_color_alone_sets_no_accent_color(self) -> None:
+        """A community that sets only theme_color keeps the widget's own default, which
+        tracks theme_color directly in the stylesheet: resolve() adds no accent_color."""
+        result = WidgetConfig(theme_color="#008a79").resolve("Test")
+        assert result["theme_color"] == "#008a79"
+        assert "accent_color" not in result
+
+    def test_resolve_includes_accent_color_when_set(self) -> None:
+        """resolve() should include accent_color when specified."""
+        result = WidgetConfig(accent_color="#257a92").resolve("Test")
+        assert result["accent_color"] == "#257a92"
+
+    def test_user_bubble_text_color_valid(self) -> None:
+        """Should accept a valid hex color for text in the reader's own bubbles."""
+        widget = WidgetConfig(user_bubble_text_color="#04121f")
+        assert widget.user_bubble_text_color == "#04121f"
+
+    def test_user_bubble_text_color_rejects_invalid_format(self) -> None:
+        """Should reject the same non-hex values user_bubble_color does."""
+        for bad in ("navy", "04121f", "#abc", "#04121f;background:red"):
+            with pytest.raises(ValidationError):
+                WidgetConfig(user_bubble_text_color=bad)
+
+    def test_user_bubble_text_color_defaults_to_none(self) -> None:
+        """Should default to None when not specified."""
+        widget = WidgetConfig()
+        assert widget.user_bubble_text_color is None
+
+    def test_user_bubble_color_alone_sets_no_text_color(self) -> None:
+        """A community that sets only user_bubble_color keeps the widget's white
+        bubble text: resolve() adds no user_bubble_text_color."""
+        result = WidgetConfig(user_bubble_color="#5bbad5").resolve("Test")
+        assert result["user_bubble_color"] == "#5bbad5"
+        assert "user_bubble_text_color" not in result
+
+    def test_resolve_includes_user_bubble_text_color_when_set(self) -> None:
+        """resolve() should include user_bubble_text_color when specified."""
+        result = WidgetConfig(user_bubble_text_color="#04121f").resolve("Test")
+        assert result["user_bubble_text_color"] == "#04121f"
+
+    def test_launcher_defaults_to_bubble(self) -> None:
+        """Should default to 'bubble', today's single-icon launcher."""
+        widget = WidgetConfig()
+        assert widget.launcher == "bubble"
+
+    def test_launcher_accepts_capsule(self) -> None:
+        """Should accept the three-icon capsule launcher (#436)."""
+        widget = WidgetConfig(launcher="capsule")
+        assert widget.launcher == "capsule"
+
+    def test_launcher_rejects_invalid_value(self) -> None:
+        """Should reject any value other than 'bubble' or 'capsule'."""
+        with pytest.raises(ValidationError):
+            WidgetConfig(launcher="pill")
+
+    def test_resolve_omits_launcher_when_bubble(self) -> None:
+        """resolve() should omit launcher for the 'bubble' default, so a community that
+        never sets it renders exactly as it did before this field existed."""
+        result = WidgetConfig().resolve("Test")
+        assert "launcher" not in result
+
+    def test_resolve_includes_launcher_when_capsule(self) -> None:
+        """resolve() should include launcher when it is 'capsule'."""
+        result = WidgetConfig(launcher="capsule").resolve("Test")
+        assert result["launcher"] == "capsule"
+
+    def test_color_scheme_defaults_to_light_and_is_omitted(self) -> None:
+        """A community that never sets color_scheme resolves exactly as before it existed."""
+        widget = WidgetConfig()
+        assert widget.color_scheme == "light"
+        assert "color_scheme" not in widget.resolve("Test")
+
+    def test_color_scheme_auto_is_included(self) -> None:
+        result = WidgetConfig(color_scheme="auto").resolve("Test")
+        assert result["color_scheme"] == "auto"
+
+    @pytest.mark.parametrize("value", ["dark", "Auto", "system", ""])
+    def test_color_scheme_rejects_anything_but_light_or_auto(self, value: str) -> None:
+        """'dark' is refused on purpose: a forced-dark widget on a light page is a host
+        page's choice (setColorScheme), not a community default."""
+        with pytest.raises(ValidationError):
+            WidgetConfig(color_scheme=value)
+
+    @pytest.mark.parametrize("value", ["dark", "light", "system"])
+    def test_the_widget_response_can_only_carry_auto(self, value: str) -> None:
+        """The response model is its own guard, whichever code path builds it: 'light'
+        is omitted rather than sent, and 'dark' is never a community's to send."""
+        from src.api.routers.community import WidgetConfigResponse
+
+        # Built from resolve(), the way the config route builds it.
+        auto = WidgetConfigResponse(**WidgetConfig(color_scheme="auto").resolve("T"))
+        assert auto.color_scheme == "auto"
+        light = WidgetConfig().resolve("T")
+        assert WidgetConfigResponse(**light).color_scheme is None
+        with pytest.raises(ValidationError):
+            WidgetConfigResponse(**{**light, "color_scheme": value})
+
+    def test_launcher_label_valid(self) -> None:
+        """Should accept a short plain-text tooltip label."""
+        widget = WidgetConfig(launcher_label="Explore NEMAR")
+        assert widget.launcher_label == "Explore NEMAR"
+
+    def test_launcher_label_strips_whitespace(self) -> None:
+        """Should strip surrounding whitespace."""
+        widget = WidgetConfig(launcher_label="  Explore NEMAR  ")
+        assert widget.launcher_label == "Explore NEMAR"
+
+    def test_launcher_label_empty_normalizes_to_none(self) -> None:
+        """A whitespace-only label should normalize to None, like other text fields."""
+        widget = WidgetConfig(launcher_label="   ")
+        assert widget.launcher_label is None
+
+    def test_launcher_label_rejects_markup(self) -> None:
+        """Should reject values containing '<' or '>' as not plain text."""
+        with pytest.raises(ValidationError):
+            WidgetConfig(launcher_label="<b>Explore</b>")
+
+    def test_launcher_label_max_length(self) -> None:
+        """Should enforce the 40-character maximum."""
+        with pytest.raises(ValidationError):
+            WidgetConfig(launcher_label="x" * 41)
+        widget = WidgetConfig(launcher_label="x" * 40)
+        assert widget.launcher_label == "x" * 40
+
+    def test_launcher_label_defaults_to_none(self) -> None:
+        """Should default to None, keeping the widget's hardcoded tooltip text."""
+        widget = WidgetConfig()
+        assert widget.launcher_label is None
+
+    def test_resolve_omits_launcher_label_when_unset(self) -> None:
+        """resolve() should omit launcher_label when not specified."""
+        result = WidgetConfig().resolve("Test")
+        assert "launcher_label" not in result
+
+    def test_resolve_includes_launcher_label_when_set(self) -> None:
+        """resolve() should include launcher_label when specified."""
+        result = WidgetConfig(launcher_label="Explore NEMAR").resolve("Test")
+        assert result["launcher_label"] == "Explore NEMAR"
+
     def test_placeholder_max_length(self) -> None:
         """Should enforce placeholder max length."""
         with pytest.raises(ValidationError):
@@ -598,6 +819,83 @@ class TestWidgetConfig:
         result = widget.resolve("HED")
         assert result["title"] == "Custom Title"
         assert result["placeholder"] == "Custom placeholder"
+
+
+class TestDatasetSuggestedQuestions:
+    """widget.dataset_suggested_questions (#477): templates for a dataset page."""
+
+    def test_default_is_empty_and_resolve_omits_it(self) -> None:
+        """A community that sets none sends nothing, so the widget keeps its general list."""
+        widget = WidgetConfig()
+        assert widget.dataset_suggested_questions == []
+        assert "dataset_suggested_questions" not in widget.resolve("HED")
+
+    def test_resolve_sends_each_template_with_needs_zarr(self) -> None:
+        widget = WidgetConfig(
+            dataset_suggested_questions=[
+                {"text": "What is {dataset_id} about?"},
+                {
+                    "text": "Plot sub-{subject}'s {task} recording from {dataset_id}",
+                    "needs_zarr": True,
+                },
+            ]
+        )
+        assert widget.resolve("NEMAR")["dataset_suggested_questions"] == [
+            {"text": "What is {dataset_id} about?", "needs_zarr": False},
+            {"text": "Plot sub-{subject}'s {task} recording from {dataset_id}", "needs_zarr": True},
+        ]
+
+    def test_text_is_stripped(self) -> None:
+        question = DatasetSuggestedQuestion(text="  What is {dataset_id}?  ")
+        assert question.text == "What is {dataset_id}?"
+
+    @pytest.mark.parametrize(
+        ("text", "match"),
+        [
+            ("", "must not be empty"),
+            ("   ", "must not be empty"),
+            ("What is in this dataset?", "must name its dataset"),
+            ("Plot {subject} from {dataset_id}", None),
+            ("Plot {session} from {dataset_id}", r"unknown blank\(s\) \{session\}"),
+            ("Plot {Dataset_Id}", r"unknown blank\(s\) \{Dataset_Id\}"),
+            ("Plot {} from {dataset_id}", r"unknown blank\(s\) \{\}"),
+            ("Plot {dataset_id", "unmatched"),
+            ("Plot dataset_id} from {dataset_id}", "unmatched"),
+            ("Plot {{dataset_id}}", "unmatched"),
+            ("<b>What</b> is {dataset_id}?", "plain text"),
+            ("x" * 190 + " {dataset_id}", "at most 200 characters"),
+        ],
+    )
+    def test_text_validation(self, text: str, match: str | None) -> None:
+        """Only the three known blanks, {dataset_id} required, balanced braces, no markup."""
+        if match is None:
+            assert DatasetSuggestedQuestion(text=text).text == text
+            return
+        with pytest.raises(ValidationError, match=match):
+            DatasetSuggestedQuestion(text=text)
+
+    @pytest.mark.parametrize("bad", [42, None, True, ["a"], {"x": 1}])
+    def test_non_string_text_is_a_validation_error(self, bad: object) -> None:
+        """An unquoted YAML number, a null or a list where the text belongs fails as a
+        config error naming the field, not as an AttributeError from the stripping."""
+        with pytest.raises(ValidationError, match="text"):
+            DatasetSuggestedQuestion(text=bad)
+
+    def test_unknown_field_is_refused(self) -> None:
+        """A misspelled needs_zarr must fail loudly, not silently show the question everywhere."""
+        with pytest.raises(ValidationError, match="needs_zar"):
+            DatasetSuggestedQuestion(text="What is {dataset_id}?", needs_zar=True)
+
+    def test_at_most_ten(self) -> None:
+        templates = [{"text": f"Question {i} about {{dataset_id}}"} for i in range(11)]
+        with pytest.raises(ValidationError, match="Maximum is 10"):
+            WidgetConfig(dataset_suggested_questions=templates)
+        assert (
+            len(
+                WidgetConfig(dataset_suggested_questions=templates[:10]).dataset_suggested_questions
+            )
+            == 10
+        )
 
 
 class TestWidgetConfigLogoUrl:
@@ -1895,3 +2193,666 @@ class TestFAQTemperatureWarning:
             )
 
         assert config.summary_agent.temperature == 0.1
+
+
+class TestClientToolConfig:
+    """Tests for ClientToolConfig model."""
+
+    def test_valid_client_tool(self) -> None:
+        """Should create a valid client tool entry."""
+        tool = ClientToolConfig(
+            name="execute_code",
+            runtime="python",
+            description="Run Python in the browser and return its output.",
+        )
+        assert tool.name == "execute_code"
+        assert tool.runtime == "python"
+        assert tool.requires_permission is True
+
+    def test_requires_permission_defaults_true(self) -> None:
+        """requires_permission should default to True (safe default)."""
+        tool = ClientToolConfig(name="execute_code", runtime="python", description="Run code.")
+        assert tool.requires_permission is True
+
+    def test_requires_permission_can_be_disabled(self) -> None:
+        """requires_permission should be settable to False."""
+        tool = ClientToolConfig(
+            name="execute_code",
+            runtime="python",
+            description="Run code.",
+            requires_permission=False,
+        )
+        assert tool.requires_permission is False
+
+    def test_rejects_unknown_runtime(self) -> None:
+        """Should reject a runtime other than the known literal values."""
+        with pytest.raises(ValidationError):
+            ClientToolConfig(name="execute_code", runtime="javascript", description="Run code.")
+
+    def test_rejects_extra_fields(self) -> None:
+        """Should reject unknown fields, matching every sibling model."""
+        with pytest.raises(ValidationError):
+            ClientToolConfig(
+                name="execute_code",
+                runtime="python",
+                description="Run code.",
+                unexpected="nope",
+            )
+
+    def test_requires_name_runtime_and_description(self) -> None:
+        """name, runtime, and description should all be required."""
+        with pytest.raises(ValidationError):
+            ClientToolConfig(runtime="python", description="Run code.")  # type: ignore[call-arg]
+        with pytest.raises(ValidationError):
+            ClientToolConfig(name="execute_code", description="Run code.")  # type: ignore[call-arg]
+        with pytest.raises(ValidationError):
+            ClientToolConfig(name="execute_code", runtime="python")  # type: ignore[call-arg]
+
+
+class TestRuntimeLimits:
+    """Tests for RuntimeLimits model."""
+
+    def test_defaults(self) -> None:
+        """Should default to the documented resource caps."""
+        limits = RuntimeLimits()
+        assert limits.memory_mb == 1536
+        assert limits.stdout_chars == 16384
+        assert limits.stderr_chars == 8192
+        assert limits.images == 3
+        assert limits.image_px == 1024
+        assert limits.exec_seconds == 120
+
+    def test_accepts_overrides(self) -> None:
+        """Should accept explicit values for every field, within the server's caps."""
+        limits = RuntimeLimits(
+            memory_mb=2048,
+            stdout_chars=8192,
+            stderr_chars=4096,
+            images=2,
+            image_px=2048,
+            exec_seconds=60,
+        )
+        assert limits.memory_mb == 2048
+        assert limits.images == 2
+
+    @pytest.mark.parametrize(
+        ("field", "over_cap"),
+        [
+            ("stdout_chars", MAX_STDOUT_CHARS + 1),
+            ("stderr_chars", MAX_STDERR_CHARS + 1),
+            ("images", MAX_IMAGES + 1),
+            ("image_px", MAX_IMAGE_EDGE_PX + 1),
+        ],
+    )
+    def test_a_limit_the_server_would_reject_is_refused_at_config_load(
+        self, field: str, over_cap: int
+    ) -> None:
+        """A community must not be able to promise the browser more than the server
+        accepts.
+
+        Otherwise the browser honors its own config, sends a result the server rejects
+        whole with a 422, and the failure looks like the browser misbehaving when it is
+        the config lying. Bounding the config against the same constants makes that
+        state unrepresentable rather than merely unlikely.
+        """
+        with pytest.raises(ValidationError):
+            RuntimeLimits(**{field: over_cap})
+
+    def test_the_defaults_are_the_servers_caps(self) -> None:
+        """So the common case needs no thought and cannot drift."""
+        limits = RuntimeLimits()
+
+        assert limits.stdout_chars == MAX_STDOUT_CHARS
+        assert limits.stderr_chars == MAX_STDERR_CHARS
+        assert limits.images == MAX_IMAGES
+
+    def test_memory_and_time_are_deliberately_unbounded_here(self) -> None:
+        """Neither is a server-side cap: the server never sees memory usage, and
+        `exec_seconds` is the browser's own clock. Bounding them against a server
+        constant would invent a limit that nothing enforces."""
+        limits = RuntimeLimits(memory_mb=99_999, exec_seconds=99_999)
+
+        assert limits.memory_mb == 99_999
+        assert limits.exec_seconds == 99_999
+
+    def test_images_can_be_zero(self) -> None:
+        """images=0 (no images allowed) should be a valid, explicit choice."""
+        limits = RuntimeLimits(images=0)
+        assert limits.images == 0
+
+    @pytest.mark.parametrize(
+        "field,bad_value",
+        [
+            ("memory_mb", 0),
+            ("stdout_chars", 0),
+            ("stderr_chars", 0),
+            ("images", -1),
+            ("image_px", 0),
+            ("exec_seconds", 0),
+        ],
+    )
+    def test_rejects_below_lower_bound(self, field: str, bad_value: int) -> None:
+        """Every field should reject a value below its documented lower bound."""
+        with pytest.raises(ValidationError):
+            RuntimeLimits(**{field: bad_value})
+
+    def test_rejects_extra_fields(self) -> None:
+        """Should reject unknown fields, matching every sibling model."""
+        with pytest.raises(ValidationError):
+            RuntimeLimits(unexpected="nope")
+
+
+class TestPythonRuntimeConfig:
+    """Tests for PythonRuntimeConfig model."""
+
+    def test_valid_config_with_explicit_limits(self) -> None:
+        """An explicit limits section should be honored."""
+        config = PythonRuntimeConfig(
+            pyodide_version="0.29.5",
+            lockfile="pyodide-lock-2026-01.json",
+            limits=RuntimeLimits(),
+        )
+        assert config.pyodide_version == "0.29.5"
+        assert config.limits.memory_mb == 1536
+
+    def test_omitted_limits_defaults_to_runtime_limits_defaults(self) -> None:
+        """Omitting limits entirely should validate and take every RuntimeLimits default.
+
+        Every field inside RuntimeLimits already has a default, so a
+        community with no reason to deviate from them should not have to
+        spell out an empty `limits: {}`.
+        """
+        config = PythonRuntimeConfig(
+            pyodide_version="0.29.5",
+            lockfile="pyodide-lock-2026-01.json",
+        )
+        assert config.limits == RuntimeLimits()
+        assert config.limits.memory_mb == 1536
+        assert config.limits.exec_seconds == 120
+
+    def test_optional_fields_default_empty(self) -> None:
+        """preload/allow_install/fetch_allow/index_urls should default to empty lists."""
+        config = PythonRuntimeConfig(
+            pyodide_version="0.29.5",
+            lockfile="pyodide-lock-2026-01.json",
+            limits=RuntimeLimits(),
+        )
+        assert config.preload == []
+        assert config.allow_install == []
+        assert config.fetch_allow == []
+        assert config.index_urls == []
+        assert config.preload_on == "first_run"
+
+    def test_preload_on_accepts_widget_open(self) -> None:
+        """preload_on should accept 'widget_open' as well as the default."""
+        config = PythonRuntimeConfig(
+            pyodide_version="0.29.5",
+            lockfile="pyodide-lock-2026-01.json",
+            preload_on="widget_open",
+            limits=RuntimeLimits(),
+        )
+        assert config.preload_on == "widget_open"
+
+    def test_preload_on_accepts_first_message(self) -> None:
+        """preload_on should accept 'first_message': boot as soon as the reader
+        sends their first message, overlapping the download with the model's turn."""
+        config = PythonRuntimeConfig(
+            pyodide_version="0.29.5",
+            lockfile="pyodide-lock-2026-01.json",
+            preload_on="first_message",
+            limits=RuntimeLimits(),
+        )
+        assert config.preload_on == "first_message"
+
+    def test_rejects_unknown_preload_on(self) -> None:
+        """Should reject a preload_on value outside the known literal set."""
+        with pytest.raises(ValidationError):
+            PythonRuntimeConfig(
+                pyodide_version="0.29.5",
+                lockfile="pyodide-lock-2026-01.json",
+                preload_on="on_click",
+                limits=RuntimeLimits(),
+            )
+
+    def test_rejects_extra_fields(self) -> None:
+        """Should reject unknown fields, matching every sibling model."""
+        with pytest.raises(ValidationError):
+            PythonRuntimeConfig(
+                pyodide_version="0.29.5",
+                lockfile="pyodide-lock-2026-01.json",
+                limits=RuntimeLimits(),
+                unexpected="nope",
+            )
+
+    def test_lockfile_and_prelude_are_optional(self) -> None:
+        """A runtime the Pyodide distribution alone satisfies needs neither."""
+        config = PythonRuntimeConfig(pyodide_version="0.29.5")
+        assert config.lockfile is None
+        assert config.prelude is None
+
+    def test_lockfile_and_prelude_may_be_given_as_null(self) -> None:
+        """A YAML key left empty arrives as None, which means the same as omitting it."""
+        config = PythonRuntimeConfig(pyodide_version="0.29.5", lockfile=None, prelude=None)
+        assert config.lockfile is None
+        assert config.prelude is None
+
+    @pytest.mark.parametrize(
+        "lockfile",
+        [
+            "/etc/lock.json",
+            "../other/lock.json",
+            "runtime/../../lock.json",
+            "./lock.json",
+            "runtime\\lock.json",
+            "runtime/lock.yaml",
+        ],
+    )
+    def test_a_lockfile_must_stay_in_the_community_folder(self, lockfile: str) -> None:
+        """It is joined onto a folder on the server, so it must not be able to leave it."""
+        with pytest.raises(ValidationError, match="lockfile"):
+            PythonRuntimeConfig(pyodide_version="0.29.5", lockfile=lockfile)
+
+    def test_a_prelude_that_awaits_at_top_level_is_accepted(self) -> None:
+        """It runs where executed code runs, and top-level await works there."""
+        prelude = "import osa\nstatus, body = await osa.fetch('https://zarr.nemar.org/x')\n"
+        assert PythonRuntimeConfig(pyodide_version="0.29.5", prelude=prelude).prelude == prelude
+
+    def test_a_prelude_that_does_not_compile_is_refused_here(self) -> None:
+        """Here, at config load, rather than as a failed boot in every reader's browser."""
+        with pytest.raises(ValidationError, match="prelude does not compile"):
+            PythonRuntimeConfig(pyodide_version="0.29.5", prelude="import osa\nif True\n")
+
+    def test_a_prelude_is_bounded(self) -> None:
+        at_the_cap = "x = 1\n" + "#" * (MAX_PRELUDE_CHARS - 7) + "\n"
+        assert len(at_the_cap) == MAX_PRELUDE_CHARS
+        assert PythonRuntimeConfig(pyodide_version="0.29.5", prelude=at_the_cap).prelude
+
+        with pytest.raises(ValidationError, match="at most"):
+            PythonRuntimeConfig(pyodide_version="0.29.5", prelude=at_the_cap + "\n")
+
+
+class TestRuntimeConfig:
+    """Tests for RuntimeConfig model."""
+
+    def test_python_defaults_to_none(self) -> None:
+        """A RuntimeConfig with nothing configured should have python=None."""
+        config = RuntimeConfig()
+        assert config.python is None
+
+    def test_accepts_python_runtime(self) -> None:
+        """Should accept a configured python runtime."""
+        config = RuntimeConfig(
+            python=PythonRuntimeConfig(
+                pyodide_version="0.29.5",
+                lockfile="pyodide-lock-2026-01.json",
+                limits=RuntimeLimits(),
+            )
+        )
+        assert config.python is not None
+        assert config.python.pyodide_version == "0.29.5"
+
+    def test_rejects_extra_fields(self) -> None:
+        """Should reject unknown fields, matching every sibling model."""
+        with pytest.raises(ValidationError):
+            RuntimeConfig(unexpected="nope")
+
+
+class TestExtensionsConfigClientTools:
+    """Tests for ExtensionsConfig.client_tools field."""
+
+    def test_defaults_to_empty(self) -> None:
+        """client_tools should default to an empty list."""
+        config = ExtensionsConfig()
+        assert config.client_tools == []
+
+    def test_accepts_client_tools(self) -> None:
+        """Should accept a list of client tool entries."""
+        config = ExtensionsConfig(
+            client_tools=[
+                ClientToolConfig(name="execute_code", runtime="python", description="Run code."),
+            ]
+        )
+        assert len(config.client_tools) == 1
+        assert config.client_tools[0].name == "execute_code"
+
+    def test_does_not_enforce_uniqueness_itself(self) -> None:
+        """Duplicate names are allowed to construct at the ExtensionsConfig
+        level: uniqueness is enforced on CommunityConfig, which can see the
+        client_tools list as a whole alongside the runtime sibling field
+        (see TestCommunityConfigClientTools)."""
+        config = ExtensionsConfig(
+            client_tools=[
+                ClientToolConfig(name="dup", runtime="python", description="One."),
+                ClientToolConfig(name="dup", runtime="python", description="Two."),
+            ]
+        )
+        assert len(config.client_tools) == 2
+
+    def test_refuses_more_tools_than_a_request_can_declare(self) -> None:
+        """One tool past the cap is refused at load, where an operator sees it,
+        rather than as a 422 on every message the widget then sends."""
+        tools = [
+            ClientToolConfig(name=f"tool_{i}", runtime="python", description="Run.")
+            for i in range(MAX_CONFIGURED_CLIENT_TOOLS + 1)
+        ]
+        with pytest.raises(ValidationError, match="at most"):
+            ExtensionsConfig(client_tools=tools)
+
+
+def _python_runtime_config() -> RuntimeConfig:
+    """A minimal valid RuntimeConfig with a python runtime, for reuse below."""
+    return RuntimeConfig(
+        python=PythonRuntimeConfig(
+            pyodide_version="0.29.5",
+            lockfile="pyodide-lock-2026-01.json",
+            limits=RuntimeLimits(),
+        )
+    )
+
+
+def _notebook_kwargs(**overrides: object) -> dict[str, object]:
+    """Minimal valid zarr_base/dataset_page_base, for reuse below: only their
+    shape matters to these tests, never a real host."""
+    kwargs: dict[str, object] = {
+        "zarr_base": {"production": "https://zarr.example.org"},
+        "dataset_page_base": {"production": "https://example.org"},
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+class TestCommunityConfigClientTools:
+    """Tests for CommunityConfig's client_tools/runtime cross-field validator."""
+
+    def test_no_client_tools_no_runtime_required(self) -> None:
+        """A community with no client_tools should not need a runtime section."""
+        config = CommunityConfig(id="test", name="Test", description="Test")
+        assert config.runtime is None
+
+    def test_runtime_optional_when_unused(self) -> None:
+        """A community may configure a runtime with no client_tools using it yet."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            runtime=_python_runtime_config(),
+        )
+        assert config.runtime is not None
+        assert config.extensions is None
+
+    def test_client_tools_without_runtime_rejected(self) -> None:
+        """client_tools set but no top-level runtime section should fail."""
+        with pytest.raises(ValidationError, match="runtime"):
+            CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                extensions=ExtensionsConfig(
+                    client_tools=[
+                        ClientToolConfig(
+                            name="execute_code", runtime="python", description="Run code."
+                        ),
+                    ]
+                ),
+            )
+
+    def test_client_tools_python_without_runtime_python_rejected(self) -> None:
+        """A runtime: python client tool needs runtime.python configured."""
+        with pytest.raises(ValidationError, match="runtime.python"):
+            CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                extensions=ExtensionsConfig(
+                    client_tools=[
+                        ClientToolConfig(
+                            name="execute_code", runtime="python", description="Run code."
+                        ),
+                    ]
+                ),
+                runtime=RuntimeConfig(),
+            )
+
+    def test_client_tools_with_matching_runtime_accepted(self) -> None:
+        """client_tools plus a matching runtime.python should validate cleanly."""
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            extensions=ExtensionsConfig(
+                client_tools=[
+                    ClientToolConfig(
+                        name="execute_code", runtime="python", description="Run code."
+                    ),
+                ]
+            ),
+            runtime=_python_runtime_config(),
+        )
+        assert config.extensions.client_tools[0].name == "execute_code"
+        assert config.runtime.python is not None
+
+    def test_rejects_duplicate_client_tool_names(self) -> None:
+        """Duplicate client_tools names should be rejected on CommunityConfig."""
+        with pytest.raises(ValidationError, match="Duplicate client_tools names"):
+            CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                extensions=ExtensionsConfig(
+                    client_tools=[
+                        ClientToolConfig(name="execute_code", runtime="python", description="One."),
+                        ClientToolConfig(name="execute_code", runtime="python", description="Two."),
+                    ]
+                ),
+                runtime=_python_runtime_config(),
+            )
+
+
+class TestNotebookConfig:
+    """Tests for the notebook.osc.earth starter config block (issue #453)."""
+
+    def test_a_minimal_notebook_config_validates(self) -> None:
+        config = NotebookConfig(
+            starter="notebook/starter.ipynb", dataset_pattern="^nm[0-9]{6}$", **_notebook_kwargs()
+        )
+        assert config.dataset_pattern == "^nm[0-9]{6}$"
+
+    def test_an_unanchored_pattern_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="anchored"):
+            NotebookConfig(
+                starter="notebook/starter.ipynb", dataset_pattern="nm[0-9]{6}", **_notebook_kwargs()
+            )
+
+    def test_a_pattern_missing_only_the_trailing_dollar_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="anchored"):
+            NotebookConfig(
+                starter="notebook/starter.ipynb",
+                dataset_pattern="^nm[0-9]{6}",
+                **_notebook_kwargs(),
+            )
+
+    def test_a_pattern_that_does_not_compile_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="does not compile"):
+            NotebookConfig(
+                starter="notebook/starter.ipynb",
+                dataset_pattern="^nm[0-9{6}$",
+                **_notebook_kwargs(),
+            )
+
+    def test_starter_must_be_a_relative_ipynb_path(self) -> None:
+        with pytest.raises(ValidationError):
+            NotebookConfig(
+                starter="/etc/passwd", dataset_pattern="^nm[0-9]{6}$", **_notebook_kwargs()
+            )
+        with pytest.raises(ValidationError):
+            NotebookConfig(
+                starter="notebook/starter.json",
+                dataset_pattern="^nm[0-9]{6}$",
+                **_notebook_kwargs(),
+            )
+
+    def test_extra_fields_are_forbidden(self) -> None:
+        with pytest.raises(ValidationError):
+            NotebookConfig(
+                starter="notebook/starter.ipynb",
+                dataset_pattern="^nm[0-9]{6}$",
+                extra_field="nope",
+                **_notebook_kwargs(),
+            )
+
+    @pytest.mark.parametrize(
+        "hostile_pattern",
+        [
+            "^.*$",  # matches everything, including every probe below
+            r'^[a-z0-9"]{1,20}$',  # a quote reachable directly in the character class
+            r"^[a-z0-9\\]{1,20}$",  # a backslash reachable directly
+            r"^[\s\S]{1,20}$",  # a newline and a space both reachable
+        ],
+    )
+    def test_a_pattern_that_would_accept_a_hostile_probe_is_rejected(
+        self, hostile_pattern: str
+    ) -> None:
+        """Defense in depth (docs/adr/0011-the-notebook-site.md): a dataset id is
+        substituted unescaped into the starter's Python source, so a pattern
+        this loose must never ship, independent of notebook/open.js's own
+        client-side generic shape guard."""
+        with pytest.raises(ValidationError, match="hostile probe"):
+            NotebookConfig(
+                starter="notebook/starter.ipynb",
+                dataset_pattern=hostile_pattern,
+                **_notebook_kwargs(),
+            )
+
+    def test_nemars_own_pattern_accepts_no_hostile_probe(self) -> None:
+        """The one pattern actually shipped today; a regression here would be
+        NEMAR's own config failing to load, not merely a test fixture."""
+        config = NotebookConfig(
+            starter="notebook/starter.ipynb",
+            dataset_pattern="^(nm|ds|on|xx)[0-9]{6}$",
+            **_notebook_kwargs(),
+        )
+        assert config.dataset_pattern == "^(nm|ds|on|xx)[0-9]{6}$"
+
+    def test_an_unrecognized_environment_key_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="unrecognized environment 'staging'"):
+            NotebookConfig(
+                starter="notebook/starter.ipynb",
+                dataset_pattern="^nm[0-9]{6}$",
+                zarr_base={"staging": "https://zarr-staging.example.org"},
+                dataset_page_base={"production": "https://example.org"},
+            )
+
+    @pytest.mark.parametrize(
+        "malformed",
+        [
+            "http://zarr.example.org",  # not https
+            "https://zarr.example.org/zarr",  # has a path
+            "https://zarr.example.org?x=1",  # has a query
+            "not-a-url",
+        ],
+    )
+    def test_a_malformed_zarr_base_is_rejected(self, malformed: str) -> None:
+        with pytest.raises(ValidationError, match="zarr_base"):
+            NotebookConfig(
+                starter="notebook/starter.ipynb",
+                dataset_pattern="^nm[0-9]{6}$",
+                zarr_base={"production": malformed},
+                dataset_page_base={"production": "https://example.org"},
+            )
+
+    def test_a_malformed_dataset_page_base_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="dataset_page_base"):
+            NotebookConfig(
+                starter="notebook/starter.ipynb",
+                dataset_pattern="^nm[0-9]{6}$",
+                zarr_base={"production": "https://zarr.example.org"},
+                dataset_page_base={"production": "https://example.org/dataset"},
+            )
+
+
+class TestCommunityConfigNotebook:
+    """Tests for CommunityConfig's notebook/runtime.python.pyodide_version cross-check."""
+
+    def test_no_notebook_no_pyodide_pin_required(self) -> None:
+        config = CommunityConfig(id="test", name="Test", description="Test")
+        assert config.notebook is None
+
+    def test_notebook_with_matching_pyodide_pin_accepted(self) -> None:
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            notebook=NotebookConfig(
+                starter="notebook/starter.ipynb",
+                dataset_pattern="^nm[0-9]{6}$",
+                **_notebook_kwargs(),
+            ),
+            runtime=_python_runtime_config(),
+        )
+        assert config.notebook is not None
+        assert config.runtime.python.pyodide_version == NOTEBOOK_SITE_PYODIDE_VERSION
+
+    def test_notebook_with_no_runtime_at_all_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="One notebook site loads one Pyodide"):
+            CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                notebook=NotebookConfig(
+                    starter="notebook/starter.ipynb",
+                    dataset_pattern="^nm[0-9]{6}$",
+                    **_notebook_kwargs(),
+                ),
+            )
+
+    def test_notebook_with_a_different_pyodide_pin_is_rejected(self) -> None:
+        mismatched = RuntimeConfig(
+            python=PythonRuntimeConfig(pyodide_version="0.28.3", limits=RuntimeLimits())
+        )
+        with pytest.raises(ValidationError, match="One notebook site loads one Pyodide"):
+            CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                notebook=NotebookConfig(
+                    starter="notebook/starter.ipynb",
+                    dataset_pattern="^nm[0-9]{6}$",
+                    **_notebook_kwargs(),
+                ),
+                runtime=mismatched,
+            )
+
+
+class TestCommunityConfigCapsule:
+    """The capsule launcher opens the community's notebook as a tab (#470), so it
+    needs a notebook section; the bubble does not."""
+
+    def test_capsule_without_notebook_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="no notebook section is configured"):
+            CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                widget=WidgetConfig(launcher="capsule"),
+            )
+
+    def test_capsule_with_notebook_accepted(self) -> None:
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            widget=WidgetConfig(launcher="capsule"),
+            notebook=NotebookConfig(
+                starter="notebook/starter.ipynb",
+                dataset_pattern="^nm[0-9]{6}$",
+                **_notebook_kwargs(),
+            ),
+            runtime=_python_runtime_config(),
+        )
+        assert config.widget.launcher == "capsule"
+
+    def test_bubble_needs_no_notebook(self) -> None:
+        config = CommunityConfig(
+            id="test", name="Test", description="Test", widget=WidgetConfig(launcher="bubble")
+        )
+        assert config.notebook is None

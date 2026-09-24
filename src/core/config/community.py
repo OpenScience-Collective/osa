@@ -21,16 +21,45 @@ Example config.yaml:
         - "Hierarchical Event Descriptors"
 """
 
+import ast
 import ipaddress
 import logging
 import re
 import warnings
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal
 from urllib.parse import urlparse
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
+
+from src.core.config.deployment import (
+    Deployment,
+    check_deployment_map,
+    current_deployment,
+    for_deployment,
+)
+from src.core.config.notebook_lock import (
+    NOTEBOOK_ENVIRONMENTS,
+    NOTEBOOK_SITE_PYODIDE_VERSION,
+    environment_base_url_problem,
+    starter_path_problem,
+)
+from src.core.config.runtime_lock import lockfile_path_problem
+from src.core.limits import (
+    MAX_IMAGE_EDGE_PX,
+    MAX_IMAGES,
+    MAX_STDERR_CHARS,
+    MAX_STDOUT_CHARS,
+)
 
 # Dependency-free by design, so importing it here keeps this module usable on a
 # CLI-only install (see src/core/services/anthropic_models.py). Importing
@@ -501,8 +530,24 @@ class McpServer(BaseModel):
     command: list[str] | None = None
     """Command to start local MCP server."""
 
-    url: HttpUrl | None = None
-    """URL for remote MCP server."""
+    url: HttpUrl | dict[Deployment, HttpUrl] | None = None
+    """URL for remote MCP server: one URL, or one per deployment (``production``,
+    ``develop``) for a server with a staging copy, so the develop chat reads the
+    staging server rather than production's (#480, ``src/core/config/deployment.py``).
+    Read it through :attr:`resolved_url`."""
+
+    @property
+    def resolved_url(self) -> HttpUrl | None:
+        """The URL for the deployment this process is."""
+        if self.url is None:
+            return None
+        return for_deployment(self.url, current_deployment())
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def _url_map_names_every_deployment(cls, value: object) -> object:
+        check_deployment_map(value, "url")
+        return value
 
     @model_validator(mode="after")
     def validate_command_or_url(self) -> "McpServer":
@@ -535,6 +580,410 @@ class McpServer(BaseModel):
         return v
 
 
+FULL_OUTPUT_TOOL_NAME = "get_full_output"
+"""The client tool that reads back output a browser run kept locally.
+
+Derived rather than configured: ``src.tools.client_tools.build_client_tools``
+binds it whenever a python-runtime tool is bound and the caller declares it,
+so a community never lists it and cannot misconfigure it. Declared here rather
+than in ``src.tools.client_tools`` because this module must import without the
+``server`` extra, and the name has to be reserved at config load.
+"""
+
+RESERVED_CLIENT_TOOL_NAMES = frozenset({FULL_OUTPUT_TOOL_NAME})
+"""Names a community may not configure, because the server binds them itself."""
+
+MAX_DECLARED_CLIENT_TOOLS = 8
+"""How many client tool names one chat or resume request may declare."""
+
+MAX_CONFIGURED_CLIENT_TOOLS = MAX_DECLARED_CLIENT_TOOLS - len(RESERVED_CLIENT_TOOL_NAMES)
+"""How many client tools a community may configure.
+
+Derived, not chosen: the widget declares every configured tool plus the
+reserved ones, and a request declaring more than ``MAX_DECLARED_CLIENT_TOOLS``
+is refused whole. A community allowed one more tool than this would get a 422
+on every message, from a config that loaded without complaint.
+"""
+
+
+ClientToolRuntime = Literal["python"]
+"""The runtimes a client tool may run in. One definition, read by the config and by
+the public config response, so the widget is told exactly the set it switches on."""
+
+
+class ClientToolConfig(BaseModel):
+    """A tool the server binds to the model but never executes itself.
+
+    Named ``ClientToolConfig`` rather than ``ClientTool`` to avoid colliding
+    with ``src.tools.client_tools.ClientTool`` (the ``BaseTool`` subclass
+    built from this config entry): both would otherwise need to be imported
+    into the same module under the same name.
+
+    See ``RuntimeConfig`` / ``PythonRuntimeConfig`` for the execution
+    environment a ``runtime`` value refers to, and the model validator on
+    ``CommunityConfig`` that requires a matching ``runtime`` section to
+    exist whenever any ``client_tools`` entry is configured.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    """Tool name, as the model will see and call it (e.g. 'execute_code')."""
+
+    runtime: ClientToolRuntime
+    """Which configured runtime environment executes this tool's calls.
+
+    Selects the argument schema the tool is bound with; see
+    ``src.tools.client_tools.build_client_tools``. Only 'python' exists in
+    phase 1 (browser execution, see .context/browser-execution-tool-design.md).
+    """
+
+    requires_permission: bool = True
+    """Whether the browser must show a permission gate before running a call
+    to this tool. Carried through to the `client_tools` graph node's
+    `pending_client_call` so the enforcement point (phase 2's resume handler)
+    does not need a second lookup back into this config."""
+
+    description: str
+    """Tool description shown to the model: what it does and when to call it."""
+
+    @field_validator("name")
+    @classmethod
+    def _not_reserved(cls, value: str) -> str:
+        """Refuse a name the server binds itself.
+
+        A configured tool under a reserved name would be bound beside the derived
+        one, and the model would see two tools with one name and different
+        argument shapes. Refusing it at load is the only point where that is a
+        clear error rather than a confusing tool call.
+        """
+        if value in RESERVED_CLIENT_TOOL_NAMES:
+            raise ValueError(
+                f"'{value}' is reserved: the server binds it itself whenever a python "
+                "client tool is bound, so it must not be configured."
+            )
+        return value
+
+
+class RuntimeLimits(BaseModel):
+    """Resource caps a community declares for a client tool's execution environment.
+
+    These are what the community TELLS the browser it may produce. What the server
+    will actually accept is fixed in `src.api.tool_results`, and the two must not be
+    able to disagree, because a community cannot see the server's constants.
+
+    So the fields the server also enforces are bounded BY those constants rather than
+    written out again. Without the upper bounds, a community could validly declare
+    `stdout_chars: 65536` or `images: 5`, the browser would honor its own config, and
+    every result it sent would be rejected whole with a 422 by a cap it was never told
+    about. The failure would look like the browser misbehaving; it would be the config
+    lying. The defaults are the server's caps, so the common case needs no thought.
+
+    Phase 1 defines these and enforces the server's own copy on the way in; it does not
+    implement the browser-side client that produces them (phase 2, #431).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    memory_mb: int = Field(default=1536, ge=64)
+    """Maximum memory, in megabytes, the runtime may use.
+
+    Not bounded against a server constant: the server never sees memory, and wasm32
+    tops out between 2 and 4 GB regardless of what is written here."""
+
+    stdout_chars: int = Field(default=MAX_STDOUT_CHARS, ge=256, le=MAX_STDOUT_CHARS)
+    """Maximum captured stdout, in characters, per execution.
+
+    Characters, not bytes, because that is what everything downstream counts:
+    `ClientToolResult` bounds the field with `max_length`, and both the browser
+    and the Python harness clip by string length. These fields were first named
+    `*_bytes`, which told a community author that multibyte output costs more of
+    the budget than it does."""
+
+    stderr_chars: int = Field(default=MAX_STDERR_CHARS, ge=256, le=MAX_STDERR_CHARS)
+    """Maximum captured stderr, in characters, per execution."""
+
+    images: int = Field(default=MAX_IMAGES, ge=0, le=MAX_IMAGES)
+    """Maximum number of images an execution may return. 0 disables images."""
+
+    image_px: int = Field(default=1024, ge=16, le=MAX_IMAGE_EDGE_PX)
+    """Maximum width or height, in pixels, of a returned image."""
+
+    exec_seconds: int = Field(default=120, ge=1)
+    """Maximum wall-clock time, in seconds, a single execution may run.
+
+    Not bounded against a server constant: this is the browser's own clock, and the
+    server neither measures nor enforces it."""
+
+
+#: A prelude is a few lines of setup, not a program; this bounds what every reader's
+#: browser runs before anything they asked for.
+MAX_PRELUDE_CHARS = 4000
+
+
+_Prelude = Annotated[str, Field(max_length=MAX_PRELUDE_CHARS)]
+"""One prelude's source, bounded as every reader's startup pays for it."""
+
+
+class PythonRuntimeConfig(BaseModel):
+    """Configuration for the browser-side Python (Pyodide) runtime.
+
+    Describes the environment a ``runtime: python`` client tool executes
+    in: which Pyodide build to load, the wheels it adds to that build, what
+    is loaded at startup, a prelude, and the resource caps in ``limits``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    pyodide_version: str
+    """Pyodide distribution version to load in the browser."""
+
+    lockfile: str | None = None
+    """A Pyodide lock overlay, relative to the community's folder: the pure-Python
+    wheels this runtime adds to the Pyodide distribution, each with its sha256, in
+    ``wheels/`` beside it. Omit it when the distribution alone is enough.
+
+    The server verifies every wheel against its entry when it loads the overlay,
+    sends the entries in ``/config``, and serves the wheels itself, so a package named
+    in ``preload`` resolves from here or from Pyodide's own lock. See
+    ``src/core/config/runtime_lock.py``."""
+
+    preload: list[str] = Field(default_factory=list)
+    """Packages loaded when the runtime starts, from the Pyodide distribution or the
+    lock overlay, with the dependencies their lock entries name."""
+
+    allow_install: list[str] = Field(default_factory=list)
+    """Requirements micropip installs when the runtime starts, each with ``deps=False``:
+    from ``index_urls`` when the community gives any, and otherwise from micropip's own
+    default index, PyPI. Nothing is installed after startup. A wheel pinned by sha256
+    belongs in the lock overlay instead."""
+
+    prelude: _Prelude | dict[Deployment, _Prelude] | None = None
+    """Python run once in the reader's browser after the runtime is sealed and before
+    the first execution, with exactly the privileges executed code has. One prelude,
+    or one per deployment (``production``, ``develop``), as ``fetch_allow`` below.
+
+    For setup every execution needs, such as registering a library's transport over
+    ``osa.fetch``. It runs without the permission gate, which exists for code a model
+    wrote; this is code the community wrote and reviewed. Top-level ``await`` is
+    allowed. If it raises, the runtime fails to start, because every later execution
+    would otherwise fail in a way that names the wrong cause."""
+
+    preload_on: Literal["first_run", "widget_open", "first_message"] = "first_run"
+    """When to trigger preloading: at the first execution, as soon as the widget opens, or
+    as soon as the reader sends their first message.
+
+    `first_message` overlaps the Python download with the model's first turn, without
+    charging a reader who only opens the chat: the boot starts the moment the reader sends
+    something, before the model has answered and well before any code execution asks for a
+    Run gate.
+    """
+
+    fetch_allow: list[str] | dict[Deployment, list[str]] = Field(default_factory=list)
+    """URL prefixes the runtime is allowed to fetch from: one list, or one per
+    deployment (``production``, ``develop``) for data with a staging copy, so the
+    develop chat reads the staging host (#480). The public config response carries
+    the list for the deployment that serves it (:meth:`for_deployment`)."""
+
+    index_urls: list[str] = Field(default_factory=list)
+    """Package index URLs the runtime may install from."""
+
+    limits: RuntimeLimits = Field(default_factory=RuntimeLimits)
+    """Resource caps for this runtime. Defaults to every ``RuntimeLimits``
+    field's own default, so a community that has no reason to deviate from
+    them can omit this key entirely rather than spelling out ``limits: {}``."""
+
+    @field_validator("lockfile")
+    @classmethod
+    def _lockfile_stays_in_the_community_folder(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        problem = lockfile_path_problem(value)
+        if problem is not None:
+            raise ValueError(f"lockfile {value!r}: {problem}")
+        return value
+
+    @field_validator("prelude")
+    @classmethod
+    def _prelude_compiles(
+        cls, value: str | dict[Deployment, str] | None
+    ) -> str | dict[Deployment, str] | None:
+        """Compiled here so a syntax error fails a config check, not a reader's boot:
+        every deployment's prelude, not only the one this process runs."""
+        if value is None:
+            return None
+        for deployment, source in value.items() if isinstance(value, dict) else [(None, value)]:
+            where = f" for {deployment}" if deployment else ""
+            try:
+                compile(source, "<prelude>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+            except SyntaxError as err:
+                raise ValueError(f"prelude{where} does not compile: {err}") from err
+        return value
+
+    @field_validator("fetch_allow", "prelude", mode="before")
+    @classmethod
+    def _maps_name_every_deployment(cls, value: object, info: ValidationInfo) -> object:
+        """Before type validation, so a misspelled deployment gets this message rather
+        than the literal-type error."""
+        check_deployment_map(value, info.field_name or "")
+        return value
+
+    def for_deployment(self, deployment: Deployment) -> "PythonRuntimeConfig":
+        """This runtime with one ``prelude`` and one ``fetch_allow``: ``deployment``'s."""
+        return self.model_copy(
+            update={
+                "prelude": None
+                if self.prelude is None
+                else for_deployment(self.prelude, deployment),
+                "fetch_allow": for_deployment(self.fetch_allow, deployment),
+            }
+        )
+
+
+class RuntimeConfig(BaseModel):
+    """Top-level execution environments available to this community's client tools."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    python: PythonRuntimeConfig | None = None
+    """The browser-side Python (Pyodide) runtime, if configured."""
+
+    def for_deployment(self, deployment: Deployment) -> "RuntimeConfig":
+        """This config with every per-deployment value resolved to ``deployment``'s."""
+        if self.python is None:
+            return self
+        return self.model_copy(update={"python": self.python.for_deployment(deployment)})
+
+
+#: A dataset id reaches the starter's Python source unescaped (``{{dataset_id}}``,
+#: substituted client-side by ``notebook/open.js``), so a community's
+#: ``dataset_pattern`` must never accept any of these, regardless of how loose
+#: or careless the pattern's author was: a quote (either kind), a backslash, a
+#: newline, and a space. Checked by ``NotebookConfig``'s own field validator
+#: below, independent of ``open.js``'s generic client-side shape guard.
+HOSTILE_DATASET_PROBES = ('"', "'", "\\", "\n", " ")
+
+
+class NotebookConfig(BaseModel):
+    """A community's starter notebook for the separate notebook.osc.earth/osa site.
+
+    Optional, and unrelated to ``extensions.client_tools``/``runtime.python``
+    above: those run model-written code in the chat widget, in the reader's
+    browser, on the embedding page's own origin. This is a link a widget's own
+    button (built separately, not by this config) can open into a NEW tab, on
+    the notebook site's own origin, that drops a starter notebook -- this
+    community's own template, with ``{{dataset_id}}`` filled in -- into
+    JupyterLite's storage and opens it (issue #453,
+    docs/adr/0011-the-notebook-site.md; ADR 0010 is what deferred building it).
+
+    A community that sets this MUST pin ``runtime.python.pyodide_version`` to
+    the notebook site's own Pyodide (see ``validate_notebook_needs_matching_
+    pyodide`` on ``CommunityConfig``): one site loads one Pyodide, so a starter
+    that ran under a different pin would be untested by anything that runs it.
+
+    Also declares ``zarr_base`` and ``dataset_page_base``: the data host and
+    website a starter reads, one per environment (production, develop), filled
+    in at build time. Why they are build inputs: docs/adr/0011-the-notebook-site.md.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    starter: str
+    """Path to an ``.ipynb`` template, relative to the community's own folder.
+
+    Must contain the literal token ``{{dataset_id}}`` in at least one cell's
+    source (checked by ``src.core.config.notebook_lock.validate_notebook_
+    starter``, not here: that check reads the file, and this model's own
+    validator only checks the path's shape, the same split ``lockfile`` above
+    draws against ``runtime_lock.py``)."""
+
+    dataset_pattern: str
+    """A regular expression a dataset id must match for this starter to open.
+
+    Must be anchored (``^...$``): an unanchored pattern would match a dataset
+    id that merely contains a valid-looking substring, and ``notebook/open.js``
+    uses this pattern as the whole gate between an arbitrary query string and
+    writing into the reader's own browser storage."""
+
+    zarr_base: dict[str, str]
+    """This community's Zarr host for each environment, keyed by
+    ``NOTEBOOK_ENVIRONMENTS`` (``"production"``, ``"develop"``).
+
+    ``scripts/build_notebook_site.py --environment`` fills one entry into the
+    starter's ``{{zarr_base}}`` token
+    (``src.core.config.notebook_lock.fill_build_time_tokens``), and refuses an
+    environment this map does not declare.
+
+    Example::
+
+        zarr_base:
+          production: https://zarr.nemar.org
+          develop: https://zarr-test.nemar.org
+    """
+
+    dataset_page_base: dict[str, str]
+    """This community's website for each environment, for the starter's link to
+    a dataset's page; filled into ``{{dataset_page_base}}`` the same way as
+    ``zarr_base``."""
+
+    @field_validator("zarr_base", "dataset_page_base")
+    @classmethod
+    def _environment_url_maps_are_well_formed(
+        cls, value: dict[str, str], info: ValidationInfo
+    ) -> dict[str, str]:
+        for environment, url in value.items():
+            if environment not in NOTEBOOK_ENVIRONMENTS:
+                raise ValueError(
+                    f"{info.field_name} names an unrecognized environment {environment!r}; "
+                    f"must be one of {NOTEBOOK_ENVIRONMENTS}"
+                )
+            problem = environment_base_url_problem(url)
+            if problem is not None:
+                raise ValueError(f"{info.field_name}[{environment!r}] {problem}")
+        return value
+
+    @field_validator("starter")
+    @classmethod
+    def _starter_stays_in_the_community_folder(cls, value: str) -> str:
+        problem = starter_path_problem(value)
+        if problem is not None:
+            raise ValueError(f"starter {value!r}: {problem}")
+        return value
+
+    @field_validator("dataset_pattern")
+    @classmethod
+    def _dataset_pattern_is_anchored_and_compiles(cls, value: str) -> str:
+        if not (value.startswith("^") and value.endswith("$")):
+            raise ValueError(f"dataset_pattern must be anchored with ^...$: {value!r}")
+        try:
+            re.compile(value)
+        except re.error as err:
+            raise ValueError(f"dataset_pattern does not compile: {err}") from err
+        return value
+
+    @field_validator("dataset_pattern")
+    @classmethod
+    def _dataset_pattern_refuses_hostile_probes(cls, value: str) -> str:
+        """Defense in depth: a starter substitutes the dataset id unescaped into
+        Python source (``{{dataset_id}}``, filled in client-side by
+        ``notebook/open.js``), so a pattern that would accept a quote, a
+        backslash, a newline or a space is never safe to ship, independent of
+        ``open.js``'s own generic shape guard (``^[A-Za-z0-9._-]{1,64}$``,
+        checked before any community's own pattern). This check exists so a
+        community's pattern can never rely on that client-side guard alone.
+        """
+        pattern = re.compile(value)
+        hostile = [probe for probe in HOSTILE_DATASET_PROBES if pattern.match(probe)]
+        if hostile:
+            raise ValueError(
+                f"dataset_pattern {value!r} would accept a hostile probe "
+                f"{hostile!r}; a dataset id is substituted unescaped into the "
+                "starter's Python source, so the pattern must never match a "
+                "quote, a backslash, a newline, or a space"
+            )
+        return value
+
+
 class ExtensionsConfig(BaseModel):
     """Extension points for specialized tools."""
 
@@ -545,6 +994,16 @@ class ExtensionsConfig(BaseModel):
 
     mcp_servers: list[McpServer] = Field(default_factory=list)
     """MCP servers providing additional tools (Phase 2)."""
+
+    client_tools: list[ClientToolConfig] = Field(
+        default_factory=list, max_length=MAX_CONFIGURED_CLIENT_TOOLS
+    )
+    """Tools the server binds so the model can call them, but never executes
+    itself; the browser executes them instead (phase 1 plumbing, phase 2
+    execution: #431). Uniqueness of names, and the requirement that a
+    matching ``runtime`` section exists, are enforced on ``CommunityConfig``
+    (see its model validator), not here: this model cannot see the
+    top-level ``runtime`` sibling field."""
 
     @model_validator(mode="after")
     def validate_unique_extensions(self) -> "ExtensionsConfig":
@@ -849,6 +1308,60 @@ class BudgetConfig(BaseModel):
         return self
 
 
+DATASET_QUESTION_BLANKS = ("dataset_id", "subject", "task")
+"""The blanks a dataset question may use, filled from the host page's ``setDataset``."""
+
+_BLANK_RE = re.compile(r"\{([^{}]*)\}")
+
+
+class DatasetSuggestedQuestion(BaseModel):
+    """A suggested question for a dataset page (#477): a template the widget fills
+    with the facts the host page passes in ``OSAChatWidget.setDataset``.
+
+    ``{dataset_id}`` is always known on a dataset page and must appear, so the
+    question the reader sends names its dataset. ``{subject}`` and ``{task}`` are
+    BIDS labels the page may or may not know; a template with a blank the page did
+    not fill is not shown.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    text: str = Field(..., max_length=200)
+    """The question, with ``{dataset_id}``, ``{subject}`` or ``{task}`` blanks."""
+
+    needs_zarr: bool = False
+    """Shown only when the dataset has a Zarr copy: set it on a question that runs
+    code against a recording, since the browser runtime reads recordings from Zarr."""
+
+    @field_validator("text", mode="before")
+    @classmethod
+    def validate_text(cls, v: object) -> object:
+        """Strip whitespace, refuse markup, and allow only the known blanks."""
+        if not isinstance(v, str):
+            return v
+        v = v.strip()
+        if not v:
+            msg = "a dataset question's text must not be empty"
+            raise ValueError(msg)
+        if "<" in v or ">" in v:
+            msg = "a dataset question must be plain text (no '<' or '>')"
+            raise ValueError(msg)
+        unknown = sorted({b for b in _BLANK_RE.findall(v) if b not in DATASET_QUESTION_BLANKS})
+        if unknown:
+            msg = (
+                f"unknown blank(s) {', '.join('{' + b + '}' for b in unknown)} in {v!r}; "
+                f"a dataset question may use {', '.join('{' + b + '}' for b in DATASET_QUESTION_BLANKS)}"
+            )
+            raise ValueError(msg)
+        if "{" in _BLANK_RE.sub("", v) or "}" in _BLANK_RE.sub("", v):
+            msg = f"unmatched '{{' or '}}' in {v!r}"
+            raise ValueError(msg)
+        if "{dataset_id}" not in v:
+            msg = f"a dataset question must name its dataset with {{dataset_id}}: {v!r}"
+            raise ValueError(msg)
+        return v
+
+
 class WidgetConfig(BaseModel):
     """Widget display configuration for frontend embedding.
 
@@ -871,11 +1384,62 @@ class WidgetConfig(BaseModel):
     suggested_questions: list[str] = Field(default_factory=list)
     """Clickable suggestion buttons shown below the initial message."""
 
+    dataset_suggested_questions: list[DatasetSuggestedQuestion] = Field(default_factory=list)
+    """Suggestions for a dataset page, in place of ``suggested_questions`` (#477).
+
+    When the host page names a dataset with ``setDataset``, the opening screen shows
+    up to three of these whose blanks the page filled, in this order, and
+    ``suggested_questions`` everywhere else. Mid-conversation, a dataset the
+    conversation has not been on yet gets up to two, in a compact row above the
+    input. Unset, every page shows ``suggested_questions`` as before.
+    """
+
     theme_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
     """Primary theme color as a hex code (e.g., '#008a79').
 
-    Applied to the widget button, header, and accent elements.
-    Defaults to the platform blue (#2563eb) if not specified.
+    Paints the launcher button and header surfaces (and every other surface that
+    otherwise reads the platform blue). Defaults to the platform blue (#2563eb) if
+    not specified. Pairs with `theme_text_color` (defaults to white, the text and
+    icon color drawn on this surface) and `accent_color` (defaults to `theme_color`
+    itself, this same color used as a foreground on the widget's white panel rather
+    than as a surface); set `theme_text_color` when `theme_color` is too light for
+    white text, and `accent_color` when `theme_color` is too light to read on white.
+    """
+
+    user_bubble_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    """Background of the reader's own message bubbles, as a hex code.
+
+    Separate from `theme_color` so that setting one never changes the other: a community
+    that sets only `theme_color` keeps the platform blue (#2563eb) bubbles it has always had.
+    Pairs with `user_bubble_text_color` (default white); set both when the surface is light.
+    """
+
+    theme_text_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    """Text and icon color drawn ON surfaces painted with `theme_color`: the header, the
+    launcher button, the send button, the primary buttons (such as Run), and any other
+    element whose background is `theme_color`.
+
+    Separate from `theme_color` so a community that sets only the theme keeps the white
+    text every community has always had. Set this when `theme_color` is light enough that
+    white text would fail contrast (below 4.5:1); the widget does not check this for you.
+    """
+
+    accent_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    """`theme_color` used as a FOREGROUND on the widget's white panel: link colors, icon
+    colors, borders, focus rings, and `accent-color` on native checkboxes. Every one of
+    these normally just reads `theme_color` directly, which is fine for a color dark
+    enough to read on white; this field lets a community whose `theme_color` is a light
+    surface color (and so unreadable as text on white) name a separate, darker foreground
+    for the same brand hue. Defaults to `theme_color` itself when unset, so a community
+    that only sets `theme_color` sees no change here.
+    """
+
+    user_bubble_text_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    """Text color in the reader's own message bubbles, painted on `user_bubble_color`.
+
+    Separate from `user_bubble_color` for the same reason `theme_text_color` is separate
+    from `theme_color`: a community that sets only `user_bubble_color` keeps white bubble
+    text. Set this when `user_bubble_color` is too light for white text to read.
     """
 
     logo_url: str | None = Field(default=None, max_length=500)
@@ -886,6 +1450,54 @@ class WidgetConfig(BaseModel):
     in the community's folder.  Falls back to a default brain icon in
     the widget if no logo is found.
     """
+
+    launcher: Literal["bubble", "capsule"] = "bubble"
+    """The floating launcher's shape (#436).
+
+    "bubble" (default) is today's single chat button. "capsule" adds two more circular
+    icons, a notebook and a high-performance computing (HPC) placeholder, that expand
+    out of the chat button once it is clicked (upward, or into a row on a narrow
+    window); the chat button itself never moves. The
+    notebook icon opens the community's starter notebook as a tab of the widget's panel
+    (#470), so "capsule" requires a top-level ``notebook`` section
+    (``CommunityConfig.validate_capsule_needs_notebook``).
+    A community that never sets this renders exactly as it did before this field existed.
+    """
+
+    color_scheme: Literal["light", "auto"] = "light"
+    """Whether the widget has a dark appearance (#469).
+
+    "light" (default) was the widget's only appearance before this field. "auto"
+    follows the reader's device setting, and a host page can also set light or dark
+    explicitly with ``OSAChatWidget.setColorScheme`` (for a site with its own theme
+    switch). In dark mode the panel, text and borders use the widget's dark palette,
+    and ``accent_color``, chosen to read on the white panel, gives way to
+    ``theme_color`` itself, or to a lighter shade of it when ``theme_color`` is too
+    dark to read on the dark panel (``darkAccentFor`` in the widget).
+    A community that never sets this renders exactly as it did before this field existed.
+    """
+
+    launcher_label: str | None = Field(default=None, max_length=40)
+    """Tooltip text shown beside the collapsed launcher.
+
+    Replaces the hardcoded "Ask me about <title>". Kept deliberately short: the greeting,
+    suggested questions and the rest of the panel stay behind the click (#436). Unset
+    keeps the existing hardcoded text.
+    """
+
+    @field_validator("launcher_label", mode="before")
+    @classmethod
+    def validate_launcher_label(cls, v: str | None) -> str | None:
+        """Strip whitespace, normalize empty to None, and refuse markup."""
+        if not isinstance(v, str):
+            return v
+        v = v.strip()
+        if not v:
+            return None
+        if "<" in v or ">" in v:
+            msg = "launcher_label must be plain text (no '<' or '>')"
+            raise ValueError(msg)
+        return v
 
     @field_validator("logo_url", mode="before")
     @classmethod
@@ -920,6 +1532,17 @@ class WidgetConfig(BaseModel):
             raise ValueError(msg)
         return cleaned
 
+    @field_validator("dataset_suggested_questions")
+    @classmethod
+    def validate_dataset_suggested_questions(
+        cls, v: list[DatasetSuggestedQuestion]
+    ) -> list[DatasetSuggestedQuestion]:
+        """Enforce the same maximum as ``suggested_questions``."""
+        if len(v) > 10:
+            msg = f"Too many dataset suggested questions ({len(v)}). Maximum is 10."
+            raise ValueError(msg)
+        return v
+
     def resolve(self, community_name: str, logo_url: str | None = None) -> dict[str, Any]:
         """Return widget config with defaults applied.
 
@@ -935,8 +1558,26 @@ class WidgetConfig(BaseModel):
             "suggested_questions": self.suggested_questions,
             "logo_url": self.logo_url or logo_url,
         }
+        if self.dataset_suggested_questions:
+            result["dataset_suggested_questions"] = [
+                q.model_dump() for q in self.dataset_suggested_questions
+            ]
         if self.theme_color:
             result["theme_color"] = self.theme_color
+        if self.user_bubble_color:
+            result["user_bubble_color"] = self.user_bubble_color
+        if self.theme_text_color:
+            result["theme_text_color"] = self.theme_text_color
+        if self.accent_color:
+            result["accent_color"] = self.accent_color
+        if self.user_bubble_text_color:
+            result["user_bubble_text_color"] = self.user_bubble_text_color
+        if self.launcher == "capsule":
+            result["launcher"] = self.launcher
+        if self.color_scheme != "light":
+            result["color_scheme"] = self.color_scheme
+        if self.launcher_label:
+            result["launcher_label"] = self.launcher_label
         return result
 
 
@@ -1121,6 +1762,46 @@ class CommunityConfig(BaseModel):
 
     extensions: ExtensionsConfig | None = None
     """Extension points for specialized tools."""
+
+    runtime: RuntimeConfig | None = None
+    """Execution environments available to this community's client tools.
+
+    Required whenever ``extensions.client_tools`` is non-empty (see
+    ``validate_client_tools_have_runtime`` below): a client tool names a
+    ``runtime`` value, and this is where that value's environment is
+    actually configured. ``CommunityConfig`` is ``extra="forbid"``, so this
+    key is rejected by any config written before this field existed;
+    it and ``ClientToolConfig`` land together for that reason.
+
+    Example:
+        runtime:
+          python:
+            pyodide_version: "0.29.5"
+            lockfile: "runtime/pyodide-lock.json"
+            limits:
+              memory_mb: 1536
+    """
+
+    notebook: NotebookConfig | None = None
+    """A starter notebook for the separate notebook.osc.earth/osa site (issue #453).
+
+    Requires ``runtime.python.pyodide_version`` to equal the notebook site's own
+    pin (``validate_notebook_needs_matching_pyodide`` below), the same way
+    ``extensions.client_tools`` requires a matching ``runtime`` section. Required in
+    turn by ``widget.launcher: capsule``, whose notebook icon opens this starter
+    (``validate_capsule_needs_notebook`` below).
+
+    Example:
+        notebook:
+          starter: notebook/starter.ipynb
+          dataset_pattern: "^(nm|ds|on|xx)[0-9]{6}$"
+          zarr_base:
+            production: https://zarr.nemar.org
+            develop: https://zarr-test.nemar.org
+          dataset_page_base:
+            production: https://nemar.org
+            develop: https://test.nemar.org
+    """
 
     enable_page_context: bool = True
     """Enable page context tool for widget embedding (default: True).
@@ -1494,6 +2175,98 @@ class CommunityConfig(BaseModel):
                 f"Ultra-expensive models (>$15/1M tokens) cannot use the platform API key."
             )
 
+        return self
+
+    @model_validator(mode="after")
+    def validate_client_tools_have_runtime(self) -> "CommunityConfig":
+        """A configured client tool must name a runtime this community configures.
+
+        Runs on ``CommunityConfig`` rather than ``ExtensionsConfig`` because
+        ``runtime`` is this model's own field, not a sibling
+        ``ExtensionsConfig`` can see. Also enforces unique ``client_tools``
+        names here, for the same reason ``ExtensionsConfig.
+        validate_unique_extensions`` enforces uniqueness of plugin modules
+        and MCP server names on itself: one entry silently shadowing
+        another under the same name is exactly the kind of config mistake
+        that should fail at load time, not at the first tool call that
+        picks the wrong one.
+        """
+        client_tools = self.extensions.client_tools if self.extensions else []
+        if not client_tools:
+            return self
+
+        names = [entry.name for entry in client_tools]
+        seen: set[str] = set()
+        duplicates: list[str] = []
+        for name in names:
+            if name in seen:
+                duplicates.append(name)
+            seen.add(name)
+        if duplicates:
+            raise ValueError(f"Duplicate client_tools names: {', '.join(duplicates)}")
+
+        if self.runtime is None:
+            raise ValueError(
+                "extensions.client_tools is set but no top-level 'runtime' "
+                "section is configured. Add a 'runtime:' section describing "
+                "the execution environment(s) the declared client tools run in."
+            )
+
+        # Which `runtime` section each declared runtime requires. A mapping rather
+        # than a chain of `elif`s, because a chain has no else: adding a runtime to
+        # ClientToolConfig's Literal and forgetting a branch here would let a community
+        # declare a client tool whose execution environment was never configured. The
+        # tool would bind, the model would call it, the call would park, and nothing
+        # would ever answer it. A missing entry here is a KeyError at config load
+        # instead, which is loud and immediate.
+        required_section = {"python": "python"}
+
+        for entry in client_tools:
+            section = required_section[entry.runtime]
+            if getattr(self.runtime, section, None) is None:
+                raise ValueError(
+                    f"client_tools entry '{entry.name}' declares runtime: "
+                    f"{entry.runtime}, but runtime.{section} is not configured."
+                )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_notebook_needs_matching_pyodide(self) -> "CommunityConfig":
+        """A community with a notebook starter must be pinned to the notebook
+        site's own Pyodide, because one site loads one Pyodide (docs/adr/
+        0011-the-notebook-site.md). A community pinned to a different version
+        would parse, and its own widget runtime would work fine, while its
+        notebook starter ran under an interpreter nothing tested it against --
+        exactly the failure mode that stays invisible until a reader opens it.
+        """
+        if self.notebook is None:
+            return self
+        python = self.runtime.python if self.runtime else None
+        pinned = python.pyodide_version if python else None
+        if pinned != NOTEBOOK_SITE_PYODIDE_VERSION:
+            raise ValueError(
+                "notebook is configured but runtime.python.pyodide_version is "
+                f"{pinned!r}, not {NOTEBOOK_SITE_PYODIDE_VERSION!r}, the notebook "
+                "site's own pin. One notebook site loads one Pyodide."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_capsule_needs_notebook(self) -> "CommunityConfig":
+        """The capsule launcher's notebook icon opens the community's starter on the
+        notebook site as a tab of the widget's panel (#470). Without a ``notebook``
+        section the site has no starter for the community, so the icon would open
+        a tab that can only report an error. Refused here rather than hidden in the
+        widget, so a community asking for the capsule learns what it also needs.
+        """
+        widget = self.widget
+        if widget is not None and widget.launcher == "capsule" and self.notebook is None:
+            raise ValueError(
+                "widget.launcher is 'capsule' but no notebook section is configured. "
+                "The capsule's notebook icon opens the community's starter notebook "
+                "(docs/community-notebook.md)."
+            )
         return self
 
     def get_sync_config(self) -> dict[str, Any]:

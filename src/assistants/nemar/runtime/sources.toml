@@ -1,0 +1,24 @@
+# Where each wheel in wheels/ comes from, one table per wheel, keyed by canonical
+# name (matching depends.toml and the overlay). tests/test_assistants/test_nemar_runtime.py
+# fails if a wheel in wheels/ has no table here, or a table names a wheel that is not
+# in wheels/. scripts/eegprep_lean_drift.py reads the [eegprep-lean] table -- with the
+# vendored version from the overlay beside this file, never duplicated here -- to
+# check upstream for a newer commit; see that script and
+# .github/workflows/eegprep-lean-watch.yml. An optional `reviewed_through` names a
+# later upstream commit a maintainer read and found leaves the wheel as it is; the
+# README beside this file says when to set it.
+
+[eegprep-lean]
+wheel = "eegprep_lean-0.1.0.dev2-py3-none-any.whl"
+repository = "sccn/eegprep"
+branch = "develop"
+path = "packages/eegprep-lean"
+commit = "b4aa18bdbc0556c943a10ca3bd4105f6b4971ed6"
+# The commit's own timestamp, so a rebuild produces identical bytes; see
+# src/assistants/nemar/runtime/README.md for the full procedure.
+build = "git archive b4aa18bdbc0556c943a10ca3bd4105f6b4971ed6 packages/eegprep-lean | tar -x -C <dir> && cd <dir>/packages/eegprep-lean && SOURCE_DATE_EPOCH=1790128328 uv build --wheel"
+
+[zarr]
+wheel = "zarr-3.4.0-py3-none-any.whl"
+source = "pypi"
+version = "3.4.0"

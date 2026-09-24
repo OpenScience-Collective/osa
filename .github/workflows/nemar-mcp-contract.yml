@@ -1,0 +1,144 @@
+name: NEMAR MCP Contract
+
+# Watches NEMAR's live MCP server (mcp.nemar.org) and the eegprep-lean wheel
+# vendored beside the prompt, which nothing else does on a schedule (issue #432).
+#
+# The rest of this repository's tests prove the CLIENT against a real server
+# (tests/test_tools/test_mcp_client.py), and that the ASSISTANT wires up to
+# whatever that server presents (tests/test_assistants/test_nemar_mcp_wiring.py).
+# Both are deselected in the default CI sweep (`-m "not network"`), so nothing
+# runs them unless someone remembers to. This is that memory: a server-side
+# rename, a removed tool, or a `python_browser` recipe that starts calling an
+# eegprep_lean name the vendored wheel does not export would break NEMAR's
+# browser lane silently, between the runs that would otherwise catch it.
+
+on:
+  schedule:
+    # Once a day. This checks a third party's server and a fixed committed
+    # wheel, neither of which changes often enough to warrant more.
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: Check NEMAR's MCP contract
+    runs-on: ubuntu-latest
+    outputs:
+      failed: ${{ steps.contract.outputs.failed }}
+      report: ${{ steps.contract.outputs.report }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: |
+          uv sync --frozen --extra dev
+
+      - name: Run the NEMAR MCP contract tests
+        id: contract
+        run: |
+          set +e
+          failures=""
+
+          run_target() {
+            local desc="$1"
+            shift
+            if uv run pytest -v "$@"; then
+              echo "ok    $desc"
+            else
+              echo "FAIL  $desc"
+              failures="${failures}\n- \`$desc\` failed"
+            fi
+          }
+
+          # The client wrapper against production: the documented tool set is
+          # still there, search still returns real datasets, a refusal still
+          # reads as text.
+          run_target "test_mcp_client.py::TestAgainstProductionNemar" \
+            tests/test_tools/test_mcp_client.py::TestAgainstProductionNemar
+
+          # The assistant's own wiring against production: every tool the
+          # prompt names is one the server actually serves, and vice versa.
+          run_target "test_nemar_mcp_wiring.py -m network" \
+            tests/test_assistants/test_nemar_mcp_wiring.py -m network
+
+          # The browser-lane guard: read_window's live recipe still carries
+          # how_to.python_browser and a sample range, and every eegprep_lean
+          # name that recipe uses is exported by the wheel committed beside
+          # the prompt. TestLiveRecipeOnCPython runs separately below, since it
+          # shells out to `uv run --isolated` and is worth its own pass/fail line.
+          run_target "test_nemar_contract_live.py (recipe + wheel contract)" \
+            tests/test_assistants/test_nemar_contract_live.py -k "not TestLiveRecipeOnCPython"
+
+          # The strongest guard (#432): run production's actual python_browser
+          # recipe, unmodified, on CPython with nothing installed but the
+          # vendored wheel. A name/keyword match can miss what only running the
+          # recipe catches.
+          run_target "test_nemar_contract_live.py::TestLiveRecipeOnCPython" \
+            tests/test_assistants/test_nemar_contract_live.py::TestLiveRecipeOnCPython
+
+          if [ -n "$failures" ]; then
+            # A random delimiter, so no line of the report can end the value early.
+            delimiter="report_$(openssl rand -hex 8)"
+            {
+              echo "failed=true"
+              echo "report<<$delimiter"
+              echo -e "$failures"
+              echo "$delimiter"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "failed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fail the run so the schedule surfaces it
+        if: steps.contract.outputs.failed == 'true'
+        run: exit 1
+
+  # A separate job, so the issue opens even when the check job fails before its
+  # check runs (checkout included): this job checks out only the action it
+  # needs, on its own runner. Not on a cancelled run, which is neither green nor
+  # failing and which the action would otherwise read as green.
+  track:
+    name: Track the issue
+    needs: contract
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/actions
+
+      - uses: ./.github/actions/track-issue
+        with:
+          label: nemar-mcp-contract
+          title: 'NEMAR MCP contract check failing'
+          failed: ${{ needs.contract.result == 'failure' || needs.contract.outputs.failed == 'true' }}
+          recovery_message: 'all NEMAR MCP contract checks'
+          report: |
+            The scheduled check of NEMAR's live MCP server and its eegprep-lean wheel is failing.
+
+            ${{ needs.contract.outputs.report || '- The check job failed before the checks ran (checkout, Python or `uv sync`), so nothing was checked.' }}
+
+            Likely causes, cheapest first:
+
+            - `mcp.nemar.org` is down or slow (a network blip, not a contract break).
+            - A tool was renamed or removed on the server side; the assistant's prompt still names the old one.
+            - `nemar_read_window`'s live recipe now calls an eegprep_lean name the vendored wheel
+              (`src/assistants/nemar/runtime/wheels/`) does not export, or passes a keyword its
+              function does not take: a server-side change, or a wheel that needs re-vendoring.
+            - TestLiveRecipeOnCPython specifically: the recipe runs but fails against the real data.
+              Check the subprocess stderr in the job log; a 403 there means zarr.nemar.org is refusing
+              the transport's User-Agent.

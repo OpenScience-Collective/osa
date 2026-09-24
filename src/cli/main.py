@@ -86,7 +86,7 @@ def init(
     Either credential works, and which provider it belongs to is read from
     the key itself:
 
-    - Anthropic (recommended): https://console.anthropic.com/settings/keys
+    - Anthropic (recommended): https://platform.claude.com/settings/keys
     - OpenRouter: https://openrouter.ai/keys
     """
     config = load_config()
@@ -100,8 +100,8 @@ def init(
         output.err_console.print("Using OSA from the command line needs your own API key.")
         output.err_console.print(
             "Anthropic (recommended): "
-            "[link=https://console.anthropic.com/settings/keys]"
-            "console.anthropic.com/settings/keys[/link]"
+            "[link=https://platform.claude.com/settings/keys]"
+            "platform.claude.com/settings/keys[/link]"
         )
         output.err_console.print(
             "OpenRouter: [link=https://openrouter.ai/keys]openrouter.ai/keys[/link]"

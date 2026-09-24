@@ -1,5 +1,6 @@
 """Tests for LangGraph state definitions."""
 
+import typing
 from datetime import datetime
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -7,6 +8,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from src.agents.state import (
     AgentMetadata,
     BaseAgentState,
+    PendingClientCallPayload,
     RouterState,
     SpecialistState,
 )
@@ -89,6 +91,53 @@ class TestBaseAgentState:
         }
         assert len(state["tool_calls"]) == 2
         assert state["tool_calls"][0]["name"] == "retrieve_hed_docs"
+
+
+class TestBaseAgentStatePendingClientCall:
+    """Tests for BaseAgentState.pending_client_call.
+
+    `TypedDict` enforces nothing at runtime: a test that builds a dict
+    literal annotated `: BaseAgentState` and then asserts on exactly what it
+    just wrote proves only that Python can execute a dict literal. Deleting
+    `pending_client_call` from `BaseAgentState` entirely would not fail such
+    a test. These instead inspect the TypedDict's own declared shape, the
+    technique `tests/test_api/test_tool_results.py::TestPendingClientCall::
+    test_the_required_keys_are_the_ones_the_node_writes` uses for the
+    reader's side of this same contract.
+    """
+
+    def test_pending_client_call_is_a_declared_key(self) -> None:
+        """The field must exist on BaseAgentState at all."""
+        assert "pending_client_call" in BaseAgentState.__annotations__
+
+    def test_pending_client_call_is_optional(self) -> None:
+        """total=False: the key may be omitted entirely, as run 1 always does."""
+        assert "pending_client_call" in BaseAgentState.__optional_keys__
+        assert "pending_client_call" not in BaseAgentState.__required_keys__
+
+    def test_pending_client_call_type_is_the_payload_or_none(self) -> None:
+        """Not `dict[str, Any]` or something looser: the declared type must
+        name `PendingClientCallPayload`, the one shape
+        `PendingClientCall.from_state` (src/api/tool_results.py) reads."""
+        hints = typing.get_type_hints(BaseAgentState)
+        assert hints["pending_client_call"] == PendingClientCallPayload | None
+
+    def test_payload_declares_exactly_the_keys_the_node_writes(self) -> None:
+        """Mirrors PendingClientCall.REQUIRED_KEYS from the reader's side; a
+        drift between the two must be loud, not silent."""
+        assert set(PendingClientCallPayload.__annotations__) == {
+            "call_id",
+            "tool",
+            "args",
+            "requires_permission",
+        }
+
+    def test_payload_keys_are_all_required(self) -> None:
+        """PendingClientCallPayload is total (the default), unlike
+        BaseAgentState: once a call is parked, every key must be present."""
+        assert PendingClientCallPayload.__required_keys__ == frozenset(
+            PendingClientCallPayload.__annotations__
+        )
 
 
 class TestRouterState:

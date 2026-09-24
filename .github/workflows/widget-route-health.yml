@@ -24,15 +24,15 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   probe:
     name: Probe the mounted widget hosts
     runs-on: ubuntu-latest
+    outputs:
+      failed: ${{ steps.probe.outputs.failed }}
+      report: ${{ steps.probe.outputs.report }}
     steps:
-      - uses: actions/checkout@v4
-
       - name: Probe
         id: probe
         run: |
@@ -80,87 +80,41 @@ jobs:
             echo "failed=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Open or update an issue on failure
-        if: steps.probe.outputs.failed == 'true'
-        uses: actions/github-script@v7
-        env:
-          # Passed through env rather than interpolated into the script body.
-          # The values here are hardcoded URLs and curl status codes, so this
-          # is not currently attacker-controlled, but interpolating anything
-          # into a github-script body is the wrong habit to establish in a
-          # workflow that holds issues:write.
-          PROBE_REPORT: ${{ steps.probe.outputs.report }}
-        with:
-          script: |
-            const title = 'Widget route health check failing';
-            const report = process.env.PROBE_REPORT || '';
-            const body = [
-              'The scheduled probe of the widget worker hosts is failing.',
-              '',
-              report,
-              '',
-              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-              '',
-              'Likely causes, cheapest first:',
-              '',
-              '- The Cloudflare zone route was detached, so the hostname resolves but nothing serves it (522).',
-              '- A deploy flipped `workers_dev` off, taking the `workers.dev` hostname down.',
-              '- `MOUNTED_HOSTS` and the `[[routes]]` patterns drifted, so the worker is never invoked.',
-              '- The backend itself is down, which shows as `/osa/communities` failing while `/osa/health` still answers.',
-              '',
-              'This closes itself on the next green run.',
-            ].join('\n');
-
-            const existing = await github.rest.issues.listForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              labels: 'widget-route-health',
-            });
-
-            if (existing.data.length > 0) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: existing.data[0].number,
-                body,
-              });
-            } else {
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title,
-                body,
-                labels: ['widget-route-health'],
-              });
-            }
-
-      - name: Close the tracking issue on recovery
-        if: steps.probe.outputs.failed == 'false'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const existing = await github.rest.issues.listForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              labels: 'widget-route-health',
-            });
-            for (const issue of existing.data) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issue.number,
-                body: `Recovered: all probes green as of ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-              });
-              await github.rest.issues.update({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issue.number,
-                state: 'closed',
-              });
-            }
-
       - name: Fail the run so the schedule surfaces it
         if: steps.probe.outputs.failed == 'true'
         run: exit 1
+
+  # A separate job, so the issue opens even when the check job fails before its
+  # check runs (checkout included): this job checks out only the action it
+  # needs, on its own runner. Not on a cancelled run, which is neither green nor
+  # failing and which the action would otherwise read as green.
+  track:
+    name: Track the issue
+    needs: probe
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/actions
+
+      - uses: ./.github/actions/track-issue
+        with:
+          label: widget-route-health
+          title: 'Widget route health check failing'
+          failed: ${{ needs.probe.result == 'failure' || needs.probe.outputs.failed == 'true' }}
+          recovery_message: 'all probes'
+          report: |
+            The scheduled probe of the widget worker hosts is failing.
+
+            ${{ needs.probe.outputs.report || '- The probe job failed before it probed anything; see the run.' }}
+
+            Likely causes, cheapest first:
+
+            - The Cloudflare zone route was detached, so the hostname resolves but nothing serves it (522).
+            - A deploy flipped `workers_dev` off, taking the `workers.dev` hostname down.
+            - `MOUNTED_HOSTS` and the `[[routes]]` patterns drifted, so the worker is never invoked.
+            - The backend itself is down, which shows as `/osa/communities` failing while `/osa/health` still answers.

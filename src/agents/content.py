@@ -28,6 +28,7 @@ content came from a single final message or a stream of chunks.
 
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, NamedTuple
 
@@ -206,9 +207,28 @@ class CitationTracker:
     (streamed or not) so numbering is identical between the two paths.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, carried: Sequence[CitationMark] = ()) -> None:
+        """Start empty, or continue a response that is already under way.
+
+        Args:
+            carried: Marks an earlier run of the SAME turn already assigned, in
+                marker order. A browser-execution reply is several runs the reader
+                sees as one, so each run continues the numbering of the runs before
+                it: a source already cited keeps its marker, and a new one takes the
+                next number. Starting again at [1] would give one reply two
+                different [1]s.
+        """
         self._marker_by_source: dict[str, int] = {}
         self._marks: list[CitationMark] = []
+        for expected, mark in enumerate(carried, start=1):
+            if mark.marker != expected or mark.source in self._marker_by_source:
+                raise ValueError(
+                    "carried citation marks must be numbered 1..n in order with one "
+                    f"per source; got marker {mark.marker} for {mark.source!r} at "
+                    f"position {expected}"
+                )
+            self._marker_by_source[mark.source] = mark.marker
+            self._marks.append(mark)
 
     def _record(self, citation: dict[str, Any]) -> tuple[CitationMark, bool] | None:
         """Record one citation. Returns (its mark, is_new), or None if unusable."""
@@ -480,8 +500,9 @@ class CitationAssembler:
     behavior and are emitted at that point.
     """
 
-    def __init__(self) -> None:
-        self._tracker = CitationTracker()
+    def __init__(self, carried: Sequence[CitationMark] = ()) -> None:
+        """See `CitationTracker` for what ``carried`` continues."""
+        self._tracker = CitationTracker(carried)
         self._text_seen: set[int | None] = set()
         self._pending: dict[int | None, list[dict[str, Any]]] = {}
 

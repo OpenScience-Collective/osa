@@ -105,6 +105,7 @@ wrangler deploy --env dev
 | `/version` | GET | Backend version | None |
 | `/hed/ask` | POST | Single question | Turnstile + Rate limit |
 | `/hed/chat` | POST | Multi-turn chat | Turnstile + Rate limit |
+| `/hed/chat/resume` | POST | Resume chat after a client-executed tool call | Rate limit only (per-minute, plus its own resume-chain hourly cap; exempt from the `/chat` per-hour counter) |
 | `/feedback` | POST | Submit feedback | Rate limit only |
 
 ## Rate Limits
@@ -125,6 +126,41 @@ Hybrid approach for optimal performance and protection:
 - Limits are **per IP address**, not per session
 - 20/hour in production = ~1 question every 3 minutes (reasonable for research)
 - Prevents abuse while allowing legitimate use
+
+### `/chat/resume` and the resume-chain budget
+
+`/chat/resume` is a browser posting back the result of a model-written Python
+execution so the conversation can continue. It skips Turnstile (the widget's
+token is single-use and already spent by the `/chat` call that started the
+turn) and is exempt from the `/chat` hourly counter above: one turn with N
+tool executions is 1 + N HTTP requests, and charging every resume against
+the 20/hour `/chat` budget would let two executions in one turn burn three
+of a user's twenty hourly requests, shared across a NAT'd lab.
+
+That exemption only holds for one turn. A resume call can itself end in
+another tool request, whose resume is also exempt, and so on, so nothing
+else bounds how many times that repeats. Unchecked, a single hourly-counted
+`/chat` call could chain resume calls up to the per-minute limiter's ceiling
+alone (10/min × 60 = 600/hour in production, ~30x the 20/hour `/chat`
+budget), and a successful prompt injection through the tool's own stdout
+(an explicit injection channel) could drive that chain without the user's
+cooperation.
+
+To bound it, `/chat/resume` keeps its own KV counter, independent of the
+`/chat` hourly counter:
+
+| Environment | Resume-Chain Budget (Per Hour) |
+|-------------|--------------------------------|
+| Production | 100 |
+| Development | 500 |
+
+That is 5x the `/chat` hourly cap in both environments: generous enough
+that a legitimate multi-step analysis (several tool executions spread
+across many of the hour's chat turns) is never throttled as if each
+execution were its own chat turn, while still capping the worst-case
+amplification at 5x instead of the unbounded ~30x the per-minute limiter
+alone would allow. Exceeding it returns 429 with `Too many resume requests
+per hour`, distinct from the `/chat` hourly rejection reason.
 
 ## BYOK Mode
 

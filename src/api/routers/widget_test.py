@@ -398,16 +398,15 @@ def get_widget_test_page(community_id: str) -> str:
             <h2>📝 Integration Code</h2>
             <p style="margin-bottom: 1rem; color: #6b7280;">Copy this code to integrate the widget into your website:</p>
             <pre><code>&lt;!-- OSA Chat Widget for {escaped_community_id_upper} --&gt;
+&lt;script src="https://demo.osc.earth/osa-chat-widget.js"&gt;&lt;/script&gt;
 &lt;script&gt;
-  // Configure widget before loading
-  window.OSAChatWidget = {{
+  OSAChatWidget.setConfig({{
     communityId: '{escaped_community_id}',
     title: '{escaped_config_name} Assistant',
     initialMessage: 'Hi! I\\'m the {escaped_config_name} Assistant. How can I help you today?',
     placeholder: 'Ask about {escaped_config_name}...'
-  }};
-&lt;/script&gt;
-&lt;script src="https://osa.osc.earth/frontend/osa-chat-widget.js"&gt;&lt;/script&gt;</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
+  }});
+&lt;/script&gt;</code><button class="copy-btn" onclick="copyCode(this)">Copy</button></pre>
 
             <div class="info-box">
                 <p><strong>📦 What happens when you add this code:</strong></p>

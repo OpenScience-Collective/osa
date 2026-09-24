@@ -8,6 +8,10 @@ import pytest
 
 from src.assistants.hed.tools import get_hed_schema_versions, validate_hed_string
 
+# Every test here calls hedtools.org, so the unit job's `-m "not network"` leaves them to
+# the network job; unmarked, a slow response from that service failed unrelated PRs.
+pytestmark = pytest.mark.network
+
 
 class TestValidateHedString:
     """Tests for validate_hed_string tool."""

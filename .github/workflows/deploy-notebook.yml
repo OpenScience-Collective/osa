@@ -1,0 +1,198 @@
+name: Deploy notebook site
+
+# The separate JupyterLite notebook site (issue #453,
+# docs/adr/0011-the-notebook-site.md). Unlike deploy-pages.yml (frontend/, the
+# demo widget, one Pages project per PR preview), this site has exactly two
+# targets, develop and main, and is never built for a pull request: a PR-preview
+# subdomain would need its own DNS/Pages-domain dance for a site whose only job
+# is to redirect a reader into a notebook, and nothing in this build depends on
+# the PR's own diff being reachable from a public URL to review.
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'notebook/**'
+      - 'scripts/build_notebook_site.py'
+      - 'src/core/config/notebook_lock.py'
+      - 'src/core/config/community.py'
+      - 'src/core/config/runtime_lock.py'
+      - 'src/assistants/*/notebook/**'
+      - 'src/assistants/*/runtime/**'
+      - 'src/assistants/*/config.yaml'
+      - '.github/workflows/deploy-notebook.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+
+      # OSC's naming rule: a subdomain is a PLANE serving several projects, and
+      # the project itself is the PATH (api.osc.earth/osa, widget.osc.earth/osa,
+      # ...), so the notebook site is notebook.osc.earth/osa, not the bare host.
+      # The custom DOMAIN stays host-only (notebook.osc.earth); scripts/
+      # build_notebook_site.py is what turns --site-url's /osa suffix into an
+      # osa/ subdirectory plus a root _redirects sending / to /osa/.
+      - name: Pick the site URL for this branch
+        id: site
+        run: |
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            {
+              echo "url=https://notebook.osc.earth/osa"
+              echo "environment=production"
+              echo "subdomain=notebook"
+              echo "pages_target=osa-notebook.pages.dev"
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "url=https://develop-notebook.osc.earth/osa"
+              echo "environment=develop"
+              echo "subdomain=develop-notebook"
+              echo "pages_target=develop.osa-notebook.pages.dev"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build the notebook site
+        run: |
+          uv run python scripts/build_notebook_site.py \
+            --site-url "${{ steps.site.outputs.url }}" \
+            --environment "${{ steps.site.outputs.environment }}" \
+            --output-dir dist/notebook-site
+
+      - name: Report the built site's size
+        run: |
+          echo "files: $(find dist/notebook-site -type f | wc -l)"
+          echo "bytes: $(du -sh dist/notebook-site | cut -f1)"
+
+      - name: Check whether the osa-notebook Pages project exists
+        id: project
+        env:
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CF_API_TOKEN" ] || [ -z "$CF_ACCOUNT_ID" ]; then
+            echo "::warning::Cloudflare secrets not fully configured, skipping project check"
+            echo "exists=unknown" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          EXISTING=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/pages/projects/osa-notebook" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}")
+          if [ "$EXISTING" = "200" ]; then
+            echo "osa-notebook project already exists"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "osa-notebook project not found (HTTP ${EXISTING})"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Idempotent, like deploy-pages.yml's own project: created once, on
+      # whichever push first needs it. Authenticates through this action's own
+      # apiToken/accountId inputs, the same as deploy-pages.yml -- `cfman` wraps
+      # a LOCAL machine's wrangler login (no plain `wrangler login` works on
+      # those hosts), which is a different problem than CI's own token-based auth.
+      - name: Create the osa-notebook Pages project if it does not exist
+        if: steps.project.outputs.exists == 'false'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages project create osa-notebook --production-branch=main
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist/notebook-site --project-name=osa-notebook --branch=${{ github.ref_name }}
+
+      - name: Ensure DNS record and Pages custom domain
+        env:
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+        run: |
+          SUBDOMAIN="${{ steps.site.outputs.subdomain }}"
+          FQDN="${SUBDOMAIN}.osc.earth"
+          TARGET="${{ steps.site.outputs.pages_target }}"
+          PROJECT="osa-notebook"
+
+          if [ -z "$CF_ZONE_ID" ] || [ -z "$CF_API_TOKEN" ] || [ -z "$CF_ACCOUNT_ID" ]; then
+            echo "::warning::Cloudflare secrets not fully configured, skipping DNS/domain setup"
+            exit 0
+          fi
+
+          # Step 1: Ensure CNAME DNS record exists
+          EXISTING=$(curl -sf -X GET \
+            "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?name=${FQDN}&type=CNAME" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H "Content-Type: application/json") || {
+            echo "::warning::Failed to query DNS records for ${FQDN}"
+            exit 0
+          }
+
+          COUNT=$(echo "$EXISTING" | jq '.result | length // 0')
+
+          if [ "$COUNT" = "0" ]; then
+            echo "Creating CNAME: ${FQDN} -> ${TARGET}"
+            RESULT=$(curl -sf -X POST \
+              "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
+              -H "Authorization: Bearer ${CF_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              --data "{\"type\":\"CNAME\",\"name\":\"${SUBDOMAIN}\",\"content\":\"${TARGET}\",\"proxied\":true}")
+            SUCCESS=$(echo "$RESULT" | jq '.success')
+            if [ "$SUCCESS" = "true" ]; then
+              echo "DNS record created: ${FQDN}"
+            else
+              echo "::warning::Failed to create DNS record: $(echo "$RESULT" | jq -r '.errors')"
+            fi
+          else
+            echo "DNS record already exists: ${FQDN}"
+          fi
+
+          # Step 2: Register as Pages custom domain (so Cloudflare routes to Pages)
+          DOMAINS=$(curl -sf -X GET \
+            "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/pages/projects/${PROJECT}/domains" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" \
+            -H "Content-Type: application/json") || {
+            echo "::warning::Failed to query Pages domains"
+            exit 0
+          }
+
+          DOMAIN_EXISTS=$(echo "$DOMAINS" | jq --arg fqdn "$FQDN" '[.result[] | select(.name == $fqdn)] | length // 0')
+
+          if [ "$DOMAIN_EXISTS" = "0" ]; then
+            echo "Registering Pages custom domain: ${FQDN}"
+            RESULT=$(curl -sf -X POST \
+              "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/pages/projects/${PROJECT}/domains" \
+              -H "Authorization: Bearer ${CF_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              --data "{\"name\":\"${FQDN}\"}")
+            SUCCESS=$(echo "$RESULT" | jq '.success // false')
+            if [ "$SUCCESS" = "true" ]; then
+              echo "Pages custom domain registered: ${FQDN}"
+            else
+              ERRORS=$(echo "$RESULT" | jq -r '.errors // .messages // "unknown error"')
+              echo "::warning::Failed to register Pages domain (may need manual setup): ${ERRORS}"
+            fi
+          else
+            echo "Pages custom domain already registered: ${FQDN}"
+          fi

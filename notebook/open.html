@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Opening your notebook</title>
+  <meta name="robots" content="noindex" />
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      background: #fff;
+      color: #111;
+      margin: 0;
+      display: flex;
+      min-height: 100vh;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 1.5rem;
+      box-sizing: border-box;
+    }
+    #app {
+      max-width: 32rem;
+      font-size: 1.05rem;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <!-- No inline script: open.js sets #app's textContent only, never innerHTML,
+       so this page's Content-Security-Policy (see _headers) can omit
+       'unsafe-inline' entirely. -->
+  <main id="app">Opening your notebook&hellip;</main>
+  <script src="./localforage.min.js"></script>
+  <script type="module" src="./open.js"></script>
+</body>
+</html>

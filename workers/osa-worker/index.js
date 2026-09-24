@@ -10,7 +10,24 @@
  */
 
 // Path segments that are actual routes, never valid community IDs
-const RESERVED_PATHS = ['health', 'version', 'feedback', 'communities', 'metrics', 'sync'];
+export const RESERVED_PATHS = ['health', 'version', 'feedback', 'communities', 'metrics', 'sync'];
+
+// Route matchers used directly by fetch() below. Exported so tests exercise
+// the exact patterns that route real traffic, rather than a parallel copy
+// that could drift from them.
+export const ROUTE_PATTERNS = {
+  // /:communityId/ask and /:communityId/chat -- the two-segment action route.
+  communityAction: /^\/([^\/]+)\/(ask|chat)$/,
+  // /:communityId/chat/resume -- three segments, so it can never be matched
+  // by communityAction above (which is anchored to exactly two segments).
+  communityChatResume: /^\/([^\/]+)\/chat\/resume$/,
+  // /:communityId/runtime/:file -- a wheel the browser runtime loads (#431).
+  // A coarse filter: anything that is not a bare wheel name never reaches the
+  // backend. The backend owns the exact rule (pure-Python -py3-none-any wheels,
+  // in src/core/config/runtime_lock.py) and serves only the names its lock
+  // overlay lists, so the edge does not repeat it.
+  communityRuntimeFile: /^\/([^\/]+)\/runtime\/([A-Za-z0-9_.+-]+\.whl)$/,
+};
 
 // This worker is reachable two ways: its default *.workers.dev hostname
 // (unprefixed), and the product-owned widget.osc.earth/osa/* path mount
@@ -67,6 +84,9 @@ function getConfig(env) {
   return {
     RATE_LIMIT_PER_MINUTE: isDev ? 60 : 10,
     RATE_LIMIT_PER_HOUR: isDev ? 100 : 20,
+    // Separate, more generous hourly budget for /chat/resume chains. See
+    // checkResumeChainLimit for why a distinct counter exists and why 5x.
+    RESUME_LIMIT_PER_HOUR: isDev ? 500 : 100,
     REQUEST_TIMEOUT: 120000, // 2 minutes for LLM responses
     IS_DEV: isDev,
   };
@@ -130,13 +150,23 @@ async function verifyTurnstileToken(token, secretKey, ip) {
  * Known limitation:
  * - KV read-then-write is not atomic; concurrent requests from same IP
  *   may slightly exceed hourly limit. Per-minute guard constrains this.
+ *
+ * @param {object} [options]
+ * @param {boolean} [options.countHourly=true] - When false, skip both the
+ *   hourly KV gate and its increment. Used by /chat/resume: one conversational
+ *   turn with N client-executed tool calls is 1 + N HTTP requests (the
+ *   original /chat plus one /chat/resume per execution), so counting the
+ *   resume leg against the hourly cap would let two executions burn three of
+ *   a user's twenty hourly requests, shared across a NAT'd lab. The
+ *   per-minute limiter (bot protection) always runs regardless of this flag.
  */
-async function checkRateLimit(request, env, CONFIG) {
+async function checkRateLimit(request, env, CONFIG, options = {}) {
+  const { countHourly = true } = options;
   const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
 
   // Check hourly limit first (KV, read-only, no token consumed)
   // This prevents wasting per-minute tokens on already-rejected requests
-  if (env.RATE_LIMITER_KV) {
+  if (countHourly && env.RATE_LIMITER_KV) {
     try {
       const now = Math.floor(Date.now() / 1000);
       const hourKey = `rl:hour:${ip}:${Math.floor(now / 3600)}`;
@@ -153,7 +183,8 @@ async function checkRateLimit(request, env, CONFIG) {
   }
 
   // Check per-minute limit (built-in API, fast, consumes token)
-  // Only check this AFTER hourly passes to avoid wasting tokens
+  // Only check this AFTER hourly passes to avoid wasting tokens.
+  // This is the bot-protection path and always runs, regardless of countHourly.
   if (env.RATE_LIMITER_MINUTE) {
     try {
       const { success } = await env.RATE_LIMITER_MINUTE.limit({ key: ip });
@@ -167,8 +198,9 @@ async function checkRateLimit(request, env, CONFIG) {
   }
 
   // Increment hourly counter (1 write per request instead of 2)
-  // Done last, after both checks pass
-  if (env.RATE_LIMITER_KV) {
+  // Done last, after both checks pass. Skipped along with the gate above
+  // when countHourly is false.
+  if (countHourly && env.RATE_LIMITER_KV) {
     try {
       const now = Math.floor(Date.now() / 1000);
       const hourKey = `rl:hour:${ip}:${Math.floor(now / 3600)}`;
@@ -185,9 +217,78 @@ async function checkRateLimit(request, env, CONFIG) {
 
 /**
  * Check rate limit and return a 429 response if exceeded, or null if allowed.
+ *
+ * @param {object} [options] - Forwarded to checkRateLimit; see its doc for
+ *   countHourly.
  */
-async function rateLimitOrReject(request, env, corsHeaders, CONFIG) {
-  const rl = await checkRateLimit(request, env, CONFIG);
+async function rateLimitOrReject(request, env, corsHeaders, CONFIG, options = {}) {
+  const rl = await checkRateLimit(request, env, CONFIG, options);
+  if (!rl.allowed) {
+    return new Response(
+      JSON.stringify({ error: 'Rate limit exceeded', details: rl.reason }),
+      { status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
+  }
+  return null;
+}
+
+/**
+ * Cap the number of /chat/resume calls a single IP can make per hour.
+ *
+ * This is deliberately a separate counter from the /chat hourly budget
+ * above, not a reuse of it. handleChatResume exempts resume calls from the
+ * /chat hourly counter (countHourly: false) because one legitimate
+ * conversational turn with N client-executed tool calls costs 1 + N HTTP
+ * requests, and counting each resume against the /chat cap would punish a
+ * multi-step analysis as if every execution were its own chat turn.
+ *
+ * But a resume call can itself end in another tool_request, whose resume is
+ * also exempt, and so on -- nothing before this function bounds how many
+ * times that repeats. Left unchecked, a single hourly-counted /chat call
+ * could chain resume calls up to the per-minute limiter's ceiling alone:
+ * 10/min * 60 = 600/hour in production, roughly 30x the 20/hour /chat
+ * budget. The tool's own stdout is an explicit prompt-injection channel
+ * (see src/api/tool_results.py), so a successful injection could drive that
+ * chain without the user's cooperation.
+ *
+ * RESUME_LIMIT_PER_HOUR is 5x the /chat hourly cap in both environments
+ * (100/hour in production, 500/hour in dev): generous enough that a
+ * legitimate multi-step analysis, several tool executions spread across
+ * many of the hour's 20 (or 100 in dev) /chat turns, is not throttled, while
+ * still capping the worst-case amplification at 5x instead of the
+ * unbounded ~30x the per-minute limiter alone would allow.
+ */
+async function checkResumeChainLimit(request, env, CONFIG) {
+  if (!env.RATE_LIMITER_KV) {
+    return { allowed: true };
+  }
+
+  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const hourKey = `rl:resume:hour:${ip}:${Math.floor(now / 3600)}`;
+
+    const count = parseInt(await env.RATE_LIMITER_KV.get(hourKey) || '0', 10);
+    if (count >= CONFIG.RESUME_LIMIT_PER_HOUR) {
+      return { allowed: false, reason: 'Too many resume requests per hour' };
+    }
+
+    await env.RATE_LIMITER_KV.put(hourKey, (count + 1).toString(), { expirationTtl: 7200 });
+  } catch (error) {
+    console.error('Resume chain limit check error:', error);
+    // Fail open for KV errors, consistent with checkRateLimit above.
+  }
+
+  return { allowed: true };
+}
+
+/**
+ * Check the resume-chain limit and return a 429 response if exceeded, or
+ * null if allowed. Mirrors rateLimitOrReject's shape for handleChatResume.
+ */
+async function resumeChainLimitOrReject(request, env, corsHeaders, CONFIG) {
+  const rl = await checkResumeChainLimit(request, env, CONFIG);
   if (!rl.allowed) {
     return new Response(
       JSON.stringify({ error: 'Rate limit exceeded', details: rl.reason }),
@@ -220,6 +321,7 @@ function isAllowedOrigin(origin) {
     'https://nemar.org',
     'https://openneuropet.github.io',
     'https://sccn.github.io',
+    'https://test.nemar.org',
     'https://www.eeglab.org',
     'https://www.fieldtriptoolbox.org',
     'https://www.hedtags.org',
@@ -260,7 +362,7 @@ function isAllowedOrigin(origin) {
 /**
  * Validate community ID format
  */
-function isValidCommunityId(id) {
+export function isValidCommunityId(id) {
   // Allow alphanumeric, hyphen, underscore, 1-50 chars
   return /^[a-zA-Z0-9_-]{1,50}$/.test(id);
 }
@@ -282,7 +384,7 @@ function getCorsHeaders(origin) {
 /**
  * Validate community ID and return error response if invalid, or null if valid.
  */
-function validateCommunityId(communityId, corsHeaders) {
+export function validateCommunityId(communityId, corsHeaders) {
   if (RESERVED_PATHS.includes(communityId)) {
     return new Response('Not Found', { status: 404, headers: corsHeaders });
   }
@@ -599,8 +701,34 @@ export default {
         }
       }
 
+      // Community runtime wheel: /:communityId/runtime/:file (GET, immutable bytes)
+      const communityRuntimeMatch = pathname.match(ROUTE_PATTERNS.communityRuntimeFile);
+      if (communityRuntimeMatch && request.method === 'GET') {
+        const [, communityId, fileName] = communityRuntimeMatch;
+
+        const invalid = validateCommunityId(communityId, corsHeaders);
+        if (invalid) return invalid;
+
+        return await handleRuntimeFile(request, env, ctx, communityId, fileName, corsHeaders, CONFIG);
+      }
+
+      // Community endpoint: /:communityId/chat/resume (three segments).
+      // Matched ahead of the two-segment ask/chat route below purely for
+      // readability; the two patterns are anchored to different segment
+      // counts (communityChatResume always has a literal /chat/resume tail)
+      // so neither can shadow the other regardless of order.
+      const communityChatResumeMatch = pathname.match(ROUTE_PATTERNS.communityChatResume);
+      if (communityChatResumeMatch && request.method === 'POST') {
+        const [, communityId] = communityChatResumeMatch;
+
+        const invalid = validateCommunityId(communityId, corsHeaders);
+        if (invalid) return invalid;
+
+        return await handleChatResume(request, env, communityId, corsHeaders, CONFIG);
+      }
+
       // Community endpoints: /:communityId/ask and /:communityId/chat
-      const communityActionMatch = pathname.match(/^\/([^\/]+)\/(ask|chat)$/);
+      const communityActionMatch = pathname.match(ROUTE_PATTERNS.communityAction);
       if (communityActionMatch && request.method === 'POST') {
         const [, communityId, action] = communityActionMatch;
 
@@ -648,6 +776,8 @@ function handleRoot(corsHeaders, CONFIG) {
       'GET /:communityId/': 'Get community configuration',
       'POST /:communityId/ask': 'Ask a single question to a community',
       'POST /:communityId/chat': 'Multi-turn conversation with a community',
+      'POST /:communityId/chat/resume': 'Resume a conversation after a client-executed tool call',
+      'GET /:communityId/runtime/:file': 'A wheel the community\'s browser runtime loads (immutable)',
       'GET /:communityId/metrics/public': 'Public community metrics',
       'GET /:communityId/sessions': 'List sessions (requires API key)',
       'GET /communities': 'List communities with widget configuration',
@@ -662,6 +792,7 @@ function handleRoot(corsHeaders, CONFIG) {
       turnstile: 'visible (required for web clients)',
       byok: 'Bring Your Own Key mode for CLI/programmatic access',
       rate_limit: `${CONFIG.RATE_LIMIT_PER_MINUTE}/min, ${CONFIG.RATE_LIMIT_PER_HOUR}/hour`,
+      resume_rate_limit: `${CONFIG.RATE_LIMIT_PER_MINUTE}/min (shared per-minute limiter), ${CONFIG.RESUME_LIMIT_PER_HOUR}/hour (separate resume-chain cap; /chat/resume is exempt from the rate_limit hourly figure above)`,
     },
     notes: {
       communities: 'Available communities: hed, bids, eeglab, nemar (check /communities endpoint for full list)',
@@ -794,4 +925,134 @@ async function handleFeedback(request, env, corsHeaders, CONFIG) {
     });
   }
   return await proxyToBackend(request, env, '/feedback', body, corsHeaders, CONFIG);
+}
+
+/**
+ * Handle the chat resume endpoint: rate-limit-only, no Turnstile, and
+ * exempt from the hourly counter.
+ *
+ * Rate-limit-only, no Turnstile: protected POSTs (handleProtectedEndpoint)
+ * verify a single-use Turnstile token that the widget clears after each
+ * message it sends. A /chat/resume call follows a client-executed tool
+ * call, not a new widget-composed message, so it cannot carry a valid
+ * token. Routed the same way as /feedback (handleFeedback above), which the
+ * worker already treats as rate-limit-only. This is latent today because
+ * Turnstile verification is disabled (no TURNSTILE_SECRET_KEY configured),
+ * and would be fatal the day it is switched on: every resume call would be
+ * rejected as a failed bot check.
+ *
+ * Exempt from the hourly counter: production is 10/minute and 20/hour per
+ * IP. One conversational turn with N client-executed tool calls is 1 + N
+ * HTTP requests (the original /chat plus one /chat/resume per execution),
+ * so counting resume calls against the hourly cap would let two executions
+ * in one turn burn three of a user's twenty hourly requests -- a budget
+ * shared across an entire NAT'd lab. The per-minute limiter (bot
+ * protection) still applies via rateLimitOrReject's default behavior.
+ *
+ * That exemption is only safe because resumeChainLimitOrReject, below,
+ * bounds the chain itself against a separate, generous hourly budget --
+ * see checkResumeChainLimit for why an unbounded chain would otherwise
+ * let this exemption be abused.
+ */
+/** Wheels are named by version and verified by sha256, so a name never changes bytes. */
+const IMMUTABLE = 'public, max-age=31536000, immutable';
+
+/**
+ * Serve a wheel a community's browser runtime loads (#431).
+ *
+ * The edge cache answers repeats, so only a miss spends rate budget, and never
+ * the hourly budget /chat counts against: one cold start fetches a wheel or two
+ * per reader, and charging those as chats would spend a NAT'd lab's twenty
+ * hourly questions on downloads. The cache holds the bytes without CORS
+ * headers, because they are the same for every embedder and the headers are
+ * not; each response gets its own.
+ */
+async function handleRuntimeFile(request, env, ctx, communityId, fileName, corsHeaders, CONFIG) {
+  const path = `/${communityId}/runtime/${fileName}`;
+  // The Cache API exists in Workers and not in Bun, where test-routing.js
+  // supplies one; on a *.workers.dev host it exists and stores nothing, which
+  // is only a miss.
+  const cache = typeof caches !== 'undefined' ? caches.default : null;
+  const cacheKey = new Request(new URL(path, request.url).toString(), { method: 'GET' });
+  const respond = (body) => new Response(body, {
+    status: 200,
+    headers: { ...corsHeaders, 'Content-Type': 'application/octet-stream', 'Cache-Control': IMMUTABLE },
+  });
+
+  if (cache) {
+    const cached = await cache.match(cacheKey);
+    if (cached) return respond(cached.body);
+  }
+
+  const rejected = await rateLimitOrReject(request, env, corsHeaders, CONFIG, { countHourly: false });
+  if (rejected) return rejected;
+
+  if (!env.BACKEND_URL) {
+    return new Response(JSON.stringify({ error: 'Backend not configured' }), {
+      status: 503,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  }
+  const backendHeaders = {};
+  if (env.BACKEND_API_KEY) backendHeaders['X-API-Key'] = env.BACKEND_API_KEY;
+
+  let upstream;
+  try {
+    upstream = await fetch(`${env.BACKEND_URL}${path}`, {
+      method: 'GET',
+      headers: backendHeaders,
+      signal: AbortSignal.timeout(CONFIG.REQUEST_TIMEOUT),
+    });
+  } catch (error) {
+    console.error('Runtime file proxy error:', error.message);
+    return new Response('Bad Gateway', { status: 502, headers: corsHeaders });
+  }
+  // A 404 is the backend's answer (not a listed wheel) and passes through. Any
+  // other failure, the backend's own 503 for an overlay that does not verify
+  // included, is not cached and must not read as "no such file".
+  if (upstream.status === 404) return new Response('Not Found', { status: 404, headers: corsHeaders });
+  if (!upstream.ok) {
+    console.error(`Runtime file ${path}: backend answered ${upstream.status}`);
+    return new Response('Bad Gateway', { status: 502, headers: corsHeaders });
+  }
+
+  const bytes = await upstream.arrayBuffer();
+  if (cache) {
+    const stored = new Response(bytes, {
+      headers: { 'Content-Type': 'application/octet-stream', 'Cache-Control': IMMUTABLE },
+    });
+    // Logged, because a write that fails leaves every later request a miss,
+    // each spending rate budget, with nothing else to show for it.
+    ctx.waitUntil(
+      cache.put(cacheKey, stored).catch((error) => {
+        console.error(`Runtime file ${path}: cache write failed:`, error && error.message);
+      })
+    );
+  }
+  return respond(bytes);
+}
+
+async function handleChatResume(request, env, communityId, corsHeaders, CONFIG) {
+  const rejected = await rateLimitOrReject(request, env, corsHeaders, CONFIG, { countHourly: false });
+  if (rejected) return rejected;
+
+  // Separate, generous cap on resume chains themselves; see
+  // checkResumeChainLimit for why this exists alongside the exemption above.
+  const chainRejected = await resumeChainLimitOrReject(request, env, corsHeaders, CONFIG);
+  if (chainRejected) return chainRejected;
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response(JSON.stringify({ error: 'Invalid JSON in request body' }), {
+      status: 400,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  }
+
+  // Correlation identifiers (session_id, call_id) travel in this JSON body,
+  // not as headers: the worker forwards only an allowlisted header set to
+  // the backend, and this route does not add to it.
+  return await proxyToBackend(request, env, `/${communityId}/chat/resume`, body, corsHeaders, CONFIG);
 }

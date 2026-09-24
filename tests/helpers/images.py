@@ -79,6 +79,18 @@ def _fill(pixels: bytearray, width: int, left: int, top: int, right: int, bottom
         pixels[y * width + left : y * width + right] = bytes([INK]) * (right - left)
 
 
+def tiny_png(width: int = 4, height: int = 3) -> bytes:
+    """The smallest real PNG at an exact, caller-chosen size.
+
+    For tests that need to know a PNG's dimensions in advance -- proving
+    `src.api.tool_results.png_dimensions` reads a real IHDR chunk, or standing in
+    for what an MCP tool's `ImageContent` would return -- rather than derive them
+    from a chart the way `bar_chart_png` does.
+    """
+    pixels = bytearray([PAPER]) * (width * height)
+    return _encode_grayscale_png(pixels, width, height)
+
+
 def bar_chart_png(
     heights: Sequence[float],
     *,

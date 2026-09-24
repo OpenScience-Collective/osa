@@ -45,7 +45,19 @@ server = [
     "uvicorn[standard]>=0.38.0",
     # LangChain/LangGraph
     "langchain>=1.2.0",
-    "langchain-core>=1.2.0",
+    # `count_tokens_approximately` must charge image blocks a fixed penalty. Before
+    # it did, any non-string content was `repr()`-ed whole and divided by four, so one
+    # 400 KB figure measured about 100,000 tokens against an 80,000 budget and
+    # `trim_messages` silently discarded the conversation. That matters here because a
+    # browser tool result carries plots, and it matters more than usual because CI
+    # resolves without the lockfile (issue #374).
+    #
+    # The feature landed in **1.2.8**, bisected release by release: 1.2.6 and 1.2.7 have
+    # the `repr()` fallback, 1.2.8 onward has `tokens_per_image`. So the true minimum is
+    # `>=1.2.8`, and 1.6.0 is a deliberate safety margin rather than the boundary. An
+    # earlier version of this comment claimed 1.6 was where it landed; that was inferred
+    # from two endpoints without bisecting, and it was wrong.
+    "langchain-core>=1.6.0",
     "langchain-openai>=1.1.0",
     "langchain-anthropic>=1.7.2",
     "langchain-community>=0.4.0",
@@ -174,3 +186,8 @@ python_version = "3.11"
 warn_return_any = true
 warn_unused_ignores = true
 disallow_untyped_defs = true
+
+[dependency-groups]
+dev = [
+    "nbformat>=5.11.1",
+]

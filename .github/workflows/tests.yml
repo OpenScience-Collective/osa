@@ -32,6 +32,18 @@ jobs:
         run: |
           uv run ruff format --check src tests
 
+      # Scoped to the notebook site's own workflows (PR review finding, #465):
+      # a hand-written run: block there is exactly the kind of shell mistake
+      # actionlint's embedded shellcheck catches, and nothing else in this
+      # repository's CI statically checks a workflow file at all. Not run
+      # against every workflow in .github/workflows/ -- fixing whatever that
+      # would surface elsewhere is a separate change. Version pinned so a new
+      # actionlint release cannot silently change what this step accepts.
+      - name: Check the notebook site workflows with actionlint
+        run: |
+          bash <(curl -s https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.12
+          ./actionlint .github/workflows/deploy-notebook.yml .github/workflows/notebook-site-check.yml
+
   test:
     name: Test
     needs: lint
@@ -55,11 +67,43 @@ jobs:
         run: |
           uv sync --frozen --extra dev
 
+      # tests/test_frontend/test_workspace_export.py spawns a small Bun
+      # script (build_workspace_export_fixture.js) that calls the real
+      # frontend/osa-workspace.js; it has no external package dependencies,
+      # so `bun` on PATH is enough here, with no `bun install` needed.
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
       - name: Run tests
         env:
           READ_GITHUB_TOKEN: ${{ secrets.READ_GITHUB_TOKEN }}
         run: |
           uv run pytest --ignore=tests/test_integration -v --cov=src --cov-report=xml -m "not network"
+
+      # The widget's light and dark appearance in real Chrome (#469). The bug is the
+      # browser's own drawing of form controls on a dark host page, which the happy-dom
+      # suite cannot show. The check starts its own two widget_e2e.py servers (the
+      # default config, and the same with color_scheme: auto), so it needs this job's
+      # Python environment as well as Bun; the runner ships Chrome.
+      - name: Check the widget's light and dark appearance in headless Chrome
+        if: matrix.python-version == '3.12'
+        run: bun frontend/browser-harness/color-scheme-check.mjs --serve
+
+      # Every frame in which the launcher is visible shows the community's look,
+      # never the defaults first (#475); needs the same server as the check above.
+      - name: Check the widget's first paint in headless Chrome
+        if: matrix.python-version == '3.12'
+        run: bun frontend/browser-harness/first-paint-check.mjs --serve
+
+      # The pop-out under the harness's copy of nemar.org's policy, with no
+      # 'unsafe-inline' in script-src (#470): it renders from the capsule's chat and
+      # notebook tabs, on the tab it came from, and carries the widget tag's
+      # integrity, which the browser checks there. Needs the same server.
+      - name: Check the widget's pop-out in headless Chrome
+        if: matrix.python-version == '3.12'
+        run: bun frontend/browser-harness/popout-check.mjs --serve
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4
@@ -76,6 +120,11 @@ jobs:
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
+        with:
+          # The Bun that builds frontend/osa-runtime.bundle.js. The staleness
+          # check below rebuilds and compares bytes, which only means something
+          # if CI minifies exactly as the machine that built the bundle did.
+          bun-version-file: package.json
 
       - name: Run citation marker tests
         run: bun frontend/test-citation-markers.js
@@ -91,6 +140,89 @@ jobs:
 
       - name: Run worker mounted-hosts agreement test
         run: bun workers/osa-worker/test-mounted-hosts.js
+
+      - name: Run browser runtime lifecycle tests
+        run: bun frontend/test-runtime-lifecycle.js
+
+      - name: Run runtime egress control tests
+        run: bun frontend/test-egress.js
+
+      - name: Run runtime output capture tests
+        run: bun frontend/test-output.js
+
+      - name: Run tool_request controller and highlighter tests
+        run: bun frontend/test-controller.js
+
+      # Path validation, manifest derivation, the .ipynb builder and the zip
+      # writer, none of which touch IndexedDB (it does not exist under Bun);
+      # the zip is checked by unzip and Python's zipfile, both preinstalled
+      # on ubuntu-latest.
+      - name: Run workspace tests
+        run: bun frontend/test-workspace.js
+
+      # notebook/open.js's pure logic (validation, token filling, entry shape);
+      # the real IndexedDB write and redirect are notebook/e2e-check.js, run
+      # separately in real Chrome (see notebook/README.md).
+      - name: Run notebook bootstrap tests
+        run: bun notebook/test-open.js
+
+      # The worker core runs against the REAL Pyodide from npm, so the Python half
+      # of the runtime is tested in CI rather than only by hand in a browser. The
+      # npm package carries the interpreter; numpy and matplotlib are fetched from
+      # the CDN on the first run and cached between runs.
+      - name: Install frontend test dependencies
+        run: bun install
+
+      - name: Cache Pyodide packages
+        uses: actions/cache@v4
+        with:
+          path: .cache/pyodide-packages
+          # Keyed on the manifest that pins Pyodide, so a version bump starts a
+          # fresh cache instead of relying on someone to edit a second copy here.
+          key: pyodide-packages-${{ hashFiles('package.json') }}
+
+      - name: Run worker core tests against real Pyodide
+        run: bun frontend/test-worker-core.js
+
+      # NEMAR's runtime as it ships: its config, its lock overlay and the wheels
+      # beside it, loaded by the real core and reading a sharded store over HTTP.
+      - name: Run the NEMAR data lane against real Pyodide
+        run: bun frontend/test-data-lane.js
+
+      - name: Check the runtime bundle and its hash are current
+        run: bun scripts/build-runtime-bundle.js --check
+
+      - name: Run runtime bundle tests, as built
+        run: bun frontend/test-runtime-bundle.js
+
+      - name: Run widget browser-execution tests on a real DOM
+        run: bun frontend/test-widget-tools.js
+
+      - name: Run the capsule launcher tests on a real DOM
+        run: bun frontend/test-widget-capsule.js
+
+      - name: Run the light and dark appearance tests on a real DOM
+        run: bun frontend/test-widget-color-scheme.js
+
+      - name: Run the notebook tab tests on a real DOM
+        run: bun frontend/test-widget-notebook-tab.js
+
+      - name: Run the first paint tests on a real DOM
+        run: bun frontend/test-widget-first-paint.js
+
+      - name: Run the dataset question tests on a real DOM
+        run: bun frontend/test-widget-dataset-questions.js
+
+      - name: Run the pop-out tests on a real DOM
+        run: bun frontend/test-widget-popout.js
+
+      # What only a browser can check: Pyodide under a real Content-Security-Policy,
+      # the egress guard on a real worker global, and NEMAR's lock overlay loaded by
+      # URL with each wheel's sha256 enforced (a valid wheel with other bytes must
+      # not start). The runner ships Chrome; the harness downloads Pyodide from the
+      # CDN, as a reader's browser does.
+      - name: Run the browser harness in headless Chrome
+        run: bun frontend/browser-harness/chrome.js
 
       - name: Check widget syntax
         run: node --check frontend/osa-chat-widget.js

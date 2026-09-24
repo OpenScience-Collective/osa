@@ -1,0 +1,587 @@
+#!/usr/bin/env python3
+"""Build the notebook.osc.earth/osa static site (issue #453, docs/adr/0011-the-notebook-site.md).
+
+    uv run python scripts/build_notebook_site.py \\
+        --site-url https://notebook.osc.earth/osa --output-dir dist/notebook-site \\
+        --environment production
+
+Needs no secrets, and can run in CI: it fetches Pyodide's own build tooling from
+PyPI and its lock from jsDelivr (both public, and the lock is pinned and verified
+by sha256 -- see PYODIDE_LOCK_SHA256 below), then assembles, for every community
+that names a ``notebook:`` block in its ``config.yaml``:
+
+1. A JupyterLite site (``jupyterlite-core`` 0.8.4, ``jupyterlite-pyodide-kernel``
+   0.8.0), patched to load Pyodide 0.29.5 from jsDelivr rather than the kernel's own
+   default pin, WITHOUT self-hosting it (``--pyodide=<tarball>`` would copy the full
+   ~464 MB distribution into the site; ``pyodideUrl`` keeps it a CDN reference).
+2. ``lock/pyodide-lock.json``: Pyodide's own lock, pinned and sha256-verified, with
+   every notebook-enabled community's own lock overlay merged in (never replacing a
+   distribution package; see ``src.core.config.notebook_lock.merge_site_lock``).
+3. ``wheels/<community>/<file>``: each overlay wheel, copied from the community's own
+   ``runtime/wheels/`` folder, its sha256 already verified by ``load_runtime_lock``.
+4. ``starters/<community>.ipynb`` and ``starters/index.json``: each community's
+   starter notebook, validated (``validate_notebook_starter``), with ``{{zarr_base}}``
+   and ``{{dataset_page_base}}`` filled in for ``--environment`` (``fill_build_time_
+   tokens``; a build for an environment a community has not declared either for is
+   refused, ``environment_bases``), and the dataset id pattern ``notebook/open.js``
+   gates a request against. ``{{dataset_id}}`` is left for ``open.js`` to fill
+   client-side, per reader.
+5. The same-origin bootstrap (``open.html``, ``open.js``, vendored ``localforage``)
+   and ``osa-bridge.js``, copied verbatim from ``notebook/`` at the repository root.
+   The notebook page (``notebooks/index.html``) gains a script tag for the bridge
+   (``inject_bridge``), which runs a starter's setup cells when it opens and takes
+   the embedding widget's theme (docs/adr/0012-the-notebook-as-a-widget-tab.md).
+
+Everything above (1-5) is written under ``--output-dir/<subdir>``, where
+``<subdir>`` is ``--site-url``'s own path component (``osa`` for
+``https://notebook.osc.earth/osa``): OSC's naming rule is that a subdomain is a
+PLANE serving several projects, and the project itself is the PATH
+(``api.osc.earth/osa``, ``widget.osc.earth/osa``, ...), and this site follows the
+same rule rather than owning its subdomain's root. ``_headers`` is generated
+(not copied verbatim) with every path pattern prefixed by ``/<subdir>``, and
+written at ``--output-dir`` itself, because Cloudflare Pages only reads
+``_headers``/``_redirects`` from the exact root of the published directory --
+never from a subdirectory. When ``<subdir>`` is non-empty, a ``_redirects`` file
+sending ``/`` to ``/<subdir>/`` is also written at ``--output-dir``. A bare-host
+``--site-url`` (no path) is still accepted, and then everything sits at
+``--output-dir`` directly with no ``_redirects``, matching how a plain local
+test build with no path prefix behaves.
+
+``_headers`` also carries this environment's ``frame-ancestors`` list
+(``embed_origins``): the sites the chat widget runs on, which embed the notebook as
+a tab. Every build exposes JupyterLite's app as ``window.jupyterapp``, because the
+bridge drives it; the browser check (``notebook/e2e-check.js``) therefore runs the
+same build a deployment ships.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import urllib.request
+from pathlib import Path
+from urllib.parse import urlparse
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from src.core.config.community import CommunityConfig  # noqa: E402
+from src.core.config.notebook_lock import (  # noqa: E402
+    NOTEBOOK_ENVIRONMENTS,
+    NOTEBOOK_SITE_PYODIDE_VERSION,
+    fill_build_time_tokens,
+    merge_site_lock,
+    validate_notebook_starter,
+)
+from src.core.config.runtime_lock import load_runtime_lock, runtime_wheel  # noqa: E402
+
+ASSISTANTS_DIR = ROOT / "src" / "assistants"
+NOTEBOOK_SOURCE_DIR = ROOT / "notebook"
+
+JUPYTERLITE_CORE_VERSION = "0.8.4"
+JUPYTERLITE_PYODIDE_KERNEL_VERSION = "0.8.0"
+PYODIDE_VERSION = NOTEBOOK_SITE_PYODIDE_VERSION
+
+#: Pyodide 0.29.5's own lock, as fetched from jsDelivr on 2026-09-23 (see
+#: .context/notebook-surface-measurements.md). Pinned so a change upstream -- a
+#: yanked release, a re-published lock -- fails the build loudly instead of quietly
+#: shipping a different set of stock packages than every other check ran against.
+PYODIDE_LOCK_SHA256 = "14d2c2dba101277999e17135e653d8f15389ad1437f53eae213bf0c3cdff723d"
+
+PYODIDE_CDN_BASE = f"https://cdn.jsdelivr.net/pyodide/v{PYODIDE_VERSION}/full/"
+KERNEL_PLUGIN_ID = "@jupyterlite/pyodide-kernel-extension:kernel"
+
+#: The bootstrap and vendored files copied verbatim from notebook/ into the site's
+#: own subdirectory. ``_headers`` is NOT here: it is generated (path-prefixed) and
+#: written at the true publish root instead -- see ``write_headers``.
+BOOTSTRAP_FILES = ("open.html", "open.js", "localforage.min.js", "osa-bridge.js")
+
+#: The page ``open.js`` redirects into, and the only one the bridge is added to.
+NOTEBOOK_PAGE = Path("notebooks") / "index.html"
+BRIDGE_SCRIPT_TAG = '<script src="../osa-bridge.js" defer></script>'
+
+#: The sites, beyond each notebook community's own ``cors_origins``, that run the
+#: chat widget and so may embed the notebook. They mirror the widget hosts in
+#: ``src/api/main.py``'s ``_collect_cors_config``, less the dashboards, which do
+#: not host the widget. A frame-ancestors source cannot take a partial-label
+#: wildcard, so develop's previews (``*-demo.osc.earth``) are covered by
+#: ``*.osc.earth``; loopback is for local testing, and develop only.
+PLATFORM_EMBED_ORIGINS = {
+    "production": ("https://demo.osc.earth", "https://osa-demo.pages.dev"),
+    "develop": (
+        "https://demo.osc.earth",
+        "https://osa-demo.pages.dev",
+        "https://*.osc.earth",
+        "https://*.osa-demo.pages.dev",
+        "http://localhost:*",
+        "http://127.0.0.1:*",
+    ),
+}
+
+#: A Content Security Policy (CSP) host source: scheme, host (optionally led by a
+#: ``*.`` wildcard label) and an optional port or ``*``; no path.
+CSP_HOST_SOURCE = re.compile(r"^https?://(\*\.)?[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*(:(\d+|\*))?$")
+
+#: Replaced in the ``_headers`` template with this build's frame-ancestors list.
+FRAME_ANCESTORS_TOKEN = "{{frame_ancestors}}"
+
+#: Merged into the built ``jupyter-lite.json``'s ``settingsOverrides``. A notebook
+#: opened on its own follows the device's light or dark setting (the bridge sets
+#: an explicit theme when the widget embeds it), and edits reach storage within
+#: seconds rather than JupyterLab's default two minutes, so popping the widget out
+#: reopens the reader's latest edits.
+NOTEBOOK_SETTINGS_OVERRIDES = {
+    "@jupyterlab/apputils-extension:themes": {"adaptive-theme": True},
+    "@jupyterlab/docmanager-extension:plugin": {"autosaveInterval": 5},
+}
+
+#: The template ``_headers`` is generated from; see ``write_headers``.
+HEADERS_TEMPLATE = NOTEBOOK_SOURCE_DIR / "_headers"
+
+
+def site_subdir(site_url: str) -> str:
+    """The path component of ``site_url`` as a plain subdirectory name.
+
+    ``osa`` for ``https://notebook.osc.earth/osa``; ``""`` for a bare host with
+    no path, in which case the site is published at ``--output-dir`` directly.
+    """
+    return urlparse(site_url).path.strip("/")
+
+
+class NotebookSiteBuildError(RuntimeError):
+    """The notebook site cannot be built as configured or as the tools produced it."""
+
+
+def discover_notebook_communities() -> dict[str, CommunityConfig]:
+    """Every community whose config.yaml declares a ``notebook:`` block, by id."""
+    found: dict[str, CommunityConfig] = {}
+    for path in sorted(ASSISTANTS_DIR.glob("*/config.yaml")):
+        config = CommunityConfig.from_yaml(path)
+        if config.notebook is not None:
+            found[config.id] = config
+    return found
+
+
+def fetch_pyodide_lock(version: str, expected_sha256: str, url: str | None = None) -> dict:
+    """Pyodide's own lock, sha256-verified against the pin above.
+
+    ``url`` defaults to jsDelivr; a test overrides it with a real local HTTP
+    server to exercise the mismatch path against genuine bytes over a genuine
+    socket, rather than a stubbed return value.
+    """
+    if url is None:
+        url = f"https://cdn.jsdelivr.net/pyodide/v{version}/full/pyodide-lock.json"
+    with urllib.request.urlopen(url, timeout=60) as response:  # noqa: S310
+        data = response.read()
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != expected_sha256:
+        raise NotebookSiteBuildError(
+            f"{url} has sha256 {digest}, not the pinned {expected_sha256}. Pyodide "
+            f"{version}'s own lock changed upstream; re-verify and update the pin "
+            "deliberately rather than building against an unreviewed lock."
+        )
+    return json.loads(data)
+
+
+def run_jupyterlite_build(output_dir: Path) -> None:
+    """Shell out to the exact pinned JupyterLite build the maintainer's spike used."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="osa-notebook-lite-dir-") as empty_lite_dir:
+        command = [
+            "uv",
+            "tool",
+            "run",
+            "--from",
+            f"jupyterlite-core=={JUPYTERLITE_CORE_VERSION}",
+            "--with",
+            f"jupyterlite-pyodide-kernel=={JUPYTERLITE_PYODIDE_KERNEL_VERSION}",
+            "--with",
+            "jupyter-server",
+            "jupyter",
+            "lite",
+            "build",
+            "--output-dir",
+            str(output_dir),
+            # Explicit, empty: nothing here should merge stray jupyter-lite.json
+            # config from wherever this script happens to be run from.
+            "--lite-dir",
+            empty_lite_dir,
+            "--apps",
+            "notebooks",
+            "--apps",
+            "lab",
+        ]
+        result = subprocess.run(command, cwd=ROOT, check=False)  # noqa: S603
+        if result.returncode != 0:
+            raise NotebookSiteBuildError(f"jupyter lite build exited {result.returncode}")
+
+
+def patch_root_config(output_dir: Path) -> None:
+    """Pin the kernel's Pyodide to jsDelivr's own 0.29.5, without self-hosting it.
+
+    JupyterLite's own build-time config merge (``--lite-dir``) REPLACES
+    ``litePluginSettings`` wholesale rather than merging it (verified by reading
+    ``jupyterlite_core.addons.base.BaseAddon.merge_jupyter_config_data``: only
+    ``disabledExtensions``/``federated_extensions``/``settingsOverrides`` are
+    merged; every other key, ``litePluginSettings`` included, is a plain
+    overwrite), so a ``--lite-dir`` seed file would silently drop the build's own
+    ``pipliteUrls`` entry. Post-processing the built file instead, as here, keeps
+    it: this function reads it back and requires it to still be there.
+
+    Patching only the root ``jupyter-lite.json`` is enough for the ``notebooks``
+    app too: ``config-utils.js`` (bundled into every app page) fetches every
+    ancestor directory's ``jupyter-lite.json`` up to the site root at runtime and
+    merges each plugin's settings shallowly, so the notebooks app inherits this
+    file's values without its own copy needing the same patch.
+    """
+    config_path = output_dir / "jupyter-lite.json"
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except OSError as err:
+        raise NotebookSiteBuildError(f"{config_path} cannot be read: {err}") from err
+
+    jcd = data.get("jupyter-config-data")
+    if not isinstance(jcd, dict):
+        raise NotebookSiteBuildError(f"{config_path} has no jupyter-config-data")
+
+    settings = jcd.setdefault("litePluginSettings", {})
+    kernel_settings = settings.setdefault(KERNEL_PLUGIN_ID, {})
+    if "pipliteUrls" not in kernel_settings:
+        raise NotebookSiteBuildError(
+            f"{config_path}: {KERNEL_PLUGIN_ID} lost its pipliteUrls entry; the "
+            "installed jupyterlite-pyodide-kernel version may have changed how it "
+            "writes this file"
+        )
+
+    kernel_settings["pyodideUrl"] = f"{PYODIDE_CDN_BASE}pyodide.mjs"
+    kernel_settings["loadPyodideOptions"] = {
+        # Ends in "URL": the kernel's own code resolves this against the site's
+        # base URL, so a root-relative "./..." is correct here.
+        "lockFileURL": "./lock/pyodide-lock.json",
+        # Does NOT end in "URL" (it ends in "baseUrl"), so the kernel does not
+        # resolve it -- it must already be absolute, or every non-root-relative
+        # package fetch (every stock Pyodide package this site does not vendor)
+        # would resolve against this site instead of jsDelivr.
+        "packageBaseUrl": PYODIDE_CDN_BASE,
+    }
+    # The bridge (osa-bridge.js) drives the app through window.jupyterapp.
+    jcd["exposeAppInBrowser"] = True
+    overrides = jcd.setdefault("settingsOverrides", {})
+    for plugin_id, values in NOTEBOOK_SETTINGS_OVERRIDES.items():
+        overrides.setdefault(plugin_id, {}).update(values)
+
+    config_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def build_merged_lock_and_wheels(
+    output_dir: Path,
+    communities: dict[str, CommunityConfig],
+    stock_lock: dict,
+    site_url: str,
+) -> None:
+    """Write lock/pyodide-lock.json and copy every overlay wheel beside it."""
+    overlays = {}
+    lockfiles: dict[str, str] = {}
+    for community_id, config in communities.items():
+        python = config.runtime.python if config.runtime else None
+        lockfile = python.lockfile if python else None
+        if lockfile is None:
+            continue  # this community's starter needs nothing beyond stock Pyodide
+        overlays[community_id] = load_runtime_lock(ASSISTANTS_DIR / community_id, lockfile)
+        lockfiles[community_id] = lockfile
+
+    merged = merge_site_lock(stock_lock, overlays, site_url)
+    lock_dir = output_dir / "lock"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    (lock_dir / "pyodide-lock.json").write_text(json.dumps(merged, indent=2) + "\n")
+
+    for community_id, overlay in overlays.items():
+        lockfile = lockfiles[community_id]
+        dest_dir = output_dir / "wheels" / community_id
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        for entry in overlay.packages.values():
+            data = runtime_wheel(ASSISTANTS_DIR / community_id, lockfile, entry.file_name)
+            if data is None:
+                raise NotebookSiteBuildError(
+                    f"{community_id}: overlay lists {entry.file_name} but it was not "
+                    "found among its verified wheels"
+                )
+            (dest_dir / entry.file_name).write_bytes(data)
+
+
+def environment_bases(
+    community_id: str, config: CommunityConfig, environment: str
+) -> tuple[str, str]:
+    """``(zarr_base, dataset_page_base)`` for `community_id` at `environment`.
+
+    Raises :class:`NotebookSiteBuildError` if the community's ``notebook:`` block
+    does not declare that environment in either map, rather than leaving a
+    token unfilled or reading another environment's host.
+    """
+    assert config.notebook is not None
+    zarr_base = config.notebook.zarr_base.get(environment)
+    if zarr_base is None:
+        raise NotebookSiteBuildError(
+            f"{community_id}: no zarr_base declared for environment {environment!r} "
+            f"(has: {sorted(config.notebook.zarr_base)})"
+        )
+    dataset_page_base = config.notebook.dataset_page_base.get(environment)
+    if dataset_page_base is None:
+        raise NotebookSiteBuildError(
+            f"{community_id}: no dataset_page_base declared for environment {environment!r} "
+            f"(has: {sorted(config.notebook.dataset_page_base)})"
+        )
+    return zarr_base, dataset_page_base
+
+
+def write_starters(
+    output_dir: Path, communities: dict[str, CommunityConfig], environment: str
+) -> None:
+    """starters/<community>.ipynb (validated, with ``{{zarr_base}}``/``{{dataset_
+    page_base}}`` filled in for `environment`) and index.json."""
+    starters_dir = output_dir / "starters"
+    starters_dir.mkdir(parents=True, exist_ok=True)
+    index: dict[str, dict[str, str]] = {}
+    for community_id, config in communities.items():
+        assert config.notebook is not None  # discover_notebook_communities guarantees this
+        notebook = validate_notebook_starter(ASSISTANTS_DIR / community_id, config.notebook.starter)
+        zarr_base, dataset_page_base = environment_bases(community_id, config, environment)
+        notebook = fill_build_time_tokens(
+            notebook, zarr_base=zarr_base, dataset_page_base=dataset_page_base
+        )
+        (starters_dir / f"{community_id}.ipynb").write_text(
+            json.dumps(notebook, indent=2) + "\n", encoding="utf-8"
+        )
+        index[community_id] = {"dataset_pattern": config.notebook.dataset_pattern}
+    (starters_dir / "index.json").write_text(
+        json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+
+def copy_bootstrap_files(site_root: Path) -> None:
+    for name in BOOTSTRAP_FILES:
+        source = NOTEBOOK_SOURCE_DIR / name
+        if not source.exists():
+            raise NotebookSiteBuildError(f"missing bootstrap file: {source}")
+        shutil.copy2(source, site_root / name)
+
+
+def inject_bridge(site_root: Path) -> None:
+    """Add ``osa-bridge.js`` to the notebook page, just before its ``</head>``.
+
+    Refuses a page with no single ``</head>``, or one that already carries the
+    tag: either means JupyterLite's page changed shape, and a build that
+    silently shipped without the bridge would open notebooks whose setup cell
+    never runs.
+    """
+    page = site_root / NOTEBOOK_PAGE
+    try:
+        html = page.read_text(encoding="utf-8")
+    except OSError as err:
+        raise NotebookSiteBuildError(f"{page} cannot be read: {err}") from err
+    if html.count("</head>") != 1:
+        raise NotebookSiteBuildError(f"{page} does not have exactly one </head>")
+    if "osa-bridge.js" in html:
+        raise NotebookSiteBuildError(f"{page} already references osa-bridge.js")
+    page.write_text(html.replace("</head>", f"  {BRIDGE_SCRIPT_TAG}\n</head>"), encoding="utf-8")
+
+
+def embed_origins(communities: dict[str, CommunityConfig], environment: str) -> list[str]:
+    """The frame-ancestors sources for ``environment``: the platform's own widget
+    hosts (``PLATFORM_EMBED_ORIGINS``), then every notebook community's
+    ``cors_origins``, in that order, without duplicates.
+
+    Raises :class:`NotebookSiteBuildError` for an origin a frame-ancestors source
+    cannot express, such as a partial-label wildcard, rather than writing a
+    policy the browser would ignore. ``CommunityConfig``'s own ``cors_origins``
+    rule already refuses those at config load; this is the second check, for a
+    loosened loader rule or an origin set some other way.
+    """
+    if environment not in PLATFORM_EMBED_ORIGINS:
+        raise NotebookSiteBuildError(f"no platform embed origins declared for {environment!r}")
+    origins: list[str] = []
+    for origin in PLATFORM_EMBED_ORIGINS[environment]:
+        if origin not in origins:
+            origins.append(origin)
+    for community_id, config in communities.items():
+        for origin in config.cors_origins:
+            if not CSP_HOST_SOURCE.match(origin):
+                raise NotebookSiteBuildError(
+                    f"{community_id}: cors_origins entry {origin!r} cannot be written "
+                    "as a frame-ancestors source (a wildcard must be a whole leading "
+                    "label, as in https://*.example.org)"
+                )
+            if origin not in origins:
+                origins.append(origin)
+    return origins
+
+
+def write_headers(publish_root: Path, subdir: str, frame_ancestors: list[str]) -> None:
+    """``_headers``, every path pattern prefixed by ``/<subdir>`` and its
+    ``frame-ancestors`` filled in, at the site's TRUE publish root (never a
+    subdirectory: Cloudflare Pages only reads ``_headers``/``_redirects`` from
+    exactly there)."""
+    try:
+        text = HEADERS_TEMPLATE.read_text(encoding="utf-8")
+    except OSError as err:
+        raise NotebookSiteBuildError(
+            f"missing _headers template: {HEADERS_TEMPLATE}: {err}"
+        ) from err
+    if text.count(FRAME_ANCESTORS_TOKEN) != 1:
+        raise NotebookSiteBuildError(
+            f"{HEADERS_TEMPLATE} must carry {FRAME_ANCESTORS_TOKEN} exactly once"
+        )
+    text = text.replace(FRAME_ANCESTORS_TOKEN, " ".join(["'self'", *frame_ancestors]))
+    if subdir:
+        text = (
+            "\n".join(
+                f"/{subdir}{line}" if line.startswith("/") else line for line in text.splitlines()
+            )
+            + "\n"
+        )
+    (publish_root / "_headers").write_text(text, encoding="utf-8")
+
+
+def write_root_redirect(publish_root: Path, subdir: str) -> None:
+    """``/`` -> ``/<subdir>/``, Cloudflare Pages' own ``_redirects`` format.
+
+    Only written when there IS a subdir: a bare-host build has nothing to
+    redirect away from.
+    """
+    (publish_root / "_redirects").write_text(f"/  /{subdir}/  302\n", encoding="utf-8")
+
+
+def strip_sourcemaps(output_dir: Path) -> int:
+    """Remove every *.map file: a browser fetches one only when devtools asks for
+    it, so their absence changes nothing a reader's session depends on -- checked
+    directly by notebook/e2e-check.js, which runs the full notebook flow against a
+    build this function has already stripped."""
+    removed = 0
+    for map_file in output_dir.rglob("*.map"):
+        map_file.unlink()
+        removed += 1
+    return removed
+
+
+def parse_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--site-url",
+        required=True,
+        help="the site's own absolute base URL, e.g. https://notebook.osc.earth/osa",
+    )
+    parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument(
+        "--environment",
+        required=True,
+        choices=NOTEBOOK_ENVIRONMENTS,
+        help=(
+            "which deployment this build is for: production or develop. It "
+            "selects each community's zarr_base and dataset_page_base entry, "
+            "and has no default because a build for the wrong one still builds "
+            "(docs/adr/0011-the-notebook-site.md)."
+        ),
+    )
+    return parser.parse_args(argv)
+
+
+def finalize_publish_root(output_dir: Path, subdir: str, frame_ancestors: list[str]) -> None:
+    """Write ``_headers`` (and ``_redirects``, when ``subdir`` is non-empty) at the
+    true Cloudflare Pages publish root, ``output_dir`` -- NEVER at ``output_dir /
+    subdir`` (the site itself): Cloudflare Pages reads ``_headers``/``_redirects``
+    only from the exact root of the published directory, never from a
+    subdirectory (see this module's own docstring).
+
+    Pulled out of ``build()`` as its own step, callable on its own against a
+    synthetic output tree, so a regression in exactly this wiring -- passing the
+    site subdirectory instead of the publish root to either write -- is caught
+    by a fast offline test (``tests/test_scripts/test_build_notebook_site.py::
+    TestFinalizePublishRoot``) rather than only by the network-marked full build.
+    """
+    write_headers(output_dir, subdir, frame_ancestors)
+    if subdir:
+        write_root_redirect(output_dir, subdir)
+
+
+def build(site_url: str, output_dir: Path, environment: str) -> None:
+    """The whole build, callable directly (tests use this; main() is the CLI wrapper).
+
+    ``environment`` has no default (see ``--environment``'s own help): every
+    caller, including a test, must say which deployment this is.
+    """
+    if environment not in NOTEBOOK_ENVIRONMENTS:
+        raise NotebookSiteBuildError(
+            f"--environment must be one of {NOTEBOOK_ENVIRONMENTS}, got {environment!r}"
+        )
+
+    site_url = site_url.rstrip("/")
+    if not site_url:
+        raise NotebookSiteBuildError("--site-url must not be empty")
+
+    subdir = site_subdir(site_url)
+    site_root = output_dir / subdir if subdir else output_dir
+
+    communities = discover_notebook_communities()
+    if not communities:
+        raise NotebookSiteBuildError("no community declares a notebook: block; nothing to build")
+
+    for community_id, config in communities.items():
+        python = config.runtime.python if config.runtime else None
+        # Already enforced at config load (CommunityConfig.validate_notebook_needs_
+        # matching_pyodide); re-checked here so a build can never silently proceed
+        # even if that model validator were ever loosened.
+        if python is None or python.pyodide_version != PYODIDE_VERSION:
+            raise NotebookSiteBuildError(
+                f"{community_id}: notebook is configured but runtime.python."
+                f"pyodide_version is not {PYODIDE_VERSION!r}"
+            )
+        assert config.notebook is not None
+        validate_notebook_starter(ASSISTANTS_DIR / community_id, config.notebook.starter)
+        # Fail before the expensive jupyterlite build below, not deep inside
+        # write_starters: a build for an environment a community has not
+        # declared a data/website host for is a config problem, not a build
+        # problem, and should be reported as fast as the pyodide-version check.
+        environment_bases(community_id, config, environment)
+    frame_ancestors = embed_origins(communities, environment)
+
+    print(
+        f"building JupyterLite {JUPYTERLITE_CORE_VERSION} "
+        f"(kernel {JUPYTERLITE_PYODIDE_KERNEL_VERSION}) for {sorted(communities)} "
+        f"into {site_root} (site url {site_url}, environment {environment})"
+    )
+    run_jupyterlite_build(site_root)
+    patch_root_config(site_root)
+
+    print(f"fetching Pyodide {PYODIDE_VERSION}'s own lock")
+    stock_lock = fetch_pyodide_lock(PYODIDE_VERSION, PYODIDE_LOCK_SHA256)
+    build_merged_lock_and_wheels(site_root, communities, stock_lock, site_url)
+
+    write_starters(site_root, communities, environment)
+    copy_bootstrap_files(site_root)
+    inject_bridge(site_root)
+
+    finalize_publish_root(output_dir, subdir, frame_ancestors)
+
+    removed = strip_sourcemaps(site_root)
+    print(f"stripped {removed} sourcemap file(s)")
+    print(f"done: {output_dir}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    try:
+        build(args.site_url, args.output_dir, args.environment)
+    except NotebookSiteBuildError as err:
+        print(f"error: {err}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

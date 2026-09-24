@@ -45,7 +45,7 @@ uv run pre-commit install
 
 ```bash
 # Set up your API key
-# Anthropic (what the platform itself runs on): https://console.anthropic.com/settings/keys
+# Anthropic (what the platform itself runs on): https://platform.claude.com/settings/keys
 # OpenRouter (still supported for BYOK): https://openrouter.ai/keys
 osa init
 
@@ -110,7 +110,7 @@ OSA uses a YAML-driven registry to configure community assistants. Each communit
 # Directory structure
 src/assistants/
     hed/config.yaml      # HED assistant configuration
-    bids/config.yaml     # BIDS assistant (planned)
+    bids/config.yaml     # BIDS assistant
 ```
 
 ### Adding a New Community
@@ -162,6 +162,18 @@ uv run osa validate src/assistants/my-tool/config.yaml
 4. Start the server - the `/{community-id}/ask` endpoint is auto-created.
 
 For the full guide, see the [community registry documentation](https://docs.osc.earth/osa/registry/).
+
+To let a community's model write and run Python in the reader's own browser
+(`execute_code`, a client tool), see
+[`docs/community-browser-runtime.md`](docs/community-browser-runtime.md):
+the `extensions.client_tools` and `runtime.python` config keys, the lock
+overlay for wheels Pyodide does not ship, the embedding page's
+Content-Security-Policy, and the measured first-load cost.
+
+To customize a community's widget (title, greeting, suggested questions, logo,
+and its colors: the surface, the text on it, the accent used on the white
+panel, and the reader's own message bubble), see
+[`docs/community-widget.md`](docs/community-widget.md).
 
 ## Documentation
 

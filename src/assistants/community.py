@@ -24,6 +24,7 @@ from src.agents.base import ToolAgent
 from src.core.config.community import CommunityConfig
 from src.tools.base import DocRegistry
 from src.tools.citations import build_search_result, truncate
+from src.tools.client_tools import build_client_tools
 from src.tools.fetcher import get_fetcher
 from src.tools.knowledge import create_knowledge_tools
 from src.utils.page_fetcher import fetch_page
@@ -228,6 +229,14 @@ class CommunityAssistant(ToolAgent):
             them. Defaults to False so a caller who does not pass it gets
             today's plain-string tool behavior; the API layer resolves
             this from the request's provider choice (Anthropic only).
+        allow_mcp_images: Whether the model in use accepts the native Anthropic
+            image content block (`src.api.tool_results.ToolResultImage.to_content_block`).
+            When True, an MCP tool result carrying a PNG (`nemar_render_overview`)
+            attaches it for the model to see; when False, every MCP image becomes a
+            text placeholder instead. Defaults to False for the same reason
+            `citations` does: the API layer resolves this from the request's
+            provider choice, and OpenRouter/LiteLLM have not been shown to accept
+            this content block.
     """
 
     def __init__(
@@ -239,8 +248,22 @@ class CommunityAssistant(ToolAgent):
         additional_tools: list[BaseTool] | None = None,
         additional_instructions: str = "",
         citations: bool = False,
+        allow_mcp_images: bool = False,
+        declared_client_tools: set[str] | None = None,
+        browser_runs_left: int | None = None,
     ) -> None:
-        """Initialize the community assistant."""
+        """Initialize the community assistant.
+
+        `declared_client_tools` names the client-executed tools the CALLER says it can
+        run. Only tools that are both configured on the community and declared here are
+        bound, which is what makes it structurally impossible to ask a client to run
+        something it has no executor for: the model never sees the tool, so it cannot
+        call it. A caller that declares nothing, which is every caller until the widget
+        ships its runtime, gets exactly the server-only behavior of before.
+
+        `browser_runs_left` is how many more browser executions this reply may request;
+        see `BaseAgent`.
+        """
         self.config = config
         self.additional_instructions = additional_instructions
         self._preload_docs = preload_docs
@@ -282,8 +305,32 @@ class CommunityAssistant(ToolAgent):
         # plugin loader above: log and continue on failure, never raise out of
         # this constructor. An assistant that cannot start because someone
         # else's host is down is worse than one missing a few tools.
-        mcp_tools, self._degraded_mcp_servers = self._load_mcp_tools(config)
+        mcp_tools, self._degraded_mcp_servers = self._load_mcp_tools(
+            config, allow_images=allow_mcp_images
+        )
         tools.extend(mcp_tools)
+
+        # Tools this server binds but never executes; the browser does. Empty unless
+        # the community configures them AND the caller declares it can run them.
+        client_tools = build_client_tools(config, declared_client_tools)
+
+        # A client tool sharing a name with a real server tool is the one configuration
+        # mistake here with no symptom. `BaseAgent` partitions by name, so the server
+        # tool would be dropped from the node that executes it and the model's calls to
+        # it would be parked for a browser that has no executor for that name: the turn
+        # would simply hang. Config validation cannot see this, because the colliding
+        # name comes from a doc, knowledge or MCP tool assembled at runtime rather than
+        # from the same YAML block.
+        collisions = sorted({t.name for t in tools} & {t.name for t in client_tools})
+        if collisions:
+            raise ValueError(
+                f"Community '{config.id}' declares client tool(s) {collisions} whose "
+                "name(s) already belong to server-executed tools. Rename the client "
+                "tool: a shared name would route the server tool's calls to a browser "
+                "that cannot run them."
+            )
+
+        tools.extend(client_tools)
 
         # Generate system prompt
         system_prompt = self._build_system_prompt(config, additional_instructions)
@@ -310,6 +357,8 @@ class CommunityAssistant(ToolAgent):
             model=model,
             tools=tools,
             system_prompt=system_prompt,
+            client_tool_names={tool.name for tool in client_tools},
+            browser_runs_left=browser_runs_left,
         )
 
     def _fetch_preloaded_docs(self) -> dict[str, str]:
@@ -401,7 +450,9 @@ class CommunityAssistant(ToolAgent):
 
         return all_tools
 
-    def _load_mcp_tools(self, config: CommunityConfig) -> tuple[list[BaseTool], list[str]]:
+    def _load_mcp_tools(
+        self, config: CommunityConfig, *, allow_images: bool = False
+    ) -> tuple[list[BaseTool], list[str]]:
         """Load tools from configured Model Context Protocol (MCP) servers.
 
         Returns the tools, and the names of any configured servers that yielded
@@ -414,6 +465,10 @@ class CommunityAssistant(ToolAgent):
         swallows per-server failures, so the try here covers the import itself --
         `mcp` lives in the `server` extra, and a CLI-only install must not break
         on it.
+
+        `allow_images` is `CommunityAssistant`'s `allow_mcp_images`, passed straight
+        through to `discover_mcp_tools`; see its docstring for why this is part of
+        the tool-discovery cache key rather than a detail read later.
 
         Touches no instance state, so it stays callable as an unbound function.
         """
@@ -432,7 +487,7 @@ class CommunityAssistant(ToolAgent):
             return all_tools, [s.name for s in config.extensions.mcp_servers]
 
         for server in config.extensions.mcp_servers:
-            server_tools = discover_mcp_tools(server)
+            server_tools = discover_mcp_tools(server, allow_images=allow_images)
             if server_tools:
                 logger.info("Loaded %d tools from MCP server %s", len(server_tools), server.name)
             else:
@@ -623,6 +678,7 @@ def create_community_assistant(
     model: "BaseChatModel",
     config: CommunityConfig,
     citations: bool = False,
+    allow_mcp_images: bool = False,
     **kwargs,
 ) -> CommunityAssistant:
     """Factory function to create a generic community assistant.
@@ -633,6 +689,9 @@ def create_community_assistant(
         citations: Whether the model in use supports Anthropic's native
             search_result citations (see CommunityAssistant's `citations`
             flag). The API layer passes True only on the Anthropic path.
+        allow_mcp_images: Whether the model in use accepts the native Anthropic
+            image content block (see CommunityAssistant's `allow_mcp_images`
+            flag). The API layer passes True only on the Anthropic path.
         **kwargs: Additional arguments passed to CommunityAssistant.
             - preload_docs: Whether to preload docs (default: True)
             - page_context: PageContext for widget embedding
@@ -642,4 +701,10 @@ def create_community_assistant(
     Returns:
         Configured CommunityAssistant instance.
     """
-    return CommunityAssistant(model=model, config=config, citations=citations, **kwargs)
+    return CommunityAssistant(
+        model=model,
+        config=config,
+        citations=citations,
+        allow_mcp_images=allow_mcp_images,
+        **kwargs,
+    )

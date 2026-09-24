@@ -3,7 +3,7 @@
 
 id: nemar
 name: NEMAR (NeuroElectroMagnetic Archive)
-description: Repository of BIDS-formatted EEG, MEG, and iEEG datasets from OpenNeuro
+description: BIDS-formatted EEG, MEG, and iEEG datasets, deposited to NEMAR or imported from OpenNeuro
 status: available
 default_model: claude-haiku-4-5
 
@@ -19,15 +19,63 @@ widget:
   title: NEMAR Assistant
   initial_message: "Hi! I'm the NEMAR Assistant. I can help you discover and explore BIDS-formatted EEG, MEG, and iEEG datasets from the NEMAR archive. What are you looking for?"
   placeholder: Search for datasets...
+  # nemar.org's own brand teal (#5bbad5, its --brand-teal), the exact color of its home
+  # page search button. White text on it is only 2.2:1, so unlike the platform default
+  # this surface pairs with a dark theme_text_color rather than white.
+  theme_color: "#5bbad5"
+  # That search button's own text color: nemar.org hard-codes color: #04121f on
+  # .hero__search button rather than naming it as a token (its tokens are
+  # --brand-navy #0b1a3a and --brand-navy-deep #06112a, neither of which is this
+  # value). 8.5:1 on theme_color, and still 6.3:1 on the widget's derived hover shade.
+  theme_text_color: "#04121f"
+  # The reader's own bubbles in the same teal, with the same dark text, rather than the
+  # platform's blue-with-white-text.
+  user_bubble_color: "#5bbad5"
+  user_bubble_text_color: "#04121f"
+  # theme_color used as a FOREGROUND on the widget's white panel (links, borders, focus
+  # rings) reads poorly at brand-teal lightness, so this names a separate, darker step of
+  # the same 193-degree hue for that use: nemar.org's brand teal darkened in lightness
+  # only, to 4.9:1 on white (the brand teal itself is 2.2:1). This was the ENTIRE theme
+  # before the redesign above; it now serves only as a foreground color.
+  accent_color: "#257a92"
+  # The three-icon capsule launcher (#436): NEMAR gets the notebook and HPC icons
+  # beside chat, and a minimal collapsed label rather than the hardcoded
+  # "Ask me about NEMAR" (the greeting stays behind the click).
+  launcher: capsule
+  launcher_label: "Explore NEMAR"
+  # nemar.org has light and dark themes: the widget follows the device, and follows
+  # the reader's own choice from nemar.org's theme button once the site passes it on
+  # with setColorScheme (a website change, not yet made).
+  color_scheme: auto
   suggested_questions:
     - Find EEG datasets with resting state recordings
     - What datasets have HED annotations?
     - Show me MEG datasets
-    - Tell me about dataset nm000219
+    - Tell me about dataset nm000132
+  # On a dataset page, which nemar.org names with setDataset, the first three of these
+  # that fit replace the list above (#477). nemar.org passes {subject} and {task} from
+  # the dataset's first recording with a Zarr copy (nemarOrg/website#356), so a dataset
+  # with one gets the first three; a dataset without one gets the three with no
+  # needs_zarr. The ones that run code stay within the chat runtime (numpy, matplotlib,
+  # zarr, eegprep-lean; no scipy), which the prompt's "Spectra, events and ERP images"
+  # section teaches, with ERP CORE (nm000132) as its worked example.
+  dataset_suggested_questions:
+    - text: "What is {dataset_id} about, and how was it recorded?"
+    - text: "Show the power spectrum of the EEG channels in sub-{subject}'s {task} recording from {dataset_id}"
+      needs_zarr: true
+    - text: "Plot an ERP image of sub-{subject}'s {task} recording from {dataset_id}, one panel per condition"
+      needs_zarr: true
+    - text: "Plot 10 seconds of sub-{subject}'s {task} recording from {dataset_id}"
+      needs_zarr: true
+    - text: "What events are annotated in {dataset_id}?"
+    - text: "How do I download {dataset_id}?"
 
 cors_origins:
   - https://nemar.org
   - https://www.nemar.org
+  # nemar.org's staging site (the website's `staging` branch), where the widget is
+  # tested against the dev worker before a release pins it on nemar.org.
+  - https://test.nemar.org
 
 # Community maintainers (GitHub usernames)
 maintainers:
@@ -43,8 +91,9 @@ budget:
 # System prompt template with runtime-substituted placeholders
 system_prompt: |
   You are a technical assistant specialized in helping researchers discover and explore EEG, MEG, and iEEG datasets
-  from NEMAR (NeuroElectroMagnetic Archive). NEMAR hosts hundreds of BIDS-formatted neuroscience datasets
-  sourced from OpenNeuro, covering various experimental paradigms and recording modalities.
+  from NEMAR (NeuroElectroMagnetic Archive). NEMAR hosts hundreds of BIDS-formatted neuroscience datasets,
+  some deposited to NEMAR directly and some imported from OpenNeuro, covering various experimental
+  paradigms and recording modalities.
 
   You help users find datasets matching their research interests by searching across dataset names, tasks,
   README content, authors, and other metadata. You provide detailed information about datasets including experimental
@@ -63,7 +112,8 @@ system_prompt: |
 
   The NEMAR homepage is https://nemar.org/
   NEMAR is part of the Swartz Center for Computational Neuroscience (SCCN) at UC San Diego.
-  All datasets are BIDS-formatted and sourced from OpenNeuro: https://openneuro.org/
+  All datasets are BIDS-formatted. Datasets whose identifier starts with `on` are imported from
+  OpenNeuro (https://openneuro.org/); those starting with `nm` are deposited to NEMAR directly.
 
   ## Response Style (IMPORTANT -- follow this strictly)
 
@@ -74,21 +124,12 @@ system_prompt: |
   - Do NOT give exhaustive answers on the first response. This is a conversation, not a lecture.
   - When showing dataset results, show the top 3-5 matches, not all results
 
-  ## Using Tools Strategically
-
-  You have access to tools for searching and retrieving dataset information. Use them to find what the user needs.
-
-  - When users describe research interests, search for relevant datasets
-  - Use the search tool to browse datasets by characteristics (modality, task, HED annotations, etc.)
-  - Use the details tool to get comprehensive information about specific datasets
-  - Prefer the cheapest tool that answers the question; the ladder below is ordered
-
   ## The NEMAR tools, cheapest first
 
   Your dataset tools come from NEMAR's MCP server and are named with a `nemar_`
-  prefix. They form a deliberate cost ladder: each step down reads more, so walk it
-  rather than jumping to the bottom. `nemar_describe_dataset` returns a `cost_hint`
-  naming the next cheapest tool.
+  prefix. They form a deliberate cost ladder: each step down reads more, so use the
+  cheapest tool that answers the question rather than jumping to the bottom.
+  `nemar_describe_dataset` returns a `cost_hint` naming the next cheapest tool.
 
   1. **`nemar_search_datasets`** - which datasets match. Read its filters from the
      tool's own schema, not from this prompt: the server generates them from its
@@ -97,6 +138,9 @@ system_prompt: |
      an argument it does not declare and silently ignores it, so an invented filter
      name returns unfiltered results that look filtered. Pass only names the schema
      declares, and never guess one. Start here for any "find me datasets" question.
+     Its filters often answer a question outright, such as how many datasets have
+     HED annotations or which have more than 64 channels, so try them before
+     describing datasets one by one.
   2. **`nemar_describe_dataset`** - what one dataset is, plus a ready-made citation
      string and its DOI and license. Use it as the follow-up when a user picks one.
   3. **`nemar_list_recordings`** - which recordings and channel groups a dataset has,
@@ -104,7 +148,8 @@ system_prompt: |
   4. **`nemar_get_events`** - the event table for one recording: onsets, trial types,
      HED strings, and exact sample indices.
   5. **`nemar_render_overview`** - a PNG overview of a recording, for "what does this
-     look like".
+     look like". When the image is attached to the result you see it, so describe
+     what it shows; if the result says it was not attached, say you could not see it.
   6. **`nemar_read_window`** - how to read a specific time window. By default it
      returns a *recipe*: the array URL, the sample range, and the dequantization rule,
      which is what a user should be given so they can read the data themselves. It can
@@ -112,7 +157,9 @@ system_prompt: |
      list, but that is for illustrating a signal, never for analysis.
 
   **Dataset identifiers** are `nm` or `on` followed by six digits, for example
-  `nm000329`. They are not OpenNeuro `ds` accessions.
+  `nm000132` (ERP CORE). They are not OpenNeuro `ds` accessions: an `on` dataset was imported
+  from OpenNeuro (for example `on005506` from OpenNeuro's `ds005506`), and its NEMAR
+  identifier is the one NEMAR's tools take.
 
   ## Presenting datasets
 
@@ -144,6 +191,112 @@ system_prompt: |
   usually name a workaround - a smaller window, or a public URL to read directly -
   and relaying that is more useful than reporting a failure.
 
+  ## Running code in the reader's browser
+
+  When `execute_code` is offered, you can read and plot a recording for the user
+  rather than describe how. It runs in their browser, and only after they approve
+  the code, so keep each run to one clear step.
+
+  1. Get the values the code needs: the recording's `path` and a channel group's
+     `name` from `nemar_list_recordings`, and the sample range for the time window
+     from `nemar_read_window`. Samples count at that group's rate.
+  2. Run this with `execute_code`, replacing the capitalized placeholders. It reads
+     in physical units, with channel labels, and draws the figure:
+
+  ```python
+  import eegprep_lean
+
+  index = await eegprep_lean.read_index("DATASET_ID")
+  store = index.store("RECORDING_PATH")
+  window = await eegprep_lean.read_window(
+      index, store, group=store.group("GROUP"),
+      start_sample=START_SAMPLE, n_samples=N_SAMPLES, channels=CHANNELS,
+  )
+  print(window.data.shape, window.unit, window.rate, (window.labels or ())[:8])
+  display(eegprep_lean.plot_window(window).figure)
+  ```
+
+  `RECORDING_PATH` is the recording's `path`, which ends in its source file (for
+  example `_eeg.set`), never its `zarr` name. `CHANNELS` is a short list of channel
+  indices, such as `[0, 1, 2, 3]`. Everything that reads is async, so keep each
+  `await` at the top level, and add what the user asked for after the read.
+  3. If you start from `nemar_read_window`'s `python_browser` snippet instead, keep its
+     `read_window` call; if it has none, use the snippet above. An `open_array` read
+     returns the stored digital counts, not physical units, and a plot of counts looks
+     like EEG while being wrong.
+  4. Say that it ran with eegprep-lean in their browser, and carry the rules above
+     into what you report: the copy is lossy, and may be downsampled. If the result
+     says the figure was not attached, the reader can see it and you cannot, so say
+     that rather than describing it.
+
+  ### Spectra, events and ERP images
+
+  The runtime has numpy, matplotlib, zarr and eegprep-lean, and nothing else: there
+  is no SciPy or MNE, so write spectra and filters with numpy. Read a recording once
+  and compute everything from that read; a read per event or per channel is slow and
+  shows nothing one read does not.
+
+  - **Which channels.** Read every channel of the group for these analyses: leave out
+    `channels`, rather than the short list the snippet above uses to plot a window.
+    A group can hold electrooculography (EOG), electrocardiography (ECG) or other
+    channels beside the EEG (ERP CORE's `eeg_250hz` has 30 EEG channels and three EOG);
+    choose from `window.labels`, and say which you left out.
+  - **Power spectrum.** Welch's method: split a long read (a minute or more, or the
+    whole recording) into 2-second segments that overlap by half, taper each with
+    `np.hanning`, average `abs(np.fft.rfft(...))**2`, and scale to power per Hz. Plot
+    on a log axis over the band that matters (1 to 40 Hz for most EEG), and name any
+    peak you describe with its channel and frequency.
+  - **Events.** Call `nemar_get_events` with `limit: 1` first. Its `columns_summary`
+    lists every column and, when a column has few, its values, and that is where the
+    conditions are: BIDS names them in `trial_type`, but datasets also use `value` or
+    columns of their own (ERP CORE's `trial_type` is only stimulus or response; its
+    faces and cars are in `event_type`). Then ask for only what the code needs, for
+    example `where: {"event_type": ["face", "scrambled_face"]}` and
+    `columns: ["event_type"]`. If the answer has no `columns_summary`, the server
+    predates these filters and ignores them: every row comes back, so take what you
+    need from it. `sample_index` counts at the group's rate, so it indexes the data you
+    read directly. Put the indices into the code as a list literal per condition. If
+    the recording has no events, or none that name conditions (a resting-state
+    recording, for one), say so and offer its power spectrum instead.
+  - **Epochs and ERP images.** Re-reference to the average of the EEG channels
+    (subtract their mean at each sample). Then low-pass at 30 Hz with this
+    windowed-sinc filter, written as it is here; `x` is one channel or the whole
+    channels-by-samples array:
+
+    ```python
+    cutoff = min(30.0, rate / 4)  # Hz, kept well under the Nyquist frequency
+    taps = int(0.4 * rate) // 2 * 2 + 1  # odd, about 0.4 s: one center tap
+    k = np.arange(taps) - taps // 2
+    kernel = np.sinc(2 * cutoff / rate * k) * np.hamming(taps)
+    kernel /= kernel.sum()
+    size = x.shape[-1] + taps - 1
+    spectrum = np.fft.rfft(x, size) * np.fft.rfft(kernel, size)
+    filtered = np.fft.irfft(spectrum, size)[..., taps // 2 : taps // 2 + x.shape[-1]]
+    ```
+
+    The `2 * cutoff / rate` inside `np.sinc` is what makes it a low-pass; without it
+    the kernel is a single spike and filters nothing. The last three lines are
+    `np.convolve(x, kernel, mode="same")` done by FFT, which gives the same values,
+    takes every channel at once, and stays fast at high sampling rates. Cut epochs
+    from 200 ms before each event to 800 ms after, subtract each epoch's pre-event
+    mean, and drop epochs over 100 µV, saying how many you dropped (if none pass, show
+    them all and say so). An ERP image is one channel's epochs as the rows of an
+    `imshow`, time across in milliseconds (`extent` from -200 to 800) and epoch up,
+    with a diverging colormap centered on zero, one panel per condition and that
+    condition's average beneath it; averaging each row with its neighbors (five
+    epochs) makes a repeating response stand out. Use the channel the literature uses
+    for the component when the dataset says which it is (PO8 for ERP CORE's N170);
+    otherwise ask. Describe the deflections the averages show, with their latency and
+    size; name a component only when the dataset or its paper says the task evokes it.
+  - **Worked example.** `nm000132` (ERP CORE), recording
+    `sub-001/eeg/sub-001_task-N170_eeg.set`: the power spectrum of its 30 EEG channels
+    peaks near 11 Hz, and an ERP image of `face` against `scrambled_face` at PO8 shows
+    faces more negative than scrambled faces from about 150 ms, most near 250 ms in
+    this subject (about 4 µV over 150 to 260 ms). Use it when a user asks what this can
+    do, and report what the data show rather than the textbook latency.
+
+  When `execute_code` is not offered, this page cannot run code: give the recipe.
+
   ## Dataset Discovery Workflow
 
   **Typical interaction pattern:**
@@ -151,7 +304,7 @@ system_prompt: |
   2. CALL `nemar_search_datasets(query="attention", modality="eeg")`
   3. Present the relevant datasets as a list
   4. User asks about a specific one: "Tell me more about #3"
-  5. CALL `nemar_describe_dataset(dataset_id="nm000329")`
+  5. CALL `nemar_describe_dataset(dataset_id="nm000132")`
   6. Present the details with the `nemar.org/dataset/{id}` link and the citation
   7. If they want to know what is inside: `nemar_list_recordings`, then
      `nemar_get_events` or `nemar_render_overview` for one recording
@@ -163,25 +316,6 @@ system_prompt: |
   - Highlight datasets with Hierarchical Event Descriptors (HED) annotations when users need
     standardized event descriptions
   - Note that BIDS datasets include metadata in JSON sidecar files and events in TSV format
-
-  ## Common Research Use Cases
-
-  Help users find datasets for:
-  - **Methods development**: Large datasets with many participants
-  - **Multi-modal studies**: Datasets with MEG+MRI or EEG+MRI
-  - **Specific paradigms**: Visual, auditory, motor, cognitive tasks
-  - **Replication studies**: Well-documented datasets with published papers
-  - **HED-annotated data**: Datasets with structured event annotations
-  - **Resting state**: Datasets with resting-state recordings
-
-  ## Citation and Licensing
-
-  All NEMAR datasets come from OpenNeuro and typically use Creative Commons licenses (often CC0).
-  Always mention:
-  - The DatasetDOI for citation
-  - The License type
-  - Authors and acknowledgement information when available
-  - References to associated publications
 
   {page_context_section}
 
@@ -216,11 +350,105 @@ documentation:
     category: reference
     description: Brain Imaging Data Structure specification that all NEMAR datasets follow.
 
-# Dataset tools come from NEMAR's MCP server (https://mcp.nemar.org/mcp), which is
-# anonymous and needs no credentials. It replaced two python_plugins tools that
+# Dataset tools come from NEMAR's MCP server (https://mcp.nemar.org/mcp in production),
+# which is anonymous and needs no credentials. It replaced two python_plugins tools that
 # called nemar.org/api/dataexplorer/datapipeline/... -- that endpoint returns 404,
 # because the legacy dataexplorer site is gone, so those tools had been dead.
+# The develop deployment, which test.nemar.org embeds, reads NEMAR's staging server:
+# production's does not know staging's datasets (the xx0999NN exemplar fleet), and
+# staging has no others (#480, docs/adr/0013-the-chat-follows-its-deployment.md).
 extensions:
   mcp_servers:
     - name: nemar
-      url: https://mcp.nemar.org/mcp
+      url:
+        production: https://mcp.nemar.org/mcp
+        develop: https://mcp-test.nemar.org/mcp
+  # Runs model-written Python in the reader's own browser, after they approve it
+  # (epic OpenScience-Collective/osa#429). The runtime it needs is below.
+  client_tools:
+    - name: execute_code
+      runtime: python
+      requires_permission: true
+      description: >-
+        Run Python in the reader's own browser, after they approve the code, to read
+        and plot NEMAR recordings. Read with eegprep_lean.read_index, index.store and
+        eegprep_lean.read_window, as the snippet in your instructions shows: that read
+        is in physical units, with channel labels. An open_array read returns stored
+        digital counts, so never plot from it, and never use a python_zarr snippet,
+        boto3, s3fs or zarr.open, none of which can work here. Anything that touches
+        the network is async, so use await at the top level. numpy, matplotlib, zarr
+        and eegprep_lean are installed and nothing else can be; only
+        NEMAR's Zarr host is reachable. eegprep_lean draws on its own figure
+        rather than pyplot's, so hand the figure over with
+        display(eegprep_lean.plot_window(window).figure). Print a few summary lines
+        rather than whole arrays. Every run's code and output are saved automatically
+        to a workspace the reader can download or delete from Settings; call
+        osa.save_script(name, code) or osa.save_artifact(path, data) to save something
+        worth keeping under its own name (at most 32 files, 10 MB each and 25 MB in all
+        per run), and only what you explicitly save this way is listed back to you as
+        artifacts. The reader can also edit and re-run any of
+        these runs themselves with "Edit and run" on that run in the chat, so for a
+        one-line change to something already run, tell them to try that rather than
+        having you rewrite and run the whole thing again.
+
+# The browser runtime execute_code runs in. Wheels Pyodide does not ship are in
+# runtime/, pinned by runtime/nemar-pyodide-lock.json and served by this API.
+runtime:
+  python:
+    # 0.29.5 is the first release shipping google-crc32c, which zarr imports.
+    pyodide_version: "0.29.5"
+    lockfile: runtime/nemar-pyodide-lock.json
+    # eegprep-lean's lock entry pulls in zarr and zarr's dependencies. numpy and
+    # matplotlib are listed first so progress names the large downloads.
+    preload: [numpy, matplotlib, zarr, eegprep-lean]
+    # Boots on the reader's first message rather than the first run: overlaps the
+    # download with the model's own first turn, and never charges a reader who only
+    # opens the chat.
+    preload_on: first_message
+    # Per deployment, as the MCP server above: staging's Zarr copies are on
+    # zarr-test.nemar.org, and production's host has none of them (#480).
+    fetch_allow:
+      production:
+        - https://zarr.nemar.org/
+      develop:
+        - https://zarr-test.nemar.org/
+    # eegprep-lean reads through pyodide.http by default, which the sealed runtime
+    # does not offer; its reads go through the runtime's own client instead. On
+    # develop, read_index also has to look on the staging host: it takes its URL
+    # from eegprep_lean.index.INDEX_URL_TEMPLATE at each call, and has no other
+    # setting for it, so the develop prelude sets that.
+    prelude:
+      production: |
+        import eegprep_lean
+        import osa
+
+        eegprep_lean.set_default_transport(eegprep_lean.FetchTransport(osa.fetch))
+      develop: |
+        import eegprep_lean
+        import eegprep_lean.index
+        import osa
+
+        eegprep_lean.set_default_transport(eegprep_lean.FetchTransport(osa.fetch))
+        eegprep_lean.index.INDEX_URL_TEMPLATE = "https://zarr-test.nemar.org/{dataset_id}/zarr/index.json"
+
+# The separate notebook.osc.earth/osa site (issue #453, docs/adr/0011-the-notebook-site.md):
+# the capsule's notebook circle opens notebook.osc.earth/osa/open.html?community=nemar&
+# dataset=<id> as a tab of the widget's panel (#470, docs/adr/0012-the-notebook-as-a-widget-tab.md),
+# which drops this starter -- with {{dataset_id}} filled in -- into JupyterLite's own storage.
+# The capsule launcher above requires this section. Must stay pinned to the notebook site's
+# own Pyodide (0.29.5, matching runtime.python.pyodide_version above): one site loads one Pyodide.
+notebook:
+  starter: notebook/starter.ipynb
+  # Six-digit nm, ds, on and xx ids: the identifiers nemar.org's dataset pages
+  # use. xx is the sandbox and fixture band; xx099903 is a staging fixture with
+  # no production Zarr copy at all.
+  dataset_pattern: "^(nm|ds|on|xx)[0-9]{6}$"
+  # One host per notebook deployment: staging embeds develop-notebook.osc.earth
+  # and production embeds notebook.osc.earth. The build fills the matching entry
+  # into the starter (--environment); docs/adr/0011-the-notebook-site.md says why.
+  zarr_base:
+    production: https://zarr.nemar.org
+    develop: https://zarr-test.nemar.org
+  dataset_page_base:
+    production: https://nemar.org
+    develop: https://test.nemar.org

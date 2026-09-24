@@ -94,6 +94,112 @@ class TestCommunitiesEndpoint:
                     f"Community {community['id']} has widget config but no suggested questions"
                 )
 
+    def test_only_nemar_sets_its_own_bubble_color(self) -> None:
+        """NEMAR's widget colors the reader's bubbles; every other community keeps the
+        platform blue, because none of them sets user_bubble_color."""
+        client = _create_test_client()
+        data = client.get("/communities").json()
+
+        by_id = {community["id"]: community["widget"] for community in data}
+        assert by_id["nemar"].get("user_bubble_color") == "#5bbad5"
+        others = {cid: w.get("user_bubble_color") for cid, w in by_id.items() if cid != "nemar"}
+        assert others and all(color is None for color in others.values()), others
+
+    def test_only_nemar_sets_its_own_launcher_or_label(self) -> None:
+        """NEMAR is the only community on the three-icon capsule launcher (#436); every
+        other community stays on the 'bubble' default and sets no launcher_label."""
+        client = _create_test_client()
+        data = client.get("/communities").json()
+
+        by_id = {community["id"]: community["widget"] for community in data}
+        assert by_id["nemar"].get("launcher") == "capsule"
+        assert by_id["nemar"].get("launcher_label") == "Explore NEMAR"
+        others = {
+            cid: (w.get("launcher"), w.get("launcher_label"))
+            for cid, w in by_id.items()
+            if cid != "nemar"
+        }
+        assert others and all(value == (None, None) for value in others.values()), others
+
+    def test_only_nemar_has_dataset_questions(self) -> None:
+        """NEMAR is the only community with dataset-page questions (#477); the API omits
+        the field for every other community, so their widgets keep the general list."""
+        client = _create_test_client()
+        data = client.get("/communities").json()
+
+        by_id = {community["id"]: community["widget"] for community in data}
+        nemar = by_id["nemar"]["dataset_suggested_questions"]
+        assert nemar and all(set(q) == {"text", "needs_zarr"} for q in nemar), nemar
+        assert all("{dataset_id}" in q["text"] for q in nemar), nemar
+        # A dataset without a Zarr copy still gets three questions.
+        assert sum(1 for q in nemar if not q["needs_zarr"]) >= 3, nemar
+        # A question with a {subject} or {task} blank is one nemar.org fills from a
+        # recording with a Zarr copy, so it must need one.
+        assert all(
+            q["needs_zarr"] for q in nemar if "{subject}" in q["text"] or "{task}" in q["text"]
+        ), nemar
+        others = {
+            cid: w.get("dataset_suggested_questions") for cid, w in by_id.items() if cid != "nemar"
+        }
+        assert others and all(value is None for value in others.values()), others
+
+    def test_only_nemar_has_a_dark_appearance(self) -> None:
+        """NEMAR's widget follows the reader's light or dark setting (#469); every
+        other community stays on the 'light' default, which the API omits."""
+        client = _create_test_client()
+        data = client.get("/communities").json()
+
+        by_id = {community["id"]: community["widget"] for community in data}
+        assert by_id["nemar"].get("color_scheme") == "auto"
+        others = {cid: w.get("color_scheme") for cid, w in by_id.items() if cid != "nemar"}
+        assert others and all(value is None for value in others.values()), others
+
+    def test_only_nemar_runs_code_or_opens_a_notebook(self) -> None:
+        """Running the assistant's Python in the reader's browser, and the notebook
+        opened from the widget, are both opt-in per community: a client tool under
+        extensions.client_tools, a runtime section, and a notebook section. NEMAR is
+        the only community with any of the three, checked against every real
+        community's config rather than a hard-coded list of the others."""
+        configs = {
+            info.id: info.community_config
+            for info in registry.list_available()
+            if info.community_config
+        }
+        nemar = configs.pop("nemar")
+        assert [tool.name for tool in nemar.extensions.client_tools] == ["execute_code"]
+        assert nemar.runtime is not None
+        assert nemar.notebook is not None
+
+        assert configs, "expected at least one non-NEMAR community to compare against"
+        opted_in = {
+            cid: {
+                "client_tools": bool(config.extensions and config.extensions.client_tools),
+                "runtime": config.runtime is not None,
+                "notebook": config.notebook is not None,
+            }
+            for cid, config in configs.items()
+        }
+        assert all(not any(flags.values()) for flags in opted_in.values()), opted_in
+
+    def test_only_nemar_sets_its_own_text_colors(self) -> None:
+        """NEMAR's home-page-teal widget needs dark text on its light surfaces, which
+        every other community's widget does not: theme_text_color, accent_color and
+        user_bubble_text_color are all NEMAR-only, checked against every real
+        community's config rather than a hard-coded list of the others."""
+        client = _create_test_client()
+        data = client.get("/communities").json()
+
+        by_id = {community["id"]: community["widget"] for community in data}
+        assert by_id["nemar"].get("theme_text_color") == "#04121f"
+        assert by_id["nemar"].get("accent_color") == "#257a92"
+        assert by_id["nemar"].get("user_bubble_text_color") == "#04121f"
+
+        others = {cid: w for cid, w in by_id.items() if cid != "nemar"}
+        assert others, "expected at least one non-NEMAR community to compare against"
+        for field in ("theme_text_color", "accent_color", "user_bubble_text_color"):
+            leaked = {cid: w.get(field) for cid, w in others.items() if w.get(field) is not None}
+            assert not leaked, f"{field} is NEMAR-only, but is also set on {leaked}"
+
     def test_widget_title_defaults_to_name(self) -> None:
         """If widget title is not set, it should default to community name."""
         client = _create_test_client()
