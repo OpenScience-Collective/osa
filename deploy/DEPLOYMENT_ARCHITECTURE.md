@@ -37,6 +37,12 @@ This document explains the deployment architecture for OSA (Open Science Assista
 | Production | `https://api.osc.earth/osa` | `ghcr.io/openscience-collective/osa:latest` | 38528 |
 | Development | `https://api.osc.earth/osa-dev` | `ghcr.io/openscience-collective/osa:dev` | 38529 |
 
+The backend knows which of the two it is: `OSA_DEPLOYMENT` (`production` or `develop`), which `deploy/auto-update-dev.sh` passes as `develop`,
+and when that is unset, `develop` for a container mounted at `/osa-dev`.
+A community config value written per deployment resolves to that deployment's entry,
+so the development host reads a community's staging data (NEMAR's `mcp-test.nemar.org` and `zarr-test.nemar.org`)
+([ADR 0013](../docs/adr/0013-the-chat-follows-its-deployment.md)).
+
 ### What each image tag means
 
 | Tag | Moves when | Use it for |
