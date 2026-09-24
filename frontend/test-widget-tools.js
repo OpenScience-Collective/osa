@@ -1779,6 +1779,80 @@ console.log('\na failed first_message preload is retried by the next run, which 
   assertEqual(runtime.state, 'failed', 'boot() retried from FAILED and failed again the same way, against the same worker');
 }
 
+console.log('\nsending the first message while the runtime bundle is still loading is not lost: it boots once the bundle resolves');
+{
+  const config = {
+    default_model: 'm', offered_models: [], widget: {},
+    client_tools: [{ name: 'execute_code', runtime: 'python', requires_permission: true }],
+    runtime: { python: { ...LOCAL_RUNTIME_CONFIG, preload_on: 'first_message' } },
+  };
+  const fetch = async (url) => {
+    const s = String(url);
+    if (s.endsWith('/health')) return new Response(JSON.stringify({ status: 'healthy' }));
+    if (s.endsWith('/chat')) {
+      return new Response(JSON.stringify({ message: { content: 'hi' }, session_id: 's1' }),
+        { headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify(config), { headers: { 'content-type': 'application/json' } });
+  };
+  const { window, api, widget } = loadWidget({ fetch });
+
+  // The gate: intercept the script element loadRuntimeBundle() appends, WITHOUT
+  // connecting it to the live document, so nothing (not even happy-dom's own
+  // disabled-file-loading behavior, which otherwise auto-fires onerror or onload
+  // within a tick or two on its own schedule) can settle its load/error before
+  // this test decides to. loadRuntimeBundle/setUpBrowserTools/startBrowserTools
+  // all run completely unmodified; only the DOM's own script-loading mechanism
+  // (a platform boundary, exactly like fetch elsewhere in this file) is held open.
+  let capturedScript = null;
+  const realAppendChild = window.document.head.appendChild.bind(window.document.head);
+  window.document.head.appendChild = (node) => {
+    if (node && node.tagName === 'SCRIPT' && String(node.src).includes('osa-runtime.bundle.js')) {
+      capturedScript = node;
+      return node;
+    }
+    return realAppendChild(node);
+  };
+
+  widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: 'osa-test-bundle-race' });
+  widget.init();
+
+  await waitUntil(() => capturedScript !== null, 'the community config resolved and the bundle script was built');
+  assertEqual(api.getBrowserRuntime(), null, 'no runtime exists yet: the bundle has not resolved');
+
+  // The reader sends their first message before the bundle resolves.
+  const container = window.document.querySelector('.osa-chat-widget');
+  const input = container.querySelector('.osa-chat-input input');
+  input.value = 'hello';
+  click(window, container.querySelector('.osa-send-btn'));
+  assertEqual(api.getBrowserRuntime(), null, 'still no runtime: sending it does not itself construct one');
+
+  // Now the real loading path resolves, by this test's own hand: the real bundle
+  // bytes and the real PyodideRuntime class (every method, including boot()'s
+  // real state machine, is inherited unchanged), with only its workerFactory
+  // extension point (the same seam useLocalController substitutes elsewhere in
+  // this file) pointed at the real test worker protocol instead of a real
+  // network Pyodide boot.
+  // eslint-disable-next-line no-new-func
+  new Function(readFileSync(new URL('./osa-runtime.bundle.js', import.meta.url), 'utf8'))();
+  const RealOSARuntime = globalThis.OSARuntime;
+  window.OSARuntime = {
+    ...RealOSARuntime,
+    PyodideRuntime: class extends RealOSARuntime.PyodideRuntime {
+      constructor(options) {
+        super({ ...options, workerFactory: () => new Worker(new URL('./test-workers/happy.js', import.meta.url).href) });
+      }
+    },
+  };
+  capturedScript.onload();
+
+  await waitUntil(() => api.getBrowserRuntime() !== null, 'setUpBrowserTools constructs the runtime once the bundle resolves');
+  const runtime = api.getBrowserRuntime();
+  await waitUntil(() => runtime.state !== 'idle',
+    'and the catch-up in startBrowserTools boots it right away, since the first message was already sent');
+  await waitUntil(() => runtime.state === 'ready', 'the (test-worker) boot completes');
+}
+
 console.log('\n' + '='.repeat(60));
 console.log(`Total: ${passed + failed}   Passed: ${passed}   Failed: ${failed}`);
 clearTimeout(watchdog);
