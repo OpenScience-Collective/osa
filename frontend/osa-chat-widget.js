@@ -210,6 +210,21 @@
   // icon; may be set before init() runs, since the DOM does not exist to render into
   // yet -- the value just sits here until applyLauncherMode/renderLauncherIcons reads it.
   let currentDataset = null;
+  // The capsule's open tab (#470): 'chat' or 'notebook'. Only a capsule widget
+  // ever has a notebook tab; a bubble widget is always on chat.
+  let activeTab = 'chat';
+  // The notebook shown in the notebook tab (#470): its frame is created the first
+  // time the tab opens and kept, hidden, while chat is open, so the reader's Python
+  // session and edits survive switching back and forth. See ensureNotebookFrame.
+  //   state: 'idle' (no frame), 'loading' (frame loading, no word from the
+  //          notebook yet), 'ready' (the notebook reported ready), 'failed'
+  //   setup: the notebook's last setup status: null (none yet), 'running',
+  //          'done', 'error' or 'none' (a starter with no setup cell)
+  //   failure: why it failed, for the fallback's text: 'startup' or 'timeout'
+  const notebookEmbed = {
+    frame: null, datasetId: null, state: 'idle', setup: null, failure: null,
+    loadTimer: null, readyTimer: null, sentScheme: null
+  };
   const CHAT_HISTORY_VERSION = 2;
   let responseSequence = 0;
 
@@ -401,86 +416,205 @@
       display: flex;
       flex-direction: row;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
+      /* The hidden icons keep their place while the panel is closed (so the
+         chat button never moves, and the indicator's positions hold), which
+         leaves this box covering the page above the chat button; clicks there
+         go to the page. The buttons themselves take clicks back, below. */
+      pointer-events: none;
     }
 
-    /* Extends 8px beyond the icons on every side, so the pill reads as one control,
-       without adding padding to .osa-launcher-capsule itself: padding would shift the
-       fixed bottom/right anchor and move the chat button off its today's position. */
-    .osa-chat-widget.chat-open .osa-launcher-capsule::before {
+    /* The pill: 7px beyond the icons on every side, drawn behind them, without
+       padding on .osa-launcher-capsule itself (padding would shift the fixed
+       bottom/right anchor and move the chat button). It grows out of the chat
+       button when the panel opens (#470): toward the left in the row layout,
+       upward in the column layout past 601px. */
+    .osa-launcher-capsule::before {
       content: '';
       position: absolute;
-      inset: -8px;
+      inset: -7px;
       background: var(--osa-bg);
-      border-radius: 32px;
+      border-radius: 30px;
       box-shadow: var(--osa-shadow);
       z-index: -1;
+      opacity: 0;
+      transform: scaleX(0.35);
+      transform-origin: 100% 50%;
+      transition: opacity 200ms ease, transform 280ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .osa-chat-widget.chat-open .osa-launcher-capsule::before {
+      opacity: 1;
+      transform: none;
+    }
+
+    /* The filled circle behind the open tab (#470): slides between the chat and
+       notebook circles; positionIndicator moves it to its button's offset. */
+    .osa-capsule-indicator {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 46px;
+      height: 46px;
+      border-radius: 50%;
+      background: var(--osa-primary);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+      z-index: 0;
+      opacity: 0;
+      pointer-events: none;
+      transition: transform 380ms cubic-bezier(0.34, 1.25, 0.64, 1), opacity 160ms ease;
+    }
+
+    .osa-chat-widget.chat-open .osa-capsule-indicator {
+      opacity: 1;
     }
 
     /* Inside the capsule, the flex parent positions the chat button; its own
-       fixed/bottom/right (still true for a bubble-mode widget) would fight that. */
+       fixed/bottom/right (still true for a bubble-mode widget) would fight that.
+       46px, as are the other circles: about 15% larger than the Send button. */
     .osa-launcher-capsule .osa-chat-button {
       position: relative;
       bottom: auto;
       right: auto;
       flex-shrink: 0;
+      width: 46px;
+      height: 46px;
+      z-index: 1;
+      pointer-events: auto;
+      box-sizing: border-box;
+      border: 1.5px solid transparent;
+      transition: transform 0.2s, background-color 200ms ease, color 200ms ease, border-color 200ms ease, box-shadow 200ms ease;
+    }
+
+    .osa-launcher-capsule .osa-chat-button svg {
+      width: 21px;
+      height: 21px;
+    }
+
+    /* Open: the indicator is the chat circle's fill, so the button itself is clear. */
+    .osa-chat-widget.chat-open .osa-launcher-capsule .osa-chat-button,
+    .osa-chat-widget.chat-open .osa-launcher-capsule .osa-chat-button:hover {
+      background: transparent;
+      box-shadow: none;
+    }
+
+    /* The notebook is the open tab: chat becomes an outlined circle. The ring is
+       the accent mixed into the panel, with the plain border for a browser
+       without color-mix. */
+    .osa-chat-widget.chat-open.osa-tab-notebook .osa-launcher-capsule .osa-chat-button {
+      color: var(--osa-accent);
+      border-color: var(--osa-border);
+      border-color: color-mix(in srgb, var(--osa-accent) 45%, var(--osa-bg));
     }
 
     .osa-launcher-icon {
       position: relative;
-      width: 56px;
-      height: 56px;
+      z-index: 1;
+      width: 46px;
+      height: 46px;
       flex-shrink: 0;
+      box-sizing: border-box;
+      padding: 0;
       border-radius: 50%;
-      border: 1px solid var(--osa-border);
+      border: 1.5px solid var(--osa-border);
       background: var(--osa-assistant-bg);
       color: var(--osa-text-light);
-      display: none; /* hidden until the capsule expands (.chat-open below) */
+      display: flex;
       align-items: center;
       justify-content: center;
       cursor: default;
-      box-shadow: var(--osa-shadow);
-      transition: transform 0.2s, background 0.2s;
+      /* Hidden until the panel opens, but in place: see .osa-launcher-capsule. */
+      opacity: 0;
+      transform: scale(0.55);
+      visibility: hidden;
+      pointer-events: none;
+      transition: background-color 200ms ease, color 200ms ease, border-color 200ms ease,
+        opacity 220ms ease, transform 280ms cubic-bezier(0.22, 1, 0.36, 1), visibility 0s linear 280ms;
     }
 
+    /* Opening: the notebook circle arrives 30ms after the pill starts, HPC 70ms. */
     .osa-chat-widget.chat-open .osa-launcher-icon {
-      display: flex;
+      opacity: 1;
+      transform: none;
+      visibility: visible;
+      pointer-events: auto;
+      transition: background-color 200ms ease, color 200ms ease, border-color 200ms ease,
+        opacity 220ms ease 30ms, transform 280ms cubic-bezier(0.22, 1, 0.36, 1) 30ms, visibility 0s;
+    }
+
+    .osa-chat-widget.chat-open .osa-hpc-btn {
+      transition-delay: 0ms, 0ms, 0ms, 70ms, 70ms, 0s;
     }
 
     .osa-launcher-icon svg {
-      width: 24px;
-      height: 24px;
+      width: 21px;
+      height: 21px;
     }
 
-    /* Active (the notebook, once a Zarr copy exists): the same surface/foreground
-       pair as the chat button, so "this one works" reads the same way chat always
-       has. Inactive and coming-soon (the default above) share the muted look; only
-       the badge below tells them apart, per #436. */
-    .osa-launcher-icon.osa-icon-active {
-      background: var(--osa-primary);
-      color: var(--osa-on-primary);
-      border-color: transparent;
+    /* Available (the notebook, once a Zarr copy exists): an outlined circle in the
+       accent, which becomes the open tab when clicked. Unavailable and coming-soon
+       (the default above) share the muted look; only the badge tells them apart,
+       per #436. */
+    .osa-launcher-icon.osa-icon-available {
+      background: transparent;
+      color: var(--osa-accent);
+      border-color: var(--osa-border);
+      border-color: color-mix(in srgb, var(--osa-accent) 45%, var(--osa-bg));
       cursor: pointer;
     }
 
-    .osa-launcher-icon.osa-icon-active:hover {
-      background: var(--osa-primary-dark);
+    .osa-chat-widget.chat-open .osa-launcher-icon.osa-icon-available:hover {
       transform: scale(1.05);
+    }
+
+    /* The open tab: the indicator behind it is its fill. */
+    .osa-launcher-icon.osa-icon-available.osa-tab-current {
+      border-color: transparent;
+      color: var(--osa-on-primary);
+    }
+
+    /* The notebook is starting while another tab is open: a ring turns on its circle. */
+    .osa-notebook-ring {
+      position: absolute;
+      top: -1.5px;
+      left: -1.5px;
+      width: 46px;
+      height: 46px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 200ms ease;
+      animation: osa-spin 1s linear infinite;
+    }
+
+    .osa-notebook-ring circle {
+      fill: none;
+      stroke: var(--osa-primary);
+      stroke-width: 2.5;
+      stroke-linecap: round;
+      stroke-dasharray: 34 101;
+    }
+
+    .osa-launcher-icon.osa-notebook-busy .osa-notebook-ring {
+      opacity: 1;
+    }
+
+    @keyframes osa-spin {
+      to { transform: rotate(360deg); }
     }
 
     .osa-icon-badge {
       position: absolute;
-      top: -4px;
-      right: -4px;
+      top: -5px;
+      right: -9px;
       background: var(--osa-text-light);
       color: #ffffff;
-      font-size: 9px;
+      font-size: 8.5px;
       font-weight: 700;
       line-height: 1;
       padding: 3px 5px;
-      border-radius: 8px;
+      border-radius: 7px;
       text-transform: uppercase;
-      letter-spacing: 0.02em;
+      letter-spacing: 0.04em;
     }
 
     /* Same look as .osa-chat-tooltip, positioned relative to its own icon (which sits
@@ -489,10 +623,10 @@
       position: absolute;
       right: calc(100% + 12px);
       top: 50%;
-      transform: translateY(-50%);
+      transform: translate(6px, -50%);
       background: var(--osa-bg);
       color: var(--osa-text);
-      padding: 10px 14px;
+      padding: 8px 12px;
       border-radius: 8px;
       box-shadow: var(--osa-shadow);
       font-size: 13px;
@@ -501,12 +635,27 @@
       z-index: 10001;
       opacity: 0;
       pointer-events: none;
-      transition: opacity 0.15s ease;
+      transition: opacity 140ms ease, transform 140ms ease;
     }
 
+    .osa-launcher-capsule .osa-chat-button:hover .osa-icon-tooltip,
+    .osa-launcher-capsule .osa-chat-button:focus-visible .osa-icon-tooltip,
     .osa-launcher-icon:hover .osa-icon-tooltip,
     .osa-launcher-icon:focus-visible .osa-icon-tooltip {
       opacity: 1;
+      transform: translate(0, -50%);
+    }
+
+    /* The chat button's own tooltip exists only while the panel is open (it says
+       what a click does then); closed, the collapsed launcher's label is shown. */
+    .osa-chat-widget:not(.chat-open) .osa-launcher-capsule .osa-chat-button .osa-icon-tooltip {
+      display: none;
+    }
+
+    /* The collapsed label, beside the smaller chat circle. */
+    .osa-chat-widget.osa-capsule .osa-chat-tooltip {
+      right: 76px;
+      bottom: 24px;
     }
 
     @media (min-width: 601px) {
@@ -514,21 +663,235 @@
         flex-direction: column;
       }
 
+      .osa-launcher-capsule::before {
+        transform: scaleY(0.35);
+        transform-origin: 50% 100%;
+      }
+
       /* Opens to the LEFT of the capsule instead of above it; today's rule below
          (bottom: 90px, right: 20px, max-height: calc(100vh - 120px)) is what a
-         narrow viewport keeps. 20 + 56 + 12 mirror the capsule's own offset,
-         diameter and gap, so the window sits flush beside it with no overlap.
-         The transition is scoped to capsule mode alone (this selector never
-         matches a bubble-mode widget, which must render exactly as it always
-         has): the community config can still be resolving when the reader
-         opens the chat, and launcher: capsule arriving a moment later would
-         otherwise snap an already-open panel to its new position instead of
-         easing into it. */
+         narrow viewport keeps. 20 + 46 + 7 + 12 are the capsule's own offset,
+         diameter, the pill's reach beyond it, and a gap, so the window sits
+         beside the pill with no overlap. The transition is scoped to capsule
+         mode alone (this selector never matches a bubble-mode widget, which must
+         render exactly as it always has): the community config can still be
+         resolving when the reader opens the chat, and launcher: capsule arriving
+         a moment later would otherwise snap an already-open panel to its new
+         position instead of easing into it. */
       .osa-chat-widget.osa-capsule .osa-chat-window {
-        right: calc(20px + 56px + 12px);
+        right: calc(20px + 46px + 7px + 12px);
         bottom: 20px;
+        max-width: calc(100vw - 20px - 46px - 7px - 12px - 20px);
         max-height: calc(100vh - 50px);
         transition: right 0.2s ease, bottom 0.2s ease, max-height 0.2s ease;
+      }
+    }
+
+    /* The chat and notebook views (#470), capsule mode only: applyLauncherMode
+       moves the chat's own elements into the first and adds the second, so a
+       bubble-mode widget's markup is untouched. Switching is a fade-through: the
+       old view fades out in 110ms, then the new one fades in (210ms, after 90ms)
+       from 98.5% scale. A view that is off is also inert and, once faded,
+       hidden, so it is neither focusable nor read; the notebook's frame is only
+       ever hidden, never removed or display:none, so its Python keeps running. */
+    .osa-capsule .osa-views {
+      position: relative;
+      flex: 1 1 auto;
+      min-height: 0;
+    }
+
+    .osa-capsule .osa-view {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      transition: opacity 110ms ease-in, transform 110ms ease-in, visibility 0s linear 110ms;
+    }
+
+    .osa-capsule .osa-view.osa-view-on {
+      transition: opacity 210ms ease-out 90ms, transform 280ms cubic-bezier(0.22, 1, 0.36, 1) 90ms, visibility 0s;
+    }
+
+    .osa-capsule .osa-view.osa-view-off {
+      opacity: 0;
+      transform: scale(0.985);
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    .osa-notebook-frame {
+      flex: 1 1 auto;
+      width: 100%;
+      min-height: 0;
+      border: 0;
+      display: block;
+      background: var(--osa-bg);
+    }
+
+    /* Chrome keeps a resize drag with the page even over the frame (the Chrome
+       check drags across it with and without this rule); this is for a browser
+       that hands the pointer to whatever frame is under it. */
+    .osa-chat-window.osa-resizing .osa-notebook-frame {
+      pointer-events: none;
+    }
+
+    .osa-notebook-overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      padding: 24px;
+      box-sizing: border-box;
+      text-align: center;
+      background: var(--osa-bg);
+      color: var(--osa-text);
+      transition: opacity 280ms ease, visibility 0s;
+    }
+
+    .osa-notebook-overlay.osa-overlay-hidden {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transition: opacity 280ms ease, visibility 0s linear 280ms;
+    }
+
+    .osa-notebook-overlay-title {
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    .osa-notebook-overlay-text {
+      font-size: 13px;
+      color: var(--osa-text-light);
+      max-width: 300px;
+    }
+
+    .osa-notebook-bar-track {
+      width: 60%;
+      max-width: 220px;
+      height: 4px;
+      border-radius: 999px;
+      background: var(--osa-border);
+      overflow: hidden;
+    }
+
+    .osa-notebook-bar {
+      width: 40%;
+      height: 100%;
+      border-radius: 999px;
+      background: var(--osa-primary);
+      animation: osa-bar 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+    }
+
+    @keyframes osa-bar {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(260%); }
+    }
+
+    .osa-notebook-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .osa-notebook-actions a,
+    .osa-notebook-actions button {
+      font: inherit;
+      font-size: 13px;
+      padding: 6px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--osa-border);
+      background: var(--osa-bg);
+      color: var(--osa-text);
+      cursor: pointer;
+      text-decoration: none;
+    }
+
+    .osa-notebook-actions .osa-notebook-retry {
+      background: var(--osa-primary);
+      border-color: var(--osa-primary);
+      color: var(--osa-on-primary);
+    }
+
+    /* The header's two titles, one per tab, in the same place. */
+    .osa-capsule .osa-chat-title-area {
+      display: grid;
+    }
+
+    .osa-capsule .osa-ttl {
+      grid-area: 1 / 1;
+      min-width: 0;
+      transition: opacity 180ms ease, transform 240ms cubic-bezier(0.22, 1, 0.36, 1), visibility 0s;
+    }
+
+    .osa-capsule .osa-ttl.osa-ttl-off {
+      opacity: 0;
+      transform: translateY(6px);
+      visibility: hidden;
+      pointer-events: none;
+      transition: opacity 180ms ease, transform 240ms cubic-bezier(0.22, 1, 0.36, 1), visibility 0s linear 240ms;
+    }
+
+    .osa-notebook-status-text {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* The chat's own header buttons have nothing to do on the notebook tab.
+       Hidden, not removed, so the header does not reflow as the tabs switch. The
+       pop-out is hidden there too, until it can carry the notebook (#470). */
+    .osa-capsule .osa-settings-btn-open,
+    .osa-capsule .osa-reset-btn,
+    .osa-capsule .osa-popout-btn {
+      transition: opacity 160ms ease, background 0.2s, visibility 0s;
+    }
+
+    .osa-capsule.osa-tab-notebook .osa-settings-btn-open,
+    .osa-capsule.osa-tab-notebook .osa-reset-btn,
+    .osa-capsule.osa-tab-notebook .osa-popout-btn {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transition: opacity 160ms ease, background 0.2s, visibility 0s linear 160ms;
+    }
+
+    /* Reduced motion: every change is immediate except a short plain fade
+       between the views, and nothing turns or slides. */
+    @media (prefers-reduced-motion: reduce) {
+      .osa-launcher-capsule::before,
+      .osa-capsule-indicator,
+      .osa-launcher-icon,
+      .osa-chat-widget.chat-open .osa-launcher-icon,
+      .osa-launcher-capsule .osa-chat-button,
+      .osa-capsule .osa-ttl,
+      .osa-capsule .osa-ttl.osa-ttl-off {
+        transition-duration: 1ms !important;
+        transition-delay: 0ms !important;
+      }
+
+      .osa-capsule .osa-view,
+      .osa-capsule .osa-view.osa-view-off {
+        transition: opacity 120ms linear, visibility 0s linear 120ms !important;
+        transform: none !important;
+      }
+
+      .osa-capsule .osa-view.osa-view-on {
+        transition: opacity 120ms linear, visibility 0s !important;
+      }
+
+      .osa-notebook-bar {
+        animation: none;
+        width: 60%;
+      }
+
+      .osa-notebook-ring {
+        animation: none;
       }
     }
 
@@ -595,7 +958,8 @@
       min-width: 0;
     }
 
-    .osa-chat-title {
+    .osa-chat-title,
+    .osa-notebook-heading {
       display: flex;
       align-items: center;
       gap: 8px;
@@ -1981,46 +2345,76 @@
 
   // What the notebook icon shows for the current dataset state (#436): four states,
   // from setDataset's value and nothing else (the community does not change this;
-  // every community with launcher: capsule shows the same four states).
+  // every community with launcher: capsule shows the same four states). When the
+  // notebook is the open tab, clicking it closes the panel, as the chat circle
+  // does when chat is (#470).
   function notebookIconState() {
     if (!currentDataset) {
       return {
-        active: false,
+        available: false,
         label: 'Notebook: open a dataset page to start a notebook',
         tooltip: 'Open a dataset page to start a notebook'
       };
     }
     if (currentDataset.zarr === true) {
+      if (isOpen && activeTab === 'notebook') {
+        return { available: true, label: `Close ${CONFIG.title}`, tooltip: 'Close' };
+      }
       return {
-        active: true,
-        label: `Open ${currentDataset.id} in a Python notebook, opens a new tab`,
-        tooltip: `Open ${currentDataset.id} in a Python notebook (JupyterLite, opens a new tab)`
+        available: true,
+        label: `Open ${currentDataset.id} in a Python notebook`,
+        tooltip: `Open ${currentDataset.id} in a Python notebook`
       };
     }
     if (currentDataset.zarr === false) {
       return {
-        active: false,
+        available: false,
         label: 'Notebook: this dataset has no Zarr copy',
         tooltip: 'This dataset has no Zarr copy yet, so there is nothing to open in a notebook'
       };
     }
     // zarr is undefined: known dataset, not yet known whether it has a Zarr copy.
     return {
-      active: false,
+      available: false,
       label: 'Notebook: checking for a Zarr copy',
       tooltip: 'Checking whether this dataset has a Zarr copy'
     };
   }
 
-  // Apply the notebook and HPC buttons' current state to the DOM. Safe to call any
-  // time (setDataset, a config load, or capsule creation): a no-op wherever a button
-  // does not exist yet (bubble mode, or before applyLauncherMode has run).
+  function isNotebookAvailable() {
+    return !!currentDataset && currentDataset.zarr === true;
+  }
+
+  // The notebook site's address for the dataset on screen: the notebook site's
+  // contract (open.html validates both parameters, writes a starter notebook into
+  // JupyterLite's own storage, and redirects into it).
+  function notebookUrlFor(datasetId) {
+    const base = normalizeNotebookUrl(CONFIG.notebookUrl) || CONFIG.notebookUrl;
+    return `${base}open.html?community=${encodeURIComponent(CONFIG.communityId)}` +
+      `&dataset=${encodeURIComponent(datasetId)}`;
+  }
+
+  // The origin the notebook's messages must come from, and the only one the
+  // widget's own messages are addressed to.
+  function notebookOrigin() {
+    try {
+      return new URL(normalizeNotebookUrl(CONFIG.notebookUrl) || CONFIG.notebookUrl).origin;
+    } catch {
+      return null;
+    }
+  }
+
+  // Apply the capsule's current state to the DOM: each button's availability,
+  // label and tooltip, which tab is open, and the notebook's busy ring. Safe to
+  // call any time (setDataset, a config load, a tab switch, capsule creation): a
+  // no-op wherever a button does not exist yet (bubble mode, or before
+  // applyLauncherMode has run).
   function renderLauncherIcons(container) {
     const hpcButton = container.querySelector('.osa-hpc-btn');
     if (hpcButton) {
       hpcButton.setAttribute('aria-disabled', 'true');
       hpcButton.setAttribute('aria-label', 'HPC submission, coming soon');
-      hpcButton.classList.remove('osa-icon-active');
+      hpcButton.classList.remove('osa-icon-available');
       const tooltip = hpcButton.querySelector('.osa-icon-tooltip');
       if (tooltip) tooltip.textContent = 'HPC submission is coming soon';
       const badge = hpcButton.querySelector('.osa-icon-badge');
@@ -2030,40 +2424,296 @@
     const notebookButton = container.querySelector('.osa-notebook-btn');
     if (notebookButton) {
       const state = notebookIconState();
-      notebookButton.setAttribute('aria-disabled', state.active ? 'false' : 'true');
+      const current = isOpen && activeTab === 'notebook';
+      notebookButton.setAttribute('aria-disabled', state.available ? 'false' : 'true');
       notebookButton.setAttribute('aria-label', state.label);
-      notebookButton.classList.toggle('osa-icon-active', state.active);
+      notebookButton.setAttribute('aria-pressed', current ? 'true' : 'false');
+      notebookButton.classList.toggle('osa-icon-available', state.available);
+      notebookButton.classList.toggle('osa-tab-current', current);
+      // Python is starting, or the notebook still loading, while the reader is
+      // elsewhere: the ring says so on the circle they would click.
+      const starting = notebookEmbed.state === 'loading' ||
+        (notebookEmbed.state === 'ready' && notebookEmbed.setup === 'running');
+      const busy = !current && state.available && starting;
+      notebookButton.classList.toggle('osa-notebook-busy', busy);
       const tooltip = notebookButton.querySelector('.osa-icon-tooltip');
       if (tooltip) tooltip.textContent = state.tooltip;
       const badge = notebookButton.querySelector('.osa-icon-badge');
       if (badge) badge.style.display = 'none';
     }
+
+    const chatButton = container.querySelector('.osa-launcher-capsule .osa-chat-button');
+    if (chatButton) {
+      const current = isOpen && activeTab === 'chat';
+      let label = 'Open chat';
+      let tooltip = '';
+      if (current) {
+        label = `Close ${CONFIG.title}`;
+        tooltip = 'Close';
+      } else if (isOpen) {
+        label = `Chat with ${CONFIG.title}`;
+        tooltip = 'Chat';
+      }
+      chatButton.setAttribute('aria-label', label);
+      chatButton.setAttribute('aria-pressed', current ? 'true' : 'false');
+      const tip = chatButton.querySelector('.osa-icon-tooltip');
+      if (tip) tip.textContent = tooltip;
+    }
   }
 
-  // The notebook button's click handler: aria-disabled is the guard (not the
-  // disabled attribute, so the button stays focusable and its reason stays
-  // reachable), re-checked against currentDataset itself so the two can never
-  // drift apart into a click that opens nothing the aria state promised, or a
-  // click that does something an aria-disabled="true" button said it would not.
+  // Move the filled indicator behind the open tab's circle. Positions come from
+  // the layout itself (each button's offset in the capsule), so the row and column
+  // layouts need nothing of their own.
+  function positionIndicator(container) {
+    const indicator = container.querySelector('.osa-capsule-indicator');
+    if (!indicator) return;
+    const target = activeTab === 'notebook'
+      ? container.querySelector('.osa-notebook-btn')
+      : container.querySelector('.osa-launcher-capsule .osa-chat-button');
+    if (!target) return;
+    indicator.style.transform = `translate(${target.offsetLeft}px, ${target.offsetTop}px)`;
+  }
+
+  // Open a tab (#470): the views fade through, the header's title and buttons
+  // follow, and the indicator slides. Opening the notebook tab creates its frame
+  // the first time. A bubble widget has no tabs, so this is a no-op there.
+  function setTab(container, tab) {
+    if (!container.classList.contains('osa-capsule')) return;
+    if (tab === 'notebook' && !isNotebookAvailable()) tab = 'chat';
+    activeTab = tab;
+    container.classList.toggle('osa-tab-notebook', tab === 'notebook');
+    container.classList.toggle('osa-tab-chat', tab === 'chat');
+    for (const [name, on] of [['chat', tab === 'chat'], ['notebook', tab === 'notebook']]) {
+      const view = container.querySelector(`.osa-view-${name}`);
+      if (view) {
+        view.classList.toggle('osa-view-on', on);
+        view.classList.toggle('osa-view-off', !on);
+        view.toggleAttribute('inert', !on);
+      }
+      const title = container.querySelector(`.osa-ttl-${name}`);
+      if (title) {
+        title.classList.toggle('osa-ttl-off', !on);
+        title.setAttribute('aria-hidden', on ? 'false' : 'true');
+      }
+    }
+    if (tab === 'notebook') ensureNotebookFrame(container);
+    renderNotebookStatus(container);
+    renderLauncherIcons(container);
+    positionIndicator(container);
+  }
+
+  // The chat circle (#470): closed, it opens the panel on chat; open on chat, it
+  // closes it; open on another tab, it goes back to chat. A bubble widget's
+  // button only ever toggles, exactly as before.
+  function handleChatButtonClick(container) {
+    if (container.classList.contains('osa-capsule') && isOpen && activeTab !== 'chat') {
+      setTab(container, 'chat');
+      container.querySelector('.osa-chat-input input')?.focus();
+      return;
+    }
+    if (!isOpen) setTab(container, 'chat');
+    toggleChat(container);
+  }
+
+  // The notebook circle: aria-disabled is the guard (not the disabled attribute, so
+  // the button stays focusable and its reason stays reachable), re-checked against
+  // currentDataset itself so the two can never drift apart. Opens the notebook as
+  // the panel's tab (#470), opening the panel if it is closed; on the notebook tab
+  // already, it closes the panel, as the chat circle does on chat.
   function handleNotebookClick(notebookButton) {
     if (notebookButton.getAttribute('aria-disabled') === 'true') return;
-    if (!currentDataset || currentDataset.zarr !== true) return;
-    const base = normalizeNotebookUrl(CONFIG.notebookUrl) || CONFIG.notebookUrl;
-    const url = `${base}open.html?community=${encodeURIComponent(CONFIG.communityId)}` +
-      `&dataset=${encodeURIComponent(currentDataset.id)}`;
-    window.open(url, '_blank', 'noopener');
+    if (!isNotebookAvailable()) return;
+    const container = notebookButton.closest('.osa-chat-widget');
+    if (!container) return;
+    if (isOpen && activeTab === 'notebook') {
+      toggleChat(container);
+      return;
+    }
+    setTab(container, 'notebook');
+    if (!isOpen) toggleChat(container);
+  }
+
+  // The notebook's frame, created on first use and whenever the dataset on screen
+  // has changed since (#470). Kept, hidden, while another tab is open. A frame
+  // that never hears from the notebook falls back to a link that opens it in a
+  // browser tab of its own: 12 seconds after the frame loads (a page that refused
+  // to be framed, or a host page whose policy refuses the frame, still loads, as
+  // an error page, and never speaks), or 45 seconds after it was created at all.
+  // Variables, not constants, only so the test hooks can shorten them.
+  let NOTEBOOK_AFTER_LOAD_MS = 12000;
+  let NOTEBOOK_TOTAL_MS = 45000;
+
+  function ensureNotebookFrame(container) {
+    if (!isNotebookAvailable()) return;
+    const datasetId = currentDataset.id;
+    if (notebookEmbed.frame && notebookEmbed.datasetId === datasetId && notebookEmbed.state !== 'failed') return;
+    const view = container.querySelector('.osa-view-notebook');
+    if (!view) return;
+    discardNotebookFrame();
+    const frame = document.createElement('iframe');
+    frame.className = 'osa-notebook-frame';
+    frame.title = `Python notebook for ${datasetId}`;
+    frame.setAttribute('allow', 'clipboard-read; clipboard-write');
+    notebookEmbed.frame = frame;
+    notebookEmbed.datasetId = datasetId;
+    notebookEmbed.state = 'loading';
+    notebookEmbed.setup = null;
+    notebookEmbed.failure = null;
+    notebookEmbed.sentScheme = null;
+    frame.addEventListener('load', () => {
+      if (notebookEmbed.frame !== frame) return;
+      // The notebook takes a theme before it is ready and applies it then.
+      postNotebookTheme(true);
+      if (notebookEmbed.state === 'loading') {
+        clearTimeout(notebookEmbed.loadTimer);
+        notebookEmbed.loadTimer = setTimeout(() => failNotebook(container, frame, 'timeout'), NOTEBOOK_AFTER_LOAD_MS);
+      }
+    });
+    notebookEmbed.readyTimer = setTimeout(() => failNotebook(container, frame, 'timeout'), NOTEBOOK_TOTAL_MS);
+    view.insertBefore(frame, view.firstChild);
+    frame.src = notebookUrlFor(datasetId);
+    renderNotebookStatus(container);
+  }
+
+  function discardNotebookFrame() {
+    clearTimeout(notebookEmbed.loadTimer);
+    clearTimeout(notebookEmbed.readyTimer);
+    if (notebookEmbed.frame) notebookEmbed.frame.remove();
+    notebookEmbed.frame = null;
+    notebookEmbed.datasetId = null;
+    notebookEmbed.state = 'idle';
+    notebookEmbed.setup = null;
+    notebookEmbed.failure = null;
+    notebookEmbed.sentScheme = null;
+  }
+
+  function failNotebook(container, frame, failure) {
+    if (notebookEmbed.frame !== frame || notebookEmbed.state === 'ready') return;
+    clearTimeout(notebookEmbed.loadTimer);
+    clearTimeout(notebookEmbed.readyTimer);
+    notebookEmbed.state = 'failed';
+    notebookEmbed.failure = failure;
+    console.warn(`[OSA] The notebook for ${notebookEmbed.datasetId} did not ${failure === 'startup' ? 'start' : 'load in time'}; offering it in a tab of its own.`);
+    renderNotebookStatus(container);
+    renderLauncherIcons(container);
+  }
+
+  // Pass the widget's effective scheme to the notebook, which follows it (#469).
+  // Addressed to the notebook's own origin, so it reaches nothing else; sent only
+  // when it changed, unless forced (a fresh load, or the notebook saying it is ready).
+  function postNotebookTheme(force) {
+    const frame = notebookEmbed.frame;
+    const origin = notebookOrigin();
+    if (!frame || !frame.contentWindow || !origin) return;
+    const scheme = isDarkScheme() ? 'dark' : 'light';
+    if (!force && scheme === notebookEmbed.sentScheme) return;
+    notebookEmbed.sentScheme = scheme;
+    try {
+      frame.contentWindow.postMessage({ target: 'osa-notebook', type: 'theme', scheme }, origin);
+    } catch (e) {
+      console.warn('[OSA] Could not pass the color scheme to the notebook:', e);
+    }
+  }
+
+  // The notebook's own messages (notebook/osa-bridge.js): only from the frame this
+  // widget made, and only from the notebook site's origin.
+  function handleNotebookMessage(event) {
+    const frame = notebookEmbed.frame;
+    if (!frame || event.source !== frame.contentWindow) return;
+    if (event.origin !== notebookOrigin()) return;
+    const data = event.data;
+    if (!data || typeof data !== 'object' || data.source !== 'osa-notebook') return;
+    const container = document.querySelector('.osa-chat-widget');
+    if (!container) return;
+    if (data.type === 'ready') {
+      clearTimeout(notebookEmbed.loadTimer);
+      clearTimeout(notebookEmbed.readyTimer);
+      notebookEmbed.state = 'ready';
+      notebookEmbed.failure = null;
+      postNotebookTheme(true);
+    } else if (data.type === 'setup' && ['running', 'done', 'error', 'none'].includes(data.status)) {
+      notebookEmbed.setup = data.status;
+    } else if (data.type === 'error' && data.phase === 'startup') {
+      failNotebook(container, frame, 'startup');
+      return;
+    } else {
+      return;
+    }
+    renderNotebookStatus(container);
+    renderLauncherIcons(container);
+  }
+
+  // The notebook tab's header line and its loading and fallback overlays.
+  function renderNotebookStatus(container) {
+    const text = container.querySelector('.osa-notebook-status-text');
+    const loading = container.querySelector('.osa-notebook-loading');
+    const fallback = container.querySelector('.osa-notebook-fallback');
+    if (!text || !loading || !fallback) return;
+    const id = notebookEmbed.datasetId || (currentDataset && currentDataset.id) || '';
+    let status = 'Opening the notebook…';
+    if (notebookEmbed.state === 'failed') {
+      status = 'The notebook did not open here';
+    } else if (notebookEmbed.state === 'ready') {
+      status = {
+        done: 'Python ready',
+        none: 'Ready',
+        error: 'Setup did not finish; see the notebook',
+      }[notebookEmbed.setup] || 'Starting Python…';
+    }
+    text.textContent = id ? `${id} · ${status}` : status;
+    loading.classList.toggle('osa-overlay-hidden', notebookEmbed.state !== 'loading');
+    fallback.classList.toggle('osa-overlay-hidden', notebookEmbed.state !== 'failed');
+    const link = fallback.querySelector('.osa-notebook-open-tab');
+    if (link && id) link.href = notebookUrlFor(id);
+    const reason = fallback.querySelector('.osa-notebook-overlay-text');
+    if (reason) {
+      reason.textContent = notebookEmbed.failure === 'startup'
+        ? 'The notebook loaded but could not start here.'
+        : 'The notebook did not load in this page. This page may not allow it, or it may be slow to start.';
+    }
+  }
+
+  // The notebook view (#470): the frame goes in first, when the tab first opens;
+  // the overlays cover it while it loads, and if it never speaks.
+  function buildNotebookView() {
+    const view = document.createElement('div');
+    view.className = 'osa-view osa-view-notebook osa-view-off';
+    view.setAttribute('inert', '');
+    view.innerHTML = `
+      <div class="osa-notebook-overlay osa-notebook-loading osa-overlay-hidden" role="status">
+        <div class="osa-notebook-overlay-title">Opening the notebook</div>
+        <div class="osa-notebook-bar-track"><div class="osa-notebook-bar"></div></div>
+        <div class="osa-notebook-overlay-text">Python runs here, in this browser tab. The first time takes longer, while it downloads.</div>
+      </div>
+      <div class="osa-notebook-overlay osa-notebook-fallback osa-overlay-hidden" role="alert">
+        <div class="osa-notebook-overlay-title">The notebook did not open here</div>
+        <div class="osa-notebook-overlay-text"></div>
+        <div class="osa-notebook-actions">
+          <button type="button" class="osa-notebook-retry">Try again</button>
+          <a class="osa-notebook-open-tab" target="_blank" rel="noopener">Open in a new tab</a>
+        </div>
+      </div>`;
+    view.querySelector('.osa-notebook-retry').addEventListener('click', () => {
+      const container = view.closest('.osa-chat-widget');
+      if (!container) return;
+      discardNotebookFrame();
+      ensureNotebookFrame(container);
+      renderLauncherIcons(container);
+    });
+    return view;
   }
 
   // Convert an already-rendered bubble launcher into the capsule, in place: moves
   // the EXISTING .osa-chat-button node (its listeners intact) into a new wrapper
   // alongside two new icon buttons, rather than rebuilding the widget's markup from
-  // scratch. Called both right after creation (CONFIG.launcher was already
-  // 'capsule', e.g. set via setConfig before init) and again whenever the
-  // community config arrives with launcher: capsule after the bubble was already
-  // built (the ordinary case: fetchCommunityConfig resolves after createWidget).
-  // A no-op for every bubble-mode widget and for fullscreen (the pop-out has no
-  // launcher at all), which is what keeps a bubble community's markup and computed
-  // styles exactly as they were before this feature existed.
+  // scratch, and, in the panel, moves the chat's own elements into a chat view
+  // beside a new notebook view (#470). Called both right after creation
+  // (CONFIG.launcher was already 'capsule', e.g. set via setConfig before init) and
+  // again whenever the community config arrives with launcher: capsule after the
+  // bubble was already built (the ordinary case: fetchCommunityConfig resolves
+  // after createWidget). A no-op for every bubble-mode widget and for fullscreen
+  // (the pop-out has no launcher at all), which is what keeps a bubble community's
+  // markup and computed styles exactly as they were before this feature existed.
   function applyLauncherMode(container) {
     const isCapsule = CONFIG.launcher === 'capsule' && !CONFIG.fullscreen;
     if (!isCapsule || container.classList.contains('osa-capsule')) return;
@@ -2075,8 +2725,13 @@
     capsule.className = 'osa-launcher-capsule';
     chatButton.parentNode.insertBefore(capsule, chatButton);
 
+    const indicator = document.createElement('div');
+    indicator.className = 'osa-capsule-indicator';
+    indicator.setAttribute('aria-hidden', 'true');
     const hpcButton = buildLauncherIcon('hpc', ICONS.hpc);
     const notebookButton = buildLauncherIcon('notebook', ICONS.notebook);
+    notebookButton.insertAdjacentHTML('beforeend',
+      '<svg class="osa-notebook-ring" viewBox="0 0 46 46" aria-hidden="true"><circle cx="23" cy="23" r="21.5"></circle></svg>');
     // DOM order is bottom-to-top / left-to-right: hpc, notebook, chat. A fixed
     // container anchored on bottom+right only (never top/left) grows away from
     // that corner as hidden siblings reveal, so the LAST child, the chat button,
@@ -2085,12 +2740,57 @@
     // and it matches the visual order in both layouts: top-to-bottom on desktop
     // (HPC above notebook above chat) and left-to-right at 600px and under
     // (HPC, then notebook, then chat, reading toward the bubble). Keep the
-    // three appendChild calls in this order for that reason, not just habit.
+    // appendChild calls in this order for that reason, not just habit. The
+    // indicator goes first and is drawn behind the three.
+    capsule.appendChild(indicator);
     capsule.appendChild(hpcButton);
     capsule.appendChild(notebookButton);
     capsule.appendChild(chatButton);
 
-    container.classList.add('osa-capsule');
+    // The capsule's chat circle always shows the chat icon (a bubble opened before
+    // the community config arrived swapped it for a close icon), and its tooltip
+    // says what a click does while the panel is open.
+    chatButton.innerHTML = ICONS.chat;
+    const chatTooltip = document.createElement('span');
+    chatTooltip.className = 'osa-icon-tooltip';
+    chatTooltip.setAttribute('aria-hidden', 'true');
+    chatButton.appendChild(chatTooltip);
+
+    // The panel: the header's two titles, and the chat and notebook views.
+    const chatWindow = container.querySelector('.osa-chat-window');
+    const header = chatWindow && chatWindow.querySelector('.osa-chat-header');
+    const titleArea = header && header.querySelector('.osa-chat-title-area');
+    if (titleArea) {
+      const chatTitle = document.createElement('div');
+      chatTitle.className = 'osa-ttl osa-ttl-chat';
+      while (titleArea.firstChild) chatTitle.appendChild(titleArea.firstChild);
+      const notebookTitle = document.createElement('div');
+      notebookTitle.className = 'osa-ttl osa-ttl-notebook osa-ttl-off';
+      notebookTitle.setAttribute('aria-hidden', 'true');
+      notebookTitle.innerHTML = `
+        <h3 class="osa-notebook-heading">Notebook</h3>
+        <div class="osa-chat-status"><span class="osa-notebook-status-text"></span></div>`;
+      titleArea.appendChild(chatTitle);
+      titleArea.appendChild(notebookTitle);
+    }
+    if (header) {
+      const views = document.createElement('div');
+      views.className = 'osa-views';
+      const chatView = document.createElement('div');
+      chatView.className = 'osa-view osa-view-chat osa-view-on';
+      // Everything between the header and the overlays is the chat's own.
+      let node = header.nextElementSibling;
+      while (node && !node.classList.contains('osa-settings-overlay')) {
+        const next = node.nextElementSibling;
+        chatView.appendChild(node);
+        node = next;
+      }
+      views.appendChild(chatView);
+      views.appendChild(buildNotebookView());
+      header.after(views);
+    }
+
+    container.classList.add('osa-capsule', 'osa-tab-chat');
 
     notebookButton.addEventListener('click', () => handleNotebookClick(notebookButton));
     // The HPC button has no click action (#436: coming soon everywhere); the
@@ -2098,11 +2798,16 @@
     hpcButton.addEventListener('click', () => {});
 
     renderLauncherIcons(container);
+    positionIndicator(container);
+    // The row and column layouts put the circles in different places.
+    window.addEventListener('resize', () => positionIndicator(container));
   }
 
   // Apply a setDataset(value) call: validates, stores the result (even before the
   // widget's DOM exists, so a call made before init() is applied once it does), and
-  // re-renders if the capsule is already there.
+  // re-renders if the capsule is already there. A different dataset, or one without
+  // a Zarr copy any more, takes the notebook tab back to chat; its frame is replaced
+  // the next time the tab opens (#470).
   function applySetDataset(value) {
     if (value === null) {
       currentDataset = null;
@@ -2124,7 +2829,17 @@
       return;
     }
     const container = document.querySelector('.osa-chat-widget');
-    if (container) renderLauncherIcons(container);
+    if (!container) return;
+    const stale = notebookEmbed.frame &&
+      (!isNotebookAvailable() || notebookEmbed.datasetId !== currentDataset.id);
+    if (stale) {
+      discardNotebookFrame();
+      if (activeTab === 'notebook') setTab(container, isNotebookAvailable() ? 'notebook' : 'chat');
+    } else if (activeTab === 'notebook' && !isNotebookAvailable()) {
+      setTab(container, 'chat');
+    }
+    renderNotebookStatus(container);
+    renderLauncherIcons(container);
   }
 
   // Copy text to clipboard
@@ -3981,6 +4696,8 @@
 
     if (CONFIG.colorScheme === 'auto' && !darkSchemeQuery) watchDeviceScheme();
     container.classList.toggle('osa-dark', isDarkScheme());
+    // The notebook tab follows the widget's scheme (#470).
+    postNotebookTheme(false);
   }
 
   // After the host page changes the scheme: this page's widget, if mounted, and an
@@ -4595,6 +5312,8 @@
       startY = e.clientY;
       startWidth = chatWindow.offsetWidth;
       startHeight = chatWindow.offsetHeight;
+      // The notebook's frame would take the drag once the pointer crosses it.
+      chatWindow.classList.add('osa-resizing');
       e.preventDefault();
     });
 
@@ -4605,17 +5324,22 @@
       const newWidth = startWidth - (e.clientX - startX);
       const newHeight = startHeight - (e.clientY - startY);
 
-      // Set minimum and maximum sizes
-      if (newWidth >= 300 && newWidth <= 600) {
+      // Set minimum and maximum sizes. The capsule holds a notebook too (#470), so
+      // it may grow to most of the viewport; a bubble keeps its limits.
+      const capsule = !!chatWindow.closest('.osa-capsule');
+      const maxWidth = capsule ? Math.max(600, Math.min(1400, window.innerWidth - 120)) : 600;
+      const maxHeight = capsule ? Math.max(800, window.innerHeight - 40) : 800;
+      if (newWidth >= 300 && newWidth <= maxWidth) {
         chatWindow.style.width = newWidth + 'px';
       }
-      if (newHeight >= 350 && newHeight <= 800) {
+      if (newHeight >= 350 && newHeight <= maxHeight) {
         chatWindow.style.height = newHeight + 'px';
       }
     });
 
     document.addEventListener('mouseup', () => {
       isResizing = false;
+      chatWindow.classList.remove('osa-resizing');
     });
   }
 
@@ -5695,13 +6419,18 @@
     const chatWindow = container.querySelector('.osa-chat-window');
     const button = container.querySelector('.osa-chat-button');
     const tooltip = container.querySelector('.osa-chat-tooltip');
+    // The capsule's chat circle keeps its icon when open, and its label follows
+    // the open tab (renderLauncherIcons); a bubble swaps to a close icon (#470).
+    const capsule = container.classList.contains('osa-capsule');
 
     if (isOpen) {
       chatWindow.classList.add('open');
       container.classList.add('chat-open');
-      button.innerHTML = ICONS.close;
-      button.setAttribute('aria-label', 'Close chat');
-      container.querySelector('.osa-chat-input input').focus();
+      if (!capsule) {
+        button.innerHTML = ICONS.close;
+        button.setAttribute('aria-label', 'Close chat');
+      }
+      if (activeTab === 'chat') container.querySelector('.osa-chat-input input').focus();
       // Hide tooltip when chat opens
       if (tooltip) tooltip.classList.remove('visible');
       // Surface any notice queued by an init-time failure (see loadUserSettings/loadHistory).
@@ -5713,8 +6442,14 @@
       flushPendingResponseFeedback(container);
       chatWindow.classList.remove('open');
       container.classList.remove('chat-open');
-      button.innerHTML = ICONS.chat;
-      button.setAttribute('aria-label', 'Open chat');
+      if (!capsule) {
+        button.innerHTML = ICONS.chat;
+        button.setAttribute('aria-label', 'Open chat');
+      }
+    }
+    if (capsule) {
+      renderLauncherIcons(container);
+      positionIndicator(container);
     }
   }
 
@@ -5938,7 +6673,9 @@
     }
 
     // Event listeners with null checks
-    chatButton?.addEventListener('click', () => toggleChat(container));
+    chatButton?.addEventListener('click', () => handleChatButtonClick(container));
+    // The notebook tab's frame speaks through messages (#470); nothing else is heard.
+    window.addEventListener('message', handleNotebookMessage);
     closeBtn?.addEventListener('click', () => toggleChat(container));
     resetBtn?.addEventListener('click', () => resetChat(container));
     popoutBtn?.addEventListener('click', () => openPopout());
@@ -6133,6 +6870,14 @@
     window.OSAChatWidget.__applyDoneEvent = applyDoneEvent;
     window.OSAChatWidget.__migrateLegacyCitationMarkers = migrateLegacyCitationMarkers;
     window.OSAChatWidget.__isSameResponseMessage = isSameResponseMessage;
+    window.OSAChatWidget.__notebook = {
+      // The notebook tab's own state (#470), read-only, and its two timeouts.
+      state: () => ({ ...notebookEmbed, frame: undefined, loadTimer: undefined, readyTimer: undefined }),
+      setTimeouts: (afterLoadMs, totalMs) => {
+        NOTEBOOK_AFTER_LOAD_MS = afterLoadMs;
+        NOTEBOOK_TOTAL_MS = totalMs;
+      },
+    };
     window.OSAChatWidget.__browser = {
       MAX_BROWSER_RUNS_PER_REPLY,
       EXECUTION_FIELD_LIMITS,

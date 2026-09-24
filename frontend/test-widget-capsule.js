@@ -95,6 +95,9 @@ function loadWidget({
     settings: {
       disableJavaScriptFileLoading: true,
       disableCSSFileLoading: true,
+      // The notebook tab's frame (#470) is created with a real src; a unit test
+      // checks the address, and never loads it.
+      navigation: { disableChildFrameNavigation: true },
     },
   });
   window.__OSA_TEST__ = true;
@@ -156,15 +159,16 @@ console.log('\ncapsule markup exists only under launcher: capsule');
     assert(!!capsule.querySelector('.osa-hpc-btn'), 'the HPC icon exists');
     assert(!!capsule.querySelector('.osa-chat-button'), 'the chat button is still there');
     const order = Array.from(capsule.children).map((el) => el.className);
-    assert(order[0].includes('osa-hpc-btn'), 'DOM order: HPC first (top when expanded)');
-    assert(order[1].includes('osa-notebook-btn'), 'DOM order: notebook second (middle)');
-    assert(order[2].includes('osa-chat-button'), 'DOM order: chat last (bottom, anchored, never moves)');
+    assert(order[0].includes('osa-capsule-indicator'), 'DOM order: the indicator first, drawn behind the circles (#470)');
+    assert(order[1].includes('osa-hpc-btn'), 'DOM order: HPC next (top when expanded)');
+    assert(order[2].includes('osa-notebook-btn'), 'DOM order: notebook (middle)');
+    assert(order[3].includes('osa-chat-button'), 'DOM order: chat last (bottom, anchored, never moves)');
 
     // The tooltip <span>s repeat the button's own aria-label verbatim; without
     // aria-hidden a screen reader would read each one twice. The pre-existing
     // .osa-chat-tooltip (the collapsed launcher's own) is untouched, since it
     // has no button-owning aria-label to duplicate.
-    for (const btn of [capsule.querySelector('.osa-hpc-btn'), capsule.querySelector('.osa-notebook-btn')]) {
+    for (const btn of [capsule.querySelector('.osa-hpc-btn'), capsule.querySelector('.osa-notebook-btn'), capsule.querySelector('.osa-chat-button')]) {
       assertEqual(btn.querySelector('.osa-icon-tooltip').getAttribute('aria-hidden'), 'true', `${btn.className}: its tooltip span is aria-hidden`);
     }
     assert(!container.querySelector('.osa-chat-tooltip').hasAttribute('aria-hidden'), 'the pre-existing launcher tooltip is untouched, no aria-hidden added to it');
@@ -279,7 +283,7 @@ console.log('\nan already-open chat panel eases into its capsule position, rathe
   await waitUntil(() => container.classList.contains('osa-capsule'), 'the config resolves and converts to the capsule');
   assert(chatWindow.classList.contains('open'), 'the chat is STILL open after the conversion (the click was never undone)');
   const windowStyle = window.getComputedStyle(chatWindow);
-  assertEqual(windowStyle.right, 'calc(20px + 56px + 12px)', 'the now-capsule desktop position: right, beside the capsule');
+  assertEqual(windowStyle.right, 'calc(20px + 46px + 7px + 12px)', 'the now-capsule desktop position: right, beside the capsule');
   assertEqual(windowStyle.bottom, '20px', 'the now-capsule desktop position: bottom');
   assertEqual(windowStyle.maxHeight, 'calc(800px - 50px)', 'the now-capsule desktop position: the taller max-height');
   const transition = windowStyle.transition;
@@ -350,7 +354,7 @@ console.log('\nthe capsule\'s layout switches at the 601px breakpoint, at explic
       label: 'desktop (1024px, past the 601px breakpoint)',
       width: 1024,
       flexDirection: 'column',
-      windowRight: 'calc(20px + 56px + 12px)',
+      windowRight: 'calc(20px + 46px + 7px + 12px)',
       windowBottom: '20px',
     },
   ];
@@ -404,8 +408,8 @@ console.log('\nthe four notebook states from setDataset');
       label: 'dataset, zarr: true',
       apply: (widget) => widget.setDataset({ id: 'nm000103', zarr: true }),
       active: true,
-      tooltip: 'Open nm000103 in a Python notebook (JupyterLite, opens a new tab)',
-      ariaLabel: 'Open nm000103 in a Python notebook, opens a new tab',
+      tooltip: 'Open nm000103 in a Python notebook',
+      ariaLabel: 'Open nm000103 in a Python notebook',
     },
   ];
   for (const { label, apply, active, tooltip, ariaLabel } of cases) {
@@ -418,7 +422,7 @@ console.log('\nthe four notebook states from setDataset');
     apply(widget);
     const notebookBtn = container.querySelector('.osa-notebook-btn');
     assertEqual(notebookBtn.getAttribute('aria-disabled'), active ? 'false' : 'true', `${label}: aria-disabled`);
-    assert(notebookBtn.classList.contains('osa-icon-active') === active, `${label}: osa-icon-active class matches`);
+    assert(notebookBtn.classList.contains('osa-icon-available') === active, `${label}: osa-icon-available class matches`);
     assertEqual(notebookBtn.querySelector('.osa-icon-tooltip').textContent, tooltip, `${label}: tooltip text`);
     assertEqual(notebookBtn.getAttribute('aria-label'), ariaLabel, `${label}: exact aria-label`);
   }
@@ -435,7 +439,7 @@ console.log('\nsetDataset before init() is applied once the capsule exists');
   await waitUntil(() => container.querySelector('.osa-launcher-capsule'), 'capsule exists');
   const notebookBtn = container.querySelector('.osa-notebook-btn');
   assertEqual(notebookBtn.getAttribute('aria-disabled'), 'false', 'the pre-init setDataset value is applied once the capsule is built');
-  assert(notebookBtn.classList.contains('osa-icon-active'), 'and the notebook icon renders active');
+  assert(notebookBtn.classList.contains('osa-icon-available'), 'and the notebook icon renders available');
 }
 
 console.log('\nthe pre-init value renders even when the community config never arrives');
@@ -552,7 +556,7 @@ console.log('\nthe HPC icon is coming soon everywhere, with a badge and no click
   const hpcBtn = container.querySelector('.osa-hpc-btn');
   assertEqual(hpcBtn.getAttribute('aria-disabled'), 'true', 'HPC is always aria-disabled');
   assertEqual(hpcBtn.getAttribute('aria-label'), 'HPC submission, coming soon', 'HPC exact aria-label');
-  assert(!hpcBtn.classList.contains('osa-icon-active'), 'HPC never gets the active look');
+  assert(!hpcBtn.classList.contains('osa-icon-available'), 'HPC never gets the available look');
   assertEqual(hpcBtn.querySelector('.osa-icon-tooltip').textContent, 'HPC submission is coming soon', 'HPC tooltip text');
   const badge = hpcBtn.querySelector('.osa-icon-badge');
   assert(!!badge && badge.textContent === 'Soon' && badge.style.display !== 'none', 'HPC carries a visible "Soon" badge, not just a muted icon');
@@ -576,7 +580,9 @@ console.log('\nan inactive notebook button opens nothing on click (the aria-disa
 
   const opens = wrapWindowOpen(window);
   notebookBtn.dispatchEvent(new window.Event('click', { bubbles: true }));
-  assertEqual(opens.length, 0, 'clicking an inactive notebook button opens nothing');
+  assertEqual(opens.length, 0, 'clicking an inactive notebook button opens no browser tab');
+  assert(!container.querySelector('.osa-notebook-frame'), 'nor a notebook frame');
+  assert(!container.querySelector('.osa-chat-window').classList.contains('open'), 'nor the panel');
 }
 
 console.log('\nthe aria-disabled attribute is its own guard, independent of currentDataset');
@@ -602,9 +608,10 @@ console.log('\nthe aria-disabled attribute is its own guard, independent of curr
   const opens = wrapWindowOpen(window);
   notebookBtn.dispatchEvent(new window.Event('click', { bubbles: true }));
   assertEqual(opens.length, 0, 'aria-disabled="true" alone blocks the click, even with an active dataset behind it');
+  assert(!container.querySelector('.osa-notebook-frame'), 'and makes no notebook frame');
 }
 
-console.log('\nthe active notebook button opens the exact contract URL');
+console.log('\nthe available notebook button opens the notebook in the panel, at the exact contract URL');
 {
   // NOT a test that encodeURIComponent runs: isValidCommunityId and
   // isValidDatasetId only ever admit unreserved characters (letters, digits,
@@ -632,14 +639,15 @@ console.log('\nthe active notebook button opens the exact contract URL');
 
   const opens = wrapWindowOpen(window);
   notebookBtn.dispatchEvent(new window.Event('click', { bubbles: true }));
-  assertEqual(opens.length, 1, 'exactly one window.open call');
+  assertEqual(opens.length, 0, 'no browser tab is opened: the notebook is a tab of the panel (#470)');
+  assert(container.querySelector('.osa-chat-window').classList.contains('open'), 'the panel opens');
+  const frame = container.querySelector('.osa-view-notebook .osa-notebook-frame');
+  assert(!!frame, 'with the notebook frame in the notebook view');
   assertEqual(
-    opens[0].url,
+    frame && frame.getAttribute('src'),
     'https://notebook.osc.earth/osa/open.html?community=nemar-test&dataset=nm.000103',
-    'the URL matches the notebook site\'s contract exactly (a punctuation-carrying id and community, which need no escaping under the validators\' own unreserved-character rule)'
+    'the frame\'s address matches the notebook site\'s contract exactly (a punctuation-carrying id and community, which need no escaping under the validators\' own unreserved-character rule)'
   );
-  assertEqual(opens[0].target, '_blank', 'opens in a new tab');
-  assertEqual(opens[0].features, 'noopener', 'with noopener');
 }
 
 console.log('\nnotebookUrl defaults to the /osa/ project path on the shared plane');
@@ -730,14 +738,14 @@ console.log('\nlauncher_label sets the collapsed tooltip; unset keeps today\'s t
   }
 }
 
-console.log('\nthe capsule\'s active and neutral surfaces resolve to the color this PR assigned them, against the REAL stylesheet');
+console.log('\nthe capsule\'s available, open-tab and neutral surfaces resolve to the colors assigned them, against the REAL stylesheet');
 {
   // Same technique test-widget-tools.js's own table-driven surface/foreground
   // audit uses (probe a throwaway element against the real, unmodified
   // injectStyles() output, with custom properties set directly rather than
   // round-tripping a community config): kept here, not there, so every piece
-  // of capsule classification lives in one file. The active notebook icon is a
-  // THEMED surface (same pair the launcher button and header already are);
+  // of capsule classification lives in one file. The open tab's fill (the
+  // indicator) is a THEMED surface (same pair the launcher button and header are);
   // the neutral icon (inactive OR coming-soon: they share a look, see #436) is
   // NOT, and must read identically whether or not a community themes anything,
   // which is the property that keeps a disabled button from ever looking active.
@@ -766,15 +774,28 @@ console.log('\nthe capsule\'s active and neutral surfaces resolve to the color t
   };
   const UNSET_PROPS = {};
 
-  const ACTIVE_HTML = '<div class="osa-launcher-capsule"><button class="osa-launcher-icon osa-notebook-btn osa-icon-active">x</button></div>';
-  const nemarActive = probe(NEMAR_PROPS, ACTIVE_HTML, '.osa-notebook-btn');
-  const unsetActive = probe(UNSET_PROPS, ACTIVE_HTML, '.osa-notebook-btn');
-  assertEqual(window.getComputedStyle(nemarActive).backgroundColor, '#5bbad5', 'active notebook icon: NEMAR-style background is theme_color (#5bbad5)');
-  assertEqual(window.getComputedStyle(nemarActive).color, '#04121f', 'active notebook icon: NEMAR-style icon color is theme_text_color (#04121f)');
-  assertEqual(window.getComputedStyle(unsetActive).backgroundColor, '#2563eb', 'active notebook icon: unset falls back to the platform blue (#2563eb)');
-  assertEqual(window.getComputedStyle(unsetActive).color, '#ffffff', 'active notebook icon: unset falls back to white');
+  // Available but not the open tab (#470): an outlined circle whose icon is the
+  // accent, the theme's color as a foreground; the same role links have.
+  const AVAILABLE_HTML = '<div class="osa-launcher-capsule"><button class="osa-launcher-icon osa-notebook-btn osa-icon-available">x</button></div>';
+  const nemarAvailable = probe(NEMAR_PROPS, AVAILABLE_HTML, '.osa-notebook-btn');
+  const unsetAvailable = probe(UNSET_PROPS, AVAILABLE_HTML, '.osa-notebook-btn');
+  assertEqual(window.getComputedStyle(nemarAvailable).backgroundColor, 'transparent', 'available notebook icon: no fill of its own');
+  assertEqual(window.getComputedStyle(nemarAvailable).color, '#257a92', 'available notebook icon: NEMAR-style icon is accent_color (#257a92)');
+  assertEqual(window.getComputedStyle(unsetAvailable).color, '#2563eb', 'available notebook icon: unset, the accent is the platform blue');
 
-  // Neither icon carries osa-icon-active: this is the shared inactive/coming-soon
+  // The open tab: the indicator behind it is the theme's surface, and the icon on
+  // it is the text-on-surface color, the same pair the launcher button uses.
+  const CURRENT_HTML = '<div class="osa-launcher-capsule"><div class="osa-capsule-indicator"></div><button class="osa-launcher-icon osa-notebook-btn osa-icon-available osa-tab-current">x</button></div>';
+  const nemarCurrent = probe(NEMAR_PROPS, CURRENT_HTML, '.osa-notebook-btn');
+  const unsetCurrent = probe(UNSET_PROPS, CURRENT_HTML, '.osa-notebook-btn');
+  assertEqual(window.getComputedStyle(nemarCurrent).color, '#04121f', 'the open tab\'s icon: NEMAR-style, theme_text_color (#04121f)');
+  assertEqual(window.getComputedStyle(unsetCurrent).color, '#ffffff', 'the open tab\'s icon: unset, white');
+  const nemarIndicator = probe(NEMAR_PROPS, CURRENT_HTML, '.osa-capsule-indicator');
+  const unsetIndicator = probe(UNSET_PROPS, CURRENT_HTML, '.osa-capsule-indicator');
+  assertEqual(window.getComputedStyle(nemarIndicator).backgroundColor, '#5bbad5', 'the indicator: NEMAR-style, theme_color (#5bbad5)');
+  assertEqual(window.getComputedStyle(unsetIndicator).backgroundColor, '#2563eb', 'the indicator: unset, the platform blue');
+
+  // Neither icon carries osa-icon-available: this is the shared inactive/coming-soon
   // look (#436 says the two must still read differently from EACH OTHER via the
   // badge, not via this surface, which both use).
   const NEUTRAL_HTML = '<div class="osa-launcher-capsule"><button class="osa-launcher-icon osa-hpc-btn">x</button></div>';
