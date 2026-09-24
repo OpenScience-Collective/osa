@@ -16,6 +16,9 @@ on:
     paths:
       - 'notebook/**'
       - 'scripts/build_notebook_site.py'
+      - 'src/core/config/notebook_lock.py'
+      - 'src/core/config/community.py'
+      - 'src/core/config/runtime_lock.py'
       - 'src/assistants/*/notebook/**'
       - 'src/assistants/*/runtime/**'
       - 'src/assistants/*/config.yaml'
