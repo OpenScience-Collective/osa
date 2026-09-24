@@ -361,6 +361,7 @@ console.log('\na capsule community\'s pop-out has the panel\'s tabs, as a strip 
   for (const selector of ['.osa-launcher-capsule', '.osa-notebook-btn', '.osa-hpc-btn', '.osa-capsule-indicator']) {
     assert(!q(selector), `and no launcher: no ${selector}`);
   }
+  assert(!page.q('.osa-tab-strip') && !!page.q('.osa-launcher-capsule'), 'the page\'s own panel has no strip: its tabs are the circles');
   const chatTab = q('.osa-strip-chat');
   const notebookTab = q('.osa-strip-notebook');
   assertEqual([chatTab.textContent.trim(), notebookTab.textContent.trim()], ['Chat', 'Notebook'], 'the tabs are Chat and Notebook');
@@ -387,6 +388,9 @@ console.log('\na capsule community\'s pop-out has the panel\'s tabs, as a strip 
   assert(pressed(notebookTab) && q('.osa-notebook-frame') === frame, 'the open tab\'s own button does nothing: the pop-out\'s panel has no closed state');
   assert(q('.osa-chat-window').classList.contains('open'), 'and the panel stays open');
 
+  // A reader's click focuses the button first; happy-dom's click() does not.
+  chatTab.focus();
+  assert(popup.document.activeElement === chatTab, 'sanity: the chat tab has focus, as a click gives it');
   chatTab.click();
   assert(pressed(chatTab) && isOn(q('.osa-view-chat')), 'the chat tab goes back to chat');
   assert(q('.osa-notebook-frame') === frame && frame.isConnected, 'keeping the same frame, so its Python keeps running');
@@ -426,6 +430,7 @@ console.log('\nthe strip\'s notebook tab carries the notebook\'s cues while the 
   const notebookTab = q('.osa-strip-notebook');
   notebookTab.click();
   const frame = q('.osa-notebook-frame');
+  assert(!notebookTab.classList.contains('osa-notebook-busy'), 'loading, on the notebook tab: no busy cue, the loading overlay says so');
   q('.osa-strip-chat').click();
   assert(notebookTab.classList.contains('osa-notebook-busy'), 'loading, from chat: the busy cue');
   bridgeMessage(popup, frame, { type: 'ready' });
