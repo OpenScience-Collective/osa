@@ -315,7 +315,7 @@ Measured 2026-09-24 in Chrome 153:
 ### The pop-out
 
 ```bash
-bun frontend/browser-harness/popout-check.mjs --serve [screenshot-dir]
+bun frontend/browser-harness/popout-check.mjs --serve [--live-notebook] [screenshot-dir]
 ```
 
 starts `widget_e2e.py --nemar` on a free port and opens the widget's pop-out window (#470) under the harness's policy, whose `script-src` has no `'unsafe-inline'`.
@@ -323,6 +323,8 @@ It is what CI runs, beside the first paint check; pass a running server's base U
 The pop-out is an `about:blank` window of the page's own origin and inherits the page's policy;
 it is a new DevTools target, which the check finds by discovering targets and attaches to by the one whose opener is the page.
 The notebook's address points at the harness server itself, so the notebook tab's frame loads nothing from the network; its address is what is checked.
+`--live-notebook` points it at the develop notebook instead, which admits loopback pages to frame it, and requires the pop-out's own notebook to report "Python ready" through the bridge;
+it needs the network, so CI does not pass it.
 
 Measured 2026-09-24 in Chrome 153, 49 checks:
 
@@ -337,6 +339,9 @@ Measured 2026-09-24 in Chrome 153, 49 checks:
   and after the page's tag is given a wrong digest, the next pop-out is refused by the browser and says so in its own window
 - opened on the notebook tab, the pop-out starts no transition on its views or titles, recorded from the moment its document is written; the strip's next switch starts one, which shows the record sees them.
   With the fading `setTab` in place of `showTabAtOnce`, the pop-out opens showing the chat and records its fade, and the check fails
+
+With `--live-notebook`, measured the same day: the pop-out's own notebook reported "Python ready" 8.9 s after its tab showed, with no overlay left over it,
+so the develop notebook's `frame-ancestors` admits a pop-out, and the bridge's messages reach the pop-out's widget.
 
 The widget as it was before it loaded the pop-out's script by address times out waiting for the pop-out's widget in `color-scheme-check.mjs`, which opens one under the same policy.
 

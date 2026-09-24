@@ -24,13 +24,16 @@
  * A pop-out is a new DevTools target: this discovers targets and attaches to the one
  * whose opener is the page. The notebook's address points at the harness server
  * itself, so the frame loads nothing from the network; its address is what is
- * checked, and frontend/browser-harness/notebook-tab-check.mjs loads a real notebook.
+ * checked. With --live-notebook it is the develop notebook instead
+ * (develop-notebook.osc.earth/osa, which admits loopback pages to frame it), and
+ * the pop-out's notebook must report "Python ready" through the bridge, which needs
+ * the network, so CI does not pass it.
  *
  * Usage:
- *   bun frontend/browser-harness/popout-check.mjs --serve [screenshot-dir]
+ *   bun frontend/browser-harness/popout-check.mjs --serve [--live-notebook] [screenshot-dir]
  *     starts `widget_e2e.py --nemar` on a free port, runs the check, and stops it;
- *     what CI runs
- *   bun frontend/browser-harness/popout-check.mjs http://127.0.0.1:PORT [screenshot-dir]
+ *     what CI runs, without --live-notebook
+ *   bun frontend/browser-harness/popout-check.mjs http://127.0.0.1:PORT [--live-notebook] [screenshot-dir]
  *     checks a `widget_e2e.py PORT --nemar` already running
  */
 
@@ -39,6 +42,8 @@ import { startServer, waitForServer } from './harness-server.js';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+const LIVE_NOTEBOOK_URL = 'https://develop-notebook.osc.earth/osa/';
 
 let failed = 0;
 function report(ok, label, detail) {
@@ -173,7 +178,7 @@ async function checkRendered(cdp, page, popup, { label, pageScript, pageUrl, tit
   return true;
 }
 
-async function check(base, screenshotDir) {
+async function check(base, screenshotDir, { liveNotebook = false } = {}) {
   const chromePath = findChrome();
   if (!chromePath) {
     if (process.env.CI) {
@@ -184,7 +189,7 @@ async function check(base, screenshotDir) {
     return;
   }
   if (screenshotDir) mkdirSync(screenshotDir, { recursive: true });
-  const notebookUrl = `${base}/notebook-stub/`;
+  const notebookUrl = liveNotebook ? LIVE_NOTEBOOK_URL : `${base}/notebook-stub/`;
   const query = `?dataset=nm000103&zarr=true&notebookUrl=${encodeURIComponent(notebookUrl)}`;
   const profileDir = mkdtempSync(join(tmpdir(), 'osa-popout-check-'));
   let chrome, cdp;
@@ -287,6 +292,18 @@ async function check(base, screenshotDir) {
         report(await evaluate(cdp, popup.sessionId, `document.querySelector('.osa-notebook-frame').getAttribute('src') === ${JSON.stringify(`${notebookUrl}open.html?community=nemar&dataset=nm000103`)}`),
           'notebook: and its Notebook tab shows the same notebook again');
       }
+      if (liveNotebook) {
+        // The notebook in the pop-out's own frame, framed by the pop-out and heard by
+        // the pop-out's widget: its setup cell runs, as in the panel.
+        const started = Date.now();
+        if (await waitFor(cdp, popup.sessionId, `/Python ready$/.test(document.querySelector('.osa-notebook-status-text').textContent)`,
+          'live notebook: "Python ready" in the pop-out\'s header', 120_000)) {
+          report(true, `live notebook: the pop-out's own notebook reported "Python ready", ${((Date.now() - started) / 1000).toFixed(1)} s after its tab showed`);
+          report(await evaluate(cdp, popup.sessionId, `document.querySelector('.osa-notebook-fallback').classList.contains('osa-overlay-hidden') && document.querySelector('.osa-notebook-loading').classList.contains('osa-overlay-hidden')`),
+            'live notebook: no overlay left over it');
+          await screenshot(cdp, popup.sessionId, screenshotDir, 'popout-live-notebook.png');
+        }
+      }
     }
     await close(popup);
 
@@ -326,7 +343,9 @@ async function check(base, screenshotDir) {
 }
 
 async function main() {
-  const args = process.argv.slice(2);
+  const all = process.argv.slice(2);
+  const liveNotebook = all.includes('--live-notebook');
+  const args = all.filter((arg) => arg !== '--live-notebook');
   const screenshotDir = args[1];
   if (args[0] === '--serve' && args.length <= 2) {
     const server = startServer(['--nemar']);
@@ -334,15 +353,15 @@ async function main() {
       if (!(await waitForServer(server))) {
         report(false, `the widget_e2e.py --nemar server on port ${server.port} did not start`, server.output.slice(-2000));
       } else {
-        await check(`http://127.0.0.1:${server.port}`, screenshotDir);
+        await check(`http://127.0.0.1:${server.port}`, screenshotDir, { liveNotebook });
       }
     } finally {
       server.proc.kill();
     }
   } else if (args.length >= 1 && args.length <= 2 && /^https?:\/\//.test(args[0])) {
-    await check(args[0].replace(/\/$/, ''), screenshotDir);
+    await check(args[0].replace(/\/$/, ''), screenshotDir, { liveNotebook });
   } else {
-    console.error('usage: bun frontend/browser-harness/popout-check.mjs --serve | http://127.0.0.1:PORT [screenshot-dir]');
+    console.error('usage: bun frontend/browser-harness/popout-check.mjs --serve | http://127.0.0.1:PORT [--live-notebook] [screenshot-dir]');
     return 2;
   }
   return failed > 0 ? 1 : 0;
