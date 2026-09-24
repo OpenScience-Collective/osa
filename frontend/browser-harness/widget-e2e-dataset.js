@@ -1,5 +1,6 @@
 // Lets a manual or scripted Chrome run drive setDataset/setConfig({notebookUrl})
-// without a devtools console: widget-e2e.html?dataset=<id>&zarr=true|false&notebookUrl=<url>
+// without a devtools console:
+// widget-e2e.html?dataset=<id>&zarr=true|false&subject=<label>&task=<label>&notebookUrl=<url>
 //
 // An external file, not an inline <script>, because the harness serves this page
 // under nemar.org's production Content-Security-Policy (script-src 'self'
@@ -10,6 +11,8 @@
 // - dataset=            (empty): setDataset(null) (explicitly "no dataset").
 // - dataset=<id>&zarr=true|false: setDataset({id, zarr: true|false}).
 // - dataset=<id>, no zarr param: setDataset({id}) (zarr unknown).
+// - subject=<label> and task=<label> add those facts (#477), which fill the
+//   dataset questions' blanks; the widget drops a label that is not one.
 (function () {
   const params = new URLSearchParams(window.location.search);
   if (params.has('dataset')) {
@@ -21,6 +24,9 @@
       const value = { id };
       if (zarrParam === 'true') value.zarr = true;
       else if (zarrParam === 'false') value.zarr = false;
+      for (const fact of ['subject', 'task']) {
+        if (params.has(fact)) value[fact] = params.get(fact);
+      }
       window.OSAChatWidget.setDataset(value);
     }
   }

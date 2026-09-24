@@ -91,6 +91,7 @@ function serverFetch(config) {
   const fetch = async (url, init) => {
     const u = String(url);
     if (u.endsWith('/health')) return new Response(JSON.stringify({ status: 'healthy' }));
+    if (u.endsWith('osa-chat-widget.js')) return new Response(SOURCE);
     if (u.endsWith('/chat')) {
       sent.push(JSON.parse(init.body));
       if (gate) await gate;
@@ -116,13 +117,15 @@ function serverFetch(config) {
 // A fresh window, as a new page load. `dataset` is setDataset's value before init
 // (undefined: the page never calls it); `storage` seeds localStorage with what an
 // earlier load left.
-async function start({ widget = { dataset_suggested_questions: TEMPLATES }, dataset, storage = {}, setConfig = {} } = {}) {
+// `before(window)` runs before the widget script, as a pop-out's own preset script does.
+async function start({ widget = { dataset_suggested_questions: TEMPLATES }, dataset, storage = {}, setConfig = {}, before } = {}) {
   const window = new Window({
     url: 'http://localhost/page',
     settings: { disableJavaScriptFileLoading: true, disableCSSFileLoading: true },
   });
   window.__OSA_TEST__ = true;
   for (const [key, value] of Object.entries(storage)) window.localStorage.setItem(key, value);
+  if (before) before(window);
   const script = window.document.createElement('script');
   script.setAttribute('src', 'http://localhost/static/osa-chat-widget.js');
   script.setAttribute('data-no-auto-init', '');
@@ -256,10 +259,9 @@ console.log('\na community with no templates keeps the general list on a dataset
   assertEqual(shown(q3), GENERAL, 'templates exist but none fits this page: the general list, never an empty area');
 }
 
-console.log('\ninvalid facts are refused, and leave the previous dataset in place');
+console.log('\nan invalid subject or task is dropped alone, and the rest of the call applies');
 {
   const { api, q } = await start({ dataset: ERP_CORE });
-  const before = shown(q);
   const capture = captureWarnings();
   try {
     for (const bad of [
@@ -274,9 +276,15 @@ console.log('\ninvalid facts are refused, and leave the previous dataset in plac
   } finally {
     capture.restore();
   }
-  assertEqual(capture.warnings.length, 5, 'each is refused with a warning');
-  assert(capture.warnings.every((w) => w.startsWith('[OSA] setDataset: invalid ')), 'naming what was wrong');
-  assertEqual(shown(q), before, 'and the questions still name nm000132');
+  assertEqual(capture.warnings.length, 5, 'each bad label is dropped with a warning');
+  assert(capture.warnings.every((w) => /^\[OSA\] setDataset: invalid (subject|task) label, dropping it:/.test(w)), 'naming which fact');
+  assertEqual(shown(q), [
+    'What is nm000133 about, and how was it recorded?',
+    'How do I download nm000133?',
+    'What events are annotated in nm000133?',
+  ], 'the new dataset is on screen: never kept on nm000132, and no question needs the dropped fact');
+  api.setDataset({ id: 'nm000134', zarr: true, subject: 'sub-001', task: 'N170' });
+  assert(!shown(q).some((text) => text.includes('sub-sub') || text.includes('{')), 'a dropped subject never reaches a question');
 }
 
 console.log('\na template the server would refuse is skipped, not shown with its blank');
@@ -301,6 +309,20 @@ console.log('\na template the server would refuse is skipped, not shown with its
   }
   assertEqual(shown(ctx.q), ['Plot sub-001 from nm000132 & more'], 'only the well-formed template, filled');
   assertEqual(ctx.q('.osa-suggestion').innerHTML, 'Plot sub-001 from nm000132 &amp; more', 'and its text is escaped, not parsed as markup');
+}
+
+console.log('\na malformed value from setConfig, which the server never checks, falls back to the general list');
+{
+  for (const bad of ['oops', { text: 'What is {dataset_id}?' }, 42]) {
+    const { q } = await start({ dataset: ERP_CORE, setConfig: { datasetSuggestedQuestions: bad } });
+    assertEqual(shown(q), GENERAL, `datasetSuggestedQuestions set to ${JSON.stringify(bad)}: the general list, and no error`);
+  }
+}
+
+console.log('\nnothing to suggest: the area stays hidden rather than showing an empty "Try asking:"');
+{
+  const { q } = await start({ widget: { suggested_questions: [] } });
+  assertEqual(shown(q), null, 'no general questions and no dataset: hidden');
 }
 
 console.log('\nan embedder\'s setConfig outranks the community\'s templates');
@@ -371,6 +393,49 @@ console.log('\nnothing is offered while a reply is on its way, and the row appea
   release();
   await waitUntil(() => !ctx.q('.osa-chat-input input').disabled, 'the reply arrives');
   assertEqual(label(ctx.q), 'About xx099904:', 'the reply is in: the row for the new dataset appears');
+}
+
+console.log('\na pop-out is told the dataset on screen, and follows the host page to the next one');
+{
+  const ctx = await start({ dataset: ERP_CORE });
+  const written = [];
+  const forwarded = [];
+  ctx.window.open = () => ({
+    closed: false,
+    close() {},
+    focus() {},
+    document: { write: (html) => written.push(html), close() {} },
+    OSAChatWidget: { setDataset: (value) => forwarded.push(value) },
+  });
+  ctx.q('.osa-popout-btn').click();
+  await waitUntil(() => written.length > 0, 'the pop-out is written');
+  const html = written.join('');
+  const line = html.split('\n').find((l) => l.includes('window.__OSA_DATASET__ = '));
+  assert(!!line, 'the pop-out\'s preset names the dataset');
+  assertEqual(line && JSON.parse(line.trim().replace('window.__OSA_DATASET__ = ', '').replace(/;$/, '')), ERP_CORE,
+    'as {id, zarr, subject, task}');
+  ctx.api.setDataset({ id: 'xx099904', zarr: true, subject: '01', task: 'p300' });
+  assertEqual(forwarded, [{ id: 'xx099904', zarr: true, subject: '01', task: 'p300' }], 'a later setDataset reaches the open pop-out');
+  ctx.api.setDataset(null);
+  assertEqual(forwarded.at(-1), null, 'and so does clearing it');
+
+  // The pop-out itself: its preset runs before the widget script.
+  const popout = await start({
+    before: (w) => { w.__OSA_DATASET__ = ERP_CORE; },
+    setConfig: { fullscreen: true },
+  });
+  assertEqual(shown(popout.q)[0], 'What is nm000132 about, and how was it recorded?', 'the pop-out shows the questions about its opener\'s dataset');
+  const cleared = await start({ before: (w) => { w.__OSA_DATASET__ = null; }, setConfig: { fullscreen: true } });
+  assertEqual(shown(cleared.q), GENERAL, 'told there is none: the general list');
+  const capture = captureWarnings();
+  let bad;
+  try {
+    bad = await start({ before: (w) => { w.__OSA_DATASET__ = { id: '<b>' }; }, setConfig: { fullscreen: true } });
+  } finally {
+    capture.restore();
+  }
+  assertEqual(shown(bad.q), GENERAL, 'a malformed preset is refused as setDataset would refuse it');
+  assert(capture.warnings.some((w) => w.startsWith('[OSA] setDataset: invalid dataset id')), 'with its warning');
 }
 
 console.log('\na history saved before this feature, or with a bad dataset field, counts as not on the dataset');

@@ -235,8 +235,9 @@
   // null when there is none (never set, or explicitly cleared), or {id, zarr, subject,
   // task} where zarr is true, false, or undefined (not known yet), and subject and
   // task are BIDS labels or undefined (#477). Read by the capsule's notebook icon and
-  // the dataset-page suggestions; may be set before init() runs, since the DOM does not exist to render into
-  // yet -- the value just sits here until applyLauncherMode/renderLauncherIcons reads it.
+  // the dataset-page suggestions (datasetQuestions); may be set before init() runs,
+  // since the DOM does not exist to render into yet -- the value just sits here until
+  // renderLauncherIcons and renderSuggestions read it.
   let currentDataset = null;
   // The capsule's open tab (#470): 'chat' or 'notebook'. Only a capsule widget
   // ever has a notebook tab; a bubble widget is always on chat.
@@ -2972,13 +2973,19 @@
         console.warn('[OSA] setDataset: invalid zarr value, ignoring:', value.zarr);
         return;
       }
+      // subject and task only fill question blanks (#477), so a bad one is dropped
+      // alone: refusing the whole call would keep the previous dataset on screen, and
+      // with it the notebook icon, for a mistake in a fact that gates nothing.
+      const facts = {};
       for (const fact of ['subject', 'task']) {
-        if (value[fact] !== undefined && !isValidBidsLabel(value[fact])) {
-          console.warn(`[OSA] setDataset: invalid ${fact} label, ignoring:`, value[fact]);
-          return;
+        if (value[fact] === undefined) continue;
+        if (isValidBidsLabel(value[fact])) {
+          facts[fact] = value[fact];
+        } else {
+          console.warn(`[OSA] setDataset: invalid ${fact} label, dropping it:`, value[fact]);
         }
       }
-      currentDataset = { id: value.id, zarr, subject: value.subject, task: value.task };
+      currentDataset = { id: value.id, zarr, subject: facts.subject, task: facts.task };
     } else {
       console.warn('[OSA] setDataset: invalid value, ignoring:', value);
       return;
@@ -2998,6 +3005,28 @@
     renderNotebookStatus(container);
     renderLauncherIcons(container);
     if (container.querySelector('.osa-suggestions')) renderSuggestions(container);
+    forwardDatasetToPopout();
+  }
+
+  // An open pop-out has no host page of its own to call setDataset, so it is told
+  // the dataset on screen when it opens (window.__OSA_DATASET__, in openPopout) and
+  // again whenever the host page names another, as applyColorSchemeEverywhere does
+  // for the color scheme (#477: its suggestions are about the dataset).
+  function forwardDatasetToPopout() {
+    if (!chatPopup || chatPopup.closed) return;
+    let popupWidget = null;
+    try {
+      popupWidget = chatPopup.OSAChatWidget;
+    } catch (e) {
+      console.warn('[OSA] Could not reach the pop-out to pass the dataset on:', e);
+      return;
+    }
+    if (!popupWidget || typeof popupWidget.setDataset !== 'function') return;
+    try {
+      popupWidget.setDataset(currentDataset);
+    } catch (e) {
+      console.error('[OSA] The pop-out failed to apply the dataset:', e);
+    }
   }
 
   // Copy text to clipboard
@@ -6881,8 +6910,12 @@
 
       // Serialize config safely (escape script-breaking sequences)
       let configJson;
+      let datasetJson;
       try {
         configJson = JSON.stringify(popupConfig)
+          .replace(/</g, '\\u003c')
+          .replace(/>/g, '\\u003e');
+        datasetJson = JSON.stringify(currentDataset)
           .replace(/</g, '\\u003c')
           .replace(/>/g, '\\u003e');
       } catch (e) {
@@ -6919,6 +6952,7 @@
     // Pre-configure widget before it initializes
     window.__OSA_CHAT_CONFIG__ = ${configJson};
     window.__OSA_HOST_COLOR_SCHEME__ = ${JSON.stringify(hostColorScheme)};
+    window.__OSA_DATASET__ = ${datasetJson};
   <\/script>
   <script>
     // Widget code (will pick up __OSA_CHAT_CONFIG__ if present)
@@ -6984,6 +7018,9 @@
       CONFIG.colorScheme = window.__OSA_HOST_COLOR_SCHEME__;
       _userSetKeys.add('colorScheme');
     }
+    // A pop-out is told the dataset its opener had on screen (openPopout, #477);
+    // null there means none. Validated exactly as a host page's setDataset is.
+    if (window.__OSA_DATASET__ !== undefined) applySetDataset(window.__OSA_DATASET__);
 
     // The community's look from the last load, before anything is drawn (#475).
     // With none, on a first visit, the launcher waits for the config, briefly,
@@ -7218,7 +7255,7 @@
       return { ...CONFIG };
     },
     // The dataset on screen (#436): null (no dataset, or not known yet) or
-    // {id, zarr}. May be called before init(); see applySetDataset.
+    // {id, zarr, subject, task} (#477). May be called before init(); see applySetDataset.
     setDataset: function(value) {
       applySetDataset(value);
     },
