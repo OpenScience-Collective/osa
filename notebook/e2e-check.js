@@ -116,6 +116,25 @@ function truncate(text) {
   return `${text.slice(0, MAX_ITEM_CHARS)}... [truncated, ${text.length} chars total]`;
 }
 
+// window.jupyterapp's current notebook panel's own sessionContext -- the same
+// object a person reads the kernel indicator from in the top-right of the
+// notebook. `session` is null until a kernel is requested; `session.kernel.
+// status` moves through 'starting' (or 'unknown') to 'idle' once the kernel
+// has actually come up and can accept execution. Shared between main()'s own
+// waitForKernelIdle and diagnose() below, so both ask the page the same
+// question the same way.
+const KERNEL_INFO_EXPR = `(() => {
+  const panel = window.jupyterapp?.shell?.currentWidget;
+  const session = panel?.sessionContext?.session ?? null;
+  const kernel = session?.kernel ?? null;
+  return {
+    hasPanel: !!panel,
+    hasSession: !!session,
+    kernelName: kernel?.name ?? null,
+    kernelStatus: kernel?.status ?? null,
+  };
+})()`;
+
 /**
  * Bounded, best-effort diagnostics for whichever page was active when a step
  * (almost always a pollUntil) failed. Printed to stderr so CI shows it right
@@ -138,6 +157,21 @@ async function diagnose(cdp, page, consoleErrors, exceptions) {
     } catch (err) {
       lines.push(`page url: <could not read: ${err.message}>`);
     }
+
+    try {
+      const kernel = await evaluate(cdp, page.sessionId, KERNEL_INFO_EXPR);
+      lines.push(
+        `kernel: session=${kernel.hasSession} name=${JSON.stringify(kernel.kernelName)} ` +
+          `status=${JSON.stringify(kernel.kernelStatus)}`
+      );
+    } catch (err) {
+      lines.push(`kernel: <could not read: ${err.message}>`);
+    }
+    lines.push(
+      page.workerTargets && page.workerTargets.length > 0
+        ? `pyodide worker target(s) seen (${page.workerTargets.length}): ${page.workerTargets.slice(0, MAX_LIST_ITEMS).join(', ')}`
+        : 'pyodide worker target: none seen yet'
+    );
 
     try {
       const cells = await evaluate(
@@ -237,7 +271,17 @@ async function main() {
     async function openPage(url) {
       const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
       const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
+      // Pyodide's kernel runs in a Worker; whether one has even been spawned
+      // yet is itself diagnostic (a kernel stuck 'starting' with no worker at
+      // all is a different problem than one with a worker that never reaches
+      // 'idle'). Target.attachedToTarget for a child of this page arrives on
+      // THIS page's own session, same as attachWithNetwork below relies on.
+      const workerTargets = [];
       cdp.on((message) => {
+        if (message.method === 'Target.attachedToTarget' && message.sessionId === sessionId) {
+          if (message.params.targetInfo.type === 'worker') workerTargets.push(message.params.targetInfo.url);
+          return;
+        }
         if (message.sessionId !== sessionId) return;
         if (message.method === 'Runtime.exceptionThrown') {
           exceptions.push(message.params.exceptionDetails.text);
@@ -264,7 +308,7 @@ async function main() {
       const recorder = new NetworkRecorder();
       await attachWithNetwork(cdp, sessionId, recorder);
       await cdp.send('Page.navigate', { url }, sessionId);
-      const page = { targetId, sessionId, recorder };
+      const page = { targetId, sessionId, recorder, workerTargets };
       currentPage = page;
       return page;
     }
@@ -275,6 +319,29 @@ async function main() {
         timeoutMs,
         300
       );
+    }
+
+    async function kernelInfo(sessionId) {
+      return evaluate(cdp, sessionId, KERNEL_INFO_EXPR);
+    }
+
+    /**
+     * The race PR review found in CI (#465): notebook:run-all-cells queues
+     * nothing if it fires before the kernel is up, and on a fast machine the
+     * kernel is ready before anyone would notice the gap. This is that gate,
+     * checked the way a person would -- the same sessionContext the kernel
+     * indicator in the notebook's own toolbar reads.
+     */
+    async function waitForKernelIdle(sessionId, timeoutMs) {
+      try {
+        await pollUntil(async () => (await kernelInfo(sessionId)).kernelStatus === 'idle', timeoutMs, 300);
+      } catch (err) {
+        const info = await kernelInfo(sessionId).catch(() => null);
+        throw new Error(
+          `the notebook's kernel never reached 'idle' within ${timeoutMs / 1000}s ` +
+            `(last seen: ${JSON.stringify(info)}): ${err.message}`
+        );
+      }
     }
 
     function runAllCells(sessionId) {
@@ -300,6 +367,43 @@ async function main() {
       );
     }
 
+    /** True once Run All has queued at least one cell: some code prompt is no
+     * longer the never-executed placeholder '[ ]:' (queued '[*]:' and
+     * numbered '[n]:' both count). Distinct from promptsDone, which requires
+     * EVERY prompt numbered and none busy -- this only asks whether anything
+     * moved at all, so a slow run and a run that queued nothing are told apart. */
+    async function runStarted(sessionId) {
+      return evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const prompts = Array.from(document.querySelectorAll('.jp-InputPrompt')).map((el) => el.textContent.trim());
+          const codePrompts = prompts.filter((p) => p.includes('['));
+          return codePrompts.length > 0 && codePrompts.some((p) => p !== '[ ]:');
+        })()`
+      );
+    }
+
+    /**
+     * Fire Run All, then confirm it actually queued something within 20s.
+     * Deliberately NOT a retry: a blind re-fire of Run All would hide a real
+     * "Run All does nothing" bug behind an apparent pass on the second try.
+     * If nothing queued, this fails with that stated outright; only once
+     * something has queued does the caller wait out the full run.
+     */
+    async function runAllCellsAndConfirmQueued(sessionId) {
+      await runAllCells(sessionId);
+      try {
+        await pollUntil(() => runStarted(sessionId), 20_000, 300);
+      } catch {
+        throw new Error(
+          "notebook:run-all-cells did not queue any cell within 20s of firing " +
+            "(every code prompt is still the never-executed '[ ]:'); this looks like " +
+            'Run All doing nothing, not a slow run, so it was not retried.'
+        );
+      }
+    }
+
     async function sentinelPresent(sessionId) {
       return evaluate(cdp, sessionId, `document.body.innerText.includes(${JSON.stringify(SENTINEL)})`);
     }
@@ -320,7 +424,8 @@ async function main() {
         300
       );
       await waitForNotebookReady(first.sessionId, 30_000);
-      await runAllCells(first.sessionId);
+      await waitForKernelIdle(first.sessionId, 90_000);
+      await runAllCellsAndConfirmQueued(first.sessionId);
       await pollUntil(
         async () => (await sentinelPresent(first.sessionId)) && (await promptsDone(first.sessionId)),
         120_000,
@@ -407,7 +512,8 @@ async function main() {
 
       // --- 3. Re-run in the warm profile, to measure a genuinely warm cell run too ---
       const rerunStart = Date.now();
-      await runAllCells(second.sessionId);
+      await waitForKernelIdle(second.sessionId, 90_000);
+      await runAllCellsAndConfirmQueued(second.sessionId);
       await pollUntil(
         async () => (await sentinelPresent(second.sessionId)) && (await promptsDone(second.sessionId)),
         60_000,
