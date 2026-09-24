@@ -169,6 +169,12 @@
   let offeredModels = null; // Live offered_models list from the community config API; null until loaded
   let sessionId = null; // Server-side session ID for multi-turn conversations
   let communityConfigReady = null; // Promise for the community config fetch, once started
+  // A first visit, with no remembered look: the launcher waits, hidden, for the
+  // community config (#475). See revealLauncher.
+  let launcherWaiting = false;
+  // How long the launcher waits for the config before showing the defaults anyway.
+  // A variable, not a constant, only so the test hooks can shorten it.
+  let LAUNCHER_WAIT_MS = 1500;
   // Browser code execution (#431). browserToolsReady is assigned, to a pending
   // promise, as soon as the config says the community runs code; it resolves to
   // the controller once the runtime bundle has loaded and passed its integrity
@@ -446,6 +452,22 @@
     .osa-chat-widget.chat-open .osa-launcher-capsule::before {
       opacity: 1;
       transform: none;
+    }
+
+    /* A first visit, waiting for the community config (#475): the launcher stays out
+       of sight and nothing animates, so it appears already in the community's look.
+       revealLauncher removes this once the config arrives, or after LAUNCHER_WAIT_MS. */
+    .osa-chat-widget.osa-launcher-waiting .osa-chat-button,
+    .osa-chat-widget.osa-launcher-waiting .osa-chat-tooltip,
+    .osa-chat-widget.osa-launcher-waiting .osa-launcher-capsule {
+      visibility: hidden;
+    }
+
+    .osa-chat-widget.osa-launcher-waiting,
+    .osa-chat-widget.osa-launcher-waiting *,
+    .osa-chat-widget.osa-launcher-waiting *::before,
+    .osa-chat-widget.osa-launcher-waiting *::after {
+      transition: none !important;
     }
 
     /* The filled circle behind the open tab (#470): slides between the chat and
@@ -3549,7 +3571,134 @@
   }
 
   // Fetch community config (default model + widget display settings) from API
+  // However the fetch ends (applied, refused, unreachable), a launcher waiting for
+  // it is shown (#475).
+  // Copy a community config's `widget` block into CONFIG, for every field the
+  // embedder has not set itself (setConfig outranks the community). Returns whether
+  // anything changed. Explicit null/undefined checks, not truthiness, so that a null
+  // initial_message from the API correctly replaces the hardcoded HED default. Used
+  // for the fresh config, and for the one remembered from the last load (#475).
+  function applyWidgetDisplay(w) {
+    let changed = false;
+    if (w.title != null && !_userSetKeys.has('title')) {
+      CONFIG.title = w.title;
+      changed = true;
+    }
+    if ('initial_message' in w && !_userSetKeys.has('initialMessage')) {
+      CONFIG.initialMessage = w.initial_message || '';
+      changed = true;
+    }
+    if (w.placeholder != null && !_userSetKeys.has('placeholder')) {
+      CONFIG.placeholder = w.placeholder;
+      changed = true;
+    }
+    if (w.suggested_questions != null && !_userSetKeys.has('suggestedQuestions')) {
+      CONFIG.suggestedQuestions = w.suggested_questions;
+      changed = true;
+    }
+    if (w.theme_color != null && !_userSetKeys.has('themeColor')) {
+      CONFIG.themeColor = w.theme_color;
+      changed = true;
+    }
+    if (w.user_bubble_color != null && !_userSetKeys.has('userBubbleColor')) {
+      CONFIG.userBubbleColor = w.user_bubble_color;
+      changed = true;
+    }
+    if (w.theme_text_color != null && !_userSetKeys.has('themeTextColor')) {
+      CONFIG.themeTextColor = w.theme_text_color;
+      changed = true;
+    }
+    if (w.accent_color != null && !_userSetKeys.has('accentColor')) {
+      CONFIG.accentColor = w.accent_color;
+      changed = true;
+    }
+    if (w.user_bubble_text_color != null && !_userSetKeys.has('userBubbleTextColor')) {
+      CONFIG.userBubbleTextColor = w.user_bubble_text_color;
+      changed = true;
+    }
+    if (w.logo_url != null && !_userSetKeys.has('logo')) {
+      // Resolve path-only logo URLs (starting with '/') against the API endpoint
+      if (w.logo_url.startsWith('/')) {
+        CONFIG.logo = CONFIG.apiEndpoint + w.logo_url;
+      } else {
+        CONFIG.logo = w.logo_url;
+      }
+      changed = true;
+    }
+    if (w.launcher != null && !_userSetKeys.has('launcher')) {
+      CONFIG.launcher = w.launcher;
+      changed = true;
+    }
+    if (w.launcher_label != null && !_userSetKeys.has('launcherLabel')) {
+      CONFIG.launcherLabel = w.launcher_label;
+      changed = true;
+    }
+    if (w.color_scheme != null && !_userSetKeys.has('colorScheme')) {
+      if (COMMUNITY_COLOR_SCHEMES.includes(w.color_scheme)) {
+        CONFIG.colorScheme = w.color_scheme;
+        changed = true;
+      } else {
+        warnInvalidColorScheme('color_scheme from the community config', w.color_scheme, COMMUNITY_COLOR_SCHEMES);
+      }
+    }
+    return changed;
+  }
+
+  // The community's look, remembered from the last load (#475), so the widget is
+  // drawn in it from the first frame instead of in the built-in defaults until the
+  // config request returns. Only the `widget` block the server sent, applied through
+  // applyWidgetDisplay's checks exactly as a fresh one is; the fresh config still
+  // arrives, wins, and replaces it. The API endpoint is stored beside it, so a page
+  // pointed at another deployment starts fresh.
+  function widgetMemoryKey() {
+    return `osa-widget-config-${CONFIG.communityId}`;
+  }
+
+  function readRememberedWidget() {
+    try {
+      const raw = localStorage.getItem(widgetMemoryKey());
+      if (!raw) return null;
+      const saved = JSON.parse(raw);
+      if (!saved || typeof saved !== 'object' || saved.apiEndpoint !== CONFIG.apiEndpoint) return null;
+      const widget = saved.widget;
+      if (!widget || typeof widget !== 'object' || Array.isArray(widget)) return null;
+      return widget;
+    } catch (e) {
+      console.warn('[OSA] Ignoring the remembered widget config:', e.message || e);
+      return null;
+    }
+  }
+
+  function rememberWidget(widget) {
+    try {
+      localStorage.setItem(widgetMemoryKey(), JSON.stringify({ apiEndpoint: CONFIG.apiEndpoint, widget }));
+    } catch (e) {
+      // Storage full or blocked: the next load draws the defaults first, as before.
+      console.warn('[OSA] Could not remember the widget config:', e.message || e);
+    }
+  }
+
+  // Show a launcher that was waiting for the community config (#475). The waiting
+  // class also turns transitions off, so reading the layout first commits the
+  // community's colors while they are off; removing the class then shows the button
+  // already in them, with no fade from the defaults.
+  function revealLauncher() {
+    launcherWaiting = false;
+    const container = document.querySelector('.osa-chat-widget');
+    if (!container || !container.classList.contains('osa-launcher-waiting')) return;
+    container.getBoundingClientRect();
+    container.classList.remove('osa-launcher-waiting');
+  }
+
   async function fetchCommunityConfig() {
+    try {
+      await loadCommunityConfig();
+    } finally {
+      revealLauncher();
+    }
+  }
+
+  async function loadCommunityConfig() {
     // Validate communityId before making request
     if (!isValidCommunityId(CONFIG.communityId)) {
       console.error('[OSA] Invalid communityId, cannot fetch default model');
@@ -3598,77 +3747,13 @@
         );
       }
 
-      // Apply widget display config from API for fields not explicitly set by the embedder.
-      // Use explicit null/undefined checks (not truthiness) so that a null initial_message
-      // from the API correctly replaces the hardcoded HED default.
-      if (data && data.widget) {
-        const w = data.widget;
-        let changed = false;
-        if (w.title != null && !_userSetKeys.has('title')) {
-          CONFIG.title = w.title;
-          changed = true;
-        }
-        if ('initial_message' in w && !_userSetKeys.has('initialMessage')) {
-          CONFIG.initialMessage = w.initial_message || '';
-          changed = true;
-        }
-        if (w.placeholder != null && !_userSetKeys.has('placeholder')) {
-          CONFIG.placeholder = w.placeholder;
-          changed = true;
-        }
-        if (w.suggested_questions != null && !_userSetKeys.has('suggestedQuestions')) {
-          CONFIG.suggestedQuestions = w.suggested_questions;
-          changed = true;
-        }
-        if (w.theme_color != null && !_userSetKeys.has('themeColor')) {
-          CONFIG.themeColor = w.theme_color;
-          changed = true;
-        }
-        if (w.user_bubble_color != null && !_userSetKeys.has('userBubbleColor')) {
-          CONFIG.userBubbleColor = w.user_bubble_color;
-          changed = true;
-        }
-        if (w.theme_text_color != null && !_userSetKeys.has('themeTextColor')) {
-          CONFIG.themeTextColor = w.theme_text_color;
-          changed = true;
-        }
-        if (w.accent_color != null && !_userSetKeys.has('accentColor')) {
-          CONFIG.accentColor = w.accent_color;
-          changed = true;
-        }
-        if (w.user_bubble_text_color != null && !_userSetKeys.has('userBubbleTextColor')) {
-          CONFIG.userBubbleTextColor = w.user_bubble_text_color;
-          changed = true;
-        }
-        if (w.logo_url != null && !_userSetKeys.has('logo')) {
-          // Resolve path-only logo URLs (starting with '/') against the API endpoint
-          if (w.logo_url.startsWith('/')) {
-            CONFIG.logo = CONFIG.apiEndpoint + w.logo_url;
-          } else {
-            CONFIG.logo = w.logo_url;
-          }
-          changed = true;
-        }
-        if (w.launcher != null && !_userSetKeys.has('launcher')) {
-          CONFIG.launcher = w.launcher;
-          changed = true;
-        }
-        if (w.launcher_label != null && !_userSetKeys.has('launcherLabel')) {
-          CONFIG.launcherLabel = w.launcher_label;
-          changed = true;
-        }
-        if (w.color_scheme != null && !_userSetKeys.has('colorScheme')) {
-          if (COMMUNITY_COLOR_SCHEMES.includes(w.color_scheme)) {
-            CONFIG.colorScheme = w.color_scheme;
-            changed = true;
-          } else {
-            warnInvalidColorScheme('color_scheme from the community config', w.color_scheme, COMMUNITY_COLOR_SCHEMES);
-          }
-        }
-
-        if (changed) {
+      // Apply widget display config from API for fields not explicitly set by the embedder,
+      // and remember it for the next load (#475).
+      if (data && data.widget && typeof data.widget === 'object' && !Array.isArray(data.widget)) {
+        if (applyWidgetDisplay(data.widget)) {
           applyWidgetConfig();
         }
+        rememberWidget(data.widget);
       } else if (data) {
         console.warn('[OSA] API response missing widget config; using local defaults');
       }
@@ -4786,6 +4871,67 @@
     applyLauncherMode(container);
     renderLauncherIcons(container);
 
+    applyThemeProperties(container);
+
+    applyColorScheme(container);
+
+    // Update header title
+    const titleEl = container.querySelector('.osa-chat-title');
+    if (titleEl) {
+      const badge = titleEl.querySelector('.osa-experimental-badge');
+      titleEl.textContent = CONFIG.title;
+      if (badge) titleEl.appendChild(badge);
+    }
+
+    // Update tooltip: launcher_label if set, else the hardcoded default (#436).
+    const tooltip = container.querySelector('.osa-chat-tooltip');
+    if (tooltip) {
+      tooltip.textContent = CONFIG.launcherLabel || ('Ask me about ' + CONFIG.title.replace(' Assistant', ''));
+    }
+
+    // Update input placeholder
+    const input = container.querySelector('.osa-chat-input input');
+    if (input) {
+      input.placeholder = CONFIG.placeholder;
+    }
+
+    // Update initial assistant message if chat has only the default greeting
+    if (messages.length === 1 && messages[0].role === 'assistant') {
+      messages[0].content = CONFIG.initialMessage;
+      renderMessages(container);
+    }
+
+    // Update suggested questions
+    renderSuggestions(container);
+
+    // Update avatar with community logo if available
+    const avatar = container.querySelector('.osa-chat-avatar');
+    const shownLogo = avatar && avatar.querySelector('img');
+    if (avatar && CONFIG.logo && !(shownLogo && shownLogo.getAttribute('src') === CONFIG.logo)) {
+      const fallback = avatar.innerHTML;
+      const img = document.createElement('img');
+      img.src = CONFIG.logo;
+      img.alt = CONFIG.title;
+      img.onerror = function() {
+        console.warn('[OSA] Failed to load community logo:', CONFIG.logo);
+        avatar.innerHTML = fallback;
+        img.onerror = null;
+      };
+      avatar.innerHTML = '';
+      avatar.appendChild(img);
+    }
+
+    // Update loading label if currently loading
+    const loadingLabel = container.querySelector('.osa-loading-label');
+    if (loadingLabel) {
+      loadingLabel.textContent = isThinking ? 'Thinking...' : CONFIG.title;
+    }
+  }
+
+  // The community's colors as custom properties on the widget. Also run by
+  // createWidget before the widget joins the page, so a remembered look (#475) is
+  // there from the first frame, with nothing to fade from.
+  function applyThemeProperties(container) {
     // Apply theme color if configured (must be valid #RRGGBB hex)
     if (CONFIG.themeColor) {
       if (/^#[0-9a-fA-F]{6}$/.test(CONFIG.themeColor)) {
@@ -4803,8 +4949,6 @@
         warnInvalidColor('themeColor', CONFIG.themeColor);
       }
     }
-
-    applyColorScheme(container);
 
     // The reader's bubbles have their own color, so a theme_color alone leaves
     // them the platform blue every community has had (must be valid #RRGGBB hex).
@@ -4864,57 +5008,6 @@
       } else {
         warnInvalidColor('disclaimerBackground', CONFIG.disclaimerBackground);
       }
-    }
-
-    // Update header title
-    const titleEl = container.querySelector('.osa-chat-title');
-    if (titleEl) {
-      const badge = titleEl.querySelector('.osa-experimental-badge');
-      titleEl.textContent = CONFIG.title;
-      if (badge) titleEl.appendChild(badge);
-    }
-
-    // Update tooltip: launcher_label if set, else the hardcoded default (#436).
-    const tooltip = container.querySelector('.osa-chat-tooltip');
-    if (tooltip) {
-      tooltip.textContent = CONFIG.launcherLabel || ('Ask me about ' + CONFIG.title.replace(' Assistant', ''));
-    }
-
-    // Update input placeholder
-    const input = container.querySelector('.osa-chat-input input');
-    if (input) {
-      input.placeholder = CONFIG.placeholder;
-    }
-
-    // Update initial assistant message if chat has only the default greeting
-    if (messages.length === 1 && messages[0].role === 'assistant') {
-      messages[0].content = CONFIG.initialMessage;
-      renderMessages(container);
-    }
-
-    // Update suggested questions
-    renderSuggestions(container);
-
-    // Update avatar with community logo if available
-    const avatar = container.querySelector('.osa-chat-avatar');
-    if (avatar && CONFIG.logo) {
-      const fallback = avatar.innerHTML;
-      const img = document.createElement('img');
-      img.src = CONFIG.logo;
-      img.alt = CONFIG.title;
-      img.onerror = function() {
-        console.warn('[OSA] Failed to load community logo:', CONFIG.logo);
-        avatar.innerHTML = fallback;
-        img.onerror = null;
-      };
-      avatar.innerHTML = '';
-      avatar.appendChild(img);
-    }
-
-    // Update loading label if currently loading
-    const loadingLabel = container.querySelector('.osa-loading-label');
-    if (loadingLabel) {
-      loadingLabel.textContent = isThinking ? 'Thinking...' : CONFIG.title;
     }
   }
 
@@ -5391,7 +5484,8 @@
   // Create the widget DOM
   function createWidget() {
     const container = document.createElement('div');
-    container.className = 'osa-chat-widget' + (CONFIG.fullscreen ? ' fullscreen' : '');
+    container.className = 'osa-chat-widget' + (CONFIG.fullscreen ? ' fullscreen' : '') +
+      (launcherWaiting ? ' osa-launcher-waiting' : '');
 
     const experimentalBadge = CONFIG.showExperimentalBadge
       ? '<span class="osa-experimental-badge">Experimental</span>'
@@ -5570,6 +5664,9 @@
       </div>
       </div>
     `;
+    // Before the widget joins the page, so its first style is already the
+    // community's (a remembered look, #475, or an embedder's setConfig colors).
+    applyThemeProperties(container);
     document.body.appendChild(container);
 
     // Setup resize
@@ -6679,11 +6776,22 @@
       _userSetKeys.add('colorScheme');
     }
 
+    // The community's look from the last load, before anything is drawn (#475).
+    // With none, on a first visit, the launcher waits for the config, briefly,
+    // rather than showing the built-in defaults and then changing.
+    const remembered = isValidCommunityId(CONFIG.communityId) ? readRememberedWidget() : null;
+    if (remembered) applyWidgetDisplay(remembered);
+    launcherWaiting = !remembered && !CONFIG.fullscreen && isValidCommunityId(CONFIG.communityId);
+
     loadPageContextPreference();
     loadUserSettings();
     const historyNeedsSave = loadHistory();
     injectStyles();
     const container = createWidget();
+    // Everything else the remembered config sets (the logo, the title, the
+    // greeting), still before the first frame.
+    if (remembered) applyWidgetConfig();
+    if (launcherWaiting) setTimeout(revealLauncher, LAUNCHER_WAIT_MS);
 
     if (historyNeedsSave) {
       try {
@@ -6922,6 +7030,12 @@
 
   // Keep the state reducer testable without exposing it in normal embeds.
   if (window.__OSA_TEST__) {
+    window.OSAChatWidget.__firstPaint = {
+      setWait(ms) {
+        LAUNCHER_WAIT_MS = ms;
+      },
+      waiting: () => launcherWaiting,
+    };
     window.OSAChatWidget.__applyDoneEvent = applyDoneEvent;
     window.OSAChatWidget.__migrateLegacyCitationMarkers = migrateLegacyCitationMarkers;
     window.OSAChatWidget.__isSameResponseMessage = isSameResponseMessage;

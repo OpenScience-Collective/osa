@@ -303,6 +303,11 @@ console.log('\nbubble mode renders today\'s markup: nothing about it changes');
   const tooltip = container.querySelector('.osa-chat-tooltip');
   assert(chatButton.parentElement === container, 'the chat button is still a direct child of the widget container');
   assert(tooltip.parentElement === container, 'the tooltip is still a direct child of the widget container');
+  // A first visit keeps the launcher hidden until the community config arrives, so
+  // it is never drawn in the defaults first (#475); that is the only addition, and it
+  // goes once the config is in.
+  assert(container.className === 'osa-chat-widget osa-launcher-waiting', "before the config, a first visit adds only 'osa-launcher-waiting'");
+  await waitUntil(() => !container.classList.contains('osa-launcher-waiting'), 'the config arrives');
   assert(container.className === 'osa-chat-widget', "the container's className is exactly 'osa-chat-widget', nothing appended");
   assert(!container.querySelector('.osa-launcher-icon'), 'no launcher icon exists anywhere in a bubble-mode widget');
 }
