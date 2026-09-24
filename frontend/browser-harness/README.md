@@ -285,7 +285,8 @@ It needs the network, for the notebook site and the Pyodide it loads, so it is n
 Measured 2026-09-24 in Chrome 153, with a cold profile:
 
 - the capsule's circles are 46px, 15% larger than the 40px Send button, and the filled indicator sits on the open tab's circle, sliding from chat to the notebook
-- the notebook reported ready 2.8 s after the click, every message came from the notebook's origin, and setup finished ("Python ready") 7.5 s after it, with no overlay left over the notebook
+- Enter on the focused notebook circle opens the notebook tab, and Space on it later goes back to it, as real key presses
+- the notebook reported ready 3.2 s after the key press, every message came from the notebook's origin, and setup finished ("Python ready") 7.7 s after it, with no overlay left over the notebook
 - `setColorScheme('dark')` was applied inside the notebook, which said so
 - 80 ms into a switch to chat, both views are mid-fade; switching back finds the same frame, never reloaded
 - dragging the resize handle across the frame widens the panel to 940px, past the bubble's 600px

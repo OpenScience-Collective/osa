@@ -43,7 +43,7 @@ function report(ok, label, detail) {
   }
 }
 
-// Seconds since the notebook circle was clicked.
+// Seconds since the notebook circle was pressed.
 let clickedAt = 0;
 const seconds = () => ((Date.now() - clickedAt) / 1000).toFixed(1);
 
@@ -75,6 +75,14 @@ async function main() {
       }
       report(false, `timed out after ${timeoutMs / 1000}s: ${label}`);
       return false;
+    };
+    // A real key press on whatever has focus, as a reader's keyboard sends it.
+    const press = async (key) => {
+      const code = key === ' ' ? 'Space' : key;
+      const keyCode = key === ' ' ? 32 : 13;
+      const text = key === ' ' ? ' ' : '\r';
+      await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode: keyCode, text }, s);
+      await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: keyCode }, s);
     };
     const shot = async (name) => {
       if (!shotDir) return;
@@ -110,10 +118,12 @@ async function main() {
     report(onChat, 'the filled indicator sits on the chat circle');
     await shot('2-chat-tab');
 
-    // The notebook tab.
+    // The notebook tab, opened from the keyboard: Enter on the focused circle.
+    await evaluate(`document.querySelector('.osa-notebook-btn').focus(), true`);
     clickedAt = Date.now();
-    await evaluate(`document.querySelector('.osa-notebook-btn').click(), true`);
+    await press('Enter');
     if (!(await waitFor(`!!document.querySelector('.osa-notebook-frame')`, 'the notebook frame'))) return 1;
+    report(true, 'Enter on the focused notebook circle opens the notebook tab');
     await evaluate(`document.querySelector('.osa-notebook-frame').addEventListener('load', () => window.__nb.loads++), true`);
     await Bun.sleep(450);
     const onNotebook = await evaluate(`(() => {
@@ -124,13 +134,13 @@ async function main() {
     report(onNotebook, 'the indicator slid to the notebook circle');
     await shot('3-notebook-loading');
     if (!(await waitFor(`window.__nb.messages.some((m) => m.type === 'ready')`, 'the notebook reports ready', 90_000))) return 1;
-    report(true, `the notebook reported ready, ${seconds()}s after the click`);
+    report(true, `the notebook reported ready, ${seconds()}s after the key press`);
     const origins = await evaluate(`[...new Set(window.__nb.messages.map((m) => m.origin))]`);
     report(origins.length === 1 && origins[0] === 'https://develop-notebook.osc.earth', 'every message came from the notebook\'s origin', origins);
     if (!(await waitFor(`window.__nb.messages.some((m) => m.type === 'setup' && m.status === 'done')`, 'setup done', 180_000))) return 1;
     await Bun.sleep(300);
     const status = await evaluate(`document.querySelector('.osa-notebook-status-text').textContent`);
-    report(status === `${DATASET} · Python ready`, `the header says Python is ready, ${seconds()}s after the click`, status);
+    report(status === `${DATASET} · Python ready`, `the header says Python is ready, ${seconds()}s after the key press`, status);
     const overlays = await evaluate(`[...document.querySelectorAll('.osa-notebook-overlay')].every((o) => o.classList.contains('osa-overlay-hidden'))`);
     report(overlays, 'no overlay covers the notebook');
     await shot('4-notebook-ready');
@@ -151,8 +161,11 @@ async function main() {
     report(midFade[0] < 1 && midFade[1] < 1, 'fade-through: 80ms in, the notebook is fading out and chat has not yet faded in', midFade);
     await Bun.sleep(500);
     await shot('6-chat-dark');
-    await evaluate(`document.querySelector('.osa-notebook-btn').click(), true`);
+    // Back to the notebook from the keyboard again, with Space this time.
+    await evaluate(`document.querySelector('.osa-notebook-btn').focus(), true`);
+    await press(' ');
     await Bun.sleep(500);
+    report(await evaluate(`document.querySelector('.osa-chat-widget').classList.contains('osa-tab-notebook')`), 'Space on the focused notebook circle goes back to the notebook tab');
     const kept = await evaluate(`({ mark: document.querySelector('.osa-notebook-frame').dataset.mark, loads: window.__nb.loads, frames: document.querySelectorAll('.osa-notebook-frame').length })`);
     report(kept.mark === 'kept' && kept.loads === loadsBefore && kept.frames === 1, 'the same frame, not reloaded, after a switch to chat and back', { kept, loadsBefore });
 
