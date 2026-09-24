@@ -329,8 +329,9 @@ close button, closes the panel.
   dataset: `Opening the notebook…`, `Starting Python…`, `Python ready` (or `Ready` for
   a starter with no setup cell), `Setup did not finish; see the notebook`, or
   `The notebook did not open here`.
-  The chat's own header buttons (Settings, reset and pop-out) are hidden on the
-  notebook tab; the close button stays.
+  The chat's own header buttons (Settings and reset) are hidden on the notebook tab;
+  the close button stays, and so does the pop-out button, which opens the pop-out on
+  the notebook tab (see "The pop-out window" below).
 - **The frame is kept.** Going back to chat hides it without unloading it, so its
   Python keeps running and returning finds the notebook as it was left.
   A new dataset on screen replaces the frame; a dataset with no Zarr copy drops it
@@ -366,10 +367,6 @@ close button, closes the panel.
 points `notebookUrl` at the develop notebook.
 Without it the browser refuses the frame, and the tab shows the fallback above.
 
-**The pop-out does not carry the notebook yet.** Its button is hidden on the notebook
-tab, and a pop-out opened from chat shows the chat only; a tab strip in the pop-out
-is planned (issue #470).
-
 Testing: `frontend/test-widget-capsule.js` and `frontend/test-widget-notebook-tab.js`
 run the real widget source in a happy-dom window (the same technique
 `frontend/test-widget-tools.js` uses), and both run in CI.
@@ -379,6 +376,52 @@ config for a manual or scripted Chrome check (`widget-e2e-dataset.js` drives
 console), and `frontend/browser-harness/notebook-tab-check.mjs` drives the notebook
 tab in Chrome against the live develop notebook; it needs the network, so it is not
 in CI.
+
+## The pop-out window
+
+The header's pop-out button opens the widget in a window of its own, which the panel fills.
+
+- **It carries the page's widget.** Its settings, every `setConfig` the page made included, the color scheme the host page chose, if it chose one, and the dataset on screen.
+  A later `setColorScheme` or `setDataset` on the page reaches an open pop-out too, including one whose script is still loading.
+- **It shares the page's storage.** The pop-out is an `about:blank` window of the page's own origin,
+  so it has the page's chat history and browser runtime workspace (`docs/community-browser-runtime.md`).
+- **A capsule community's pop-out has the panel's tabs** (issue #470), Chat and Notebook, as a strip under its header, since a pop-out has no launcher.
+  It opens on the tab the reader was on when they clicked the pop-out button, drawn there at once.
+  The strip's notebook tab follows the page's dataset as the notebook circle does:
+  it cannot open without a dataset that has a Zarr copy, and its tooltip says why;
+  it shows the circle's busy and attention cues as a small mark while the reader is on chat.
+- **The pop-out's notebook is a frame of its own, and a fresh notebook session.**
+  Python starts again there, and so does the starter's setup cell.
+  The notebook opens with the edits that had reached storage, which an edit does within about five seconds (`docs/community-notebook.md`).
+  The page's own notebook frame is left as it was, still running, so both windows have the same stored notebook open: edit it in one of them at a time.
+- **A bubble community's pop-out is unchanged**: the chat only, with no tab strip.
+
+### What a host page's policy needs for the pop-out
+
+Nothing beyond what the widget itself needs.
+The pop-out is an `about:blank` window of the page's own origin, so the browser applies the page's own CSP to it,
+and the pop-out runs no inline script:
+its document is written without one, its settings are set on its window from the page,
+and the widget arrives as a script element with the address of the page's own widget tag,
+and that tag's `integrity` and `crossorigin`, when it has them.
+A policy that lets the page load the widget lets the pop-out load it too, and `script-src` needs no `'unsafe-inline'`.
+Until issue #470, the pop-out wrote the widget's source into itself as inline script,
+and opened blank on a page whose policy did not allow `'unsafe-inline'`.
+
+- Keep `integrity` and `crossorigin` together on a pinned widget tag, as a page must for the widget itself:
+  the pop-out copies both, and a script from another origin (jsDelivr, for nemar.org) pinned by its Subresource Integrity (SRI) hash loads only with `crossorigin`,
+  since without it the browser cannot read the response to check the hash, and refuses it.
+- `data-no-auto-init` on the tag is fine: the pop-out's copy does not carry it, and starts itself.
+- The pop-out's document has a `<style>` element, and the widget adds its own styles as one,
+  so the pop-out needs only the `style-src 'unsafe-inline'` the widget already needs.
+- The notebook tab in the pop-out needs the same `frame-src` as the panel's (above).
+- A pop-out whose script the browser refuses says so in its window ("The assistant could not load in this window"),
+  and the page's console names the address it could not load.
+
+Testing: `frontend/test-widget-popout.js` runs the real widget source in happy-dom windows, a host page and the pop-out it opens,
+with the widget loaded by its script tag in both,
+and `frontend/browser-harness/popout-check.mjs --serve` opens the pop-out in Chrome under a policy without `'unsafe-inline'`,
+from both tabs, on a plain and a pinned widget tag (see the harness README); both run in CI.
 
 ## The first paint: remembering the community's look
 

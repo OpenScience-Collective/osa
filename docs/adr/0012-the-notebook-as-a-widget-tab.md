@@ -89,9 +89,25 @@ Measured with a control: with the override, an edit with no Save reached storage
 - **A frame kept alive costs memory while the reader is on chat.**
   One Pyodide stays loaded for as long as the page is open once the tab has been used; the tab is opened only by a reader asking for it.
 
+## Update: the pop-out carries the notebook
+
+Date: 2026-09-24
+
+Two sentences above no longer describe the pop-out; they are kept as they were written, and this is what replaced them (#470, its second part).
+
+- **"`openPopout` writes the widget into it."** The pop-out now writes a document with no script in it, sets its presets on its window from the page, and loads the widget by its address, with the page's widget tag's `integrity` and `crossorigin`.
+  An `about:blank` window inherits the embedding page's Content Security Policy, and the inline copy it used to write was refused on a page without `script-src 'unsafe-inline'`, where the pop-out opened blank (measured in Chrome with the harness's copy of nemar.org's policy).
+  It is still an `about:blank` window of the embedding page's own origin, so the frame-ancestors reasoning above holds: a notebook frame in the pop-out has the same site as its ancestor.
+- **"The pop-out does not carry the notebook yet."** A capsule community's pop-out has the panel's Chat and Notebook tabs, as a strip under its header, since it has no launcher, and opens on the tab the reader was on; the pop-out button stays on the notebook tab.
+
+The pop-out's notebook is a frame of its own, and so a fresh notebook session: Python and the setup cell start again there, and the notebook reopens with what had reached storage, which is what the five-second autosave above is for.
+Moving the page's frame into the pop-out was rejected: an iframe taken out of its document is unloaded, so the pop-out would start a fresh session anyway, and the page would lose its own.
+The page's frame is left running, so both windows have the same stored notebook open; the widget's documentation says to edit it in one of them at a time.
+
 ## References
 
 - Issues #470 (the notebook tab) and #453 (the site); ADR [0011](0011-the-notebook-site.md).
 - `notebook/osa-bridge.js`, `scripts/build_notebook_site.py` (`embed_origins`, `inject_bridge`, `NOTEBOOK_SETTINGS_OVERRIDES`), `notebook/e2e-check.js` (the framed runs).
 - `frontend/osa-chat-widget.js` (`ensureNotebookFrame`, `handleNotebookMessage`, `setTab`), `frontend/test-widget-notebook-tab.js`, `frontend/browser-harness/notebook-tab-check.mjs` (the widget's half, in Chrome against the develop notebook).
-- `docs/community-notebook.md` (the adopter-facing how-to) and `docs/community-widget.md`, "The notebook tab".
+- `docs/community-notebook.md` (the adopter-facing how-to) and `docs/community-widget.md`, "The notebook tab" and "The pop-out window".
+- For the update: `frontend/osa-chat-widget.js` (`openPopout`, `buildTabStrip`, `showTabAtOnce`), `frontend/test-widget-popout.js`, and `frontend/browser-harness/popout-check.mjs` (the pop-out in Chrome under a policy without `'unsafe-inline'`).
