@@ -81,9 +81,17 @@ function fetchReturning(config) {
 function loadWidget({
   scriptSrc = 'http://localhost/static/osa-chat-widget.js',
   fetch = noNetwork,
+  innerWidth,
+  innerHeight,
 } = {}) {
   const window = new Window({
     url: 'http://localhost/page',
+    // Left undefined unless a caller passes them: happy-dom's own default
+    // (1024x768, confirmed empirically) is desktop-width, which is what every
+    // other test in this file already relies on implicitly. A caller testing
+    // the narrow (<=600px) layout passes innerWidth explicitly.
+    ...(innerWidth !== undefined ? { innerWidth } : {}),
+    ...(innerHeight !== undefined ? { innerHeight } : {}),
     settings: {
       disableJavaScriptFileLoading: true,
       disableCSSFileLoading: true,
@@ -293,6 +301,72 @@ console.log('\nbubble mode renders today\'s markup: nothing about it changes');
   assert(tooltip.parentElement === container, 'the tooltip is still a direct child of the widget container');
   assert(container.className === 'osa-chat-widget', "the container's className is exactly 'osa-chat-widget', nothing appended");
   assert(!container.querySelector('.osa-launcher-icon'), 'no launcher icon exists anywhere in a bubble-mode widget');
+}
+
+console.log('\nbubble mode\'s computed layout is exactly today\'s: outside sites embed it unpinned');
+{
+  // The markup/className checks above do not catch a selector that widens to
+  // match every community (e.g. dropping the ".osa-launcher-capsule " prefix
+  // from the chat-button override, so ".osa-chat-button { position: relative;
+  // ... }" would apply everywhere): the DOM would still look right, but a
+  // bubble-mode widget embedded on an outside site, which never pins a
+  // version, would silently lose its fixed position. Computed style is the
+  // only check that catches that.
+  const { window, widget } = loadWidget({ fetch: fetchReturning(configResponse()), innerHeight: 800 });
+  widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: 'osa-test-bubble-computed-layout' });
+  widget.init();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const chatButton = container.querySelector('.osa-chat-button');
+  const chatWindow = container.querySelector('.osa-chat-window');
+  const buttonStyle = window.getComputedStyle(chatButton);
+  const windowStyle = window.getComputedStyle(chatWindow);
+
+  assertEqual(buttonStyle.position, 'fixed', "the chat button's position is fixed");
+  assertEqual(buttonStyle.bottom, '20px', "the chat button's bottom is 20px");
+  assertEqual(buttonStyle.right, '20px', "the chat button's right is 20px");
+  assertEqual(buttonStyle.zIndex, '10000', "the chat button's z-index is 10000");
+  assertEqual(windowStyle.bottom, '90px', "the chat window's bottom is 90px");
+  assertEqual(windowStyle.right, '20px', "the chat window's right is 20px");
+  assertEqual(windowStyle.maxHeight, 'calc(800px - 120px)', "the chat window's max-height is calc(100vh - 120px), today's formula");
+}
+
+console.log('\nthe capsule\'s layout switches at the 601px breakpoint, at explicit widths');
+{
+  // happy-dom DOES evaluate @media (min-width: ...) against the Window's own
+  // configured innerWidth when resolving getComputedStyle (confirmed
+  // empirically), so this is testable here rather than only in the Chrome
+  // run: built at two explicit widths, one on each side of the breakpoint,
+  // rather than relying on happy-dom's own default (1024px, which is already
+  // desktop-width and so would never exercise the narrow branch at all).
+  const cases = [
+    {
+      label: 'narrow (390px, at or under the 600px breakpoint)',
+      width: 390,
+      flexDirection: 'row',
+      windowRight: '20px',
+      windowBottom: '90px',
+    },
+    {
+      label: 'desktop (1024px, past the 601px breakpoint)',
+      width: 1024,
+      flexDirection: 'column',
+      windowRight: 'calc(20px + 56px + 12px)',
+      windowBottom: '20px',
+    },
+  ];
+  for (const { label, width, flexDirection, windowRight, windowBottom } of cases) {
+    const config = configResponse({ launcher: 'capsule' });
+    const { window, widget } = loadWidget({ fetch: fetchReturning(config), innerWidth: width, innerHeight: 800 });
+    widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: `osa-test-breakpoint-${width}` });
+    widget.init();
+    const container = window.document.querySelector('.osa-chat-widget');
+    await waitUntil(() => container.querySelector('.osa-launcher-capsule'), `capsule exists (${label})`);
+    const capsule = container.querySelector('.osa-launcher-capsule');
+    const chatWindow = container.querySelector('.osa-chat-window');
+    assertEqual(window.getComputedStyle(capsule).flexDirection, flexDirection, `${label}: capsule flex-direction`);
+    assertEqual(window.getComputedStyle(chatWindow).right, windowRight, `${label}: chat window right`);
+    assertEqual(window.getComputedStyle(chatWindow).bottom, windowBottom, `${label}: chat window bottom`);
+  }
 }
 
 console.log('\nthe four notebook states from setDataset');
