@@ -25,6 +25,7 @@ letting the reasoning stay buried in a PR nobody will reread.
 | [0009](0009-astral-tooling-uv-ruff.md) | Astral tooling (uv, ruff) for Python dependency management and linting |
 | [0010](0010-the-notebook-surface.md) | Skip marimo as the notebook surface; adopt JupyterLite pinned to Pyodide 0.29.5, deferred to a follow-up (#453) |
 | [0011](0011-the-notebook-site.md) | Host the JupyterLite notebook surface at notebook.osc.earth/osa, built from this repository, amending 0010 |
+| [0012](0012-the-notebook-as-a-widget-tab.md) | Let the widget's own sites embed the notebook as a tab, with a bridge script that runs setup cells and takes the widget's theme, amending 0011 |
 
 ## Adding a new ADR
 

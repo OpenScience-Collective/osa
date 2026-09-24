@@ -28,6 +28,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from scripts import build_notebook_site as site
 
@@ -171,7 +172,7 @@ class TestPatchRootConfig:
             },
         )
 
-        site.patch_root_config(output_dir, expose_app=False)
+        site.patch_root_config(output_dir)
 
         patched = json.loads(config_path.read_text())
         kernel = patched["jupyter-config-data"]["litePluginSettings"][site.KERNEL_PLUGIN_ID]
@@ -187,18 +188,43 @@ class TestPatchRootConfig:
         assert kernel["pipliteUrls"] == [
             "./extensions/@jupyterlite/pyodide-kernel-extension/static/pypi/all.json"
         ]
-        assert "exposeAppInBrowser" not in patched["jupyter-config-data"]
 
-    def test_expose_app_sets_the_flag(self, tmp_path: Path) -> None:
+    def test_always_exposes_the_app_for_the_bridge(self, tmp_path: Path) -> None:
+        """osa-bridge.js drives the notebook through window.jupyterapp, so a
+        deployed build without it would open notebooks whose setup never runs."""
         output_dir = tmp_path / "out"
         config_path = self._built_config(
             output_dir, {site.KERNEL_PLUGIN_ID: {"pipliteUrls": ["x"]}}
         )
 
-        site.patch_root_config(output_dir, expose_app=True)
+        site.patch_root_config(output_dir)
 
         patched = json.loads(config_path.read_text())
         assert patched["jupyter-config-data"]["exposeAppInBrowser"] is True
+
+    def test_sets_the_theme_and_autosave_overrides_and_keeps_existing_ones(
+        self, tmp_path: Path
+    ) -> None:
+        output_dir = tmp_path / "out"
+        config_path = self._built_config(
+            output_dir, {site.KERNEL_PLUGIN_ID: {"pipliteUrls": ["x"]}}
+        )
+        data = json.loads(config_path.read_text())
+        data["jupyter-config-data"]["settingsOverrides"] = {
+            "@jupyterlab/docmanager-extension:plugin": {"autosave": True},
+            "@jupyterlab/notebook-extension:tracker": {"kernelShutdown": False},
+        }
+        config_path.write_text(json.dumps(data))
+
+        site.patch_root_config(output_dir)
+
+        overrides = json.loads(config_path.read_text())["jupyter-config-data"]["settingsOverrides"]
+        assert overrides["@jupyterlab/apputils-extension:themes"] == {"adaptive-theme": True}
+        assert overrides["@jupyterlab/docmanager-extension:plugin"] == {
+            "autosave": True,
+            "autosaveInterval": 5,
+        }
+        assert overrides["@jupyterlab/notebook-extension:tracker"] == {"kernelShutdown": False}
 
     def test_missing_pipliteurls_is_refused(self, tmp_path: Path) -> None:
         """A JupyterLite version that stopped writing pipliteUrls must fail the
@@ -208,13 +234,13 @@ class TestPatchRootConfig:
         self._built_config(output_dir, {site.KERNEL_PLUGIN_ID: {}})
 
         with pytest.raises(site.NotebookSiteBuildError, match="pipliteUrls"):
-            site.patch_root_config(output_dir, expose_app=False)
+            site.patch_root_config(output_dir)
 
     def test_missing_config_file_is_refused(self, tmp_path: Path) -> None:
         output_dir = tmp_path / "out"
         output_dir.mkdir()
         with pytest.raises(site.NotebookSiteBuildError, match="cannot be read"):
-            site.patch_root_config(output_dir, expose_app=False)
+            site.patch_root_config(output_dir)
 
 
 class TestBuildMergedLockAndWheels:
@@ -541,7 +567,7 @@ class TestWriteHeaders:
         publish_root = tmp_path / "out"
         publish_root.mkdir()
 
-        site.write_headers(publish_root, "osa")
+        site.write_headers(publish_root, "osa", ["https://nemar.org"])
 
         text = (publish_root / "_headers").read_text()
         assert "/osa/wheels/*" in text
@@ -553,7 +579,7 @@ class TestWriteHeaders:
         publish_root = tmp_path / "out"
         publish_root.mkdir()
 
-        site.write_headers(publish_root, "osa")
+        site.write_headers(publish_root, "osa", ["https://nemar.org"])
 
         text = (publish_root / "_headers").read_text()
         assert any(line.startswith("#") for line in text.splitlines())
@@ -562,10 +588,178 @@ class TestWriteHeaders:
         publish_root = tmp_path / "out"
         publish_root.mkdir()
 
-        site.write_headers(publish_root, "")
+        site.write_headers(publish_root, "", ["https://nemar.org"])
 
         text = (publish_root / "_headers").read_text()
         assert "\n/wheels/*" in f"\n{text}"
+
+    def test_frame_ancestors_is_self_then_the_given_origins(self, tmp_path: Path) -> None:
+        publish_root = tmp_path / "out"
+        publish_root.mkdir()
+
+        site.write_headers(publish_root, "osa", ["https://nemar.org", "https://*.osc.earth"])
+
+        text = (publish_root / "_headers").read_text()
+        assert (
+            "Content-Security-Policy: frame-ancestors 'self' https://nemar.org https://*.osc.earth"
+            in text
+        )
+        assert site.FRAME_ANCESTORS_TOKEN not in text
+        assert "'none'" not in text
+        # For a browser too old to read frame-ancestors: it refuses to embed at all.
+        assert "X-Frame-Options: SAMEORIGIN" in text
+
+    def test_the_pages_served_open_path_is_not_cached(self, tmp_path: Path) -> None:
+        """Cloudflare Pages answers /osa/open.html with a 308 to /osa/open, and a
+        header rule matches the path served, so /osa/open needs its own rule."""
+        publish_root = tmp_path / "out"
+        publish_root.mkdir()
+
+        site.write_headers(publish_root, "osa", [])
+
+        lines = (publish_root / "_headers").read_text().splitlines()
+        for path in ("/osa/open", "/osa/open.html", "/osa/osa-bridge.js"):
+            assert path in lines
+            assert lines[lines.index(path) + 1].strip() == "Cache-Control: no-cache"
+
+    def test_a_template_without_the_frame_ancestors_token_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        template = tmp_path / "_headers"
+        template.write_text("/*\n  Content-Security-Policy: frame-ancestors 'none'\n")
+        monkeypatch.setattr(site, "HEADERS_TEMPLATE", template)
+        publish_root = tmp_path / "out"
+        publish_root.mkdir()
+
+        with pytest.raises(site.NotebookSiteBuildError, match="exactly once"):
+            site.write_headers(publish_root, "osa", ["https://nemar.org"])
+
+
+class TestEmbedOrigins:
+    def test_production_is_the_platform_hosts_then_each_community_origin(
+        self, assistants_dir: Path
+    ) -> None:
+        _write_community(assistants_dir, "nemarlike", with_overlay=False)
+        communities = site.discover_notebook_communities()
+        communities["nemarlike"].cors_origins = ["https://example.org", "https://demo.osc.earth"]
+
+        origins = site.embed_origins(communities, "production")
+
+        assert origins == [
+            "https://demo.osc.earth",
+            "https://osa-demo.pages.dev",
+            "https://example.org",
+        ]
+
+    def test_every_build_environment_declares_its_platform_hosts(self) -> None:
+        assert set(site.PLATFORM_EMBED_ORIGINS) == set(site.NOTEBOOK_ENVIRONMENTS)
+
+    def test_only_develop_admits_loopback_and_the_preview_hosts(self) -> None:
+        production = site.embed_origins({}, "production")
+        develop = site.embed_origins({}, "develop")
+
+        for origin in ("http://localhost:*", "http://127.0.0.1:*", "https://*.osc.earth"):
+            assert origin in develop
+            assert origin not in production
+
+    @pytest.mark.parametrize(
+        "origin",
+        [
+            "https://*-preview.example.org",  # a partial-label wildcard
+            'https://nemar.org"; frame-ancestors *',  # would end the header value
+            "https://nemar.org;evil",
+            "https://nemar.org\nX-Injected: 1",  # would start a new header line
+            "https://nemar.org/path",
+        ],
+    )
+    def test_an_origin_frame_ancestors_cannot_express_is_refused(
+        self, assistants_dir: Path, origin: str
+    ) -> None:
+        _write_community(assistants_dir, "nemarlike", with_overlay=False)
+        communities = site.discover_notebook_communities()
+        communities["nemarlike"].cors_origins = [origin]
+
+        with pytest.raises(site.NotebookSiteBuildError, match="frame-ancestors"):
+            site.embed_origins(communities, "develop")
+
+    @pytest.mark.parametrize(
+        "origin",
+        [
+            "https://*-preview.example.org",
+            'https://nemar.org"; frame-ancestors *',
+            "https://nemar.org\nX-Injected: 1",
+        ],
+    )
+    def test_the_config_loader_refuses_such_an_origin_first(
+        self, assistants_dir: Path, origin: str
+    ) -> None:
+        """CommunityConfig's own cors_origins rule is the first guard; the check
+        in embed_origins is the second, for an origin that reaches it some other
+        way, or a loader rule loosened later."""
+        _write_community(assistants_dir, "nemarlike", with_overlay=False)
+        config = assistants_dir / "nemarlike" / "config.yaml"
+        config.write_text(config.read_text() + f"cors_origins:\n  - {json.dumps(origin)}\n")
+
+        with pytest.raises(ValidationError, match="Invalid CORS origin"):
+            site.discover_notebook_communities()
+
+    def test_the_shipped_nemar_config_may_embed_from_its_own_sites(self) -> None:
+        communities = site.discover_notebook_communities()
+
+        for environment in site.NOTEBOOK_ENVIRONMENTS:
+            origins = site.embed_origins(communities, environment)
+            for origin in ("https://nemar.org", "https://www.nemar.org", "https://test.nemar.org"):
+                assert origin in origins, (environment, origin)
+
+
+class TestInjectBridge:
+    def _page(self, site_root: Path, html: str) -> Path:
+        page = site_root / site.NOTEBOOK_PAGE
+        page.parent.mkdir(parents=True)
+        page.write_text(html)
+        return page
+
+    def test_adds_the_bridge_once_just_before_the_end_of_head(self, tmp_path: Path) -> None:
+        page = self._page(tmp_path, "<html><head><title>n</title></head><body></body></html>")
+
+        site.inject_bridge(tmp_path)
+
+        html = page.read_text()
+        assert html.count(site.BRIDGE_SCRIPT_TAG) == 1
+        assert html.index(site.BRIDGE_SCRIPT_TAG) < html.index("</head>")
+        assert "<title>n</title>" in html
+
+    def test_a_page_without_a_single_head_end_is_refused(self, tmp_path: Path) -> None:
+        self._page(tmp_path, "<html><body></body></html>")
+
+        with pytest.raises(site.NotebookSiteBuildError, match="exactly one </head>"):
+            site.inject_bridge(tmp_path)
+
+    def test_a_page_with_two_head_ends_is_refused(self, tmp_path: Path) -> None:
+        self._page(tmp_path, "<html><head></head><head></head></html>")
+
+        with pytest.raises(site.NotebookSiteBuildError, match="exactly one </head>"):
+            site.inject_bridge(tmp_path)
+
+    def test_a_page_that_already_has_the_bridge_is_refused(self, tmp_path: Path) -> None:
+        self._page(tmp_path, f"<html><head>{site.BRIDGE_SCRIPT_TAG}</head></html>")
+
+        with pytest.raises(site.NotebookSiteBuildError, match="already references"):
+            site.inject_bridge(tmp_path)
+
+
+class TestNemarStarterSetupCell:
+    def test_the_first_code_cell_is_the_only_one_that_runs_on_open(self) -> None:
+        config = site.discover_notebook_communities()["nemar"]
+        assert config.notebook is not None
+        starter = json.loads((site.ASSISTANTS_DIR / "nemar" / config.notebook.starter).read_text())
+        code = [cell for cell in starter["cells"] if cell["cell_type"] == "code"]
+        tagged = [cell for cell in code if "osa-autorun" in cell["metadata"].get("tags", [])]
+
+        assert tagged == [code[0]]
+        source = "".join(code[0]["source"])
+        assert "%pip install eegprep-lean" in source
+        assert "import eegprep_lean" in source
 
 
 class TestWriteRootRedirect:
@@ -594,7 +788,7 @@ class TestFinalizePublishRoot:
         site_root.mkdir(parents=True)
         (site_root / "index.html").write_text("<html></html>")  # stands in for a real build
 
-        site.finalize_publish_root(output_dir, "osa")
+        site.finalize_publish_root(output_dir, "osa", ["https://nemar.org"])
 
         assert (output_dir / "_headers").is_file()
         assert (output_dir / "_redirects").is_file()
@@ -605,7 +799,7 @@ class TestFinalizePublishRoot:
         output_dir = tmp_path / "out"
         output_dir.mkdir()
 
-        site.finalize_publish_root(output_dir, "")
+        site.finalize_publish_root(output_dir, "", ["https://nemar.org"])
 
         assert (output_dir / "_headers").is_file()
         assert not (output_dir / "_redirects").exists()
@@ -686,7 +880,7 @@ class TestFullBuildEndToEnd:
         output_dir = tmp_path / "site"
         site_root = output_dir / "osa"
 
-        site.build("https://notebook.osc.earth/osa", output_dir, "production", expose_app=True)
+        site.build("https://notebook.osc.earth/osa", output_dir, "production")
 
         assert (site_root / "jupyter-lite.json").exists()
         assert (site_root / "notebooks" / "index.html").exists()
@@ -706,11 +900,19 @@ class TestFullBuildEndToEnd:
         assert not (site_root / "_headers").exists()
         headers_text = (output_dir / "_headers").read_text()
         assert "/osa/wheels/*" in headers_text
+        # The widget's hosts may embed the notebook; loopback, develop only, may not.
+        assert "frame-ancestors 'self' https://demo.osc.earth" in headers_text
+        assert "https://nemar.org" in headers_text
+        assert "localhost" not in headers_text
+        notebook_page = (site_root / "notebooks" / "index.html").read_text()
+        assert notebook_page.count(site.BRIDGE_SCRIPT_TAG) == 1
         assert (output_dir / "_redirects").read_text().strip() == "/  /osa/  302"
 
         config = json.loads((site_root / "jupyter-lite.json").read_text())
         jcd = config["jupyter-config-data"]
         assert jcd["exposeAppInBrowser"] is True
+        for plugin_id, values in site.NOTEBOOK_SETTINGS_OVERRIDES.items():
+            assert values.items() <= jcd["settingsOverrides"][plugin_id].items()
         kernel = jcd["litePluginSettings"][site.KERNEL_PLUGIN_ID]
         assert kernel["pyodideUrl"] == f"{site.PYODIDE_CDN_BASE}pyodide.mjs"
         assert kernel["loadPyodideOptions"]["packageBaseUrl"] == site.PYODIDE_CDN_BASE
