@@ -2532,6 +2532,17 @@ class TestImportBeforeSeal:
         with pytest.raises(ValidationError, match="is not one preload names"):
             self._runtime([name])
 
+    def test_a_package_from_allow_install_is_not_enough(self) -> None:
+        """allow_install names requirements and wheel URLs, not imports, so only preload
+        can vouch for a module's package, although the imports run after both."""
+        with pytest.raises(ValidationError, match="only a package preload names"):
+            PythonRuntimeConfig(
+                pyodide_version="0.29.5",
+                preload=["numpy"],
+                allow_install=["pandas"],
+                import_before_seal=["pandas"],
+            )
+
     def test_a_preload_name_is_read_as_its_import_name(self) -> None:
         """eegprep-lean is imported as eegprep_lean, and a lock name as PEP 503 spells it."""
         assert self._runtime(["eegprep_lean"]).import_before_seal == ["eegprep_lean"]
@@ -2551,7 +2562,11 @@ class TestImportBeforeSeal:
 
     def test_the_sealed_roots_are_the_ones_the_seal_blocks(self) -> None:
         """SEALED_IMPORT_ROOTS mirrors _BLOCKED_ROOTS in the namespace seal's source,
-        which the server cannot import; a root added there must be refused here too."""
+        which the server cannot import; a root added there must be refused here too.
+
+        The regex reads buildNamespaceSealSource's convention of Python written as one
+        single-quoted JavaScript string per line; if that source changes shape, this
+        fails loudly on the missing literal rather than passing."""
         source = (Path(__file__).resolve().parents[3] / "frontend" / "osa-egress.js").read_text()
         block = re.search(
             r"'_BLOCKED_ROOTS = frozenset\(\{',\n((?:\s*'[^']*',\n)+?)\s*'\}\)',", source

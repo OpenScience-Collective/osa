@@ -882,10 +882,12 @@ class PythonRuntimeConfig(BaseModel):
     def _import_before_seal_comes_from_preload(self) -> "PythonRuntimeConfig":
         """Every module's top-level package is one this runtime preloads.
 
-        The list exists for the packages this runtime loads, and a name from anywhere
-        else is far more likely a typo than a need. Compared by import name, which is
-        the lock name with ``-`` read as ``_``; ``frontend/test-data-lane.js`` checks
-        that each such lock entry really provides that import."""
+        ``preload`` only, not ``allow_install``: an ``allow_install`` entry is a
+        requirement or a wheel URL, which names no import, while a ``preload`` name is a
+        lock entry whose import name is known. A name from anywhere else is far more
+        likely a typo than a need. Compared by import name, which is the lock name with
+        ``-`` read as ``_``; ``frontend/test-data-lane.js`` checks that each such lock
+        entry really provides that import."""
         provided = {canonical_name(package).replace("-", "_") for package in self.preload}
         for name in self.import_before_seal:
             root = name.partition(".")[0]
@@ -893,7 +895,7 @@ class PythonRuntimeConfig(BaseModel):
                 raise ValueError(
                     f"import_before_seal entry {name!r}: its top-level package {root!r} is "
                     f"not one preload names ({sorted(provided)}), written as its import "
-                    "name, so it would not be installed when the imports run"
+                    "name; only a package preload names may be imported before the seal"
                 )
         return self
 
