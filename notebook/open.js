@@ -8,7 +8,10 @@
  * `open.html?community=<id>&dataset=<dataset_id>` does this:
  *
  *   1. Validate `community` (a plain slug, and one this site has a starter for)
- *      and `dataset` (against that community's own dataset_pattern). An invalid
+ *      and `dataset`: first against a generic safe shape
+ *      (`^[A-Za-z0-9._-]{1,64}$`, checked BEFORE the community's own pattern,
+ *      since the value is substituted unescaped into the starter's Python
+ *      source), then against that community's own dataset_pattern. An invalid
  *      link shows a plain sentence and writes nothing to storage.
  *   2. Fetch that community's starter (`starters/<community>.ipynb`) and fill in
  *      `{{dataset_id}}` in every cell's source.
@@ -17,7 +20,10 @@
  *      Contents drive uses -- at `<community>/<dataset>.ipynb`, creating the
  *      `<community>` directory entry first if it does not exist yet. NEVER
  *      overwrites an existing notebook at that path: a reader's own edits from an
- *      earlier visit must survive opening the same dataset again.
+ *      earlier visit must survive opening the same dataset again. This step is
+ *      raced against a short timeout (`STORAGE_TIMEOUT_MS`): some
+ *      private-browsing and storage-blocked modes never settle a storage call,
+ *      and this page must show a plain sentence rather than hang forever.
  *   4. Redirect into `notebooks/index.html?path=<that path>`.
  *
  * PURE vs BROWSER-ONLY, the same split `frontend/osa-workspace.js` uses: every
@@ -36,6 +42,17 @@ export const NOTEBOOK_TOKEN = '{{dataset_id}}';
 
 /** A community id, as this site's own starters/index.json keys them. */
 const COMMUNITY_PATTERN = /^[a-z0-9-]{1,64}$/;
+
+/**
+ * The one shape a dataset id may ever have, independent of any community's own
+ * `dataset_pattern` and checked BEFORE it (see `datasetProblem`). This is what
+ * actually reaches the starter's Python source unescaped (`{{dataset_id}}`),
+ * so a community whose own pattern is accidentally too loose is still not a
+ * code-injection hole (defense in depth; the Python side has the matching
+ * check on the pattern itself, `NotebookConfig`'s hostile-probe validator in
+ * `src/core/config/community.py`).
+ */
+const SAFE_DATASET_SHAPE = /^[A-Za-z0-9._-]{1,64}$/;
 
 /**
  * Why `community` cannot be used, or null if it can.
@@ -66,6 +83,9 @@ export function communityProblem(community, knownCommunities) {
  */
 export function datasetProblem(dataset, datasetPattern) {
   if (typeof dataset !== 'string' || dataset.length === 0) return 'no dataset id given';
+  if (!SAFE_DATASET_SHAPE.test(dataset)) {
+    return 'does not look like a valid dataset id for this community';
+  }
   let pattern;
   try {
     pattern = new RegExp(datasetPattern);
@@ -188,6 +208,74 @@ export function storageOptions(baseUrl) {
   };
 }
 
+/**
+ * How long a storage call may run before this page gives up on it rather than
+ * leaving the reader stuck on "Opening your notebook..." forever. Some
+ * private-browsing and storage-blocked modes never resolve or reject an
+ * IndexedDB request at all, so a plain `await` on it can hang indefinitely;
+ * this bound is what turns that into a plain, shown refusal instead.
+ */
+export const STORAGE_TIMEOUT_MS = 5000;
+
+/**
+ * A value no real storage call ever resolves to (`getItem`/`setItem` resolve
+ * to a stored value, `undefined`, or `null`), so `raceStorage`'s caller can
+ * tell "the timeout fired" apart from "the storage call itself resolved to
+ * something falsy".
+ */
+export const STORAGE_TIMEOUT = Symbol('notebook-open-storage-timeout');
+
+/** Shown when a storage call times out or rejects; kept as one constant so a
+ * test can assert the exact sentence and `main()` shows the same words either
+ * way (a reader in a blocked-storage mode does not need to distinguish the two). */
+export const STORAGE_UNREACHABLE_MESSAGE =
+  "This page could not reach your browser's storage. Try a different browser, or turn off private browsing, then reload this link.";
+
+/**
+ * `promise`, or STORAGE_TIMEOUT if it has not settled within `timeoutMs`.
+ * Never rejects on the timeout path -- a rejection from `promise` itself
+ * still propagates, since a storage call that fails fast (rather than hangs)
+ * is a different, already-handled case (the caller's own try/catch).
+ *
+ * @param {Promise<unknown>} promise
+ * @param {number} timeoutMs
+ */
+export function raceStorage(promise, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(STORAGE_TIMEOUT), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
+/**
+ * Everything this page writes into JupyterLite's own storage for one dataset:
+ * the community's directory entry (once) and the filled notebook (only if
+ * nothing is there yet -- see `notebookPath`'s own doc, this never overwrites
+ * a reader's edits from an earlier visit). Pulled out of `main()` so
+ * `raceStorage` can wrap exactly this and nothing else -- the two fetches
+ * above it are network calls with their own try/catch and are not what a
+ * blocked-storage browser mode hangs on.
+ *
+ * @param {{getItem: (key: string) => Promise<unknown>, setItem: (key: string, value: unknown) => Promise<unknown>}} store
+ */
+export async function writeToStorage(store, community, dataset, path, filled, nowIso) {
+  if ((await store.getItem(community)) == null) {
+    await store.setItem(community, buildDirectoryEntry(community, nowIso));
+  }
+  if ((await store.getItem(path)) == null) {
+    await store.setItem(path, buildNotebookEntry(`${dataset}.ipynb`, path, filled, nowIso));
+  }
+}
+
 async function main() {
   const app = document.getElementById('app');
   const show = (text) => {
@@ -246,14 +334,24 @@ async function main() {
   const store = globalThis.localforage.createInstance(storageOptions(baseUrl));
 
   const now = new Date().toISOString();
-  if ((await store.getItem(community)) == null) {
-    await store.setItem(community, buildDirectoryEntry(community, now));
-  }
-
   const path = notebookPath(community, dataset);
-  // NEVER overwrite: a reader's own edits from an earlier visit live here.
-  if ((await store.getItem(path)) == null) {
-    await store.setItem(path, buildNotebookEntry(`${dataset}.ipynb`, path, filled, now));
+  // NEVER overwrite: a reader's own edits from an earlier visit live here
+  // (writeToStorage's own contract). Raced against a timeout: some
+  // private-browsing and storage-blocked modes never settle a storage call
+  // at all, and this page must not hang on "Opening your notebook..." forever.
+  let outcome;
+  try {
+    outcome = await raceStorage(
+      writeToStorage(store, community, dataset, path, filled, now),
+      STORAGE_TIMEOUT_MS
+    );
+  } catch {
+    show(STORAGE_UNREACHABLE_MESSAGE);
+    return;
+  }
+  if (outcome === STORAGE_TIMEOUT) {
+    show(STORAGE_UNREACHABLE_MESSAGE);
+    return;
   }
 
   window.location.replace(`./notebooks/index.html?path=${encodeURIComponent(path)}`);
