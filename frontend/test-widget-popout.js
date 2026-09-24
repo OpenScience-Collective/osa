@@ -314,8 +314,16 @@ console.log('\nlater setColorScheme and setDataset calls reach an open pop-out')
   assertEqual(suggestions(pop.q)[0], 'What is nm000103 about?', 'the pop-out\'s questions are about the page\'s dataset');
   page.api.setColorScheme('light');
   assert(!isDark(pop.container), 'the host switching to light reaches it');
+  // What the page hands the pop-out's API, recorded on the way through.
+  const handed = [];
+  const popupApi = pop.container.ownerDocument.defaultView.OSAChatWidget;
+  const realSetDataset = popupApi.setDataset;
+  popupApi.setDataset = (value) => { handed.push(value); realSetDataset(value); };
   page.api.setDataset({ id: 'nm000132', zarr: true });
   assertEqual(suggestions(pop.q)[0], 'What is nm000132 about?', 'the page naming another dataset reaches it');
+  const popupWindow = pop.container.ownerDocument.defaultView;
+  assert(handed.length === 1 && handed[0] instanceof popupWindow.Object && !(handed[0] instanceof page.window.Object),
+    'as the pop-out\'s own copy, as its preset is');
   page.api.setDataset(null);
   assertEqual(suggestions(pop.q), ['How do I cite NEMAR?'], 'and so does clearing it: the general list');
 }

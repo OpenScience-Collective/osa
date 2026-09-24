@@ -3190,8 +3190,11 @@
   function forwardDatasetToPopout() {
     if (!chatPopup || chatPopup.closed) return;
     let popupWidget = null;
+    let dataset;
     try {
-      chatPopup.__OSA_DATASET__ = toPopupRealm(chatPopup, currentDataset);
+      // The pop-out's own copy, for its preset and its API alike, as openPopout's.
+      dataset = toPopupRealm(chatPopup, currentDataset);
+      chatPopup.__OSA_DATASET__ = dataset;
       popupWidget = chatPopup.OSAChatWidget;
     } catch (e) {
       console.warn('[OSA] Could not reach the pop-out to pass the dataset on:', e);
@@ -3199,7 +3202,7 @@
     }
     if (!popupWidget || typeof popupWidget.setDataset !== 'function') return;
     try {
-      popupWidget.setDataset(currentDataset);
+      popupWidget.setDataset(dataset);
     } catch (e) {
       console.error('[OSA] The pop-out failed to apply the dataset:', e);
     }
