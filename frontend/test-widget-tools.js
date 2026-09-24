@@ -1225,6 +1225,23 @@ console.log('\nthe real bundle, loaded into the page, answers through the widget
   assertEqual(api.getToolActivity(), null, 'and the panel is cleared');
 }
 
+console.log('\ngetBrowserRuntimeStatus() carries Pyodide\'s own boot state separately from the wiring state');
+{
+  // state describes the bundle/controller wiring; runtime describes Pyodide's
+  // OWN boot, which first_message and widget_open can start well before any
+  // Run gate exists. Proven against a REAL boot, over the real test worker.
+  const { window, api, widget } = loadWidgetWithRealBundle();
+  const { runtime } = await useLocalController({ api, window }, { worker: 'happy' });
+  assertEqual(widget.getBrowserRuntimeStatus().state, 'ready', 'the wiring is ready (bundle loaded, controller built)');
+  assertEqual(widget.getBrowserRuntimeStatus().runtime, 'idle', 'but Pyodide itself has not booted yet');
+
+  const bootPromise = runtime.boot();
+  assertEqual(widget.getBrowserRuntimeStatus().runtime, 'booting', 'a real boot already under way is reflected at once');
+
+  await bootPromise;
+  assertEqual(widget.getBrowserRuntimeStatus().runtime, 'ready', 'and once it settles, the field reflects that too');
+}
+
 console.log('\na community\'s lock overlay reaches the runtime, with its wheels served by the API that sent it');
 {
   const { window, api } = loadWidget({ bundleLoads: true });
