@@ -1679,6 +1679,8 @@
       max-width: 100%;
       margin-top: 6px;
       border-radius: 6px;
+      /* Stays white on the dark panel too: a figure drawn with a transparent
+         background keeps its dark axes and labels readable. */
       background: #ffffff;
     }
 
@@ -1772,8 +1774,9 @@
     }
 
     /* Dark appearance (#469). Only a widget whose color_scheme is "auto" (on a dark
-       device) or whose host page called setColorScheme('dark') ever has .osa-dark,
-       so none of these rules reach any other widget; every rule above is unchanged.
+       device), or whose host page chose 'dark' (setColorScheme or setConfig), ever has
+       .osa-dark, so none of these rules reach any other widget; every rule above is
+       unchanged.
        The tokens carry most of it; the rules after them replace the colors the
        stylesheet above writes out literally. */
     .osa-chat-widget.osa-dark {
@@ -1787,9 +1790,10 @@
          (the panel, the launcher, the tooltips) also gets a hairline edge. */
       --osa-shadow: 0 0 0 1px #374151, 0 10px 25px rgba(0, 0, 0, 0.5);
       /* The community's accent_color was chosen to read on white. The dark panel
-         uses the theme color itself (NEMAR's teal: 8.0:1), or, when that is too dark
-         to read here, the lighter --osa-accent-on-dark that applyWidgetConfig
-         derives from it (see darkAccentFor). */
+         uses the theme color itself (NEMAR's teal: 8.0:1 here, 6.6:1 on the
+         assistant's bubble), or, when that is too dark to read on either, the
+         lighter --osa-accent-on-dark that applyColorScheme derives from it (see
+         darkAccentFor). */
       --osa-accent: var(--osa-accent-on-dark, var(--osa-primary));
     }
 
@@ -2894,11 +2898,11 @@
           changed = true;
         }
         if (w.color_scheme != null && !_userSetKeys.has('colorScheme')) {
-          if (isValidColorScheme(w.color_scheme)) {
+          if (COMMUNITY_COLOR_SCHEMES.includes(w.color_scheme)) {
             CONFIG.colorScheme = w.color_scheme;
             changed = true;
           } else {
-            console.warn('[OSA] Ignoring invalid color_scheme from the community config:', w.color_scheme);
+            warnInvalidColorScheme('color_scheme from the community config', w.color_scheme, COMMUNITY_COLOR_SCHEMES);
           }
         }
 
@@ -3856,20 +3860,34 @@
   // typo through setConfig() (or a hand-edited widget: block) otherwise looks
   // exactly like "not set", with no way to tell the two apart short of reading
   // this source.
-  // The color schemes a widget can have (#469); see CONFIG.colorScheme.
+  // The color schemes a widget can have (#469); see CONFIG.colorScheme. A host page
+  // may choose any of the three; a community config only 'light' or 'auto', because a
+  // widget forced dark on a light page is the host page's call, not the community's
+  // (WidgetConfig.color_scheme refuses 'dark' on the server as well).
   const COLOR_SCHEMES = ['light', 'dark', 'auto'];
+  const COMMUNITY_COLOR_SCHEMES = ['light', 'auto'];
 
   function isValidColorScheme(value) {
     return COLOR_SCHEMES.includes(value);
   }
 
-  // The dark panel's background: the same value as --osa-bg under .osa-dark,
-  // which a test holds them to. The accent is measured against it.
+  function warnInvalidColorScheme(what, value, allowed) {
+    const expected = allowed.map(v => `'${v}'`).join(', ');
+    console.warn(`[OSA] Ignoring invalid ${what} ${JSON.stringify(value)}; expected one of ${expected}`);
+  }
+
+  // The dark surfaces the accent is read on: the panel itself (borders, focus rings,
+  // the footer checkbox) and the assistant's bubble, where links sit, which is the
+  // lighter of the two and so the one that decides. The same values as --osa-bg and
+  // --osa-assistant-bg under .osa-dark, which a test holds them to.
   const DARK_PANEL_BG = '#111827';
-  // The stylesheet's own --osa-primary, for a community with no theme_color.
+  const DARK_BUBBLE_BG = '#1f2937';
+  // The stylesheet's own --osa-primary, for a community with no theme_color (also
+  // held to the stylesheet by a test).
   const DEFAULT_PRIMARY = '#2563eb';
   // WCAG AA for body text: the accent colors links and the local-run note.
   const MIN_TEXT_CONTRAST = 4.5;
+  const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
 
   // WCAG relative luminance of a #RRGGBB color.
   function relativeLuminance(hex) {
@@ -3885,25 +3903,33 @@
     return (hi + 0.05) / (lo + 0.05);
   }
 
-  // The accent the dark panel uses: the theme color itself when it already reads on
-  // the dark background (null: the stylesheet's var(--osa-primary) stands, so
-  // NEMAR's teal is used exactly), otherwise the theme color mixed with white in
-  // 10% steps until it does. White itself always reads.
-  function darkAccentFor(primary) {
-    if (contrastRatio(primary, DARK_PANEL_BG) >= MIN_TEXT_CONTRAST) return null;
+  function readsOnDark(color) {
+    return Math.min(contrastRatio(color, DARK_PANEL_BG), contrastRatio(color, DARK_BUBBLE_BG)) >= MIN_TEXT_CONTRAST;
+  }
+
+  // The accent the dark panel uses, from the community's theme color: null when that
+  // color already reads on both dark surfaces (the stylesheet's var(--osa-primary)
+  // stands, so NEMAR's teal is used exactly), otherwise the color mixed with white in
+  // 10% steps until it does. A theme color that is not #RRGGBB is one
+  // applyWidgetConfig never applies (and warns about), so the stylesheet's default is
+  // what is on screen, and so what is measured.
+  function darkAccentFor(themeColor) {
+    const primary = HEX_COLOR.test(themeColor || '') ? themeColor : DEFAULT_PRIMARY;
+    if (readsOnDark(primary)) return null;
     const rgb = [1, 3, 5].map(i => parseInt(primary.slice(i, i + 2), 16));
-    for (let step = 1; step < 10; step++) {
+    // Step 10 is white, which reads on both surfaces, so the loop always returns.
+    for (let step = 1; step <= 10; step++) {
       const mixed = '#' + rgb
         .map(c => Math.round(c + (255 - c) * step / 10).toString(16).padStart(2, '0'))
         .join('');
-      if (contrastRatio(mixed, DARK_PANEL_BG) >= MIN_TEXT_CONTRAST) return mixed;
+      if (readsOnDark(mixed)) return mixed;
     }
-    return '#ffffff';
   }
 
   // Follows the device's setting while colorScheme is 'auto'. Created the first time
   // a widget is 'auto', so a 'light' widget never registers a listener at all.
   let darkSchemeQuery = null;
+  let deviceSchemeWarned = false;
 
   // Whether the widget draws its dark appearance right now.
   function isDarkScheme() {
@@ -3911,30 +3937,49 @@
     return CONFIG.colorScheme === 'auto' && !!darkSchemeQuery && darkSchemeQuery.matches;
   }
 
+  // Start following the device's setting (see darkSchemeQuery). A browser with no
+  // matchMedia leaves 'auto' light, and one whose query cannot report a change keeps
+  // the setting the page opened with; the console says so, once. Safari before 14
+  // has only the older addListener, which is used when addEventListener is missing.
+  function watchDeviceScheme() {
+    if (typeof window.matchMedia !== 'function') {
+      if (!deviceSchemeWarned) {
+        deviceSchemeWarned = true;
+        console.warn("[OSA] This browser has no matchMedia, so color_scheme 'auto' cannot follow the device and stays light.");
+      }
+      return;
+    }
+    darkSchemeQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    const follow = () => {
+      const mounted = document.querySelector('.osa-chat-widget');
+      if (mounted) applyColorScheme(mounted);
+    };
+    if (typeof darkSchemeQuery.addEventListener === 'function') {
+      darkSchemeQuery.addEventListener('change', follow);
+    } else if (typeof darkSchemeQuery.addListener === 'function') {
+      darkSchemeQuery.addListener(follow);
+    } else {
+      console.warn("[OSA] This browser cannot report a change of the device's color scheme; 'auto' keeps the setting the page opened with.");
+    }
+  }
+
   // Put .osa-dark on the container, or take it off, to match CONFIG.colorScheme, and
   // set the dark panel's accent from the current theme color: only when that color
   // is too dark to read there, and cleared otherwise so a changed theme color does
   // not keep a stale one. A 'light' widget gets neither, so its markup is exactly
-  // what it was before dark mode existed. Runs from createWidget and again from
-  // applyWidgetConfig and setColorScheme.
+  // what it was before dark mode existed. Runs from createWidget, from
+  // applyWidgetConfig, from setColorScheme and setConfig (through
+  // applyColorSchemeEverywhere), and from the device-change listener in
+  // watchDeviceScheme while colorScheme is 'auto'.
   function applyColorScheme(container) {
-    const primary = /^#[0-9a-fA-F]{6}$/.test(CONFIG.themeColor || '') ? CONFIG.themeColor : DEFAULT_PRIMARY;
-    const darkAccent = CONFIG.colorScheme === 'light' ? null : darkAccentFor(primary);
+    const darkAccent = CONFIG.colorScheme === 'light' ? null : darkAccentFor(CONFIG.themeColor);
     if (darkAccent) {
       container.style.setProperty('--osa-accent-on-dark', darkAccent);
     } else if (container.style.getPropertyValue('--osa-accent-on-dark')) {
       container.style.removeProperty('--osa-accent-on-dark');
     }
 
-    if (CONFIG.colorScheme === 'auto' && !darkSchemeQuery && typeof window.matchMedia === 'function') {
-      darkSchemeQuery = window.matchMedia('(prefers-color-scheme: dark)');
-      if (typeof darkSchemeQuery.addEventListener === 'function') {
-        darkSchemeQuery.addEventListener('change', () => {
-          const mounted = document.querySelector('.osa-chat-widget');
-          if (mounted) applyColorScheme(mounted);
-        });
-      }
-    }
+    if (CONFIG.colorScheme === 'auto' && !darkSchemeQuery) watchDeviceScheme();
     container.classList.toggle('osa-dark', isDarkScheme());
   }
 
@@ -3942,19 +3987,25 @@
   // open pop-out, which is its own copy of the widget and has no host page of its
   // own to tell it. The pop-out shares this page's origin (it is written from here),
   // so its API is reachable; a pop-out still loading has no API yet and reads the
-  // scheme from its preset instead (see openPopout).
+  // scheme from its preset instead (see openPopout). Reaching the pop-out and the
+  // pop-out applying the scheme fail for different reasons, so they are reported
+  // apart: the second is a bug in the pop-out's own copy of this code.
   function applyColorSchemeEverywhere() {
     const container = document.querySelector('.osa-chat-widget');
     if (container) applyColorScheme(container);
-    if (chatPopup && !chatPopup.closed) {
-      try {
-        const popupWidget = chatPopup.OSAChatWidget;
-        if (popupWidget && typeof popupWidget.setColorScheme === 'function') {
-          popupWidget.setColorScheme(CONFIG.colorScheme);
-        }
-      } catch (e) {
-        console.warn('[OSA] Could not pass the color scheme to the pop-out:', e);
-      }
+    if (!chatPopup || chatPopup.closed) return;
+    let popupWidget = null;
+    try {
+      popupWidget = chatPopup.OSAChatWidget;
+    } catch (e) {
+      console.warn('[OSA] Could not reach the pop-out to pass the color scheme on:', e);
+      return;
+    }
+    if (!popupWidget || typeof popupWidget.setColorScheme !== 'function') return;
+    try {
+      popupWidget.setColorScheme(CONFIG.colorScheme);
+    } catch (e) {
+      console.error('[OSA] The pop-out failed to apply the color scheme:', e);
     }
   }
 
@@ -6021,7 +6072,7 @@
         }
       }
       if ('colorScheme' in opts && !isValidColorScheme(opts.colorScheme)) {
-        console.warn('[OSA] Invalid colorScheme, ignoring:', opts.colorScheme);
+        warnInvalidColorScheme('colorScheme', opts.colorScheme, COLOR_SCHEMES);
         delete opts.colorScheme;
       }
       // Track which keys the embedder explicitly set (before auto-derivation)
@@ -6040,7 +6091,7 @@
     // called before or after init(), and reaches an open pop-out too.
     setColorScheme: function(value) {
       if (!isValidColorScheme(value)) {
-        console.warn('[OSA] Invalid colorScheme, ignoring:', value);
+        warnInvalidColorScheme('colorScheme', value, COLOR_SCHEMES);
         return;
       }
       _userSetKeys.add('colorScheme');

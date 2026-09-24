@@ -71,6 +71,37 @@ function contrast(a, b) {
   return (hi + 0.05) / (lo + 0.05);
 }
 
+// The widget's own constants, read from its source so each can be held to the
+// stylesheet value it duplicates.
+const constant = (name) => SOURCE.match(new RegExp(`const ${name} = '(#[0-9a-f]{6})';`))[1];
+const DARK_PANEL_BG = constant('DARK_PANEL_BG');
+const DARK_BUBBLE_BG = constant('DARK_BUBBLE_BG');
+const DEFAULT_PRIMARY = constant('DEFAULT_PRIMARY');
+// The worse of the two dark surfaces an accent is read on.
+const darkContrast = (color) => Math.min(contrast(color, DARK_PANEL_BG), contrast(color, DARK_BUBBLE_BG));
+// A color mixed with white, the widget's lift, written out again here.
+const mixWithWhite = (hex, step) => '#' + [1, 3, 5]
+  .map((i) => parseInt(hex.slice(i, i + 2), 16))
+  .map((c) => Math.round(c + (255 - c) * step / 10).toString(16).padStart(2, '0'))
+  .join('');
+// The lift the widget should choose: the first 10% step that reads on both.
+function expectedLift(hex) {
+  for (let step = 1; step <= 10; step++) {
+    if (darkContrast(mixWithWhite(hex, step)) >= 4.5) return mixWithWhite(hex, step);
+  }
+  return null;
+}
+
+// The rule the widget's own stylesheet holds for a selector, from the parsed sheet,
+// for states a computed style cannot reach here (:hover, ::before).
+function stylesheetRule(window, selector) {
+  for (const sheet of window.document.styleSheets) {
+    const rule = [...sheet.cssRules].find((r) => r.selectorText === selector);
+    if (rule) return rule.style;
+  }
+  return null;
+}
+
 // A community config response fixture, shaped like fetchCommunityConfig expects.
 // `placeholder` changes with every response, so a test can wait for the config to
 // have been applied even when nothing else about the widget visibly changes.
@@ -97,7 +128,7 @@ function fetchReturning(config) {
  * The widget, evaluated in its own window. Mirrors test-widget-capsule.js's
  * loadWidget, plus the device's color scheme and a pop-out's preset globals.
  */
-function loadWidget({ fetch, prefersColorScheme = 'light', preset } = {}) {
+function loadWidget({ fetch, prefersColorScheme = 'light', preset, mediaQueries: mediaSupport = 'modern' } = {}) {
   const window = new Window({
     url: 'http://localhost/page',
     settings: {
@@ -113,6 +144,21 @@ function loadWidget({ fetch, prefersColorScheme = 'light', preset } = {}) {
   const realMatchMedia = window.matchMedia.bind(window);
   window.matchMedia = (query) => { mediaQueries.push(query); return realMatchMedia(query); };
   window.__mediaQueries = mediaQueries;
+  // Older browsers, for the fallbacks: none has no matchMedia at all; legacy is
+  // Safari before 14, whose query answers but offers only addListener. The answer
+  // and the change events are still happy-dom's own.
+  if (mediaSupport === 'none') window.matchMedia = undefined;
+  if (mediaSupport === 'legacy') {
+    window.matchMedia = (query) => {
+      const real = realMatchMedia(query);
+      return {
+        get matches() { return real.matches; },
+        media: real.media,
+        addListener: (listener) => real.addEventListener('change', listener),
+        removeListener: (listener) => real.removeEventListener('change', listener),
+      };
+    };
+  }
   if (preset) Object.assign(window, preset);
   const script = window.document.createElement('script');
   script.setAttribute('src', 'http://localhost/static/osa-chat-widget.js');
@@ -130,8 +176,8 @@ function loadWidget({ fetch, prefersColorScheme = 'light', preset } = {}) {
 }
 
 // Start a widget for `config` and wait until that config has been applied.
-async function startWidget(config, { prefersColorScheme, preset, before } = {}) {
-  const { window, widget } = loadWidget({ fetch: fetchReturning(config), prefersColorScheme, preset });
+async function startWidget(config, { prefersColorScheme, preset, before, mediaQueries } = {}) {
+  const { window, widget } = loadWidget({ fetch: fetchReturning(config), prefersColorScheme, preset, mediaQueries });
   widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: `osa-test-scheme-${configCounter}` });
   if (before) before(widget);
   widget.init();
@@ -198,8 +244,10 @@ console.log('\na light community keeps the light panel\'s own colors on its inpu
     const probe = container.querySelector(`.osa-inherit-probe ${selector}`);
     assertEqual(window.getComputedStyle(probe).color, '#1f2937', `${selector} sets its own text color, not an inherited one`);
   }
-  assert(/\.osa-chat-widget \{[^}]*color-scheme: light;/.test(SOURCE),
-    'the container declares color-scheme: light, so a dark host page does not darken the browser\'s own controls');
+  assertEqual(window.getComputedStyle(container).colorScheme, 'light',
+    'the container\'s color-scheme is light, so a dark host page does not darken the browser\'s own controls');
+  assertEqual(window.getComputedStyle(container).getPropertyValue('--osa-primary'), DEFAULT_PRIMARY,
+    'DEFAULT_PRIMARY, which the dark accent measures when no theme_color is set, is the stylesheet\'s own --osa-primary');
 }
 
 console.log('\n"auto" follows the device: dark on a dark device, light on a light one');
@@ -219,6 +267,27 @@ console.log('\n"auto" follows a device that switches while the page is open');
   assert(isDark(container), 'the device switching to dark darkens the panel');
   switchDevice(window, 'light');
   assert(!isDark(container), 'and switching back lightens it again');
+}
+
+console.log('\nolder browsers: no matchMedia leaves "auto" light, with a warning; Safari before 14 still follows the device');
+{
+  const warnings = captureWarnings();
+  let none;
+  try {
+    none = await startWidget(configResponse({ color_scheme: 'auto' }), { prefersColorScheme: 'dark', mediaQueries: 'none' });
+    none.widget.setColorScheme('auto');
+  } finally {
+    warnings.restore();
+  }
+  assert(!isDark(none.container), 'no matchMedia: auto stays light, the default appearance');
+  assertEqual(warnings.warnings.filter((w) => w.includes('no matchMedia')).length, 1, 'and says so once, however often it is applied');
+  none.widget.setColorScheme('dark');
+  assert(isDark(none.container), 'a host page\'s explicit dark still works without it');
+
+  const legacy = await startWidget(configResponse({ color_scheme: 'auto' }), { prefersColorScheme: 'light', mediaQueries: 'legacy' });
+  assert(!isDark(legacy.container), 'addListener only: light on a light device');
+  switchDevice(legacy.window, 'dark');
+  assert(isDark(legacy.container), 'and follows the device switching to dark, through addListener');
 }
 
 console.log('\nthe host page\'s choice outranks the community\'s, before init() and after');
@@ -276,7 +345,8 @@ console.log('\ninvalid values are ignored, with a warning, and change nothing');
   }
   assertEqual(widget.getConfig().colorScheme, 'auto', 'CONFIG still holds the community\'s value');
   assert(isDark(container), 'and the panel is still dark');
-  assertEqual(warnings.filter((w) => w.includes('Invalid colorScheme')).length, 3, 'each of the three was warned about');
+  assertEqual(warnings.filter((w) => w.includes('Ignoring invalid colorScheme') && w.includes("expected one of 'light', 'dark', 'auto'")).length, 3,
+    'each of the three was warned about, naming the values that are accepted');
 
   // An invalid value from the server is ignored the same way.
   const serverWarnings = captureWarnings();
@@ -288,8 +358,21 @@ console.log('\ninvalid values are ignored, with a warning, and change nothing');
   }
   assertEqual(fromServer.widget.getConfig().colorScheme, 'light', 'a server color_scheme that is not light or auto leaves the light default');
   assert(!isDark(fromServer.container), 'and the panel light');
-  assert(serverWarnings.warnings.some((w) => w.includes('invalid color_scheme') && w.includes('midnight')),
-    'with a warning naming the rejected value');
+  assert(serverWarnings.warnings.some((w) => w.includes('invalid color_scheme from the community config "midnight"')
+    && w.includes("expected one of 'light', 'auto'")), 'with a warning naming the rejected value and the accepted ones');
+
+  // 'dark' is a host page's choice, never a community's: the server refuses it in
+  // config, and the widget refuses it from a response too.
+  const darkWarnings = captureWarnings();
+  let darkFromServer;
+  try {
+    darkFromServer = await startWidget(configResponse({ color_scheme: 'dark' }), { prefersColorScheme: 'light' });
+  } finally {
+    darkWarnings.restore();
+  }
+  assertEqual(darkFromServer.widget.getConfig().colorScheme, 'light', 'a community config saying dark leaves the light default');
+  assert(!isDark(darkFromServer.container), 'and the panel light on a light device');
+  assert(darkWarnings.warnings.some((w) => w.includes('color_scheme from the community config "dark"')), 'with a warning');
 }
 
 console.log('\nsetConfig({colorScheme}) applies too, before or after init()');
@@ -315,12 +398,14 @@ console.log('\nthe dark panel\'s colors are the ones the stylesheet declares, re
   messages.insertAdjacentHTML('beforeend',
     '<div class="osa-message assistant"><div class="osa-message-content"><pre><code>x</code></pre><code>y</code><a href="#">link</a></div></div>');
   const style = (selector) => window.getComputedStyle(container.querySelector(selector));
-  const darkBg = SOURCE.match(/const DARK_PANEL_BG = '(#[0-9a-f]{6})';/)[1];
-  assertEqual(style('.osa-chat-window').backgroundColor, darkBg, 'the panel is DARK_PANEL_BG, the value the accent is measured against');
+  const darkBg = DARK_PANEL_BG;
+  assertEqual(window.getComputedStyle(container).colorScheme, 'dark', 'the container\'s color-scheme is dark, for the browser\'s own parts');
+  assertEqual(style('.osa-chat-window').backgroundColor, darkBg, 'the panel is DARK_PANEL_BG, one of the two surfaces the accent is measured against');
   assertEqual(style('.osa-chat-window').color, '#e5e7eb', 'its text is light');
   assertEqual(style('.osa-chat-input input').backgroundColor, darkBg, 'the chat input is dark');
   assertEqual(style('.osa-chat-input input').color, '#e5e7eb', 'with light text');
-  assertEqual(style('.osa-message.assistant .osa-message-content').backgroundColor, '#1f2937', 'the assistant\'s bubble is one step lighter than the panel');
+  assertEqual(style('.osa-message.assistant .osa-message-content').backgroundColor, DARK_BUBBLE_BG,
+    'the assistant\'s bubble is DARK_BUBBLE_BG, the other one, one step lighter than the panel');
   assertEqual(style('.osa-message-content pre').backgroundColor, '#030712', 'a code block is one step darker');
   assertEqual(style('.osa-settings-modal').backgroundColor, darkBg, 'Settings is dark');
   assertEqual(style('.osa-settings-input').color, '#e5e7eb', 'and its fields have light text');
@@ -334,14 +419,95 @@ console.log('\nthe dark panel\'s colors are the ones the stylesheet declares, re
   assert(mutedRatio >= 4.5, `muted text reads on the assistant's bubble (${mutedRatio.toFixed(1)}:1)`);
 }
 
+console.log('\nevery color the dark block replaces, on the widget\'s own elements where it has them');
+{
+  // Each entry: where to look, what to read, and the dark value. Every one is also
+  // read on a light widget and must differ there, so an entry that would pass
+  // with the dark rule missing cannot slip in. The widget's own elements are used
+  // where it renders them (the banners, Settings, the input row); the rest are
+  // written the way the widget's render functions write them.
+  const PROBES = `<div class="osa-probes">
+    <span class="osa-icon-badge">Soon</span>
+    <div class="osa-message-content"><code class="probe-inline-code">y</code></div>
+    <table class="osa-table"><tbody><tr><th class="probe-th">h</th></tr><tr class="probe-even"><td>2</td></tr></tbody></table>
+    <pre class="osa-tool-code">x = 1</pre>
+    <textarea class="osa-rerun-textarea">x = 1</textarea>
+    <button class="osa-feedback-btn osa-feedback-up selected">up</button>
+    <button class="osa-feedback-btn osa-feedback-down selected">down</button>
+    <div class="osa-feedback-modal-thanks">Thanks</div>
+    <div class="osa-execution-workspace-note">not saved</div>
+    <pre class="osa-execution-output">out</pre>
+  </div>`;
+  const CASES = [
+    ['.osa-icon-badge', 'color', '#111827'],
+    ['.probe-inline-code', 'backgroundColor', 'rgba(255, 255, 255, 0.1)'],
+    ['.probe-th', 'backgroundColor', 'rgba(255, 255, 255, 0.06)'],
+    ['.probe-even', 'backgroundColor', 'rgba(255, 255, 255, 0.03)'],
+    ['.osa-tool-code', 'backgroundColor', '#030712'],
+    ['.osa-rerun-textarea', 'backgroundColor', '#030712'],
+    ['.osa-feedback-up', 'color', '#4ade80'],
+    ['.osa-feedback-down', 'color', '#f87171'],
+    ['.osa-feedback-modal-thanks', 'color', '#4ade80'],
+    ['.osa-execution-workspace-note', 'color', '#fca5a5'],
+    ['.osa-execution-workspace-note', 'backgroundColor', 'rgba(220, 38, 38, 0.15)'],
+    ['.osa-execution-output', 'backgroundColor', 'rgba(255, 255, 255, 0.06)'],
+    ['.osa-error', 'color', '#fca5a5'],
+    ['.osa-error', 'backgroundColor', 'rgba(220, 38, 38, 0.15)'],
+    ['.osa-error', 'borderTopColor', 'rgba(248, 113, 113, 0.35)'],
+    ['.osa-warning', 'color', '#fcd34d'],
+    ['.osa-warning', 'backgroundColor', 'rgba(245, 158, 11, 0.12)'],
+    ['.osa-warning', 'borderTopColor', 'rgba(252, 211, 77, 0.3)'],
+    ['.osa-settings-overlay', 'backgroundColor', 'rgba(0, 0, 0, 0.6)'],
+    ['.osa-settings-modal', 'boxShadow', '0 0 0 1px #374151, 0 10px 25px rgba(0, 0, 0, 0.5)'],
+    ['.osa-chat-input input', 'backgroundColor', '#1f2937', (el) => { el.disabled = true; }],
+    ['.osa-send-btn', 'backgroundColor', '#4b5563', (el) => { el.disabled = true; }],
+  ];
+  async function read(prefersColorScheme) {
+    const { window, container } = await startWidget(configResponse({ color_scheme: 'auto' }), { prefersColorScheme });
+    container.insertAdjacentHTML('beforeend', PROBES);
+    return CASES.map(([selector, property, , prepare]) => {
+      const element = container.querySelector(selector);
+      if (!element) return null;
+      if (prepare) prepare(element);
+      return window.getComputedStyle(element)[property];
+    });
+  }
+  const dark = await read('dark');
+  const light = await read('light');
+  CASES.forEach(([selector, property, expected], i) => {
+    assertEqual(dark[i], expected, `dark ${selector} ${property}`);
+    assert(light[i] !== null && light[i] !== expected, `and it is the dark rule that sets it (light: ${light[i]})`);
+  });
+
+  // A code block's own code keeps no background of its own: the dark inline-code
+  // rule above must not reach into a <pre>.
+  const { window, container } = await startWidget(configResponse({ color_scheme: 'auto' }), { prefersColorScheme: 'dark' });
+  container.insertAdjacentHTML('beforeend', '<div class="osa-message-content"><pre><code class="probe-pre-code">x</code></pre></div>');
+  assertEqual(window.getComputedStyle(container.querySelector('.probe-pre-code')).backgroundColor, 'transparent',
+    'code inside a code block stays transparent on the dark panel');
+
+  // States a computed style cannot reach here, read from the parsed stylesheet: a
+  // rule commented out or misspelled is absent from it.
+  for (const [selector, property, expected] of [
+    ['.osa-chat-widget.osa-dark .osa-suggestion:hover', 'background', '#374151'],
+    ['.osa-chat-widget.osa-dark .osa-suggestion:hover', 'border-color', '#4b5563'],
+    ['.osa-chat-widget.osa-dark .osa-message-copy-btn:hover', 'background', 'rgba(255, 255, 255, 0.08)'],
+    ['.osa-chat-widget.osa-dark .osa-resize-handle::before', 'border-left-color', 'rgba(255, 255, 255, 0.3)'],
+    ['.osa-chat-widget.osa-dark .osa-resize-handle::before', 'border-top-color', 'rgba(255, 255, 255, 0.3)'],
+  ]) {
+    const rule = stylesheetRule(window, selector);
+    assertEqual(rule ? rule.getPropertyValue(property) : null, expected, `the stylesheet's ${selector} sets ${property}`);
+  }
+}
+
 console.log('\nthe dark accent: NEMAR\'s teal as it is; a theme color too dark to read is lifted');
 {
   // NEMAR's own colors: accent_color #257a92 was chosen for white (3.6:1 on the
-  // dark panel, too dark); the teal theme color itself reads there.
+  // dark panel, 3.0:1 on its bubbles); the teal theme color itself reads on both.
   const nemar = {
     color_scheme: 'auto', theme_color: '#5bbad5', theme_text_color: '#04121f', accent_color: '#257a92',
   };
-  const darkBg = SOURCE.match(/const DARK_PANEL_BG = '(#[0-9a-f]{6})';/)[1];
+  const darkBg = DARK_PANEL_BG;
   const addLink = (container) => {
     container.querySelector('.osa-chat-messages').insertAdjacentHTML('beforeend',
       '<div class="osa-message assistant"><div class="osa-message-content"><a href="#">link</a></div></div>');
@@ -354,18 +520,24 @@ console.log('\nthe dark accent: NEMAR\'s teal as it is; a theme color too dark t
   const onDark = await startWidget(configResponse(nemar), { prefersColorScheme: 'dark' });
   assertEqual(onDark.container.style.getPropertyValue('--osa-accent-on-dark'), '', 'NEMAR\'s teal needs no lifting');
   assertEqual(onDark.window.getComputedStyle(addLink(onDark.container)).color, '#5bbad5', 'links on the dark panel are the teal itself');
-  assert(contrast('#5bbad5', darkBg) >= 4.5, `which reads there (${contrast('#5bbad5', darkBg).toFixed(1)}:1)`);
+  assert(darkContrast('#5bbad5') >= 4.5, `which reads on both dark surfaces (${darkContrast('#5bbad5').toFixed(1)}:1 at worst)`);
 
   const onLight = await startWidget(configResponse(nemar), { prefersColorScheme: 'light' });
   assertEqual(onLight.window.getComputedStyle(addLink(onLight.container)).color, '#257a92', 'on the light panel, links are still accent_color');
 
-  // No theme_color: the platform blue, 3.4:1 on the dark panel, is lifted.
+  // No theme_color: the platform blue, 3.4:1 on the dark panel, is lifted. Links
+  // sit on the assistant's bubble, the lighter surface, so that one decides.
   const platform = await startWidget(configResponse({ color_scheme: 'auto' }), { prefersColorScheme: 'dark' });
   const lifted = platform.container.style.getPropertyValue('--osa-accent-on-dark');
-  assert(/^#[0-9a-f]{6}$/.test(lifted), `the platform blue gets a lifted dark accent (${lifted})`);
-  assert(contrast(lifted, darkBg) >= 4.5, `which reads on the dark panel (${contrast(lifted, darkBg).toFixed(1)}:1)`);
-  assert(contrast(lifted, darkBg) < 5.5, 'and is lifted only as far as it needs to be, not to white');
+  assertEqual(lifted, expectedLift(DEFAULT_PRIMARY), `the platform blue is lifted to the first step that reads on both surfaces (${lifted})`);
+  assert(darkContrast(lifted) >= 4.5, `which reads on the assistant's bubble too (${contrast(lifted, DARK_BUBBLE_BG).toFixed(1)}:1)`);
   assertEqual(platform.window.getComputedStyle(addLink(platform.container)).color, lifted, 'links use it');
+
+  // The darkest theme color there is still lifts to a gray, not to white.
+  const black = await startWidget(configResponse({ color_scheme: 'auto', theme_color: '#000000' }), { prefersColorScheme: 'dark' });
+  const blackLift = black.container.style.getPropertyValue('--osa-accent-on-dark');
+  assertEqual(blackLift, expectedLift('#000000'), `black is lifted to ${blackLift}`);
+  assert(blackLift !== '#ffffff', 'which is short of white: every theme color reads before the last step');
 
   // A theme color that changes after the lift clears the stale value.
   platform.widget.setConfig({ themeColor: '#5bbad5' });
