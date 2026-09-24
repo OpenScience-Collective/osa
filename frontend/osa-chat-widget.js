@@ -3310,58 +3310,94 @@
     }).join('');
   }
 
+  // A malformed value is named here rather than dropped in silence: an embedder's
+  // typo through setConfig() (or a hand-edited widget: block) otherwise looks
+  // exactly like "not set", with no way to tell the two apart short of reading
+  // this source.
+  function warnInvalidColor(field, value) {
+    console.warn(`[OSA] Ignoring invalid ${field} (not a recognized color): ${JSON.stringify(value)}`);
+  }
+
   // Update DOM elements to reflect current CONFIG values (called after API config load)
   function applyWidgetConfig() {
     const container = document.querySelector('.osa-chat-widget');
     if (!container) return;
 
     // Apply theme color if configured (must be valid #RRGGBB hex)
-    if (CONFIG.themeColor && /^#[0-9a-fA-F]{6}$/.test(CONFIG.themeColor)) {
-      container.style.setProperty('--osa-primary', CONFIG.themeColor);
-      // Derive a darker shade for hover states
-      const r = parseInt(CONFIG.themeColor.slice(1, 3), 16);
-      const g = parseInt(CONFIG.themeColor.slice(3, 5), 16);
-      const b = parseInt(CONFIG.themeColor.slice(5, 7), 16);
-      const darker = '#' +
-        Math.max(0, r - 25).toString(16).padStart(2, '0') +
-        Math.max(0, g - 25).toString(16).padStart(2, '0') +
-        Math.max(0, b - 25).toString(16).padStart(2, '0');
-      container.style.setProperty('--osa-primary-dark', darker);
+    if (CONFIG.themeColor) {
+      if (/^#[0-9a-fA-F]{6}$/.test(CONFIG.themeColor)) {
+        container.style.setProperty('--osa-primary', CONFIG.themeColor);
+        // Derive a darker shade for hover states
+        const r = parseInt(CONFIG.themeColor.slice(1, 3), 16);
+        const g = parseInt(CONFIG.themeColor.slice(3, 5), 16);
+        const b = parseInt(CONFIG.themeColor.slice(5, 7), 16);
+        const darker = '#' +
+          Math.max(0, r - 25).toString(16).padStart(2, '0') +
+          Math.max(0, g - 25).toString(16).padStart(2, '0') +
+          Math.max(0, b - 25).toString(16).padStart(2, '0');
+        container.style.setProperty('--osa-primary-dark', darker);
+      } else {
+        warnInvalidColor('themeColor', CONFIG.themeColor);
+      }
     }
 
     // The reader's bubbles have their own color, so a theme_color alone leaves
     // them the platform blue every community has had (must be valid #RRGGBB hex).
-    if (CONFIG.userBubbleColor && /^#[0-9a-fA-F]{6}$/.test(CONFIG.userBubbleColor)) {
-      container.style.setProperty('--osa-user-bg', CONFIG.userBubbleColor);
+    if (CONFIG.userBubbleColor) {
+      if (/^#[0-9a-fA-F]{6}$/.test(CONFIG.userBubbleColor)) {
+        container.style.setProperty('--osa-user-bg', CONFIG.userBubbleColor);
+      } else {
+        warnInvalidColor('userBubbleColor', CONFIG.userBubbleColor);
+      }
     }
 
     // Text/icons drawn ON a theme_color surface (header, launcher, Run, Send, Save).
     // Left at the stylesheet's own white default when unset, so a community that never
     // names this sees no change.
-    if (CONFIG.themeTextColor && /^#[0-9a-fA-F]{6}$/.test(CONFIG.themeTextColor)) {
-      container.style.setProperty('--osa-on-primary', CONFIG.themeTextColor);
+    if (CONFIG.themeTextColor) {
+      if (/^#[0-9a-fA-F]{6}$/.test(CONFIG.themeTextColor)) {
+        container.style.setProperty('--osa-on-primary', CONFIG.themeTextColor);
+      } else {
+        warnInvalidColor('themeTextColor', CONFIG.themeTextColor);
+      }
     }
 
     // theme_color used as a FOREGROUND on the white panel (links, borders, focus rings,
     // native checkbox accent-color). Left at the stylesheet's own `var(--osa-primary)`
     // default when unset, so it tracks theme_color exactly as it always has.
-    if (CONFIG.accentColor && /^#[0-9a-fA-F]{6}$/.test(CONFIG.accentColor)) {
-      container.style.setProperty('--osa-accent', CONFIG.accentColor);
+    if (CONFIG.accentColor) {
+      if (/^#[0-9a-fA-F]{6}$/.test(CONFIG.accentColor)) {
+        container.style.setProperty('--osa-accent', CONFIG.accentColor);
+      } else {
+        warnInvalidColor('accentColor', CONFIG.accentColor);
+      }
     }
 
     // Text in the reader's own bubbles, painted on user_bubble_color (or the platform
     // blue, if that is unset too). Left at the stylesheet's own white default otherwise.
-    if (CONFIG.userBubbleTextColor && /^#[0-9a-fA-F]{6}$/.test(CONFIG.userBubbleTextColor)) {
-      container.style.setProperty('--osa-user-text', CONFIG.userBubbleTextColor);
+    if (CONFIG.userBubbleTextColor) {
+      if (/^#[0-9a-fA-F]{6}$/.test(CONFIG.userBubbleTextColor)) {
+        container.style.setProperty('--osa-user-text', CONFIG.userBubbleTextColor);
+      } else {
+        warnInvalidColor('userBubbleTextColor', CONFIG.userBubbleTextColor);
+      }
     }
 
     // Apply disclaimer colors if configured (must be valid CSS color: hex, named, rgb, hsl)
     const cssColorPattern = /^(#[0-9a-fA-F]{3,8}|[a-zA-Z]+|rgba?\([^)]+\)|hsla?\([^)]+\))$/;
-    if (CONFIG.disclaimerColor && cssColorPattern.test(CONFIG.disclaimerColor.trim())) {
-      container.style.setProperty('--osa-disclaimer-color', CONFIG.disclaimerColor.trim());
+    if (CONFIG.disclaimerColor) {
+      if (cssColorPattern.test(CONFIG.disclaimerColor.trim())) {
+        container.style.setProperty('--osa-disclaimer-color', CONFIG.disclaimerColor.trim());
+      } else {
+        warnInvalidColor('disclaimerColor', CONFIG.disclaimerColor);
+      }
     }
-    if (CONFIG.disclaimerBackground && cssColorPattern.test(CONFIG.disclaimerBackground.trim())) {
-      container.style.setProperty('--osa-disclaimer-bg', CONFIG.disclaimerBackground.trim());
+    if (CONFIG.disclaimerBackground) {
+      if (cssColorPattern.test(CONFIG.disclaimerBackground.trim())) {
+        container.style.setProperty('--osa-disclaimer-bg', CONFIG.disclaimerBackground.trim());
+      } else {
+        warnInvalidColor('disclaimerBackground', CONFIG.disclaimerBackground);
+      }
     }
 
     // Update header title

@@ -1512,6 +1512,61 @@ console.log('\nthree more widget colors: theme_text_color, accent_color and user
   }
 }
 
+console.log('\napplyWidgetConfig() warns on a malformed color instead of dropping it in silence, for every color field');
+{
+  // console.warn is the real widget's own real call: the widget script runs with the
+  // REAL global console injected (see loadWidget's run(...) call), so intercepting it
+  // here observes exactly what a browser's devtools console would show.
+  const BAD = 'not-a-color';
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (...args) => { warnings.push(args.join(' ')); };
+  try {
+    const config = {
+      default_model: 'm', offered_models: [], client_tools: [], runtime: null,
+      widget: {
+        theme_color: BAD,
+        user_bubble_color: BAD,
+        theme_text_color: BAD,
+        accent_color: BAD,
+        user_bubble_text_color: BAD,
+      },
+    };
+    const fetch = async (url) => {
+      if (String(url).endsWith('/health')) return new Response(JSON.stringify({ status: 'healthy' }));
+      return new Response(JSON.stringify(config), { headers: { 'content-type': 'application/json' } });
+    };
+    const { window, widget } = loadWidget({ fetch });
+    widget.setConfig({
+      apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: 'osa-test-warn-colors',
+      disclaimerColor: BAD, disclaimerBackground: BAD,
+    });
+    widget.init();
+    const container = window.document.querySelector('.osa-chat-widget');
+    // applyWidgetConfig() only runs once the server config resolves and reports a
+    // change; every field here is malformed, so nothing should ever land inline.
+    await waitUntil(() => warnings.length >= 7, 'all seven malformed colors are warned about', 3000);
+
+    const fields = [
+      'themeColor', 'userBubbleColor', 'themeTextColor', 'accentColor', 'userBubbleTextColor',
+      'disclaimerColor', 'disclaimerBackground',
+    ];
+    for (const field of fields) {
+      assert(warnings.some((w) => w.includes(field) && w.includes(BAD)), `a warning names ${field} and the rejected value`);
+    }
+
+    const properties = [
+      '--osa-primary', '--osa-primary-dark', '--osa-user-bg', '--osa-on-primary', '--osa-accent',
+      '--osa-user-text', '--osa-disclaimer-color', '--osa-disclaimer-bg',
+    ];
+    for (const property of properties) {
+      assertEqual(container.style.getPropertyValue(property), '', `${property} still falls back to the stylesheet default`);
+    }
+  } finally {
+    console.warn = originalWarn;
+  }
+}
+
 console.log('\n' + '='.repeat(60));
 console.log(`Total: ${passed + failed}   Passed: ${passed}   Failed: ${failed}`);
 clearTimeout(watchdog);
