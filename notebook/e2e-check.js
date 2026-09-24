@@ -226,6 +226,28 @@ async function contentsLastModified(cdp, sessionId, path) {
   );
 }
 
+/**
+ * What `code` prints when the current notebook's kernel runs it outside any
+ * cell (store_history off, so no execution count moves), or null when it has
+ * not finished within `timeoutMs`: an await that never returns looks like that.
+ */
+async function kernelStdout(cdp, sessionId, code, timeoutMs) {
+  return evaluateAwaited(
+    cdp,
+    sessionId,
+    `(() => {
+      const kernel = window.jupyterapp.shell.currentWidget.sessionContext.session.kernel;
+      const chunks = [];
+      const future = kernel.requestExecute({ code: ${JSON.stringify(code)}, store_history: false });
+      future.onIOPub = (msg) => {
+        if (msg.header.msg_type === 'stream') chunks.push(msg.content.text);
+      };
+      const done = future.done.then(() => chunks.join(''), () => chunks.join(''));
+      return Promise.race([done, new Promise((resolve) => setTimeout(() => resolve(null), ${timeoutMs}))]);
+    })()`
+  );
+}
+
 async function pollUntil(fn, timeoutMs, intervalMs = 500) {
   const deadline = Date.now() + timeoutMs;
   let last;
@@ -628,6 +650,28 @@ async function main() {
       report(setupRanByItself, `the setup cell ran by itself and printed its Ready line (${setupSeconds.toFixed(1)}s after opening)`);
       if (!setupRanByItself) throw new Error(`the setup cell never ran by itself: ${JSON.stringify(await setupCell(first.sessionId))}`);
       await waitForKernelIdle(first.sessionId, 90_000);
+
+      // osa-bridge.js's rejection guard reached this kernel (#496). Safari's
+      // fetch rejects with a name and a message and no stack, which Pyodide
+      // 0.29.5 does not take for an error, so an await on it never returns.
+      // Chrome's own fetch errors carry a stack, so a rejection of that shape
+      // is made by hand here: without the guard it hangs in Chrome as well.
+      const stackless = await kernelStdout(
+        cdp,
+        first.sessionId,
+        'import js\n' +
+          'try:\n' +
+          '    await js.Promise.reject(js.JSON.parse(\'{"name": "TypeError", "message": "Load failed"}\'))\n' +
+          'except Exception as e:\n' +
+          '    print(type(e).__name__, e)',
+        15_000
+      );
+      report(
+        stackless === 'JsException TypeError: Load failed\n',
+        `a rejection shaped like Safari's failed fetch raises in the kernel rather than hanging it (got ${JSON.stringify(stackless)})`
+      );
+      if (stackless === null) throw new Error('the kernel is stuck on a rejection it cannot raise, so nothing after this could run');
+
       await runAllCellsAndConfirmQueued(first.sessionId);
       await pollUntil(
         async () => (await sentinelPresent(first.sessionId)) && (await promptsDone(first.sessionId)),

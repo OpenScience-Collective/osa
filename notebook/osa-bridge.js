@@ -4,12 +4,15 @@
  * script to notebooks/index.html; it drives JupyterLite through the app the
  * build exposes as window.jupyterapp.
  *
- * It does two things:
+ * It does three things:
  *
  * 1. Runs a starter's setup cells (code cells tagged "osa-autorun") when the
  *    notebook opens, and again after the kernel restarts, so a reader never
  *    has to know a setup cell exists.
- * 2. When the notebook is embedded (the widget's tab), talks to the page that
+ * 2. Before those, in every new kernel, makes a request that fails raise in
+ *    the cell that awaited it. In Safari it otherwise never returns, and the
+ *    kernel stays busy for good (#496; see REJECTION_GUARD below).
+ * 3. When the notebook is embedded (the widget's tab), talks to the page that
  *    embeds it: it reports when the notebook is ready and how setup went, and
  *    applies the light or dark theme the widget sends.
  *
@@ -64,6 +67,58 @@
     return false;
   }
 
+  // Python that makes a rejected JavaScript promise raise in the coroutine
+  // awaiting it. Safari's fetch rejects with a TypeError that has no `stack`,
+  // which Pyodide 0.29.5 does not recognize as an error, so asyncio refuses it
+  // and the await never returns: the cell stays "[*]" and every later cell
+  // queues behind it. Measured in WebKit 26.6 on this site, 2026-09-24. Why it
+  // works is explained once, at buildRejectionGuardSource() in
+  // frontend/osa-egress.js, which the chat's runtime runs too; this copy must
+  // equal it, and notebook/test-bridge.js fails when it does not.
+  const REJECTION_GUARD = [
+    'def _osa_guard_rejections():',
+    '    import _pyodide._future_helper as helper',
+    '    from pyodide.ffi import JsException',
+    '',
+    '    original = helper.set_exception',
+    '    if getattr(original, "osa_rejection_guard", False):',
+    '        return',
+    '',
+    '    def describe(value):',
+    '        try:',
+    '            name = getattr(value, "name", None)',
+    '            message = getattr(value, "message", None)',
+    '            if not isinstance(message, str):',
+    '                message = str(value)',
+    '        except Exception:',
+    '            name, message = None, "a promise was rejected with a value that could not be read"',
+    '        return (name if isinstance(name, str) and name else "Error"), message',
+    '',
+    '    def set_exception(fut, val):',
+    '        # asyncio takes an exception instance or class, and refuses the rest.',
+    '        if not (isinstance(val, BaseException) or (isinstance(val, type) and issubclass(val, BaseException))):',
+    '            val = JsException(*describe(val))',
+    '        original(fut, val)',
+    '',
+    '    set_exception.osa_rejection_guard = True',
+    '    helper.set_exception = set_exception',
+    '',
+    '',
+    '_osa_guard_rejections()',
+    'del _osa_guard_rejections',
+  ].join('\n');
+
+  // Silent, so it takes no execution count and shows nothing, and it leaves no
+  // name behind in the reader's namespace. It is the kernel's and not the
+  // starter's, so it runs for a notebook with no setup cells too.
+  async function guardRejections(panel) {
+    await panel.sessionContext.ready;
+    const kernel = panel.sessionContext.session?.kernel;
+    if (!kernel) throw new Error('the notebook has no kernel');
+    const reply = await kernel.requestExecute({ code: REJECTION_GUARD, silent: true, store_history: false }).done;
+    if (reply.content.status !== 'ok') throw new Error(`${reply.content.ename}: ${reply.content.evalue}`);
+  }
+
   let setupRun = null;
 
   // notebook:run-cell runs the active cell of the current notebook and settles
@@ -75,15 +130,23 @@
   function runSetup(app, panel) {
     if (setupRun) return setupRun;
     setupRun = (async () => {
+      // Sent first, so the kernel runs it before any setup cell. A kernel it
+      // did not reach still runs the notebook; it only hangs, in Safari, on
+      // the first request that fails, so this is a warning and not a failure.
+      const guarded = guardRejections(panel).catch((err) =>
+        warn('a failed request may hang this kernel in Safari: the rejection guard was not installed', err)
+      );
       try {
         const notebook = panel.content;
         const indices = autorunIndices(notebook.model);
         if (indices.length === 0) {
           post({ type: 'setup', status: 'none' });
+          await guarded;
           return;
         }
         post({ type: 'setup', status: 'running' });
         await panel.sessionContext.ready;
+        await guarded;
         let ran = true;
         for (const index of indices) {
           if (app.shell.currentWidget !== panel) throw new Error('another widget became current');
