@@ -227,6 +227,12 @@ async function main() {
     const launched = await launch(chromePath, profileDir);
     chrome = launched.chrome;
     cdp = await connect(launched.wsUrl);
+    // Cheap and always useful: a CI failure and a local pass can be two
+    // different Chrome builds (the GitHub-hosted runner and a laptop are
+    // rarely on the exact same release), so this is worth knowing without
+    // cross-referencing the runner image manifest by hand every time.
+    const { product: chromeVersion } = await cdp.send('Browser.getVersion');
+    log(`Chrome: ${chromeVersion}`);
 
     async function openPage(url) {
       const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
