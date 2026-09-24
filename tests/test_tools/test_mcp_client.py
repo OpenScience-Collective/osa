@@ -209,6 +209,20 @@ class TestDiscovery:
             "fixture_wrong_mime_image",
         }
 
+    def test_a_per_deployment_url_connects_to_the_running_deployments_server(
+        self, mcp_url: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The develop chat reads the staging server (#480): discovery goes to the
+        resolved URL, and never to the other deployment's. Port 1 refuses, so the
+        wrong one yields no tools."""
+        dead = "http://127.0.0.1:1/mcp"
+        monkeypatch.delenv("ROOT_PATH", raising=False)
+        server = McpServer(name="fixture", url={"production": dead, "develop": mcp_url})
+        monkeypatch.setenv("OSA_DEPLOYMENT", "develop")
+        assert "fixture_echo_dataset" in {t.name for t in discover_mcp_tools(server)}
+        monkeypatch.setenv("OSA_DEPLOYMENT", "production")
+        assert discover_mcp_tools(server) == []
+
     def test_names_are_prefixed_with_the_server_name(self, mcp_url: str) -> None:
         """So two servers offering the same tool cannot collide in one assistant."""
         tools = discover_mcp_tools(_server(mcp_url, name="other"))

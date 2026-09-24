@@ -68,6 +68,7 @@ from src.core.config.community import (
     RuntimeConfig,
     WidgetConfig,
 )
+from src.core.config.deployment import current_deployment
 from src.core.config.runtime_lock import (
     RuntimeLockError,
     RuntimeLockOverlay,
@@ -408,7 +409,8 @@ class CommunityConfigResponse(BaseModel):
     runtime: RuntimeConfig | None = Field(
         default=None,
         description=(
-            "The execution environment those tools run in, exactly as configured. None "
+            "The execution environment those tools run in, as configured for the deployment "
+            "serving this response (one fetch_allow list and one prelude). None "
             "whenever client_tools is empty."
         ),
     )
@@ -1841,7 +1843,9 @@ def _client_tool_config(config: CommunityConfig | None) -> dict[str, Any]:
             )
             for entry in configured
         ],
-        "runtime": config.runtime,
+        # Resolved for the deployment serving this response (#480): the develop
+        # widget gets the staging hosts, and never a per-deployment map.
+        "runtime": config.runtime.for_deployment(current_deployment()) if config.runtime else None,
         "runtime_lock": runtime_lock,
     }
 

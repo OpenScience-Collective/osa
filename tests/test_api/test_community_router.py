@@ -30,7 +30,11 @@ from src.api.routers.community import (
 )
 from src.api.tool_results import ClientToolResult
 from src.assistants import discover_assistants
-from src.core.config.community import MAX_CONFIGURED_CLIENT_TOOLS, RESERVED_CLIENT_TOOL_NAMES
+from src.core.config.community import (
+    MAX_CONFIGURED_CLIENT_TOOLS,
+    RESERVED_CLIENT_TOOL_NAMES,
+    CommunityConfig,
+)
 
 # Discover assistants to populate registry
 discover_assistants()
@@ -778,6 +782,47 @@ class TestCommunityConfigClientTools:
         # so the widget and the server read one set of numbers.
         assert python["limits"]["stdout_chars"] == 4096
         assert python["limits"]["exec_seconds"] == 120
+
+    def test_the_runtime_is_resolved_for_the_deployment_serving_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The widget runs what it is sent, so it must get one fetch_allow list and one
+        prelude, the develop deployment's on develop (#480)."""
+        from fastapi import FastAPI
+
+        from src.api.routers.community import create_community_router
+        from src.assistants import registry
+        from src.tools.client_tools import CLIENT_TOOL_KILL_SWITCH_ENV
+
+        monkeypatch.delenv(CLIENT_TOOL_KILL_SWITCH_ENV, raising=False)
+        monkeypatch.delenv("ROOT_PATH", raising=False)
+        monkeypatch.delenv("OSA_DEPLOYMENT", raising=False)
+        community = "deployment-runtime-test"
+        base = self._config().model_dump(exclude_none=True)
+        base["id"] = community
+        base["runtime"]["python"]["fetch_allow"] = {
+            "production": ["https://zarr.nemar.org/"],
+            "develop": ["https://zarr-test.nemar.org/"],
+        }
+        base["runtime"]["python"]["prelude"] = {"production": "x = 1", "develop": "x = 2"}
+        registry.register_from_config(CommunityConfig.model_validate(base))
+        app = FastAPI()
+        app.include_router(create_community_router(community))
+        client = TestClient(app)
+        try:
+            production = client.get(f"/{community}/").json()["runtime"]["python"]
+            monkeypatch.setenv("OSA_DEPLOYMENT", "develop")
+            develop = client.get(f"/{community}/").json()["runtime"]["python"]
+        finally:
+            registry._assistants.pop(community, None)
+        assert (production["fetch_allow"], production["prelude"]) == (
+            ["https://zarr.nemar.org/"],
+            "x = 1",
+        )
+        assert (develop["fetch_allow"], develop["prelude"]) == (
+            ["https://zarr-test.nemar.org/"],
+            "x = 2",
+        )
 
     def test_the_kill_switch_hides_them(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
