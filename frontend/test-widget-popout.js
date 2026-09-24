@@ -328,6 +328,18 @@ console.log('\nlater setColorScheme and setDataset calls reach an open pop-out')
   assertEqual(suggestions(pop.q), ['How do I cite NEMAR?'], 'and so does clearing it: the general list');
 }
 
+console.log('\na later setConfig does not reach an open pop-out');
+{
+  // Only setColorScheme and setDataset are forwarded (docs/community-widget.md);
+  // the pop-out took the rest of its config when it opened.
+  const page = await hostPage();
+  const { popup, q } = await openPopout(page);
+  const title = q('.osa-chat-title').textContent;
+  page.api.setConfig({ title: 'A title set later' });
+  assertEqual(q('.osa-chat-title').textContent, title, 'the pop-out keeps the title it opened with');
+  assert(popup.__OSA_CHAT_CONFIG__.title !== 'A title set later', 'and its preset is unchanged');
+}
+
 console.log('\n... and one whose widget has not started yet');
 {
   // happy-dom runs the pop-out's script as soon as it is added, and the widget
@@ -429,6 +441,26 @@ console.log('\nopened from the notebook tab, the pop-out opens on the notebook t
   bridgeMessage(popup, frame, { type: 'ready' });
   bridgeMessage(popup, frame, { type: 'setup', status: 'done' });
   assertEqual(q('.osa-notebook-status-text').textContent, 'nm000103 · Python ready', 'the pop-out\'s notebook reports ready in its own header');
+}
+
+console.log('\nopened from the notebook tab on a dataset the page then drops, it opens on chat');
+{
+  // __OSA_TAB__ is set once, when the button is clicked, while __OSA_DATASET__
+  // follows the page until the pop-out starts. So the tab can name a notebook the
+  // dataset no longer has, and setTab's fallback is what turns it back to chat.
+  for (const [label, dropped] of [['cleared', null], ['one with no Zarr copy', { id: 'nm000104', zarr: false }]]) {
+    const page = await hostPage({ dataset: { id: 'nm000103', zarr: true } });
+    page.click('.osa-notebook-btn');
+    page.click('.osa-popout-btn');
+    const { popup } = page.opened.at(-1);
+    assert(!popup.document.querySelector('.osa-chat-widget'), `sanity (${label}): the pop-out's widget has not started`);
+    assertEqual(popup.__OSA_TAB__, 'notebook', `sanity (${label}): it was told the notebook tab`);
+    page.api.setDataset(dropped);
+    const { q } = await popoutReady(page, popup);
+    assert(pressed(q('.osa-strip-chat')) && !pressed(q('.osa-strip-notebook')), `the dataset ${label} before it started: it opens on chat`);
+    assert(isOn(q('.osa-view-chat')) && isOff(q('.osa-view-notebook')), `the chat view on, the notebook off (${label})`);
+    assert(!q('.osa-notebook-frame'), `and no notebook frame is made for a dataset it cannot open (${label})`);
+  }
 }
 
 console.log('\nthe strip\'s notebook tab carries the notebook\'s cues while the reader is on chat');
