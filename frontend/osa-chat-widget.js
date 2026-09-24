@@ -1938,6 +1938,11 @@
     // container anchored on bottom+right only (never top/left) grows away from
     // that corner as hidden siblings reveal, so the LAST child, the chat button,
     // never moves regardless of how many icons appear before it.
+    // This is also the Tab order (Tab follows DOM order, not visual position),
+    // and it matches the visual order in both layouts: top-to-bottom on desktop
+    // (HPC above notebook above chat) and left-to-right at 600px and under
+    // (HPC, then notebook, then chat, reading toward the bubble). Keep the
+    // three appendChild calls in this order for that reason, not just habit.
     capsule.appendChild(hpcButton);
     capsule.appendChild(notebookButton);
     capsule.appendChild(chatButton);
