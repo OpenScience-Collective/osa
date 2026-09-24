@@ -1184,6 +1184,38 @@ class WidgetConfig(BaseModel):
     the widget if no logo is found.
     """
 
+    launcher: Literal["bubble", "capsule"] = "bubble"
+    """The floating launcher's shape (#436).
+
+    "bubble" (default) is today's single chat button. "capsule" adds two more circular
+    icons, a notebook and a high-performance computing (HPC) placeholder, that expand
+    upward above the chat button once it is clicked; the chat button itself never moves
+    and keeps its own behavior.
+    A community that never sets this renders exactly as it did before this field existed.
+    """
+
+    launcher_label: str | None = Field(default=None, max_length=40)
+    """Tooltip text shown beside the collapsed launcher.
+
+    Replaces the hardcoded "Ask me about <title>". Kept deliberately short: the greeting,
+    suggested questions and the rest of the panel stay behind the click (#436). Unset
+    keeps the existing hardcoded text.
+    """
+
+    @field_validator("launcher_label", mode="before")
+    @classmethod
+    def validate_launcher_label(cls, v: str | None) -> str | None:
+        """Strip whitespace, normalize empty to None, and refuse markup."""
+        if not isinstance(v, str):
+            return v
+        v = v.strip()
+        if not v:
+            return None
+        if "<" in v or ">" in v:
+            msg = "launcher_label must be plain text (no '<' or '>')"
+            raise ValueError(msg)
+        return v
+
     @field_validator("logo_url", mode="before")
     @classmethod
     def validate_logo_url(cls, v: str | None) -> str | None:
@@ -1242,6 +1274,10 @@ class WidgetConfig(BaseModel):
             result["accent_color"] = self.accent_color
         if self.user_bubble_text_color:
             result["user_bubble_text_color"] = self.user_bubble_text_color
+        if self.launcher == "capsule":
+            result["launcher"] = self.launcher
+        if self.launcher_label:
+            result["launcher_label"] = self.launcher_label
         return result
 
 

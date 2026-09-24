@@ -15,6 +15,21 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Added
 
+- **A three-icon capsule launcher** (issue #436): `launcher: capsule` replaces the
+  single chat bubble with a vertical stack of three circular icons -- chat (unchanged),
+  notebook, and a high-performance computing (HPC) placeholder -- that expand upward
+  above the chat button once it opens; the chat button itself never moves, and a
+  community that never sets `launcher` (the `bubble` default) renders exactly as it did
+  before this feature existed. A new
+  `OSAChatWidget.setDataset({ id, zarr })` call (or `setDataset(null)`) tells the widget
+  which dataset, if any, is on screen, driving the notebook icon through four states
+  (no dataset, Zarr unknown, no Zarr copy, active); the active state opens
+  `${notebookUrl}open.html?community=...&dataset=...` in a new tab, where `notebookUrl`
+  is set via `setConfig` (default `https://notebook.osc.earth/osa/`). `launcher_label`
+  replaces the hardcoded collapsed-launcher tooltip with a short community-chosen label,
+  keeping the greeting and suggested questions behind the click. NEMAR is the first
+  community on the capsule, with the label "Explore NEMAR". See the
+  "Launcher" section of `docs/community-widget.md`.
 - **Three more widget colors, and NEMAR's home page teal in the widget.**
   `theme_text_color`, `accent_color` and `user_bubble_text_color` join `theme_color` and
   `user_bubble_color`: a community can now separate the color painted as a surface (the

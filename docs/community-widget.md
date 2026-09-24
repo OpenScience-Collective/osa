@@ -106,6 +106,110 @@ widget:
   accent_color: "#257a92"         # the same hue, darkened for foreground use on white
 ```
 
+## Launcher: the capsule, the notebook icon, and the high-performance computing (HPC) placeholder
+
+The floating launcher has two shapes: `bubble`, a single chat button (today's only
+behavior), and `capsule`, a vertical stack of three circular icons (issue #436).
+Collapsed, a `capsule` widget looks identical to a `bubble` one: one chat button,
+bottom right.
+Clicking it opens the chat panel and expands the capsule, revealing a notebook icon
+and an HPC placeholder; the chat button itself never moves.
+Above 600px wide, the capsule expands upward into a vertical stack, and the chat
+panel opens to the button's left instead of above it.
+At 600px and narrower, the capsule instead expands into a row beside the chat
+button, and the panel opens above it, exactly as it always has.
+A community that never sets `launcher` renders exactly as it did before this field
+existed, markup and computed styles included; that equivalence is asserted in
+`frontend/test-widget-capsule.js`.
+
+| Field | Type | Default | What it changes |
+|---|---|---|---|
+| `launcher` | `"bubble"` or `"capsule"` | `"bubble"` | The floating launcher's shape. |
+| `launcher_label` | string, up to 40 characters, no `<`/`>` markup | none | Replaces the hardcoded collapsed-launcher tooltip, `Ask me about <title>`, with a shorter label. |
+
+```yaml
+widget:
+  launcher: capsule
+  launcher_label: "Explore NEMAR"
+```
+
+Both fields live on `WidgetConfig` and reach the frontend through `WidgetConfigResponse`,
+the same path `theme_color` and `user_bubble_color` use; `resolve()` omits `launcher`
+for the `bubble` default and omits `launcher_label` when unset, so an older or
+unconfigured community sends neither key.
+`launcher_label` only changes what shows *before* the click: the greeting
+(`initial_message`), suggested questions and the rest of the panel stay behind it
+either way.
+
+### The three icons
+
+Bottom to top: chat (today's button, unchanged), notebook, HPC.
+Each is an accessible button with an `aria-label` naming its current state and a
+hover/keyboard-focus tooltip in the same look as the collapsed launcher's own tooltip.
+An icon that cannot be used right now carries `aria-disabled="true"`, never the
+`disabled` attribute, so it stays focusable and a screen reader can still reach its
+reason.
+The active notebook icon is a themed surface, the same `theme_color`/`theme_text_color`
+pair the launcher button above already uses; the inactive and coming-soon look is a
+fixed neutral surface that never changes with a community's theme, which is what keeps
+a disabled button from ever reading as active.
+
+The HPC icon is a placeholder everywhere: always `aria-disabled`, always tooltipped
+"HPC submission is coming soon", and always carrying a small "Soon" badge.
+Submission to a cluster sits outside OSA (`nemarOrg/nemar-cli` ADR 0049) and is drawn
+now only so the capsule does not need redesigning once it exists.
+
+The notebook icon reflects the dataset on screen, from `setDataset` (below), in four
+states:
+
+| State | `aria-disabled` | Tooltip |
+|---|---|---|
+| No dataset (never set, or explicitly `null`) | `true` | Open a dataset page to start a notebook |
+| A dataset, Zarr copy unknown | `true` | Checking whether this dataset has a Zarr copy |
+| A dataset with no Zarr copy (`zarr: false`) | `true` | This dataset has no Zarr copy yet, so there is nothing to open in a notebook |
+| A dataset with a Zarr copy (`zarr: true`) | `false` | Open `<id>` in a Python notebook (JupyterLite, opens a new tab) |
+
+"Inactive" (no dataset, or no Zarr copy) and "coming soon" (HPC) read differently on
+purpose: an inactive icon is muted; "coming soon" carries the badge on top of that
+same muted look.
+Neither is just a lower opacity on the active look, which would read as broken rather
+than deliberate.
+
+### `OSAChatWidget.setDataset(value)`
+
+The embedding page tells the widget which dataset, if any, is on screen:
+
+```js
+OSAChatWidget.setDataset({ id: 'nm000103', zarr: true });
+OSAChatWidget.setDataset(null); // not a dataset page
+```
+
+- `value` is `null` (not a dataset page) or an object `{ id, zarr }`.
+- `id` must match `^[A-Za-z0-9._-]{1,64}$`.
+- `zarr` is `true` (a Zarr copy exists), `false` (it does not), or absent/`undefined`
+  (not known yet, e.g. the check is still in flight).
+- Invalid input (a malformed `id`, or a `zarr` that is not `true`/`false`/absent) is
+  ignored with a `console.warn`; it never throws, and it never changes the
+  previously-set state.
+
+`setDataset` can be called before `OSAChatWidget.init()` runs, since the embedder's own
+dataset-detection script may load before or after the widget script.
+The value is stored either way and rendered once the capsule exists; every later call
+re-renders immediately.
+
+Clicking the active notebook icon opens
+`${notebookUrl}open.html?community=${encodeURIComponent(communityId)}&dataset=${encodeURIComponent(id)}`
+in a new tab (`window.open(url, '_blank', 'noopener')`).
+That URL is the notebook site's contract: it validates both parameters, writes a
+starter notebook into JupyterLite's own storage, and redirects into it.
+
+Testing: `frontend/test-widget-capsule.js` runs the real widget source in a happy-dom
+window (the same technique `frontend/test-widget-tools.js` uses), and
+`frontend/browser-harness/widget_e2e.py --nemar` serves NEMAR's real, capsule-enabled
+config for a manual or scripted Chrome check (`widget-e2e-dataset.js` drives
+`setDataset`/`setConfig` from the page's own URL, so a run does not need a devtools
+console).
+
 ## Embedder `setConfig` keys
 
 A page that embeds the widget directly (rather than only through a
@@ -127,6 +231,8 @@ field: once an embedder sets `themeColor`, no community config value for
 | `accent_color` | `accentColor` |
 | `user_bubble_color` | `userBubbleColor` |
 | `user_bubble_text_color` | `userBubbleTextColor` |
+| `launcher` | `launcher` |
+| `launcher_label` | `launcherLabel` |
 
 ```html
 <script src="https://demo.osc.earth/osa-chat-widget.js" data-no-auto-init></script>
@@ -143,6 +249,20 @@ Two more embedder-only settings share the same malformed-value handling as
 the colors above, but have no `config.yaml` counterpart: `disclaimerColor`
 and `disclaimerBackground`, the AI-disclaimer banner's own text and
 background colors (any valid CSS color, not only `#RRGGBB` hex).
+
+A third, `notebookUrl`, has no `config.yaml` counterpart either, but is
+validated as a URL rather than a color: the notebook site's base URL (see
+"Launcher" above), an absolute `https:` URL or an `http:` URL on
+`localhost`/`127.0.0.1` (for local testing), with or without a path.
+Defaults to `https://notebook.osc.earth/osa/`; `/osa/` names this widget's
+own project on the shared `notebook.osc.earth` plane. An accepted value is
+normalized to end in a trailing slash; anything else is ignored with a
+`console.warn`, keeping whatever was set before.
+
+The "What happens with a malformed value" section right below covers only the color
+fields; it does not describe `notebookUrl` (see above) or `launcher` (any value other
+than exactly `"capsule"` behaves as `bubble`, silently, since `setConfig` does not
+validate it the way it validates `notebookUrl`).
 
 ### What happens with a malformed value
 

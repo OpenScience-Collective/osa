@@ -12,5 +12,9 @@
   <!-- Configuration first, from a file: the policy forbids inline script. -->
   <script src="widget-e2e-config.js"></script>
   <script src="../osa-chat-widget.js"></script>
+  <!-- Optional: ?dataset=<id>&zarr=true|false&notebookUrl=<url> drives setDataset
+       and setConfig({notebookUrl}) for the capsule launcher (#436), without a
+       devtools console. See widget-e2e-dataset.js. -->
+  <script src="widget-e2e-dataset.js"></script>
 </body>
 </html>

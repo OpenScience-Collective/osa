@@ -38,6 +38,11 @@ widget:
   # only, to 4.9:1 on white (the brand teal itself is 2.2:1). This was the ENTIRE theme
   # before the redesign above; it now serves only as a foreground color.
   accent_color: "#257a92"
+  # The three-icon capsule launcher (#436): NEMAR gets the notebook and HPC icons
+  # beside chat, and a minimal collapsed label rather than the hardcoded
+  # "Ask me about NEMAR" (the greeting stays behind the click).
+  launcher: capsule
+  launcher_label: "Explore NEMAR"
   suggested_questions:
     - Find EEG datasets with resting state recordings
     - What datasets have HED annotations?

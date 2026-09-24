@@ -52,6 +52,18 @@
     initialMessage: 'Hi! I\'m the Open Science Assistant. How can I help you today?',
     placeholder: 'Ask a question...',
     suggestedQuestions: [],
+    // The launcher's shape (#436): 'bubble' is today's single chat button; 'capsule'
+    // adds a notebook and an HPC placeholder icon that expand above it. Loaded from
+    // the community config the same way theme_color is, unless the embedder sets it.
+    launcher: 'bubble',
+    // Tooltip text beside the collapsed launcher. null keeps the hardcoded
+    // "Ask me about <title>" every community has always had.
+    launcherLabel: null,
+    // The notebook site's base URL (a sibling PR builds it); setDataset's active
+    // notebook button opens `${notebookUrl}open.html?community=...&dataset=...`.
+    // /osa/ names this widget's project on the shared notebook.osc.earth plane,
+    // per OSC's subdomain-per-plane, path-per-project naming rule.
+    notebookUrl: 'https://notebook.osc.earth/osa/',
     // Per-page instructions for the assistant (set by widget embedder)
     // These are sent to the backend as part of page_context
     widgetInstructions: null,
@@ -187,6 +199,12 @@
   // config that finishes loading afterward still knows to boot immediately under
   // preload_on: first_message rather than waiting for a run.
   let firstMessageSent = false;
+  // The dataset on screen (#436), set by the embedder's page script via setDataset:
+  // null when there is none (never set, or explicitly cleared), or {id, zarr} where
+  // zarr is true, false, or undefined (not known yet). Read by the capsule's notebook
+  // icon; may be set before init() runs, since the DOM does not exist to render into
+  // yet -- the value just sits here until applyLauncherMode/renderLauncherIcons reads it.
+  let currentDataset = null;
   const CHAT_HISTORY_VERSION = 2;
   let responseSequence = 0;
 
@@ -243,7 +261,11 @@
     popout: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>',
     settings: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="2"></circle><circle cx="12" cy="12" r="2"></circle><circle cx="12" cy="19" r="2"></circle></svg>',
     thumbUp: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/></svg>',
-    thumbDown: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 14V2"/><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z"/></svg>'
+    thumbDown: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 14V2"/><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z"/></svg>',
+    // The capsule launcher's other two positions (#436): a page with lines for the
+    // notebook, three stacked racks for HPC.
+    notebook: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>',
+    hpc: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="4" rx="1"/><rect x="3" y="10" width="18" height="4" rx="1"/><rect x="3" y="17" width="18" height="4" rx="1"/><line x1="7" y1="5" x2="7.01" y2="5"/><line x1="7" y1="12" x2="7.01" y2="12"/><line x1="7" y1="19" x2="7.01" y2="19"/></svg>'
   };
 
   // CSS Styles
@@ -339,6 +361,163 @@
     /* Hide tooltip when chat is open */
     .osa-chat-widget.chat-open .osa-chat-tooltip {
       display: none;
+    }
+
+    /* The three-icon capsule launcher (#436). Every selector here is scoped under
+       .osa-launcher-capsule, an element that exists ONLY when launcher: capsule
+       converts the DOM (see applyLauncherMode): a bubble-mode widget never has one,
+       so none of these rules ever match it and its markup and computed styles stay
+       exactly as they were before this feature existed.
+       Base (below 601px): the icons lay out in a ROW to the left of the chat button,
+       and .osa-chat-window keeps its unmodified rule above (opens above, as today).
+       The @media override past 601px switches to the vertical stack, opening the
+       chat window to the LEFT instead. Both directions rely on the same trick: the
+       fixed container sets only bottom+right (never top/left), so as hidden
+       icons reveal and the container grows, it grows away from the anchored corner
+       and the last child (the chat button) never moves. */
+    .osa-launcher-capsule {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      /* Higher than .osa-chat-window's 10000: two fixed elements with EQUAL
+         z-index stack by DOM order, and .osa-chat-window follows the capsule in
+         the markup, so a tie would paint the window over the icon tooltips
+         (measured: an icon-tooltip's own 10001 is scoped to this stacking
+         context and never compared against the window's). This element's own
+         z-index is what has to beat the window's, not its descendants'. */
+      z-index: 10002;
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 12px;
+    }
+
+    /* Extends 8px beyond the icons on every side, so the pill reads as one control,
+       without adding padding to .osa-launcher-capsule itself: padding would shift the
+       fixed bottom/right anchor and move the chat button off its today's position. */
+    .osa-chat-widget.chat-open .osa-launcher-capsule::before {
+      content: '';
+      position: absolute;
+      inset: -8px;
+      background: var(--osa-bg);
+      border-radius: 32px;
+      box-shadow: var(--osa-shadow);
+      z-index: -1;
+    }
+
+    /* Inside the capsule, the flex parent positions the chat button; its own
+       fixed/bottom/right (still true for a bubble-mode widget) would fight that. */
+    .osa-launcher-capsule .osa-chat-button {
+      position: relative;
+      bottom: auto;
+      right: auto;
+      flex-shrink: 0;
+    }
+
+    .osa-launcher-icon {
+      position: relative;
+      width: 56px;
+      height: 56px;
+      flex-shrink: 0;
+      border-radius: 50%;
+      border: 1px solid var(--osa-border);
+      background: var(--osa-assistant-bg);
+      color: var(--osa-text-light);
+      display: none; /* hidden until the capsule expands (.chat-open below) */
+      align-items: center;
+      justify-content: center;
+      cursor: default;
+      box-shadow: var(--osa-shadow);
+      transition: transform 0.2s, background 0.2s;
+    }
+
+    .osa-chat-widget.chat-open .osa-launcher-icon {
+      display: flex;
+    }
+
+    .osa-launcher-icon svg {
+      width: 24px;
+      height: 24px;
+    }
+
+    /* Active (the notebook, once a Zarr copy exists): the same surface/foreground
+       pair as the chat button, so "this one works" reads the same way chat always
+       has. Inactive and coming-soon (the default above) share the muted look; only
+       the badge below tells them apart, per #436. */
+    .osa-launcher-icon.osa-icon-active {
+      background: var(--osa-primary);
+      color: var(--osa-on-primary);
+      border-color: transparent;
+      cursor: pointer;
+    }
+
+    .osa-launcher-icon.osa-icon-active:hover {
+      background: var(--osa-primary-dark);
+      transform: scale(1.05);
+    }
+
+    .osa-icon-badge {
+      position: absolute;
+      top: -4px;
+      right: -4px;
+      background: var(--osa-text-light);
+      color: #ffffff;
+      font-size: 9px;
+      font-weight: 700;
+      line-height: 1;
+      padding: 3px 5px;
+      border-radius: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+    }
+
+    /* Same look as .osa-chat-tooltip, positioned relative to its own icon (which sits
+       in a row or a column depending on viewport) rather than at a fixed offset. */
+    .osa-icon-tooltip {
+      position: absolute;
+      right: calc(100% + 12px);
+      top: 50%;
+      transform: translateY(-50%);
+      background: var(--osa-bg);
+      color: var(--osa-text);
+      padding: 10px 14px;
+      border-radius: 8px;
+      box-shadow: var(--osa-shadow);
+      font-size: 13px;
+      font-weight: 500;
+      white-space: nowrap;
+      z-index: 10001;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.15s ease;
+    }
+
+    .osa-launcher-icon:hover .osa-icon-tooltip,
+    .osa-launcher-icon:focus-visible .osa-icon-tooltip {
+      opacity: 1;
+    }
+
+    @media (min-width: 601px) {
+      .osa-launcher-capsule {
+        flex-direction: column;
+      }
+
+      /* Opens to the LEFT of the capsule instead of above it; today's rule below
+         (bottom: 90px, right: 20px, max-height: calc(100vh - 120px)) is what a
+         narrow viewport keeps. 20 + 56 + 12 mirror the capsule's own offset,
+         diameter and gap, so the window sits flush beside it with no overlap.
+         The transition is scoped to capsule mode alone (this selector never
+         matches a bubble-mode widget, which must render exactly as it always
+         has): the community config can still be resolving when the reader
+         opens the chat, and launcher: capsule arriving a moment later would
+         otherwise snap an already-open panel to its new position instead of
+         easing into it. */
+      .osa-chat-widget.osa-capsule .osa-chat-window {
+        right: calc(20px + 56px + 12px);
+        bottom: 20px;
+        max-height: calc(100vh - 50px);
+        transition: right 0.2s ease, bottom 0.2s ease, max-height 0.2s ease;
+      }
     }
 
     .osa-chat-window {
@@ -1597,6 +1776,214 @@
     }
   }
 
+  // ---- Capsule launcher (#436): notebook and HPC icons above the chat button ----
+
+  // A dataset id, as the page embedding the widget names it: matches what
+  // setDataset's contract promises the notebook site (the URL it builds
+  // encodeURIComponent's it regardless, but the widget still refuses a
+  // malformed id up front rather than silently opening a bad link).
+  function isValidDatasetId(id) {
+    return typeof id === 'string' && /^[A-Za-z0-9._-]{1,64}$/.test(id);
+  }
+
+  // Accepts only an absolute https: URL, or http: on localhost/127.0.0.1 for tests
+  // (the notebook site itself is served over plain http in a local dev server).
+  // Returns the normalized URL (always ending in '/') or null if invalid.
+  function normalizeNotebookUrl(value) {
+    if (typeof value !== 'string' || !value) return null;
+    let parsed;
+    try {
+      parsed = new URL(value);
+    } catch {
+      return null;
+    }
+    const isLocalHttp = parsed.protocol === 'http:' &&
+      (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1');
+    if (parsed.protocol !== 'https:' && !isLocalHttp) return null;
+    // A base URL carries no query or fragment: handleNotebookClick appends its
+    // own '?community=...&dataset=...' after it, so a query here would produce
+    // a URL with two '?' (and the trailing-slash fix below would land the
+    // slash INSIDE that query/fragment, after its last character, not at the
+    // end of the path). Reject rather than silently mangle it.
+    if (parsed.search || parsed.hash) return null;
+    let href = parsed.href;
+    if (!href.endsWith('/')) href += '/';
+    return href;
+  }
+
+  // Build one capsule icon button: the SVG, a hidden "Soon" badge (shown only for
+  // HPC), and a hover/focus tooltip using the .osa-chat-tooltip look.
+  function buildLauncherIcon(name, svg) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `osa-launcher-icon osa-${name}-btn`;
+    button.innerHTML = svg;
+    const badge = document.createElement('span');
+    badge.className = 'osa-icon-badge';
+    badge.textContent = 'Soon';
+    badge.style.display = 'none';
+    button.appendChild(badge);
+    const tooltip = document.createElement('span');
+    tooltip.className = 'osa-icon-tooltip';
+    // The button's own aria-label already states this text; without this, a
+    // screen reader would read it twice (once for the label, once for this
+    // span's text content, which the label duplicates verbatim). The
+    // pre-existing .osa-chat-tooltip (the collapsed launcher's own tooltip)
+    // is untouched: it has no button-owning aria-label to duplicate, since
+    // the chat button's aria-label is just "Open chat"/"Close chat".
+    tooltip.setAttribute('aria-hidden', 'true');
+    button.appendChild(tooltip);
+    return button;
+  }
+
+  // What the notebook icon shows for the current dataset state (#436): four states,
+  // from setDataset's value and nothing else (the community does not change this;
+  // every community with launcher: capsule shows the same four states).
+  function notebookIconState() {
+    if (!currentDataset) {
+      return {
+        active: false,
+        label: 'Notebook: open a dataset page to start a notebook',
+        tooltip: 'Open a dataset page to start a notebook'
+      };
+    }
+    if (currentDataset.zarr === true) {
+      return {
+        active: true,
+        label: `Open ${currentDataset.id} in a Python notebook, opens a new tab`,
+        tooltip: `Open ${currentDataset.id} in a Python notebook (JupyterLite, opens a new tab)`
+      };
+    }
+    if (currentDataset.zarr === false) {
+      return {
+        active: false,
+        label: 'Notebook: this dataset has no Zarr copy',
+        tooltip: 'This dataset has no Zarr copy yet, so there is nothing to open in a notebook'
+      };
+    }
+    // zarr is undefined: known dataset, not yet known whether it has a Zarr copy.
+    return {
+      active: false,
+      label: 'Notebook: checking for a Zarr copy',
+      tooltip: 'Checking whether this dataset has a Zarr copy'
+    };
+  }
+
+  // Apply the notebook and HPC buttons' current state to the DOM. Safe to call any
+  // time (setDataset, a config load, or capsule creation): a no-op wherever a button
+  // does not exist yet (bubble mode, or before applyLauncherMode has run).
+  function renderLauncherIcons(container) {
+    const hpcButton = container.querySelector('.osa-hpc-btn');
+    if (hpcButton) {
+      hpcButton.setAttribute('aria-disabled', 'true');
+      hpcButton.setAttribute('aria-label', 'HPC submission, coming soon');
+      hpcButton.classList.remove('osa-icon-active');
+      const tooltip = hpcButton.querySelector('.osa-icon-tooltip');
+      if (tooltip) tooltip.textContent = 'HPC submission is coming soon';
+      const badge = hpcButton.querySelector('.osa-icon-badge');
+      if (badge) badge.style.display = '';
+    }
+
+    const notebookButton = container.querySelector('.osa-notebook-btn');
+    if (notebookButton) {
+      const state = notebookIconState();
+      notebookButton.setAttribute('aria-disabled', state.active ? 'false' : 'true');
+      notebookButton.setAttribute('aria-label', state.label);
+      notebookButton.classList.toggle('osa-icon-active', state.active);
+      const tooltip = notebookButton.querySelector('.osa-icon-tooltip');
+      if (tooltip) tooltip.textContent = state.tooltip;
+      const badge = notebookButton.querySelector('.osa-icon-badge');
+      if (badge) badge.style.display = 'none';
+    }
+  }
+
+  // The notebook button's click handler: aria-disabled is the guard (not the
+  // disabled attribute, so the button stays focusable and its reason stays
+  // reachable), re-checked against currentDataset itself so the two can never
+  // drift apart into a click that opens nothing the aria state promised, or a
+  // click that does something an aria-disabled="true" button said it would not.
+  function handleNotebookClick(notebookButton) {
+    if (notebookButton.getAttribute('aria-disabled') === 'true') return;
+    if (!currentDataset || currentDataset.zarr !== true) return;
+    const base = normalizeNotebookUrl(CONFIG.notebookUrl) || CONFIG.notebookUrl;
+    const url = `${base}open.html?community=${encodeURIComponent(CONFIG.communityId)}` +
+      `&dataset=${encodeURIComponent(currentDataset.id)}`;
+    window.open(url, '_blank', 'noopener');
+  }
+
+  // Convert an already-rendered bubble launcher into the capsule, in place: moves
+  // the EXISTING .osa-chat-button node (its listeners intact) into a new wrapper
+  // alongside two new icon buttons, rather than rebuilding the widget's markup from
+  // scratch. Called both right after creation (CONFIG.launcher was already
+  // 'capsule', e.g. set via setConfig before init) and again whenever the
+  // community config arrives with launcher: capsule after the bubble was already
+  // built (the ordinary case: fetchCommunityConfig resolves after createWidget).
+  // A no-op for every bubble-mode widget and for fullscreen (the pop-out has no
+  // launcher at all), which is what keeps a bubble community's markup and computed
+  // styles exactly as they were before this feature existed.
+  function applyLauncherMode(container) {
+    const isCapsule = CONFIG.launcher === 'capsule' && !CONFIG.fullscreen;
+    if (!isCapsule || container.classList.contains('osa-capsule')) return;
+
+    const chatButton = container.querySelector('.osa-chat-button');
+    if (!chatButton) return;
+
+    const capsule = document.createElement('div');
+    capsule.className = 'osa-launcher-capsule';
+    chatButton.parentNode.insertBefore(capsule, chatButton);
+
+    const hpcButton = buildLauncherIcon('hpc', ICONS.hpc);
+    const notebookButton = buildLauncherIcon('notebook', ICONS.notebook);
+    // DOM order is bottom-to-top / left-to-right: hpc, notebook, chat. A fixed
+    // container anchored on bottom+right only (never top/left) grows away from
+    // that corner as hidden siblings reveal, so the LAST child, the chat button,
+    // never moves regardless of how many icons appear before it.
+    // This is also the Tab order (Tab follows DOM order, not visual position),
+    // and it matches the visual order in both layouts: top-to-bottom on desktop
+    // (HPC above notebook above chat) and left-to-right at 600px and under
+    // (HPC, then notebook, then chat, reading toward the bubble). Keep the
+    // three appendChild calls in this order for that reason, not just habit.
+    capsule.appendChild(hpcButton);
+    capsule.appendChild(notebookButton);
+    capsule.appendChild(chatButton);
+
+    container.classList.add('osa-capsule');
+
+    notebookButton.addEventListener('click', () => handleNotebookClick(notebookButton));
+    // The HPC button has no click action (#436: coming soon everywhere); the
+    // listener exists only so a click event never bubbles into anything else.
+    hpcButton.addEventListener('click', () => {});
+
+    renderLauncherIcons(container);
+  }
+
+  // Apply a setDataset(value) call: validates, stores the result (even before the
+  // widget's DOM exists, so a call made before init() is applied once it does), and
+  // re-renders if the capsule is already there.
+  function applySetDataset(value) {
+    if (value === null) {
+      currentDataset = null;
+    } else if (value && typeof value === 'object') {
+      if (!isValidDatasetId(value.id)) {
+        console.warn('[OSA] setDataset: invalid dataset id, ignoring:', value.id);
+        return;
+      }
+      let zarr;
+      if (value.zarr === true || value.zarr === false || value.zarr === undefined) {
+        zarr = value.zarr;
+      } else {
+        console.warn('[OSA] setDataset: invalid zarr value, ignoring:', value.zarr);
+        return;
+      }
+      currentDataset = { id: value.id, zarr };
+    } else {
+      console.warn('[OSA] setDataset: invalid value, ignoring:', value);
+      return;
+    }
+    const container = document.querySelector('.osa-chat-widget');
+    if (container) renderLauncherIcons(container);
+  }
+
   // Copy text to clipboard
   async function copyToClipboard(text, button) {
     try {
@@ -2357,6 +2744,14 @@
           } else {
             CONFIG.logo = w.logo_url;
           }
+          changed = true;
+        }
+        if (w.launcher != null && !_userSetKeys.has('launcher')) {
+          CONFIG.launcher = w.launcher;
+          changed = true;
+        }
+        if (w.launcher_label != null && !_userSetKeys.has('launcherLabel')) {
+          CONFIG.launcherLabel = w.launcher_label;
           changed = true;
         }
 
@@ -3323,6 +3718,12 @@
     const container = document.querySelector('.osa-chat-widget');
     if (!container) return;
 
+    // Convert to the capsule launcher if launcher: capsule just arrived from the
+    // community config (the ordinary case: this resolves after createWidget()
+    // already built the bubble). A no-op once already converted, or in bubble mode.
+    applyLauncherMode(container);
+    renderLauncherIcons(container);
+
     // Apply theme color if configured (must be valid #RRGGBB hex)
     if (CONFIG.themeColor) {
       if (/^#[0-9a-fA-F]{6}$/.test(CONFIG.themeColor)) {
@@ -3408,10 +3809,10 @@
       if (badge) titleEl.appendChild(badge);
     }
 
-    // Update tooltip
+    // Update tooltip: launcher_label if set, else the hardcoded default (#436).
     const tooltip = container.querySelector('.osa-chat-tooltip');
     if (tooltip) {
-      tooltip.textContent = 'Ask me about ' + CONFIG.title.replace(' Assistant', '');
+      tooltip.textContent = CONFIG.launcherLabel || ('Ask me about ' + CONFIG.title.replace(' Assistant', ''));
     }
 
     // Update input placeholder
@@ -3928,7 +4329,7 @@
       <button class="osa-chat-button" aria-label="Open chat">
         ${ICONS.chat}
       </button>
-      <div class="osa-chat-tooltip">Ask me about ${escapeHtml(CONFIG.title.replace(' Assistant', ''))}</div>
+      <div class="osa-chat-tooltip">${escapeHtml(CONFIG.launcherLabel || ('Ask me about ' + CONFIG.title.replace(' Assistant', '')))}</div>
       <div class="osa-chat-window">
         <div class="osa-resize-handle"></div>
         <div class="osa-chat-header">
@@ -4102,6 +4503,12 @@
     // Setup resize
     const chatWindow = container.querySelector('.osa-chat-window');
     setupResize(chatWindow);
+
+    // Convert to the capsule launcher if CONFIG.launcher is already 'capsule' at
+    // creation time (an embedder that set it via setConfig before init()). The
+    // ordinary case, launcher arriving later from the community config, is applied
+    // again from applyWidgetConfig().
+    applyLauncherMode(container);
 
     return container;
   }
@@ -5335,6 +5742,18 @@
         console.error('[OSA] Invalid communityId:', opts.communityId);
         return;
       }
+      // The notebook site's base URL (#436): validated and normalized here so an
+      // invalid value is dropped on its own, rather than aborting the whole call
+      // the way an invalid communityId does.
+      if ('notebookUrl' in opts) {
+        const normalized = normalizeNotebookUrl(opts.notebookUrl);
+        if (normalized) {
+          opts.notebookUrl = normalized;
+        } else {
+          console.warn('[OSA] Invalid notebookUrl, ignoring:', opts.notebookUrl);
+          delete opts.notebookUrl;
+        }
+      }
       // Track which keys the embedder explicitly set (before auto-derivation)
       for (const key of Object.keys(opts)) {
         _userSetKeys.add(key);
@@ -5347,6 +5766,11 @@
     },
     getConfig: function() {
       return { ...CONFIG };
+    },
+    // The dataset on screen (#436): null (no dataset, or not known yet) or
+    // {id, zarr}. May be called before init(); see applySetDataset.
+    setDataset: function(value) {
+      applySetDataset(value);
     },
     // Whether this page can run the assistant's code, and if not, why:
     // {state: 'off' | 'loading' | 'ready' | 'unavailable', reason, detail?, runtime}.

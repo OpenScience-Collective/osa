@@ -327,6 +327,13 @@ class WidgetConfigResponse(BaseModel):
     user_bubble_text_color: str | None = Field(
         default=None, description="Text in the reader's own message bubbles, as hex #RRGGBB"
     )
+    launcher: str | None = Field(
+        default=None,
+        description="The launcher's shape: 'capsule' when set, omitted for the 'bubble' default",
+    )
+    launcher_label: str | None = Field(
+        default=None, description="Tooltip text beside the collapsed launcher"
+    )
 
 
 class OfferedModelResponse(BaseModel):
