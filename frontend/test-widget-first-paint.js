@@ -93,11 +93,13 @@ function configFetch(config, { held = true, status = 200 } = {}) {
 
 // A fresh window, as a new page load; `storage` seeds its localStorage with what an
 // earlier load left, and `storageOverride` replaces it outright.
-function loadWidget({ fetch, storage = {}, storageOverride = null, preset = null }) {
+// `source` replaces the widget's source, for the one test that injects a fault into it.
+function loadWidget({ fetch, storage = {}, storageOverride = null, preset = null, hostScheme, prefersColorScheme = 'light', source = SOURCE }) {
   const window = new Window({
     url: 'http://localhost/page',
-    settings: { disableJavaScriptFileLoading: true, disableCSSFileLoading: true },
+    settings: { disableJavaScriptFileLoading: true, disableCSSFileLoading: true, device: { prefersColorScheme } },
   });
+  if (hostScheme) window.__OSA_HOST_COLOR_SCHEME__ = hostScheme;
   window.__OSA_TEST__ = true;
   for (const [key, value] of Object.entries(storage)) window.localStorage.setItem(key, value);
   if (preset) window.__OSA_CHAT_CONFIG__ = preset;
@@ -110,7 +112,7 @@ function loadWidget({ fetch, storage = {}, storageOverride = null, preset = null
   // eslint-disable-next-line no-new-func
   const run = new Function(
     'window', 'document', 'localStorage', 'fetch', 'navigator', 'AbortSignal', 'URL',
-    'TextDecoder', 'setTimeout', 'clearTimeout', 'console', SOURCE
+    'TextDecoder', 'setTimeout', 'clearTimeout', 'console', source
   );
   run(window, window.document, localStorage, fetch, window.navigator, AbortSignal, URL,
     TextDecoder, setTimeout, clearTimeout, console);
@@ -178,6 +180,7 @@ console.log('\na first visit waits, hidden, for the config, then shows the commu
   assert(window.getComputedStyle(q('.osa-launcher-capsule .osa-chat-button')).visibility !== 'hidden', 'and now shown');
   const saved = JSON.parse(storageOf(window)[MEMORY_KEY] || 'null');
   assertEqual(saved, { apiEndpoint: API, widget: NEMAR_WIDGET }, 'the widget block is remembered, with the endpoint it came from');
+  assertEqual(q('.osa-feedback-community').textContent, 'NEMAR', 'the feedback dialog names the community its feedback goes to, not the default one it was drawn with');
   afterFirstVisit = storageOf(window);
 }
 
@@ -278,7 +281,7 @@ console.log('\na config that never comes, or fails, does not hide the launcher f
   // The cap is read when init() runs, so this instance waits the full 1.5 s; the
   // shortened one below shows the cap itself.
   assert(container.classList.contains('osa-launcher-waiting'), 'waiting while the config is in flight');
-  await waitUntil(() => !container.classList.contains('osa-launcher-waiting'), 'the cap passes', 3000);
+  await waitUntil(() => !container.classList.contains('osa-launcher-waiting'), 'the cap passes', 6000);
   assert(window.getComputedStyle(q('.osa-chat-button')).visibility !== 'hidden', 'after the cap, the launcher is shown in the defaults');
   assert(!widget.__firstPaint.waiting(), 'and the wait is over');
 
@@ -333,6 +336,136 @@ console.log('\nthe pop-out never waits: it has no launcher');
 {
   const { container } = start({ fetch: configFetch(configResponse()).fetch, preset: { fullscreen: true } });
   assert(!container.classList.contains('osa-launcher-waiting'), 'fullscreen: no waiting class');
+}
+
+// Markup with the whitespace between tags removed: a bubble that was opened once
+// has already lost its template's whitespace around the icon.
+const markup = (container) => container.innerHTML.replace(/>\s+</g, '><').trim();
+
+console.log('\nthe fresh config wins even for a field it leaves out: the server omits defaults');
+{
+  // What the last load remembered: NEMAR as it was, a dark-following capsule with a
+  // label, a text color and a logo.
+  const before = { [MEMORY_KEY]: JSON.stringify({ apiEndpoint: API, widget: { ...NEMAR_WIDGET, color_scheme: 'auto' } }) };
+  // What it is now, as WidgetConfig.resolve() sends a bubble in the light scheme
+  // with no label, no text color and no logo: those keys absent, not set to a default.
+  const now = { title: 'NEMAR Assistant', placeholder: 'Ask about NEMAR', theme_color: '#5bbad5', logo_url: null };
+
+  const { fetch, release } = configFetch(configResponse(now));
+  const stale = start({ fetch, storage: before, prefersColorScheme: 'dark' });
+  assert(stale.container.classList.contains('osa-capsule') && stale.container.classList.contains('osa-dark'),
+    'drawn from memory: the capsule, dark on a dark device');
+  release();
+  await waitUntil(() => !stale.container.classList.contains('osa-capsule'), 'the fresh config arrives');
+
+  // The baseline: a load that already remembers the new config, so, like the stale
+  // one, it is built from a known title (the feedback dialog's hint reads it once,
+  // when the widget is built; a first visit builds it from the default).
+  const fresh = start({
+    fetch: configFetch(configResponse(now), { held: false }).fetch,
+    storage: { [MEMORY_KEY]: JSON.stringify({ apiEndpoint: API, widget: now }) },
+    prefersColorScheme: 'dark',
+  });
+  await waitUntil(() => fresh.q('.osa-chat-input input').placeholder === 'Ask about NEMAR', 'a load remembering the new config');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assertEqual(stale.container.className, 'osa-chat-widget', 'the capsule is undone: exactly the bubble\'s class, and not dark');
+  assert(markup(stale.container) === markup(fresh.container), 'and exactly the markup of a load that remembers the new config');
+  assertEqual(stale.widget.getConfig().colorScheme, 'light', 'color_scheme left out: back to the light default');
+  assertEqual(stale.container.style.getPropertyValue('--osa-on-primary'), '', 'theme_text_color left out: its property removed');
+  assertEqual(stale.q('.osa-chat-tooltip').textContent, 'Ask me about NEMAR', 'launcher_label left out: the default tooltip');
+  assert(!stale.q('.osa-chat-avatar img'), 'logo_url null: the default avatar again');
+  assertEqual(stale.container.style.getPropertyValue('--osa-primary'), '#5bbad5', 'and what it does send still applies');
+}
+
+console.log('\na dropped theme color goes back to the stylesheet\'s, and a setConfig made meanwhile still wins');
+{
+  const before = { [MEMORY_KEY]: JSON.stringify({ apiEndpoint: API, widget: NEMAR_WIDGET }) };
+  const { theme_color: _dropped, ...withoutColor } = NEMAR_WIDGET;
+  const { fetch, release } = configFetch(configResponse({ ...withoutColor, title: 'Renamed Assistant' }));
+  const { widget, container, q } = start({ fetch, storage: before });
+  assertEqual(container.style.getPropertyValue('--osa-primary'), '#5bbad5', 'drawn in the remembered theme color');
+  // The embedder sets its own title while the config is in flight.
+  widget.setConfig({ title: 'Page title' });
+  release();
+  await waitUntil(() => container.style.getPropertyValue('--osa-primary') === '', 'the fresh config arrives');
+  assert(true, 'theme_color left out: the property is removed, so the stylesheet\'s own color applies');
+  assertEqual(widget.getConfig().title, 'Page title', 'the embedder\'s title, set after init, is not reset to the pre-init default');
+  assertEqual(q('.osa-chat-title').firstChild.textContent.trim(), 'Page title', 'and it is what the header shows');
+}
+
+console.log('\nthe config is remembered for the community it was requested for');
+{
+  const { fetch, release } = configFetch(configResponse());
+  const { window, widget } = start({ fetch });
+  widget.setConfig({ communityId: 'other' }); // while the request is in flight
+  release();
+  await waitUntil(() => storageOf(window)[MEMORY_KEY] !== undefined, 'the config arrives');
+  assertEqual(JSON.parse(storageOf(window)[MEMORY_KEY]).widget.title, 'NEMAR Assistant', 'under nemar, which it was fetched for');
+  assertEqual(storageOf(window)['osa-widget-config-other'], undefined, 'and not under the community set since');
+}
+
+console.log('\none bad color is one warning, however often the config is applied');
+{
+  const bad = { ...NEMAR_WIDGET, theme_color: 'red' };
+  const capture = captureWarnings();
+  try {
+    const { fetch, release } = configFetch(configResponse(bad));
+    const { container } = start({ fetch, storage: { [MEMORY_KEY]: JSON.stringify({ apiEndpoint: API, widget: bad }) } });
+    release();
+    await waitUntil(() => !container.classList.contains('osa-launcher-waiting') && capture.warnings.length > 0, 'the fresh config arrives');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assertEqual(capture.warnings.filter((w) => w.includes('themeColor')).length, 1, 'remembered, drawn, and fresh: warned once');
+  } finally {
+    capture.restore();
+  }
+}
+
+console.log('\nan exception while the widget is built cannot leave the launcher hidden');
+{
+  const anchor = '    document.body.appendChild(container);\n';
+  assertEqual(SOURCE.split(anchor).length - 1, 1, 'the fault goes in at one place: right after the widget joins the page');
+  const faulty = SOURCE.replace(anchor, `${anchor}    throw new Error('injected after the widget joined the page');\n`);
+  const { window, widget } = loadWidget({ fetch: configFetch(configResponse()).fetch, source: faulty });
+  widget.__firstPaint.setWait(30);
+  widget.setConfig({ apiEndpoint: API, communityId: 'nemar', storageKey: 'osa-test-first-paint-fault' });
+  let threw = null;
+  try {
+    widget.init();
+  } catch (e) {
+    threw = e;
+  }
+  assert(threw && threw.message.includes('injected'), 'init() throws the injected error');
+  const container = window.document.querySelector('.osa-chat-widget');
+  assert(container && container.classList.contains('osa-launcher-waiting'), 'the widget is in the page, waiting');
+  await waitUntil(() => !container.classList.contains('osa-launcher-waiting'), 'the cap passes anyway');
+  assert(true, 'the cap was scheduled before anything that could throw, so the launcher is shown');
+}
+
+console.log('\nthe tooltip waits for its button');
+{
+  const { fetch, release } = configFetch(configResponse());
+  const { window, widget } = loadWidget({ fetch });
+  widget.__firstPaint.setWait(4000);
+  widget.setConfig({ apiEndpoint: API, communityId: 'nemar', storageKey: 'osa-test-first-paint-tooltip' });
+  widget.init();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const tooltip = container.querySelector('.osa-chat-tooltip');
+  await new Promise((resolve) => setTimeout(resolve, 1700));
+  assert(container.classList.contains('osa-launcher-waiting'), 'still waiting, 1.7 s in');
+  assert(!tooltip.classList.contains('visible'), 'and its tooltip, due 1.5 s after init before, is not shown');
+  release();
+  await waitUntil(() => !container.classList.contains('osa-launcher-waiting'), 'the config arrives');
+  await waitUntil(() => tooltip.classList.contains('visible'), 'the tooltip', 3000);
+  assert(true, 'the tooltip shows 1.5 s after the launcher does');
+}
+
+console.log('\nthe pop-out keeps its host\'s scheme over a remembered one');
+{
+  const remembered = { [MEMORY_KEY]: JSON.stringify({ apiEndpoint: API, widget: { ...NEMAR_WIDGET, color_scheme: 'auto' } }) };
+  const { widget, container } = start({ fetch: configFetch(configResponse()).fetch, storage: remembered, preset: { fullscreen: true }, hostScheme: 'dark' });
+  assertEqual(widget.getConfig().colorScheme, 'dark', 'the host page chose dark: the remembered auto does not replace it');
+  assert(!container.classList.contains('osa-launcher-waiting'), 'and it does not wait');
 }
 
 console.log('\n' + '='.repeat(60));

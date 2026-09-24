@@ -173,8 +173,23 @@
   // community config (#475). See revealLauncher.
   let launcherWaiting = false;
   // How long the launcher waits for the config before showing the defaults anyway.
-  // A variable, not a constant, only so the test hooks can shorten it.
+  // A variable, not a constant, only so the test hooks can shorten it. A soft
+  // bound in a background tab, whose timers the browser slows; the config's own
+  // arrival, which ends the wait too, is not a timer.
   let LAUNCHER_WAIT_MS = 1500;
+  // What revealLauncher runs once the launcher is on screen (the tooltip's timer).
+  const launcherShownCallbacks = [];
+  // The display fields' values before a remembered look was applied (#475), so the
+  // fresh config can start from them: the server leaves a default out (a bubble
+  // launcher, the light scheme, an unset color), and a field it leaves out must
+  // end at its default, not at what the last load remembered. Null once used, or
+  // when nothing was remembered.
+  let displayDefaults = null;
+  const DISPLAY_KEYS = ['title', 'initialMessage', 'placeholder', 'suggestedQuestions', 'themeColor',
+    'userBubbleColor', 'themeTextColor', 'accentColor', 'userBubbleTextColor', 'logo', 'launcher',
+    'launcherLabel', 'colorScheme'];
+  // The header avatar as createWidget draws it, for a config that drops its logo.
+  let defaultAvatarHtml = null;
   // Browser code execution (#431). browserToolsReady is assigned, to a pending
   // promise, as soon as the config says the community runs code; it resolves to
   // the controller once the runtime bundle has loaded and passed its integrity
@@ -2868,6 +2883,39 @@
     window.addEventListener('message', handleNotebookMessage);
   }
 
+  // Undo applyLauncherMode (#475): a load drawn from a remembered capsule whose
+  // fresh config no longer asks for one goes back to the bubble's own markup. The
+  // capsule's window listeners stay; with its elements gone they find nothing.
+  function revertLauncherMode(container) {
+    if (!container.classList.contains('osa-capsule')) return;
+    discardNotebookFrame();
+    activeTab = 'chat';
+    const capsule = container.querySelector('.osa-launcher-capsule');
+    const chatButton = capsule && capsule.querySelector('.osa-chat-button');
+    if (chatButton) {
+      chatButton.removeAttribute('aria-pressed');
+      chatButton.innerHTML = isOpen ? ICONS.close : ICONS.chat;
+      chatButton.setAttribute('aria-label', isOpen ? 'Close chat' : 'Open chat');
+      capsule.before(chatButton);
+    }
+    if (capsule) capsule.remove();
+    const titleArea = container.querySelector('.osa-chat-title-area');
+    const chatTitle = titleArea && titleArea.querySelector('.osa-ttl-chat');
+    if (chatTitle) {
+      while (chatTitle.firstChild) titleArea.insertBefore(chatTitle.firstChild, chatTitle);
+      chatTitle.remove();
+    }
+    const notebookTitle = titleArea && titleArea.querySelector('.osa-ttl-notebook');
+    if (notebookTitle) notebookTitle.remove();
+    const views = container.querySelector('.osa-views');
+    if (views) {
+      const chatView = views.querySelector('.osa-view-chat');
+      while (chatView && chatView.firstChild) views.before(chatView.firstChild);
+      views.remove();
+    }
+    container.classList.remove('osa-capsule', 'osa-tab-chat', 'osa-tab-notebook');
+  }
+
   // Apply a setDataset(value) call: validates, stores the result (even before the
   // widget's DOM exists, so a call made before init() is applied once it does), and
   // re-renders if the capsule is already there. A different dataset, or one without
@@ -3650,8 +3698,8 @@
   // applyWidgetDisplay's checks exactly as a fresh one is; the fresh config still
   // arrives, wins, and replaces it. The API endpoint is stored beside it, so a page
   // pointed at another deployment starts fresh.
-  function widgetMemoryKey() {
-    return `osa-widget-config-${CONFIG.communityId}`;
+  function widgetMemoryKey(communityId = CONFIG.communityId) {
+    return `osa-widget-config-${communityId}`;
   }
 
   function readRememberedWidget() {
@@ -3669,9 +3717,12 @@
     }
   }
 
-  function rememberWidget(widget) {
+  // `requested` is the community and endpoint the config was fetched for, which a
+  // setConfig during the fetch may no longer match.
+  function rememberWidget(widget, requested) {
     try {
-      localStorage.setItem(widgetMemoryKey(), JSON.stringify({ apiEndpoint: CONFIG.apiEndpoint, widget }));
+      localStorage.setItem(widgetMemoryKey(requested.communityId),
+        JSON.stringify({ apiEndpoint: requested.apiEndpoint, widget }));
     } catch (e) {
       // Storage full or blocked: the next load draws the defaults first, as before.
       console.warn('[OSA] Could not remember the widget config:', e.message || e);
@@ -3685,9 +3736,17 @@
   function revealLauncher() {
     launcherWaiting = false;
     const container = document.querySelector('.osa-chat-widget');
-    if (!container || !container.classList.contains('osa-launcher-waiting')) return;
-    container.getBoundingClientRect();
-    container.classList.remove('osa-launcher-waiting');
+    if (container && container.classList.contains('osa-launcher-waiting')) {
+      container.getBoundingClientRect();
+      container.classList.remove('osa-launcher-waiting');
+    }
+    for (const run of launcherShownCallbacks.splice(0)) run();
+  }
+
+  // Run `fn` once the launcher is on screen: now, or when a first visit's wait ends.
+  function whenLauncherShown(fn) {
+    if (launcherWaiting) launcherShownCallbacks.push(fn);
+    else fn();
   }
 
   async function fetchCommunityConfig() {
@@ -3699,6 +3758,7 @@
   }
 
   async function loadCommunityConfig() {
+    const requested = { communityId: CONFIG.communityId, apiEndpoint: CONFIG.apiEndpoint };
     // Validate communityId before making request
     if (!isValidCommunityId(CONFIG.communityId)) {
       console.error('[OSA] Invalid communityId, cannot fetch default model');
@@ -3750,10 +3810,19 @@
       // Apply widget display config from API for fields not explicitly set by the embedder,
       // and remember it for the next load (#475).
       if (data && data.widget && typeof data.widget === 'object' && !Array.isArray(data.widget)) {
-        if (applyWidgetDisplay(data.widget)) {
+        if (displayDefaults) {
+          // A remembered look was drawn first: back to the defaults, then the fresh
+          // config, so that it wins for every field, including one it leaves out.
+          for (const key of DISPLAY_KEYS) {
+            if (!_userSetKeys.has(key)) CONFIG[key] = displayDefaults[key];
+          }
+          displayDefaults = null;
+          applyWidgetDisplay(data.widget);
+          applyWidgetConfig();
+        } else if (applyWidgetDisplay(data.widget)) {
           applyWidgetConfig();
         }
-        rememberWidget(data.widget);
+        rememberWidget(data.widget, requested);
       } else if (data) {
         console.warn('[OSA] API response missing widget config; using local defaults');
       }
@@ -4856,7 +4925,13 @@
     }
   }
 
+  // Once per field and value: a remembered config is applied before the widget is
+  // drawn and again when the fresh one arrives, and one bad color needs one warning.
+  const warnedInvalidColors = new Set();
   function warnInvalidColor(field, value) {
+    const key = `${field}:${JSON.stringify(value)}`;
+    if (warnedInvalidColors.has(key)) return;
+    warnedInvalidColors.add(key);
     console.warn(`[OSA] Ignoring invalid ${field} (not a recognized color): ${JSON.stringify(value)}`);
   }
 
@@ -4868,6 +4943,9 @@
     // Convert to the capsule launcher if launcher: capsule just arrived from the
     // community config (the ordinary case: this resolves after createWidget()
     // already built the bubble). A no-op once already converted, or in bubble mode.
+    // The other way only after a remembered capsule (#475): the fresh config says
+    // bubble.
+    if (CONFIG.launcher !== 'capsule') revertLauncherMode(container);
     applyLauncherMode(container);
     renderLauncherIcons(container);
 
@@ -4882,6 +4960,11 @@
       titleEl.textContent = CONFIG.title;
       if (badge) titleEl.appendChild(badge);
     }
+
+    // Who feedback goes to: drawn before the config arrives, so kept current here, or
+    // a first visit tells the reader it goes to the default community's maintainers.
+    const feedbackCommunity = container.querySelector('.osa-feedback-community');
+    if (feedbackCommunity) feedbackCommunity.textContent = CONFIG.title.replace(' Assistant', '');
 
     // Update tooltip: launcher_label if set, else the hardcoded default (#436).
     const tooltip = container.querySelector('.osa-chat-tooltip');
@@ -4907,6 +4990,9 @@
     // Update avatar with community logo if available
     const avatar = container.querySelector('.osa-chat-avatar');
     const shownLogo = avatar && avatar.querySelector('img');
+    if (avatar && !CONFIG.logo && shownLogo && defaultAvatarHtml !== null) {
+      avatar.innerHTML = defaultAvatarHtml;
+    }
     if (avatar && CONFIG.logo && !(shownLogo && shownLogo.getAttribute('src') === CONFIG.logo)) {
       const fallback = avatar.innerHTML;
       const img = document.createElement('img');
@@ -4948,6 +5034,11 @@
       } else {
         warnInvalidColor('themeColor', CONFIG.themeColor);
       }
+    } else {
+      // Unset (the default, or a remembered color the fresh config dropped): the
+      // stylesheet's own value.
+      container.style.removeProperty('--osa-primary');
+      container.style.removeProperty('--osa-primary-dark');
     }
 
     // The reader's bubbles have their own color, so a theme_color alone leaves
@@ -4958,6 +5049,8 @@
       } else {
         warnInvalidColor('userBubbleColor', CONFIG.userBubbleColor);
       }
+    } else {
+      container.style.removeProperty('--osa-user-bg');
     }
 
     // Text/icons drawn ON a theme_color surface (header, launcher, Run, Send, Save).
@@ -4969,6 +5062,8 @@
       } else {
         warnInvalidColor('themeTextColor', CONFIG.themeTextColor);
       }
+    } else {
+      container.style.removeProperty('--osa-on-primary');
     }
 
     // theme_color used as a FOREGROUND on the white panel (links, borders, focus rings,
@@ -4981,6 +5076,8 @@
       } else {
         warnInvalidColor('accentColor', CONFIG.accentColor);
       }
+    } else {
+      container.style.removeProperty('--osa-accent-on-light');
     }
 
     // Text in the reader's own bubbles, painted on user_bubble_color (or the platform
@@ -4991,6 +5088,8 @@
       } else {
         warnInvalidColor('userBubbleTextColor', CONFIG.userBubbleTextColor);
       }
+    } else {
+      container.style.removeProperty('--osa-user-text');
     }
 
     // Apply disclaimer colors if configured (must be valid CSS color: hex, named, rgb, hsl)
@@ -5645,7 +5744,7 @@
                 placeholder="Your feedback helps the maintainers improve this assistant..."
               ></textarea>
               <span class="osa-settings-hint">
-                Shared with the ${escapeHtml(CONFIG.title.replace(' Assistant', ''))} community maintainers. Please do not include personal information.
+                Shared with the <span class="osa-feedback-community">${escapeHtml(CONFIG.title.replace(' Assistant', ''))}</span> community maintainers. Please do not include personal information.
               </span>
             </div>
           </div>
@@ -5664,6 +5763,7 @@
       </div>
       </div>
     `;
+    defaultAvatarHtml = container.querySelector('.osa-chat-avatar')?.innerHTML ?? null;
     // Before the widget joins the page, so its first style is already the
     // community's (a remembered look, #475, or an embedder's setConfig colors).
     applyThemeProperties(container);
@@ -6780,8 +6880,14 @@
     // With none, on a first visit, the launcher waits for the config, briefly,
     // rather than showing the built-in defaults and then changing.
     const remembered = isValidCommunityId(CONFIG.communityId) ? readRememberedWidget() : null;
-    if (remembered) applyWidgetDisplay(remembered);
+    if (remembered) {
+      displayDefaults = Object.fromEntries(DISPLAY_KEYS.map((key) => [key, CONFIG[key]]));
+      applyWidgetDisplay(remembered);
+    }
     launcherWaiting = !remembered && !CONFIG.fullscreen && isValidCommunityId(CONFIG.communityId);
+    // Scheduled before anything is built, so no exception on the way can leave the
+    // launcher hidden for good.
+    if (launcherWaiting) setTimeout(revealLauncher, LAUNCHER_WAIT_MS);
 
     loadPageContextPreference();
     loadUserSettings();
@@ -6791,7 +6897,6 @@
     // Everything else the remembered config sets (the logo, the title, the
     // greeting), still before the first frame.
     if (remembered) applyWidgetConfig();
-    if (launcherWaiting) setTimeout(revealLauncher, LAUNCHER_WAIT_MS);
 
     if (historyNeedsSave) {
       try {
@@ -6913,13 +7018,15 @@
     if (!CONFIG.fullscreen) {
       const tooltip = container.querySelector('.osa-chat-tooltip');
       if (tooltip) {
-        setTimeout(() => {
+        // 1.5 seconds after the launcher is on screen: at once, or once a first
+        // visit's wait ends (#475), so the tooltip never shows before its button.
+        whenLauncherShown(() => setTimeout(() => {
           tooltip.classList.add('visible');
           // Auto-hide tooltip after 8 seconds
           setTimeout(() => {
             tooltip.classList.remove('visible');
           }, 8000);
-        }, 1500);
+        }, 1500));
       }
     }
 
