@@ -169,10 +169,12 @@ Both run in CI.
 
 The floating launcher has two shapes: `bubble`, a single chat button (today's only
 behavior), and `capsule`, a vertical stack of three circular icons (issue #436).
-Collapsed, a `capsule` widget looks identical to a `bubble` one: one chat button,
-bottom right.
+Collapsed, a `capsule` widget shows one chat button, bottom right, as a `bubble` one
+does, at 46px instead of the bubble's 56px.
 Clicking it opens the chat panel and expands the capsule, revealing a notebook icon
 and an HPC placeholder; the chat button itself never moves.
+The notebook opens as a second tab of the same panel (issue #470, "The notebook tab"
+below), and the capsule shows which tab is open.
 Above 600px wide, the capsule expands upward into a vertical stack, and the chat
 panel opens to the button's left instead of above it.
 At 600px and narrower, the capsule instead expands into a row beside the chat
@@ -183,7 +185,7 @@ existed, markup and computed styles included; that equivalence is asserted in
 
 | Field | Type | Default | What it changes |
 |---|---|---|---|
-| `launcher` | `"bubble"` or `"capsule"` | `"bubble"` | The floating launcher's shape. |
+| `launcher` | `"bubble"` or `"capsule"` | `"bubble"` | The floating launcher's shape. `capsule` requires a top-level `notebook` section (`docs/community-notebook.md`); the loader refuses the config without one, since the notebook icon would open a tab that can only report an error. |
 | `launcher_label` | string, up to 40 characters, no `<`/`>` markup | none | Replaces the hardcoded collapsed-launcher tooltip, `Ask me about <title>`, with a shorter label. |
 
 ```yaml
@@ -202,16 +204,25 @@ either way.
 
 ### The three icons
 
-Bottom to top: chat (today's button, unchanged), notebook, HPC.
+Bottom to top: chat, notebook, HPC.
+Every circle is 46px, about 15% larger than the panel's 40px Send button.
 Each is an accessible button with an `aria-label` naming its current state and a
 hover/keyboard-focus tooltip in the same look as the collapsed launcher's own tooltip.
 An icon that cannot be used right now carries `aria-disabled="true"`, never the
 `disabled` attribute, so it stays focusable and a screen reader can still reach its
 reason.
-The active notebook icon is a themed surface, the same `theme_color`/`theme_text_color`
-pair the launcher button above already uses; the inactive and coming-soon look is a
-fixed neutral surface that never changes with a community's theme, which is what keeps
-a disabled button from ever reading as active.
+
+The open tab's circle sits on a filled indicator in `theme_color`, which slides to
+the other circle when the tab changes; that circle is `aria-pressed="true"`.
+A circle that can be clicked but is not the open tab is outlined in the accent color.
+The inactive and coming-soon look is a fixed neutral surface that never changes with
+a community's theme, which is what keeps a disabled button from ever reading as active.
+
+Opening the panel grows the capsule's pill out of the chat button, and the notebook
+and HPC circles arrive 30ms and 70ms after it; the views, the header's title and the
+indicator animate between tabs.
+With `prefers-reduced-motion: reduce`, every change is immediate except a short plain
+fade between the views, and nothing slides, scales or turns.
 
 The HPC icon is a placeholder everywhere: always `aria-disabled`, always tooltipped
 "HPC submission is coming soon", and always carrying a small "Soon" badge.
@@ -226,7 +237,7 @@ states:
 | No dataset (never set, or explicitly `null`) | `true` | Open a dataset page to start a notebook |
 | A dataset, Zarr copy unknown | `true` | Checking whether this dataset has a Zarr copy |
 | A dataset with no Zarr copy (`zarr: false`) | `true` | This dataset has no Zarr copy yet, so there is nothing to open in a notebook |
-| A dataset with a Zarr copy (`zarr: true`) | `false` | Open `<id>` in a Python notebook (JupyterLite, opens a new tab) |
+| A dataset with a Zarr copy (`zarr: true`) | `false` | Open `<id>` in a Python notebook |
 
 "Inactive" (no dataset, or no Zarr copy) and "coming soon" (HPC) read differently on
 purpose: an inactive icon is muted; "coming soon" carries the badge on top of that
@@ -256,18 +267,65 @@ dataset-detection script may load before or after the widget script.
 The value is stored either way and rendered once the capsule exists; every later call
 re-renders immediately.
 
-Clicking the active notebook icon opens
-`${notebookUrl}open.html?community=${encodeURIComponent(communityId)}&dataset=${encodeURIComponent(id)}`
-in a new tab (`window.open(url, '_blank', 'noopener')`).
-That URL is the notebook site's contract: it validates both parameters, writes a
-starter notebook into JupyterLite's own storage, and redirects into it.
+### The notebook tab
 
-Testing: `frontend/test-widget-capsule.js` runs the real widget source in a happy-dom
-window (the same technique `frontend/test-widget-tools.js` uses), and
+Clicking the active notebook icon opens the panel on its Notebook tab (issue #470),
+or switches to it if the panel is already open on chat.
+The tab is a frame at
+`${notebookUrl}open.html?community=${encodeURIComponent(communityId)}&dataset=${encodeURIComponent(id)}`,
+the notebook site's contract: it validates both parameters, writes a starter notebook
+into JupyterLite's own storage, and redirects into it.
+The notebook site decides which pages may frame it (`docs/adr/0012-the-notebook-as-a-widget-tab.md`).
+The chat circle goes back to chat, and the open tab's own circle, or the header's
+close button, closes the panel.
+
+- **The header follows the tab.** It reads "Notebook", with a status line naming the
+  dataset: `Opening the notebook…`, `Starting Python…`, `Python ready` (or `Ready` for
+  a starter with no setup cell), `Setup did not finish; see the notebook`, or
+  `The notebook did not open here`.
+  The chat's own header buttons (Settings, reset and pop-out) are hidden on the
+  notebook tab; the close button stays.
+- **The frame is kept.** Going back to chat hides it without unloading it, so its
+  Python keeps running and returning finds the notebook as it was left.
+  A new dataset on screen replaces the frame; a dataset with no Zarr copy drops it
+  and takes the panel back to chat.
+- **The notebook reports its progress.** `notebook/osa-bridge.js`, inside the frame,
+  says when it is ready and how its setup cell went; the widget listens only to
+  messages from the frame it made and from the notebook site's origin.
+  While Python is starting and the reader is on chat, a ring turns on the notebook
+  circle.
+- **The theme follows the widget.** The widget sends its light or dark scheme to the
+  notebook when the frame loads, when the notebook says it is ready, and whenever the
+  scheme changes, addressed to the notebook site's origin only.
+- **A notebook that cannot open here says so.** A frame that has loaded but not
+  reported ready within 12 seconds, or has not reported ready within 45 seconds of
+  being created, or whose bridge reports a startup error before it is ready, is
+  covered by a message with "Try again" (a fresh frame) and "Open in a new tab" (the
+  same address in a browser tab of its own).
+  The usual cause is the host page's own policy, below.
+- **Resizing.** The capsule's panel resizes up to 1400px wide (never closer than
+  120px to the window's left edge) and to the window's full height less 40px, where
+  a bubble's stops at 600 by 800.
+
+**A host page with a Content Security Policy (CSP)** must allow the notebook host in
+`frame-src` (or, lacking `frame-src`, in `child-src` or `default-src`):
+`https://notebook.osc.earth`, or `https://develop-notebook.osc.earth` for a page that
+points `notebookUrl` at the develop notebook.
+Without it the browser refuses the frame, and the tab shows the fallback above.
+
+**The pop-out does not carry the notebook yet.** Its button is hidden on the notebook
+tab, and a pop-out opened from chat shows the chat only; a tab strip in the pop-out
+is planned (issue #470).
+
+Testing: `frontend/test-widget-capsule.js` and `frontend/test-widget-notebook-tab.js`
+run the real widget source in a happy-dom window (the same technique
+`frontend/test-widget-tools.js` uses), and both run in CI.
 `frontend/browser-harness/widget_e2e.py --nemar` serves NEMAR's real, capsule-enabled
 config for a manual or scripted Chrome check (`widget-e2e-dataset.js` drives
 `setDataset`/`setConfig` from the page's own URL, so a run does not need a devtools
-console).
+console), and `frontend/browser-harness/notebook-tab-check.mjs` drives the notebook
+tab in Chrome against the live develop notebook; it needs the network, so it is not
+in CI.
 
 ## Embedder `setConfig` keys
 
