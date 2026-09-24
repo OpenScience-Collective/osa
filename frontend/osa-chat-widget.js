@@ -2548,11 +2548,18 @@
     startBrowserTools();
   }
 
+  // `state` describes the WIRING: whether a bundle was requested, is loading, failed,
+  // or is ready to hand the controller a runtime to boot. It does NOT describe Pyodide
+  // itself, which boots separately (lazily under first_run, eagerly under widget_open
+  // or first_message) and can be idle, booting, ready, failed or terminated at any
+  // point after `state` already reads 'ready'. `runtime` carries that separately, from
+  // the PyodideRuntime instance's own `.state` (see RUNTIME_STATE in osa-runtime.js),
+  // and is null whenever no such instance exists yet (every state but 'ready').
   function browserRuntimeStatus() {
-    if (!browserToolsSetup) return { state: 'off', reason: null };
-    if (browserToolsUnavailable) return { state: 'unavailable', ...browserToolsUnavailable };
-    if (!browserTools) return { state: 'loading', reason: null };
-    return { state: 'ready', reason: null };
+    if (!browserToolsSetup) return { state: 'off', reason: null, runtime: null };
+    if (browserToolsUnavailable) return { state: 'unavailable', ...browserToolsUnavailable, runtime: null };
+    if (!browserTools) return { state: 'loading', reason: null, runtime: null };
+    return { state: 'ready', reason: null, runtime: browserRuntime ? browserRuntime.state : null };
   }
 
   // The workspace exists only for a community that declares client tools, and
@@ -5306,8 +5313,15 @@
       return { ...CONFIG };
     },
     // Whether this page can run the assistant's code, and if not, why:
-    // {state: 'off' | 'loading' | 'ready' | 'unavailable', reason, detail?}.
-    // For an embedder checking their page's policy, and for support.
+    // {state: 'off' | 'loading' | 'ready' | 'unavailable', reason, detail?, runtime}.
+    // `state` is the bundle/controller WIRING, not Pyodide itself: `runtime` is
+    // Pyodide's own boot state ('idle' | 'booting' | 'ready' | 'failed' |
+    // 'terminated', from PyodideRuntime.state / RUNTIME_STATE in osa-runtime.js),
+    // null until `state` is 'ready' (no PyodideRuntime instance exists before
+    // then). A community configured with preload_on: 'first_message' or
+    // 'widget_open' can show `runtime: 'booting'` well before any Run gate; a
+    // 'first_run' community stays 'idle' until the model actually asks to run
+    // code. For an embedder checking their page's policy, and for support.
     getBrowserRuntimeStatus: function() {
       return browserRuntimeStatus();
     },
