@@ -139,7 +139,7 @@ async function screenshot(cdp, sessionId, dir, name) {
 
 // What every pop-out that rendered must show: the widget on screen, its policy in
 // force, its document free of inline script, and the widget's own script by address.
-async function checkRendered(cdp, popup, { label, pageScript, pageUrl, title }) {
+async function checkRendered(cdp, page, popup, { label, pageScript, pageUrl, title }) {
   if (!(await waitFor(cdp, popup.sessionId,
     `!!window.OSAChatWidget && !!document.querySelector('.osa-chat-widget.fullscreen .osa-chat-window.open')`,
     `${label}: the pop-out's widget`))) return false;
@@ -159,9 +159,17 @@ async function checkRendered(cdp, popup, { label, pageScript, pageUrl, title }) 
       `${label}: with the page tag's integrity and crossorigin (${pageScript.integrity ? 'pinned' : 'none'})`,
       { widget, pageScript });
   }
-  const popupState = await evaluate(cdp, popup.sessionId, `({ href: location.href, title: OSAChatWidget.getConfig().title })`);
+  const popupState = await evaluate(cdp, popup.sessionId, `({
+    href: location.href, origin: self.origin, title: OSAChatWidget.getConfig().title,
+    marker: localStorage.getItem('osa-popout-check'),
+  })`);
   report(popupState.title === title, `${label}: the pop-out's widget has the page's community title`, popupState.title);
   report(popupState.href === pageUrl, `${label}: the pop-out reports the page's address, for the page context it sends`, popupState.href);
+  // The page's origin, and so the page's storage: a value only the page wrote
+  // (load() below; the widget never writes that key) is there in the pop-out.
+  const pageStorage = await evaluate(cdp, page.sessionId, `({ origin: self.origin, marker: localStorage.getItem('osa-popout-check') })`);
+  report(popupState.origin === pageStorage.origin && !!pageStorage.marker && popupState.marker === pageStorage.marker,
+    `${label}: the pop-out has the page's origin, and reads the page's own storage`, { popup: popupState, page: pageStorage });
   return true;
 }
 
@@ -207,6 +215,7 @@ async function check(base, screenshotDir) {
         `${path}: NEMAR's capsule, with the notebook available`))) return null;
       report(!(await evaluate(cdp, sessionId, INLINE_RUNS)), `${path}: control: the page refuses an inline script (no 'unsafe-inline')`);
       await evaluate(cdp, sessionId, RECORD_POPOUT_TRANSITIONS);
+      await evaluate(cdp, sessionId, `localStorage.setItem('osa-popout-check', ${JSON.stringify(`${path} ${Date.now()}`)})`);
       const pageScript = await evaluate(cdp, sessionId, `(() => {
         const s = document.querySelector('script[src*="osa-chat-widget"]');
         return { src: s.src, integrity: s.getAttribute('integrity'), crossorigin: s.getAttribute('crossorigin') };
@@ -227,7 +236,7 @@ async function check(base, screenshotDir) {
     await evaluate(cdp, sessionId, `document.querySelector('.osa-launcher-capsule .osa-chat-button').click()`);
     let popup = await openPopout(cdp, created, page, `document.querySelector('.osa-popout-btn').click()`);
     if (!popup) return;
-    if (await checkRendered(cdp, popup, { label: 'chat', pageScript: plain.pageScript, pageUrl: plain.url, title: plain.title })) {
+    if (await checkRendered(cdp, page, popup, { label: 'chat', pageScript: plain.pageScript, pageUrl: plain.url, title: plain.title })) {
       const tabs = await evaluate(cdp, popup.sessionId, `({
         chat: document.querySelector('.osa-strip-chat').getAttribute('aria-pressed'),
         notebook: document.querySelector('.osa-strip-notebook').getAttribute('aria-pressed'),
@@ -245,7 +254,7 @@ async function check(base, screenshotDir) {
     report(await evaluate(cdp, sessionId, visible('.osa-popout-btn')), 'notebook: the page\'s pop-out button is on screen on the notebook tab');
     popup = await openPopout(cdp, created, page, `document.querySelector('.osa-popout-btn').click()`);
     if (!popup) return;
-    if (await checkRendered(cdp, popup, { label: 'notebook', pageScript: plain.pageScript, pageUrl: plain.url, title: plain.title })) {
+    if (await checkRendered(cdp, page, popup, { label: 'notebook', pageScript: plain.pageScript, pageUrl: plain.url, title: plain.title })) {
       const state = await evaluate(cdp, popup.sessionId, `({
         chat: document.querySelector('.osa-strip-chat').getAttribute('aria-pressed'),
         notebook: document.querySelector('.osa-strip-notebook').getAttribute('aria-pressed'),
@@ -288,7 +297,7 @@ async function check(base, screenshotDir) {
       'sanity: this page\'s widget tag has integrity and crossorigin', pinned.pageScript);
     popup = await openPopout(cdp, created, page, `document.querySelector('.osa-popout-btn').click()`);
     if (!popup) return;
-    await checkRendered(cdp, popup, { label: 'pinned', pageScript: pinned.pageScript, pageUrl: pinned.url, title: pinned.title });
+    await checkRendered(cdp, page, popup, { label: 'pinned', pageScript: pinned.pageScript, pageUrl: pinned.url, title: pinned.title });
     await close(popup);
 
     // The control: the same tag with a wrong digest. The page's own copy has already

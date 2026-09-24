@@ -394,10 +394,12 @@ stdout and stderr as `stream` outputs, each figure as a `display_data` `image/pn
 
 ### The one limitation worth knowing
 
-IndexedDB is scoped to the page's origin.
-The widget's pop-out window can run on a different origin than the page that embeds it,
-and a pop-out on another origin sees neither the chat history (already true before this feature)
-nor the workspace.
+IndexedDB is scoped to the page's origin,
+so each site that embeds the widget keeps its own workspace, and a reader's workspace on one site is not there on another.
+The widget's pop-out window is not another site:
+it is an `about:blank` window of the embedding page's own origin,
+so it has the page's storage, the chat history and the workspace included
+(`frontend/browser-harness/popout-check.mjs` checks that it reads what the page wrote).
 This is documented, not engineered around:
 there is no cross-origin storage bridge here, and none is planned.
 

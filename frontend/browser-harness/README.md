@@ -324,11 +324,12 @@ The pop-out is an `about:blank` window of the page's own origin and inherits the
 it is a new DevTools target, which the check finds by discovering targets and attaches to by the one whose opener is the page.
 The notebook's address points at the harness server itself, so the notebook tab's frame loads nothing from the network; its address is what is checked.
 
-Measured 2026-09-24 in Chrome 153, 46 checks:
+Measured 2026-09-24 in Chrome 153, 49 checks:
 
 - from the capsule's chat tab and from its notebook tab, the pop-out renders, with the tab strip, on the tab it was opened from;
   every script in its document has a `src`, the widget's being the page tag's own address;
   it reports the page's address (the page context it sends), and has the page's community title
+- the pop-out has the page's origin, and reads a value only the page wrote to `localStorage`: it has the page's storage
 - from the notebook tab, the frame is at `${notebookUrl}open.html?community=nemar&dataset=nm000103` and on screen, the header reads "Notebook", the chat is hidden, and the page keeps its own frame;
   the strip's Chat and Notebook tabs switch the pop-out's views
 - **controls**: the page and every pop-out refuse an inline script, so the policy is in force in both;
