@@ -53,7 +53,7 @@ from src.core.config.notebook_lock import (
     environment_base_url_problem,
     starter_path_problem,
 )
-from src.core.config.runtime_lock import lockfile_path_problem
+from src.core.config.runtime_lock import canonical_name, lockfile_path_problem
 from src.core.limits import (
     MAX_IMAGE_EDGE_PX,
     MAX_IMAGES,
@@ -724,6 +724,24 @@ MAX_PRELUDE_CHARS = 4000
 _Prelude = Annotated[str, Field(max_length=MAX_PRELUDE_CHARS)]
 """One prelude's source, bounded as every reader's startup pays for it."""
 
+#: Every module in ``import_before_seal`` is imported in every reader's browser before
+#: the first execution, so the list is short by construction.
+MAX_IMPORT_BEFORE_SEAL = 16
+
+#: The module roots the runtime's namespace seal refuses to executed code:
+#: ``_BLOCKED_ROOTS`` in ``buildNamespaceSealSource`` (``frontend/osa-egress.js``),
+#: which ``tests/test_core/test_config/test_community.py`` compares with this. The seal
+#: evicts these from ``sys.modules`` and refuses them by name, so importing one before
+#: it gains nothing; naming one in ``import_before_seal`` is refused as a mistake.
+SEALED_IMPORT_ROOTS = frozenset(
+    {"micropip", "js", "pyodide", "pyodide_js", "pyodide_http", "ctypes"}
+)
+
+_MODULE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
+
+_ModuleName = Annotated[str, Field(min_length=1, max_length=200)]
+"""One dotted module name, such as ``scipy.signal``."""
+
 
 class PythonRuntimeConfig(BaseModel):
     """Configuration for the browser-side Python (Pyodide) runtime.
@@ -757,6 +775,23 @@ class PythonRuntimeConfig(BaseModel):
     from ``index_urls`` when the community gives any, and otherwise from micropip's own
     default index, PyPI. Nothing is installed after startup. A wheel pinned by sha256
     belongs in the lock overlay instead."""
+
+    import_before_seal: list[_ModuleName] = Field(
+        default_factory=list, max_length=MAX_IMPORT_BEFORE_SEAL
+    )
+    """Modules imported once at startup, after ``preload`` and ``allow_install`` and
+    before the runtime is sealed, for a package that imports a sealed module at its own
+    top level. SciPy imports ``ctypes`` in ``scipy._lib._ccallback``, which
+    ``import scipy`` runs, so under the seal SciPy does not import at all; named here, it
+    does. The seal still refuses ``import ctypes`` to executed code, while the package
+    keeps its own reference to it (docs/community-browser-runtime.md says what that
+    means). Empty by default, and each one is imported in every reader's browser before
+    the first execution, so name only what a package needs to import under the seal.
+
+    Each is a dotted module name whose top-level package is one ``preload`` names,
+    written as its import name (``eegprep-lean`` is ``eegprep_lean``), and none may be a
+    module the seal removes (:data:`SEALED_IMPORT_ROOTS`). A module that does not import
+    fails the boot, naming it."""
 
     prelude: _Prelude | dict[Deployment, _Prelude] | None = None
     """Python run once in the reader's browser after the runtime is sealed and before
@@ -819,6 +854,48 @@ class PythonRuntimeConfig(BaseModel):
             except SyntaxError as err:
                 raise ValueError(f"prelude{where} does not compile: {err}") from err
         return value
+
+    @field_validator("import_before_seal")
+    @classmethod
+    def _import_before_seal_names_modules(cls, value: list[str]) -> list[str]:
+        """Module names only, each once, and none the seal removes."""
+        seen: set[str] = set()
+        for name in value:
+            if not _MODULE_NAME.fullmatch(name):
+                raise ValueError(
+                    f"import_before_seal entry {name!r} is not a module name: "
+                    "dotted Python identifiers only, such as scipy.signal"
+                )
+            if name in seen:
+                raise ValueError(f"import_before_seal names {name!r} twice")
+            seen.add(name)
+            root = name.partition(".")[0]
+            if root in SEALED_IMPORT_ROOTS:
+                raise ValueError(
+                    f"import_before_seal entry {name!r} is a module the seal removes: it "
+                    "evicts it from sys.modules and refuses it by name, so importing it "
+                    "first gains nothing"
+                )
+        return value
+
+    @model_validator(mode="after")
+    def _import_before_seal_comes_from_preload(self) -> "PythonRuntimeConfig":
+        """Every module's top-level package is one this runtime preloads.
+
+        The list exists for the packages this runtime loads, and a name from anywhere
+        else is far more likely a typo than a need. Compared by import name, which is
+        the lock name with ``-`` read as ``_``; ``frontend/test-data-lane.js`` checks
+        that each such lock entry really provides that import."""
+        provided = {canonical_name(package).replace("-", "_") for package in self.preload}
+        for name in self.import_before_seal:
+            root = name.partition(".")[0]
+            if root not in provided:
+                raise ValueError(
+                    f"import_before_seal entry {name!r}: its top-level package {root!r} is "
+                    f"not one preload names ({sorted(provided)}), written as its import "
+                    "name, so it would not be installed when the imports run"
+                )
+        return self
 
     @field_validator("fetch_allow", "prelude", mode="before")
     @classmethod
