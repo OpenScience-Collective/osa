@@ -721,36 +721,57 @@ print(json.dumps(out))
     }
   }
 
-  console.log('\nthe prompt\'s spectrum runs one channel at a time, which this runtime needs');
+  console.log('\nthe prompt\'s spectrum runs one channel at a time, and no longer than this runtime allows');
   {
     const { fence, code } = promptBlock('**Power spectrum.**');
     assert(fence !== null, 'the spectrum bullet carries a python block');
     if (fence) {
+      // Two reads: many channels at 250 Hz, and a few minutes at 1000 Hz, which is
+      // past the most samples one welch call takes here. The block runs exactly as
+      // written with only `eeg` and `rate` bound, the names the prompt uses.
       const result = await run(`import json
 import numpy as np
 from scipy import signal
 
-rate = 250.0
-t = np.arange(30000) / rate
+def prompt_spectrum(eeg, rate):
+${indented(code)}
+    return freqs, power, most
+
+def refused(x, rate):
+    try:
+        signal.welch(x, fs=rate, nperseg=int(2 * rate), axis=-1)
+        return "ok"
+    except ValueError as e:
+        return str(e)
+
+out = []
 rng = np.random.default_rng(0)
-eeg = rng.standard_normal((33, t.size)) + 3 * np.sin(2 * np.pi * 10 * t)
-${code}
-try:
-    signal.welch(eeg, fs=rate, nperseg=int(2 * rate), axis=-1)
-    whole = "ok"
-except ValueError as e:
-    whole = str(e)
-print(json.dumps({"shape": list(power.shape), "bins": int(freqs.size),
-                  "peak_hz": float(freqs[np.argmax(power.mean(axis=0))]), "whole": whole}))
+for rate, channels, seconds in ((250.0, 33, 120), (1000.0, 4, 200)):
+    t = np.arange(int(seconds * rate)) / rate
+    eeg = rng.standard_normal((channels, t.size)) + 3 * np.sin(2 * np.pi * 10 * t)
+    freqs, power, most = prompt_spectrum(eeg, rate)
+    out.append({
+        "rate": rate, "channels": channels, "samples": int(t.size), "most": int(most),
+        "shape": list(power.shape), "bins": int(freqs.size),
+        "peak_hz": float(freqs[np.argmax(power.mean(axis=0))]),
+        "whole": refused(eeg, rate), "one_channel": refused(eeg[0], rate),
+    })
+print(json.dumps(out))
 `);
       assertEqual(result.status, 'ok', `it runs (stderr: ${result.stderr.slice(-300)})`);
-      const out = JSON.parse(result.stdout || '{}');
-      assertEqual(out.shape, [33, out.bins], 'one spectrum per channel');
-      assert(Math.abs(out.peak_hz - 10) < 0.6, `the 10 Hz tone is the peak (${out.peak_hz} Hz)`);
-      // The control: the reason the prompt says one channel at a time. If a later
-      // Pyodide lifts this, the check says so and the prompt's sentence can go.
-      assert(/array is too big/.test(out.whole),
-        `control: welch on the whole 33 x 30000 array is refused here (${String(out.whole).slice(0, 80)})`);
+      const [many, long] = JSON.parse(result.stdout || '[{}, {}]');
+      for (const r of [many, long]) {
+        const at = `${r.channels} channels by ${r.samples} samples at ${r.rate} Hz`;
+        assertEqual(r.shape, [r.channels, r.bins], `${at}: one spectrum per channel`);
+        assert(Math.abs(r.peak_hz - 10) < 0.6, `${at}: the 10 Hz tone is the peak (${r.peak_hz} Hz)`);
+      }
+      assert(long.most < long.samples, `the 1000 Hz read is longer than one welch call takes (${long.most} of ${long.samples})`);
+      // The controls: the reasons for both limits. If a later Pyodide lifts
+      // either, the check says so and the prompt's sentence can go.
+      assert(/array is too big/.test(many.whole),
+        `control: welch on the whole 33-channel array is refused here (${String(many.whole).slice(0, 80)})`);
+      assert(/array is too big/.test(long.one_channel),
+        `control: and so is one channel of the 1000 Hz read, past most (${String(long.one_channel).slice(0, 80)})`);
     }
   }
 } finally {

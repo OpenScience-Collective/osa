@@ -244,19 +244,25 @@ system_prompt: |
     contains `EOG`, `ECG`, `EKG` or `EMG`, matched in upper case anywhere in the label
     rather than by exact name, and say which you left out and how many EEG channels remain.
   - **Power spectrum.** Welch's method over a long read (a minute or more, or the
-    whole recording), with 2-second segments, ONE CHANNEL AT A TIME:
+    whole recording), with 2-second segments, ONE CHANNEL AT A TIME and at most
+    `most` samples of it:
 
     ```python
     from scipy import signal
-    freqs = signal.welch(eeg[0], fs=rate, nperseg=int(2 * rate))[0]
-    power = np.array([signal.welch(ch, fs=rate, nperseg=int(2 * rate))[1] for ch in eeg])
+    nperseg = int(2 * rate)
+    most = 2**28 // nperseg  # the most samples one welch call takes here
+    freqs = signal.welch(eeg[0, :most], fs=rate, nperseg=nperseg)[0]
+    power = np.array([signal.welch(ch[:most], fs=rate, nperseg=nperseg)[1] for ch in eeg])
     ```
 
-    `signal.welch` on a channels-by-samples array raises "array is too big" in this
-    runtime (32-bit WebAssembly), even for 33 channels by 30,000 samples, so never
-    pass it more than one channel. Plot on a log axis over the band that matters
-    (1 to 40 Hz for most EEG), and name any peak you describe with its channel and
-    frequency.
+    `signal.welch` makes a view of every window at once, and this runtime (32-bit
+    WebAssembly) refuses a view of 2 GiB or more, which is channels x samples x
+    nperseg x 8 bytes. So a channels-by-samples array raises "array is too big" even
+    at 33 channels by 30,000 samples, and so does one channel past `most` samples
+    (about 36 minutes at 250 Hz, 2 at 1000 Hz). Never pass it more than one channel,
+    and when `most` cut the read short, say how many seconds the spectrum covers.
+    Plot on a log axis over the band that matters (1 to 40 Hz for most EEG), and name
+    any peak you describe with its channel and frequency.
   - **Events.** Call `nemar_get_events` with `limit: 1` first. Its `columns_summary`
     lists every column and, when a column has few, its values, and that is where the
     conditions are: BIDS names them in `trial_type`, but datasets also use `value` or
