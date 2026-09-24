@@ -520,6 +520,14 @@ console.log('\nnotebookUrl: valid values are accepted and normalized, invalid on
     '',
     42,
     null,
+    // A base URL carries no query or fragment: handleNotebookClick appends
+    // its own '?community=...&dataset=...' after it, so accepting one here
+    // would build a URL with two '?', and the trailing-slash fix would land
+    // the slash inside the query/fragment rather than at the end of the path
+    // ('https://notebook.osc.earth/osa/?env=staging' would become
+    // '.../osa/?env=staging/', not '.../osa/?env=staging').
+    'https://notebook.osc.earth/osa/?env=staging',
+    'https://notebook.osc.earth/osa/#section',
   ];
   for (const bad of invalid) {
     const { widget } = loadWidget({ fetch: fetchReturning(configResponse()) });

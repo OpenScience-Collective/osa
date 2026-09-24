@@ -1793,6 +1793,12 @@
     const isLocalHttp = parsed.protocol === 'http:' &&
       (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1');
     if (parsed.protocol !== 'https:' && !isLocalHttp) return null;
+    // A base URL carries no query or fragment: handleNotebookClick appends its
+    // own '?community=...&dataset=...' after it, so a query here would produce
+    // a URL with two '?' (and the trailing-slash fix below would land the
+    // slash INSIDE that query/fragment, after its last character, not at the
+    // end of the path). Reject rather than silently mangle it.
+    if (parsed.search || parsed.hash) return null;
     let href = parsed.href;
     if (!href.endsWith('/')) href += '/';
     return href;
