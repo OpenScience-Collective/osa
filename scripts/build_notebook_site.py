@@ -30,7 +30,7 @@ that names a ``notebook:`` block in its ``config.yaml``:
    and ``osa-bridge.js``, copied verbatim from ``notebook/`` at the repository root.
    The notebook page (``notebooks/index.html``) gains a script tag for the bridge
    (``inject_bridge``), which runs a starter's setup cells when it opens and takes
-   the embedding widget's theme (docs/adr/0011-the-notebook-site.md).
+   the embedding widget's theme (docs/adr/0012-the-notebook-as-a-widget-tab.md).
 
 Everything above (1-5) is written under ``--output-dir/<subdir>``, where
 ``<subdir>`` is ``--site-url``'s own path component (``osa`` for

@@ -24,19 +24,22 @@ And the widget's pop-out window reopens the notebook in a new frame, which only 
 **The sites the widget runs on may embed the notebook, and nothing else may.**
 `scripts/build_notebook_site.py`'s `embed_origins` writes `frame-ancestors` per environment: `'self'`, the platform's own widget hosts (`https://demo.osc.earth`, `https://osa-demo.pages.dev`), then every notebook community's `cors_origins`, the same origins the application programming interface (API) already allows the widget on.
 The develop build adds `https://*.osc.earth`, `https://*.osa-demo.pages.dev` and loopback, for previews and local testing.
-A frame-ancestors source cannot take a partial-label wildcard, so develop's `*-demo.osc.earth` previews are covered by `*.osc.earth`, and a community origin written that way fails the build instead of producing a policy the browser ignores.
+A frame-ancestors source cannot take a partial-label wildcard, so develop's `*-demo.osc.earth` previews are covered by `*.osc.earth`; a community origin written that way is refused by the config loader's own `cors_origins` rule, and again by the build, rather than producing a policy the browser ignores.
+The site also sends `X-Frame-Options: SAMEORIGIN`, for a browser too old to read frame-ancestors, which then refuses to embed it at all; a browser that reads frame-ancestors ignores `X-Frame-Options` when both are sent (measured in Chrome: the allowed embed still loads).
 The widget's pop-out is an `about:blank` window of the embedding page's own origin (`openPopout` writes the widget into it), so its frame's ancestor is the same site and the same list covers it.
 
 **A small script of ours runs inside the notebook page, `notebook/osa-bridge.js`.**
 The build adds it to `notebooks/index.html`, the page `open.js` redirects into.
-It runs a starter's code cells tagged `osa-autorun` when the notebook opens, and again after a kernel restart, which starts a fresh Python.
+It runs a starter's code cells tagged `osa-autorun` when the notebook opens, and again after a kernel restart or a new kernel, each a fresh Python.
+Setup counts as done only if every tagged cell got an execution count (cleared first, because a reopened notebook shows the one it was saved with) and none produced an error.
 Embedded, it also tells the widget when the notebook is ready and how setup went, and applies the theme the widget sends:
 
 | Direction | Message |
 |---|---|
 | notebook to widget | `{source: 'osa-notebook', type: 'ready'}` |
 | notebook to widget | `{source: 'osa-notebook', type: 'setup', status: 'running' \| 'done' \| 'error' \| 'none'}` |
-| notebook to widget | `{source: 'osa-notebook', type: 'theme', scheme}`, after applying one |
+| notebook to widget | `{source: 'osa-notebook', type: 'theme', scheme, applied}`, once a theme is applied or has failed |
+| notebook to widget | `{source: 'osa-notebook', type: 'error', phase: 'startup'}`, if the script could not start |
 | widget to notebook | `{target: 'osa-notebook', type: 'theme', scheme: 'light' \| 'dark'}` |
 
 It listens only to `window.parent`: frame-ancestors has already decided which pages can be that parent, so the script repeats no origin list.

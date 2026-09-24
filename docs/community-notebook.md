@@ -1,13 +1,13 @@
 # Adding a starter notebook to the notebook site
 
-A separate site, `notebook.osc.earth/osa` (`develop-notebook.osc.earth/osa` on `develop`), lets a reader open a real JupyterLite notebook, pre-filled for one dataset, as a tab inside the chat widget or on its own.
+A separate site, `notebook.osc.earth/osa` (`develop-notebook.osc.earth/osa` on `develop`), lets a reader open a real JupyterLite notebook, pre-filled for one dataset, from the chat widget or on its own.
 The `/osa` path follows OSC's own naming rule: a subdomain is a plane serving several projects, and the project itself is the path (`api.osc.earth/osa`, `widget.osc.earth/osa`, ...), so this site does not own its subdomain's root either.
 This is a different surface from `docs/community-browser-runtime.md`'s in-widget Pyodide runtime: that one runs model-written code inside the chat, sealed behind an egress allowlist;
 this one is a full notebook, on its own origin, running the reader's OWN code, with no chat and no model in the loop at all (issue #453, `docs/adr/0011-the-notebook-site.md`).
 
 ## What the site is
 
-The widget's notebook tab (built separately, not part of this config surface) loads `https://notebook.osc.earth/osa/open.html?community=<id>&dataset=<dataset_id>` in a frame.
+The widget's notebook button (built separately, not part of this config surface) opens `https://notebook.osc.earth/osa/open.html?community=<id>&dataset=<dataset_id>` in a new tab today; with #470 it will load the same link as a tab inside the widget, in a frame, which this site already allows.
 That page validates the link, drops a filled-in starter notebook into JupyterLite's own browser storage, and redirects into it.
 The same link also works on its own, in any browser tab.
 Nothing here talks to this application programming interface (API) server: once the site is built and deployed, opening a notebook is a static, client-side operation.
@@ -60,7 +60,7 @@ Keep them quick and free of side effects a reader would not expect, because they
 
 The site sends a `frame-ancestors` policy: the sites the chat widget runs on may show the notebook in a frame, and no other site may.
 It is built from each notebook-enabled community's `cors_origins`, the same list that already lets the widget reach the API from those sites, plus the platform's own widget hosts; a community needs no separate setting.
-A wildcard origin must be a whole leading label (`https://*.example.org`), because that is all `frame-ancestors` can express; anything else fails the build.
+A wildcard origin must be a whole leading label (`https://*.example.org`), because that is all `frame-ancestors` can express; the config loader already refuses anything else, and the build checks again before writing the policy.
 A site with its own Content Security Policy (CSP) also needs `frame-src https://notebook.osc.earth` (or `https://develop-notebook.osc.earth` on staging) to show the tab.
 
 ### The Pyodide-version rule
@@ -79,7 +79,7 @@ A community's wheel is served from `wheels/<community_id>/<file_name>` on the no
 ## What the reader's browser keeps
 
 Once a reader opens a link, the filled-in notebook lives in JupyterLite's own storage (IndexedDB, via `localforage`), on the notebook site's own origin -- NOT the widget's own workspace storage, and not this server.
-In the widget's tab the notebook is a third-party frame, so the browser keeps that storage separately for each site that embeds it: a notebook edited in nemar.org's tab, or its pop-out, is not the one the reader sees when opening the notebook site on its own.
+In the widget's tab (#470) the notebook is a third-party frame, so the browser keeps that storage separately for each site that embeds it: a notebook edited in nemar.org's tab, or its pop-out, is not the one the reader sees when opening the notebook site on its own.
 Edits reach storage within about five seconds without a Save, so a pop-out reopens the latest ones.
 Opening the same dataset again never overwrites it: `open.js` checks for an existing notebook at that path first, and if one is already there, it is left alone and the reader is taken straight to it, edits intact.
 Deleting it, or starting over, is a plain file operation inside JupyterLite's own file browser; nothing here ever does it for the reader.
