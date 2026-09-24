@@ -44,7 +44,11 @@
 # the chat widget's own CSP variants went through
 # (frontend/browser-harness/serve.js's POLICIES) -- not attempted in this PR; see
 # docs/adr/0011-the-notebook-site.md, "Consequences".
+# X-Frame-Options is for a browser too old to read frame-ancestors, which
+# then refuses to embed this site at all; a browser that reads frame-ancestors
+# ignores X-Frame-Options when both are sent.
 /*
   Content-Security-Policy: frame-ancestors {{frame_ancestors}}
+  X-Frame-Options: SAMEORIGIN
   Referrer-Policy: no-referrer
   X-Content-Type-Options: nosniff

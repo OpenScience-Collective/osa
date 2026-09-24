@@ -399,8 +399,12 @@ def embed_origins(communities: dict[str, CommunityConfig], environment: str) -> 
 
     Raises :class:`NotebookSiteBuildError` for an origin a frame-ancestors source
     cannot express, such as a partial-label wildcard, rather than writing a
-    policy the browser would ignore.
+    policy the browser would ignore. ``CommunityConfig``'s own ``cors_origins``
+    rule already refuses those at config load; this is the second check, for a
+    loosened loader rule or an origin set some other way.
     """
+    if environment not in PLATFORM_EMBED_ORIGINS:
+        raise NotebookSiteBuildError(f"no platform embed origins declared for {environment!r}")
     origins: list[str] = []
     for origin in PLATFORM_EMBED_ORIGINS[environment]:
         if origin not in origins:

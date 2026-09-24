@@ -28,6 +28,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from scripts import build_notebook_site as site
 
@@ -605,6 +606,8 @@ class TestWriteHeaders:
         )
         assert site.FRAME_ANCESTORS_TOKEN not in text
         assert "'none'" not in text
+        # For a browser too old to read frame-ancestors: it refuses to embed at all.
+        assert "X-Frame-Options: SAMEORIGIN" in text
 
     def test_the_pages_served_open_path_is_not_cached(self, tmp_path: Path) -> None:
         """Cloudflare Pages answers /osa/open.html with a 308 to /osa/open, and a
@@ -648,6 +651,9 @@ class TestEmbedOrigins:
             "https://example.org",
         ]
 
+    def test_every_build_environment_declares_its_platform_hosts(self) -> None:
+        assert set(site.PLATFORM_EMBED_ORIGINS) == set(site.NOTEBOOK_ENVIRONMENTS)
+
     def test_only_develop_admits_loopback_and_the_preview_hosts(self) -> None:
         production = site.embed_origins({}, "production")
         develop = site.embed_origins({}, "develop")
@@ -656,15 +662,46 @@ class TestEmbedOrigins:
             assert origin in develop
             assert origin not in production
 
+    @pytest.mark.parametrize(
+        "origin",
+        [
+            "https://*-preview.example.org",  # a partial-label wildcard
+            'https://nemar.org"; frame-ancestors *',  # would end the header value
+            "https://nemar.org;evil",
+            "https://nemar.org\nX-Injected: 1",  # would start a new header line
+            "https://nemar.org/path",
+        ],
+    )
     def test_an_origin_frame_ancestors_cannot_express_is_refused(
-        self, assistants_dir: Path
+        self, assistants_dir: Path, origin: str
     ) -> None:
         _write_community(assistants_dir, "nemarlike", with_overlay=False)
         communities = site.discover_notebook_communities()
-        communities["nemarlike"].cors_origins = ["https://*-preview.example.org"]
+        communities["nemarlike"].cors_origins = [origin]
 
         with pytest.raises(site.NotebookSiteBuildError, match="frame-ancestors"):
             site.embed_origins(communities, "develop")
+
+    @pytest.mark.parametrize(
+        "origin",
+        [
+            "https://*-preview.example.org",
+            'https://nemar.org"; frame-ancestors *',
+            "https://nemar.org\nX-Injected: 1",
+        ],
+    )
+    def test_the_config_loader_refuses_such_an_origin_first(
+        self, assistants_dir: Path, origin: str
+    ) -> None:
+        """CommunityConfig's own cors_origins rule is the first guard; the check
+        in embed_origins is the second, for an origin that reaches it some other
+        way, or a loader rule loosened later."""
+        _write_community(assistants_dir, "nemarlike", with_overlay=False)
+        config = assistants_dir / "nemarlike" / "config.yaml"
+        config.write_text(config.read_text() + f"cors_origins:\n  - {json.dumps(origin)}\n")
+
+        with pytest.raises(ValidationError, match="Invalid CORS origin"):
+            site.discover_notebook_communities()
 
     def test_the_shipped_nemar_config_may_embed_from_its_own_sites(self) -> None:
         communities = site.discover_notebook_communities()
@@ -694,6 +731,12 @@ class TestInjectBridge:
 
     def test_a_page_without_a_single_head_end_is_refused(self, tmp_path: Path) -> None:
         self._page(tmp_path, "<html><body></body></html>")
+
+        with pytest.raises(site.NotebookSiteBuildError, match="exactly one </head>"):
+            site.inject_bridge(tmp_path)
+
+    def test_a_page_with_two_head_ends_is_refused(self, tmp_path: Path) -> None:
+        self._page(tmp_path, "<html><head></head><head></head></html>")
 
         with pytest.raises(site.NotebookSiteBuildError, match="exactly one </head>"):
             site.inject_bridge(tmp_path)

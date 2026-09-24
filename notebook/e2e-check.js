@@ -848,7 +848,7 @@ async function main() {
                 async () => {
                   const acked = (await messagesOf(host))
                     .slice(before)
-                    .some((m) => m?.source === 'osa-notebook' && m.type === 'theme' && m.scheme === scheme);
+                    .some((m) => m?.source === 'osa-notebook' && m.type === 'theme' && m.scheme === scheme && m.applied === true);
                   return acked && (await shows(scheme));
                 },
                 15_000,
@@ -875,6 +875,19 @@ async function main() {
         const refused = await openPage(`${refusedOrigin}/host.html?src=${encodeURIComponent(notebookLink)}`, {
           childTypes: ['worker', 'iframe'],
         });
+        // Silence only means refusal if the host page itself loaded and pointed
+        // its frame at the notebook; a host page that never loaded is silent too.
+        const hostLoaded = await pollUntil(
+          () =>
+            evaluate(
+              cdp,
+              refused.sessionId,
+              "Array.isArray(window.__messages) && document.getElementById('notebook')?.src.includes('/open.html')"
+            ),
+          15_000,
+          300
+        ).catch(() => false);
+        report(hostLoaded, `the page on ${refusedOrigin} loaded and pointed its frame at the notebook`);
         await Bun.sleep(15_000);
         const refusedMessages = await messagesOf(refused);
         report(
