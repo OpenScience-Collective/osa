@@ -61,7 +61,8 @@ const API = 'http://localhost/api';
 const HISTORY_KEY = 'osa-test-dataset-questions';
 
 const GENERAL = ['Find EEG datasets with resting state recordings', 'Tell me about dataset nm000132'];
-// NEMAR's own templates, in its order (src/assistants/nemar/config.yaml).
+// Templates shaped like NEMAR's (src/assistants/nemar/config.yaml), kept as a
+// fixture: the widget's rules are under test here, not NEMAR's wording.
 const TEMPLATES = [
   { text: 'What is {dataset_id} about, and how was it recorded?', needs_zarr: false },
   { text: "Plot 10 seconds of sub-{subject}'s {task} recording from {dataset_id}", needs_zarr: true },

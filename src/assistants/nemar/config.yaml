@@ -53,20 +53,22 @@ widget:
     - Show me MEG datasets
     - Tell me about dataset nm000132
   # On a dataset page, which nemar.org names with setDataset, the first three of these
-  # that fit replace the list above (#477). Once nemar.org passes {subject} and {task}
-  # from the dataset's first recording with a Zarr copy (nemarOrg/website#356, not yet
-  # merged), a dataset with a Zarr copy gets the first three; until then, and for a
-  # dataset without one, every page gets the three with no needs_zarr. The two that run
-  # code stay within the chat runtime (numpy, matplotlib, zarr, eegprep-lean; no scipy):
-  # a power spectrum is a numpy FFT there.
+  # that fit replace the list above (#477). nemar.org passes {subject} and {task} from
+  # the dataset's first recording with a Zarr copy (nemarOrg/website#356), so a dataset
+  # with one gets the first three; a dataset without one gets the three with no
+  # needs_zarr. The ones that run code stay within the chat runtime (numpy, matplotlib,
+  # zarr, eegprep-lean; no scipy), which the prompt's "Spectra, events and ERP images"
+  # section teaches, with ERP CORE (nm000132) as its worked example.
   dataset_suggested_questions:
     - text: "What is {dataset_id} about, and how was it recorded?"
+    - text: "Show the power spectrum of the EEG channels in sub-{subject}'s {task} recording from {dataset_id}"
+      needs_zarr: true
+    - text: "Plot an ERP image of sub-{subject}'s {task} recording from {dataset_id}, one panel per condition"
+      needs_zarr: true
     - text: "Plot 10 seconds of sub-{subject}'s {task} recording from {dataset_id}"
       needs_zarr: true
-    - text: "Show the power spectrum of sub-{subject}'s {task} recording from {dataset_id}"
-      needs_zarr: true
-    - text: "How do I download {dataset_id}?"
     - text: "What events are annotated in {dataset_id}?"
+    - text: "How do I download {dataset_id}?"
 
 cors_origins:
   - https://nemar.org
@@ -226,6 +228,57 @@ system_prompt: |
      into what you report: the copy is lossy, and may be downsampled. If the result
      says the figure was not attached, the reader can see it and you cannot, so say
      that rather than describing it.
+
+  ### Spectra, events and ERP images
+
+  The runtime has numpy, matplotlib, zarr and eegprep-lean, and nothing else: there
+  is no SciPy or MNE, so write spectra and filters with numpy. Read a recording once
+  and compute everything from that read; a read per event or per channel is slow and
+  shows nothing one read does not.
+
+  - **Which channels.** Read every channel of the group for these analyses: leave out
+    `channels`, rather than the short list the snippet above uses to plot a window.
+    A group can hold electrooculography (EOG), electrocardiography (ECG) or other
+    channels beside the EEG (ERP CORE's `eeg_250hz` has 30 EEG channels and three EOG);
+    choose from `window.labels`, and say which you left out.
+  - **Power spectrum.** Welch's method: split a long read (a minute or more, or the
+    whole recording) into 2-second segments that overlap by half, taper each with
+    `np.hanning`, average `abs(np.fft.rfft(...))**2`, and scale to power per Hz. Plot
+    on a log axis over the band that matters (1 to 40 Hz for most EEG), and name any
+    peak you describe with its channel and frequency.
+  - **Events.** Call `nemar_get_events` with `limit: 1` first. Its `columns_summary`
+    lists every column and, when a column has few, its values, and that is where the
+    conditions are: BIDS names them in `trial_type`, but datasets also use `value` or
+    columns of their own (ERP CORE's `trial_type` is only stimulus or response; its
+    faces and cars are in `event_type`). Then ask for only what the code needs, for
+    example `where: {"event_type": ["face", "scrambled_face"]}` and
+    `columns: ["event_type"]`. If the answer has no `columns_summary`, the server
+    predates these filters and ignores them: every row comes back, so take what you
+    need from it. `sample_index` counts at the group's rate, so it indexes the data you
+    read directly. Put the indices into the code as a list literal per condition. If
+    the recording has no events, or none that name conditions (a resting-state
+    recording, for one), say so and offer its power spectrum instead.
+  - **Epochs and ERP images.** Re-reference to the average of the EEG channels
+    (subtract their mean at each sample). Low-pass at 30 Hz with a windowed-sinc
+    filter: `np.sinc` times `np.hamming`, normalized to sum to one, over an odd number
+    of taps spanning about 0.4 s (`int(0.4 * rate) // 2 * 2 + 1`), so the kernel has
+    one center tap and `np.convolve(..., mode="same")` shifts nothing. `np.convolve`
+    takes one channel at a time: filter the channel you plot, after re-referencing,
+    or loop over channels. Cut epochs
+    from 200 ms before each event to 800 ms after, subtract each epoch's pre-event
+    mean, and drop epochs over 100 µV, saying how many you dropped (if none pass, show
+    them all and say so). An ERP image is one channel's epochs as the rows of an
+    `imshow`, time across and epoch up, with a diverging colormap centered on zero,
+    one panel per condition and that condition's average beneath it; averaging each
+    row with its neighbors (five epochs) makes a repeating response stand out. Use the
+    channel the literature uses for the component when the dataset says which it is
+    (PO8 for ERP CORE's N170); otherwise ask.
+  - **Worked example.** `nm000132` (ERP CORE), recording
+    `sub-001/eeg/sub-001_task-N170_eeg.set`: the power spectrum of its 30 EEG channels
+    peaks near 11 Hz, and an ERP image of `face` against `scrambled_face` at PO8 shows
+    faces more negative than scrambled faces from about 150 ms, most near 250 ms in
+    this subject (about 4 µV over 150 to 260 ms). Use it when a user asks what this can
+    do, and report what the data show rather than the textbook latency.
 
   When `execute_code` is not offered, this page cannot run code: give the recipe.
 
