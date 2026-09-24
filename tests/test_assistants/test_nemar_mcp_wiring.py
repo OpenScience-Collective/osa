@@ -15,6 +15,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import pytest
+from pydantic import HttpUrl
 
 from src.assistants.community import CommunityAssistant
 from src.core.config.community import CommunityConfig
@@ -40,7 +41,11 @@ class TestNemarConfig:
         extensions = _nemar_config().extensions
         assert extensions is not None
         assert [s.name for s in extensions.mcp_servers] == ["nemar"]
-        assert str(extensions.mcp_servers[0].url) == "https://mcp.nemar.org/mcp"
+        # Production's server, and staging's on develop, which test.nemar.org embeds (#480).
+        assert extensions.mcp_servers[0].url == {
+            "production": HttpUrl("https://mcp.nemar.org/mcp"),
+            "develop": HttpUrl("https://mcp-test.nemar.org/mcp"),
+        }
 
     def test_the_dead_python_plugins_are_gone(self) -> None:
         """`search_nemar_datasets` and `get_nemar_dataset_details` called
