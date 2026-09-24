@@ -13,6 +13,15 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ## [Unreleased]
 
+### Changed
+
+- **A larger capsule launcher at rest** (issue #490):
+  with the panel closed, a capsule community's chat circle is drawn 25% larger, 58px instead of 46px, so it is easier to see,
+  and settles to 46px as the panel opens, where the open layout is exactly as before;
+  with reduced motion it changes size at once.
+  A bubble community is unchanged.
+  See "Launcher" in `docs/community-widget.md`.
+
 ### Fixed
 
 - **NEMAR's ERP images use the events they name.** On nemar.org a model asked for every stimulus of ERP CORE's N170 recording in one call,
