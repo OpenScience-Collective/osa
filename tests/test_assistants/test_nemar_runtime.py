@@ -110,20 +110,25 @@ class TestTheShippedConfig:
         recording in one call, sorted the 320 rows into faces and scrambled faces while
         copying them into code, and averaged 282 "faces" of a recording that has 80. The
         prompt asks for one condition per call and an assert on each list's length, so a
-        copying slip stops the run; this keeps both instructions from being dropped."""
-        prompt = nemar.system_prompt
+        copying slip stops the run; this keeps both instructions from being dropped.
+        Compared with whitespace collapsed, so reflowing the prose does not break it."""
+        prompt = " ".join(nemar.system_prompt.split())
         assert "ask for one condition per call" in prompt
         assert 'where: {"event_type": ["face"]}' in prompt
         assert "Never sort one call's mixed rows into conditions by hand" in prompt
         assert "assert len(face) == 80" in prompt
+        # A condition longer than `limit` comes back truncated; without this, the
+        # assert fires and a model may "fix" it by matching the short list.
+        assert "when `truncated` is true" in prompt
 
     def test_the_prompt_leaves_out_non_eeg_channels_by_substring(
         self, nemar: CommunityConfig
     ) -> None:
         """ERP CORE labels its EOG channels HEOG_left, HEOG_right and VEOG_lower, so a
         model that excluded "HEOG" and "VEOG" by exact name kept all three."""
-        prompt = nemar.system_prompt
+        prompt = " ".join(nemar.system_prompt.split())
         assert "`HEOG_left`, `HEOG_right` and `VEOG_lower`" in prompt
+        assert "`EOG`, `ECG`, `EKG` or `EMG`" in prompt
         assert "anywhere in the label" in prompt
 
     def test_the_prompt_teaches_the_browser_lane(self, nemar: CommunityConfig) -> None:

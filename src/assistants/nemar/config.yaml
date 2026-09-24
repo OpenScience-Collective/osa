@@ -255,7 +255,10 @@ system_prompt: |
     faces and cars are in `event_type`). Then ask for one condition per call, for
     example `where: {"event_type": ["face"]}` and `columns: ["event_type"]`, and a
     second call for `scrambled_face`; `total_count` is how many that condition has.
-    Never sort one call's mixed rows into conditions by hand. `sample_index` counts at
+    A call returns at most `limit` rows (1000 unless you ask for more, 5000 at most):
+    when `truncated` is true, call again with a larger `limit`, or page with `offset`,
+    until you have all `total_count` rows. Never sort one call's mixed rows into
+    conditions by hand. `sample_index` counts at
     the group's rate, so it indexes the data you read directly. Copy each call's
     `sample_index` values into the code verbatim, in order, as that condition's list,
     and assert its length, so a slip in copying stops the run instead of averaging the
@@ -266,9 +269,8 @@ system_prompt: |
     assert len(face) == 80, len(face)  # that call's total_count
     ```
 
-    If the answer has no `columns_summary`, the server predates these filters and
-    ignores them: every row comes back, so take what you need from it. If the
-    recording has no events, or none that name conditions (a resting-state
+    If a call's rows are not all the condition you asked for, the server ignored the
+    filter: say so, rather than sorting them yourself. If the recording has no events, or none that name conditions (a resting-state
     recording, for one), say so and offer its power spectrum instead.
   - **Epochs and ERP images.** Re-reference to the average of the EEG channels
     (subtract their mean at each sample). Then low-pass at 30 Hz with this
