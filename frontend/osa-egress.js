@@ -445,6 +445,8 @@ export function buildRejectionGuardSource() {
     '        return',
     '',
     '    def describe(value):',
+    '        if value is None:',
+    '            return "Error", "a promise was rejected with no reason"',
     '        try:',
     '            name = getattr(value, "name", None)',
     '            message = getattr(value, "message", None)',

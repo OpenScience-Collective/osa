@@ -85,6 +85,8 @@
     '        return',
     '',
     '    def describe(value):',
+    '        if value is None:',
+    '            return "Error", "a promise was rejected with no reason"',
     '        try:',
     '            name = getattr(value, "name", None)',
     '            message = getattr(value, "message", None)',
@@ -140,8 +142,9 @@
         const notebook = panel.content;
         const indices = autorunIndices(notebook.model);
         if (indices.length === 0) {
-          post({ type: 'setup', status: 'none' });
+          // Setup is over once the guard is, with or without cells to run.
           await guarded;
+          post({ type: 'setup', status: 'none' });
           return;
         }
         post({ type: 'setup', status: 'running' });

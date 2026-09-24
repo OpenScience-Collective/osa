@@ -123,6 +123,16 @@ console.log('\nrun as the bridge runs it, a failed request raises instead of han
   );
   assert(plainValue === 'JsException: Error: just a string',
     `and a rejection with no error at all raises too, naming the value (got ${JSON.stringify(plainValue)})`);
+
+  const noReason = await settleWithin(
+    pyodide.runPythonAsync(
+      'import js\ntry:\n    await js.Promise.reject(js.undefined)\n' +
+        'except Exception as e:\n    out = f"{type(e).__name__}: {e}"\nout'
+    ),
+    10_000
+  );
+  assert(noReason === 'JsException: Error: a promise was rejected with no reason',
+    `and so does one with no reason at all, saying so rather than "None" (got ${JSON.stringify(noReason)})`);
 }
 
 console.log(`\n${'='.repeat(60)}`);
