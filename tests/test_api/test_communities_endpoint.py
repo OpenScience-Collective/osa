@@ -121,6 +121,17 @@ class TestCommunitiesEndpoint:
         }
         assert others and all(value == (None, None) for value in others.values()), others
 
+    def test_only_nemar_has_a_dark_appearance(self) -> None:
+        """NEMAR's widget follows the reader's light or dark setting (#469); every
+        other community stays on the 'light' default, which the API omits."""
+        client = _create_test_client()
+        data = client.get("/communities").json()
+
+        by_id = {community["id"]: community["widget"] for community in data}
+        assert by_id["nemar"].get("color_scheme") == "auto"
+        others = {cid: w.get("color_scheme") for cid, w in by_id.items() if cid != "nemar"}
+        assert others and all(value is None for value in others.values()), others
+
     def test_only_nemar_sets_its_own_text_colors(self) -> None:
         """NEMAR's home-page-teal widget needs dark text on its light surfaces, which
         every other community's widget does not: theme_text_color, accent_color and

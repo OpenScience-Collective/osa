@@ -43,6 +43,9 @@ widget:
   # "Ask me about NEMAR" (the greeting stays behind the click).
   launcher: capsule
   launcher_label: "Explore NEMAR"
+  # nemar.org has light and dark themes (following the device, or the reader's
+  # choice from its theme button, which it passes on with setColorScheme).
+  color_scheme: auto
   suggested_questions:
     - Find EEG datasets with resting state recordings
     - What datasets have HED annotations?

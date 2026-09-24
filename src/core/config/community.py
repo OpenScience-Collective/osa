@@ -1337,6 +1337,19 @@ class WidgetConfig(BaseModel):
     A community that never sets this renders exactly as it did before this field existed.
     """
 
+    color_scheme: Literal["light", "auto"] = "light"
+    """Whether the widget has a dark appearance (#469).
+
+    "light" (default) was the widget's only appearance before this field. "auto"
+    follows the reader's device setting, and a host page can also set light or dark
+    explicitly with ``OSAChatWidget.setColorScheme`` (for a site with its own theme
+    switch). In dark mode the panel, text and borders use the widget's dark palette,
+    and ``accent_color``, chosen to read on the white panel, gives way to
+    ``theme_color`` itself, or to a lighter shade of it when ``theme_color`` is too
+    dark to read on the dark panel (``darkAccentFor`` in the widget).
+    A community that never sets this renders exactly as it did before this field existed.
+    """
+
     launcher_label: str | None = Field(default=None, max_length=40)
     """Tooltip text shown beside the collapsed launcher.
 
@@ -1419,6 +1432,8 @@ class WidgetConfig(BaseModel):
             result["user_bubble_text_color"] = self.user_bubble_text_color
         if self.launcher == "capsule":
             result["launcher"] = self.launcher
+        if self.color_scheme != "light":
+            result["color_scheme"] = self.color_scheme
         if self.launcher_label:
             result["launcher_label"] = self.launcher_label
         return result

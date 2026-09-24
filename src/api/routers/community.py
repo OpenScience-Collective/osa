@@ -334,6 +334,10 @@ class WidgetConfigResponse(BaseModel):
     launcher_label: str | None = Field(
         default=None, description="Tooltip text beside the collapsed launcher"
     )
+    color_scheme: str | None = Field(
+        default=None,
+        description="'auto' to follow the reader's light or dark setting; omitted for the 'light' default",
+    )
 
 
 class OfferedModelResponse(BaseModel):
