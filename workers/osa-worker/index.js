@@ -69,9 +69,7 @@ function stripMountPrefix(pathname, hostname) {
   if (!MOUNTED_HOSTS.has(hostname)) {
     return pathname;
   }
-  if (pathname === MOUNT_PREFIX) {
-    return '/';
-  }
+  // The bare "/osa" never reaches here: fetch() redirects it to "/osa/" (#500).
   if (pathname.startsWith(`${MOUNT_PREFIX}/`)) {
     return pathname.slice(MOUNT_PREFIX.length);
   }
