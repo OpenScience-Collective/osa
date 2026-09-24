@@ -81,13 +81,14 @@ function fetchReturning(config) {
   };
 }
 
-function loadWidget({ fetch }) {
+function loadWidget({ fetch, reducedMotion = false }) {
   const window = new Window({
     url: 'http://localhost/page',
     settings: {
       disableJavaScriptFileLoading: true,
       disableCSSFileLoading: true,
       navigation: { disableChildFrameNavigation: true },
+      device: { prefersReducedMotion: reducedMotion ? 'reduce' : 'no-preference' },
     },
   });
   window.__OSA_TEST__ = true;
@@ -107,9 +108,9 @@ function loadWidget({ fetch }) {
 }
 
 // A NEMAR-like capsule widget with a dataset that has a Zarr copy, its config loaded.
-async function startCapsule({ dataset = { id: 'nm000103', zarr: true }, widget: widgetOverrides, before } = {}) {
+async function startCapsule({ dataset = { id: 'nm000103', zarr: true }, widget: widgetOverrides, before, reducedMotion } = {}) {
   const config = configResponse(widgetOverrides);
-  const { window, widget } = loadWidget({ fetch: fetchReturning(config) });
+  const { window, widget } = loadWidget({ fetch: fetchReturning(config), reducedMotion });
   widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'nemar', storageKey: `osa-test-nbtab-${configCounter}` });
   if (dataset) widget.setDataset(dataset);
   if (before) before(widget, window);
@@ -597,6 +598,29 @@ console.log('\nthe circles are 46px in the capsule, and a bubble\'s chat button 
   }
   assertEqual(window.getComputedStyle(q('.osa-send-btn')).width, '40px', 'the Send button, for scale, is 40px');
 
+  // At rest the chat circle is drawn 25% larger (#490), its box still 46px: 46 x
+  // 1.2609 is 58px, and the translate keeps its bottom-right corner on the box's.
+  const chatButton = q('.osa-launcher-capsule .osa-chat-button');
+  const resting = window.getComputedStyle(chatButton);
+  assertEqual([resting.scale, resting.translate], ['1.2609', '-6px -6px'], 'closed: the chat circle is drawn at 58px');
+  assertEqual([resting.width, resting.height], ['46px', '46px'], 'closed: from the same 46px box, so nothing else in the capsule moves');
+  assert(Math.round(46 * Number(resting.scale)) === 58 && Math.abs(23 * (Number(resting.scale) - 1) - 6) < 0.01,
+    'the scale is 58/46, and the 6px translate is exactly the growth past the box on each side');
+  const transition = resting.transition;
+  const timing = (property) => (transition.match(new RegExp(`(?:^|,\\s*)${property} ([0-9.]+m?s(?: [a-z-]+(?:\\([^)]*\\))?)?)`)) || [])[1];
+  assert(timing('scale') && timing('scale') === timing('translate'), `scale and translate share one duration and curve, so the corner holds still (${JSON.stringify(timing('scale'))}, ${JSON.stringify(timing('translate'))})`);
+  for (const selector of ['.osa-notebook-btn', '.osa-hpc-btn', '.osa-capsule-indicator']) {
+    const style = window.getComputedStyle(q(selector));
+    assert(!style.scale && !style.translate, `${selector} is not drawn larger at rest`);
+  }
+  chatButton.dispatchEvent(new window.Event('click', { bubbles: true }));
+  assert(q('.osa-chat-window').classList.contains('open'), 'sanity: the panel is open');
+  const open = window.getComputedStyle(chatButton);
+  assert(!open.scale && !open.translate, 'open: the chat circle is back to its 46px box, where the indicator is');
+  assertEqual(window.getComputedStyle(q('.osa-chat-window')).right, 'calc(20px + 46px + 7px + 12px)', 'open: the panel sits where it always has');
+  chatButton.dispatchEvent(new window.Event('click', { bubbles: true }));
+  assertEqual(window.getComputedStyle(chatButton).scale, '1.2609', 'closed again: drawn at 58px again');
+
   const config = configResponse({ launcher: undefined });
   delete config.widget.launcher;
   const bubble = loadWidget({ fetch: fetchReturning(config) });
@@ -606,6 +630,7 @@ console.log('\nthe circles are 46px in the capsule, and a bubble\'s chat button 
   await waitUntil(() => bubbleContainer.querySelector('.osa-chat-input input').placeholder === config.widget.placeholder, 'config loaded');
   const bubbleStyle = bubble.window.getComputedStyle(bubbleContainer.querySelector('.osa-chat-button'));
   assertEqual([bubbleStyle.width, bubbleStyle.height], ['56px', '56px'], 'a bubble\'s chat button stays 56px');
+  assert(!bubbleStyle.scale && !bubbleStyle.translate, 'and is drawn at its own size, not scaled like the capsule\'s at rest');
 }
 
 console.log('\nreduced motion: the stylesheet replaces every animation with a short fade');
@@ -619,9 +644,18 @@ console.log('\nreduced motion: the stylesheet replaces every animation with a sh
   }
   assert(!!reduced, 'there is a (prefers-reduced-motion: reduce) block');
   const selectors = reduced ? [...reduced.cssRules].map((r) => r.selectorText).join(' | ') : '';
-  for (const selector of ['.osa-capsule .osa-view', '.osa-capsule-indicator', '.osa-notebook-bar', '.osa-notebook-ring']) {
+  for (const selector of ['.osa-capsule .osa-view', '.osa-capsule-indicator', '.osa-notebook-bar', '.osa-notebook-ring', '.osa-launcher-capsule .osa-chat-button']) {
     assert(selectors.includes(selector), `it covers ${selector}`);
   }
+}
+
+console.log('\nreduced motion: the chat circle goes between its resting and open sizes at once (#490)');
+{
+  const { window, q } = await startCapsule({ reducedMotion: true });
+  assert(window.matchMedia('(prefers-reduced-motion: reduce)').matches, 'sanity: the device asks for reduced motion');
+  const style = window.getComputedStyle(q('.osa-launcher-capsule .osa-chat-button'));
+  assertEqual(style.scale, '1.2609', 'at rest it is still drawn at 58px');
+  assertEqual([style.transitionDuration, style.transitionDelay], ['1ms', '0ms'], 'but every transition on it, the resize included, is immediate');
 }
 
 console.log('\n' + '='.repeat(60));

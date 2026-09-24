@@ -529,7 +529,8 @@
 
     /* Inside the capsule, the flex parent positions the chat button; its own
        fixed/bottom/right (still true for a bubble-mode widget) would fight that.
-       46px, as are the other circles: about 15% larger than the Send button. */
+       46px, as are the other circles: about 15% larger than the Send button. At
+       rest it is drawn larger; see the rule after the next. */
     .osa-launcher-capsule .osa-chat-button {
       position: relative;
       bottom: auto;
@@ -541,12 +542,28 @@
       pointer-events: auto;
       box-sizing: border-box;
       border: 1.5px solid transparent;
-      transition: transform 0.2s, background-color 200ms ease, color 200ms ease, border-color 200ms ease, box-shadow 200ms ease;
+      transition: transform 0.2s, scale 280ms cubic-bezier(0.22, 1, 0.36, 1), translate 280ms cubic-bezier(0.22, 1, 0.36, 1),
+        background-color 200ms ease, color 200ms ease, border-color 200ms ease, box-shadow 200ms ease;
     }
 
     .osa-launcher-capsule .osa-chat-button svg {
       width: 21px;
       height: 21px;
+    }
+
+    /* At rest, with the panel closed, the chat circle is drawn 25% larger (58px,
+       its icon about 26px), so the launcher is easy to see; it settles to 46px as
+       the panel opens (#490). Drawn larger rather than laid out larger: its box
+       stays 46px, so the indicator, the pill, the other circles and the panel's
+       offset are the same open or closed, and nothing reflows while it shrinks.
+       The translate puts its bottom-right corner where the 46px box's is, 20px
+       from the window's edges, as the bubble's; since 23px x (58/46 - 1) is
+       exactly 6px, that corner holds still through the whole transition, because
+       scale and translate share one duration and curve. A browser without the
+       scale and translate properties draws today's 46px. */
+    .osa-chat-widget:not(.chat-open) .osa-launcher-capsule .osa-chat-button {
+      scale: 1.2609;
+      translate: -6px -6px;
     }
 
     /* Open: the indicator is the chat circle's fill, so the button itself is clear. */
@@ -728,10 +745,12 @@
       display: none;
     }
 
-    /* The collapsed label, beside the smaller chat circle. */
+    /* The collapsed label, beside the chat circle as it is drawn at rest (58px,
+       #490): the same 10px gap and vertical center the bubble's label has. It is
+       hidden while the panel is open, when the circle is 46px. */
     .osa-chat-widget.osa-capsule .osa-chat-tooltip {
-      right: 76px;
-      bottom: 24px;
+      right: 88px;
+      bottom: 29px;
     }
 
     @media (min-width: 601px) {
@@ -1012,7 +1031,8 @@
     }
 
     /* Reduced motion: every change is immediate except a short plain fade
-       between the views, and nothing turns or slides. */
+       between the views, and nothing turns or slides. The chat circle's resting
+       size (#490) is among them: it is 58px or 46px, never between. */
     @media (prefers-reduced-motion: reduce) {
       .osa-launcher-capsule::before,
       .osa-capsule-indicator,
