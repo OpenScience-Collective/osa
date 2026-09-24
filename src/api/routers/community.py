@@ -316,6 +316,17 @@ class WidgetConfigResponse(BaseModel):
     user_bubble_color: str | None = Field(
         default=None, description="The reader's own message bubbles, as hex #RRGGBB"
     )
+    theme_text_color: str | None = Field(
+        default=None,
+        description="Text and icons drawn on theme_color surfaces (header, buttons), as hex #RRGGBB",
+    )
+    accent_color: str | None = Field(
+        default=None,
+        description="theme_color used as a foreground on the white panel (links, borders), as hex #RRGGBB",
+    )
+    user_bubble_text_color: str | None = Field(
+        default=None, description="Text in the reader's own message bubbles, as hex #RRGGBB"
+    )
 
 
 class OfferedModelResponse(BaseModel):

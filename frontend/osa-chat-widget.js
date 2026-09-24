@@ -239,6 +239,12 @@
     .osa-chat-widget {
       --osa-primary: #2563eb;
       --osa-primary-dark: #1d4ed8;
+      /* Text/icons drawn ON a --osa-primary surface (header, launcher, Run, Send, Save). */
+      --osa-on-primary: #ffffff;
+      /* --osa-primary used as a FOREGROUND on the white panel (links, borders, focus
+         rings, accent-color). Tracks --osa-primary by default, so an unset accent_color
+         changes nothing: this is exactly today's behavior. */
+      --osa-accent: var(--osa-primary);
       --osa-bg: #ffffff;
       --osa-text: #1f2937;
       --osa-text-light: #6b7280;
@@ -260,7 +266,7 @@
       height: 56px;
       border-radius: 50%;
       background: var(--osa-primary);
-      color: white;
+      color: var(--osa-on-primary);
       border: none;
       cursor: pointer;
       box-shadow: var(--osa-shadow);
@@ -349,7 +355,7 @@
     .osa-chat-header {
       padding: 12px 16px;
       background: var(--osa-primary);
-      color: white;
+      color: var(--osa-on-primary);
       display: flex;
       align-items: center;
       gap: 12px;
@@ -440,7 +446,7 @@
     .osa-header-btn {
       background: transparent;
       border: none;
-      color: white;
+      color: var(--osa-on-primary);
       cursor: pointer;
       padding: 6px;
       border-radius: 6px;
@@ -572,7 +578,7 @@
     }
 
     .osa-message-content a {
-      color: var(--osa-primary);
+      color: var(--osa-accent);
       text-decoration: none;
     }
 
@@ -625,7 +631,7 @@
     }
 
     .osa-citation a {
-      color: var(--osa-primary);
+      color: var(--osa-accent);
       text-decoration: none;
     }
 
@@ -657,7 +663,7 @@
     }
 
     .osa-message-sources a:hover {
-      color: var(--osa-primary);
+      color: var(--osa-accent);
     }
 
     /* Copy button styles */
@@ -706,7 +712,7 @@
     }
 
     .osa-message-copy-btn:hover {
-      color: var(--osa-primary);
+      color: var(--osa-accent);
       background: rgba(0,0,0,0.05);
     }
 
@@ -808,7 +814,7 @@
 
     .osa-feedback-comment-input:focus {
       outline: none;
-      border-color: var(--osa-primary);
+      border-color: var(--osa-accent);
     }
 
     .osa-feedback-comment-actions {
@@ -833,7 +839,7 @@
 
     .osa-feedback-send {
       background: var(--osa-primary);
-      color: #fff;
+      color: var(--osa-on-primary);
       border-color: var(--osa-primary);
     }
 
@@ -898,7 +904,7 @@
     }
 
     .osa-chat-input input:focus {
-      border-color: var(--osa-primary);
+      border-color: var(--osa-accent);
     }
 
     .osa-chat-input input:disabled {
@@ -910,7 +916,7 @@
       height: 40px;
       border-radius: 50%;
       background: var(--osa-primary);
-      color: white;
+      color: var(--osa-on-primary);
       border: none;
       cursor: pointer;
       display: flex;
@@ -1081,7 +1087,7 @@
       height: 11px;
       margin: 0;
       cursor: pointer;
-      accent-color: var(--osa-primary);
+      accent-color: var(--osa-accent);
     }
 
     .osa-combined-footer label {
@@ -1101,7 +1107,7 @@
     }
 
     .osa-combined-footer .osa-footer-powered a:hover {
-      color: var(--osa-primary);
+      color: var(--osa-accent);
       text-decoration: underline;
     }
 
@@ -1226,7 +1232,7 @@
     }
 
     .osa-settings-input:focus {
-      border-color: var(--osa-primary);
+      border-color: var(--osa-accent);
     }
 
     .osa-settings-select {
@@ -1243,7 +1249,7 @@
     }
 
     .osa-settings-select:focus {
-      border-color: var(--osa-primary);
+      border-color: var(--osa-accent);
     }
 
     .osa-settings-footer {
@@ -1276,7 +1282,7 @@
 
     .osa-settings-btn-save {
       background: var(--osa-primary);
-      color: white;
+      color: var(--osa-on-primary);
     }
 
     .osa-settings-btn-save:hover {
@@ -1394,7 +1400,7 @@
     .osa-tool-actions button.osa-tool-run {
       background: var(--osa-primary);
       border-color: var(--osa-primary);
-      color: #ffffff;
+      color: var(--osa-on-primary);
     }
 
     .osa-tool-autorun {
@@ -1464,7 +1470,7 @@
     }
 
     .osa-execution-local-note {
-      color: var(--osa-primary);
+      color: var(--osa-accent);
       font-weight: 600;
       margin: 6px 0;
     }
@@ -1496,7 +1502,7 @@
     .osa-rerun-buttons button.osa-rerun-run {
       background: var(--osa-primary);
       border-color: var(--osa-primary);
-      color: #ffffff;
+      color: var(--osa-on-primary);
     }
 
     .osa-rerun-buttons button:disabled {
@@ -2318,6 +2324,18 @@
         }
         if (w.user_bubble_color != null && !_userSetKeys.has('userBubbleColor')) {
           CONFIG.userBubbleColor = w.user_bubble_color;
+          changed = true;
+        }
+        if (w.theme_text_color != null && !_userSetKeys.has('themeTextColor')) {
+          CONFIG.themeTextColor = w.theme_text_color;
+          changed = true;
+        }
+        if (w.accent_color != null && !_userSetKeys.has('accentColor')) {
+          CONFIG.accentColor = w.accent_color;
+          changed = true;
+        }
+        if (w.user_bubble_text_color != null && !_userSetKeys.has('userBubbleTextColor')) {
+          CONFIG.userBubbleTextColor = w.user_bubble_text_color;
           changed = true;
         }
         if (w.logo_url != null && !_userSetKeys.has('logo')) {
@@ -3267,6 +3285,26 @@
       container.style.setProperty('--osa-user-bg', CONFIG.userBubbleColor);
     }
 
+    // Text/icons drawn ON a theme_color surface (header, launcher, Run, Send, Save).
+    // Left at the stylesheet's own white default when unset, so a community that never
+    // names this sees no change.
+    if (CONFIG.themeTextColor && /^#[0-9a-fA-F]{6}$/.test(CONFIG.themeTextColor)) {
+      container.style.setProperty('--osa-on-primary', CONFIG.themeTextColor);
+    }
+
+    // theme_color used as a FOREGROUND on the white panel (links, borders, focus rings,
+    // native checkbox accent-color). Left at the stylesheet's own `var(--osa-primary)`
+    // default when unset, so it tracks theme_color exactly as it always has.
+    if (CONFIG.accentColor && /^#[0-9a-fA-F]{6}$/.test(CONFIG.accentColor)) {
+      container.style.setProperty('--osa-accent', CONFIG.accentColor);
+    }
+
+    // Text in the reader's own bubbles, painted on user_bubble_color (or the platform
+    // blue, if that is unset too). Left at the stylesheet's own white default otherwise.
+    if (CONFIG.userBubbleTextColor && /^#[0-9a-fA-F]{6}$/.test(CONFIG.userBubbleTextColor)) {
+      container.style.setProperty('--osa-user-text', CONFIG.userBubbleTextColor);
+    }
+
     // Apply disclaimer colors if configured (must be valid CSS color: hex, named, rgb, hsl)
     const cssColorPattern = /^(#[0-9a-fA-F]{3,8}|[a-zA-Z]+|rgba?\([^)]+\)|hsla?\([^)]+\))$/;
     if (CONFIG.disclaimerColor && cssColorPattern.test(CONFIG.disclaimerColor.trim())) {
@@ -3900,7 +3938,7 @@
             </div>
             <div class="osa-settings-field" id="osa-settings-custom-model-field" style="display: none;">
               <label class="osa-settings-label" for="osa-settings-custom-model">
-                Model name, requires your own <a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer" style="color: var(--osa-primary); text-decoration: underline;">OpenRouter</a> key
+                Model name, requires your own <a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer" style="color: var(--osa-accent); text-decoration: underline;">OpenRouter</a> key
               </label>
               <input
                 type="text"

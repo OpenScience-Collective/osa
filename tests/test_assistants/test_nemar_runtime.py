@@ -133,34 +133,78 @@ class TestTheShippedConfig:
         assert max_run_mb == limits["MAX_RUN_BYTES"] / (1024 * 1024)
 
 
-def _contrast_with_white(hex_color: str) -> float:
-    """WCAG 2 contrast ratio of white text on `hex_color`."""
-
+def _luminance(hex_color: str) -> float:
     def channel(value: int) -> float:
         c = value / 255
         return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
 
     r, g, b = (int(hex_color[i : i + 2], 16) for i in (1, 3, 5))
-    luminance = 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
-    return 1.05 / (luminance + 0.05)
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+
+
+def _contrast(hex_a: str, hex_b: str) -> float:
+    """WCAG 2 contrast ratio between two hex colors, order-independent."""
+    la, lb = _luminance(hex_a), _luminance(hex_b)
+    lighter, darker = max(la, lb), min(la, lb)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def _contrast_with_white(hex_color: str) -> float:
+    """WCAG 2 contrast ratio of white text on `hex_color`."""
+    return _contrast("#ffffff", hex_color)
+
+
+def _hover_shade(hex_color: str, amount: int = 25) -> str:
+    """Mirrors applyWidgetConfig()'s hover derivation in osa-chat-widget.js: subtract
+    `amount` from each channel, floored at 0."""
+    r, g, b = (int(hex_color[i : i + 2], 16) for i in (1, 3, 5))
+    return "#" + "".join(f"{max(0, c - amount):02x}" for c in (r, g, b))
 
 
 class TestTheWidgetColors:
-    """The widget draws white text on both colors: the header and buttons on
-    theme_color, the reader's own messages on user_bubble_color. nemar.org's brand teal
-    (#5bbad5) is only 2.2:1 against white, so NEMAR ships it darkened, and this keeps
-    either color from drifting back below the 4.5:1 that body text needs."""
+    """NEMAR's home page search button is nemar.org's brand teal (#5bbad5) with dark
+    text (#04121f): white text on that teal is only 2.2:1, well below the 4.5:1 body
+    text needs, which is why the widget matches the button with theme_text_color and
+    user_bubble_text_color instead of the platform's white. accent_color reuses the
+    OLDER, darkened teal (#257a92) as a foreground on the widget's white panel, where
+    it needs its own 4.5:1 against white rather than against a surface."""
 
-    def test_both_colors_keep_white_text_readable(self, nemar: CommunityConfig) -> None:
-        assert nemar.widget is not None
-        for name in ("theme_color", "user_bubble_color"):
-            color = getattr(nemar.widget, name)
-            assert color is not None, f"NEMAR sets no {name}"
-            assert _contrast_with_white(color) >= 4.5, (name, color)
-
-    def test_the_brand_teal_itself_would_fail(self) -> None:
-        """The check can go red: the undarkened brand teal is below the bar."""
+    def test_the_brand_teal_itself_fails_white_text(self) -> None:
+        """Documents why NEMAR does not draw white text on its surfaces (the previous
+        design's own darkened teal existed only to fix this for white text; this
+        design fixes it by pairing the undarkened teal with dark text instead)."""
         assert _contrast_with_white("#5bbad5") < 4.5
+
+    def test_theme_and_bubble_text_are_readable_on_their_own_surfaces(
+        self, nemar: CommunityConfig
+    ) -> None:
+        assert nemar.widget is not None
+        for surface_name, text_name in (
+            ("theme_color", "theme_text_color"),
+            ("user_bubble_color", "user_bubble_text_color"),
+        ):
+            surface = getattr(nemar.widget, surface_name)
+            text = getattr(nemar.widget, text_name)
+            assert surface is not None, f"NEMAR sets no {surface_name}"
+            assert text is not None, f"NEMAR sets no {text_name}"
+            assert _contrast(text, surface) >= 4.5, (surface_name, text_name, surface, text)
+
+    def test_theme_text_color_stays_readable_on_the_hover_shade(
+        self, nemar: CommunityConfig
+    ) -> None:
+        """The widget derives its hover background by subtracting 25 per channel from
+        theme_color (osa-chat-widget.js, applyWidgetConfig); theme_text_color must
+        still read on THAT shade too, not just on theme_color itself."""
+        assert nemar.widget is not None
+        assert nemar.widget.theme_color is not None
+        assert nemar.widget.theme_text_color is not None
+        hover = _hover_shade(nemar.widget.theme_color)
+        assert _contrast(nemar.widget.theme_text_color, hover) >= 4.5, hover
+
+    def test_accent_color_is_readable_on_the_white_panel(self, nemar: CommunityConfig) -> None:
+        assert nemar.widget is not None
+        assert nemar.widget.accent_color is not None
+        assert _contrast_with_white(nemar.widget.accent_color) >= 4.5
 
 
 class TestTheLockOverlay:

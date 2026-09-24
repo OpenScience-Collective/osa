@@ -1381,6 +1381,54 @@ console.log('\nthe reader\'s bubbles take a community color only when its config
   }
 }
 
+console.log('\nthree more widget colors: theme_text_color, accent_color and user_bubble_text_color');
+{
+  // Stylesheet defaults: white text on a theme_color surface, and the accent
+  // tracks theme_color itself, both exactly today's behavior.
+  assert(SOURCE.includes('--osa-on-primary: #ffffff;'), 'the stylesheet default for on-primary text stays white');
+  assert(SOURCE.includes('--osa-accent: var(--osa-primary);'), 'the stylesheet default for the accent tracks theme_color');
+  const cases = [
+    {
+      label: 'all three set',
+      widget: {
+        theme_color: '#5bbad5', theme_text_color: '#04121f',
+        user_bubble_color: '#5bbad5', user_bubble_text_color: '#04121f',
+        accent_color: '#257a92',
+      },
+      onPrimary: '#04121f', userText: '#04121f', accent: '#257a92',
+    },
+    {
+      label: 'theme_color only, the three new fields unset',
+      widget: { theme_color: '#008a79' },
+      onPrimary: '', userText: '', accent: '',
+    },
+    {
+      label: 'malformed values for all three',
+      widget: {
+        theme_color: '#257a92', theme_text_color: 'red;x:y',
+        user_bubble_color: '#257a92', user_bubble_text_color: 'not-a-color',
+        accent_color: '12345',
+      },
+      onPrimary: '', userText: '', accent: '',
+    },
+  ];
+  for (const [index, { label, widget: widgetConfig, onPrimary, userText, accent }] of cases.entries()) {
+    const config = { default_model: 'm', offered_models: [], widget: widgetConfig, client_tools: [], runtime: null };
+    const fetch = async (url) => {
+      if (String(url).endsWith('/health')) return new Response(JSON.stringify({ status: 'healthy' }));
+      return new Response(JSON.stringify(config), { headers: { 'content-type': 'application/json' } });
+    };
+    const { window, widget } = loadWidget({ fetch });
+    widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: `osa-test-textcolors-${index}` });
+    widget.init();
+    const container = window.document.querySelector('.osa-chat-widget');
+    await waitUntil(() => container.style.getPropertyValue('--osa-primary') === widgetConfig.theme_color, `the theme is applied (${label})`);
+    assertEqual(container.style.getPropertyValue('--osa-on-primary'), onPrimary, `${label}: on-primary text is ${onPrimary || 'left at the default'}`);
+    assertEqual(container.style.getPropertyValue('--osa-user-text'), userText, `${label}: bubble text is ${userText || 'left at the default'}`);
+    assertEqual(container.style.getPropertyValue('--osa-accent'), accent, `${label}: accent is ${accent || 'left at the default (tracks theme_color)'}`);
+  }
+}
+
 console.log('\n' + '='.repeat(60));
 console.log(`Total: ${passed + failed}   Passed: ${passed}   Failed: ${failed}`);
 clearTimeout(watchdog);
