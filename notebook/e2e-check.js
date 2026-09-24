@@ -559,8 +559,49 @@ async function main() {
       }
     }
 
+    /** In the notebook's own outputs, not only the page's text: JupyterLab renders
+     *  the cells in view, so once the cells after it scroll the read cell out of
+     *  view, its output is in the model but no longer in the DOM. */
+    /** Per code cell, from the notebook model: how many figures it rendered, and
+     *  any error it raised. The page cannot say either reliably once the notebook
+     *  is longer than the viewport, for the same reason as the sentinel below. */
+    async function cellOutputs(sessionId) {
+      return evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const cells = window.jupyterapp.shell.currentWidget.content.model.cells;
+          const found = [];
+          for (let i = 0; i < cells.length; i++) {
+            const cell = cells.get(i).toJSON();
+            if (cell.cell_type !== 'code') continue;
+            const outputs = cell.outputs || [];
+            found.push({
+              index: i,
+              images: outputs.filter((o) => o.data && o.data['image/png']).length,
+              errors: outputs.filter((o) => o.output_type === 'error').map((o) => o.ename + ': ' + o.evalue),
+            });
+          }
+          return found;
+        })()`
+      );
+    }
+
     async function sentinelPresent(sessionId) {
-      return evaluate(cdp, sessionId, `document.body.innerText.includes(${JSON.stringify(SENTINEL)})`);
+      const sentinel = JSON.stringify(SENTINEL);
+      return evaluate(
+        cdp,
+        sessionId,
+        `(() => {
+          const cells = window.jupyterapp?.shell?.currentWidget?.content?.model?.cells;
+          if (cells) {
+            for (let i = 0; i < cells.length; i++) {
+              if (JSON.stringify(cells.get(i).toJSON().outputs || []).includes(${sentinel})) return true;
+            }
+          }
+          return document.body.innerText.includes(${sentinel});
+        })()`
+      );
     }
 
     // Steps 1-4 below are wrapped so ANY failure in them (almost always a
@@ -604,15 +645,19 @@ async function main() {
       const readLineOk = await sentinelPresent(first.sessionId);
       report(readLineOk, `the read line ("${SENTINEL}") is present`);
 
-      const figureCount = await evaluate(
-        cdp,
-        first.sessionId,
-        "document.querySelectorAll('.jp-OutputArea-output img').length"
+      const outputs = await cellOutputs(first.sessionId);
+      const figures = outputs.map((cell) => cell.images);
+      report(
+        figures.some((n) => n > 0) && figures.every((n) => n <= 1),
+        `a rendered figure, and no cell rendering one twice (figures per code cell: ${JSON.stringify(figures)})`
       );
-      report(figureCount === 1, `exactly one rendered figure (got ${figureCount})`);
 
+      const errors = outputs.flatMap((cell) => cell.errors.map((e) => `cell ${cell.index}: ${e}`));
       const noTraceback = await evaluate(cdp, first.sessionId, "!document.body.innerText.includes('Traceback')");
-      report(noTraceback, 'no error output (no "Traceback" anywhere on the page)');
+      report(
+        errors.length === 0 && noTraceback,
+        `no error output (${errors.length ? errors.join('; ') : noTraceback ? 'none' : 'a "Traceback" on the page'})`
+      );
 
       if (screenshotPath) {
         // Scroll the figure into view first: a bare captureScreenshot only sees
