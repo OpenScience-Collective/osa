@@ -17,9 +17,10 @@ the version being released and start a new `[Unreleased]` section above it.
 
 - **A three-icon capsule launcher** (issue #436): `launcher: capsule` replaces the
   single chat bubble with a vertical stack of three circular icons -- chat (unchanged),
-  notebook, and an HPC placeholder -- that expand upward above the chat button once it
-  opens; the chat button itself never moves, and a community that never sets `launcher`
-  (the `bubble` default) renders exactly as it did before this feature existed. A new
+  notebook, and a high-performance computing (HPC) placeholder -- that expand upward
+  above the chat button once it opens; the chat button itself never moves, and a
+  community that never sets `launcher` (the `bubble` default) renders exactly as it did
+  before this feature existed. A new
   `OSAChatWidget.setDataset({ id, zarr })` call (or `setDataset(null)`) tells the widget
   which dataset, if any, is on screen, driving the notebook icon through four states
   (no dataset, Zarr unknown, no Zarr copy, active); the active state opens
