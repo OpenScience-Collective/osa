@@ -15,6 +15,23 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Added
 
+- **Three more widget colors, and NEMAR's home page teal in the widget.**
+  `theme_text_color`, `accent_color` and `user_bubble_text_color` join `theme_color` and
+  `user_bubble_color`: a community can now separate the color painted as a surface (the
+  header, the launcher, Run, Send) from the text drawn on it, and from that same color
+  used as a FOREGROUND on the widget's white panel (links, borders, focus rings,
+  `accent-color`), each optional and defaulting to today's behavior when unset. NEMAR's
+  widget now matches nemar.org's home page search button exactly: `theme_color` and
+  `user_bubble_color` are the button's own `#5bbad5` with the button's own dark text
+  (`#04121f`) rather than the platform's white, and `accent_color` keeps the earlier
+  darkened teal (`#257a92`) as the foreground color on the white panel. The logo's brain
+  and electrodes move from the old dark-header white-and-gold to nemar.org's own
+  light-header treatment (navy and a deeper gold).
+- **`preload_on: first_message`**, a third value alongside `first_run` and `widget_open`:
+  boots the browser Python runtime as soon as the reader sends their first message,
+  rather than waiting for a Run gate, so the download overlaps the model's own first turn
+  instead of following it. Unlike `widget_open`, a reader who only opens the chat and
+  never sends anything is never charged for the download. NEMAR now uses this value.
 - **An assistant can run Python in the reader's browser** (epic #429). A community that
   declares `client_tools` and a `runtime` block offers the model `execute_code`: the
   server ends the run with a `tool_request`, the widget runs the code in a sealed Pyodide
