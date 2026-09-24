@@ -134,7 +134,8 @@ OSAChatWidget.setColorScheme('dark');  // or 'light', or 'auto' to hand it back 
 - Called before `init()`, the panel opens in that scheme with no flash of the other one.
 - It reaches an open pop-out too, and a pop-out opened afterward starts in it.
 - `'dark'` works for any community, including one that never set `color_scheme`: a host page with a dark theme of its own may always ask for a dark widget.
-- Anything other than `'light'`, `'dark'` or `'auto'` is ignored with a `console.warn`; `setConfig({colorScheme})` takes the same three values.
+- Anything other than `'light'`, `'dark'` or `'auto'` is ignored with a `console.warn` naming the accepted values; `setConfig({colorScheme})` takes the same three.
+- A browser without `matchMedia` leaves `'auto'` light, with a warning; Safari before 14, whose media queries offer only `addListener`, still follows the device.
 
 ### What the dark panel changes
 
@@ -143,19 +144,26 @@ Raised surfaces (the panel, the launcher, the tooltips) also get a one-pixel edg
 
 Two configured colors give way on the dark panel, because they were chosen to read on white:
 
-- **`accent_color`.** The dark panel uses `theme_color` itself as its foreground (NEMAR's teal: 8.0:1 on the dark panel, where `#257a92` would be 3.6:1).
-  A `theme_color` too dark to reach 4.5:1 there is mixed with white, in 10% steps, until it does; the platform blue becomes `#5182ef` (4.9:1).
+- **`accent_color`.** The dark panel uses `theme_color` itself as its foreground.
+  It is measured on both dark surfaces an accent is read on, the panel (`#111827`) and the assistant's bubble (`#1f2937`), where links sit.
+  NEMAR's teal reads at 8.0:1 and 6.6:1, where `#257a92` would be 3.6:1 and 3.0:1.
+  A `theme_color` under 4.5:1 on either is mixed with white, in 10% steps, until it reads on both; the platform blue becomes `#6692f1` (5.9:1 and 4.9:1).
+  Every color reads before it reaches white: black stops at `#999999`.
 - **`disclaimerColor` and `disclaimerBackground`.** The dark panel's disclaimer uses its own amber pair.
 
 `theme_color`, `theme_text_color` and the reader's bubble colors are unchanged: they are surfaces with their own text, and read the same on either panel.
 
 ### What every community gets
 
-Before this change, a dark host page could darken parts of any community's light panel: the browser drew the chat input, the Settings fields and the scrollbars in the host's dark scheme, and text with no color of its own took the host page's light text color.
+Before this change, a dark host page could darken parts of any community's light panel:
+the browser drew the chat input, the Settings fields and the scrollbars in the host's dark scheme,
+and text with no color of its own took the host page's light text color.
 Every widget now declares `color-scheme: light` (or `dark` under `osa-dark`) and gives its own text and fields explicit colors.
 On a light host page the only visible difference is that typed text, and any panel text that used to inherit the host page's color, is the widget's own near-black `#1f2937`.
 
-Testing: `frontend/test-widget-color-scheme.js` runs the real widget source in a happy-dom window, and `frontend/browser-harness/color-scheme-check.mjs` checks the browser's own drawing of the fields in Chrome, against a dark host page (see the harness README).
+Testing: `frontend/test-widget-color-scheme.js` runs the real widget source in a happy-dom window,
+and `frontend/browser-harness/color-scheme-check.mjs --serve` checks the browser's own drawing of the fields in Chrome, against a dark host page (see the harness README).
+Both run in CI.
 
 ## Launcher: the capsule, the notebook icon, and the high-performance computing (HPC) placeholder
 
