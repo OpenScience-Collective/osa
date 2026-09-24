@@ -206,6 +206,38 @@ console.log('\nthe capsule stacks above the chat window (its icon tooltips must 
   assert(capsuleZ > windowZ, `the capsule's z-index (${capsuleZ}) is higher than the chat window's (${windowZ}), so its tooltips always paint on top`);
 }
 
+console.log('\nresizing the chat window still works when it is nested in the capsule');
+{
+  // setupResize computes new width/height purely from mouse deltas against
+  // chatWindow's own offsetWidth/offsetHeight; it never reads the capsule or
+  // the chat button's position, so nesting the chat button inside the capsule
+  // should not affect it. Proven directly rather than assumed.
+  const config = configResponse({ launcher: 'capsule' });
+  const { window, widget } = loadWidget({ fetch: fetchReturning(config) });
+  widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: 'osa-test-resize' });
+  widget.init();
+  const container = window.document.querySelector('.osa-chat-widget');
+  await waitUntil(() => container.querySelector('.osa-launcher-capsule'), 'capsule exists');
+  const chatWindow = container.querySelector('.osa-chat-window');
+  const handle = container.querySelector('.osa-resize-handle');
+  assert(!!handle, 'the resize handle still exists inside the (now capsule-nested) chat window');
+
+  // happy-dom has no real layout engine, so offsetWidth/offsetHeight report 0
+  // rather than the CSS-declared 440x680; setupResize reads those directly, so
+  // seed them the way a real layout would, then drag from that starting point.
+  Object.defineProperty(chatWindow, 'offsetWidth', { value: 440, configurable: true });
+  Object.defineProperty(chatWindow, 'offsetHeight', { value: 680, configurable: true });
+
+  handle.dispatchEvent(new window.MouseEvent('mousedown', { clientX: 500, clientY: 500, bubbles: true }));
+  // Resize from the top-left corner: moving the mouse LEFT and UP grows the
+  // window, since it is anchored bottom-right (see setupResize's own comment).
+  window.document.dispatchEvent(new window.MouseEvent('mousemove', { clientX: 460, clientY: 470, bubbles: true }));
+  window.document.dispatchEvent(new window.MouseEvent('mouseup', { bubbles: true }));
+
+  assertEqual(chatWindow.style.width, '480px', 'dragging the handle resizes the window width');
+  assertEqual(chatWindow.style.height, '710px', 'and the height, even nested inside the capsule');
+}
+
 console.log('\nbubble mode renders today\'s markup: nothing about it changes');
 {
   const { window, widget } = loadWidget({ fetch: fetchReturning(configResponse()) });
