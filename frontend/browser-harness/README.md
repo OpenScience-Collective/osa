@@ -304,6 +304,8 @@ bun frontend/browser-harness/first-paint-check.mjs --serve
 starts `widget_e2e.py --nemar` and `widget_e2e.py --color-scheme auto` on free ports and checks what a reader sees while the widget starts (#475): a recorder installed before any page script samples the chat button, and whether the widget is dark, on every animation frame, and the community config request is held for 600 ms, about what it takes over the network on test.nemar.org.
 Every frame in which the launcher is visible must show the community's look, on a first visit (which must keep it hidden until the config arrives) and on a reload in the same profile (which must draw it at once, from the remembered config).
 Three runs: NEMAR on a light device and on a dark one, and the harness's bubble community, with `color_scheme: auto`, on a dark device.
+Each NEMAR run then opens and closes the panel, sampling the capsule's chat circle on every frame from just before the click (#490):
+it must go from its resting 58px to 46px and back through frames in between, keep its bottom-right corner 20px from the window's edges in every frame, and leave the panel and the indicator where they were before the change.
 It is what CI runs, beside the light and dark check; pass a running server's base URL instead of `--serve` to check that one.
 
 Measured 2026-09-24 in Chrome 153:
@@ -311,6 +313,8 @@ Measured 2026-09-24 in Chrome 153:
 - before the fix, on test.nemar.org, sampled every 50 ms: the 56px default bubble in `#2563eb` for about 450 ms on every load, a reload included, then the capsule, fading to NEMAR's teal over another 250 ms
 - after it, 42 of 42: every first visit's launcher first shown between 650 and 665 ms, just after the held config, already in the community's look (NEMAR's at 46px in its teal, dark on the dark device; the bubble at 56px, dark); every reload's between 19 and 27 ms, in the remembered look; no visible frame in any run shows anything else
 - the widget as it was on `develop` fails 12 of its checks, and each of these fails it too: leaving transitions on while waiting (the reveal fades from blue), setting the colors after the widget joins the page (a reload fades from blue), not remembering the config, and not waiting on a first visit
+- the capsule's resize (#490), 62 checks in all with it: each click sampled 44 frames, 7 of them between 58px and 46px, with the chat circle's corner 20px from both edges in every one, the panel 85px from the right edge and the indicator exactly behind the circle once open;
+  without the translate the resting circle's corner sits at 14px, a translate on another curve than the scale drifts it by up to 1.3px mid-way, and no transition goes from one size to the other in a single frame, and each of the three fails the check
 
 ### The pop-out
 

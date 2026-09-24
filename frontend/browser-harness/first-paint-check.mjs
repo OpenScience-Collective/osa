@@ -17,7 +17,9 @@
  * Three runs: NEMAR (a capsule, its theme color, color_scheme auto) on a light
  * device and on a dark one, whose first frame must already be dark; and the
  * harness's own bubble community with color_scheme auto on a dark device, so the
- * bubble's path is drawn and timed in a real browser too.
+ * bubble's path is drawn and timed in a real browser too. Each NEMAR run then
+ * opens and closes the panel, sampling the capsule's chat circle on every frame
+ * as it goes from its resting 58px to 46px and back (#490).
  *
  * Usage:
  *   bun frontend/browser-harness/first-paint-check.mjs --serve
@@ -63,6 +65,56 @@ const RECORDER = `(() => {
   requestAnimationFrame(tick);
 })();`;
 
+// The capsule's chat circle across a click (#490): drawn at 58px at rest, it settles
+// to its 46px box as the panel opens and grows back as it closes, with its
+// bottom-right corner 20px from the window's edges in every frame, where the
+// bubble's is. Sampled on every animation frame from just before the click, so a
+// snap (no frame between the two sizes) or a corner that drifts is caught.
+const SAMPLE_CLICK = `(async () => {
+  const button = document.querySelector('.osa-launcher-capsule .osa-chat-button');
+  const samples = [];
+  const sample = (t0) => {
+    const r = button.getBoundingClientRect();
+    samples.push({ t: Math.round(performance.now() - t0), w: +r.width.toFixed(2),
+      right: +(innerWidth - r.right).toFixed(2), bottom: +(innerHeight - r.bottom).toFixed(2) });
+  };
+  const t0 = performance.now();
+  sample(t0);
+  button.click();
+  await new Promise((resolve) => {
+    const tick = () => {
+      sample(t0);
+      if (performance.now() - t0 < 700) requestAnimationFrame(tick); else resolve();
+    };
+    requestAnimationFrame(tick);
+  });
+  const panel = document.querySelector('.osa-chat-window').getBoundingClientRect();
+  const indicator = document.querySelector('.osa-capsule-indicator').getBoundingClientRect();
+  const r = button.getBoundingClientRect();
+  return { samples, open: document.querySelector('.osa-chat-window').classList.contains('open'),
+    panelRight: +(innerWidth - panel.right).toFixed(2),
+    indicator: { dx: +(indicator.left - r.left).toFixed(2), dy: +(indicator.top - r.top).toFixed(2), w: +indicator.width.toFixed(2) } };
+})()`;
+
+async function checkOpenAndClose(evaluate, label) {
+  const near = (a, b) => Math.abs(a - b) <= 0.6;
+  for (const step of ['open', 'close']) {
+    const result = await evaluate(SAMPLE_CLICK);
+    const { samples } = result;
+    const [from, to] = step === 'open' ? [58, 46] : [46, 58];
+    report(result.open === (step === 'open'), `${label}, ${step}: the click ${step === 'open' ? 'opens' : 'closes'} the panel`, result.open);
+    report(near(samples[0].w, from) && near(samples.at(-1).w, to), `${label}, ${step}: the chat circle goes from ${from}px to ${to}px`, [samples[0], samples.at(-1)]);
+    const between = samples.filter((s) => s.w > 46.6 && s.w < 57.4);
+    report(between.length > 0, `${label}, ${step}: through ${between.length} frames in between, not a snap`, samples.slice(0, 6));
+    const drifted = samples.filter((s) => !near(s.right, 20) || !near(s.bottom, 20));
+    report(drifted.length === 0, `${label}, ${step}: its bottom-right corner stays 20px from the window's edges in every one of ${samples.length} frames`, drifted.slice(0, 5));
+    if (step === 'open') {
+      report(near(result.panelRight, 20 + 46 + 7 + 12), `${label}, open: the panel sits beside the 46px capsule, where it always has`, result.panelRight);
+      report(near(result.indicator.dx, 0) && near(result.indicator.dy, 0) && near(result.indicator.w, 46), `${label}, open: the indicator is exactly behind the chat circle`, result.indicator);
+    }
+  }
+}
+
 // One run: a first visit and a reload in a fresh profile. `community` names the
 // config's community (the request held is `${origin}/api/<community>`); `capsule`
 // says which launcher it has; `device` is the emulated color scheme.
@@ -86,7 +138,7 @@ async function check(base, { label, community, capsule, device }) {
     const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
     const { sessionId: s } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
     const evaluate = async (expression) => {
-      const r = await cdp.send('Runtime.evaluate', { expression, returnByValue: true }, s);
+      const r = await cdp.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, s);
       if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
       return r.result.value;
     };
@@ -123,7 +175,7 @@ async function check(base, { label, community, capsule, device }) {
       })()`);
       report(!!final, `${pass}: the launcher is there once the config has arrived`, final);
       if (!final) continue;
-      report(final.capsule === capsule && final.w === (capsule ? 46 : 56), `${pass}: ${capsule ? 'the capsule, at 46px' : 'the bubble, at 56px'}`, final);
+      report(final.capsule === capsule && final.w === (capsule ? 58 : 56), `${pass}: ${capsule ? 'the capsule, its chat circle drawn at its resting 58px' : 'the bubble, at 56px'}`, final);
       report(final.dark === (device === 'dark'), `${pass}: ${device === 'dark' ? 'dark, following the dark device' : 'light'}`, final.dark);
       report(frames.length > 0, `${pass}: the launcher was visible in ${frames.length} frames`);
       const wrong = frames.filter((f) => f.w !== final.w || f.bg !== final.bg || f.dark !== final.dark);
@@ -140,6 +192,7 @@ async function check(base, { label, community, capsule, device }) {
       }
     }
     report(heldCount >= 2, `${label}: the config request was held on both loads (${heldCount})`);
+    if (capsule) await checkOpenAndClose(evaluate, label);
     await cdp.send('Target.closeTarget', { targetId });
   } finally {
     cdp?.close();
