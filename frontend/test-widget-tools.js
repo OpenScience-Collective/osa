@@ -1725,6 +1725,60 @@ console.log('\nan embedder\'s own color survives the server config, for every co
   }
 }
 
+console.log('\na failed first_message preload is retried by the next run, which reports it');
+{
+  const config = {
+    default_model: 'm', offered_models: [], widget: {},
+    client_tools: [{ name: 'execute_code', runtime: 'python', requires_permission: true }],
+    runtime: { python: { ...LOCAL_RUNTIME_CONFIG, preload_on: 'first_message' } },
+  };
+  const fetch = async (url) => {
+    const s = String(url);
+    if (s.endsWith('/health')) return new Response(JSON.stringify({ status: 'healthy' }));
+    if (s.endsWith('/chat')) {
+      return new Response(JSON.stringify({ message: { content: 'hi' }, session_id: 's1' }),
+        { headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify(config), { headers: { 'content-type': 'application/json' } });
+  };
+  const { window, api, widget } = loadWidgetWithRealBundle({ fetch });
+  widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: 'osa-test-failed-preload' });
+  widget.init();
+  // The real test worker that fails to boot every time (real boot protocol, a real
+  // WebAssembly-style failure message), and a gate that answers RUN without a real
+  // click, since this test drives execute() directly rather than a rendered gate.
+  await useLocalController({ api, window }, {
+    worker: 'failing',
+    runtimeConfig: { ...LOCAL_RUNTIME_CONFIG, preload_on: 'first_message' },
+    gate: async () => window.OSARuntime.GATE_DECISION.RUN,
+  });
+  const runtime = api.getBrowserRuntime();
+  assertEqual(runtime.state, 'idle', 'sanity: nothing has booted yet');
+
+  // The REAL first-message path: sendMessage's own click handler, not a direct
+  // call to the boot-trigger function.
+  const container = window.document.querySelector('.osa-chat-widget');
+  const input = container.querySelector('.osa-chat-input input');
+  input.value = 'hello';
+  click(window, container.querySelector('.osa-send-btn'));
+
+  await waitUntil(() => runtime.state === 'failed', 'the first-message preload boot fails');
+  assertEqual(runtime.failure && runtime.failure.message, 'no WebAssembly.instantiate',
+    'with the failing worker\'s own reported reason');
+  await waitUntil(() => !container.querySelector('.osa-send-btn').disabled, 'the send settles before the next run');
+
+  // The model now asks to run code. execute() calls boot() again (osa-runtime.js's
+  // boot() has no special case for FAILED, so a FAILED runtime retries exactly like
+  // a fresh one); the same failing worker fails it again, and the controller reports
+  // that as THIS run's result rather than throwing out of answerToolRequest.
+  const result = await api.answerToolRequest(container, {
+    call_id: 'r1', tool: 'execute_code', args: { code: 'print(1)', description: 'd' },
+  }, 0);
+  assert(result.status === 'error' && result.stderr.includes('[runtime] the code could not be run:'),
+    `the run reports the retried boot's failure through the controller's own wording (got ${JSON.stringify(result)})`);
+  assertEqual(runtime.state, 'failed', 'boot() retried from FAILED and failed again the same way, against the same worker');
+}
+
 console.log('\n' + '='.repeat(60));
 console.log(`Total: ${passed + failed}   Passed: ${passed}   Failed: ${failed}`);
 clearTimeout(watchdog);
