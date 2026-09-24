@@ -28,12 +28,27 @@ const ENVIRONMENTS = {
   develop: { dataset: 'xx099903', sentinel: '(4, 2000) mV 1000.0' },
 };
 
+const USAGE = 'usage: bun notebook/e2e-check.js [--environment production|develop] [screenshot-path]';
+
+// Strict on purpose: an unrecognized option (a typo, or a flag this script does
+// not have) must fail, never be taken as the screenshot path while the check
+// quietly runs against production instead of the environment that was meant.
 function parseArgs(argv) {
   let environment = 'production';
   let screenshotPath = null;
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--environment') environment = argv[++i];
-    else if (screenshotPath === null) screenshotPath = argv[i];
+    const arg = argv[i];
+    if (arg === '--environment') {
+      environment = argv[++i];
+    } else if (arg.startsWith('--environment=')) {
+      environment = arg.slice('--environment='.length);
+    } else if (arg.startsWith('-')) {
+      throw new Error(`unrecognized option ${arg}; ${USAGE}`);
+    } else if (screenshotPath === null) {
+      screenshotPath = arg;
+    } else {
+      throw new Error(`unexpected extra argument ${arg}; ${USAGE}`);
+    }
   }
   if (!Object.hasOwn(ENVIRONMENTS, environment)) {
     throw new Error(`--environment must be one of ${Object.keys(ENVIRONMENTS).join(', ')}, got ${environment}`);
