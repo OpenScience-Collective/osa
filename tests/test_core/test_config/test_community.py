@@ -2493,6 +2493,33 @@ class TestNotebookConfig:
                 extra_field="nope",
             )
 
+    @pytest.mark.parametrize(
+        "hostile_pattern",
+        [
+            "^.*$",  # matches everything, including every probe below
+            r'^[a-z0-9"]{1,20}$',  # a quote reachable directly in the character class
+            r"^[a-z0-9\\]{1,20}$",  # a backslash reachable directly
+            r"^[\s\S]{1,20}$",  # a newline and a space both reachable
+        ],
+    )
+    def test_a_pattern_that_would_accept_a_hostile_probe_is_rejected(
+        self, hostile_pattern: str
+    ) -> None:
+        """Defense in depth (docs/adr/0011-the-notebook-site.md): a dataset id is
+        substituted unescaped into the starter's Python source, so a pattern
+        this loose must never ship, independent of notebook/open.js's own
+        client-side generic shape guard."""
+        with pytest.raises(ValidationError, match="hostile probe"):
+            NotebookConfig(starter="notebook/starter.ipynb", dataset_pattern=hostile_pattern)
+
+    def test_nemars_own_pattern_accepts_no_hostile_probe(self) -> None:
+        """The one pattern actually shipped today; a regression here would be
+        NEMAR's own config failing to load, not merely a test fixture."""
+        config = NotebookConfig(
+            starter="notebook/starter.ipynb", dataset_pattern="^(nm|ds|on)[0-9]{6}$"
+        )
+        assert config.dataset_pattern == "^(nm|ds|on)[0-9]{6}$"
+
 
 class TestCommunityConfigNotebook:
     """Tests for CommunityConfig's notebook/runtime.python.pyodide_version cross-check."""
