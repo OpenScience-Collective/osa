@@ -45,7 +45,7 @@ uv run pre-commit install
 
 ```bash
 # Set up your API key
-# Anthropic (what the platform itself runs on): https://console.anthropic.com/settings/keys
+# Anthropic (what the platform itself runs on): https://platform.claude.com/settings/keys
 # OpenRouter (still supported for BYOK): https://openrouter.ai/keys
 osa init
 
@@ -110,7 +110,7 @@ OSA uses a YAML-driven registry to configure community assistants. Each communit
 # Directory structure
 src/assistants/
     hed/config.yaml      # HED assistant configuration
-    bids/config.yaml     # BIDS assistant (planned)
+    bids/config.yaml     # BIDS assistant
 ```
 
 ### Adding a New Community
