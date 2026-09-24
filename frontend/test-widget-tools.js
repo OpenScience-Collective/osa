@@ -1780,7 +1780,7 @@ console.log('\na failed first_message preload is retried by the next run, which 
 }
 
 console.log('\nsending the first message while the runtime bundle is still loading is not lost: it boots once the bundle resolves');
-{
+try {
   const config = {
     default_model: 'm', offered_models: [], widget: {},
     client_tools: [{ name: 'execute_code', runtime: 'python', requires_permission: true }],
@@ -1851,6 +1851,13 @@ console.log('\nsending the first message while the runtime bundle is still loadi
   await waitUntil(() => runtime.state !== 'idle',
     'and the catch-up in startBrowserTools boots it right away, since the first message was already sent');
   await waitUntil(() => runtime.state === 'ready', 'the (test-worker) boot completes');
+} catch (err) {
+  // waitUntil throws on timeout, and this block's own awaits are otherwise
+  // uncaught: without this, a real regression here crashes the whole process
+  // (Bun exits on the uncaught exception) and hides every test that would have
+  // run after it, rather than reporting one tallied FAIL like the rest of the
+  // file. The message is the same one an uncaught throw would have shown.
+  assert(false, err.message);
 }
 
 console.log('\n' + '='.repeat(60));
