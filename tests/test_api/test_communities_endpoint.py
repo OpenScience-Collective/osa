@@ -121,6 +121,28 @@ class TestCommunitiesEndpoint:
         }
         assert others and all(value == (None, None) for value in others.values()), others
 
+    def test_only_nemar_has_dataset_questions(self) -> None:
+        """NEMAR is the only community with dataset-page questions (#477); the API omits
+        the field for every other community, so their widgets keep the general list."""
+        client = _create_test_client()
+        data = client.get("/communities").json()
+
+        by_id = {community["id"]: community["widget"] for community in data}
+        nemar = by_id["nemar"]["dataset_suggested_questions"]
+        assert nemar and all(set(q) == {"text", "needs_zarr"} for q in nemar), nemar
+        assert all("{dataset_id}" in q["text"] for q in nemar), nemar
+        # A dataset without a Zarr copy still gets three questions.
+        assert sum(1 for q in nemar if not q["needs_zarr"]) >= 3, nemar
+        # A question with a {subject} or {task} blank is one nemar.org fills from a
+        # recording with a Zarr copy, so it must need one.
+        assert all(
+            q["needs_zarr"] for q in nemar if "{subject}" in q["text"] or "{task}" in q["text"]
+        ), nemar
+        others = {
+            cid: w.get("dataset_suggested_questions") for cid, w in by_id.items() if cid != "nemar"
+        }
+        assert others and all(value is None for value in others.values()), others
+
     def test_only_nemar_has_a_dark_appearance(self) -> None:
         """NEMAR's widget follows the reader's light or dark setting (#469); every
         other community stays on the 'light' default, which the API omits."""

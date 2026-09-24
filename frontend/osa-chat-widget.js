@@ -52,6 +52,11 @@
     initialMessage: 'Hi! I\'m the Open Science Assistant. How can I help you today?',
     placeholder: 'Ask a question...',
     suggestedQuestions: [],
+    // Suggestions for a page that names a dataset with setDataset (#477): templates
+    // {text, needs_zarr} with {dataset_id}, {subject} and {task} blanks, filled from
+    // what the page passed (see datasetQuestions). Empty keeps suggestedQuestions on
+    // every page.
+    datasetSuggestedQuestions: [],
     // The launcher's shape (#436): 'bubble' is today's single chat button; 'capsule'
     // adds a notebook and an HPC placeholder icon that expand above it. Loaded from
     // the community config the same way theme_color is, unless the embedder sets it.
@@ -185,7 +190,8 @@
   // end at its default, not at what the last load remembered. Null once used, or
   // when nothing was remembered.
   let displayDefaults = null;
-  const DISPLAY_KEYS = ['title', 'initialMessage', 'placeholder', 'suggestedQuestions', 'themeColor',
+  const DISPLAY_KEYS = ['title', 'initialMessage', 'placeholder', 'suggestedQuestions',
+    'datasetSuggestedQuestions', 'themeColor',
     'userBubbleColor', 'themeTextColor', 'accentColor', 'userBubbleTextColor', 'logo', 'launcher',
     'launcherLabel', 'colorScheme'];
   // The header avatar as createWidget draws it, for a config that drops its logo.
@@ -226,10 +232,12 @@
   // preload_on: first_message rather than waiting for a run.
   let firstMessageSent = false;
   // The dataset on screen (#436), set by the embedder's page script via setDataset:
-  // null when there is none (never set, or explicitly cleared), or {id, zarr} where
-  // zarr is true, false, or undefined (not known yet). Read by the capsule's notebook
-  // icon; may be set before init() runs, since the DOM does not exist to render into
-  // yet -- the value just sits here until applyLauncherMode/renderLauncherIcons reads it.
+  // null when there is none (never set, or explicitly cleared), or {id, zarr, subject,
+  // task} where zarr is true, false, or undefined (not known yet), and subject and
+  // task are BIDS labels or undefined (#477). Read by the capsule's notebook icon and
+  // the dataset-page suggestions (datasetQuestions); may be set before init() runs,
+  // since the DOM does not exist to render into yet -- the value just sits here until
+  // renderLauncherIcons and renderSuggestions read it.
   let currentDataset = null;
   // The capsule's open tab (#470): 'chat' or 'notebook'. Only a capsule widget
   // ever has a notebook tab; a bubble widget is always on chat.
@@ -1510,6 +1518,29 @@
       border-color: #d1d5db;
     }
 
+    /* Mid-conversation, a dataset new to the conversation (#477): a short row of
+       chips above the input rather than the opening screen's full-width list. */
+    .osa-suggestions-compact {
+      padding: 8px 16px;
+    }
+
+    .osa-suggestions-compact .osa-suggestions-label {
+      margin-bottom: 6px;
+      text-transform: none;
+      letter-spacing: 0;
+    }
+
+    .osa-suggestions-compact .osa-suggestions-list {
+      flex-direction: row;
+      flex-wrap: wrap;
+    }
+
+    .osa-suggestions-compact .osa-suggestion {
+      padding: 5px 10px;
+      font-size: 12px;
+      border-radius: 14px;
+    }
+
     .osa-chat-input {
       padding: 12px 16px;
       border-top: 1px solid var(--osa-border);
@@ -2348,6 +2379,12 @@
     return typeof id === 'string' && /^[A-Za-z0-9._-]{1,64}$/.test(id);
   }
 
+  // A BIDS label, as setDataset's subject and task are (#477): alphanumeric, no
+  // "sub-" or "task-" prefix.
+  function isValidBidsLabel(label) {
+    return typeof label === 'string' && /^[A-Za-z0-9]{1,64}$/.test(label);
+  }
+
   // Accepts only an absolute https: URL, or http: on localhost/127.0.0.1 for tests
   // (the notebook site itself is served over plain http in a local dev server).
   // Returns the normalized URL (always ending in '/') or null if invalid.
@@ -2936,7 +2973,19 @@
         console.warn('[OSA] setDataset: invalid zarr value, ignoring:', value.zarr);
         return;
       }
-      currentDataset = { id: value.id, zarr };
+      // subject and task only fill question blanks (#477), so a bad one is dropped
+      // alone: refusing the whole call would keep the previous dataset on screen, and
+      // with it the notebook icon, for a mistake in a fact that gates nothing.
+      const facts = {};
+      for (const fact of ['subject', 'task']) {
+        if (value[fact] === undefined) continue;
+        if (isValidBidsLabel(value[fact])) {
+          facts[fact] = value[fact];
+        } else {
+          console.warn(`[OSA] setDataset: invalid ${fact} label, dropping it:`, value[fact]);
+        }
+      }
+      currentDataset = { id: value.id, zarr, subject: facts.subject, task: facts.task };
     } else {
       console.warn('[OSA] setDataset: invalid value, ignoring:', value);
       return;
@@ -2955,6 +3004,29 @@
     }
     renderNotebookStatus(container);
     renderLauncherIcons(container);
+    if (container.querySelector('.osa-suggestions')) renderSuggestions(container);
+    forwardDatasetToPopout();
+  }
+
+  // An open pop-out has no host page of its own to call setDataset, so it is told
+  // the dataset on screen when it opens (window.__OSA_DATASET__, in openPopout) and
+  // again whenever the host page names another, as applyColorSchemeEverywhere does
+  // for the color scheme (#477: its suggestions are about the dataset).
+  function forwardDatasetToPopout() {
+    if (!chatPopup || chatPopup.closed) return;
+    let popupWidget = null;
+    try {
+      popupWidget = chatPopup.OSAChatWidget;
+    } catch (e) {
+      console.warn('[OSA] Could not reach the pop-out to pass the dataset on:', e);
+      return;
+    }
+    if (!popupWidget || typeof popupWidget.setDataset !== 'function') return;
+    try {
+      popupWidget.setDataset(currentDataset);
+    } catch (e) {
+      console.error('[OSA] The pop-out failed to apply the dataset:', e);
+    }
   }
 
   // Copy text to clipboard
@@ -3223,7 +3295,10 @@
   // so a malformed saved reply cannot crash widget initialization.
   function normalizePersistedMessage(msg) {
     if (!isValidMessage(msg)) return null;
-    if (msg.role !== 'assistant') return { ...msg };
+    if (msg.role !== 'assistant') {
+      const { dataset, ...rest } = msg;
+      return isValidDatasetId(dataset) ? { ...rest, dataset } : rest;
+    }
     return {
       ...msg,
       citations: Array.isArray(msg.citations)
@@ -3642,6 +3717,10 @@
     }
     if (w.suggested_questions != null && !_userSetKeys.has('suggestedQuestions')) {
       CONFIG.suggestedQuestions = w.suggested_questions;
+      changed = true;
+    }
+    if (w.dataset_suggested_questions != null && !_userSetKeys.has('datasetSuggestedQuestions')) {
+      CONFIG.datasetSuggestedQuestions = w.dataset_suggested_questions;
       changed = true;
     }
     if (w.theme_color != null && !_userSetKeys.has('themeColor')) {
@@ -6041,16 +6120,72 @@
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
+  // The dataset-page suggestions (#477) for the dataset on screen, in the community's
+  // order: each template with its blanks filled from setDataset's facts, skipping one
+  // with a blank the page did not fill, and one marked needs_zarr unless the dataset
+  // has a Zarr copy.
+  const DATASET_BLANK_RE = /\{([^{}]*)\}/g;
+  function datasetQuestions(dataset) {
+    if (!dataset || !Array.isArray(CONFIG.datasetSuggestedQuestions)) return [];
+    const facts = new Map([
+      ['dataset_id', dataset.id],
+      ['subject', dataset.subject],
+      ['task', dataset.task],
+    ]);
+    const questions = [];
+    for (const template of CONFIG.datasetSuggestedQuestions) {
+      if (!template || typeof template.text !== 'string') continue;
+      if (template.needs_zarr === true && dataset.zarr !== true) continue;
+      let filled = true;
+      const text = template.text.replace(DATASET_BLANK_RE, (blank, name) => {
+        const value = facts.get(name);
+        if (typeof value !== 'string') {
+          filled = false;
+          return blank;
+        }
+        return value;
+      });
+      if (filled) questions.push(text);
+    }
+    return questions;
+  }
+
+  // Whether the reader has already sent a message from this dataset's page in this
+  // conversation (sendMessage records it on the message), so the compact row is
+  // offered once per dataset and not on every page load after.
+  function datasetInConversation(id) {
+    return messages.some((m) => m.role === 'user' && m.dataset === id);
+  }
+
+  // What the suggestions area shows, or null: on the opening screen, up to three
+  // questions about the dataset on screen, or the general list when there is no
+  // dataset or no template fits; mid-conversation, a compact row of up to two for a
+  // dataset the conversation has not been on yet (#477).
+  function suggestionsToShow() {
+    if (isLoading) return null;
+    const aboutDataset = datasetQuestions(currentDataset);
+    if (messages.length <= 1) {
+      const questions = aboutDataset.length ? aboutDataset.slice(0, 3) : CONFIG.suggestedQuestions;
+      return questions.length ? { questions, label: 'Try asking:', compact: false } : null;
+    }
+    if (aboutDataset.length && !datasetInConversation(currentDataset.id)) {
+      return { questions: aboutDataset.slice(0, 2), label: `About ${currentDataset.id}:`, compact: true };
+    }
+    return null;
+  }
+
   // Render suggestions
   function renderSuggestions(container) {
     const suggestionsEl = container.querySelector('.osa-suggestions');
     const suggestionsListEl = container.querySelector('.osa-suggestions-list');
-
-    // Only show suggestions if there's just the initial message
-    if (messages.length <= 1 && !isLoading) {
-      suggestionsListEl.innerHTML = CONFIG.suggestedQuestions.map(q =>
+    const labelEl = container.querySelector('.osa-suggestions-label');
+    const shown = suggestionsToShow();
+    if (shown) {
+      suggestionsListEl.innerHTML = shown.questions.map(q =>
         `<button class="osa-suggestion">${escapeHtml(q)}</button>`
       ).join('');
+      if (labelEl) labelEl.textContent = shown.label;
+      suggestionsEl.classList.toggle('osa-suggestions-compact', shown.compact);
       suggestionsEl.style.display = 'block';
     } else {
       suggestionsEl.style.display = 'none';
@@ -6421,7 +6556,10 @@
 
     // Track message indices to avoid corruption on error
     const userMessageIndex = messages.length;
-    messages.push({ role: 'user', content: question });
+    // The dataset on screen when it was sent (#477): what datasetInConversation reads.
+    const userMessage = { role: 'user', content: question };
+    if (currentDataset) userMessage.dataset = currentDataset.id;
+    messages.push(userMessage);
     let assistantMessageCreated = false;
 
     renderMessages(container);
@@ -6772,8 +6910,12 @@
 
       // Serialize config safely (escape script-breaking sequences)
       let configJson;
+      let datasetJson;
       try {
         configJson = JSON.stringify(popupConfig)
+          .replace(/</g, '\\u003c')
+          .replace(/>/g, '\\u003e');
+        datasetJson = JSON.stringify(currentDataset)
           .replace(/</g, '\\u003c')
           .replace(/>/g, '\\u003e');
       } catch (e) {
@@ -6810,6 +6952,7 @@
     // Pre-configure widget before it initializes
     window.__OSA_CHAT_CONFIG__ = ${configJson};
     window.__OSA_HOST_COLOR_SCHEME__ = ${JSON.stringify(hostColorScheme)};
+    window.__OSA_DATASET__ = ${datasetJson};
   <\/script>
   <script>
     // Widget code (will pick up __OSA_CHAT_CONFIG__ if present)
@@ -6875,6 +7018,9 @@
       CONFIG.colorScheme = window.__OSA_HOST_COLOR_SCHEME__;
       _userSetKeys.add('colorScheme');
     }
+    // A pop-out is told the dataset its opener had on screen (openPopout, #477);
+    // null there means none. Validated exactly as a host page's setDataset is.
+    if (window.__OSA_DATASET__ !== undefined) applySetDataset(window.__OSA_DATASET__);
 
     // The community's look from the last load, before anything is drawn (#475).
     // With none, on a first visit, the launcher waits for the config, briefly,
@@ -7109,7 +7255,7 @@
       return { ...CONFIG };
     },
     // The dataset on screen (#436): null (no dataset, or not known yet) or
-    // {id, zarr}. May be called before init(); see applySetDataset.
+    // {id, zarr, subject, task} (#477). May be called before init(); see applySetDataset.
     setDataset: function(value) {
       applySetDataset(value);
     },

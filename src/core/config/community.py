@@ -1248,6 +1248,60 @@ class BudgetConfig(BaseModel):
         return self
 
 
+DATASET_QUESTION_BLANKS = ("dataset_id", "subject", "task")
+"""The blanks a dataset question may use, filled from the host page's ``setDataset``."""
+
+_BLANK_RE = re.compile(r"\{([^{}]*)\}")
+
+
+class DatasetSuggestedQuestion(BaseModel):
+    """A suggested question for a dataset page (#477): a template the widget fills
+    with the facts the host page passes in ``OSAChatWidget.setDataset``.
+
+    ``{dataset_id}`` is always known on a dataset page and must appear, so the
+    question the reader sends names its dataset. ``{subject}`` and ``{task}`` are
+    BIDS labels the page may or may not know; a template with a blank the page did
+    not fill is not shown.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    text: str = Field(..., max_length=200)
+    """The question, with ``{dataset_id}``, ``{subject}`` or ``{task}`` blanks."""
+
+    needs_zarr: bool = False
+    """Shown only when the dataset has a Zarr copy: set it on a question that runs
+    code against a recording, since the browser runtime reads recordings from Zarr."""
+
+    @field_validator("text", mode="before")
+    @classmethod
+    def validate_text(cls, v: object) -> object:
+        """Strip whitespace, refuse markup, and allow only the known blanks."""
+        if not isinstance(v, str):
+            return v
+        v = v.strip()
+        if not v:
+            msg = "a dataset question's text must not be empty"
+            raise ValueError(msg)
+        if "<" in v or ">" in v:
+            msg = "a dataset question must be plain text (no '<' or '>')"
+            raise ValueError(msg)
+        unknown = sorted({b for b in _BLANK_RE.findall(v) if b not in DATASET_QUESTION_BLANKS})
+        if unknown:
+            msg = (
+                f"unknown blank(s) {', '.join('{' + b + '}' for b in unknown)} in {v!r}; "
+                f"a dataset question may use {', '.join('{' + b + '}' for b in DATASET_QUESTION_BLANKS)}"
+            )
+            raise ValueError(msg)
+        if "{" in _BLANK_RE.sub("", v) or "}" in _BLANK_RE.sub("", v):
+            msg = f"unmatched '{{' or '}}' in {v!r}"
+            raise ValueError(msg)
+        if "{dataset_id}" not in v:
+            msg = f"a dataset question must name its dataset with {{dataset_id}}: {v!r}"
+            raise ValueError(msg)
+        return v
+
+
 class WidgetConfig(BaseModel):
     """Widget display configuration for frontend embedding.
 
@@ -1269,6 +1323,16 @@ class WidgetConfig(BaseModel):
 
     suggested_questions: list[str] = Field(default_factory=list)
     """Clickable suggestion buttons shown below the initial message."""
+
+    dataset_suggested_questions: list[DatasetSuggestedQuestion] = Field(default_factory=list)
+    """Suggestions for a dataset page, in place of ``suggested_questions`` (#477).
+
+    When the host page names a dataset with ``setDataset``, the opening screen shows
+    up to three of these whose blanks the page filled, in this order, and
+    ``suggested_questions`` everywhere else. Mid-conversation, a dataset the
+    conversation has not been on yet gets up to two, in a compact row above the
+    input. Unset, every page shows ``suggested_questions`` as before.
+    """
 
     theme_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
     """Primary theme color as a hex code (e.g., '#008a79').
@@ -1408,6 +1472,17 @@ class WidgetConfig(BaseModel):
             raise ValueError(msg)
         return cleaned
 
+    @field_validator("dataset_suggested_questions")
+    @classmethod
+    def validate_dataset_suggested_questions(
+        cls, v: list[DatasetSuggestedQuestion]
+    ) -> list[DatasetSuggestedQuestion]:
+        """Enforce the same maximum as ``suggested_questions``."""
+        if len(v) > 10:
+            msg = f"Too many dataset suggested questions ({len(v)}). Maximum is 10."
+            raise ValueError(msg)
+        return v
+
     def resolve(self, community_name: str, logo_url: str | None = None) -> dict[str, Any]:
         """Return widget config with defaults applied.
 
@@ -1423,6 +1498,10 @@ class WidgetConfig(BaseModel):
             "suggested_questions": self.suggested_questions,
             "logo_url": self.logo_url or logo_url,
         }
+        if self.dataset_suggested_questions:
+            result["dataset_suggested_questions"] = [
+                q.model_dump() for q in self.dataset_suggested_questions
+            ]
         if self.theme_color:
             result["theme_color"] = self.theme_color
         if self.user_bubble_color:

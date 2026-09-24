@@ -51,7 +51,22 @@ widget:
     - Find EEG datasets with resting state recordings
     - What datasets have HED annotations?
     - Show me MEG datasets
-    - Tell me about dataset nm000219
+    - Tell me about dataset nm000132
+  # On a dataset page, which nemar.org names with setDataset, the first three of these
+  # that fit replace the list above (#477). Once nemar.org passes {subject} and {task}
+  # from the dataset's first recording with a Zarr copy (nemarOrg/website#356, not yet
+  # merged), a dataset with a Zarr copy gets the first three; until then, and for a
+  # dataset without one, every page gets the three with no needs_zarr. The two that run
+  # code stay within the chat runtime (numpy, matplotlib, zarr, eegprep-lean; no scipy):
+  # a power spectrum is a numpy FFT there.
+  dataset_suggested_questions:
+    - text: "What is {dataset_id} about, and how was it recorded?"
+    - text: "Plot 10 seconds of sub-{subject}'s {task} recording from {dataset_id}"
+      needs_zarr: true
+    - text: "Show the power spectrum of sub-{subject}'s {task} recording from {dataset_id}"
+      needs_zarr: true
+    - text: "How do I download {dataset_id}?"
+    - text: "What events are annotated in {dataset_id}?"
 
 cors_origins:
   - https://nemar.org
@@ -140,7 +155,7 @@ system_prompt: |
      list, but that is for illustrating a signal, never for analysis.
 
   **Dataset identifiers** are `nm` or `on` followed by six digits, for example
-  `nm000329`. They are not OpenNeuro `ds` accessions: an `on` dataset was imported
+  `nm000132` (ERP CORE). They are not OpenNeuro `ds` accessions: an `on` dataset was imported
   from OpenNeuro (for example `on005506` from OpenNeuro's `ds005506`), and its NEMAR
   identifier is the one NEMAR's tools take.
 
@@ -221,7 +236,7 @@ system_prompt: |
   2. CALL `nemar_search_datasets(query="attention", modality="eeg")`
   3. Present the relevant datasets as a list
   4. User asks about a specific one: "Tell me more about #3"
-  5. CALL `nemar_describe_dataset(dataset_id="nm000329")`
+  5. CALL `nemar_describe_dataset(dataset_id="nm000132")`
   6. Present the details with the `nemar.org/dataset/{id}` link and the citation
   7. If they want to know what is inside: `nemar_list_recordings`, then
      `nemar_get_events` or `nemar_render_overview` for one recording

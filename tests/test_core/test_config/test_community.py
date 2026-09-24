@@ -27,6 +27,7 @@ from src.core.config.community import (
     ClientToolConfig,
     CommunitiesConfig,
     CommunityConfig,
+    DatasetSuggestedQuestion,
     DocSource,
     ExtensionsConfig,
     GitHubConfig,
@@ -818,6 +819,83 @@ class TestWidgetConfig:
         result = widget.resolve("HED")
         assert result["title"] == "Custom Title"
         assert result["placeholder"] == "Custom placeholder"
+
+
+class TestDatasetSuggestedQuestions:
+    """widget.dataset_suggested_questions (#477): templates for a dataset page."""
+
+    def test_default_is_empty_and_resolve_omits_it(self) -> None:
+        """A community that sets none sends nothing, so the widget keeps its general list."""
+        widget = WidgetConfig()
+        assert widget.dataset_suggested_questions == []
+        assert "dataset_suggested_questions" not in widget.resolve("HED")
+
+    def test_resolve_sends_each_template_with_needs_zarr(self) -> None:
+        widget = WidgetConfig(
+            dataset_suggested_questions=[
+                {"text": "What is {dataset_id} about?"},
+                {
+                    "text": "Plot sub-{subject}'s {task} recording from {dataset_id}",
+                    "needs_zarr": True,
+                },
+            ]
+        )
+        assert widget.resolve("NEMAR")["dataset_suggested_questions"] == [
+            {"text": "What is {dataset_id} about?", "needs_zarr": False},
+            {"text": "Plot sub-{subject}'s {task} recording from {dataset_id}", "needs_zarr": True},
+        ]
+
+    def test_text_is_stripped(self) -> None:
+        question = DatasetSuggestedQuestion(text="  What is {dataset_id}?  ")
+        assert question.text == "What is {dataset_id}?"
+
+    @pytest.mark.parametrize(
+        ("text", "match"),
+        [
+            ("", "must not be empty"),
+            ("   ", "must not be empty"),
+            ("What is in this dataset?", "must name its dataset"),
+            ("Plot {subject} from {dataset_id}", None),
+            ("Plot {session} from {dataset_id}", r"unknown blank\(s\) \{session\}"),
+            ("Plot {Dataset_Id}", r"unknown blank\(s\) \{Dataset_Id\}"),
+            ("Plot {} from {dataset_id}", r"unknown blank\(s\) \{\}"),
+            ("Plot {dataset_id", "unmatched"),
+            ("Plot dataset_id} from {dataset_id}", "unmatched"),
+            ("Plot {{dataset_id}}", "unmatched"),
+            ("<b>What</b> is {dataset_id}?", "plain text"),
+            ("x" * 190 + " {dataset_id}", "at most 200 characters"),
+        ],
+    )
+    def test_text_validation(self, text: str, match: str | None) -> None:
+        """Only the three known blanks, {dataset_id} required, balanced braces, no markup."""
+        if match is None:
+            assert DatasetSuggestedQuestion(text=text).text == text
+            return
+        with pytest.raises(ValidationError, match=match):
+            DatasetSuggestedQuestion(text=text)
+
+    @pytest.mark.parametrize("bad", [42, None, True, ["a"], {"x": 1}])
+    def test_non_string_text_is_a_validation_error(self, bad: object) -> None:
+        """An unquoted YAML number, a null or a list where the text belongs fails as a
+        config error naming the field, not as an AttributeError from the stripping."""
+        with pytest.raises(ValidationError, match="text"):
+            DatasetSuggestedQuestion(text=bad)
+
+    def test_unknown_field_is_refused(self) -> None:
+        """A misspelled needs_zarr must fail loudly, not silently show the question everywhere."""
+        with pytest.raises(ValidationError, match="needs_zar"):
+            DatasetSuggestedQuestion(text="What is {dataset_id}?", needs_zar=True)
+
+    def test_at_most_ten(self) -> None:
+        templates = [{"text": f"Question {i} about {{dataset_id}}"} for i in range(11)]
+        with pytest.raises(ValidationError, match="Maximum is 10"):
+            WidgetConfig(dataset_suggested_questions=templates)
+        assert (
+            len(
+                WidgetConfig(dataset_suggested_questions=templates[:10]).dataset_suggested_questions
+            )
+            == 10
+        )
 
 
 class TestWidgetConfigLogoUrl:
