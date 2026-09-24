@@ -26,6 +26,9 @@ const SITE_SUBDIR = 'osa';
 // Never appears in the starter's own source, only in its runtime output
 // (window.data.shape, window.unit, window.rate on nm000103's first store).
 const SENTINEL = '(4, 500) uV 250.0';
+// Matches open.js's own notebookPath(community, dataset); this is the one
+// file whose save the edit/reopen step below has to confirm.
+const NOTEBOOK_PATH = `${COMMUNITY}/${DATASET}.ipynb`;
 
 function log(msg) {
   console.log(`[e2e] ${msg}`);
@@ -95,6 +98,40 @@ async function evaluate(cdp, sessionId, expression) {
   );
   if (exceptionDetails) throw new Error(`page threw: ${exceptionDetails.text}`);
   return result.value;
+}
+
+/** Like evaluate(), but DOES await a returned promise -- for a call that
+ * always settles on its own (unlike notebook:run-all-cells or docmanager:
+ * save's own command promises, which this app's session plumbing never
+ * resolves; see evaluate()'s own comment). serviceManager.contents.get() is
+ * an ordinary REST-shaped call against JupyterLite's own Contents drive and
+ * always settles, so this is safe to await here specifically. */
+async function evaluateAwaited(cdp, sessionId, expression) {
+  const { result, exceptionDetails } = await cdp.send(
+    'Runtime.evaluate',
+    { expression, returnByValue: true, awaitPromise: true },
+    sessionId
+  );
+  if (exceptionDetails) throw new Error(`page threw: ${exceptionDetails.text}`);
+  return result.value;
+}
+
+/**
+ * The `last_modified` JupyterLite's own Contents drive reports for `path`,
+ * via window.jupyterapp.serviceManager.contents -- the SAME contents manager
+ * a fresh page's notebook load reads through, so a change here is the
+ * authoritative signal that a save actually reached storage, not just that
+ * the document model's own dirty flag (a UI-level convenience) cleared.
+ * Resolves to null if the path does not exist yet or the call fails.
+ */
+async function contentsLastModified(cdp, sessionId, path) {
+  return evaluateAwaited(
+    cdp,
+    sessionId,
+    `window.jupyterapp.serviceManager.contents.get(${JSON.stringify(path)}, { content: false })
+      .then((model) => model.last_modified)
+      .catch(() => null)`
+  );
 }
 
 async function pollUntil(fn, timeoutMs, intervalMs = 500) {
@@ -472,6 +509,10 @@ async function main() {
       // --- 2. Edit a cell, save, and prove a second open does not overwrite it ---
       log('editing the intro cell and saving');
       const marker = `EDIT_MARKER_${Date.now()}`;
+      // Captured before the edit, so "the save reached storage" can be told
+      // apart from "the file already looked like this" -- last_modified must
+      // move, not merely be non-null.
+      const beforeSaveModified = await contentsLastModified(cdp, first.sessionId, NOTEBOOK_PATH);
       await evaluate(
         cdp,
         first.sessionId,
@@ -484,9 +525,25 @@ async function main() {
       );
       await evaluate(cdp, first.sessionId, "window.jupyterapp.commands.execute('docmanager:save'); true");
       // docmanager:save's own promise is not awaited either, for the same reason
-      // as run-all-cells; poll the model's own dirty flag instead of a fixed sleep.
+      // as run-all-cells. Two confirmations, cheapest first: the document
+      // model's own dirty flag (a UI-level convenience, usually already
+      // false by the time this is checked) is necessary but was not
+      // sufficient under CPU throttling in testing, since it can clear before
+      // the underlying storage write is actually visible to a DIFFERENT
+      // page's read; the contents manager's own reported last_modified
+      // actually moving is the authoritative signal, since that is read
+      // through the exact same Contents drive a second page's notebook load
+      // uses.
       await pollUntil(
         () => evaluate(cdp, first.sessionId, '!window.jupyterapp.shell.currentWidget.context.model.dirty'),
+        15_000,
+        300
+      );
+      await pollUntil(
+        async () => {
+          const modified = await contentsLastModified(cdp, first.sessionId, NOTEBOOK_PATH);
+          return modified !== null && modified !== beforeSaveModified;
+        },
         15_000,
         300
       );
@@ -503,11 +560,17 @@ async function main() {
       const warmSeconds = (Date.now() - warmStart) / 1000;
       log(`warm (open, no re-run): ${warmSeconds.toFixed(1)}s`);
 
-      const editSurvived = await evaluate(
-        cdp,
-        second.sessionId,
-        `document.body.innerText.includes(${JSON.stringify(marker)})`
-      );
+      // waitForNotebookReady only confirms the notebook WIDGET exists, not
+      // that its cell views have finished mounting their editor DOM -- under
+      // CPU throttling those can lag behind, so this is a real condition
+      // wait (up to 15s), not a single read: a timeout here means the edit
+      // genuinely never showed up, reported as a failure like any other,
+      // not silently swallowed.
+      const editSurvived = await pollUntil(
+        () => evaluate(cdp, second.sessionId, `document.body.innerText.includes(${JSON.stringify(marker)})`),
+        15_000,
+        300
+      ).catch(() => false);
       report(editSurvived, 'the edit survived opening the same dataset again (no overwrite)');
 
       // --- 3. Re-run in the warm profile, to measure a genuinely warm cell run too ---
@@ -525,9 +588,14 @@ async function main() {
       // --- 4. Refusals: unknown community and malformed dataset write nothing ---
       log('checking refusals');
       // The placeholder text ("Opening your notebook...") is itself non-empty, so
-      // the poll condition has to wait for it to CHANGE, not merely exist.
+      // the poll condition has to wait for it to CHANGE, not merely exist. And
+      // right after Page.navigate, the target can still be showing about:blank
+      // (no #app at all yet) before open.html's own document has loaded, so the
+      // read itself has to be optional-chained rather than assume the element
+      // is already there -- a page that has not loaded yet is exactly what
+      // pollUntil is for, not a crash.
       const refusalShown = async (targetSessionId) => {
-        const text = await evaluate(cdp, targetSessionId, "document.getElementById('app').textContent");
+        const text = await evaluate(cdp, targetSessionId, "document.getElementById('app')?.textContent ?? null");
         return text && !text.includes('Opening') ? text : null;
       };
 
