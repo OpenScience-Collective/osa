@@ -57,15 +57,32 @@ const PACKAGE_CACHE = new URL('../.cache/pyodide-packages/', import.meta.url).pa
 
 const createFromSource = new Function(`return (${createWorkerRuntime.toString()});`)();
 
-// A request that gets no response at all. A browser rejects one with an ordinary
-// TypeError; Bun's own rejection is an object Pyodide's future helper refuses, so
-// an await on it never settles (measured 2026-09-22 on 0.29.5). This host is
-// refused the way a browser refuses it, which is the one thing that stands in
-// here: installed before any runtime boots, since the data client captures fetch.
-const UNREACHABLE = 'http://unreachable.invalid/';
-const bunFetch = globalThis.fetch;
-globalThis.fetch = (input, init) =>
-  String(input).startsWith(UNREACHABLE) ? Promise.reject(new TypeError('Failed to fetch')) : bunFetch(input, init);
+// A request that gets no response at all, for real: a loopback port that was
+// just released, so nothing listens on it. Bun's fetch rejects it with a
+// TypeError that has no `stack`, the same shape Safari's fetch rejects with
+// (both run JavaScriptCore; measured 2026-09-24 in WebKit 26.6, #496). Pyodide
+// 0.29.5 takes a JavaScript value for an error only when it has a name, a
+// message AND a stack, so before the rejection guard in osa-egress.js such a
+// rejection reached asyncio's Future.set_exception as a plain object, which
+// refuses it, and the await never settled. This suite used to stand a
+// JavaScript-made TypeError in for Bun's rejection here; that one has a stack,
+// which is how it hid the hang Safari's readers hit.
+async function refusedUrl() {
+  const probe = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch: () => new Response('') });
+  const url = `http://127.0.0.1:${probe.port}/`;
+  await probe.stop(true);
+  return url;
+}
+
+// An await that never settles reports nothing, so each one that could is raced
+// against a timer and reads as null when the timer wins.
+function settleWithin(promise, ms) {
+  let timer;
+  const expired = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(null), ms);
+  });
+  return Promise.race([promise, expired]).finally(() => clearTimeout(timer));
+}
 
 /**
  * Boot a runtime exactly as the worker does, recording what it sends and seals.
@@ -667,21 +684,35 @@ console.log('\nosa.fetch reads byte ranges, and reports a status rather than rai
     );
     assertEqual(typed.stdout, 'TypeError the Range header must be a str, not int\n', 'a Range value that is not a string is refused');
     assertEqual(seen.length, before, 'and neither refused call reached the network');
-
-    // No response at all, through the host that is refused the way a browser
-    // refuses it (see UNREACHABLE). The egress guard's refusal of a URL outside
-    // fetch_allow is checked in the browser harness, where the guard is real.
-    const lost = await plain.run(
-      `try:\n    await osa.fetch(${JSON.stringify(`${UNREACHABLE}x`)})\nexcept OSError as e:\n` +
-        '    print(type(e.__cause__).__name__)\n    print(e)'
-    );
-    const [cause, message] = lost.stdout.split('\n');
-    assertEqual(cause, 'JsException', 'a fetch the browser rejects is an OSError, chained to what the browser raised');
-    assert(/^no response from http:\/\/unreachable\.invalid\/x: a network failure, a redirect .* or a URL outside fetch_allow\. The browser said: TypeError: Failed to fetch$/.test(message),
-      `and it lists what "no response" can mean, since the browser says so little (got ${JSON.stringify(message)})`);
   } finally {
     server.stop(true);
   }
+}
+
+console.log('\na request that gets no response raises, rather than hanging the run (Safari, #496)');
+{
+  // A runtime of its own: without the rejection guard the await never settles,
+  // and a runtime left mid-execution answers every later call with "another
+  // execution is already running", which would fail later sections for a reason
+  // that is not their own. The egress guard's refusal of a URL outside
+  // fetch_allow is checked in the browser harness, where the guard is real.
+  const lost = await bootRuntime();
+  const refused = await refusedUrl();
+  const noResponse = await settleWithin(
+    lost.run(
+      `try:\n    await osa.fetch(${JSON.stringify(`${refused}x`)})\nexcept OSError as e:\n` +
+        '    print(type(e.__cause__).__name__)\n    print(e)'
+    ),
+    15_000
+  );
+  assertEqual(noResponse && noResponse.status, 'ok',
+    'a refused connection settles the await, although its rejection has no stack, as in Safari');
+  const [cause, message] = noResponse ? noResponse.stdout.split('\n') : [];
+  assertEqual(cause, 'JsException', 'it is an OSError, chained to what the browser raised');
+  assert(/^no response from http:\/\/127\.0\.0\.1:\d+\/x: a network failure, a redirect .* or a URL outside fetch_allow\. The browser said: TypeError: \S/.test(message),
+    `and it lists what "no response" can mean, then what the browser said (got ${JSON.stringify(message)})`);
+  const after = await settleWithin(lost.run('print("still answering")'), 15_000);
+  assertEqual(after && after.stdout, 'still answering\n', 'and the runtime is free for the next run');
 }
 
 console.log('\nosa.save_script and osa.save_artifact write into the run\'s workspace result (#433)');
