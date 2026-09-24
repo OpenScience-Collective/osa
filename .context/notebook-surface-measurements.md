@@ -382,3 +382,81 @@ Two live checks, both against real, production endpoints:
   `frontend/browser-harness/chrome.js`, `frontend/browser-harness/serve.js` (workload, wheels, and the DevTools-protocol primitives
   `notebook-bench.js` imports).
 - `frontend/browser-harness/notebook-bench.js` (this note's measuring script).
+
+## 2026-09-23: the notebook site build
+
+Everything above is ADR 0010's own measurements (whether to build a hosted JupyterLite surface at all).
+This section is ADR 0011's: hosting it, at `notebook.osc.earth/osa` (OSC's naming rule: a subdomain is a plane, the project is the path), from this repository.
+Method, numbers and the one real bug the live check found, in the same machine and Chrome version as above (Chrome 153.0.8010.53, headless).
+
+### `?fromURL=` is confirmed absent from the built site
+
+Grepped the full built site (`jupyterlite-core` 0.8.4, `jupyterlite-pyodide-kernel` 0.8.0) for the string `fromURL`: no match, in any `.js`, `.json` or `.html` file.
+This is why `notebook/open.html`/`open.js` exist as a same-origin bootstrap rather than a query parameter into `notebooks/index.html`.
+
+### Build size
+
+A from-scratch build (`scripts/build_notebook_site.py`, this PR's own code, not the maintainer's hand-built spike), measured stage by stage:
+
+| Stage | Files | Bytes |
+|---|---:|---:|
+| `jupyter lite build` alone (before this repo's own additions) | 768 | 66.9 MB |
+| + merged lock, wheels, starters, bootstrap files | 777 | 67.5 MB |
+| after `strip_sourcemaps` removes every `*.map` (276 files) | 501 | 19.9 MB |
+
+Sourcemaps account for about 47.6 MB of the pre-strip total despite being under half the file count -- a handful of very large `.js.map` files, consistent with the maintainer's own spike citing a single 9.4 MB sourcemap as the largest file in the unstripped build.
+The pre-strip file count and size (768 files, 66.9 MB) are within measurement noise of the maintainer's own hand-built spike (780 files, 66 MB) -- the difference is the expected delta between two builds of the same pinned versions run on different days, not a regression.
+**The deployed site is 501 files, 19.9 MB**, once sourcemaps are stripped.
+
+### The `--lite-dir` merge does NOT preserve `pipliteUrls`, confirmed by reading the source
+
+`jupyterlite_core.addons.base.BaseAddon.merge_jupyter_config_data` (installed package source, `jupyterlite-core==0.8.4`) merges only three keys specially (`disabledExtensions`, `federated_extensions`, `settingsOverrides`); every other key of `jupyter-config-data`, `litePluginSettings` included, is replaced wholesale (`config[k] = v`).
+A `--lite-dir` seed file setting `litePluginSettings["@jupyterlite/pyodide-kernel-extension:kernel"]` to `{pyodideUrl, loadPyodideOptions}` would silently overwrite the build's own `pipliteUrls` entry, not merge alongside it.
+Confirmed by reading the addon source directly, not inferred from behavior; `scripts/build_notebook_site.py`'s `patch_root_config` instead post-processes the built `jupyter-lite.json` after the fact, and its own test (`tests/test_scripts/test_build_notebook_site.py::TestPatchRootConfig`) asserts `pipliteUrls` survives the patch.
+
+### The kernel's own URL-resolution rule, read from the built JS
+
+`extensions/@jupyterlite/pyodide-kernel-extension/static/716.910fdd9faf4aadc7.js` (deobfuscated by reading, not decompiling): `p = PageConfig.getBaseUrl()`, `u = a.loadPyodideOptions || {}`, then `for (let[e,t] of Object.entries(u)) e.endsWith("URL") && (u[e] = new URL(t, p).href)`.
+So `lockFileURL` (ends in `URL`) is resolved against the SITE's base URL (not the `notebooks` app's own subdirectory), and `packageBaseUrl` (ends in `baseUrl`, lowercase, which `.endsWith("URL")` does not match) is passed through unresolved -- it must already be absolute, which is exactly why `patch_root_config` sets it to the full `https://cdn.jsdelivr.net/pyodide/v0.29.5/full/` URL rather than a relative path.
+
+### The real bug this check found: a site built for one origin and served from another silently breaks package installs
+
+First attempt at the live check built the site with `--site-url https://notebook.osc.earth/osa` (the real production URL) while serving it locally on loopback for the test.
+`%pip install eegprep-lean` (which the starter's own install cell uses) completed with NO error and NO output, and the following `import eegprep_lean` then failed with `ModuleNotFoundError`.
+Direct network inspection (recording every request during the install) showed the merged lock's rewritten wheel URLs pointing at `https://notebook.osc.earth/osa/wheels/nemar/...` -- correct in production, but wrong on a machine serving the build from `http://127.0.0.1:<port>/osa` -- so the fetch failed, and `%pip`'s underlying piplite/micropip install swallowed the failure rather than raising.
+Rebuilding with `--site-url` set to the ACTUAL serving origin plus the same `/osa` path (`http://127.0.0.1:<port>/osa`, the port chosen after the static server already had its ephemeral port) fixed it immediately: `%pip install eegprep-lean` then installs and imports correctly, wheels served from `http://127.0.0.1:<port>/osa/wheels/nemar/...`.
+This is not a bug in `merge_site_lock` or `patch_root_config` -- both work exactly as designed -- it is a bug a naive test harness can walk into by building for one origin and serving from another, which is exactly what a real production deploy never does (the deploy workflow always builds with `--site-url` equal to the domain it is about to publish to).
+`notebook/e2e-check.js` avoids it by construction: it starts the static server first, reads its assigned port, and only then builds with `--site-url` set to that same origin.
+
+### The full flow, timed, in real Chrome (`notebook/e2e-check.js`)
+
+Two independent runs, `nemar`/`nm000103`, same machine, same Chrome, `--expose-app` build, `notebook:run-all-cells` fired without awaiting its own returned promise (which never settles):
+
+| Run | Cold (fresh profile, dataset link to all cells done) | Warm (open again, no re-run) | Warm re-run (all cells again, same profile) |
+|---|---:|---:|---:|
+| 1 (site url `https://.../osa`, bare host) | 8.6 s | 1.5 s | 4.0 s |
+| 2 (repeat, bare host) | 7.6 s | 1.5 s | 4.0 s |
+| 3 (site url `.../osa`, served AND opened under `/osa/`, matching production) | 7.6 s | 1.5 s | 4.0 s |
+| 4 (repeat, under `/osa/`) | 7.6 s | 1.5 s | 4.0 s |
+| 5 (final re-verification after committing, under `/osa/`, cited in the handback report but not recorded here until the PR review flagged the gap) | 9.1 s | 1.5 s | 4.0 s |
+| 6 (PR review pass, after the review's own findings were applied, under `/osa/`) | 10.1 s | 1.5 s | 4.0 s |
+| 7 (repeat, same review pass) | 8.6 s | 1.5 s | 4.0 s |
+
+"Cold" times from navigating `open.html?community=nemar&dataset=nm000103` to every code cell showing a numbered prompt and the read line's sentinel text present -- includes fetching Pyodide and every package (interpreter, numpy, matplotlib, zarr, eegprep-lean, all from jsDelivr/this site, no prior cache) and the real `zarr.nemar.org` read.
+"Warm (open again)" times only the bootstrap-to-notebook-ready step, no re-run: 1.5 s in every run, reusing the already-populated notebook.
+"Warm re-run" re-executes all cells in the SAME kernel (packages already imported, connection already warm): 4.0 s in every run, close to the maintainer's own hand-measured "4.3 s warm" figure for the identical workload.
+The maintainer's own hand-built spike measured "10.8 s cold ... to every cell done"; this PR's from-scratch, scripted build has measured 7.6-10.1 s cold across seven runs on two separate days, within the range expected from day-to-day CDN/network variance rather than a discrepancy worth chasing.
+Every run actually measured and cited (including the one this table originally omitted, row 5, a discrepancy a PR review caught between the table and the handback report) is recorded above; the warm figures have never varied.
+
+Checked end to end in every run: the index line (`N recordings with a Zarr copy`), the exact read line (`(4, 500) uV 250.0 ('E1', 'E2', 'E3', 'E4')`, matching the maintainer's own recorded output for `nm000103`'s first store), exactly one rendered `<img>` figure, no `Traceback` text anywhere on the page, and zero page exceptions.
+Runs 3-4 (under `/osa/`) also confirm `open.js`'s `resolveBaseUrl` derives `/osa/` correctly at this path (not just at a site root): the IndexedDB database it writes to and the refusal checks both read back against `JupyterLite Storage - /osa/`, the exact name JupyterLite's own drive opens when served from that path.
+A screenshot of the rendered figure (four EEG channels, `eeg_250hz`, 250 Hz) is saved at the path this task specified.
+
+Also checked, both runs: editing a cell and saving (`docmanager:save`) survives re-opening the SAME dataset link a second time -- the notebook already at that path is left alone, never overwritten (mutation-tested: forcing an unconditional overwrite in `open.js` makes this specific check fail, confirming it is load-bearing); and the two refusal paths (`community=doesnotexist`, `dataset=not-a-real-id`) each show a plain sentence, write no directory entry to IndexedDB, and never redirect into a notebook.
+
+### References
+
+- ADR [0011](../docs/adr/0011-the-notebook-site.md) (the decision this section supports).
+- `scripts/build_notebook_site.py`, `src/core/config/notebook_lock.py` (the build and the merged-lock logic this section measures).
+- `notebook/e2e-check.js` (this section's own measuring script, reusing `frontend/browser-harness/chrome.js`'s `findChrome`/`launch`/`connect`).
+- `src/assistants/nemar/notebook/starter.ipynb` (the exact starter run for these numbers).

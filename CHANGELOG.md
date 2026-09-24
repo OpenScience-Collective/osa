@@ -68,6 +68,21 @@ the version being released and start a new `[Unreleased]` section above it.
   model (#456). ADR 0010 records why this, and not marimo or a hosted JupyterLite, is the
   notebook surface for now; a hosted JupyterLite is #453.
 - `docs/community-browser-runtime.md`, a guide for a community adopting the runtime.
+- **A hosted JupyterLite notebook site**, at `notebook.osc.earth/osa` (issue #453, ADR 0011,
+  amending ADR 0010's deferral). A community adds a `notebook:` block to its
+  `config.yaml` (a starter `.ipynb` and a dataset-id pattern); a widget's own button
+  (built separately) opens `notebook.osc.earth/osa/open.html?community=<id>&dataset=<id>` in
+  a new tab, which drops that community's starter, with the dataset id filled in, into
+  JupyterLite's own browser storage and redirects into it. Pyodide 0.29.5 loads from
+  jsDelivr rather than being self-hosted (66 MB versus 530 MB for the same build);
+  community wheels are bundled through one lock merged across every notebook-enabled
+  community, following the same "an overlay may only add, never replace" rule the
+  chat-widget runtime already enforces. NEMAR ships the first starter
+  (`src/assistants/nemar/notebook/starter.ipynb`). `docs/community-notebook.md` is the
+  adopter guide; `scripts/build_notebook_site.py` and
+  `.github/workflows/deploy-notebook.yml` build and deploy it. The widget's own
+  IndexedDB workspace does not hand off to the notebook yet (ADR 0010's fourth
+  prerequisite; still open).
 
 ### Changed
 

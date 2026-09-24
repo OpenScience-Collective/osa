@@ -31,12 +31,14 @@ from src.core.config.community import (
     ExtensionsConfig,
     GitHubConfig,
     McpServer,
+    NotebookConfig,
     PythonPlugin,
     PythonRuntimeConfig,
     RuntimeConfig,
     RuntimeLimits,
     WidgetConfig,
 )
+from src.core.config.notebook_lock import NOTEBOOK_SITE_PYODIDE_VERSION
 
 
 class TestDocSource:
@@ -2439,6 +2441,17 @@ def _python_runtime_config() -> RuntimeConfig:
     )
 
 
+def _notebook_kwargs(**overrides: object) -> dict[str, object]:
+    """Minimal valid zarr_base/dataset_page_base, for reuse below: only their
+    shape matters to these tests, never a real host."""
+    kwargs: dict[str, object] = {
+        "zarr_base": {"production": "https://zarr.example.org"},
+        "dataset_page_base": {"production": "https://example.org"},
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
 class TestCommunityConfigClientTools:
     """Tests for CommunityConfig's client_tools/runtime cross-field validator."""
 
@@ -2523,4 +2536,179 @@ class TestCommunityConfigClientTools:
                     ]
                 ),
                 runtime=_python_runtime_config(),
+            )
+
+
+class TestNotebookConfig:
+    """Tests for the notebook.osc.earth starter config block (issue #453)."""
+
+    def test_a_minimal_notebook_config_validates(self) -> None:
+        config = NotebookConfig(
+            starter="notebook/starter.ipynb", dataset_pattern="^nm[0-9]{6}$", **_notebook_kwargs()
+        )
+        assert config.dataset_pattern == "^nm[0-9]{6}$"
+
+    def test_an_unanchored_pattern_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="anchored"):
+            NotebookConfig(
+                starter="notebook/starter.ipynb", dataset_pattern="nm[0-9]{6}", **_notebook_kwargs()
+            )
+
+    def test_a_pattern_missing_only_the_trailing_dollar_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="anchored"):
+            NotebookConfig(
+                starter="notebook/starter.ipynb",
+                dataset_pattern="^nm[0-9]{6}",
+                **_notebook_kwargs(),
+            )
+
+    def test_a_pattern_that_does_not_compile_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="does not compile"):
+            NotebookConfig(
+                starter="notebook/starter.ipynb",
+                dataset_pattern="^nm[0-9{6}$",
+                **_notebook_kwargs(),
+            )
+
+    def test_starter_must_be_a_relative_ipynb_path(self) -> None:
+        with pytest.raises(ValidationError):
+            NotebookConfig(
+                starter="/etc/passwd", dataset_pattern="^nm[0-9]{6}$", **_notebook_kwargs()
+            )
+        with pytest.raises(ValidationError):
+            NotebookConfig(
+                starter="notebook/starter.json",
+                dataset_pattern="^nm[0-9]{6}$",
+                **_notebook_kwargs(),
+            )
+
+    def test_extra_fields_are_forbidden(self) -> None:
+        with pytest.raises(ValidationError):
+            NotebookConfig(
+                starter="notebook/starter.ipynb",
+                dataset_pattern="^nm[0-9]{6}$",
+                extra_field="nope",
+                **_notebook_kwargs(),
+            )
+
+    @pytest.mark.parametrize(
+        "hostile_pattern",
+        [
+            "^.*$",  # matches everything, including every probe below
+            r'^[a-z0-9"]{1,20}$',  # a quote reachable directly in the character class
+            r"^[a-z0-9\\]{1,20}$",  # a backslash reachable directly
+            r"^[\s\S]{1,20}$",  # a newline and a space both reachable
+        ],
+    )
+    def test_a_pattern_that_would_accept_a_hostile_probe_is_rejected(
+        self, hostile_pattern: str
+    ) -> None:
+        """Defense in depth (docs/adr/0011-the-notebook-site.md): a dataset id is
+        substituted unescaped into the starter's Python source, so a pattern
+        this loose must never ship, independent of notebook/open.js's own
+        client-side generic shape guard."""
+        with pytest.raises(ValidationError, match="hostile probe"):
+            NotebookConfig(
+                starter="notebook/starter.ipynb",
+                dataset_pattern=hostile_pattern,
+                **_notebook_kwargs(),
+            )
+
+    def test_nemars_own_pattern_accepts_no_hostile_probe(self) -> None:
+        """The one pattern actually shipped today; a regression here would be
+        NEMAR's own config failing to load, not merely a test fixture."""
+        config = NotebookConfig(
+            starter="notebook/starter.ipynb",
+            dataset_pattern="^(nm|ds|on|xx)[0-9]{6}$",
+            **_notebook_kwargs(),
+        )
+        assert config.dataset_pattern == "^(nm|ds|on|xx)[0-9]{6}$"
+
+    def test_an_unrecognized_environment_key_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="unrecognized environment 'staging'"):
+            NotebookConfig(
+                starter="notebook/starter.ipynb",
+                dataset_pattern="^nm[0-9]{6}$",
+                zarr_base={"staging": "https://zarr-staging.example.org"},
+                dataset_page_base={"production": "https://example.org"},
+            )
+
+    @pytest.mark.parametrize(
+        "malformed",
+        [
+            "http://zarr.example.org",  # not https
+            "https://zarr.example.org/zarr",  # has a path
+            "https://zarr.example.org?x=1",  # has a query
+            "not-a-url",
+        ],
+    )
+    def test_a_malformed_zarr_base_is_rejected(self, malformed: str) -> None:
+        with pytest.raises(ValidationError, match="zarr_base"):
+            NotebookConfig(
+                starter="notebook/starter.ipynb",
+                dataset_pattern="^nm[0-9]{6}$",
+                zarr_base={"production": malformed},
+                dataset_page_base={"production": "https://example.org"},
+            )
+
+    def test_a_malformed_dataset_page_base_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="dataset_page_base"):
+            NotebookConfig(
+                starter="notebook/starter.ipynb",
+                dataset_pattern="^nm[0-9]{6}$",
+                zarr_base={"production": "https://zarr.example.org"},
+                dataset_page_base={"production": "https://example.org/dataset"},
+            )
+
+
+class TestCommunityConfigNotebook:
+    """Tests for CommunityConfig's notebook/runtime.python.pyodide_version cross-check."""
+
+    def test_no_notebook_no_pyodide_pin_required(self) -> None:
+        config = CommunityConfig(id="test", name="Test", description="Test")
+        assert config.notebook is None
+
+    def test_notebook_with_matching_pyodide_pin_accepted(self) -> None:
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            notebook=NotebookConfig(
+                starter="notebook/starter.ipynb",
+                dataset_pattern="^nm[0-9]{6}$",
+                **_notebook_kwargs(),
+            ),
+            runtime=_python_runtime_config(),
+        )
+        assert config.notebook is not None
+        assert config.runtime.python.pyodide_version == NOTEBOOK_SITE_PYODIDE_VERSION
+
+    def test_notebook_with_no_runtime_at_all_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="One notebook site loads one Pyodide"):
+            CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                notebook=NotebookConfig(
+                    starter="notebook/starter.ipynb",
+                    dataset_pattern="^nm[0-9]{6}$",
+                    **_notebook_kwargs(),
+                ),
+            )
+
+    def test_notebook_with_a_different_pyodide_pin_is_rejected(self) -> None:
+        mismatched = RuntimeConfig(
+            python=PythonRuntimeConfig(pyodide_version="0.28.3", limits=RuntimeLimits())
+        )
+        with pytest.raises(ValidationError, match="One notebook site loads one Pyodide"):
+            CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                notebook=NotebookConfig(
+                    starter="notebook/starter.ipynb",
+                    dataset_pattern="^nm[0-9]{6}$",
+                    **_notebook_kwargs(),
+                ),
+                runtime=mismatched,
             )

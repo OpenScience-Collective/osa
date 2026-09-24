@@ -88,6 +88,7 @@ and `/chat/resume` claims it exactly once (`claim_pending_call`) before run 2 st
 The workspace is IndexedDB, not the Origin Private File System (OPFS),
 and the notebook surface is deferred: ADR 0010 (`docs/adr/0010-the-notebook-surface.md`) rejects marimo,
 defers a hosted JupyterLite to #453, and ships an editable re-run panel in the chat instead.
+ADR 0011 (`docs/adr/0011-the-notebook-site.md`) later hosts that JupyterLite site, at `notebook.osc.earth/osa`.
 
 Components:
 
@@ -685,7 +686,7 @@ hold against the deployed code. They are Phase 0: none of Phase 1 works end to e
 **As built.** Phases 1 to 4 shipped as epic #429 (#430 to #433), all four on one epic branch.
 Phase 1's tests drive the real application with no checkpointer, since none was built.
 Phase 2's pilot used `eegprep-lean` rather than MNE, and pulled most of phase 3's lockfile work forward.
-Phase 4 kept the workspace, the `osa` helper and export, and replaced the JupyterLite handoff with the editable re-run panel (#456); a hosted JupyterLite is deferred to #453 (ADR 0010).
+Phase 4 kept the workspace, the `osa` helper and export, and replaced the JupyterLite handoff with the editable re-run panel (#456); a hosted JupyterLite is deferred to #453 (ADR 0010), and ADR 0011 has since built and hosted it at `notebook.osc.earth/osa`.
 Phase 5 has not started.
 
 Phases 1 to 3 land on an epic branch and merge to `develop` together, per this repo's own epic-branch

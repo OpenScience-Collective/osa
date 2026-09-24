@@ -1,0 +1,43 @@
+# TEMPLATE for Cloudflare Pages headers, notebook.osc.earth/osa (develop:
+# develop-notebook.osc.earth/osa) (issue #453, docs/adr/0011-the-notebook-site.md).
+# Path patterns below are written root-relative on purpose: scripts/
+# build_notebook_site.py's write_headers() prefixes every one with the site's
+# own path (/osa) and writes the result at the TRUE publish root, since
+# Cloudflare Pages reads _headers only from exactly there, never a subdirectory
+# the site itself is nested under.
+#
+# A wheel's file name is its own identity (a changed wheel gets a new version;
+# see src/core/config/runtime_lock.py), so every wheel route is immutable for a
+# year -- the same policy the API's own /{community}/runtime/{file_name} route
+# uses (src/api/routers/community.py, RUNTIME_WHEEL_CACHE_CONTROL).
+/wheels/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# Everything a reader's session depends on being fresh: the bootstrap page and
+# script, each community's starter and the pattern index open.js reads, and the
+# merged Pyodide lock (which changes whenever a community's own overlay does).
+/open.html
+  Cache-Control: no-cache
+/open.js
+  Cache-Control: no-cache
+/starters/*
+  Cache-Control: no-cache
+/lock/*
+  Cache-Control: no-cache
+/jupyter-lite.json
+  Cache-Control: no-cache
+
+# Site-wide, on every path. frame-ancestors 'none': this site is never meant to
+# be embedded (unlike the widget, which nemar.org and friends iframe/script-embed
+# on purpose). A stricter script-src/connect-src CSP was considered and NOT
+# added here: JupyterLite's own build loads webpack-split chunks, a blob: Worker
+# for Pyodide, and jsDelivr's CDN, then this site's own connect-src additionally
+# needs zarr.nemar.org and per-community API hosts, and proving a tighter policy
+# does not break any of that needs the same kind of headless-Chrome verification
+# the chat widget's own CSP variants went through
+# (frontend/browser-harness/serve.js's POLICIES) -- not attempted in this PR; see
+# docs/adr/0011-the-notebook-site.md, "Consequences".
+/*
+  Content-Security-Policy: frame-ancestors 'none'
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff

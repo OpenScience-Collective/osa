@@ -4,7 +4,9 @@ Date: 2026-09-23
 
 ## Status
 
-Accepted
+Accepted, amended by [0011](0011-the-notebook-site.md): this record's four
+follow-up prerequisites (a hosting origin among them) are settled there,
+which now hosts the notebook site this record deferred building.
 
 ## Context
 
