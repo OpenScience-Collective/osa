@@ -238,6 +238,40 @@ console.log('\nresizing the chat window still works when it is nested in the cap
   assertEqual(chatWindow.style.height, '710px', 'and the height, even nested inside the capsule');
 }
 
+console.log('\nan already-open chat panel eases into its capsule position, rather than jumping');
+{
+  // The community config can still be resolving when the reader opens the
+  // chat: launcher: capsule arriving a moment later moves an ALREADY-OPEN
+  // panel's right/bottom/max-height, not a closed one. Opens the chat while
+  // the widget is still in its bubble default, THEN lets the (mocked, but
+  // still asynchronous) config fetch resolve, and checks the final position
+  // and that a transition is declared for that move.
+  const config = configResponse({ launcher: 'capsule' });
+  const { window, widget } = loadWidget({ fetch: fetchReturning(config), innerWidth: 1024, innerHeight: 800 });
+  widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: 'osa-test-open-then-convert' });
+  widget.init();
+  const container = window.document.querySelector('.osa-chat-widget');
+
+  // Still bubble at this point: fetchCommunityConfig's mocked fetch is async
+  // and has not resolved yet (confirmed by the assertion right after).
+  assert(!container.classList.contains('osa-capsule'), 'sanity: still bubble mode immediately after init()');
+  container.querySelector('.osa-chat-button').dispatchEvent(new window.Event('click', { bubbles: true }));
+  const chatWindow = container.querySelector('.osa-chat-window');
+  assert(chatWindow.classList.contains('open'), 'the chat is open, in bubble mode, before the config arrives');
+
+  await waitUntil(() => container.classList.contains('osa-capsule'), 'the config resolves and converts to the capsule');
+  assert(chatWindow.classList.contains('open'), 'the chat is STILL open after the conversion (the click was never undone)');
+  const windowStyle = window.getComputedStyle(chatWindow);
+  assertEqual(windowStyle.right, 'calc(20px + 56px + 12px)', 'the now-capsule desktop position: right, beside the capsule');
+  assertEqual(windowStyle.bottom, '20px', 'the now-capsule desktop position: bottom');
+  assertEqual(windowStyle.maxHeight, 'calc(800px - 50px)', 'the now-capsule desktop position: the taller max-height');
+  const transition = windowStyle.transition;
+  assert(
+    transition.includes('right') && transition.includes('bottom') && transition.includes('max-height'),
+    `a transition is declared on right/bottom/max-height so the move eases rather than jumps (got ${JSON.stringify(transition)})`
+  );
+}
+
 console.log('\nbubble mode renders today\'s markup: nothing about it changes');
 {
   const { window, widget } = loadWidget({ fetch: fetchReturning(configResponse()) });

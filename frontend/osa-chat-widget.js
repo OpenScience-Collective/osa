@@ -505,11 +505,18 @@
       /* Opens to the LEFT of the capsule instead of above it; today's rule below
          (bottom: 90px, right: 20px, max-height: calc(100vh - 120px)) is what a
          narrow viewport keeps. 20 + 56 + 12 mirror the capsule's own offset,
-         diameter and gap, so the window sits flush beside it with no overlap. */
+         diameter and gap, so the window sits flush beside it with no overlap.
+         The transition is scoped to capsule mode alone (this selector never
+         matches a bubble-mode widget, which must render exactly as it always
+         has): the community config can still be resolving when the reader
+         opens the chat, and launcher: capsule arriving a moment later would
+         otherwise snap an already-open panel to its new position instead of
+         easing into it. */
       .osa-chat-widget.osa-capsule .osa-chat-window {
         right: calc(20px + 56px + 12px);
         bottom: 20px;
         max-height: calc(100vh - 50px);
+        transition: right 0.2s ease, bottom 0.2s ease, max-height 0.2s ease;
       }
     }
 
