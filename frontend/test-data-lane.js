@@ -217,6 +217,16 @@ console.log('\nevery community runtime resolves against the Pyodide these tests 
     for (const name of python.preload || []) {
       assert(known.has(name), `${id}: preload ${name} is something the lock can load`);
     }
+    // The config check reads a preload name as its import name (`-` as `_`),
+    // having no lock to ask; this asks the lock, so a package whose import name
+    // is not its lock name is caught here rather than as a failed boot.
+    const entries = { ...stockLock.packages, ...overlay };
+    for (const name of python.import_before_seal || []) {
+      const root = name.split('.')[0];
+      const owner = (python.preload || []).find((p) => p.replace(/-/g, '_') === root);
+      assert(owner !== undefined && entries[owner] && entries[owner].imports.includes(root),
+        `${id}: import_before_seal ${name} is imported from preload ${owner}, whose lock entry provides ${root}`);
+    }
   }
   assert(checked.includes('nemar'), `the search found NEMAR's runtime among ${JSON.stringify(checked)}`);
 }
@@ -363,6 +373,8 @@ try {
     console.log(`      booted in ${Math.round(performance.now() - started)} ms`);
     const loaded = messages.filter((m) => m.phase === 'loading_package').map((m) => m.package);
     assertEqual(loaded, PYTHON.preload, 'loading each preload package in order');
+    const imported = messages.filter((m) => m.phase === 'importing').map((m) => m.module);
+    assertEqual(imported, PYTHON.import_before_seal, 'importing each import_before_seal module in order');
     assert(messages.some((m) => m.phase === 'prelude'), 'and running the prelude');
     assertEqual(sealed, [[BASE]], 'sealed to fetch_allow');
 
@@ -409,6 +421,60 @@ try {
       'FetchTransport https://zarr-test.nemar.org/{dataset_id}/zarr/index.json\n',
       'with the runtime\'s own client as the default, and read_index on zarr-test.nemar.org'
     );
+  }
+
+  console.log('\nSciPy under the seal: every public module imports, and ctypes stays refused (#495)');
+  {
+    // Walked from SciPy's own package tree rather than listed here, so a SciPy
+    // upgrade that adds a module importing ctypes at its top level fails this
+    // check instead of a reader's analysis.
+    const walked = await run(`import importlib, json, pkgutil, scipy
+names = sorted(
+    info.name for info in pkgutil.walk_packages(scipy.__path__, "scipy.")
+    if not any(part.startswith("_") or part in ("tests", "conftest") for part in info.name.split("."))
+)
+failed = {}
+for name in names:
+    try:
+        importlib.import_module(name)
+    except Exception as err:
+        failed[name] = f"{type(err).__name__}: {err}"[:160]
+print(json.dumps({"names": names, "failed": failed, "subpackages": list(scipy.submodules)}))
+`);
+    assertEqual(walked.status, 'ok', `the walk runs (stderr: ${walked.stderr.slice(-300)})`);
+    const tree = JSON.parse(walked.stdout || '{"names": [], "failed": {}, "subpackages": []}');
+    assert(tree.names.length > 50 && tree.subpackages.every((sub) => tree.names.includes(`scipy.${sub}`)),
+      `it covers every subpackage SciPy lists and their public modules (${tree.names.length} modules)`);
+    assertEqual(tree.failed, {}, 'and every one of them imports in the sealed runtime');
+
+    const statement = await run('import ctypes');
+    assertEqual(statement.stderr, 'denied_import: ctypes', 'import ctypes is still denied to executed code');
+    const dynamic = await run('import importlib\nimportlib.import_module("ctypes")');
+    assert(/ImportError: 'ctypes' is not available to executed code/.test(dynamic.stderr),
+      `and so is importlib.import_module("ctypes") (got ${JSON.stringify(dynamic.stderr.slice(0, 100))})`);
+    // The cost docs/community-browser-runtime.md states: SciPy's own module
+    // keeps the ctypes it imported. Asserted so the sentence stays true, and so
+    // a SciPy that stops holding one says the sentence can go.
+    const reference = await run('import scipy._lib._ccallback as cc\nprint(cc.ctypes.__name__)');
+    assertEqual(reference.stdout, 'ctypes\n', 'the documented cost: scipy._lib._ccallback keeps its own ctypes');
+
+    // The control: NEMAR's runtime without import_before_seal is the runtime
+    // #495 found, where SciPy refuses to import. If a later SciPy stops
+    // importing ctypes at its top level, this says so and the key can go.
+    const bareMessages = [];
+    const bare = createFromSource({ ...config, importBeforeSeal: [], lockPackages: localPackages }, {
+      load: (indexURL, options) =>
+        loadPyodide({ packageCacheDir: PACKAGE_CACHE, stdout: () => {}, stderr: () => {}, ...options }),
+      stockLock: async () => stockLock,
+      seal: () => {},
+      send: (message) => bareMessages.push(message),
+    });
+    await bare.handle({ type: 'boot' });
+    assert(bareMessages.some((m) => m.type === 'ready'), 'control: the runtime boots without import_before_seal');
+    await bare.handle({ type: 'execute', call_id: 'bare-1', code: 'from scipy import signal' });
+    const broken = bareMessages.find((m) => m.type === 'result');
+    assert(broken && /The `scipy` install you are using seems to be broken/.test(broken.stderr),
+      `control: and there SciPy does not import under the seal (got ${JSON.stringify(broken && broken.stderr.slice(0, 120))})`);
   }
 
   console.log('\nthe python_browser recipe runs as nemar_read_window hands it out');

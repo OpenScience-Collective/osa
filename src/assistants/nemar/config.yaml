@@ -419,6 +419,14 @@ runtime:
     # 16 MB of the first load (docs/community-browser-runtime.md); spectra and filters
     # need it, and a model reaches for it first.
     preload: [numpy, scipy, matplotlib, zarr, eegprep-lean]
+    # SciPy imports ctypes as it loads, and the seal refuses ctypes to executed code,
+    # so these three are imported before it (#495): `import scipy` does through
+    # scipy._lib._ccallback, scipy.stats through _continuous_distns, and scipy.io
+    # through arff. Measured, not guessed: with them loaded, every public SciPy module
+    # imports under the seal (frontend/test-data-lane.js walks all of them), and with
+    # `scipy` alone, scipy.stats, scipy.io and scipy.signal (which imports scipy.stats)
+    # do not. They add about 1.1 s to a boot under Bun.
+    import_before_seal: [scipy, scipy.stats, scipy.io]
     # Boots on the reader's first message rather than the first run: overlaps the
     # download with the model's own first turn, and never charges a reader who only
     # opens the chat.
