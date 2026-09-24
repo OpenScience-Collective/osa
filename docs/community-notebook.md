@@ -81,7 +81,7 @@ A community's wheel is served from `wheels/<community_id>/<file_name>` on the no
 
 Once a reader opens a link, the filled-in notebook lives in JupyterLite's own storage (IndexedDB, via `localforage`), on the notebook site's own origin -- NOT the widget's own workspace storage, and not this server.
 In the widget's tab (#470) the notebook is a third-party frame, so the browser keeps that storage separately for each site that embeds it: a notebook edited in nemar.org's tab is not the one the reader sees when opening the notebook site on its own.
-Edits reach storage within about five seconds without a Save, so a pop-out, once it carries the notebook (#470), reopens the latest ones.
+Edits reach storage within about five seconds without a Save, so the widget's pop-out, whose notebook tab is a frame and a notebook session of its own (#470), reopens the latest ones.
 Opening the same dataset again never overwrites it: `open.js` checks for an existing notebook at that path first, and if one is already there, it is left alone and the reader is taken straight to it, edits intact.
 Deleting it, or starting over, is a plain file operation inside JupyterLite's own file browser; nothing here ever does it for the reader.
 

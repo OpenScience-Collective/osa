@@ -31,12 +31,17 @@ the chat opens rather than at the first run, and turns on the widget's test hook
 --color-scheme auto serves the config with its widget's color_scheme set to auto, so
 `color-scheme-check.mjs` can check the dark appearance without --nemar's live
 recipe fetch at startup.
+
+Every run also serves widget-e2e-sri.html: the same page with the widget's tag
+pinned as nemar.org pins it, integrity and crossorigin, for `popout-check.mjs`.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
+import hashlib
 import json
 import re
 import sys
@@ -370,6 +375,23 @@ def build_app(
             + ("window.__OSA_TEST__ = true;\n" if test_hooks else "")
         )
         return Response(body, media_type="application/javascript")
+
+    # The page with the widget's tag pinned as nemar.org pins it, integrity and
+    # crossorigin, from the file as it is now, so popout-check.mjs can check that a
+    # pop-out carries the pin and that the browser enforces it there.
+    @app.get("/browser-harness/widget-e2e-sri.html")
+    def widget_page_with_sri() -> Response:
+        page = (FRONTEND / "browser-harness" / "widget-e2e.html").read_text()
+        tag = '<script src="../osa-chat-widget.js"></script>'
+        if page.count(tag) != 1:
+            raise RuntimeError(f"widget-e2e.html has no single {tag!r} to pin")
+        digest = hashlib.sha384((FRONTEND / "osa-chat-widget.js").read_bytes()).digest()
+        integrity = "sha384-" + base64.b64encode(digest).decode()
+        pinned = (
+            f'<script src="../osa-chat-widget.js" integrity="{integrity}" '
+            'crossorigin="anonymous"></script>'
+        )
+        return Response(page.replace(tag, pinned), media_type="text/html")
 
     @app.middleware("http")
     async def policy(request: Request, call_next):

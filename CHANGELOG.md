@@ -15,6 +15,12 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Added
 
+- **The widget's pop-out carries the notebook** (issue #470):
+  a capsule community's pop-out window has the panel's Chat and Notebook tabs, as a strip under its header,
+  opens on the tab the reader was on, and makes a notebook frame of its own, a fresh notebook session.
+  The pop-out button now shows on the notebook tab too.
+  A bubble community's pop-out is unchanged.
+  See "The pop-out window" in `docs/community-widget.md`.
 - **Config values per deployment** (issue #480):
   `extensions.mcp_servers[].url`, `runtime.python.fetch_allow` and `runtime.python.prelude`
   each take one value or a `{production, develop}` map, the shape `notebook.zarr_base` already has.
@@ -107,6 +113,13 @@ the version being released and start a new `[Unreleased]` section above it.
 
 - The widget's own bytes, and so its integrity hash, changed: a page that pins the widget
   by Subresource Integrity (SRI) must re-pin to this release.
+
+### Fixed
+
+- **The pop-out no longer opens blank on a page without `script-src 'unsafe-inline'`** (issue #470).
+  It wrote the widget's source into itself as inline script, which the host page's Content Security Policy, inherited by the pop-out, refused.
+  It now loads the widget by its address, with the widget tag's `integrity` and `crossorigin`, so a policy that loads the widget allows its pop-out too,
+  and a pop-out whose script the browser refuses says so in its window.
 
 ## [0.8.12] - 2026-09-21
 

@@ -108,6 +108,12 @@ _RELATIVE_PATH_HARNESS_ALLOWLIST = {
         "a relative path from its own directory, never published as embed "
         "guidance"
     ),
+    "frontend/browser-harness/widget_e2e.py": (
+        "the harness server's widget-e2e-sri.html route: widget-e2e.html with "
+        "its relative ../osa-chat-widget.js tag given integrity and "
+        "crossorigin, for frontend/browser-harness/popout-check.mjs; a dev "
+        "harness page, never published as embed guidance"
+    ),
 }
 
 # A <script ...osa-chat-widget.js...> tag, literal or HTML-entity-escaped

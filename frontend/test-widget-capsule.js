@@ -471,12 +471,13 @@ console.log('\nthe pre-init value renders even when the community config never a
   assertEqual(notebookBtn.getAttribute('aria-disabled'), 'false', 'the pre-init setDataset value still rendered, with no community config ever arriving to do it');
 }
 
-console.log('\nthe pop-out (fullscreen) never gets a capsule, even when launcher: capsule is set');
+console.log('\nthe pop-out (fullscreen) never gets the launcher, even when launcher: capsule is set');
 {
   // The pop-out window has no launcher at all (.fullscreen .osa-chat-button is
-  // display:none !important); applyLauncherMode's own "&& !CONFIG.fullscreen"
+  // display:none !important); applyLauncherMode's own "if (!CONFIG.fullscreen)"
   // is what stops it from still building the wrapper and its two icons behind
-  // that hidden button.
+  // that hidden button. It gets the panel's tabs instead, as a strip (#470), which
+  // frontend/test-widget-popout.js covers.
   const { window, widget } = loadWidget({ fetch: fetchReturning(configResponse()) });
   widget.setConfig({
     apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: 'osa-test-fullscreen-no-capsule',
@@ -486,7 +487,11 @@ console.log('\nthe pop-out (fullscreen) never gets a capsule, even when launcher
   const container = window.document.querySelector('.osa-chat-widget');
   assert(container.classList.contains('fullscreen'), 'sanity: fullscreen mode is on');
   assert(!container.querySelector('.osa-launcher-capsule'), 'no capsule wrapper in fullscreen mode, even with launcher: capsule');
-  assert(!container.classList.contains('osa-capsule'), 'no osa-capsule class in fullscreen mode');
+  for (const selector of ['.osa-capsule-indicator', '.osa-notebook-btn', '.osa-hpc-btn']) {
+    assert(!container.querySelector(selector), `no ${selector} either`);
+  }
+  assert(container.classList.contains('osa-capsule') && !!container.querySelector('.osa-tab-strip'),
+    'but the panel\'s tabs, as a strip');
 }
 
 console.log('\nevery later setDataset call re-renders');

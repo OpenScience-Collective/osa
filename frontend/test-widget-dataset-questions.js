@@ -117,7 +117,7 @@ function serverFetch(config) {
 // A fresh window, as a new page load. `dataset` is setDataset's value before init
 // (undefined: the page never calls it); `storage` seeds localStorage with what an
 // earlier load left.
-// `before(window)` runs before the widget script, as a pop-out's own preset script does.
+// `before(window)` runs before the widget script, as the presets openPopout sets on a pop-out's window do.
 async function start({ widget = { dataset_suggested_questions: TEMPLATES }, dataset, storage = {}, setConfig = {}, before } = {}) {
   const window = new Window({
     url: 'http://localhost/page',
@@ -395,31 +395,11 @@ console.log('\nnothing is offered while a reply is on its way, and the row appea
   assertEqual(label(ctx.q), 'About xx099904:', 'the reply is in: the row for the new dataset appears');
 }
 
-console.log('\na pop-out is told the dataset on screen, and follows the host page to the next one');
+console.log('\na pop-out shows the questions about the dataset its opener names');
 {
-  const ctx = await start({ dataset: ERP_CORE });
-  const written = [];
-  const forwarded = [];
-  ctx.window.open = () => ({
-    closed: false,
-    close() {},
-    focus() {},
-    document: { write: (html) => written.push(html), close() {} },
-    OSAChatWidget: { setDataset: (value) => forwarded.push(value) },
-  });
-  ctx.q('.osa-popout-btn').click();
-  await waitUntil(() => written.length > 0, 'the pop-out is written');
-  const html = written.join('');
-  const line = html.split('\n').find((l) => l.includes('window.__OSA_DATASET__ = '));
-  assert(!!line, 'the pop-out\'s preset names the dataset');
-  assertEqual(line && JSON.parse(line.trim().replace('window.__OSA_DATASET__ = ', '').replace(/;$/, '')), ERP_CORE,
-    'as {id, zarr, subject, task}');
-  ctx.api.setDataset({ id: 'xx099904', zarr: true, subject: '01', task: 'p300' });
-  assertEqual(forwarded, [{ id: 'xx099904', zarr: true, subject: '01', task: 'p300' }], 'a later setDataset reaches the open pop-out');
-  ctx.api.setDataset(null);
-  assertEqual(forwarded.at(-1), null, 'and so does clearing it');
-
-  // The pop-out itself: its preset runs before the widget script.
+  // What openPopout hands the pop-out, and a later setDataset reaching it, are
+  // frontend/test-widget-popout.js's, with a real pop-out window. Here: the pop-out's
+  // side, from the preset openPopout sets on its window before its script runs.
   const popout = await start({
     before: (w) => { w.__OSA_DATASET__ = ERP_CORE; },
     setConfig: { fullscreen: true },

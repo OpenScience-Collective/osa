@@ -21,11 +21,10 @@
  *     --nemar for NEMAR's own config).
  *
  * The pop-out step runs on a second load of the page, under the harness's own
- * policy with 'unsafe-inline' added to script-src, which is what nemar.org's live
- * policy allows and the harness's stricter one does not: the pop-out is written
- * into about:blank, inherits its opener's policy, and runs its scripts inline, so
- * under the harness's policy it stays blank (a limitation of today's pop-out on
- * any host page without 'unsafe-inline', recorded for the pop-out redesign, #470).
+ * policy, which has no 'unsafe-inline': the pop-out is an about:blank window that
+ * inherits its opener's policy, and loads the widget by its address (#470), so it
+ * needs nothing the page itself does not. popout-check.mjs checks the pop-out's
+ * own half in full.
  */
 
 import { connect, findChrome, launch } from './chrome.js';
@@ -148,88 +147,52 @@ async function checkAuto(cdp, sessionId) {
   report(!(await evaluate(cdp, sessionId, IS_DARK)), 'setColorScheme(\'light\') on a dark device: light');
 }
 
-// Serve the page under nemar.org's live script-src (see the header comment):
-// every response for the page itself has 'unsafe-inline' added to script-src.
-// The listener runs outside any await of ours, so a failure in it is recorded
-// in `errors` for the caller to report rather than lost as an unhandled rejection.
-async function allowInlineScript(cdp, sessionId, errors) {
-  await cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*widget-e2e.html*', requestStage: 'Response' }] }, sessionId);
-  return cdp.on(async (message) => {
-    if (message.method !== 'Fetch.requestPaused' || message.sessionId !== sessionId) return;
-    try {
-      const { requestId, responseStatusCode, responseHeaders = [] } = message.params;
-      const headers = responseHeaders.map(({ name, value }) =>
-        name.toLowerCase() === 'content-security-policy'
-          ? { name, value: value.replace("script-src 'self'", "script-src 'self' 'unsafe-inline'") }
-          : { name, value });
-      // fulfillRequest with the page's own body, rather than continueResponse:
-      // measured, Chrome did not apply headers rewritten by continueResponse to
-      // the navigation's own policy.
-      const { body, base64Encoded } = await cdp.send('Fetch.getResponseBody', { requestId }, sessionId);
-      await cdp.send('Fetch.fulfillRequest', {
-        requestId,
-        responseCode: responseStatusCode,
-        responseHeaders: headers,
-        body: base64Encoded ? body : Buffer.from(body).toString('base64'),
-      }, sessionId);
-    } catch (error) {
-      errors.push(String(error?.message || error));
-    }
-  });
-}
-
 async function checkPopout(cdp, sessionId, url, targetIdOfPage) {
-  const interceptErrors = [];
-  const stopIntercepting = await allowInlineScript(cdp, sessionId, interceptErrors);
-  try {
-    await setDevice(cdp, sessionId, 'dark');
-    await cdp.send('Page.navigate', { url }, sessionId);
-    if (!(await waitFor(cdp, sessionId, `!!document.querySelector('.osa-chat-widget') && !!document.body`, 'the widget, reloaded'))) return;
-    // Proved on the document itself, not on a response header: an inline script runs.
-    const inlineRan = await evaluate(cdp, sessionId, `(() => {
-      const script = document.createElement('script');
-      script.textContent = 'window.__inlineRan = true';
-      document.head.append(script);
-      return window.__inlineRan === true;
-    })()`);
-    report(inlineRan, 'the reloaded page runs inline script, as nemar.org does');
-    if (!inlineRan) return;
-    await evaluate(cdp, sessionId, DARK_HOST);
-    if (!(await waitForCommunityConfig(cdp, sessionId, 'the community config, reloaded'))) return;
-    await evaluate(cdp, sessionId, `document.querySelector('.osa-chat-button').click()`);
-    await evaluate(cdp, sessionId, `window.OSAChatWidget.setColorScheme('light')`);
-    report(!(await evaluate(cdp, sessionId, IS_DARK)), 'the host chose light, on a dark device');
+  await setDevice(cdp, sessionId, 'dark');
+  await cdp.send('Page.navigate', { url }, sessionId);
+  if (!(await waitFor(cdp, sessionId, `!!document.querySelector('.osa-chat-widget') && !!document.body`, 'the widget, reloaded'))) return;
+  // The control, proved on the document itself: this page refuses inline script,
+  // and so does a pop-out it opens, which inherits its policy.
+  const inlineRan = await evaluate(cdp, sessionId, `(() => {
+    const script = document.createElement('script');
+    script.textContent = 'window.__inlineRan = true';
+    document.head.append(script);
+    return window.__inlineRan === true;
+  })()`);
+  report(!inlineRan, 'control: the page refuses inline script, as nemar.org\'s policy without \'unsafe-inline\' would');
+  if (inlineRan) return;
+  await evaluate(cdp, sessionId, DARK_HOST);
+  if (!(await waitForCommunityConfig(cdp, sessionId, 'the community config, reloaded'))) return;
+  await evaluate(cdp, sessionId, `document.querySelector('.osa-chat-button').click()`);
+  await evaluate(cdp, sessionId, `window.OSAChatWidget.setColorScheme('light')`);
+  report(!(await evaluate(cdp, sessionId, IS_DARK)), 'the host chose light, on a dark device');
 
-    // The pop-out: opened now, it starts in the host's light; then the host
-    // switching to dark reaches it.
-    const before = new Set((await cdp.send('Target.getTargets')).targetInfos.map((t) => t.targetId));
-    await evaluate(cdp, sessionId, `document.querySelector('.osa-popout-btn').click()`, { userGesture: true });
-    let popup = null;
-    const deadline = Date.now() + 15_000;
-    while (!popup && Date.now() < deadline) {
-      const { targetInfos } = await cdp.send('Target.getTargets');
-      popup = targetInfos.find((t) => t.type === 'page' && !before.has(t.targetId) && t.targetId !== targetIdOfPage);
-      if (!popup) await Bun.sleep(100);
-    }
-    report(!!popup, 'the pop-out opened');
-    if (!popup) return;
-    const { sessionId: popupSession } = await cdp.send('Target.attachToTarget', { targetId: popup.targetId, flatten: true });
-    await cdp.send('Runtime.enable', {}, popupSession);
-    await setDevice(cdp, popupSession, 'dark');
-    if (!(await waitFor(cdp, popupSession,
-      `!!document.querySelector('.osa-chat-widget.fullscreen') && !!window.OSAChatWidget`, 'the pop-out\'s widget'))) return;
-    // Its own community config fetch (auto, on a dark device) must not undo the host's light.
-    if (!(await waitForCommunityConfig(cdp, popupSession, 'the pop-out\'s community config'))) return;
-    report(!(await evaluate(cdp, popupSession, IS_DARK)),
-      'the pop-out keeps the host\'s light, on a dark device, after its own community config arrived');
-    await evaluate(cdp, sessionId, `window.OSAChatWidget.setColorScheme('dark')`);
-    if (!(await waitFor(cdp, popupSession, IS_DARK, 'the pop-out following the host to dark'))) return;
-    report(true, 'the host switching to dark reaches the open pop-out');
-    await cdp.send('Target.closeTarget', { targetId: popup.targetId });
-  } finally {
-    stopIntercepting();
-    report(interceptErrors.length === 0, 'the page-policy rewrite ran without an error', interceptErrors);
+  // The pop-out: opened now, it starts in the host's light; then the host
+  // switching to dark reaches it.
+  const before = new Set((await cdp.send('Target.getTargets')).targetInfos.map((t) => t.targetId));
+  await evaluate(cdp, sessionId, `document.querySelector('.osa-popout-btn').click()`, { userGesture: true });
+  let popup = null;
+  const deadline = Date.now() + 15_000;
+  while (!popup && Date.now() < deadline) {
+    const { targetInfos } = await cdp.send('Target.getTargets');
+    popup = targetInfos.find((t) => t.type === 'page' && !before.has(t.targetId) && t.targetId !== targetIdOfPage);
+    if (!popup) await Bun.sleep(100);
   }
+  report(!!popup, 'the pop-out opened');
+  if (!popup) return;
+  const { sessionId: popupSession } = await cdp.send('Target.attachToTarget', { targetId: popup.targetId, flatten: true });
+  await cdp.send('Runtime.enable', {}, popupSession);
+  await setDevice(cdp, popupSession, 'dark');
+  if (!(await waitFor(cdp, popupSession,
+    `!!document.querySelector('.osa-chat-widget.fullscreen') && !!window.OSAChatWidget`, 'the pop-out\'s widget'))) return;
+  // Its own community config fetch (auto, on a dark device) must not undo the host's light.
+  if (!(await waitForCommunityConfig(cdp, popupSession, 'the pop-out\'s community config'))) return;
+  report(!(await evaluate(cdp, popupSession, IS_DARK)),
+    'the pop-out keeps the host\'s light, on a dark device, after its own community config arrived');
+  await evaluate(cdp, sessionId, `window.OSAChatWidget.setColorScheme('dark')`);
+  if (!(await waitFor(cdp, popupSession, IS_DARK, 'the pop-out following the host to dark'))) return;
+  report(true, 'the host switching to dark reaches the open pop-out');
+  await cdp.send('Target.closeTarget', { targetId: popup.targetId });
 }
 
 async function check(url, mode) {

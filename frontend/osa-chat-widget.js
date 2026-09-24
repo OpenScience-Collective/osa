@@ -95,8 +95,10 @@
     fullscreen: false,
     // Streaming responses - enable progressive text display for better UX
     streamingEnabled: true,
-    // Where this script was loaded from, for a copy that runs inline (the
-    // pop-out) and so cannot tell. The browser runtime is found next to it.
+    // Where this script was loaded from, for a copy that cannot tell (one run
+    // without a script URL of its own). The browser runtime is found next to it.
+    // The pop-out loads the script by its address (#470), so it can tell, and is
+    // handed this as well.
     widgetScriptUrl: null
   };
 
@@ -285,8 +287,11 @@
     }
   }
 
-  // Store script URL at load time for reliable pop-out
-  const WIDGET_SCRIPT_URL = document.currentScript?.src || null;
+  // This script's own element and address, kept at load time (document.currentScript
+  // is null once the script has run). The pop-out loads the same address with the
+  // element's integrity and crossorigin (#470), read when it opens.
+  const WIDGET_SCRIPT = document.currentScript || null;
+  const WIDGET_SCRIPT_URL = WIDGET_SCRIPT?.src || null;
 
   // The browser Python runtime ships as a separate file, loaded only for a
   // community that configures client tools, and verified against this hash.
@@ -490,6 +495,14 @@
     .osa-chat-widget.osa-launcher-waiting *,
     .osa-chat-widget.osa-launcher-waiting *::before,
     .osa-chat-widget.osa-launcher-waiting *::after {
+      transition: none !important;
+    }
+
+    /* A pop-out opening on the notebook tab (#470) is drawn on it at once, rather
+       than fading through from chat; see showTabAtOnce. */
+    .osa-chat-widget.osa-tab-at-once *,
+    .osa-chat-widget.osa-tab-at-once *::before,
+    .osa-chat-widget.osa-tab-at-once *::after {
       transition: none !important;
     }
 
@@ -908,20 +921,94 @@
 
     /* The chat's own header buttons have nothing to do on the notebook tab.
        Hidden, not removed, so the header does not reflow as the tabs switch. The
-       pop-out is hidden there too, until it can carry the notebook (#470). */
+       pop-out button stays: the pop-out opens on the notebook tab too (#470). */
     .osa-capsule .osa-settings-btn-open,
-    .osa-capsule .osa-reset-btn,
-    .osa-capsule .osa-popout-btn {
+    .osa-capsule .osa-reset-btn {
       transition: opacity 160ms ease, background 0.2s, visibility 0s;
     }
 
     .osa-capsule.osa-tab-notebook .osa-settings-btn-open,
-    .osa-capsule.osa-tab-notebook .osa-reset-btn,
-    .osa-capsule.osa-tab-notebook .osa-popout-btn {
+    .osa-capsule.osa-tab-notebook .osa-reset-btn {
       opacity: 0;
       visibility: hidden;
       pointer-events: none;
       transition: opacity 160ms ease, background 0.2s, visibility 0s linear 160ms;
+    }
+
+    /* The pop-out's tabs (#470): the pop-out has no launcher, so the panel's Chat
+       and Notebook tabs are a strip under its header. The open tab is underlined
+       in theme_color; one that cannot open now is muted, its reason in its
+       tooltip; the notebook's tab carries the circle's cues as a small mark. */
+    .osa-tab-strip {
+      display: flex;
+      gap: 4px;
+      flex: 0 0 auto;
+      padding: 0 12px;
+      background: var(--osa-bg);
+      border-bottom: 1px solid var(--osa-border);
+    }
+
+    .osa-strip-tab {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin: 0 0 -1px;
+      padding: 10px 12px 8px;
+      border: 0;
+      border-bottom: 2px solid transparent;
+      background: transparent;
+      color: var(--osa-text);
+      font: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: color 160ms ease, border-color 200ms ease;
+    }
+
+    .osa-strip-tab svg {
+      width: 16px;
+      height: 16px;
+      flex-shrink: 0;
+    }
+
+    .osa-strip-tab[aria-pressed="true"] {
+      color: var(--osa-accent);
+      border-bottom-color: var(--osa-primary);
+    }
+
+    .osa-strip-tab[aria-disabled="true"] {
+      color: var(--osa-text-light);
+      cursor: default;
+    }
+
+    .osa-strip-tab:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: -2px;
+      border-radius: 6px 6px 0 0;
+    }
+
+    .osa-strip-cue {
+      display: none;
+      width: 8px;
+      height: 8px;
+      box-sizing: border-box;
+      border-radius: 50%;
+    }
+
+    .osa-strip-tab.osa-notebook-attention .osa-strip-cue {
+      display: block;
+      background: #dc2626;
+    }
+
+    .osa-chat-widget.osa-dark .osa-strip-tab.osa-notebook-attention .osa-strip-cue {
+      background: #f87171;
+    }
+
+    .osa-strip-tab.osa-notebook-busy .osa-strip-cue {
+      display: block;
+      border: 2px solid var(--osa-primary);
+      border-right-color: transparent;
+      animation: osa-spin 1s linear infinite;
     }
 
     /* Reduced motion: every change is immediate except a short plain fade
@@ -933,7 +1020,8 @@
       .osa-chat-widget.chat-open .osa-launcher-icon,
       .osa-launcher-capsule .osa-chat-button,
       .osa-capsule .osa-ttl,
-      .osa-capsule .osa-ttl.osa-ttl-off {
+      .osa-capsule .osa-ttl.osa-ttl-off,
+      .osa-strip-tab {
         transition-duration: 1ms !important;
         transition-delay: 0ms !important;
       }
@@ -953,7 +1041,8 @@
         width: 60%;
       }
 
-      .osa-notebook-ring {
+      .osa-notebook-ring,
+      .osa-strip-tab.osa-notebook-busy .osa-strip-cue {
         animation: none;
       }
     }
@@ -2534,9 +2623,7 @@
       notebookButton.classList.toggle('osa-tab-current', current);
       // Python is starting, or the notebook still loading, while the reader is
       // elsewhere: the ring says so on the circle they would click.
-      const starting = notebookEmbed.state === 'loading' ||
-        (notebookEmbed.state === 'ready' && notebookEmbed.setup === 'running');
-      const busy = !current && state.available && starting;
+      const busy = !current && state.available && notebookStarting();
       notebookButton.classList.toggle('osa-notebook-busy', busy);
       notebookButton.classList.toggle('osa-notebook-attention', !!state.attention);
       const tooltip = notebookButton.querySelector('.osa-icon-tooltip');
@@ -2562,6 +2649,66 @@
       const tip = chatButton.querySelector('.osa-icon-tooltip');
       if (tip) tip.textContent = tooltip;
     }
+
+    renderTabStrip(container);
+  }
+
+  // Python is starting, or the notebook still loading: the cue a notebook circle or
+  // tab shows while the reader is on another tab.
+  function notebookStarting() {
+    return notebookEmbed.state === 'loading' ||
+      (notebookEmbed.state === 'ready' && notebookEmbed.setup === 'running');
+  }
+
+  // The pop-out's tab strip (#470), from the same state as the capsule's circles:
+  // which tab is open, whether the notebook can open, and its busy and attention
+  // cues. The visible "Notebook" stays its name; the reason it cannot open, or what
+  // happened to it, is its tooltip. Only a pop-out has a strip; elsewhere a no-op.
+  function renderTabStrip(container) {
+    const strip = container.querySelector('.osa-tab-strip');
+    if (!strip) return;
+    const chatTab = strip.querySelector('.osa-strip-chat');
+    const notebookTab = strip.querySelector('.osa-strip-notebook');
+    chatTab.setAttribute('aria-pressed', activeTab === 'chat' ? 'true' : 'false');
+    const current = activeTab === 'notebook';
+    const state = notebookIconState();
+    notebookTab.setAttribute('aria-pressed', current ? 'true' : 'false');
+    notebookTab.setAttribute('aria-disabled', state.available ? 'false' : 'true');
+    if (current) {
+      notebookTab.removeAttribute('title');
+    } else {
+      notebookTab.title = state.tooltip;
+    }
+    notebookTab.classList.toggle('osa-notebook-busy', !current && state.available && notebookStarting());
+    notebookTab.classList.toggle('osa-notebook-attention', !current && !!state.attention);
+  }
+
+  // The pop-out's tabs (#470): a pop-out has no launcher to hold the capsule's
+  // circles, so its panel's Chat and Notebook tabs are a strip under the header.
+  // Each is a button, pressed while its tab is open, as the circles are. Both call
+  // setTab, as the circles do; the open tab's own button does nothing, since the
+  // pop-out's panel has no closed state.
+  function buildTabStrip(container) {
+    const strip = document.createElement('div');
+    strip.className = 'osa-tab-strip';
+    strip.setAttribute('role', 'group');
+    strip.setAttribute('aria-label', 'Tabs');
+    strip.innerHTML = `
+      <button type="button" class="osa-strip-tab osa-strip-chat" aria-pressed="true">${ICONS.chat}<span>Chat</span></button>
+      <button type="button" class="osa-strip-tab osa-strip-notebook" aria-pressed="false">${ICONS.notebook}<span>Notebook</span><span class="osa-strip-cue" aria-hidden="true"></span></button>`;
+    strip.querySelector('.osa-strip-chat').addEventListener('click', () => {
+      if (activeTab === 'chat') return;
+      setTab(container, 'chat');
+      container.querySelector('.osa-chat-input input')?.focus();
+    });
+    const notebookTab = strip.querySelector('.osa-strip-notebook');
+    notebookTab.addEventListener('click', () => {
+      // aria-disabled is the guard, as on the notebook circle, re-checked against
+      // the dataset itself so the two cannot drift apart.
+      if (notebookTab.getAttribute('aria-disabled') === 'true' || !isNotebookAvailable()) return;
+      if (activeTab !== 'notebook') setTab(container, 'notebook');
+    });
+    return strip;
   }
 
   // Move the filled indicator behind the open tab's circle. Positions come from
@@ -2578,8 +2725,9 @@
   }
 
   // Open a tab (#470): the views fade through, the header's title and buttons
-  // follow, and the indicator slides. Opening the notebook tab creates its frame
-  // the first time. A bubble widget has no tabs, so this is a no-op there.
+  // follow, and the indicator slides (or, in a pop-out, the tab strip follows).
+  // Opening the notebook tab creates its frame the first time. A bubble widget has
+  // no tabs, so this is a no-op there.
   function setTab(container, tab) {
     if (!container.classList.contains('osa-capsule')) return;
     if (tab === 'notebook' && !isNotebookAvailable()) tab = 'chat';
@@ -2603,6 +2751,19 @@
     renderNotebookStatus(container);
     renderLauncherIcons(container);
     positionIndicator(container);
+  }
+
+  // setTab without its motion: the views, titles and header buttons take their
+  // places at once. A pop-out opening on the notebook tab (#470) is drawn there
+  // from its first frame; with the fade, the window would open on the chat and
+  // fade to the notebook as it starts drawing (measured in Chrome). Layout is
+  // forced once with transitions off, so the new state is where the next switch
+  // starts from.
+  function showTabAtOnce(container, tab) {
+    container.classList.add('osa-tab-at-once');
+    setTab(container, tab);
+    void container.offsetWidth;
+    container.classList.remove('osa-tab-at-once');
   }
 
   // The chat circle (#470): closed, it opens the panel on chat; open on chat, it
@@ -2817,24 +2978,77 @@
     return view;
   }
 
-  // Convert an already-rendered bubble launcher into the capsule, in place: moves
-  // the EXISTING .osa-chat-button node (its listeners intact) into a new wrapper
-  // alongside two new icon buttons, rather than rebuilding the widget's markup from
-  // scratch, and, in the panel, moves the chat's own elements into a chat view
-  // beside a new notebook view (#470). Called both right after creation
-  // (CONFIG.launcher was already 'capsule', e.g. set via setConfig before init) and
-  // again whenever the community config arrives with launcher: capsule after the
-  // bubble was already built (the ordinary case: fetchCommunityConfig resolves
-  // after createWidget). A no-op for every bubble-mode widget and for fullscreen
-  // (the pop-out has no launcher at all), which is what keeps a bubble community's
-  // markup and computed styles exactly as they were before this feature existed.
+  // Convert an already-rendered bubble widget into a capsule community's, in place:
+  // the launcher and the panel's tabs. Called both right after creation
+  // (CONFIG.launcher was already 'capsule', e.g. set via setConfig before init, or a
+  // pop-out's preset) and again whenever the community config arrives with launcher:
+  // capsule after the bubble was already built (the ordinary case:
+  // fetchCommunityConfig resolves after createWidget). A no-op for every
+  // bubble-mode widget, which is what keeps a bubble community's markup and computed
+  // styles exactly as they were before this feature existed.
+  //
+  // A pop-out (fullscreen) has no launcher at all, so it gets the panel's tabs with
+  // a strip under the header in place of the circles (#470). `osa-capsule` on the
+  // container marks a capsule community's widget, with its tabs, in either; the
+  // launcher itself is `.osa-launcher-capsule`, and only a page's widget has one.
   function applyLauncherMode(container) {
-    const isCapsule = CONFIG.launcher === 'capsule' && !CONFIG.fullscreen;
-    if (!isCapsule || container.classList.contains('osa-capsule')) return;
+    if (CONFIG.launcher !== 'capsule' || container.classList.contains('osa-capsule')) return;
 
     const chatButton = container.querySelector('.osa-chat-button');
     if (!chatButton) return;
 
+    if (!CONFIG.fullscreen) buildCapsuleLauncher(chatButton);
+
+    // The panel: the header's two titles, and the chat and notebook views.
+    const chatWindow = container.querySelector('.osa-chat-window');
+    const header = chatWindow && chatWindow.querySelector('.osa-chat-header');
+    const titleArea = header && header.querySelector('.osa-chat-title-area');
+    if (titleArea) {
+      const chatTitle = document.createElement('div');
+      chatTitle.className = 'osa-ttl osa-ttl-chat';
+      while (titleArea.firstChild) chatTitle.appendChild(titleArea.firstChild);
+      const notebookTitle = document.createElement('div');
+      notebookTitle.className = 'osa-ttl osa-ttl-notebook osa-ttl-off';
+      notebookTitle.setAttribute('aria-hidden', 'true');
+      notebookTitle.innerHTML = `
+        <h3 class="osa-notebook-heading">Notebook</h3>
+        <div class="osa-chat-status"><span class="osa-notebook-status-text"></span></div>`;
+      titleArea.appendChild(chatTitle);
+      titleArea.appendChild(notebookTitle);
+    }
+    if (header) {
+      const views = document.createElement('div');
+      views.className = 'osa-views';
+      const chatView = document.createElement('div');
+      chatView.className = 'osa-view osa-view-chat osa-view-on';
+      // Everything between the header and the overlays is the chat's own.
+      let node = header.nextElementSibling;
+      while (node && !node.classList.contains('osa-settings-overlay')) {
+        const next = node.nextElementSibling;
+        chatView.appendChild(node);
+        node = next;
+      }
+      views.appendChild(chatView);
+      views.appendChild(buildNotebookView());
+      header.after(views);
+      if (CONFIG.fullscreen) header.after(buildTabStrip(container));
+    }
+
+    container.classList.add('osa-capsule', 'osa-tab-chat');
+
+    renderLauncherIcons(container);
+    positionIndicator(container);
+    // The row and column layouts put the circles in different places.
+    if (!CONFIG.fullscreen) window.addEventListener('resize', () => positionIndicator(container));
+    // The notebook tab's frame speaks through messages (#470). Only a capsule has
+    // that frame, so only a capsule listens.
+    window.addEventListener('message', handleNotebookMessage);
+  }
+
+  // The capsule's launcher (#436): moves the EXISTING .osa-chat-button node (its
+  // listeners intact) into a new wrapper alongside two new icon buttons, rather
+  // than rebuilding the widget's markup from scratch.
+  function buildCapsuleLauncher(chatButton) {
     const capsule = document.createElement('div');
     capsule.className = 'osa-launcher-capsule';
     chatButton.parentNode.insertBefore(capsule, chatButton);
@@ -2870,59 +3084,16 @@
     chatTooltip.setAttribute('aria-hidden', 'true');
     chatButton.appendChild(chatTooltip);
 
-    // The panel: the header's two titles, and the chat and notebook views.
-    const chatWindow = container.querySelector('.osa-chat-window');
-    const header = chatWindow && chatWindow.querySelector('.osa-chat-header');
-    const titleArea = header && header.querySelector('.osa-chat-title-area');
-    if (titleArea) {
-      const chatTitle = document.createElement('div');
-      chatTitle.className = 'osa-ttl osa-ttl-chat';
-      while (titleArea.firstChild) chatTitle.appendChild(titleArea.firstChild);
-      const notebookTitle = document.createElement('div');
-      notebookTitle.className = 'osa-ttl osa-ttl-notebook osa-ttl-off';
-      notebookTitle.setAttribute('aria-hidden', 'true');
-      notebookTitle.innerHTML = `
-        <h3 class="osa-notebook-heading">Notebook</h3>
-        <div class="osa-chat-status"><span class="osa-notebook-status-text"></span></div>`;
-      titleArea.appendChild(chatTitle);
-      titleArea.appendChild(notebookTitle);
-    }
-    if (header) {
-      const views = document.createElement('div');
-      views.className = 'osa-views';
-      const chatView = document.createElement('div');
-      chatView.className = 'osa-view osa-view-chat osa-view-on';
-      // Everything between the header and the overlays is the chat's own.
-      let node = header.nextElementSibling;
-      while (node && !node.classList.contains('osa-settings-overlay')) {
-        const next = node.nextElementSibling;
-        chatView.appendChild(node);
-        node = next;
-      }
-      views.appendChild(chatView);
-      views.appendChild(buildNotebookView());
-      header.after(views);
-    }
-
-    container.classList.add('osa-capsule', 'osa-tab-chat');
-
     notebookButton.addEventListener('click', () => handleNotebookClick(notebookButton));
     // The HPC button has no click action (#436: coming soon everywhere); the
     // listener exists only so a click event never bubbles into anything else.
     hpcButton.addEventListener('click', () => {});
-
-    renderLauncherIcons(container);
-    positionIndicator(container);
-    // The row and column layouts put the circles in different places.
-    window.addEventListener('resize', () => positionIndicator(container));
-    // The notebook tab's frame speaks through messages (#470). Only a capsule has
-    // that frame, so only a capsule listens.
-    window.addEventListener('message', handleNotebookMessage);
   }
 
   // Undo applyLauncherMode (#475): a load drawn from a remembered capsule whose
-  // fresh config no longer asks for one goes back to the bubble's own markup. The
-  // capsule's window listeners stay; with its elements gone they find nothing.
+  // fresh config no longer asks for one goes back to the bubble's own markup, a
+  // pop-out's tab strip included. The capsule's window listeners stay; with its
+  // elements gone they find nothing.
   function revertLauncherMode(container) {
     if (!container.classList.contains('osa-capsule')) return;
     discardNotebookFrame();
@@ -2944,6 +3115,8 @@
     }
     const notebookTitle = titleArea && titleArea.querySelector('.osa-ttl-notebook');
     if (notebookTitle) notebookTitle.remove();
+    const strip = container.querySelector('.osa-tab-strip');
+    if (strip) strip.remove();
     const views = container.querySelector('.osa-views');
     if (views) {
       const chatView = views.querySelector('.osa-view-chat');
@@ -3011,11 +3184,17 @@
   // An open pop-out has no host page of its own to call setDataset, so it is told
   // the dataset on screen when it opens (window.__OSA_DATASET__, in openPopout) and
   // again whenever the host page names another, as applyColorSchemeEverywhere does
-  // for the color scheme (#477: its suggestions are about the dataset).
+  // for the color scheme (#477: its suggestions are about the dataset). A pop-out
+  // whose script is still loading has no API yet, and its init() reads the preset,
+  // over anything its API was told first, so the preset is kept current too.
   function forwardDatasetToPopout() {
     if (!chatPopup || chatPopup.closed) return;
     let popupWidget = null;
+    let dataset;
     try {
+      // The pop-out's own copy, for its preset and its API alike, as openPopout's.
+      dataset = toPopupRealm(chatPopup, currentDataset);
+      chatPopup.__OSA_DATASET__ = dataset;
       popupWidget = chatPopup.OSAChatWidget;
     } catch (e) {
       console.warn('[OSA] Could not reach the pop-out to pass the dataset on:', e);
@@ -3023,7 +3202,7 @@
     }
     if (!popupWidget || typeof popupWidget.setDataset !== 'function') return;
     try {
-      popupWidget.setDataset(currentDataset);
+      popupWidget.setDataset(dataset);
     } catch (e) {
       console.error('[OSA] The pop-out failed to apply the dataset:', e);
     }
@@ -3965,8 +4144,8 @@
     oom: 'Stopped: out of memory',
   });
 
-  // Where the runtime bundle lives: next to this script. The pop-out window
-  // runs this script inline, so it is handed the URL through its config.
+  // Where the runtime bundle lives: next to this script. A copy with no script
+  // URL of its own is handed one through its config (widgetScriptUrl).
   // SRI pins the bytes, so which URL serves them is not a trust decision.
   function runtimeBundleUrl() {
     const base = WIDGET_SCRIPT_URL || CONFIG.widgetScriptUrl;
@@ -4980,17 +5159,19 @@
 
   // After the host page changes the scheme: this page's widget, if mounted, and an
   // open pop-out, which is its own copy of the widget and has no host page of its
-  // own to tell it. The pop-out shares this page's origin (it is written from here),
+  // own to tell it. The pop-out shares this page's origin (it is opened from here),
   // so its API is reachable; a pop-out still loading has no API yet and reads the
-  // scheme from its preset instead (see openPopout). Reaching the pop-out and the
-  // pop-out applying the scheme fail for different reasons, so they are reported
-  // apart: the second is a bug in the pop-out's own copy of this code.
+  // scheme from its preset instead (see openPopout), which is kept current here for
+  // that reason. Reaching the pop-out and the pop-out applying the scheme fail for
+  // different reasons, so they are reported apart: the second is a bug in the
+  // pop-out's own copy of this code.
   function applyColorSchemeEverywhere() {
     const container = document.querySelector('.osa-chat-widget');
     if (container) applyColorScheme(container);
     if (!chatPopup || chatPopup.closed) return;
     let popupWidget = null;
     try {
+      chatPopup.__OSA_HOST_COLOR_SCHEME__ = CONFIG.colorScheme;
       popupWidget = chatPopup.OSAChatWidget;
     } catch (e) {
       console.warn('[OSA] Could not reach the pop-out to pass the color scheme on:', e);
@@ -6833,106 +7014,28 @@
     }
   }
 
-  // Open chat in a new popup window
-  async function openPopout() {
-    const popoutBtn = document.querySelector('.osa-popout-btn');
-
-    // Reuse existing popup if still open
-    if (chatPopup && !chatPopup.closed) {
-      chatPopup.focus();
-      return;
+  // The script element the pop-out copies (#470): this script's own, or, for a copy
+  // that has none (run inline by an embedder), the page's widget tag.
+  function widgetScriptForPopout() {
+    if (WIDGET_SCRIPT && WIDGET_SCRIPT.src) return WIDGET_SCRIPT;
+    const scripts = document.querySelectorAll('script[src*="osa-chat-widget"]');
+    if (scripts.length > 1) {
+      console.warn(`OSA Chat Widget: Found ${scripts.length} matching script tags, using the last one.`);
     }
+    return scripts.length ? scripts[scripts.length - 1] : null;
+  }
 
-    // Prevent double-clicks during async operation
-    if (popoutBtn?.disabled) return;
+  // A value, as the pop-out's own: serialized here and parsed by the pop-out's own
+  // JSON, so the pop-out holds plain data of its own realm rather than this page's
+  // objects, which it would otherwise share with a page that can change or go away.
+  function toPopupRealm(popup, value) {
+    return popup.JSON.parse(JSON.stringify(value));
+  }
 
-    if (popoutBtn) {
-      popoutBtn.disabled = true;
-      popoutBtn.setAttribute('aria-busy', 'true');
-      popoutBtn.title = 'Opening...';
-    }
-
-    try {
-      // Find the script URL (prefer stored URL, fallback to DOM query)
-      let scriptUrl = WIDGET_SCRIPT_URL;
-      if (!scriptUrl) {
-        const scripts = document.querySelectorAll('script[src*="osa-chat-widget"]');
-        if (scripts.length === 0) {
-          console.warn('OSA Chat Widget: Could not find widget script tag for pop-out.');
-          alert('Could not find widget script URL. Pop-out is not available.');
-          return;
-        }
-        if (scripts.length > 1) {
-          console.warn(`OSA Chat Widget: Found ${scripts.length} matching script tags, using the last one.`);
-        }
-        scriptUrl = scripts[scripts.length - 1].src;
-      }
-
-      // Fetch the script content
-      let scriptCode = '';
-      try {
-        const response = await fetch(scriptUrl);
-        if (!response.ok) {
-          console.error('[OSA] Failed to fetch widget script:', {
-            url: scriptUrl,
-            status: response.status,
-            statusText: response.statusText
-          });
-          alert(`Failed to load widget for pop-out (HTTP ${response.status}). Please try again.`);
-          return;
-        }
-        scriptCode = await response.text();
-      } catch (e) {
-        console.error('[OSA] Failed to fetch widget script:', {
-          url: scriptUrl,
-          error: e.message || e,
-          stack: e.stack
-        });
-        alert('Failed to load widget for pop-out. Please try again.');
-        return;
-      }
-
-      // Validate script content
-      if (!scriptCode || scriptCode.trim().length === 0) {
-        console.error('Widget script content is empty');
-        alert('Failed to load widget for pop-out. Please try again.');
-        return;
-      }
-
-      // Create popup config with fullscreen mode. The pop-out runs this script
-      // inline, so it is told where the script lives: the runtime bundle is
-      // found next to it.
-      const popupConfig = { ...CONFIG, fullscreen: true, widgetScriptUrl: scriptUrl };
-      // The pop-out fetches the community config again, which would replace a
-      // scheme the host page chose with the community's own; this marks it as the
-      // host's, so the pop-out keeps it (#469).
-      const hostColorScheme = _userSetKeys.has('colorScheme') ? CONFIG.colorScheme : null;
-
-      // Serialize config safely (escape script-breaking sequences)
-      let configJson;
-      let datasetJson;
-      try {
-        configJson = JSON.stringify(popupConfig)
-          .replace(/</g, '\\u003c')
-          .replace(/>/g, '\\u003e');
-        datasetJson = JSON.stringify(currentDataset)
-          .replace(/</g, '\\u003c')
-          .replace(/>/g, '\\u003e');
-      } catch (e) {
-        console.error('Failed to serialize widget config:', e);
-        alert('Failed to prepare widget configuration for pop-out.');
-        return;
-      }
-
-      // Calculate responsive popup size
-      const width = Math.min(500, Math.floor(window.screen.availWidth * 0.9));
-      const height = Math.min(700, Math.floor(window.screen.availHeight * 0.9));
-      const left = Math.floor((window.screen.availWidth - width) / 2);
-      const top = Math.floor((window.screen.availHeight - height) / 2);
-      const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes`;
-
-      // Create the popup HTML with config set BEFORE the widget script runs
-      const popupHtml = `<!DOCTYPE html>
+  // The pop-out's document: no script of its own, inline or otherwise. openPopout
+  // adds the widget's script element to it, by address.
+  function popoutDocumentHtml() {
+    return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -6945,53 +7048,125 @@
       height: 100vh;
       overflow: hidden;
     }
+    .osa-popout-failure {
+      margin: 0;
+      padding: 24px;
+      font: 14px/1.5 system-ui, -apple-system, sans-serif;
+      color: #1f2937;
+    }
   </style>
 </head>
-<body>
-  <script>
-    // Pre-configure widget before it initializes
-    window.__OSA_CHAT_CONFIG__ = ${configJson};
-    window.__OSA_HOST_COLOR_SCHEME__ = ${JSON.stringify(hostColorScheme)};
-    window.__OSA_DATASET__ = ${datasetJson};
-  <\/script>
-  <script>
-    // Widget code (will pick up __OSA_CHAT_CONFIG__ if present)
-    ${scriptCode}
-  <\/script>
-</body>
+<body></body>
 </html>`;
+  }
 
-      // Open the popup window
-      const popup = window.open('', '_blank', features);
-      if (popup) {
-        try {
-          popup.document.write(popupHtml);
-          popup.document.close();
-          chatPopup = popup;
+  // The pop-out's script did not run: the browser refused it (the page's
+  // script-src, or an integrity that does not match) or it never arrived. Said in
+  // the pop-out itself, so it does not sit blank, and here for a developer.
+  function showPopoutFailure(popup, scriptUrl) {
+    console.error(`[OSA] The pop-out could not load the widget from ${scriptUrl}: ` +
+      "this page's Content Security Policy (script-src) or the widget tag's integrity refused it, or it did not arrive.");
+    try {
+      const doc = popup.document;
+      if (!doc.body || doc.querySelector('.osa-popout-failure')) return;
+      const message = doc.createElement('p');
+      message.className = 'osa-popout-failure';
+      message.setAttribute('role', 'alert');
+      message.textContent = 'The assistant could not load in this window. Close it and use the chat on the page instead.';
+      doc.body.appendChild(message);
+    } catch (e) {
+      console.warn('[OSA] Could not show the pop-out\'s failure message:', e);
+    }
+  }
 
-          // Clean up reference when popup closes
-          const checkClosed = setInterval(() => {
-            if (popup.closed) {
-              clearInterval(checkClosed);
-              chatPopup = null;
-            }
-          }, 1000);
-        } catch (e) {
-          console.error('Failed to write popup content:', e);
-          popup.close();
-          alert('Failed to initialize the pop-out window. Please try again.');
-          return;
+  // Open chat in a new popup window. The pop-out is an about:blank window of this
+  // page's own origin, and so inherits this page's Content Security Policy: it
+  // runs no inline script, which a host page without script-src 'unsafe-inline'
+  // would refuse (#470). Its document is written without one, its presets are set
+  // on its window from here, and the widget arrives as a script element with this
+  // script's own address, integrity and crossorigin, which the host page's policy
+  // already allows, since it loaded this script.
+  function openPopout() {
+    // Reuse existing popup if still open
+    if (chatPopup && !chatPopup.closed) {
+      chatPopup.focus();
+      return;
+    }
+
+    const source = widgetScriptForPopout();
+    if (!source) {
+      console.warn('OSA Chat Widget: Could not find widget script tag for pop-out.');
+      alert('Could not find widget script URL. Pop-out is not available.');
+      return;
+    }
+    const scriptUrl = source.src;
+
+    // The pop-out is fullscreen, and is told where the script lives, as a copy with
+    // no address of its own would need to be.
+    const popupConfig = { ...CONFIG, fullscreen: true, widgetScriptUrl: scriptUrl };
+    // The pop-out fetches the community config again, which would replace a
+    // scheme the host page chose with the community's own; this marks it as the
+    // host's, so the pop-out keeps it (#469).
+    const hostColorScheme = _userSetKeys.has('colorScheme') ? CONFIG.colorScheme : null;
+
+    // Serialized before any window opens, so a config that cannot be is refused
+    // without leaving an empty one behind.
+    let configJson;
+    let datasetJson;
+    try {
+      configJson = JSON.stringify(popupConfig);
+      datasetJson = JSON.stringify(currentDataset);
+    } catch (e) {
+      console.error('Failed to serialize widget config:', e);
+      alert('Failed to prepare widget configuration for pop-out.');
+      return;
+    }
+
+    // Calculate responsive popup size
+    const width = Math.min(500, Math.floor(window.screen.availWidth * 0.9));
+    const height = Math.min(700, Math.floor(window.screen.availHeight * 0.9));
+    const left = Math.floor((window.screen.availWidth - width) / 2);
+    const top = Math.floor((window.screen.availHeight - height) / 2);
+    const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes`;
+
+    const popup = window.open('', '_blank', features);
+    if (!popup) {
+      alert('Please allow popups to open the chat in a new window.');
+      return;
+    }
+    try {
+      const doc = popup.document;
+      doc.write(popoutDocumentHtml());
+      doc.close();
+      // The presets the pop-out's init() reads, set before its script can run:
+      // the config, the host's color scheme, the dataset on screen (#477), and
+      // the tab the reader was on (#470), which the pop-out opens on.
+      popup.__OSA_CHAT_CONFIG__ = popup.JSON.parse(configJson);
+      popup.__OSA_HOST_COLOR_SCHEME__ = hostColorScheme;
+      popup.__OSA_DATASET__ = popup.JSON.parse(datasetJson);
+      popup.__OSA_TAB__ = activeTab;
+      const script = doc.createElement('script');
+      // The host page's own pin, when it has one: SRI, and the CORS mode a
+      // cross-origin script needs for the browser to check it.
+      for (const name of ['integrity', 'crossorigin']) {
+        if (source.hasAttribute(name)) script.setAttribute(name, source.getAttribute(name));
+      }
+      script.addEventListener('error', () => showPopoutFailure(popup, scriptUrl));
+      script.src = scriptUrl;
+      doc.body.appendChild(script);
+      chatPopup = popup;
+
+      // Clean up reference when popup closes
+      const checkClosed = setInterval(() => {
+        if (popup.closed) {
+          clearInterval(checkClosed);
+          chatPopup = null;
         }
-      } else {
-        alert('Please allow popups to open the chat in a new window.');
-      }
-    } finally {
-      // Reset button state
-      if (popoutBtn) {
-        popoutBtn.disabled = false;
-        popoutBtn.setAttribute('aria-busy', 'false');
-        popoutBtn.title = 'Open in new window';
-      }
+      }, 1000);
+    } catch (e) {
+      console.error('Failed to write popup content:', e);
+      popup.close();
+      alert('Failed to initialize the pop-out window. Please try again.');
     }
   }
 
@@ -7190,10 +7365,14 @@
       isOpen = true;
       const chatWindow = container.querySelector('.osa-chat-window');
       chatWindow?.classList.add('open');
+      // A pop-out opens on the tab its opener was on (#470). setTab is a no-op for
+      // a bubble community's pop-out, and takes a notebook the dataset cannot open
+      // back to chat.
+      if (window.__OSA_TAB__ === 'notebook') showTabAtOnce(container, 'notebook');
       // Surface any notice queued by an init-time failure (see loadUserSettings/loadHistory).
       flushPendingNotice(container);
       setTimeout(() => {
-        input?.focus();
+        if (activeTab === 'chat') input?.focus();
       }, 100);
     }
   }
