@@ -337,6 +337,24 @@ console.log('\nbubble mode\'s computed layout is exactly today\'s: outside sites
   assertEqual(windowStyle.bottom, '90px', "the chat window's bottom is 90px");
   assertEqual(windowStyle.right, '20px', "the chat window's right is 20px");
   assertEqual(windowStyle.maxHeight, 'calc(800px - 120px)', "the chat window's max-height is calc(100vh - 120px), today's formula");
+  const tooltipStyle = window.getComputedStyle(container.querySelector('.osa-chat-tooltip'));
+  assertEqual([tooltipStyle.right, tooltipStyle.bottom], ['86px', '28px'], "the collapsed label's place beside the 56px bubble is today's");
+}
+
+console.log('\nthe capsule\'s collapsed label sits beside the chat circle as it is drawn at rest (#490)');
+{
+  // The circle is drawn at 58px at rest, 20px from the window's edges (its left
+  // edge 78px in from the right), so the label's right edge goes 10px beyond that,
+  // as the bubble's does beside its 56px, and its center (29px + half its 39.5px
+  // height) meets the circle's (20 + 29 = 49px).
+  const config = configResponse({ launcher: 'capsule' });
+  const { window, widget } = loadWidget({ fetch: fetchReturning(config) });
+  widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: 'osa-test-capsule-label-place' });
+  widget.init();
+  const container = window.document.querySelector('.osa-chat-widget');
+  await waitUntil(() => container.querySelector('.osa-launcher-capsule'), 'capsule exists');
+  const tooltipStyle = window.getComputedStyle(container.querySelector('.osa-chat-tooltip'));
+  assertEqual([tooltipStyle.right, tooltipStyle.bottom], ['88px', '29px'], 'the label is 10px left of the resting circle, centered on it');
 }
 
 console.log('\nthe capsule\'s layout switches at the 601px breakpoint, at explicit widths');

@@ -13,6 +13,15 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ## [Unreleased]
 
+### Changed
+
+- **A larger capsule launcher at rest** (issue #490):
+  with the panel closed, a capsule community's chat circle is drawn 25% larger, 58px instead of 46px, so it is easier to see,
+  and settles to 46px as the panel opens, where the open layout is exactly as before;
+  with reduced motion it changes size at once.
+  A bubble community is unchanged.
+  See "Launcher" in `docs/community-widget.md`.
+
 ### Fixed
 
 - **A failed request no longer hangs Python in Safari** (issue #496):
@@ -27,6 +36,15 @@ the version being released and start a new `[Unreleased]` section above it.
   The notebook's own reads still fail in Safari and Firefox until eegprep-lean stops sending a `User-Agent` header,
   which makes each read a CORS preflight whose answer from zarr.nemar.org does not allow that header;
   they now fail at once, naming the URL.
+- **An OSA address without its trailing slash works** (issue #500). `widget.osc.earth/osa` and `develop-widget.osc.earth/osa` answered 522,
+  because the Worker's `/osa/*` routes do not match the bare path; each host now also routes `/osa*`, and the Worker answers `/osa` with a 308 to `/osa/`, keeping the query string, and a path outside the mount such as `/osafoo` with a 404.
+  `deploy/apache-api.osc.earth.conf` redirects `api.osc.earth/osa` and `/osa-dev` the same way; the server's copy is applied by hand.
+- **NEMAR's ERP images use the events they name.** On nemar.org a model asked for every stimulus of ERP CORE's N170 recording in one call,
+  sorted the rows into faces and scrambled faces while copying them into code, and averaged 282 "faces" of a recording that has 80.
+  The prompt now asks for one condition per `nemar_get_events` call, has the code assert each list's length against that call's `total_count`,
+  and says to keep the filter's slice as written when wrapping it in a function.
+- **NEMAR's spectra and ERPs leave out every EOG channel.** The prompt names ERP CORE's labels (`HEOG_left`, `HEOG_right`, `VEOG_lower`)
+  and says to match `EOG`, `ECG`, `EKG` and `EMG` anywhere in a label, since exact names missed all three.
 
 ## [0.8.14] - 2026-09-24
 

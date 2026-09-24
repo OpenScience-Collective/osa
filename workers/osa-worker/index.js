@@ -69,9 +69,7 @@ function stripMountPrefix(pathname, hostname) {
   if (!MOUNTED_HOSTS.has(hostname)) {
     return pathname;
   }
-  if (pathname === MOUNT_PREFIX) {
-    return '/';
-  }
+  // The bare "/osa" never reaches here: fetch() redirects it to "/osa/" (#500).
   if (pathname.startsWith(`${MOUNT_PREFIX}/`)) {
     return pathname.slice(MOUNT_PREFIX.length);
   }
@@ -559,6 +557,23 @@ export default {
 
     try {
       const url = new URL(request.url);
+      // The bare mount path (#500) has one canonical form, with its slash, as
+      // the notebook host's "/osa" already does: redirect rather than serve the
+      // root at two addresses. Only on a mounted host, where "/osa" is the mount
+      // and not a path of its own (see MOUNTED_HOSTS).
+      if (MOUNTED_HOSTS.has(url.hostname)) {
+        if (url.pathname === MOUNT_PREFIX) {
+          return new Response(null, {
+            status: 308,
+            headers: { ...corsHeaders, Location: `${MOUNT_PREFIX}/${url.search}` },
+          });
+        }
+        // The bare path's "/osa*" route also delivers "/osafoo/...", which is
+        // outside the mount: not found, rather than read as community "osafoo".
+        if (url.pathname.startsWith(MOUNT_PREFIX) && !url.pathname.startsWith(`${MOUNT_PREFIX}/`)) {
+          return new Response('Not Found', { status: 404, headers: corsHeaders });
+        }
+      }
       // Strip the widget.osc.earth/osa mount prefix (#437) once, up front.
       // Every matcher below is written unprefixed and sees this pathname,
       // never url.pathname directly, so it works the same reached via the
