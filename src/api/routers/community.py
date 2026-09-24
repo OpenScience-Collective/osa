@@ -423,6 +423,21 @@ class CommunityConfigResponse(BaseModel):
         ),
     )
 
+    @field_validator("runtime")
+    @classmethod
+    def _runtime_is_resolved(cls, value: RuntimeConfig | None) -> RuntimeConfig | None:
+        """A per-deployment map never reaches the widget, which reads one list and one
+        prelude and, handed a map, would run with no egress and no prelude and say
+        nothing (docs/adr/0013-the-chat-follows-its-deployment.md). The one caller
+        resolves it first; this makes a caller that forgets a server error instead."""
+        python = value.python if value else None
+        if python and (isinstance(python.fetch_allow, dict) or isinstance(python.prelude, dict)):
+            raise ValueError(
+                "runtime is served resolved for one deployment: call "
+                "RuntimeConfig.for_deployment(current_deployment()) first"
+            )
+        return value
+
 
 class FAQEntryResponse(BaseModel):
     """A single FAQ entry exposed via the public feed."""

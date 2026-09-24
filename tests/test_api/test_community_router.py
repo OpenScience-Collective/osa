@@ -16,6 +16,7 @@ import re
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from src.api.routers.community import (
     ChatRequest,
@@ -823,6 +824,21 @@ class TestCommunityConfigClientTools:
             ["https://zarr-test.nemar.org/"],
             "x = 2",
         )
+
+    @pytest.mark.parametrize("field", ["fetch_allow", "prelude"])
+    def test_an_unresolved_runtime_is_refused_rather_than_served(
+        self, client: TestClient, field: str
+    ) -> None:
+        """A response built from the configured runtime instead of the resolved one fails,
+        rather than handing the widget a map it would read as no egress or no prelude."""
+        from src.api.routers.community import CommunityConfigResponse
+
+        payload = client.get(f"/{self.COMMUNITY}/").json()
+        CommunityConfigResponse.model_validate(payload)  # the served shape is valid
+        value = payload["runtime"]["python"][field] or ("x = 1" if field == "prelude" else [])
+        payload["runtime"]["python"][field] = {"production": value, "develop": value}
+        with pytest.raises(ValidationError, match="served resolved for one deployment"):
+            CommunityConfigResponse.model_validate(payload)
 
     def test_the_kill_switch_hides_them(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch

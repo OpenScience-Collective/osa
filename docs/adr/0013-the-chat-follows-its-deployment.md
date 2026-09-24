@@ -27,6 +27,7 @@ the two containers share one `.env` on the host, and differ only in their port a
 Three fields take either one value or such a map: `extensions.mcp_servers[].url`, `runtime.python.fetch_allow` and `runtime.python.prelude`.
 A map must name both deployments and nothing else, and every deployment's prelude is compiled at config load, so a mistake in the develop value fails in production's checks too, rather than at the first staging reader's boot.
 The MCP client connects to `McpServer.resolved_url`; the public config response carries `RuntimeConfig.for_deployment(...)`, one `fetch_allow` list and one prelude, so the widget and the runtime bundle are unchanged.
+The response model refuses a runtime that still holds a map, so a caller that skips the resolution fails on the server instead of handing the widget a value it would read as no egress and no prelude.
 
 **The deployment is `OSA_DEPLOYMENT` when set, and otherwise `develop` for the container mounted at `/osa-dev` and `production` for anything else** (`src/core/config/deployment.py`).
 The fallback is deliberate, not a convenience: the develop container's launch script runs from the host, so a deploy of this repository does not change what it passes, and it already passes `ROOT_PATH=/osa-dev`.
