@@ -1529,6 +1529,103 @@ console.log('\nthree more widget colors: theme_text_color, accent_color and user
   }
 }
 
+console.log('\nevery classified surface and foreground resolves to the color this PR assigned it, against the REAL stylesheet');
+{
+  // Against the real, unmodified <style> block (injectStyles(), called by init()):
+  // a probe element carries the exact class/selector structure a mutation to the
+  // CSS text would break, inside a throwaway .osa-chat-widget container whose
+  // custom properties this test sets directly -- the same properties
+  // applyWidgetConfig() would have set from a resolved community config, without
+  // needing a config round trip for every one of the ~20 cases below.
+  //
+  // happy-dom's getComputedStyle does NOT match :hover or :focus (confirmed
+  // empirically: a real :focus() call is reflected in element.matches(':focus')
+  // but never changes getComputedStyle's result), so the seven hover/focus-gated
+  // foregrounds are checked against the stylesheet text instead, immediately
+  // below the computed-style table.
+  const { window, widget } = loadWidget();
+  widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: 'osa-test-css-audit' });
+  widget.init(); // injects the real STYLES block; nothing here awaits its (unused) fetch
+
+  function probe(customProps, html, selector) {
+    const container = window.document.createElement('div');
+    container.className = 'osa-chat-widget';
+    for (const [prop, value] of Object.entries(customProps)) {
+      container.style.setProperty(prop, value);
+    }
+    container.innerHTML = html;
+    window.document.body.appendChild(container);
+    return container.querySelector(selector);
+  }
+
+  const NEMAR_PROPS = {
+    '--osa-primary': '#5bbad5',
+    '--osa-primary-dark': '#42a1bc',
+    '--osa-on-primary': '#04121f',
+    '--osa-accent': '#257a92',
+    '--osa-user-bg': '#5bbad5',
+    '--osa-user-text': '#04121f',
+  };
+  const UNSET_PROPS = {};
+
+  // Surfaces: background painted with theme_color, text/icons on it. NEMAR sets
+  // theme_text_color (#04121f); left unset, the stylesheet's own white applies.
+  const SURFACES = [
+    { label: 'launcher button (.osa-chat-button)', html: '<button class="osa-chat-button">x</button>', selector: '.osa-chat-button' },
+    { label: 'header (.osa-chat-header)', html: '<div class="osa-chat-header">x</div>', selector: '.osa-chat-header' },
+    { label: 'header icon buttons (.osa-header-btn)', html: '<button class="osa-header-btn">x</button>', selector: '.osa-header-btn' },
+    { label: 'feedback Send (.osa-feedback-send)', html: '<button class="osa-feedback-send">x</button>', selector: '.osa-feedback-send' },
+    { label: 'chat Send (.osa-send-btn)', html: '<button class="osa-send-btn">x</button>', selector: '.osa-send-btn' },
+    { label: 'Settings Save (.osa-settings-btn-save)', html: '<button class="osa-settings-btn-save">x</button>', selector: '.osa-settings-btn-save' },
+    { label: 'the Run button (.osa-tool-actions button.osa-tool-run)', html: '<div class="osa-tool-actions"><button class="osa-tool-run">Run</button></div>', selector: '.osa-tool-run' },
+    { label: 'the re-run Run button (.osa-rerun-buttons button.osa-rerun-run)', html: '<div class="osa-rerun-buttons"><button class="osa-rerun-run">Run</button></div>', selector: '.osa-rerun-run' },
+  ];
+  for (const { label, html, selector } of SURFACES) {
+    const nemar = probe(NEMAR_PROPS, html, selector);
+    const unset = probe(UNSET_PROPS, html, selector);
+    assertEqual(window.getComputedStyle(nemar).color, '#04121f', `${label}: NEMAR-style text is theme_text_color`);
+    assertEqual(window.getComputedStyle(unset).color, '#ffffff', `${label}: unset falls back to white`);
+  }
+
+  // Foregrounds: theme_color used AS a foreground on the widget's white panel.
+  // NEMAR sets accent_color (#257a92, deliberately different from theme_color
+  // #5bbad5, so a mutation reverting one of these to --osa-primary directly is
+  // caught); left unset, --osa-accent's own default (var(--osa-primary)) applies.
+  const FOREGROUNDS = [
+    { label: 'message links (.osa-message-content a)', html: '<div class="osa-message-content"><a href="#">x</a></div>', selector: 'a', property: 'color' },
+    { label: 'citation links (.osa-citation a)', html: '<span class="osa-citation"><a href="#">x</a></span>', selector: 'a', property: 'color' },
+    { label: "the reader's own page-context checkbox (.osa-combined-footer input[type=checkbox])", html: '<div class="osa-combined-footer"><input type="checkbox"></div>', selector: 'input', property: 'accentColor' },
+    { label: 'the local-run note (.osa-execution-local-note)', html: '<div class="osa-execution-local-note">x</div>', selector: '.osa-execution-local-note', property: 'color' },
+    // The literal inline style attribute the widget's own settings template
+    // writes for the OpenRouter link (custom-model-field, applyWidgetConfig's
+    // sibling markup), copied verbatim so a change to either drifts this test.
+    { label: 'the OpenRouter link (inline style)', html: '<a href="#" style="color: var(--osa-accent); text-decoration: underline;">OpenRouter</a>', selector: 'a', property: 'color' },
+  ];
+  for (const { label, html, selector, property } of FOREGROUNDS) {
+    const nemar = probe(NEMAR_PROPS, html, selector);
+    const unset = probe(UNSET_PROPS, html, selector);
+    assertEqual(window.getComputedStyle(nemar)[property], '#257a92', `${label}: NEMAR-style is accent_color`);
+    assertEqual(window.getComputedStyle(unset)[property], '#2563eb', `${label}: unset tracks theme_color's own default`);
+  }
+  assert(SOURCE.includes('style="color: var(--osa-accent); text-decoration: underline;">OpenRouter</a>'),
+    'the OpenRouter link\'s inline style is exactly what the probe above copied');
+
+  // Hover/focus-gated foregrounds: not reachable through getComputedStyle under
+  // happy-dom (see the note above the probe() helper), so checked as source text.
+  const HOVER_AND_FOCUS_FOREGROUNDS = [
+    ['sources hover (.osa-message-sources a:hover)', '.osa-message-sources a:hover {\n      color: var(--osa-accent);'],
+    ["copy button hover (.osa-message-copy-btn:hover)", '.osa-message-copy-btn:hover {\n      color: var(--osa-accent);'],
+    ['feedback comment focus border (.osa-feedback-comment-input:focus)', '.osa-feedback-comment-input:focus {\n      outline: none;\n      border-color: var(--osa-accent);'],
+    ['chat input focus border (.osa-chat-input input:focus)', '.osa-chat-input input:focus {\n      border-color: var(--osa-accent);'],
+    ['footer-powered link hover (.osa-footer-powered a:hover)', '.osa-combined-footer .osa-footer-powered a:hover {\n      color: var(--osa-accent);'],
+    ['settings input focus border (.osa-settings-input:focus)', '.osa-settings-input:focus {\n      border-color: var(--osa-accent);'],
+    ['settings select focus border (.osa-settings-select:focus)', '.osa-settings-select:focus {\n      border-color: var(--osa-accent);'],
+  ];
+  for (const [label, needle] of HOVER_AND_FOCUS_FOREGROUNDS) {
+    assert(SOURCE.includes(needle), `${label}: the rule reads var(--osa-accent), not var(--osa-primary) or a fixed color`);
+  }
+}
+
 console.log('\napplyWidgetConfig() warns on a malformed color instead of dropping it in silence, for every color field');
 {
   // console.warn is the real widget's own real call: the widget script runs with the
