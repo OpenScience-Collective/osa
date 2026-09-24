@@ -23,8 +23,10 @@ widget:
   # page search button. White text on it is only 2.2:1, so unlike the platform default
   # this surface pairs with a dark theme_text_color rather than white.
   theme_color: "#5bbad5"
-  # That search button's own text color (nemar.org's --brand-navy-dark equivalent):
-  # 8.5:1 on theme_color, and still 6.3:1 on the widget's derived hover shade.
+  # That search button's own text color: nemar.org hard-codes color: #04121f on
+  # .hero__search button rather than naming it as a token (its tokens are
+  # --brand-navy #0b1a3a and --brand-navy-deep #06112a, neither of which is this
+  # value). 8.5:1 on theme_color, and still 6.3:1 on the widget's derived hover shade.
   theme_text_color: "#04121f"
   # The reader's own bubbles in the same teal, with the same dark text, rather than the
   # platform's blue-with-white-text.
