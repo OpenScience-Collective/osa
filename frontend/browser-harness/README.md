@@ -270,5 +270,29 @@ The pop-out step reloads the page with `'unsafe-inline'` added to `script-src`, 
 Today's pop-out is written into `about:blank`, inherits its opener's policy and runs its scripts inline,
 so on a host page without `'unsafe-inline'` it opens blank: a limitation of the pop-out itself, left for its redesign (#470).
 
+### The notebook tab
+
+```bash
+uv run python frontend/browser-harness/widget_e2e.py 8801 --nemar
+bun frontend/browser-harness/notebook-tab-check.mjs http://127.0.0.1:8801 [screenshot-dir]
+```
+
+drives the capsule's notebook tab (#470) against the live develop notebook, `develop-notebook.osc.earth/osa`, which admits loopback pages to frame it.
+The harness's policy allows both notebook hosts in `frame-src`, as a host page must.
+It needs the network, for the notebook site and the Pyodide it loads, so it is not in CI;
+`frontend/test-widget-notebook-tab.js`, which is, covers the widget's logic in happy-dom.
+
+Measured 2026-09-24 in Chrome 153, with a cold profile:
+
+- the capsule's circles are 46px, 15% larger than the 40px Send button, and the filled indicator sits on the open tab's circle, sliding from chat to the notebook
+- the notebook reported ready 2.8 s after the click, every message came from the notebook's origin, and setup finished ("Python ready") 7.5 s after it, with no overlay left over the notebook
+- `setColorScheme('dark')` was applied inside the notebook, which said so
+- 80 ms into a switch to chat, both views are mid-fade; switching back finds the same frame, never reloaded
+- dragging the resize handle across the frame widens the panel to 940px, past the bubble's 600px
+- setting the capsule's width limit back to the bubble's 600px fails the resize step;
+  removing the rule that turns the frame's pointer events off during a drag does not, because Chrome keeps a drag with the page where it began, so that rule is checked in happy-dom only
+
+Also measured, with a one-off page: a frame refused by the host page's own `frame-src` fires `load` once and never speaks, which is why the widget's shorter fallback timeout counts from the load (ADR 0012).
+
 `notebook-bench.js` times any page's boot, cold and warm, reusing `chrome.js`'s own Chrome-driving primitives;
 see ADR 0010 (`docs/adr/0010-the-notebook-surface.md`) and `.context/notebook-surface-measurements.md` for what it was built to measure.
