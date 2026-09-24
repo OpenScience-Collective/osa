@@ -874,6 +874,13 @@ class TestDatasetSuggestedQuestions:
         with pytest.raises(ValidationError, match=match):
             DatasetSuggestedQuestion(text=text)
 
+    @pytest.mark.parametrize("bad", [42, None, True, ["a"], {"x": 1}])
+    def test_non_string_text_is_a_validation_error(self, bad: object) -> None:
+        """An unquoted YAML number, a null or a list where the text belongs fails as a
+        config error naming the field, not as an AttributeError from the stripping."""
+        with pytest.raises(ValidationError, match="text"):
+            DatasetSuggestedQuestion(text=bad)
+
     def test_unknown_field_is_refused(self) -> None:
         """A misspelled needs_zarr must fail loudly, not silently show the question everywhere."""
         with pytest.raises(ValidationError, match="needs_zar"):
