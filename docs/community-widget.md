@@ -417,6 +417,9 @@ and opened blank on a page whose policy did not allow `'unsafe-inline'`.
 - The notebook tab in the pop-out needs the same `frame-src` as the panel's (above).
 - A pop-out whose script the browser refuses says so in its window ("The assistant could not load in this window"),
   and the page's console names the address it could not load.
+- A policy that allows scripts only by nonce is not supported, here or for the widget as a whole:
+  the widget adds script elements of its own, the pop-out's and the browser runtime's, without one.
+  Allow the widget's host in `script-src`, as the policy above does.
 
 Testing: `frontend/test-widget-popout.js` runs the real widget source in happy-dom windows, a host page and the pop-out it opens,
 with the widget loaded by its script tag in both,
