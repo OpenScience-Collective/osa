@@ -31,12 +31,14 @@ from src.core.config.community import (
     ExtensionsConfig,
     GitHubConfig,
     McpServer,
+    NotebookConfig,
     PythonPlugin,
     PythonRuntimeConfig,
     RuntimeConfig,
     RuntimeLimits,
     WidgetConfig,
 )
+from src.core.config.notebook_lock import NOTEBOOK_SITE_PYODIDE_VERSION
 
 
 class TestDocSource:
@@ -2455,4 +2457,85 @@ class TestCommunityConfigClientTools:
                     ]
                 ),
                 runtime=_python_runtime_config(),
+            )
+
+
+class TestNotebookConfig:
+    """Tests for the notebook.osc.earth starter config block (issue #453)."""
+
+    def test_a_minimal_notebook_config_validates(self) -> None:
+        config = NotebookConfig(starter="notebook/starter.ipynb", dataset_pattern="^nm[0-9]{6}$")
+        assert config.dataset_pattern == "^nm[0-9]{6}$"
+
+    def test_an_unanchored_pattern_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="anchored"):
+            NotebookConfig(starter="notebook/starter.ipynb", dataset_pattern="nm[0-9]{6}")
+
+    def test_a_pattern_missing_only_the_trailing_dollar_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="anchored"):
+            NotebookConfig(starter="notebook/starter.ipynb", dataset_pattern="^nm[0-9]{6}")
+
+    def test_a_pattern_that_does_not_compile_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="does not compile"):
+            NotebookConfig(starter="notebook/starter.ipynb", dataset_pattern="^nm[0-9{6}$")
+
+    def test_starter_must_be_a_relative_ipynb_path(self) -> None:
+        with pytest.raises(ValidationError):
+            NotebookConfig(starter="/etc/passwd", dataset_pattern="^nm[0-9]{6}$")
+        with pytest.raises(ValidationError):
+            NotebookConfig(starter="notebook/starter.json", dataset_pattern="^nm[0-9]{6}$")
+
+    def test_extra_fields_are_forbidden(self) -> None:
+        with pytest.raises(ValidationError):
+            NotebookConfig(
+                starter="notebook/starter.ipynb",
+                dataset_pattern="^nm[0-9]{6}$",
+                extra_field="nope",
+            )
+
+
+class TestCommunityConfigNotebook:
+    """Tests for CommunityConfig's notebook/runtime.python.pyodide_version cross-check."""
+
+    def test_no_notebook_no_pyodide_pin_required(self) -> None:
+        config = CommunityConfig(id="test", name="Test", description="Test")
+        assert config.notebook is None
+
+    def test_notebook_with_matching_pyodide_pin_accepted(self) -> None:
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            notebook=NotebookConfig(
+                starter="notebook/starter.ipynb", dataset_pattern="^nm[0-9]{6}$"
+            ),
+            runtime=_python_runtime_config(),
+        )
+        assert config.notebook is not None
+        assert config.runtime.python.pyodide_version == NOTEBOOK_SITE_PYODIDE_VERSION
+
+    def test_notebook_with_no_runtime_at_all_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="One notebook site loads one Pyodide"):
+            CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                notebook=NotebookConfig(
+                    starter="notebook/starter.ipynb", dataset_pattern="^nm[0-9]{6}$"
+                ),
+            )
+
+    def test_notebook_with_a_different_pyodide_pin_is_rejected(self) -> None:
+        mismatched = RuntimeConfig(
+            python=PythonRuntimeConfig(pyodide_version="0.28.3", limits=RuntimeLimits())
+        )
+        with pytest.raises(ValidationError, match="One notebook site loads one Pyodide"):
+            CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                notebook=NotebookConfig(
+                    starter="notebook/starter.ipynb", dataset_pattern="^nm[0-9]{6}$"
+                ),
+                runtime=mismatched,
             )
