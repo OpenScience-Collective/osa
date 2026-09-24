@@ -170,6 +170,11 @@ the `extensions.client_tools` and `runtime.python` config keys, the lock
 overlay for wheels Pyodide does not ship, the embedding page's
 Content-Security-Policy, and the measured first-load cost.
 
+To customize a community's widget (title, greeting, suggested questions, logo,
+and its colors: the surface, the text on it, the accent used on the white
+panel, and the reader's own message bubble), see
+[`docs/community-widget.md`](docs/community-widget.md).
+
 ## Documentation
 
 Full documentation is available at **[docs.osc.earth/osa](https://docs.osc.earth/osa/)**.
