@@ -13,6 +13,8 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ## [Unreleased]
 
+## [0.8.14] - 2026-09-24
+
 ### Added
 
 - **The widget's pop-out carries the notebook** (issue #470):
