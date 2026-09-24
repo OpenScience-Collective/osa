@@ -212,6 +212,9 @@ jobs:
       - name: Run the dataset question tests on a real DOM
         run: bun frontend/test-widget-dataset-questions.js
 
+      - name: Run the pop-out tests on a real DOM
+        run: bun frontend/test-widget-popout.js
+
       # What only a browser can check: Pyodide under a real Content-Security-Policy,
       # the egress guard on a real worker global, and NEMAR's lock overlay loaded by
       # URL with each wheel's sha256 enforced (a valid wheel with other bytes must

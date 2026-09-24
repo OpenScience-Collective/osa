@@ -1172,7 +1172,7 @@ console.log('\nthe runtime bundle is found beside the script, or not at all');
   assertEqual(api.runtimeBundleUrl(), null, 'an inline copy with no URL finds nothing');
   widget.setConfig({ widgetScriptUrl: 'https://cdn.example/osa@v1/frontend/osa-chat-widget.js' });
   assertEqual(api.runtimeBundleUrl(), 'https://cdn.example/osa@v1/frontend/osa-runtime.bundle.js',
-    'the pop-out, which runs inline, finds it through the URL it is handed');
+    'a copy with no URL of its own finds it through the URL it is handed');
   ({ api, widget } = loadWidget({ scriptSrc: null }));
   assertEqual(await api.loadRuntimeBundle(), null, 'no URL at all: resolves null rather than throwing');
   assertEqual(widget.getBrowserRuntimeStatus().state, 'off', 'a community without tools reports off');

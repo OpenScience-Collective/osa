@@ -547,7 +547,7 @@ console.log('\nthe dark accent: NEMAR\'s teal as it is; a theme color too dark t
 
 console.log('\na pop-out keeps the scheme its host page chose; otherwise it follows the community');
 {
-  // What openPopout writes before the widget script runs in the new window.
+  // The presets openPopout sets on the new window before its widget script runs.
   const hostChose = await startWidget(configResponse({ color_scheme: 'auto' }), {
     prefersColorScheme: 'light',
     preset: {
@@ -579,34 +579,8 @@ console.log('\na pop-out keeps the scheme its host page chose; otherwise it foll
   assertEqual(bogus.widget.getConfig().colorScheme, 'light', 'leaving the default');
 }
 
-console.log('\nopenPopout writes the host\'s choice into the pop-out, and only the host\'s');
-{
-  // window.open is wrapped to hand back a document whose write() is recorded,
-  // the way test-widget-capsule.js observes window.open's URL: what is under
-  // test is the HTML the widget writes, not a pop-out's behavior.
-  async function popoutHtml({ hostScheme }) {
-    const config = configResponse({ color_scheme: 'auto' });
-    const fetch = async (url) => {
-      if (String(url).endsWith('osa-chat-widget.js')) return new Response(SOURCE);
-      return fetchReturning(config)(url);
-    };
-    const { window, widget } = loadWidget({ fetch });
-    widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: `osa-test-popout-${hostScheme}` });
-    if (hostScheme) widget.setColorScheme(hostScheme);
-    widget.init();
-    const container = window.document.querySelector('.osa-chat-widget');
-    await waitUntil(() => container.querySelector('.osa-chat-input input').placeholder === config.widget.placeholder, 'config loaded');
-    const written = [];
-    window.open = () => ({ closed: false, close() {}, document: { write: (html) => written.push(html), close() {} } });
-    container.querySelector('.osa-popout-btn').click();
-    await waitUntil(() => written.length > 0, 'the pop-out was written');
-    return written.join('');
-  }
-  const chosen = await popoutHtml({ hostScheme: 'dark' });
-  assert(chosen.includes('window.__OSA_HOST_COLOR_SCHEME__ = "dark";'), 'a host that chose dark: the pop-out is told so');
-  const silent = await popoutHtml({ hostScheme: null });
-  assert(silent.includes('window.__OSA_HOST_COLOR_SCHEME__ = null;'), 'a host that chose nothing: the pop-out is told nothing');
-}
+// What openPopout hands the pop-out, the host's choice or none, and a later choice
+// reaching it, are frontend/test-widget-popout.js's, with a real pop-out window.
 
 console.log('\n' + '='.repeat(60));
 console.log(`Total: ${passed + failed}   Passed: ${passed}   Failed: ${failed}`);

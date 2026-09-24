@@ -266,9 +266,9 @@ Measured 2026-09-24 in Chrome 153:
   and the host switching to dark reaches the open pop-out
 - each of those fails when the widget line it depends on is removed (seven mutations)
 
-The pop-out step reloads the page with `'unsafe-inline'` added to `script-src`, which nemar.org's live policy allows and this harness's stricter one does not.
-Today's pop-out is written into `about:blank`, inherits its opener's policy and runs its scripts inline,
-so on a host page without `'unsafe-inline'` it opens blank: a limitation of the pop-out itself, left for its redesign (#470).
+The pop-out step runs under the harness's own policy, which has no `'unsafe-inline'`, and first checks that the page refuses an inline script.
+The pop-out is an `about:blank` window that inherits its opener's policy, and it loads the widget by its address (#470),
+so it needs nothing the page itself does not; the widget as it was before that change times out waiting for the pop-out's widget here.
 
 ### The notebook tab
 

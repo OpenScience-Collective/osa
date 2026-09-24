@@ -95,8 +95,10 @@
     fullscreen: false,
     // Streaming responses - enable progressive text display for better UX
     streamingEnabled: true,
-    // Where this script was loaded from, for a copy that runs inline (the
-    // pop-out) and so cannot tell. The browser runtime is found next to it.
+    // Where this script was loaded from, for a copy that cannot tell (one run
+    // without a script URL of its own). The browser runtime is found next to it.
+    // The pop-out loads the script by its address (#470), so it can tell, and is
+    // handed this as well.
     widgetScriptUrl: null
   };
 
@@ -285,8 +287,11 @@
     }
   }
 
-  // Store script URL at load time for reliable pop-out
-  const WIDGET_SCRIPT_URL = document.currentScript?.src || null;
+  // This script's own element and address, kept at load time (document.currentScript
+  // is null once the script has run). The pop-out loads the same address with the
+  // element's integrity and crossorigin (#470), read when it opens.
+  const WIDGET_SCRIPT = document.currentScript || null;
+  const WIDGET_SCRIPT_URL = WIDGET_SCRIPT?.src || null;
 
   // The browser Python runtime ships as a separate file, loaded only for a
   // community that configures client tools, and verified against this hash.
@@ -3011,11 +3016,14 @@
   // An open pop-out has no host page of its own to call setDataset, so it is told
   // the dataset on screen when it opens (window.__OSA_DATASET__, in openPopout) and
   // again whenever the host page names another, as applyColorSchemeEverywhere does
-  // for the color scheme (#477: its suggestions are about the dataset).
+  // for the color scheme (#477: its suggestions are about the dataset). A pop-out
+  // whose script is still loading has no API yet, and its init() reads the preset,
+  // over anything its API was told first, so the preset is kept current too.
   function forwardDatasetToPopout() {
     if (!chatPopup || chatPopup.closed) return;
     let popupWidget = null;
     try {
+      chatPopup.__OSA_DATASET__ = toPopupRealm(chatPopup, currentDataset);
       popupWidget = chatPopup.OSAChatWidget;
     } catch (e) {
       console.warn('[OSA] Could not reach the pop-out to pass the dataset on:', e);
@@ -3965,8 +3973,8 @@
     oom: 'Stopped: out of memory',
   });
 
-  // Where the runtime bundle lives: next to this script. The pop-out window
-  // runs this script inline, so it is handed the URL through its config.
+  // Where the runtime bundle lives: next to this script. A copy with no script
+  // URL of its own is handed one through its config (widgetScriptUrl).
   // SRI pins the bytes, so which URL serves them is not a trust decision.
   function runtimeBundleUrl() {
     const base = WIDGET_SCRIPT_URL || CONFIG.widgetScriptUrl;
@@ -4980,17 +4988,19 @@
 
   // After the host page changes the scheme: this page's widget, if mounted, and an
   // open pop-out, which is its own copy of the widget and has no host page of its
-  // own to tell it. The pop-out shares this page's origin (it is written from here),
+  // own to tell it. The pop-out shares this page's origin (it is opened from here),
   // so its API is reachable; a pop-out still loading has no API yet and reads the
-  // scheme from its preset instead (see openPopout). Reaching the pop-out and the
-  // pop-out applying the scheme fail for different reasons, so they are reported
-  // apart: the second is a bug in the pop-out's own copy of this code.
+  // scheme from its preset instead (see openPopout), which is kept current here for
+  // that reason. Reaching the pop-out and the pop-out applying the scheme fail for
+  // different reasons, so they are reported apart: the second is a bug in the
+  // pop-out's own copy of this code.
   function applyColorSchemeEverywhere() {
     const container = document.querySelector('.osa-chat-widget');
     if (container) applyColorScheme(container);
     if (!chatPopup || chatPopup.closed) return;
     let popupWidget = null;
     try {
+      chatPopup.__OSA_HOST_COLOR_SCHEME__ = CONFIG.colorScheme;
       popupWidget = chatPopup.OSAChatWidget;
     } catch (e) {
       console.warn('[OSA] Could not reach the pop-out to pass the color scheme on:', e);
@@ -6833,106 +6843,28 @@
     }
   }
 
-  // Open chat in a new popup window
-  async function openPopout() {
-    const popoutBtn = document.querySelector('.osa-popout-btn');
-
-    // Reuse existing popup if still open
-    if (chatPopup && !chatPopup.closed) {
-      chatPopup.focus();
-      return;
+  // The script element the pop-out copies (#470): this script's own, or, for a copy
+  // that has none (run inline by an embedder), the page's widget tag.
+  function widgetScriptForPopout() {
+    if (WIDGET_SCRIPT && WIDGET_SCRIPT.src) return WIDGET_SCRIPT;
+    const scripts = document.querySelectorAll('script[src*="osa-chat-widget"]');
+    if (scripts.length > 1) {
+      console.warn(`OSA Chat Widget: Found ${scripts.length} matching script tags, using the last one.`);
     }
+    return scripts.length ? scripts[scripts.length - 1] : null;
+  }
 
-    // Prevent double-clicks during async operation
-    if (popoutBtn?.disabled) return;
+  // A value, as the pop-out's own: serialized here and parsed by the pop-out's own
+  // JSON, so the pop-out holds plain data of its own realm rather than this page's
+  // objects, which it would otherwise share with a page that can change or go away.
+  function toPopupRealm(popup, value) {
+    return popup.JSON.parse(JSON.stringify(value));
+  }
 
-    if (popoutBtn) {
-      popoutBtn.disabled = true;
-      popoutBtn.setAttribute('aria-busy', 'true');
-      popoutBtn.title = 'Opening...';
-    }
-
-    try {
-      // Find the script URL (prefer stored URL, fallback to DOM query)
-      let scriptUrl = WIDGET_SCRIPT_URL;
-      if (!scriptUrl) {
-        const scripts = document.querySelectorAll('script[src*="osa-chat-widget"]');
-        if (scripts.length === 0) {
-          console.warn('OSA Chat Widget: Could not find widget script tag for pop-out.');
-          alert('Could not find widget script URL. Pop-out is not available.');
-          return;
-        }
-        if (scripts.length > 1) {
-          console.warn(`OSA Chat Widget: Found ${scripts.length} matching script tags, using the last one.`);
-        }
-        scriptUrl = scripts[scripts.length - 1].src;
-      }
-
-      // Fetch the script content
-      let scriptCode = '';
-      try {
-        const response = await fetch(scriptUrl);
-        if (!response.ok) {
-          console.error('[OSA] Failed to fetch widget script:', {
-            url: scriptUrl,
-            status: response.status,
-            statusText: response.statusText
-          });
-          alert(`Failed to load widget for pop-out (HTTP ${response.status}). Please try again.`);
-          return;
-        }
-        scriptCode = await response.text();
-      } catch (e) {
-        console.error('[OSA] Failed to fetch widget script:', {
-          url: scriptUrl,
-          error: e.message || e,
-          stack: e.stack
-        });
-        alert('Failed to load widget for pop-out. Please try again.');
-        return;
-      }
-
-      // Validate script content
-      if (!scriptCode || scriptCode.trim().length === 0) {
-        console.error('Widget script content is empty');
-        alert('Failed to load widget for pop-out. Please try again.');
-        return;
-      }
-
-      // Create popup config with fullscreen mode. The pop-out runs this script
-      // inline, so it is told where the script lives: the runtime bundle is
-      // found next to it.
-      const popupConfig = { ...CONFIG, fullscreen: true, widgetScriptUrl: scriptUrl };
-      // The pop-out fetches the community config again, which would replace a
-      // scheme the host page chose with the community's own; this marks it as the
-      // host's, so the pop-out keeps it (#469).
-      const hostColorScheme = _userSetKeys.has('colorScheme') ? CONFIG.colorScheme : null;
-
-      // Serialize config safely (escape script-breaking sequences)
-      let configJson;
-      let datasetJson;
-      try {
-        configJson = JSON.stringify(popupConfig)
-          .replace(/</g, '\\u003c')
-          .replace(/>/g, '\\u003e');
-        datasetJson = JSON.stringify(currentDataset)
-          .replace(/</g, '\\u003c')
-          .replace(/>/g, '\\u003e');
-      } catch (e) {
-        console.error('Failed to serialize widget config:', e);
-        alert('Failed to prepare widget configuration for pop-out.');
-        return;
-      }
-
-      // Calculate responsive popup size
-      const width = Math.min(500, Math.floor(window.screen.availWidth * 0.9));
-      const height = Math.min(700, Math.floor(window.screen.availHeight * 0.9));
-      const left = Math.floor((window.screen.availWidth - width) / 2);
-      const top = Math.floor((window.screen.availHeight - height) / 2);
-      const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes`;
-
-      // Create the popup HTML with config set BEFORE the widget script runs
-      const popupHtml = `<!DOCTYPE html>
+  // The pop-out's document: no script of its own, inline or otherwise. openPopout
+  // adds the widget's script element to it, by address.
+  function popoutDocumentHtml() {
+    return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -6945,53 +6877,123 @@
       height: 100vh;
       overflow: hidden;
     }
+    .osa-popout-failure {
+      margin: 0;
+      padding: 24px;
+      font: 14px/1.5 system-ui, -apple-system, sans-serif;
+      color: #1f2937;
+    }
   </style>
 </head>
-<body>
-  <script>
-    // Pre-configure widget before it initializes
-    window.__OSA_CHAT_CONFIG__ = ${configJson};
-    window.__OSA_HOST_COLOR_SCHEME__ = ${JSON.stringify(hostColorScheme)};
-    window.__OSA_DATASET__ = ${datasetJson};
-  <\/script>
-  <script>
-    // Widget code (will pick up __OSA_CHAT_CONFIG__ if present)
-    ${scriptCode}
-  <\/script>
-</body>
+<body></body>
 </html>`;
+  }
 
-      // Open the popup window
-      const popup = window.open('', '_blank', features);
-      if (popup) {
-        try {
-          popup.document.write(popupHtml);
-          popup.document.close();
-          chatPopup = popup;
+  // The pop-out's script did not run: the browser refused it (the page's
+  // script-src, or an integrity that does not match) or it never arrived. Said in
+  // the pop-out itself, so it does not sit blank, and here for a developer.
+  function showPopoutFailure(popup, scriptUrl) {
+    console.error(`[OSA] The pop-out could not load the widget from ${scriptUrl}: ` +
+      "this page's Content Security Policy (script-src) or the widget tag's integrity refused it, or it did not arrive.");
+    try {
+      const doc = popup.document;
+      if (!doc.body || doc.querySelector('.osa-popout-failure')) return;
+      const message = doc.createElement('p');
+      message.className = 'osa-popout-failure';
+      message.setAttribute('role', 'alert');
+      message.textContent = 'The assistant could not load in this window. Close it and use the chat on the page instead.';
+      doc.body.appendChild(message);
+    } catch (e) {
+      console.warn('[OSA] Could not show the pop-out\'s failure message:', e);
+    }
+  }
 
-          // Clean up reference when popup closes
-          const checkClosed = setInterval(() => {
-            if (popup.closed) {
-              clearInterval(checkClosed);
-              chatPopup = null;
-            }
-          }, 1000);
-        } catch (e) {
-          console.error('Failed to write popup content:', e);
-          popup.close();
-          alert('Failed to initialize the pop-out window. Please try again.');
-          return;
+  // Open chat in a new popup window. The pop-out is an about:blank window of this
+  // page's own origin, and so inherits this page's Content Security Policy: it
+  // runs no inline script, which a host page without script-src 'unsafe-inline'
+  // would refuse (#470). Its document is written without one, its presets are set
+  // on its window from here, and the widget arrives as a script element with this
+  // script's own address, integrity and crossorigin, which the host page's policy
+  // already allows, since it loaded this script.
+  function openPopout() {
+    // Reuse existing popup if still open
+    if (chatPopup && !chatPopup.closed) {
+      chatPopup.focus();
+      return;
+    }
+
+    const source = widgetScriptForPopout();
+    if (!source) {
+      console.warn('OSA Chat Widget: Could not find widget script tag for pop-out.');
+      alert('Could not find widget script URL. Pop-out is not available.');
+      return;
+    }
+    const scriptUrl = source.src;
+
+    // The pop-out is fullscreen, and is told where the script lives, as a copy with
+    // no address of its own would need to be.
+    const popupConfig = { ...CONFIG, fullscreen: true, widgetScriptUrl: scriptUrl };
+    // The pop-out fetches the community config again, which would replace a
+    // scheme the host page chose with the community's own; this marks it as the
+    // host's, so the pop-out keeps it (#469).
+    const hostColorScheme = _userSetKeys.has('colorScheme') ? CONFIG.colorScheme : null;
+
+    // Serialized before any window opens, so a config that cannot be is refused
+    // without leaving an empty one behind.
+    let configJson;
+    let datasetJson;
+    try {
+      configJson = JSON.stringify(popupConfig);
+      datasetJson = JSON.stringify(currentDataset);
+    } catch (e) {
+      console.error('Failed to serialize widget config:', e);
+      alert('Failed to prepare widget configuration for pop-out.');
+      return;
+    }
+
+    // Calculate responsive popup size
+    const width = Math.min(500, Math.floor(window.screen.availWidth * 0.9));
+    const height = Math.min(700, Math.floor(window.screen.availHeight * 0.9));
+    const left = Math.floor((window.screen.availWidth - width) / 2);
+    const top = Math.floor((window.screen.availHeight - height) / 2);
+    const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes`;
+
+    const popup = window.open('', '_blank', features);
+    if (!popup) {
+      alert('Please allow popups to open the chat in a new window.');
+      return;
+    }
+    try {
+      const doc = popup.document;
+      doc.write(popoutDocumentHtml());
+      doc.close();
+      // The presets the pop-out's init() reads, set before its script can run:
+      // the config, the host's color scheme, and the dataset on screen (#477).
+      popup.__OSA_CHAT_CONFIG__ = popup.JSON.parse(configJson);
+      popup.__OSA_HOST_COLOR_SCHEME__ = hostColorScheme;
+      popup.__OSA_DATASET__ = popup.JSON.parse(datasetJson);
+      const script = doc.createElement('script');
+      // The host page's own pin, when it has one: SRI, and the CORS mode a
+      // cross-origin script needs for the browser to check it.
+      for (const name of ['integrity', 'crossorigin']) {
+        if (source.hasAttribute(name)) script.setAttribute(name, source.getAttribute(name));
+      }
+      script.addEventListener('error', () => showPopoutFailure(popup, scriptUrl));
+      script.src = scriptUrl;
+      doc.body.appendChild(script);
+      chatPopup = popup;
+
+      // Clean up reference when popup closes
+      const checkClosed = setInterval(() => {
+        if (popup.closed) {
+          clearInterval(checkClosed);
+          chatPopup = null;
         }
-      } else {
-        alert('Please allow popups to open the chat in a new window.');
-      }
-    } finally {
-      // Reset button state
-      if (popoutBtn) {
-        popoutBtn.disabled = false;
-        popoutBtn.setAttribute('aria-busy', 'false');
-        popoutBtn.title = 'Open in new window';
-      }
+      }, 1000);
+    } catch (e) {
+      console.error('Failed to write popup content:', e);
+      popup.close();
+      alert('Failed to initialize the pop-out window. Please try again.');
     }
   }
 
