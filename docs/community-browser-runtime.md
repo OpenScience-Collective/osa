@@ -122,6 +122,30 @@ Treat each entry as a host a model-written program can be steered into sending c
 and assume it logs whatever arrives;
 do not allowlist a host that logs request paths somewhere sensitive.
 
+### Values per deployment
+
+`fetch_allow` and `prelude` each take one value, or one per deployment,
+for data that has a staging copy on a host production's does not serve
+([ADR 0013](adr/0013-the-chat-follows-its-deployment.md)):
+
+```yaml
+runtime:
+  python:
+    fetch_allow:
+      production:
+        - https://zarr.nemar.org/
+      develop:
+        - https://zarr-test.nemar.org/
+```
+
+A map names both deployments, `production` and `develop`, and nothing else; every deployment's prelude is compiled when the config loads.
+The public config response carries the values for the deployment serving it, one list and one prelude,
+so the runtime never sees a map.
+`extensions.mcp_servers[].url` takes the same shape.
+The backend is the develop deployment when `OSA_DEPLOYMENT=develop`,
+or, with that unset, when it is mounted at `/osa-dev`, which is how `deploy/auto-update-dev.sh` runs it;
+anything else is production.
+
 ## The lock overlay
 
 A wheel the Pyodide distribution does not ship
