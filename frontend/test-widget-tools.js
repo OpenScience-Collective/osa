@@ -1486,7 +1486,7 @@ console.log('\nthree more widget colors: theme_text_color, accent_color and user
   // Stylesheet defaults: white text on a theme_color surface, and the accent
   // tracks theme_color itself, both exactly today's behavior.
   assert(SOURCE.includes('--osa-on-primary: #ffffff;'), 'the stylesheet default for on-primary text stays white');
-  assert(SOURCE.includes('--osa-accent: var(--osa-primary);'), 'the stylesheet default for the accent tracks theme_color');
+  assert(SOURCE.includes('--osa-accent: var(--osa-accent-on-light, var(--osa-primary));'), 'the stylesheet default for the accent tracks theme_color');
   const cases = [
     {
       label: 'all three set',
@@ -1525,7 +1525,7 @@ console.log('\nthree more widget colors: theme_text_color, accent_color and user
     await waitUntil(() => container.style.getPropertyValue('--osa-primary') === widgetConfig.theme_color, `the theme is applied (${label})`);
     assertEqual(container.style.getPropertyValue('--osa-on-primary'), onPrimary, `${label}: on-primary text is ${onPrimary || 'left at the default'}`);
     assertEqual(container.style.getPropertyValue('--osa-user-text'), userText, `${label}: bubble text is ${userText || 'left at the default'}`);
-    assertEqual(container.style.getPropertyValue('--osa-accent'), accent, `${label}: accent is ${accent || 'left at the default (tracks theme_color)'}`);
+    assertEqual(container.style.getPropertyValue('--osa-accent-on-light'), accent, `${label}: accent is ${accent || 'left at the default (tracks theme_color)'}`);
   }
 }
 
@@ -1562,7 +1562,7 @@ console.log('\nevery classified surface and foreground resolves to the color thi
     '--osa-primary': '#5bbad5',
     '--osa-primary-dark': '#42a1bc',
     '--osa-on-primary': '#04121f',
-    '--osa-accent': '#257a92',
+    '--osa-accent-on-light': '#257a92',
     '--osa-user-bg': '#5bbad5',
     '--osa-user-text': '#04121f',
   };
@@ -1591,6 +1591,8 @@ console.log('\nevery classified surface and foreground resolves to the color thi
   // NEMAR sets accent_color (#257a92, deliberately different from theme_color
   // #5bbad5, so a mutation reverting one of these to --osa-primary directly is
   // caught); left unset, --osa-accent's own default (var(--osa-primary)) applies.
+  // The probe sets --osa-accent-on-light, the property applyWidgetConfig writes, so
+  // the stylesheet's own --osa-accent rule is what carries it to each foreground.
   const FOREGROUNDS = [
     { label: 'message links (.osa-message-content a)', html: '<div class="osa-message-content"><a href="#">x</a></div>', selector: 'a', property: 'color' },
     { label: 'citation links (.osa-citation a)', html: '<span class="osa-citation"><a href="#">x</a></span>', selector: 'a', property: 'color' },
@@ -1670,7 +1672,7 @@ console.log('\napplyWidgetConfig() warns on a malformed color instead of droppin
     }
 
     const properties = [
-      '--osa-primary', '--osa-primary-dark', '--osa-user-bg', '--osa-on-primary', '--osa-accent',
+      '--osa-primary', '--osa-primary-dark', '--osa-user-bg', '--osa-on-primary', '--osa-accent-on-light',
       '--osa-user-text', '--osa-disclaimer-color', '--osa-disclaimer-bg',
     ];
     for (const property of properties) {
@@ -1692,7 +1694,7 @@ console.log('\nan embedder\'s own color survives the server config, for every co
     { camelKey: 'themeColor', snakeKey: 'theme_color', property: '--osa-primary' },
     { camelKey: 'userBubbleColor', snakeKey: 'user_bubble_color', property: '--osa-user-bg' },
     { camelKey: 'themeTextColor', snakeKey: 'theme_text_color', property: '--osa-on-primary' },
-    { camelKey: 'accentColor', snakeKey: 'accent_color', property: '--osa-accent' },
+    { camelKey: 'accentColor', snakeKey: 'accent_color', property: '--osa-accent-on-light' },
     { camelKey: 'userBubbleTextColor', snakeKey: 'user_bubble_text_color', property: '--osa-user-text' },
   ];
   const EMBEDDER_VALUE = '#111111';

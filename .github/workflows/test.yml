@@ -87,6 +87,15 @@ jobs:
           uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=term \
             -m "not integration and not llm and not network"
 
+      # The widget's light and dark appearance in real Chrome (#469). The bug is the
+      # browser's own drawing of form controls on a dark host page, which the happy-dom
+      # suite cannot show. The check starts its own two widget_e2e.py servers (the
+      # default config, and the same with color_scheme: auto), so it needs this job's
+      # Python environment as well as Bun; the runner ships Chrome.
+      - name: Check the widget's light and dark appearance in headless Chrome
+        if: matrix.python-version == '3.12'
+        run: bun frontend/browser-harness/color-scheme-check.mjs --serve
+
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.12'
         uses: codecov/codecov-action@v4
@@ -184,6 +193,9 @@ jobs:
 
       - name: Run the capsule launcher tests on a real DOM
         run: bun frontend/test-widget-capsule.js
+
+      - name: Run the light and dark appearance tests on a real DOM
+        run: bun frontend/test-widget-color-scheme.js
 
       # What only a browser can check: Pyodide under a real Content-Security-Policy,
       # the egress guard on a real worker global, and NEMAR's lock overlay loaded by

@@ -701,6 +701,37 @@ class TestWidgetConfig:
         result = WidgetConfig(launcher="capsule").resolve("Test")
         assert result["launcher"] == "capsule"
 
+    def test_color_scheme_defaults_to_light_and_is_omitted(self) -> None:
+        """A community that never sets color_scheme resolves exactly as before it existed."""
+        widget = WidgetConfig()
+        assert widget.color_scheme == "light"
+        assert "color_scheme" not in widget.resolve("Test")
+
+    def test_color_scheme_auto_is_included(self) -> None:
+        result = WidgetConfig(color_scheme="auto").resolve("Test")
+        assert result["color_scheme"] == "auto"
+
+    @pytest.mark.parametrize("value", ["dark", "Auto", "system", ""])
+    def test_color_scheme_rejects_anything_but_light_or_auto(self, value: str) -> None:
+        """'dark' is refused on purpose: a forced-dark widget on a light page is a host
+        page's choice (setColorScheme), not a community default."""
+        with pytest.raises(ValidationError):
+            WidgetConfig(color_scheme=value)
+
+    @pytest.mark.parametrize("value", ["dark", "light", "system"])
+    def test_the_widget_response_can_only_carry_auto(self, value: str) -> None:
+        """The response model is its own guard, whichever code path builds it: 'light'
+        is omitted rather than sent, and 'dark' is never a community's to send."""
+        from src.api.routers.community import WidgetConfigResponse
+
+        # Built from resolve(), the way the config route builds it.
+        auto = WidgetConfigResponse(**WidgetConfig(color_scheme="auto").resolve("T"))
+        assert auto.color_scheme == "auto"
+        light = WidgetConfig().resolve("T")
+        assert WidgetConfigResponse(**light).color_scheme is None
+        with pytest.raises(ValidationError):
+            WidgetConfigResponse(**{**light, "color_scheme": value})
+
     def test_launcher_label_valid(self) -> None:
         """Should accept a short plain-text tooltip label."""
         widget = WidgetConfig(launcher_label="Explore NEMAR")

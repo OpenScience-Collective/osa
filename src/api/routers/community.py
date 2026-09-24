@@ -334,6 +334,12 @@ class WidgetConfigResponse(BaseModel):
     launcher_label: str | None = Field(
         default=None, description="Tooltip text beside the collapsed launcher"
     )
+    # Only "auto" is ever sent: resolve() omits the "light" default, and "dark" is a
+    # host page's choice (setColorScheme), never a community's.
+    color_scheme: Literal["auto"] | None = Field(
+        default=None,
+        description="'auto' to follow the reader's light or dark setting; omitted for the 'light' default",
+    )
 
 
 class OfferedModelResponse(BaseModel):

@@ -65,7 +65,7 @@ four at once:
 |---|---|---|---|
 | `theme_color` | hex `#RRGGBB` | platform blue `#2563eb` | Surface: launcher, header, Send, Run, and similar buttons. |
 | `theme_text_color` | hex `#RRGGBB` | white `#ffffff` | Text and icons on `theme_color` surfaces. |
-| `accent_color` | hex `#RRGGBB` | `theme_color` itself | `theme_color`'s hue used as a foreground on the white panel: links, borders, focus rings, checkbox `accent-color`. |
+| `accent_color` | hex `#RRGGBB` | `theme_color` itself | `theme_color`'s hue used as a foreground on the white panel: links, borders, focus rings, checkbox `accent-color`. The dark panel does not use it (see "Light and dark" below). |
 | `user_bubble_color` | hex `#RRGGBB` | platform blue `#2563eb` | Surface: the reader's own message bubbles. |
 | `user_bubble_text_color` | hex `#RRGGBB` | white `#ffffff` | Text in the reader's own message bubbles. |
 
@@ -73,7 +73,7 @@ four at once:
 
 Every text-on-surface pair (`theme_text_color` on `theme_color`,
 `user_bubble_text_color` on `user_bubble_color`, and `accent_color` on the
-widget's white panel) needs at least a 4.5:1 WCAG 2 contrast ratio, the same
+widget's white panel) needs at least a 4.5:1 contrast ratio under the Web Content Accessibility Guidelines (WCAG) 2, the same
 bar `tests/test_assistants/test_nemar_runtime.py::TestTheWidgetColors`
 enforces for NEMAR's own colors.
 Nothing in `WidgetConfig` checks this for a new community, so measure it
@@ -105,6 +105,65 @@ widget:
   user_bubble_text_color: "#04121f"
   accent_color: "#257a92"         # the same hue, darkened for foreground use on white
 ```
+
+## Light and dark
+
+The widget draws a light panel unless its community asks for more (issue #469).
+
+| Field | Type | Default | What it changes |
+|---|---|---|---|
+| `color_scheme` | `"light"` or `"auto"` | `"light"` | `"auto"` follows the reader's device setting (`prefers-color-scheme`), including a device that switches while the page is open. |
+
+```yaml
+widget:
+  color_scheme: auto
+```
+
+`resolve()` omits `color_scheme` for the `"light"` default, so a community that never sets it sends no key, and its widget's markup is exactly what it was before this field existed:
+no `osa-dark` class and no extra inline property, on a dark device too (`frontend/test-widget-color-scheme.js`).
+
+### The host page's own choice: `OSAChatWidget.setColorScheme(value)`
+
+A host page with its own theme switch passes the reader's choice on:
+
+```js
+OSAChatWidget.setColorScheme('dark');  // or 'light', or 'auto' to hand it back to the device
+```
+
+- It outranks the community's `color_scheme`, like any other embedder setting, and can be called before or after `OSAChatWidget.init()`.
+- Called before `init()`, the panel opens in that scheme with no flash of the other one.
+- It reaches an open pop-out too, and a pop-out opened afterward starts in it.
+- `'dark'` works for any community, including one that never set `color_scheme`: a host page with a dark theme of its own may always ask for a dark widget.
+- Anything other than `'light'`, `'dark'` or `'auto'` is ignored with a `console.warn` naming the accepted values; `setConfig({colorScheme})` takes the same three.
+- A browser without `matchMedia` leaves `'auto'` light, with a warning; Safari before 14, whose media queries offer only `addListener`, still follows the device.
+
+### What the dark panel changes
+
+Every surface, text and border color has a dark value, as do code blocks, tables, the error and warning banners, the tool panels, Settings and the tooltips.
+Raised surfaces (the panel, the launcher, the tooltips) also get a one-pixel edge, since a shadow alone vanishes against a dark host page.
+
+Two configured colors give way on the dark panel, because they were chosen to read on white:
+
+- **`accent_color`.** The dark panel uses `theme_color` itself as its foreground.
+  It is measured on both dark surfaces an accent is read on, the panel (`#111827`) and the assistant's bubble (`#1f2937`), where links sit.
+  NEMAR's teal reads at 8.0:1 and 6.6:1, where `#257a92` would be 3.6:1 and 3.0:1.
+  A `theme_color` under 4.5:1 on either is mixed with white, in 10% steps, until it reads on both; the platform blue becomes `#6692f1` (5.9:1 and 4.9:1).
+  Every color reads before it reaches white: black stops at `#999999`.
+- **`disclaimerColor` and `disclaimerBackground`.** The dark panel's disclaimer uses its own amber pair.
+
+`theme_color`, `theme_text_color` and the reader's bubble colors are unchanged: they are surfaces with their own text, and read the same on either panel.
+
+### What every community gets
+
+Before this change, a dark host page could darken parts of any community's light panel:
+the browser drew the chat input, the Settings fields and the scrollbars in the host's dark scheme,
+and text with no color of its own took the host page's light text color.
+Every widget now declares `color-scheme: light` (or `dark` under `osa-dark`) and gives its own text and fields explicit colors.
+On a light host page the only visible difference is that typed text, and any panel text that used to inherit the host page's color, is the widget's own near-black `#1f2937`.
+
+Testing: `frontend/test-widget-color-scheme.js` runs the real widget source in a happy-dom window,
+and `frontend/browser-harness/color-scheme-check.mjs --serve` checks the browser's own drawing of the fields in Chrome, against a dark host page (see the harness README).
+Both run in CI.
 
 ## Launcher: the capsule, the notebook icon, and the high-performance computing (HPC) placeholder
 
@@ -233,6 +292,7 @@ field: once an embedder sets `themeColor`, no community config value for
 | `user_bubble_text_color` | `userBubbleTextColor` |
 | `launcher` | `launcher` |
 | `launcher_label` | `launcherLabel` |
+| `color_scheme` | `colorScheme` (also `'dark'`; see `setColorScheme` above) |
 
 ```html
 <script src="https://demo.osc.earth/osa-chat-widget.js" data-no-auto-init></script>

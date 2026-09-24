@@ -59,6 +59,11 @@
     // Tooltip text beside the collapsed launcher. null keeps the hardcoded
     // "Ask me about <title>" every community has always had.
     launcherLabel: null,
+    // The widget's appearance (#469): 'light' (every community's default), 'auto'
+    // (follow the reader's device), or 'dark'. The community config offers 'light'
+    // or 'auto'; a host page with its own theme switch passes the reader's choice
+    // with OSAChatWidget.setColorScheme, which outranks the community's value.
+    colorScheme: 'light',
     // The notebook site's base URL (a sibling PR builds it); setDataset's active
     // notebook button opens `${notebookUrl}open.html?community=...&dataset=...`.
     // /osa/ names this widget's project on the shared notebook.osc.earth plane,
@@ -277,8 +282,11 @@
       --osa-on-primary: #ffffff;
       /* --osa-primary used as a FOREGROUND on the white panel (links, borders, focus
          rings, accent-color). Tracks --osa-primary by default, so an unset accent_color
-         changes nothing: this is exactly today's behavior. */
-      --osa-accent: var(--osa-primary);
+         changes nothing: this is exactly today's behavior. accent_color arrives as the
+         inline --osa-accent-on-light, not as --osa-accent itself: an inline value would
+         outrank the dark rule below, which has to replace it (a color chosen to read
+         on white is often too dark to read on the dark panel). */
+      --osa-accent: var(--osa-accent-on-light, var(--osa-primary));
       --osa-bg: #ffffff;
       --osa-text: #1f2937;
       --osa-text-light: #6b7280;
@@ -287,6 +295,10 @@
       --osa-user-text: #ffffff;
       --osa-assistant-bg: #f3f4f6;
       --osa-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+      /* The widget draws its own light (or, with .osa-dark, dark) surfaces, so the
+         browser's own parts (scrollbars, native inputs, checkboxes) have to match
+         them rather than a dark host page's color-scheme (#469). */
+      color-scheme: light;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       font-size: 14px;
       line-height: 1.5;
@@ -531,6 +543,9 @@
       min-width: 300px;
       min-height: 350px;
       background: var(--osa-bg);
+      /* Text with no color of its own would otherwise inherit the host page's,
+         unreadable on this panel when the page is dark (#469). */
+      color: var(--osa-text);
       border-radius: 16px;
       box-shadow: var(--osa-shadow);
       display: none;
@@ -1091,6 +1106,10 @@
       border-radius: 20px;
       outline: none;
       font-size: 14px;
+      /* Explicit, never the browser's: a dark host page otherwise paints this
+         field dark inside the light panel (#469). */
+      background: var(--osa-bg);
+      color: var(--osa-text);
       transition: border-color 0.2s;
     }
 
@@ -1418,6 +1437,8 @@
       font-size: 13px;
       font-family: 'SF Mono', Monaco, 'Courier New', monospace;
       outline: none;
+      background: var(--osa-bg);
+      color: var(--osa-text);
       transition: border-color 0.2s;
       box-sizing: border-box;
     }
@@ -1437,6 +1458,7 @@
       box-sizing: border-box;
       transition: border-color 0.2s;
       background: var(--osa-bg);
+      color: var(--osa-text);
     }
 
     .osa-settings-select:focus {
@@ -1657,6 +1679,8 @@
       max-width: 100%;
       margin-top: 6px;
       border-radius: 6px;
+      /* Stays white on the dark panel too: a figure drawn with a transparent
+         background keeps its dark axes and labels readable. */
       background: #ffffff;
     }
 
@@ -1747,6 +1771,125 @@
     .osa-rerun-result-status {
       font-weight: 600;
       margin-top: 8px;
+    }
+
+    /* Dark appearance (#469). Only a widget whose color_scheme is "auto" (on a dark
+       device), or whose host page chose 'dark' (setColorScheme or setConfig), ever has
+       .osa-dark, so none of these rules reach any other widget; every rule above is
+       unchanged.
+       The tokens carry most of it; the rules after them replace the colors the
+       stylesheet above writes out literally. */
+    .osa-chat-widget.osa-dark {
+      color-scheme: dark;
+      --osa-bg: #111827;
+      --osa-text: #e5e7eb;
+      --osa-text-light: #9ca3af;
+      --osa-border: #374151;
+      --osa-assistant-bg: #1f2937;
+      /* A shadow alone vanishes against a dark host page, so every raised surface
+         (the panel, the launcher, the tooltips) also gets a hairline edge. */
+      --osa-shadow: 0 0 0 1px #374151, 0 10px 25px rgba(0, 0, 0, 0.5);
+      /* The community's accent_color was chosen to read on white. The dark panel
+         uses the theme color itself (NEMAR's teal: 8.0:1 here, 6.6:1 on the
+         assistant's bubble), or, when that is too dark to read on either, the
+         lighter --osa-accent-on-dark that applyColorScheme derives from it (see
+         darkAccentFor). */
+      --osa-accent: var(--osa-accent-on-dark, var(--osa-primary));
+    }
+
+    .osa-chat-widget.osa-dark .osa-icon-badge {
+      color: #111827;
+    }
+
+    .osa-chat-widget.osa-dark .osa-message-content code {
+      background: rgba(255, 255, 255, 0.1);
+    }
+
+    /* Code stays a dark block, one step darker than the panel, with an edge so it
+       does not merge into the assistant's bubble. */
+    .osa-chat-widget.osa-dark .osa-message-content pre,
+    .osa-chat-widget.osa-dark .osa-tool-code,
+    .osa-chat-widget.osa-dark .osa-rerun-textarea {
+      background: #030712;
+      box-shadow: inset 0 0 0 1px var(--osa-border);
+    }
+
+    .osa-chat-widget.osa-dark .osa-message-content pre code {
+      background: transparent;
+    }
+
+    .osa-chat-widget.osa-dark .osa-table th {
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .osa-chat-widget.osa-dark .osa-table tr:nth-child(even) {
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .osa-chat-widget.osa-dark .osa-message-copy-btn:hover {
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .osa-chat-widget.osa-dark .osa-feedback-up.selected,
+    .osa-chat-widget.osa-dark .osa-feedback-modal-thanks {
+      color: #4ade80;
+    }
+
+    .osa-chat-widget.osa-dark .osa-feedback-down.selected {
+      color: #f87171;
+    }
+
+    .osa-chat-widget.osa-dark .osa-suggestion:hover {
+      background: #374151;
+      border-color: #4b5563;
+    }
+
+    .osa-chat-widget.osa-dark .osa-chat-input input:disabled {
+      background: #1f2937;
+    }
+
+    .osa-chat-widget.osa-dark .osa-send-btn:disabled {
+      background: #4b5563;
+    }
+
+    .osa-chat-widget.osa-dark .osa-error,
+    .osa-chat-widget.osa-dark .osa-execution-workspace-note {
+      color: #fca5a5;
+      background: rgba(220, 38, 38, 0.15);
+    }
+
+    .osa-chat-widget.osa-dark .osa-error {
+      border-top-color: rgba(248, 113, 113, 0.35);
+    }
+
+    .osa-chat-widget.osa-dark .osa-warning {
+      color: #fcd34d;
+      background: rgba(245, 158, 11, 0.12);
+      border-top-color: rgba(252, 211, 77, 0.3);
+    }
+
+    .osa-chat-widget.osa-dark .osa-resize-handle::before {
+      border-left-color: rgba(255, 255, 255, 0.3);
+      border-top-color: rgba(255, 255, 255, 0.3);
+    }
+
+    /* The configured disclaimer colors, like accent_color, were chosen for the
+       light panel; the dark panel uses the same amber family. */
+    .osa-chat-widget.osa-dark .osa-ai-disclaimer {
+      color: #fdba74;
+      background: rgba(251, 146, 60, 0.12);
+    }
+
+    .osa-chat-widget.osa-dark .osa-settings-overlay {
+      background: rgba(0, 0, 0, 0.6);
+    }
+
+    .osa-chat-widget.osa-dark .osa-settings-modal {
+      box-shadow: var(--osa-shadow);
+    }
+
+    .osa-chat-widget.osa-dark .osa-execution-output {
+      background: rgba(255, 255, 255, 0.06);
     }
   `;
 
@@ -2754,6 +2897,14 @@
           CONFIG.launcherLabel = w.launcher_label;
           changed = true;
         }
+        if (w.color_scheme != null && !_userSetKeys.has('colorScheme')) {
+          if (COMMUNITY_COLOR_SCHEMES.includes(w.color_scheme)) {
+            CONFIG.colorScheme = w.color_scheme;
+            changed = true;
+          } else {
+            warnInvalidColorScheme('color_scheme from the community config', w.color_scheme, COMMUNITY_COLOR_SCHEMES);
+          }
+        }
 
         if (changed) {
           applyWidgetConfig();
@@ -3709,6 +3860,155 @@
   // typo through setConfig() (or a hand-edited widget: block) otherwise looks
   // exactly like "not set", with no way to tell the two apart short of reading
   // this source.
+  // The color schemes a widget can have (#469); see CONFIG.colorScheme. A host page
+  // may choose any of the three; a community config only 'light' or 'auto', because a
+  // widget forced dark on a light page is the host page's call, not the community's
+  // (WidgetConfig.color_scheme refuses 'dark' on the server as well).
+  const COLOR_SCHEMES = ['light', 'dark', 'auto'];
+  const COMMUNITY_COLOR_SCHEMES = ['light', 'auto'];
+
+  function isValidColorScheme(value) {
+    return COLOR_SCHEMES.includes(value);
+  }
+
+  function warnInvalidColorScheme(what, value, allowed) {
+    const expected = allowed.map(v => `'${v}'`).join(', ');
+    console.warn(`[OSA] Ignoring invalid ${what} ${JSON.stringify(value)}; expected one of ${expected}`);
+  }
+
+  // The dark surfaces the accent is read on: the panel itself (borders, focus rings,
+  // the footer checkbox) and the assistant's bubble, where links sit, which is the
+  // lighter of the two and so the one that decides. The same values as --osa-bg and
+  // --osa-assistant-bg under .osa-dark, which a test holds them to.
+  const DARK_PANEL_BG = '#111827';
+  const DARK_BUBBLE_BG = '#1f2937';
+  // The stylesheet's own --osa-primary, for a community with no theme_color (also
+  // held to the stylesheet by a test).
+  const DEFAULT_PRIMARY = '#2563eb';
+  // WCAG AA for body text: the accent colors links and the local-run note.
+  const MIN_TEXT_CONTRAST = 4.5;
+  const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+
+  // WCAG relative luminance of a #RRGGBB color.
+  function relativeLuminance(hex) {
+    const channel = (i) => {
+      const c = parseInt(hex.slice(i, i + 2), 16) / 255;
+      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    };
+    return 0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5);
+  }
+
+  function contrastRatio(a, b) {
+    const [hi, lo] = [relativeLuminance(a), relativeLuminance(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  }
+
+  function readsOnDark(color) {
+    return Math.min(contrastRatio(color, DARK_PANEL_BG), contrastRatio(color, DARK_BUBBLE_BG)) >= MIN_TEXT_CONTRAST;
+  }
+
+  // The accent the dark panel uses, from the community's theme color: null when that
+  // color already reads on both dark surfaces (the stylesheet's var(--osa-primary)
+  // stands, so NEMAR's teal is used exactly), otherwise the color mixed with white in
+  // 10% steps until it does. A theme color that is not #RRGGBB is one
+  // applyWidgetConfig never applies (and warns about), so the stylesheet's default is
+  // what is on screen, and so what is measured.
+  function darkAccentFor(themeColor) {
+    const primary = HEX_COLOR.test(themeColor || '') ? themeColor : DEFAULT_PRIMARY;
+    if (readsOnDark(primary)) return null;
+    const rgb = [1, 3, 5].map(i => parseInt(primary.slice(i, i + 2), 16));
+    // Step 10 is white, which reads on both surfaces, so the loop always returns.
+    for (let step = 1; step <= 10; step++) {
+      const mixed = '#' + rgb
+        .map(c => Math.round(c + (255 - c) * step / 10).toString(16).padStart(2, '0'))
+        .join('');
+      if (readsOnDark(mixed)) return mixed;
+    }
+  }
+
+  // Follows the device's setting while colorScheme is 'auto'. Created the first time
+  // a widget is 'auto', so a 'light' widget never registers a listener at all.
+  let darkSchemeQuery = null;
+  let deviceSchemeWarned = false;
+
+  // Whether the widget draws its dark appearance right now.
+  function isDarkScheme() {
+    if (CONFIG.colorScheme === 'dark') return true;
+    return CONFIG.colorScheme === 'auto' && !!darkSchemeQuery && darkSchemeQuery.matches;
+  }
+
+  // Start following the device's setting (see darkSchemeQuery). A browser with no
+  // matchMedia leaves 'auto' light, and one whose query cannot report a change keeps
+  // the setting the page opened with; the console says so, once. Safari before 14
+  // has only the older addListener, which is used when addEventListener is missing.
+  function watchDeviceScheme() {
+    if (typeof window.matchMedia !== 'function') {
+      if (!deviceSchemeWarned) {
+        deviceSchemeWarned = true;
+        console.warn("[OSA] This browser has no matchMedia, so color_scheme 'auto' cannot follow the device and stays light.");
+      }
+      return;
+    }
+    darkSchemeQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    const follow = () => {
+      const mounted = document.querySelector('.osa-chat-widget');
+      if (mounted) applyColorScheme(mounted);
+    };
+    if (typeof darkSchemeQuery.addEventListener === 'function') {
+      darkSchemeQuery.addEventListener('change', follow);
+    } else if (typeof darkSchemeQuery.addListener === 'function') {
+      darkSchemeQuery.addListener(follow);
+    } else {
+      console.warn("[OSA] This browser cannot report a change of the device's color scheme; 'auto' keeps the setting the page opened with.");
+    }
+  }
+
+  // Put .osa-dark on the container, or take it off, to match CONFIG.colorScheme, and
+  // set the dark panel's accent from the current theme color: only when that color
+  // is too dark to read there, and cleared otherwise so a changed theme color does
+  // not keep a stale one. A 'light' widget gets neither, so its markup is exactly
+  // what it was before dark mode existed. Runs from createWidget, from
+  // applyWidgetConfig, from setColorScheme and setConfig (through
+  // applyColorSchemeEverywhere), and from the device-change listener in
+  // watchDeviceScheme while colorScheme is 'auto'.
+  function applyColorScheme(container) {
+    const darkAccent = CONFIG.colorScheme === 'light' ? null : darkAccentFor(CONFIG.themeColor);
+    if (darkAccent) {
+      container.style.setProperty('--osa-accent-on-dark', darkAccent);
+    } else if (container.style.getPropertyValue('--osa-accent-on-dark')) {
+      container.style.removeProperty('--osa-accent-on-dark');
+    }
+
+    if (CONFIG.colorScheme === 'auto' && !darkSchemeQuery) watchDeviceScheme();
+    container.classList.toggle('osa-dark', isDarkScheme());
+  }
+
+  // After the host page changes the scheme: this page's widget, if mounted, and an
+  // open pop-out, which is its own copy of the widget and has no host page of its
+  // own to tell it. The pop-out shares this page's origin (it is written from here),
+  // so its API is reachable; a pop-out still loading has no API yet and reads the
+  // scheme from its preset instead (see openPopout). Reaching the pop-out and the
+  // pop-out applying the scheme fail for different reasons, so they are reported
+  // apart: the second is a bug in the pop-out's own copy of this code.
+  function applyColorSchemeEverywhere() {
+    const container = document.querySelector('.osa-chat-widget');
+    if (container) applyColorScheme(container);
+    if (!chatPopup || chatPopup.closed) return;
+    let popupWidget = null;
+    try {
+      popupWidget = chatPopup.OSAChatWidget;
+    } catch (e) {
+      console.warn('[OSA] Could not reach the pop-out to pass the color scheme on:', e);
+      return;
+    }
+    if (!popupWidget || typeof popupWidget.setColorScheme !== 'function') return;
+    try {
+      popupWidget.setColorScheme(CONFIG.colorScheme);
+    } catch (e) {
+      console.error('[OSA] The pop-out failed to apply the color scheme:', e);
+    }
+  }
+
   function warnInvalidColor(field, value) {
     console.warn(`[OSA] Ignoring invalid ${field} (not a recognized color): ${JSON.stringify(value)}`);
   }
@@ -3742,6 +4042,8 @@
       }
     }
 
+    applyColorScheme(container);
+
     // The reader's bubbles have their own color, so a theme_color alone leaves
     // them the platform blue every community has had (must be valid #RRGGBB hex).
     if (CONFIG.userBubbleColor) {
@@ -3765,10 +4067,11 @@
 
     // theme_color used as a FOREGROUND on the white panel (links, borders, focus rings,
     // native checkbox accent-color). Left at the stylesheet's own `var(--osa-primary)`
-    // default when unset, so it tracks theme_color exactly as it always has.
+    // default when unset, so it tracks theme_color exactly as it always has. Set as
+    // --osa-accent-on-light so the dark panel can replace it (see the stylesheet).
     if (CONFIG.accentColor) {
       if (/^#[0-9a-fA-F]{6}$/.test(CONFIG.accentColor)) {
-        container.style.setProperty('--osa-accent', CONFIG.accentColor);
+        container.style.setProperty('--osa-accent-on-light', CONFIG.accentColor);
       } else {
         warnInvalidColor('accentColor', CONFIG.accentColor);
       }
@@ -4509,6 +4812,10 @@
     // ordinary case, launcher arriving later from the community config, is applied
     // again from applyWidgetConfig().
     applyLauncherMode(container);
+
+    // A host page that chose its scheme before init() gets it with no flash of the
+    // light panel; a community's 'auto' is applied once its config arrives.
+    applyColorScheme(container);
 
     return container;
   }
@@ -5481,6 +5788,10 @@
       // inline, so it is told where the script lives: the runtime bundle is
       // found next to it.
       const popupConfig = { ...CONFIG, fullscreen: true, widgetScriptUrl: scriptUrl };
+      // The pop-out fetches the community config again, which would replace a
+      // scheme the host page chose with the community's own; this marks it as the
+      // host's, so the pop-out keeps it (#469).
+      const hostColorScheme = _userSetKeys.has('colorScheme') ? CONFIG.colorScheme : null;
 
       // Serialize config safely (escape script-breaking sequences)
       let configJson;
@@ -5521,6 +5832,7 @@
   <script>
     // Pre-configure widget before it initializes
     window.__OSA_CHAT_CONFIG__ = ${configJson};
+    window.__OSA_HOST_COLOR_SCHEME__ = ${JSON.stringify(hostColorScheme)};
   <\/script>
   <script>
     // Widget code (will pick up __OSA_CHAT_CONFIG__ if present)
@@ -5568,6 +5880,11 @@
     // Check for pre-configured settings (used by pop-out windows)
     if (window.__OSA_CHAT_CONFIG__) {
       Object.assign(CONFIG, window.__OSA_CHAT_CONFIG__);
+    }
+    // A pop-out whose opener's host page chose the scheme (see openPopout).
+    if (isValidColorScheme(window.__OSA_HOST_COLOR_SCHEME__)) {
+      CONFIG.colorScheme = window.__OSA_HOST_COLOR_SCHEME__;
+      _userSetKeys.add('colorScheme');
     }
 
     loadPageContextPreference();
@@ -5754,6 +6071,10 @@
           delete opts.notebookUrl;
         }
       }
+      if ('colorScheme' in opts && !isValidColorScheme(opts.colorScheme)) {
+        warnInvalidColorScheme('colorScheme', opts.colorScheme, COLOR_SCHEMES);
+        delete opts.colorScheme;
+      }
       // Track which keys the embedder explicitly set (before auto-derivation)
       for (const key of Object.keys(opts)) {
         _userSetKeys.add(key);
@@ -5763,6 +6084,19 @@
         opts.storageKey = `osa-chat-history-${opts.communityId}`;
       }
       Object.assign(CONFIG, opts);
+      if ('colorScheme' in opts) applyColorSchemeEverywhere();
+    },
+    // The reader's light or dark choice on the host page (#469): 'light', 'dark', or
+    // 'auto' (follow the device). Outranks the community's color_scheme, may be
+    // called before or after init(), and reaches an open pop-out too.
+    setColorScheme: function(value) {
+      if (!isValidColorScheme(value)) {
+        warnInvalidColorScheme('colorScheme', value, COLOR_SCHEMES);
+        return;
+      }
+      _userSetKeys.add('colorScheme');
+      CONFIG.colorScheme = value;
+      applyColorSchemeEverywhere();
     },
     getConfig: function() {
       return { ...CONFIG };

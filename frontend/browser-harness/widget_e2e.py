@@ -12,7 +12,7 @@ the result it was sent, so the page shows the round trip actually happened.
 
 Usage, from the repository root:
 
-    uv run python frontend/browser-harness/widget_e2e.py [port] [--nemar] [--tamper-wheel] [--widget-open]
+    uv run python frontend/browser-harness/widget_e2e.py [port] [--nemar] [--tamper-wheel] [--widget-open] [--color-scheme auto]
 
 then open http://127.0.0.1:PORT/browser-harness/widget-e2e.html and ask it to
 "plot", to "loop" (then press Stop), or to raise an "error".
@@ -28,6 +28,9 @@ negative control for the browser's integrity check, which alone can refuse it, s
 the runtime must then refuse to start. --widget-open boots the runtime when
 the chat opens rather than at the first run, and turns on the widget's test hooks so
 `OSAChatWidget.__browser.getBrowserRuntime().state` can be read from the console.
+--color-scheme auto serves the config with its widget's color_scheme set to auto, so
+`color-scheme-check.mjs` can check the dark appearance without --nemar's live
+recipe fetch at startup.
 """
 
 from __future__ import annotations
@@ -67,7 +70,7 @@ from src.api.routers.community import (  # noqa: E402
 )
 from src.assistants.community import CommunityAssistant  # noqa: E402
 from src.assistants.registry import registry  # noqa: E402
-from src.core.config.community import CommunityConfig, McpServer  # noqa: E402
+from src.core.config.community import CommunityConfig, McpServer, WidgetConfig  # noqa: E402
 from src.tools.mcp_client import discover_mcp_tools  # noqa: E402
 
 CDN = "https://cdn.jsdelivr.net"
@@ -389,8 +392,16 @@ if __name__ == "__main__":
     parser.add_argument("--nemar", action="store_true", help="serve NEMAR's own config")
     parser.add_argument("--tamper-wheel", action="store_true", help="corrupt every wheel served")
     parser.add_argument("--widget-open", action="store_true", help="boot when the chat opens")
+    parser.add_argument(
+        "--color-scheme", choices=["light", "auto"], help="set the widget's color_scheme"
+    )
     args = parser.parse_args()
     config = _nemar_config() if args.nemar else _config()
+    if args.color_scheme:
+        widget = (config.widget or WidgetConfig()).model_copy(
+            update={"color_scheme": args.color_scheme}
+        )
+        config = config.model_copy(update={"widget": widget})
     if args.nemar:
         # Ahead of "prompt", where the literal above used to hold it: the scripted
         # model answers the first keyword it finds, in this order.

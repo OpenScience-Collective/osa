@@ -760,7 +760,7 @@ console.log('\nthe capsule\'s active and neutral surfaces resolve to the color t
     '--osa-primary': '#5bbad5',
     '--osa-primary-dark': '#42a1bc',
     '--osa-on-primary': '#04121f',
-    '--osa-accent': '#257a92',
+    '--osa-accent-on-light': '#257a92',
     '--osa-user-bg': '#5bbad5',
     '--osa-user-text': '#04121f',
   };

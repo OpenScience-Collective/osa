@@ -121,6 +121,44 @@ class TestCommunitiesEndpoint:
         }
         assert others and all(value == (None, None) for value in others.values()), others
 
+    def test_only_nemar_has_a_dark_appearance(self) -> None:
+        """NEMAR's widget follows the reader's light or dark setting (#469); every
+        other community stays on the 'light' default, which the API omits."""
+        client = _create_test_client()
+        data = client.get("/communities").json()
+
+        by_id = {community["id"]: community["widget"] for community in data}
+        assert by_id["nemar"].get("color_scheme") == "auto"
+        others = {cid: w.get("color_scheme") for cid, w in by_id.items() if cid != "nemar"}
+        assert others and all(value is None for value in others.values()), others
+
+    def test_only_nemar_runs_code_or_opens_a_notebook(self) -> None:
+        """Running the assistant's Python in the reader's browser, and the notebook
+        opened from the widget, are both opt-in per community: a client tool under
+        extensions.client_tools, a runtime section, and a notebook section. NEMAR is
+        the only community with any of the three, checked against every real
+        community's config rather than a hard-coded list of the others."""
+        configs = {
+            info.id: info.community_config
+            for info in registry.list_available()
+            if info.community_config
+        }
+        nemar = configs.pop("nemar")
+        assert [tool.name for tool in nemar.extensions.client_tools] == ["execute_code"]
+        assert nemar.runtime is not None
+        assert nemar.notebook is not None
+
+        assert configs, "expected at least one non-NEMAR community to compare against"
+        opted_in = {
+            cid: {
+                "client_tools": bool(config.extensions and config.extensions.client_tools),
+                "runtime": config.runtime is not None,
+                "notebook": config.notebook is not None,
+            }
+            for cid, config in configs.items()
+        }
+        assert all(not any(flags.values()) for flags in opted_in.values()), opted_in
+
     def test_only_nemar_sets_its_own_text_colors(self) -> None:
         """NEMAR's home-page-teal widget needs dark text on its light surfaces, which
         every other community's widget does not: theme_text_color, accent_color and
