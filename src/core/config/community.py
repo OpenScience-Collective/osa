@@ -1130,8 +1130,13 @@ class WidgetConfig(BaseModel):
     theme_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
     """Primary theme color as a hex code (e.g., '#008a79').
 
-    Applied to the widget button, header, and accent elements.
-    Defaults to the platform blue (#2563eb) if not specified.
+    Paints the launcher button and header surfaces (and every other surface that
+    otherwise reads the platform blue). Defaults to the platform blue (#2563eb) if
+    not specified. Pairs with `theme_text_color` (defaults to white, the text and
+    icon color drawn on this surface) and `accent_color` (defaults to `theme_color`
+    itself, this same color used as a foreground on the widget's white panel rather
+    than as a surface); set `theme_text_color` when `theme_color` is too light for
+    white text, and `accent_color` when `theme_color` is too light to read on white.
     """
 
     user_bubble_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
