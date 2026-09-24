@@ -259,6 +259,11 @@ own project on the shared `notebook.osc.earth` plane. An accepted value is
 normalized to end in a trailing slash; anything else is ignored with a
 `console.warn`, keeping whatever was set before.
 
+The "What happens with a malformed value" section right below covers only the color
+fields; it does not describe `notebookUrl` (see above) or `launcher` (any value other
+than exactly `"capsule"` behaves as `bubble`, silently, since `setConfig` does not
+validate it the way it validates `notebookUrl`).
+
 ### What happens with a malformed value
 
 Every color field above is validated twice: `WidgetConfig`'s own
