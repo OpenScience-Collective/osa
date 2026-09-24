@@ -758,8 +758,19 @@ class TestNemarStarterSetupCell:
 
         assert tagged == [code[0]]
         source = "".join(code[0]["source"])
-        assert "%pip install eegprep-lean" in source
+        assert "%pip install eegprep-lean scipy" in source
         assert "import eegprep_lean" in source
+
+    def test_only_the_setup_cell_installs_anything(self) -> None:
+        """SciPy is installed once, by the cell that runs on open (#495), so a later
+        cell that needs it runs without a %pip of its own."""
+        config = site.discover_notebook_communities()["nemar"]
+        assert config.notebook is not None
+        starter = json.loads((site.ASSISTANTS_DIR / "nemar" / config.notebook.starter).read_text())
+        code = [cell for cell in starter["cells"] if cell["cell_type"] == "code"]
+        installing = [cell["id"] for cell in code if "%pip" in "".join(cell["source"])]
+        assert installing == [code[0]["id"]]
+        assert any("scipy" in "".join(cell["source"]) for cell in code[1:])
 
 
 class TestWriteRootRedirect:
