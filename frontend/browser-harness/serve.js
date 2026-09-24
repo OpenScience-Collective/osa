@@ -92,11 +92,23 @@ export function tamperWheel(bytes) {
   return tampered;
 }
 
-/** A community's runtime config and overlay, and its wheels by file name. */
+/** A value written once, or per deployment: production's, which is what the
+ *  server hands a widget from a local run or CI (docs/adr/0013-the-chat-follows-its-deployment.md). */
+function productionValue(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value.production : value;
+}
+
+/** A community's runtime config, resolved as the server resolves it, and its
+ *  overlay, and its wheels by file name. */
 async function readCommunityRuntime(id) {
   const folder = new URL(`${id}/`, ASSISTANTS);
   const config = Bun.YAML.parse(await Bun.file(new URL('config.yaml', folder)).text());
-  const python = config.runtime.python;
+  const configured = config.runtime.python;
+  const python = {
+    ...configured,
+    prelude: productionValue(configured.prelude),
+    fetch_allow: productionValue(configured.fetch_allow),
+  };
   const lockfile = new URL(python.lockfile, folder);
   const { packages } = JSON.parse(await Bun.file(lockfile).text());
   const wheels = new Map();

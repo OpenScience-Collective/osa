@@ -55,7 +55,18 @@ const PACKAGE_CACHE = new URL('.cache/pyodide-packages/', ROOT).pathname;
 const CDN = `https://cdn.jsdelivr.net/pyodide/v${pyodidePackage.version}/full/`;
 const COMMUNITY_DIR = new URL('src/assistants/nemar/', ROOT);
 const NEMAR = Bun.YAML.parse(await Bun.file(new URL('config.yaml', COMMUNITY_DIR)).text());
-const PYTHON = NEMAR.runtime.python;
+// The server resolves a per-deployment value before the widget sees one
+// (docs/adr/0013-the-chat-follows-its-deployment.md), so the widget's config here is
+// production's, the deployment a local run and CI resolve to. The develop prelude
+// boots in a section of its own below.
+const RAW_PYTHON = NEMAR.runtime.python;
+const forDeployment = (value, deployment) =>
+  value !== null && typeof value === 'object' && !Array.isArray(value) ? value[deployment] : value;
+const PYTHON = {
+  ...RAW_PYTHON,
+  prelude: forDeployment(RAW_PYTHON.prelude, 'production'),
+  fetch_allow: forDeployment(RAW_PYTHON.fetch_allow, 'production'),
+};
 const LOCKFILE = new URL(PYTHON.lockfile, COMMUNITY_DIR);
 const OVERLAY = JSON.parse(await Bun.file(LOCKFILE).text()).packages;
 const WHEELS = new URL('wheels/', LOCKFILE).pathname;
@@ -360,6 +371,44 @@ try {
       'the versions running are the ones the overlay pins');
     const transport = await run('import eegprep_lean\nprint(type(eegprep_lean.default_transport()).__name__)');
     assertEqual(transport.stdout, 'FetchTransport\n', 'the prelude made the runtime\'s own client eegprep-lean\'s default');
+  }
+
+  console.log('\nthe develop prelude boots too, and points read_index at the staging host');
+  {
+    // Compiled by the config check, but never run until now: a prelude that
+    // compiles can still fail under the seal, and then every staging reader's
+    // runtime fails to boot.
+    const developMessages = [];
+    const developConfig = buildWorkerConfig(
+      { ...PYTHON, prelude: forDeployment(RAW_PYTHON.prelude, 'develop'), fetch_allow: [BASE] },
+      { packages: OVERLAY, baseUrl: 'https://osa.example/nemar/runtime/' }
+    );
+    assert(developConfig.prelude !== config.prelude, 'the develop prelude is not production\'s');
+    const develop = createFromSource({ ...developConfig, lockPackages: localPackages }, {
+      load: (indexURL, options) =>
+        loadPyodide({ packageCacheDir: PACKAGE_CACHE, stdout: () => {}, stderr: () => {}, ...options }),
+      stockLock: async () => stockLock,
+      seal: () => {},
+      send: (message) => developMessages.push(message),
+    });
+    await develop.handle({ type: 'boot' });
+    assert(
+      developMessages.some((m) => m.type === 'ready'),
+      `it boots (got ${JSON.stringify(developMessages.find((m) => m.type === 'error') || developMessages.at(-1))})`
+    );
+    await develop.handle({
+      type: 'execute',
+      call_id: 'develop-1',
+      code:
+        'import eegprep_lean, eegprep_lean.index\n' +
+        'print(type(eegprep_lean.default_transport()).__name__, eegprep_lean.index.INDEX_URL_TEMPLATE)',
+    });
+    const shown = developMessages.find((m) => m.type === 'result');
+    assertEqual(
+      shown && shown.stdout,
+      'FetchTransport https://zarr-test.nemar.org/{dataset_id}/zarr/index.json\n',
+      'with the runtime\'s own client as the default, and read_index on zarr-test.nemar.org'
+    );
   }
 
   console.log('\nthe python_browser recipe runs as nemar_read_window hands it out');
