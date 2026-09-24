@@ -613,6 +613,24 @@ console.log('\nthe circles are 46px in the capsule, and a bubble\'s chat button 
     const style = window.getComputedStyle(q(selector));
     assert(!style.scale && !style.translate, `${selector} is not drawn larger at rest`);
   }
+  // Hovered at rest it grows 5% more with the corner still held: the stylesheet's
+  // own rule, read from the sheet, since happy-dom does not match :hover.
+  let hover = null;
+  for (const sheet of window.document.styleSheets) {
+    for (const rule of sheet.cssRules) {
+      if (rule.selectorText === '.osa-chat-widget:not(.chat-open) .osa-launcher-capsule .osa-chat-button:hover') hover = rule.style;
+    }
+  }
+  assert(!!hover, 'there is a rule for the resting circle hovered');
+  if (hover) {
+    const hoverScale = Number(hover.getPropertyValue('scale'));
+    const hoverShift = hover.getPropertyValue('translate').split(' ').map((v) => Number.parseFloat(v));
+    assertEqual(hover.getPropertyValue('transform'), 'none', 'hovered at rest, the shared scale(1.05) around the center gives way');
+    assert(Math.abs(hoverScale - Number(resting.scale) * 1.05) < 0.0002, `to 5% more of its own scale (${hoverScale})`);
+    assert(hoverShift.length === 2 && hoverShift.every((v) => Math.abs(-v - 23 * (hoverScale - 1)) < 0.01),
+      `with the translate that holds the corner still (${hover.getPropertyValue('translate')})`);
+  }
+
   chatButton.dispatchEvent(new window.Event('click', { bubbles: true }));
   assert(q('.osa-chat-window').classList.contains('open'), 'sanity: the panel is open');
   const open = window.getComputedStyle(chatButton);

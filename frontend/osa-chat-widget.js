@@ -557,13 +557,25 @@
        stays 46px, so the indicator, the pill, the other circles and the panel's
        offset are the same open or closed, and nothing reflows while it shrinks.
        The translate puts its bottom-right corner where the 46px box's is, 20px
-       from the window's edges, as the bubble's; since 23px x (58/46 - 1) is
-       exactly 6px, that corner holds still through the whole transition, because
-       scale and translate share one duration and curve. A browser without the
-       scale and translate properties draws today's 46px. */
+       from the window's edges, as the bubble's; since the translate is the growth
+       past the box on each side, 23px x (58/46 - 1) = 6px, that corner holds
+       still through the whole transition, because scale and translate share one
+       duration and curve. A browser without the scale and translate properties
+       draws today's 46px. */
     .osa-chat-widget:not(.chat-open) .osa-launcher-capsule .osa-chat-button {
       scale: 1.2609;
       translate: -6px -6px;
+    }
+
+    /* Hovered at rest, it grows 5% more, as every launcher does, with its corner
+       held in the same place: the scale and translate take the hover in place of
+       the shared transform: scale(1.05), which would grow it around its center
+       and push the corner out, on a curve of its own. 1.2609 x 1.05 is 1.3239,
+       and 23px x 0.3239 is 7.45px. */
+    .osa-chat-widget:not(.chat-open) .osa-launcher-capsule .osa-chat-button:hover {
+      transform: none;
+      scale: 1.3239;
+      translate: -7.45px -7.45px;
     }
 
     /* Open: the indicator is the chat circle's fill, so the button itself is clear. */
