@@ -282,8 +282,8 @@ documentation:
     category: reference
     description: Brain Imaging Data Structure specification that all NEMAR datasets follow.
 
-# Dataset tools come from NEMAR's MCP server (https://mcp.nemar.org/mcp), which is
-# anonymous and needs no credentials. It replaced two python_plugins tools that
+# Dataset tools come from NEMAR's MCP server (https://mcp.nemar.org/mcp in production),
+# which is anonymous and needs no credentials. It replaced two python_plugins tools that
 # called nemar.org/api/dataexplorer/datapipeline/... -- that endpoint returns 404,
 # because the legacy dataexplorer site is gone, so those tools had been dead.
 # The develop deployment, which test.nemar.org embeds, reads NEMAR's staging server:

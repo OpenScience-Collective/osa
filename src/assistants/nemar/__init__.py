@@ -4,8 +4,10 @@ Self-contained assistant module for discovering and exploring BIDS-formatted
 EEG, MEG, and iEEG datasets hosted on NEMAR (nemar.org).
 
 This module carries no Python tools. Its dataset tools come from NEMAR's own MCP
-server (`https://mcp.nemar.org/mcp`), configured under `extensions.mcp_servers`
-in `config.yaml` and loaded by `src/tools/mcp_client.py`.
+server, configured under `extensions.mcp_servers` in `config.yaml` and loaded by
+`src/tools/mcp_client.py`: `https://mcp.nemar.org/mcp` in production, and the
+staging server on the develop deployment
+(docs/adr/0013-the-chat-follows-its-deployment.md).
 
 That replaced two hand-written tools, `search_nemar_datasets` and
 `get_nemar_dataset_details`, which called
