@@ -604,8 +604,18 @@ console.log('\nthe aria-disabled attribute is its own guard, independent of curr
   assertEqual(opens.length, 0, 'aria-disabled="true" alone blocks the click, even with an active dataset behind it');
 }
 
-console.log('\nthe active notebook button opens the exact contract URL, encoded');
+console.log('\nthe active notebook button opens the exact contract URL');
 {
+  // NOT a test that encodeURIComponent runs: isValidCommunityId and
+  // isValidDatasetId only ever admit unreserved characters (letters, digits,
+  // '.', '_', '-'), so nothing that reaches this point ever needs escaping,
+  // and this test cannot tell an encoded '.' or '-' apart from an unescaped
+  // one (removing both encodeURIComponent calls still passes it). What it
+  // DOES prove is the literal contract string, byte for byte, for values that
+  // include the punctuation the format allows. encodeURIComponent stays in
+  // the source as defense in depth against a future caller of
+  // handleNotebookClick that is not gated by those validators, not because
+  // this test exercises it.
   const config = configResponse({ launcher: 'capsule' });
   const { window, widget } = loadWidget({ fetch: fetchReturning(config) });
   widget.setConfig({
@@ -626,7 +636,7 @@ console.log('\nthe active notebook button opens the exact contract URL, encoded'
   assertEqual(
     opens[0].url,
     'https://notebook.osc.earth/osa/open.html?community=nemar-test&dataset=nm.000103',
-    'the URL matches the notebook site\'s contract exactly, with both parameters encoded'
+    'the URL matches the notebook site\'s contract exactly (a punctuation-carrying id and community, which need no escaping under the validators\' own unreserved-character rule)'
   );
   assertEqual(opens[0].target, '_blank', 'opens in a new tab');
   assertEqual(opens[0].features, 'noopener', 'with noopener');
