@@ -103,6 +103,29 @@ class TestTheShippedConfig:
                 python.prelude or ""
             ), deployment
 
+    def test_the_prompt_asks_for_one_condition_per_events_call(
+        self, nemar: CommunityConfig
+    ) -> None:
+        """On nemar.org (2026-09-24) a model asked for every stimulus of ERP CORE's N170
+        recording in one call, sorted the 320 rows into faces and scrambled faces while
+        copying them into code, and averaged 282 "faces" of a recording that has 80. The
+        prompt asks for one condition per call and an assert on each list's length, so a
+        copying slip stops the run; this keeps both instructions from being dropped."""
+        prompt = nemar.system_prompt
+        assert "ask for one condition per call" in prompt
+        assert 'where: {"event_type": ["face"]}' in prompt
+        assert "Never sort one call's mixed rows into conditions by hand" in prompt
+        assert "assert len(face) == 80" in prompt
+
+    def test_the_prompt_leaves_out_non_eeg_channels_by_substring(
+        self, nemar: CommunityConfig
+    ) -> None:
+        """ERP CORE labels its EOG channels HEOG_left, HEOG_right and VEOG_lower, so a
+        model that excluded "HEOG" and "VEOG" by exact name kept all three."""
+        prompt = nemar.system_prompt
+        assert "`HEOG_left`, `HEOG_right` and `VEOG_lower`" in prompt
+        assert "anywhere in the label" in prompt
+
     def test_the_prompt_teaches_the_browser_lane(self, nemar: CommunityConfig) -> None:
         prompt = nemar.system_prompt
         assert "## Running code in the reader's browser" in prompt
