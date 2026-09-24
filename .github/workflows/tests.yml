@@ -125,6 +125,12 @@ jobs:
       - name: Run workspace tests
         run: bun frontend/test-workspace.js
 
+      # notebook/open.js's pure logic (validation, token filling, entry shape);
+      # the real IndexedDB write and redirect are notebook/e2e-check.js, run
+      # separately in real Chrome (see notebook/README.md).
+      - name: Run notebook bootstrap tests
+        run: bun notebook/test-open.js
+
       # The worker core runs against the REAL Pyodide from npm, so the Python half
       # of the runtime is tested in CI rather than only by hand in a browser. The
       # npm package carries the interpreter; numpy and matplotlib are fetched from
