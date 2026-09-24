@@ -245,15 +245,16 @@ Adding `scipy` to that list would bring the total to about 35.2 MB (scipy alone 
 which is the cost dropping it from `preload` avoids
 (`.context/browser-execution-tool-design.md`, "Client changes").
 
-Measured on test.nemar.org in a cold Chrome profile: the model's first turn takes about
-8.1 seconds until the Run gate appears, and under `preload_on: first_run` the download
-(18.9 MB for NEMAR) only starts once the reader clicks Run, adding its own time on top
-before the code actually runs. `preload_on: first_message` starts that download the
-moment the reader sends their first message, well before the model has answered, so it
-overlaps the model's turn instead of following it; NEMAR uses this value. A reader who
-only opens the chat and never sends anything is never charged for it, unlike
-`widget_open`, which downloads for every visitor regardless of whether they ask
-anything.
+Measured on test.nemar.org in a cold Chrome profile:
+the model's first turn takes about 8.1 seconds until the Run gate appears,
+and under `preload_on: first_run` the download (18.9 MB for NEMAR) only starts once the reader clicks Run,
+adding its own time on top before the code actually runs.
+`preload_on: first_message` starts that download the moment the reader sends their first message,
+well before the model has answered,
+so it overlaps the model's turn instead of following it;
+NEMAR uses this value.
+A reader who only opens the chat and never sends anything is never charged for it,
+unlike `widget_open`, which downloads for every visitor regardless of whether they ask anything.
 
 That cost is paid once per browser, not once per session.
 Every wheel route is served immutable (see "The lock overlay" above),
