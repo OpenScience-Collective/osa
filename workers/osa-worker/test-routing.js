@@ -150,6 +150,9 @@ for (const host of [MOUNTED_HOST, 'develop-widget.osc.earth']) {
   assertEqual(bare.headers.get('Location'), '/osa/', `${host}/osa redirects to /osa/`);
   const withQuery = await call('/osa?community=nemar&x=1', { host });
   assertEqual(withQuery.headers.get('Location'), '/osa/?community=nemar&x=1', `${host}/osa keeps its query string`);
+  const preflight = await call('/osa', { method: 'OPTIONS', host });
+  assertEqual(preflight.status, 200, `${host}/osa preflight answers 200`);
+  assertEqual(preflight.headers.get('Location'), null, `${host}/osa preflight is not redirected`);
 }
 assertEqual(await statusOf('/osa/'), await statusOf('/'), '/osa/ (the redirect target) is the API root');
 await assertReachesHandler('/osa/feedback', { method: 'POST', body: {} }, 'POST /osa/feedback reaches the feedback handler');
@@ -215,10 +218,17 @@ for (const reserved of ['health', 'version', 'feedback', 'communities', 'metrics
 }
 
 console.log('\na path that merely starts with the letters "osa" is not misread as the mount prefix');
+// On a mounted host it is outside the mount: the "/osa*" route delivers it
+// (#500), and it answers 404 rather than reaching community "osafoo".
+for (const host of [MOUNTED_HOST, 'develop-widget.osc.earth']) {
+  await assertNotFound('/osafoo/chat', { method: 'POST', body: {}, host }, `${host}/osafoo/chat is outside the mount (404)`);
+  await assertNotFound('/osafoo', { host }, `${host}/osafoo is outside the mount (404), not redirected`);
+}
+// On an unmounted host there is no mount, so it is an ordinary community path.
 await assertReachesHandler(
   '/osafoo/chat',
-  { method: 'POST', body: {} },
-  '/osafoo/chat is read as community "osafoo" (stripMountPrefix requires "/osa/" or exactly "/osa")'
+  { method: 'POST', body: {}, host: UNMOUNTED_HOST },
+  'an unmounted host reads /osafoo/chat as community "osafoo"'
 );
 
 // The bare *.workers.dev hostname stays live (wrangler.toml sets

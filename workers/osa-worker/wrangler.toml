@@ -58,8 +58,13 @@ zone_name = "osc.earth"
 # The bare mount path, which "/osa/*" does not match (#500): without this,
 # "widget.osc.earth/osa" reaches the placeholder AAAA 100:: origin and
 # Cloudflare answers 522. The worker answers it with a 308 to "/osa/".
+# The trailing "*" is required: a pattern without one never matches a URL
+# that carries a query string, so an exact "widget.osc.earth/osa" would
+# still 522 for "/osa?x=1". It also catches "/osafoo", which the worker
+# answers 404 as outside the mount; a later "widget.osc.earth/osafoo/*"
+# route is more specific and would win.
 [[routes]]
-pattern = "widget.osc.earth/osa"
+pattern = "widget.osc.earth/osa*"
 zone_name = "osc.earth"
 
 # Hybrid rate limiting approach:
@@ -109,7 +114,7 @@ zone_name = "osc.earth"
 
 # The bare mount path (#500); see the production routes above.
 [[env.dev.routes]]
-pattern = "develop-widget.osc.earth/osa"
+pattern = "develop-widget.osc.earth/osa*"
 zone_name = "osc.earth"
 
 # Per-minute rate limiter (dev has higher limit: 60/min)

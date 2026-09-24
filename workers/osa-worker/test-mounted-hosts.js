@@ -123,17 +123,20 @@ const patterns = [...wranglerSource.matchAll(/^\s*pattern\s*=\s*["']([^"']+)["']
 for (const pattern of patterns) {
   const path = pattern.slice(pattern.indexOf('/'));
   assert(
-    path === mountPrefix || path.startsWith(`${mountPrefix}/`),
+    path === `${mountPrefix}*` || path.startsWith(`${mountPrefix}/`),
     `route pattern ${pattern} mounts at MOUNT_PREFIX ${mountPrefix}`
   );
 }
 
 // Each mounted host needs BOTH routes (#500): "/osa/*" does not match the bare
-// "/osa", which otherwise reaches the placeholder origin and answers 522.
+// "/osa", which otherwise reaches the placeholder origin and answers 522. The
+// bare route ends in "*" because a pattern without a trailing wildcard never
+// matches a URL with a query string, so "/osa?x=1" would still 522.
 console.log('');
 for (const host of mountedHosts) {
   assert(patterns.includes(`${host}${mountPrefix}/*`), `${host} routes ${mountPrefix}/*`);
-  assert(patterns.includes(`${host}${mountPrefix}`), `${host} routes the bare ${mountPrefix} too`);
+  assert(patterns.includes(`${host}${mountPrefix}*`), `${host} routes the bare ${mountPrefix}, query included (${mountPrefix}*)`);
+  assert(!patterns.includes(`${host}${mountPrefix}`), `${host} has no exact ${mountPrefix} route, which a query string would miss`);
 }
 
 console.log('\n' + '='.repeat(60));
