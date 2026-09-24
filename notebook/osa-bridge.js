@@ -15,7 +15,8 @@
  *
  * Messages from this page:   { source: 'osa-notebook', type: 'ready' }
  *                            { source: 'osa-notebook', type: 'setup', status: 'running' | 'done' | 'error' | 'none' }
- *                            { source: 'osa-notebook', type: 'theme', scheme: 'light' | 'dark' }
+ *                            { source: 'osa-notebook', type: 'theme', scheme: 'light' | 'dark', applied: boolean }
+ *                            { source: 'osa-notebook', type: 'error', phase: 'startup' }
  * Messages to this page:     { target: 'osa-notebook', type: 'theme', scheme: 'light' | 'dark' }
  *
  * Only the embedding page itself is listened to (event.source === window.parent).
@@ -65,31 +66,38 @@
 
   let setupRun = null;
 
-  // notebook:run-cell runs the active cell and settles when it finishes, so
-  // each setup cell is made active in turn and awaited. Afterwards the cell
-  // after the last setup cell is made active, so Shift+Enter carries on from
-  // where the starter wants the reader to begin.
+  // notebook:run-cell runs the active cell of the current notebook and settles
+  // when it finishes, so each setup cell is made active in turn and awaited.
+  // A cell counts as run only if it has an execution count afterwards, which
+  // is cleared first, since a reopened notebook already shows the count it was
+  // saved with. Afterwards the cell after the last setup cell is made active,
+  // so Shift+Enter carries on from where the starter wants the reader to begin.
   function runSetup(app, panel) {
     if (setupRun) return setupRun;
     setupRun = (async () => {
-      const notebook = panel.content;
-      const indices = autorunIndices(notebook.model);
-      if (indices.length === 0) {
-        post({ type: 'setup', status: 'none' });
-        return;
-      }
-      post({ type: 'setup', status: 'running' });
       try {
+        const notebook = panel.content;
+        const indices = autorunIndices(notebook.model);
+        if (indices.length === 0) {
+          post({ type: 'setup', status: 'none' });
+          return;
+        }
+        post({ type: 'setup', status: 'running' });
         await panel.sessionContext.ready;
+        let ran = true;
         for (const index of indices) {
+          if (app.shell.currentWidget !== panel) throw new Error('another widget became current');
+          const cell = notebook.model.cells.get(index);
+          cell.executionCount = null;
           notebook.activeCellIndex = index;
           await app.commands.execute('notebook:run-cell');
+          if (cell.executionCount === null) ran = false;
         }
         const last = indices[indices.length - 1];
         if (notebook.activeCellIndex === last && last + 1 < notebook.model.cells.length) {
           notebook.activeCellIndex = last + 1;
         }
-        const failed = indices.some((index) => hasError(notebook.model.cells.get(index)));
+        const failed = !ran || indices.some((index) => hasError(notebook.model.cells.get(index)));
         post({ type: 'setup', status: failed ? 'error' : 'done' });
       } catch (err) {
         warn('the setup cells did not run', err);
@@ -106,7 +114,7 @@
   // the current theme in place. The adaptive-theme command starts that
   // settings write without returning it, so the setting is read back until it
   // is off; otherwise change-theme would see it still on and switch it back.
-  // The theme is reported to the widget only once the page shows it.
+  // The theme counts as applied only once the page shows it.
   async function applyTheme(app, scheme) {
     const theme = THEMES[scheme];
     if (!theme) return;
@@ -114,13 +122,14 @@
     try {
       if (followsDevice()) {
         await app.commands.execute('apputils:adaptive-theme');
-        await waitFor(() => !followsDevice(), 5_000, '"follow the device" turning off');
+        await waitFor(() => !followsDevice(), 10_000, '"follow the device" turning off');
       }
       await app.commands.execute('apputils:change-theme', { theme });
-      await waitFor(() => document.body.dataset.jpThemeName === theme, 5_000, `the ${theme} theme`);
-      post({ type: 'theme', scheme });
+      await waitFor(() => document.body.dataset.jpThemeName === theme, 10_000, `the ${theme} theme`);
+      post({ type: 'theme', scheme, applied: true });
     } catch (err) {
       warn(`the ${scheme} theme was not applied`, err);
+      post({ type: 'theme', scheme, applied: false });
     }
   }
 
@@ -159,6 +168,7 @@
     if (pendingScheme) await queueTheme(app, pendingScheme);
     post({ type: 'ready' });
 
+    // A restart, or a new kernel, is a fresh Python, so setup runs again.
     let restarting = false;
     panel.sessionContext.statusChanged.connect((_, status) => {
       if (status === 'restarting' || status === 'autorestarting') restarting = true;
@@ -167,6 +177,12 @@
         runSetup(app, panel);
       }
     });
+    panel.sessionContext.kernelChanged.connect((_, change) => {
+      if (change.oldValue && change.newValue) runSetup(app, panel);
+    });
     await runSetup(app, panel);
-  })().catch((err) => warn('the notebook bridge did not start', err));
+  })().catch((err) => {
+    warn('the notebook bridge did not start', err);
+    post({ type: 'error', phase: 'startup' });
+  });
 })();
