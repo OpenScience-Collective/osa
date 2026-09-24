@@ -7,12 +7,13 @@ See `docs/community-notebook.md` for how a community adds a starter, and `docs/a
 ## What lives in this folder
 
 - `open.html` / `open.js`: the same-origin bootstrap page. JupyterLite 0.8.4 has no `?fromURL=` content-loading parameter, so this page fills a community's starter notebook in with the requested dataset id and writes it directly into JupyterLite's own browser storage, then redirects into it.
+- `osa-bridge.js`: added by the build to the notebook page (`notebooks/index.html`). It runs a starter's cells tagged `osa-autorun` when the notebook opens and after a kernel restart, and, when the notebook is the chat widget's tab, reports ready and setup status to the widget and applies the widget's light or dark theme (`docs/adr/0012-the-notebook-as-a-widget-tab.md`).
 - `localforage.min.js`: vendored, unmodified, version 1.10.0 (the exact version JupyterLite itself bundles), Apache License 2.0.
   Fetched from `https://cdn.jsdelivr.net/npm/localforage@1.10.0/dist/localforage.min.js`, sha256 `cc168d95fb927d46b1043726cfe13998e08902ff63f24330e2bb2290109ed145` as downloaded; this repo's own pre-commit hook (`fix end of files`) added the single trailing newline the upstream file lacked, so the byte-identical committed copy is `b60ef9b887b994187a44438c182dba772741611a46f6dab79d0908c70a17cc18` -- a whitespace-only difference, not a code change.
   Its own license header is intact at the top of the file; do not strip it.
-- `_headers`: a TEMPLATE for Cloudflare Pages headers (immutable caching for wheels, no-cache for everything a reader's session depends on being fresh, and the site-wide Content Security Policy (CSP)/Referrer-Policy). The build (`write_headers`) prefixes every path pattern with the site's own path (`/osa`) and writes the result at the true publish root, since Cloudflare Pages only reads `_headers` from exactly there, never a subdirectory.
+- `_headers`: a TEMPLATE for Cloudflare Pages headers (immutable caching for wheels, no-cache for everything a reader's session depends on being fresh, and the site-wide Content Security Policy (CSP)/Referrer-Policy). The build (`write_headers`) fills in the environment's `frame-ancestors` list (`embed_origins`), prefixes every path pattern with the site's own path (`/osa`), and writes the result at the true publish root, since Cloudflare Pages only reads `_headers` from exactly there, never a subdirectory.
 - `test-open.js`: `open.js`'s pure logic (input validation, token filling, entry shape), run under Bun -- no browser, no network.
-- `e2e-check.js`: the full flow in a real, headless Chrome: builds the site, serves it, opens a dataset link, runs every cell, and checks the result. Needs the network (reads `zarr.nemar.org`, or `zarr-test.nemar.org` with `--environment develop`).
+- `e2e-check.js`: the full flow in a real, headless Chrome: builds the site, serves it with its own `_headers`, opens a dataset link, and checks that the setup cell runs by itself, every cell runs, edits save and autosave, a kernel restart reruns setup, the notebook works framed on an allowed site (theme messages included), and a site not on the list is refused. Needs the network (reads `zarr.nemar.org`, or `zarr-test.nemar.org` with `--environment develop`).
 
 The actual build script lives at the repository root, `scripts/build_notebook_site.py` (Python, alongside every other community-config-reading script), not in this folder: it reads every community's `config.yaml` under `src/assistants/`, which is easiest from the same place `scripts/build_runtime_lock.py` already reads them from.
 
@@ -30,7 +31,7 @@ It picks each community's `zarr_base` and `dataset_page_base` from its `notebook
 There is no default, because a build aimed at the wrong data host still builds and only fails in a reader's browser.
 
 Needs no secrets. Fetches: JupyterLite's own build tooling from PyPI (via `uv tool run`, pinned to `jupyterlite-core==0.8.4` / `jupyterlite-pyodide-kernel==0.8.0`), and Pyodide 0.29.5's own lock from jsDelivr (pinned and sha256-verified; the build fails loudly on a mismatch rather than silently building against an unreviewed lock).
-Add `--expose-app` for a test build that exposes JupyterLite's `Application` instance as `window.jupyterapp` (used by `e2e-check.js` to drive "Run All Cells" without clicking through the UI); a production build omits it.
+Every build exposes JupyterLite's `Application` instance as `window.jupyterapp`, because `osa-bridge.js` drives it; `e2e-check.js` uses it too, so the check runs the same build a deployment ships.
 
 `--site-url`'s path (`/osa`) becomes a subdirectory of `--output-dir`:
 the JupyterLite build, lock, wheels, starters and bootstrap files all land at `dist/notebook-site/osa/`, while `_headers` (path-prefixed) and, when there is a path, a `_redirects` sending `/` to `/osa/` are written at `dist/notebook-site/` itself --

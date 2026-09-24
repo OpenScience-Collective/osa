@@ -5,6 +5,7 @@ Date: 2026-09-23
 ## Status
 
 Accepted.
+Amended by [0012](0012-the-notebook-as-a-widget-tab.md): the widget's own sites may now embed this site, which the `frame-ancestors 'none'` below refused.
 Amends [0010](0010-the-notebook-surface.md): 0010 decided the notebook surface (JupyterLite, pinned to Pyodide 0.29.5) and deferred hosting it to this follow-up (issue #453).
 0010's body is unchanged; only its status line now says it is amended by this record.
 

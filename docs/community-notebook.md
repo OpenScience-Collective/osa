@@ -1,14 +1,15 @@
 # Adding a starter notebook to the notebook site
 
-A separate site, `notebook.osc.earth/osa` (`develop-notebook.osc.earth/osa` on `develop`), lets a reader open a real JupyterLite notebook, pre-filled for one dataset, in a new browser tab.
+A separate site, `notebook.osc.earth/osa` (`develop-notebook.osc.earth/osa` on `develop`), lets a reader open a real JupyterLite notebook, pre-filled for one dataset, as a tab inside the chat widget or on its own.
 The `/osa` path follows OSC's own naming rule: a subdomain is a plane serving several projects, and the project itself is the path (`api.osc.earth/osa`, `widget.osc.earth/osa`, ...), so this site does not own its subdomain's root either.
 This is a different surface from `docs/community-browser-runtime.md`'s in-widget Pyodide runtime: that one runs model-written code inside the chat, sealed behind an egress allowlist;
 this one is a full notebook, on its own origin, running the reader's OWN code, with no chat and no model in the loop at all (issue #453, `docs/adr/0011-the-notebook-site.md`).
 
 ## What the site is
 
-A widget's own button (built separately, not part of this config surface) opens `https://notebook.osc.earth/osa/open.html?community=<id>&dataset=<dataset_id>` in a new tab.
+The widget's notebook tab (built separately, not part of this config surface) loads `https://notebook.osc.earth/osa/open.html?community=<id>&dataset=<dataset_id>` in a frame.
 That page validates the link, drops a filled-in starter notebook into JupyterLite's own browser storage, and redirects into it.
+The same link also works on its own, in any browser tab.
 Nothing here talks to this application programming interface (API) server: once the site is built and deployed, opening a notebook is a static, client-side operation.
 
 ## Adding a starter
@@ -47,6 +48,21 @@ It can appear in a markdown cell, a code cell, or both, and in as many cells as 
 `open.js` fills in every occurrence, in every cell, client-side, at the moment a reader opens the link -- never at build time and never on this server.
 A starter that never uses the token fails validation: nothing would ever be filled in for a reader, which is exactly the mistake this check exists to catch before it ships.
 
+### The setup cell
+
+Tag a code cell `osa-autorun` (in its metadata, `"tags": ["osa-autorun"]`) and it runs by itself when the notebook opens, and again after a kernel restart, which starts a fresh Python.
+Use it for the installs and imports every later cell needs, so a reader never has to know a setup cell exists; NEMAR's starter tags its first code cell, which installs and imports eegprep-lean and prints a "Ready" line.
+Tagged cells run in notebook order, and afterwards the next cell is selected, so Shift+Enter carries on from there.
+Keep them quick and free of side effects a reader would not expect, because they run on every open.
+`notebook/osa-bridge.js` does the running (`docs/adr/0012-the-notebook-as-a-widget-tab.md`).
+
+### Who may embed the notebook
+
+The site sends a `frame-ancestors` policy: the sites the chat widget runs on may show the notebook in a frame, and no other site may.
+It is built from each notebook-enabled community's `cors_origins`, the same list that already lets the widget reach the API from those sites, plus the platform's own widget hosts; a community needs no separate setting.
+A wildcard origin must be a whole leading label (`https://*.example.org`), because that is all `frame-ancestors` can express; anything else fails the build.
+A site with its own Content Security Policy (CSP) also needs `frame-src https://notebook.osc.earth` (or `https://develop-notebook.osc.earth` on staging) to show the tab.
+
 ### The Pyodide-version rule
 
 **A community with a `notebook:` block must pin `runtime.python.pyodide_version` to the notebook site's own Pyodide** (`src.core.config.notebook_lock.NOTEBOOK_SITE_PYODIDE_VERSION`, `0.29.5` today), checked at config load (`CommunityConfig.validate_notebook_needs_matching_pyodide`) and again, defensively, by the site build itself.
@@ -63,6 +79,8 @@ A community's wheel is served from `wheels/<community_id>/<file_name>` on the no
 ## What the reader's browser keeps
 
 Once a reader opens a link, the filled-in notebook lives in JupyterLite's own storage (IndexedDB, via `localforage`), on the notebook site's own origin -- NOT the widget's own workspace storage, and not this server.
+In the widget's tab the notebook is a third-party frame, so the browser keeps that storage separately for each site that embeds it: a notebook edited in nemar.org's tab, or its pop-out, is not the one the reader sees when opening the notebook site on its own.
+Edits reach storage within about five seconds without a Save, so a pop-out reopens the latest ones.
 Opening the same dataset again never overwrites it: `open.js` checks for an existing notebook at that path first, and if one is already there, it is left alone and the reader is taken straight to it, edits intact.
 Deleting it, or starting over, is a plain file operation inside JupyterLite's own file browser; nothing here ever does it for the reader.
 
