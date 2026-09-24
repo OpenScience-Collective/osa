@@ -112,7 +112,7 @@ async function startCapsule({ dataset = { id: 'nm000103', zarr: true }, widget: 
   const { window, widget } = loadWidget({ fetch: fetchReturning(config) });
   widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'nemar', storageKey: `osa-test-nbtab-${configCounter}` });
   if (dataset) widget.setDataset(dataset);
-  if (before) before(widget);
+  if (before) before(widget, window);
   widget.init();
   const container = window.document.querySelector('.osa-chat-widget');
   await waitUntil(() => container.querySelector('.osa-chat-input input').placeholder === config.widget.placeholder, 'config loaded');
@@ -274,19 +274,92 @@ console.log('\nthe notebook\'s messages drive the header, the overlays and the b
 
 console.log('\nonly the frame the widget made, at the notebook\'s origin, is heard');
 {
-  const { window, q, click } = await startCapsule();
-  click('.osa-notebook-btn');
-  const frame = q('.osa-notebook-frame');
-  bridgeMessage(window, { type: 'ready' }, { source: frame.contentWindow, origin: 'https://evil.example' });
-  assert(!q('.osa-notebook-loading').classList.contains('osa-overlay-hidden'), 'another origin, even from the frame: ignored');
-  bridgeMessage(window, { type: 'ready' }, { source: window, origin: NOTEBOOK_ORIGIN });
-  assert(!q('.osa-notebook-loading').classList.contains('osa-overlay-hidden'), 'the notebook\'s origin, but not from the frame: ignored');
-  window.dispatchEvent(new window.MessageEvent('message', { data: { type: 'ready' }, origin: NOTEBOOK_ORIGIN, source: frame.contentWindow }));
-  assert(!q('.osa-notebook-loading').classList.contains('osa-overlay-hidden'), 'from the frame and its origin, but not the bridge\'s shape: ignored');
-  bridgeMessage(window, { type: 'setup', status: 'exploded' }, { source: frame.contentWindow });
-  assertEqual(window.OSAChatWidget.__notebook.state().setup, null, 'a setup status the bridge never sends: ignored');
-  bridgeMessage(window, { type: 'ready' }, { source: frame.contentWindow });
-  assert(q('.osa-notebook-loading').classList.contains('osa-overlay-hidden'), 'the real thing is heard');
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => { warnings.push(args.map(String).join(' ')); };
+  try {
+    const { window, q, click } = await startCapsule();
+    click('.osa-notebook-btn');
+    const frame = q('.osa-notebook-frame');
+    warnings.length = 0; // startup's own, about the test's config, are not this test's
+    bridgeMessage(window, { type: 'ready' }, { source: frame.contentWindow, origin: 'https://evil.example' });
+    assert(!q('.osa-notebook-loading').classList.contains('osa-overlay-hidden'), 'another origin, even from the frame: ignored');
+    bridgeMessage(window, { type: 'ready' }, { source: window, origin: NOTEBOOK_ORIGIN });
+    assert(!q('.osa-notebook-loading').classList.contains('osa-overlay-hidden'), 'the notebook\'s origin, but not from the frame: ignored');
+    window.dispatchEvent(new window.MessageEvent('message', { data: { type: 'ready' }, origin: NOTEBOOK_ORIGIN, source: frame.contentWindow }));
+    assert(!q('.osa-notebook-loading').classList.contains('osa-overlay-hidden'), 'from the frame and its origin, but not the bridge\'s shape: ignored');
+    assertEqual(warnings.length, 0, 'none of those is worth a warning: they are not the notebook speaking');
+    bridgeMessage(window, { type: 'setup', status: 'exploded' }, { source: frame.contentWindow });
+    assertEqual(window.OSAChatWidget.__notebook.state().setup, null, 'a setup status the bridge never sends: ignored');
+    assert(warnings.some((w) => w.includes('does not recognize')), 'but the notebook sent it, so the console hears of it');
+    bridgeMessage(window, { type: 'ready' }, { source: frame.contentWindow });
+    assert(q('.osa-notebook-loading').classList.contains('osa-overlay-hidden'), 'the real thing is heard');
+
+    warnings.length = 0;
+    bridgeMessage(window, { type: 'theme', scheme: 'dark', applied: true }, { source: frame.contentWindow });
+    assertEqual(warnings.length, 0, 'a theme the notebook applied: nothing to say');
+    bridgeMessage(window, { type: 'theme', scheme: 'dark', applied: false }, { source: frame.contentWindow });
+    assert(warnings.some((w) => w.includes('could not apply the dark theme')), 'a theme it could not apply reaches the console');
+    assertEqual(window.OSAChatWidget.__notebook.state().state, 'ready', 'and changes nothing else');
+  } finally {
+    console.warn = originalWarn;
+  }
+}
+
+console.log('\nthe capsule listens for the notebook; a bubble does not');
+{
+  // A bubble has no frame, so nothing reaches it either way; this checks it does
+  // not even listen, since only a capsule has a notebook to hear from.
+  const config = configResponse({ launcher: undefined });
+  delete config.widget.launcher;
+  const { window, widget } = loadWidget({ fetch: fetchReturning(config) });
+  const types = [];
+  const originalAdd = window.addEventListener.bind(window);
+  window.addEventListener = (type, ...rest) => { types.push(type); return originalAdd(type, ...rest); };
+  widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: 'osa-test-nbtab-bubble-listen' });
+  widget.init();
+  const container = window.document.querySelector('.osa-chat-widget');
+  await waitUntil(() => container.querySelector('.osa-chat-input input').placeholder === config.widget.placeholder, 'config loaded');
+  assert(!types.includes('message'), 'a bubble adds no message listener');
+
+  const capsule = loadWidget({ fetch: fetchReturning(configResponse()) });
+  const capsuleTypes = [];
+  const capsuleAdd = capsule.window.addEventListener.bind(capsule.window);
+  capsule.window.addEventListener = (type, ...rest) => { capsuleTypes.push(type); return capsuleAdd(type, ...rest); };
+  capsule.widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'nemar', storageKey: 'osa-test-nbtab-capsule-listen' });
+  capsule.widget.init();
+  const capsuleContainer = capsule.window.document.querySelector('.osa-chat-widget');
+  await waitUntil(() => capsuleContainer.classList.contains('osa-capsule'), 'the capsule');
+  assertEqual(capsuleTypes.filter((t) => t === 'message').length, 1, 'a capsule adds exactly one');
+}
+
+console.log('\nthe pre-set config\'s notebook address is held to setConfig\'s rule');
+{
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => { warnings.push(args.map(String).join(' ')); };
+  try {
+    const { q, click } = await startCapsule({
+      before: (_widget, window) => {
+        window.__OSA_CHAT_CONFIG__ = { notebookUrl: 'javascript:alert(1)//' };
+      },
+    });
+    click('.osa-notebook-btn');
+    assertEqual(q('.osa-notebook-frame').getAttribute('src'), 'https://notebook.osc.earth/osa/open.html?community=nemar&dataset=nm000103',
+      'an invalid pre-set notebookUrl is dropped: the frame opens the default');
+    assert(warnings.some((w) => w.includes('Invalid notebookUrl')), 'with a warning');
+
+    const custom = await startCapsule({
+      before: (_widget, window) => {
+        window.__OSA_CHAT_CONFIG__ = { notebookUrl: 'https://develop-notebook.osc.earth/osa' };
+      },
+    });
+    custom.click('.osa-notebook-btn');
+    assertEqual(custom.q('.osa-notebook-frame').getAttribute('src'), 'https://develop-notebook.osc.earth/osa/open.html?community=nemar&dataset=nm000103',
+      'a valid one is normalized, trailing slash and all');
+  } finally {
+    console.warn = originalWarn;
+  }
 }
 
 console.log('\nthe widget\'s color scheme reaches the notebook, once per change');
@@ -410,6 +483,98 @@ console.log('\na dataset change replaces the frame, and one with no Zarr copy ta
   assert(container.classList.contains('osa-tab-chat') && !q('.osa-notebook-frame'), 'and does nothing');
 }
 
+console.log('\nthe chat circle keeps its icon, and focus follows the tab');
+{
+  const { window, q, click, container } = await startCapsule();
+  const icon = () => q('.osa-launcher-capsule .osa-chat-button svg').outerHTML;
+  const chatIcon = icon();
+  const input = q('.osa-chat-input input');
+  const isOpenOn = (tab) => q('.osa-chat-window').classList.contains('open') && container.classList.contains(`osa-tab-${tab}`);
+
+  click('.osa-launcher-capsule .osa-chat-button');
+  assertEqual(icon(), chatIcon, 'open on chat, the chat circle keeps the chat icon (a bubble swaps to a close icon)');
+  // Identity, not assertEqual: every element serializes to {}, so any two compare equal.
+  assert(window.document.activeElement === input, 'opening on chat puts focus in the chat input');
+
+  click('.osa-notebook-btn');
+  assertEqual(icon(), chatIcon, 'on the notebook tab, too');
+  input.blur();
+  click('.osa-launcher-capsule .osa-chat-button');
+  assert(window.document.activeElement === input, 'going back to chat puts focus back in the chat input');
+
+  click('.osa-launcher-capsule .osa-chat-button');
+  assertEqual(icon(), chatIcon, 'closed: still the chat icon');
+  input.blur();
+  click('.osa-notebook-btn');
+  assert(isOpenOn('notebook'), 'the notebook circle opens a closed panel on the notebook tab');
+  assert(window.document.activeElement !== input, 'without putting focus in the hidden chat input');
+
+  const frame = q('.osa-notebook-frame');
+  click('.osa-notebook-btn');
+  assert(!q('.osa-chat-window').classList.contains('open'), 'closed from the notebook tab');
+  click('.osa-notebook-btn');
+  assert(isOpenOn('notebook'), 'the notebook circle reopens it on the notebook tab');
+  assert(q('.osa-notebook-frame') === frame, 'with the same frame');
+  assert(window.document.activeElement !== input, 'and focus still not in the chat input');
+}
+
+console.log('\nleaving a dataset page with the notebook open takes the panel back to chat');
+{
+  const { widget, q, click, container } = await startCapsule();
+  click('.osa-notebook-btn');
+  assert(!!q('.osa-notebook-frame'), 'the notebook tab has its frame');
+  let threw = null;
+  try {
+    widget.setDataset(null);
+  } catch (e) {
+    threw = e;
+  }
+  assertEqual(threw, null, 'setDataset(null) with a frame open does not throw');
+  assert(container.classList.contains('osa-tab-chat'), 'the panel is back on chat');
+  assert(!q('.osa-notebook-frame'), 'the frame is dropped');
+  assertEqual(q('.osa-notebook-btn').getAttribute('aria-disabled'), 'true', 'and the notebook circle is unavailable');
+}
+
+console.log('\na failed notebook stays failed until Try again, says so on its circle, and recovers if it was only slow');
+{
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    const { window, widget, q, click } = await startCapsule();
+    widget.__notebook.setTimeouts(20, 40);
+    click('.osa-notebook-btn');
+    const frame = q('.osa-notebook-frame');
+    await waitUntil(() => widget.__notebook.state().state === 'failed', 'the notebook times out');
+    widget.__notebook.setTimeouts(12000, 45000);
+    const notebookButton = q('.osa-notebook-btn');
+    assert(!notebookButton.classList.contains('osa-notebook-attention'), 'on its own tab, the circle needs no cue: the fallback is on screen');
+
+    click('.osa-launcher-capsule .osa-chat-button');
+    assert(notebookButton.classList.contains('osa-notebook-attention'), 'on chat, the notebook circle carries the attention cue');
+    assertEqual(notebookButton.querySelector('.osa-icon-tooltip').textContent, 'The nm000103 notebook did not open here', 'its tooltip says what happened');
+    assertEqual(notebookButton.getAttribute('aria-label'), 'Notebook: The nm000103 notebook did not open here', 'and so does its label');
+
+    click('.osa-notebook-btn');
+    assert(q('.osa-notebook-frame') === frame, 'coming back to the tab keeps the failed frame rather than starting over');
+    assert(!q('.osa-notebook-fallback').classList.contains('osa-overlay-hidden'), 'and still shows the fallback');
+    assertEqual(widget.__notebook.state().state, 'failed', 'still failed');
+
+    bridgeMessage(window, { type: 'ready' }, { source: frame.contentWindow });
+    assertEqual(widget.__notebook.state().state, 'ready', 'a notebook that was only slow recovers when it reports ready');
+    assert(q('.osa-notebook-fallback').classList.contains('osa-overlay-hidden'), 'and the fallback goes');
+
+    bridgeMessage(window, { type: 'setup', status: 'error' }, { source: frame.contentWindow });
+    click('.osa-launcher-capsule .osa-chat-button');
+    assert(notebookButton.classList.contains('osa-notebook-attention'), 'setup failed, on chat: the cue');
+    assertEqual(notebookButton.querySelector('.osa-icon-tooltip').textContent, 'Setup did not finish in the nm000103 notebook', 'saying setup did not finish');
+    bridgeMessage(window, { type: 'setup', status: 'done' }, { source: frame.contentWindow });
+    assert(!notebookButton.classList.contains('osa-notebook-attention'), 'a rerun that finishes clears it');
+    assertEqual(notebookButton.querySelector('.osa-icon-tooltip').textContent, 'Open nm000103 in a Python notebook', 'and the tooltip is the ordinary one');
+  } finally {
+    console.warn = originalWarn;
+  }
+}
+
 console.log('\nresizing turns the frame\'s pointer off for the drag');
 {
   const { window, q, click } = await startCapsule();
@@ -422,7 +587,7 @@ console.log('\nresizing turns the frame\'s pointer off for the drag');
   assert(!chatWindow.classList.contains('osa-resizing'), 'and after it, they are back');
 }
 
-console.log('\nthe circles are 46px in the capsule, and the chat button\'s own 56px stays for a bubble');
+console.log('\nthe circles are 46px in the capsule, and a bubble\'s chat button stays 56px');
 {
   const { window, q } = await startCapsule();
   for (const selector of ['.osa-launcher-capsule .osa-chat-button', '.osa-notebook-btn', '.osa-hpc-btn', '.osa-capsule-indicator']) {
@@ -430,6 +595,16 @@ console.log('\nthe circles are 46px in the capsule, and the chat button\'s own 5
     assertEqual([style.width, style.height], ['46px', '46px'], `${selector} is 46px`);
   }
   assertEqual(window.getComputedStyle(q('.osa-send-btn')).width, '40px', 'the Send button, for scale, is 40px');
+
+  const config = configResponse({ launcher: undefined });
+  delete config.widget.launcher;
+  const bubble = loadWidget({ fetch: fetchReturning(config) });
+  bubble.widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: 'osa-test-nbtab-bubble-size' });
+  bubble.widget.init();
+  const bubbleContainer = bubble.window.document.querySelector('.osa-chat-widget');
+  await waitUntil(() => bubbleContainer.querySelector('.osa-chat-input input').placeholder === config.widget.placeholder, 'config loaded');
+  const bubbleStyle = bubble.window.getComputedStyle(bubbleContainer.querySelector('.osa-chat-button'));
+  assertEqual([bubbleStyle.width, bubbleStyle.height], ['56px', '56px'], 'a bubble\'s chat button stays 56px');
 }
 
 console.log('\nreduced motion: the stylesheet replaces every animation with a short fade');

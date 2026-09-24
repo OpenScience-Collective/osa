@@ -594,6 +594,24 @@
       stroke-dasharray: 34 101;
     }
 
+    /* The notebook failed, or its setup did, while another tab is open: a dot on
+       its circle, beside the tooltip and label that say which. */
+    .osa-launcher-icon.osa-notebook-attention::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #dc2626;
+      box-shadow: 0 0 0 2px var(--osa-bg);
+    }
+
+    .osa-chat-widget.osa-dark .osa-launcher-icon.osa-notebook-attention::after {
+      background: #f87171;
+    }
+
     .osa-launcher-icon.osa-notebook-busy .osa-notebook-ring {
       opacity: 1;
     }
@@ -2360,6 +2378,18 @@
       if (isOpen && activeTab === 'notebook') {
         return { available: true, label: `Close ${CONFIG.title}`, tooltip: 'Close' };
       }
+      // The frame for this dataset failed, or its setup did: say so on the circle,
+      // for a reader who left the tab before it finished.
+      if (notebookEmbed.frame && notebookEmbed.datasetId === currentDataset.id) {
+        if (notebookEmbed.state === 'failed') {
+          const tip = `The ${currentDataset.id} notebook did not open here`;
+          return { available: true, attention: true, label: `Notebook: ${tip}`, tooltip: tip };
+        }
+        if (notebookEmbed.state === 'ready' && notebookEmbed.setup === 'error') {
+          const tip = `Setup did not finish in the ${currentDataset.id} notebook`;
+          return { available: true, attention: true, label: `Notebook: ${tip}`, tooltip: tip };
+        }
+      }
       return {
         available: true,
         label: `Open ${currentDataset.id} in a Python notebook`,
@@ -2388,20 +2418,18 @@
   // The notebook site's address for the dataset on screen: the notebook site's
   // contract (open.html validates both parameters, writes a starter notebook into
   // JupyterLite's own storage, and redirects into it).
+  // CONFIG.notebookUrl always holds a normalized URL: its default is one, and both
+  // of its writers (setConfig, and the pre-set config init() reads) normalize what
+  // they are given or drop it with a warning.
   function notebookUrlFor(datasetId) {
-    const base = normalizeNotebookUrl(CONFIG.notebookUrl) || CONFIG.notebookUrl;
-    return `${base}open.html?community=${encodeURIComponent(CONFIG.communityId)}` +
+    return `${CONFIG.notebookUrl}open.html?community=${encodeURIComponent(CONFIG.communityId)}` +
       `&dataset=${encodeURIComponent(datasetId)}`;
   }
 
   // The origin the notebook's messages must come from, and the only one the
   // widget's own messages are addressed to.
   function notebookOrigin() {
-    try {
-      return new URL(normalizeNotebookUrl(CONFIG.notebookUrl) || CONFIG.notebookUrl).origin;
-    } catch {
-      return null;
-    }
+    return new URL(CONFIG.notebookUrl).origin;
   }
 
   // Apply the capsule's current state to the DOM: each button's availability,
@@ -2436,6 +2464,7 @@
         (notebookEmbed.state === 'ready' && notebookEmbed.setup === 'running');
       const busy = !current && state.available && starting;
       notebookButton.classList.toggle('osa-notebook-busy', busy);
+      notebookButton.classList.toggle('osa-notebook-attention', !!state.attention);
       const tooltip = notebookButton.querySelector('.osa-icon-tooltip');
       if (tooltip) tooltip.textContent = state.tooltip;
       const badge = notebookButton.querySelector('.osa-icon-badge');
@@ -2539,6 +2568,9 @@
   // browser tab of its own: 12 seconds after the frame loads (a page that refused
   // to be framed, or a host page whose policy refuses the frame, still loads, as
   // an error page, and never speaks), or 45 seconds after it was created at all.
+  // A failed frame is kept too, so coming back to the tab shows the same fallback
+  // rather than quietly starting over, and a notebook that was only slow still
+  // recovers when it reports ready; Try again is what makes a fresh one.
   // Variables, not constants, only so the test hooks can shorten them.
   let NOTEBOOK_AFTER_LOAD_MS = 12000;
   let NOTEBOOK_TOTAL_MS = 45000;
@@ -2546,7 +2578,7 @@
   function ensureNotebookFrame(container) {
     if (!isNotebookAvailable()) return;
     const datasetId = currentDataset.id;
-    if (notebookEmbed.frame && notebookEmbed.datasetId === datasetId && notebookEmbed.state !== 'failed') return;
+    if (notebookEmbed.frame && notebookEmbed.datasetId === datasetId) return;
     const view = container.querySelector('.osa-view-notebook');
     if (!view) return;
     discardNotebookFrame();
@@ -2603,8 +2635,8 @@
   // when it changed, unless forced (a fresh load, or the notebook saying it is ready).
   function postNotebookTheme(force) {
     const frame = notebookEmbed.frame;
+    if (!frame || !frame.contentWindow) return;
     const origin = notebookOrigin();
-    if (!frame || !frame.contentWindow || !origin) return;
     const scheme = isDarkScheme() ? 'dark' : 'light';
     if (!force && scheme === notebookEmbed.sentScheme) return;
     notebookEmbed.sentScheme = scheme;
@@ -2636,7 +2668,15 @@
     } else if (data.type === 'error' && data.phase === 'startup') {
       failNotebook(container, frame, 'startup');
       return;
+    } else if (data.type === 'theme') {
+      // The notebook's answer to a theme message: nothing to show, but a theme it
+      // could not apply leaves it in the wrong scheme, which a developer should see.
+      if (data.applied === false) {
+        console.warn(`[OSA] The notebook could not apply the ${data.scheme} theme.`);
+      }
+      return;
     } else {
+      console.warn('[OSA] Ignoring a message from the notebook this widget does not recognize:', data);
       return;
     }
     renderNotebookStatus(container);
@@ -2801,6 +2841,9 @@
     positionIndicator(container);
     // The row and column layouts put the circles in different places.
     window.addEventListener('resize', () => positionIndicator(container));
+    // The notebook tab's frame speaks through messages (#470). Only a capsule has
+    // that frame, so only a capsule listens.
+    window.addEventListener('message', handleNotebookMessage);
   }
 
   // Apply a setDataset(value) call: validates, stores the result (even before the
@@ -2830,8 +2873,10 @@
     }
     const container = document.querySelector('.osa-chat-widget');
     if (!container) return;
-    const stale = notebookEmbed.frame &&
-      (!isNotebookAvailable() || notebookEmbed.datasetId !== currentDataset.id);
+    // Stale: the dataset on screen can no longer open a notebook (null, or no Zarr
+    // copy), or it is a different dataset from the one the frame was made for.
+    const stale = !!notebookEmbed.frame &&
+      (!isNotebookAvailable() || notebookEmbed.datasetId !== currentDataset?.id);
     if (stale) {
       discardNotebookFrame();
       if (activeTab === 'notebook') setTab(container, isNotebookAvailable() ? 'notebook' : 'chat');
@@ -6614,7 +6659,19 @@
   function init() {
     // Check for pre-configured settings (used by pop-out windows)
     if (window.__OSA_CHAT_CONFIG__) {
-      Object.assign(CONFIG, window.__OSA_CHAT_CONFIG__);
+      const preset = { ...window.__OSA_CHAT_CONFIG__ };
+      // The notebook's address is framed and messaged (#470), so it is held to
+      // setConfig's rule here too.
+      if ('notebookUrl' in preset) {
+        const normalized = normalizeNotebookUrl(preset.notebookUrl);
+        if (normalized) {
+          preset.notebookUrl = normalized;
+        } else {
+          console.warn('[OSA] Invalid notebookUrl, ignoring:', preset.notebookUrl);
+          delete preset.notebookUrl;
+        }
+      }
+      Object.assign(CONFIG, preset);
     }
     // A pop-out whose opener's host page chose the scheme (see openPopout).
     if (isValidColorScheme(window.__OSA_HOST_COLOR_SCHEME__)) {
@@ -6674,8 +6731,6 @@
 
     // Event listeners with null checks
     chatButton?.addEventListener('click', () => handleChatButtonClick(container));
-    // The notebook tab's frame speaks through messages (#470); nothing else is heard.
-    window.addEventListener('message', handleNotebookMessage);
     closeBtn?.addEventListener('click', () => toggleChat(container));
     resetBtn?.addEventListener('click', () => resetChat(container));
     popoutBtn?.addEventListener('click', () => openPopout());
