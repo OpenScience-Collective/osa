@@ -17,6 +17,16 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Added
 
+- **The notebook opens as a tab of the widget's panel** (issue #470, #471, #474):
+  a capsule community's notebook icon opens a Notebook tab next to the chat, framing the notebook site,
+  where it used to open the site in a new browser tab.
+  The frame is made the first time the tab opens and kept while the reader is on chat, so its Python keeps running;
+  a new dataset on screen replaces it.
+  The notebook site now allows being framed by the platform's widget hosts and each notebook community's `cors_origins`,
+  and runs a starter's cells tagged `osa-autorun` when it opens.
+  See `docs/adr/0012-the-notebook-as-a-widget-tab.md` and "Launcher" in `docs/community-widget.md`.
+- **An opt-in dark appearance** (issue #469): `widget.color_scheme: auto` follows the reader's device,
+  including a switch while the page is open; `light`, the default, is unchanged. NEMAR turns it on.
 - **The widget's pop-out carries the notebook** (issue #470):
   a capsule community's pop-out window has the panel's Chat and Notebook tabs, as a strip under its header,
   opens on the tab the reader was on, and makes a notebook frame of its own, a fresh notebook session.
@@ -57,9 +67,9 @@ the version being released and start a new `[Unreleased]` section above it.
   before this feature existed. A new
   `OSAChatWidget.setDataset({ id, zarr })` call (or `setDataset(null)`) tells the widget
   which dataset, if any, is on screen, driving the notebook icon through four states
-  (no dataset, Zarr unknown, no Zarr copy, active); the active state opens
-  `${notebookUrl}open.html?community=...&dataset=...` in a new tab, where `notebookUrl`
-  is set via `setConfig` (default `https://notebook.osc.earth/osa/`). `launcher_label`
+  (no dataset, Zarr unknown, no Zarr copy, active); the active state opens the panel's
+  Notebook tab, which frames `${notebookUrl}open.html?community=...&dataset=...`, where
+  `notebookUrl` is set via `setConfig` (default `https://notebook.osc.earth/osa/`). `launcher_label`
   replaces the hardcoded collapsed-launcher tooltip with a short community-chosen label,
   keeping the greeting and suggested questions behind the click. NEMAR is the first
   community on the capsule, with the label "Explore NEMAR". See the
@@ -104,9 +114,8 @@ the version being released and start a new `[Unreleased]` section above it.
 - `docs/community-browser-runtime.md`, a guide for a community adopting the runtime.
 - **A hosted JupyterLite notebook site**, at `notebook.osc.earth/osa` (issue #453, ADR 0011,
   amending ADR 0010's deferral). A community adds a `notebook:` block to its
-  `config.yaml` (a starter `.ipynb` and a dataset-id pattern); a widget's own button
-  (built separately) opens `notebook.osc.earth/osa/open.html?community=<id>&dataset=<id>` in
-  a new tab, which drops that community's starter, with the dataset id filled in, into
+  `config.yaml` (a starter `.ipynb` and a dataset-id pattern); the widget's Notebook tab
+  frames `notebook.osc.earth/osa/open.html?community=<id>&dataset=<id>`, which drops that community's starter, with the dataset id filled in, into
   JupyterLite's own browser storage and redirects into it. Pyodide 0.29.5 loads from
   jsDelivr rather than being self-hosted (66 MB versus 530 MB for the same build);
   community wheels are bundled through one lock merged across every notebook-enabled
@@ -125,6 +134,11 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Fixed
 
+- **The widget draws in its community's look from the first frame** (issue #475).
+  It drew the built-in blue bubble and changed to the community's look when the config arrived, about 450 ms later, on every load.
+  It now remembers the last config's `widget` block in the page's `localStorage` and applies it before drawing; the fresh config still wins.
+- **The widget keeps its own field colors on a dark page** (issue #469), for every community:
+  a host page declaring `color-scheme: dark` turned the chat input dark inside the light panel.
 - **The pop-out no longer opens blank on a page without `script-src 'unsafe-inline'`** (issue #470).
   It wrote the widget's source into itself as inline script, which the host page's Content Security Policy, inherited by the pop-out, refused.
   It now loads the widget by its address, with the widget tag's `integrity` and `crossorigin`, so a policy that loads the widget allows its pop-out too,
