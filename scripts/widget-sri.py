@@ -53,8 +53,10 @@ def main() -> None:
         print(f"""\
   <script src="https://cdn.jsdelivr.net/gh/OpenScience-Collective/osa@{tag}/frontend/osa-chat-widget.js"
           integrity="{hash_value}"
-          crossorigin="anonymous"
-          defer></script>""")
+          crossorigin="anonymous"></script>
+  <script>
+    OSAChatWidget.setConfig({{ communityId: 'hed' }});
+  </script>""")
 
 
 if __name__ == "__main__":

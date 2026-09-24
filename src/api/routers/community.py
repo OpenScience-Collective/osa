@@ -1066,7 +1066,7 @@ def _resolve_provider(
                 "API key required. Please provide your Anthropic API key via the "
                 "X-Anthropic-API-Key header, or your OpenRouter API key via the "
                 "X-OpenRouter-Key header. Get an Anthropic key at: "
-                "https://console.anthropic.com/settings/keys, or an OpenRouter key at: "
+                "https://platform.claude.com/settings/keys, or an OpenRouter key at: "
                 "https://openrouter.ai/keys"
             ),
         )
