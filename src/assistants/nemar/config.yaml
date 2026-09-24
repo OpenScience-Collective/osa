@@ -52,6 +52,20 @@ widget:
     - What datasets have HED annotations?
     - Show me MEG datasets
     - Tell me about dataset nm000132
+  # On a dataset page, which nemar.org names with setDataset, the first three of these
+  # that fit replace the list above (#477). nemar.org passes {subject} and {task} from
+  # the dataset's first recording with a Zarr copy, so a dataset with a Zarr copy gets
+  # the first three and one without gets the three with no needs_zarr. The two that run
+  # code stay within the chat runtime (numpy, matplotlib, zarr, eegprep-lean; no scipy):
+  # a power spectrum is a numpy FFT there.
+  dataset_suggested_questions:
+    - text: "What is {dataset_id} about, and how was it recorded?"
+    - text: "Plot 10 seconds of sub-{subject}'s {task} recording from {dataset_id}"
+      needs_zarr: true
+    - text: "Show the power spectrum of sub-{subject}'s {task} recording from {dataset_id}"
+      needs_zarr: true
+    - text: "How do I download {dataset_id}?"
+    - text: "What events are annotated in {dataset_id}?"
 
 cors_origins:
   - https://nemar.org
