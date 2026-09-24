@@ -18,7 +18,13 @@
 # merged Pyodide lock (which changes whenever a community's own overlay does).
 /open.html
   Cache-Control: no-cache
+# Cloudflare Pages serves open.html at /open (a 308 from the .html path), and
+# header rules match the path served, so both spellings are listed.
+/open
+  Cache-Control: no-cache
 /open.js
+  Cache-Control: no-cache
+/osa-bridge.js
   Cache-Control: no-cache
 /starters/*
   Cache-Control: no-cache
@@ -27,9 +33,10 @@
 /jupyter-lite.json
   Cache-Control: no-cache
 
-# Site-wide, on every path. frame-ancestors 'none': this site is never meant to
-# be embedded (unlike the widget, which nemar.org and friends iframe/script-embed
-# on purpose). A stricter script-src/connect-src CSP was considered and NOT
+# Site-wide, on every path. frame-ancestors is filled in by the build
+# (embed_origins in scripts/build_notebook_site.py): the chat widget shows this
+# site as a tab, so the sites the widget runs on may embed it, and nothing else
+# may. A stricter script-src/connect-src CSP was considered and NOT
 # added here: JupyterLite's own build loads webpack-split chunks, a blob: Worker
 # for Pyodide, and jsDelivr's CDN, then this site's own connect-src additionally
 # needs zarr.nemar.org and per-community API hosts, and proving a tighter policy
@@ -38,6 +45,6 @@
 # (frontend/browser-harness/serve.js's POLICIES) -- not attempted in this PR; see
 # docs/adr/0011-the-notebook-site.md, "Consequences".
 /*
-  Content-Security-Policy: frame-ancestors 'none'
+  Content-Security-Policy: frame-ancestors {{frame_ancestors}}
   Referrer-Policy: no-referrer
   X-Content-Type-Options: nosniff
