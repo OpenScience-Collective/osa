@@ -21,6 +21,13 @@ the version being released and start a new `[Unreleased]` section above it.
   The pop-out button now shows on the notebook tab too.
   A bubble community's pop-out is unchanged.
   See "The pop-out window" in `docs/community-widget.md`.
+- **NEMAR's power spectrum and ERP image, with ERP CORE as the worked example**:
+  NEMAR's prompt gains a "Spectra, events and ERP images" section, which teaches Welch's method, a windowed-sinc low-pass and epoching in numpy (the chat runtime has no SciPy),
+  and finding a dataset's conditions from `nemar_get_events`' `columns_summary` before asking for only those rows with `where` and `columns`.
+  Its dataset-page questions now offer the power spectrum and an ERP image first.
+  The notebook starter ends with a power spectrum of the first two minutes of any recording, with SciPy, and links to the fuller worked examples in NEMAR's documentation.
+- **The notebook check reads the notebook, not only the page**: `notebook/e2e-check.js` takes its read line, its figures and any error from the notebook model,
+  since JupyterLab renders only the cells in view, and it names the error a cell raised.
 - **Config values per deployment** (issue #480):
   `extensions.mcp_servers[].url`, `runtime.python.fetch_allow` and `runtime.python.prelude`
   each take one value or a `{production, develop}` map, the shape `notebook.zarr_base` already has.
