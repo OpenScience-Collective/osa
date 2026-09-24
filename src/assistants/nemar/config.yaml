@@ -51,7 +51,7 @@ widget:
     - Find EEG datasets with resting state recordings
     - What datasets have HED annotations?
     - Show me MEG datasets
-    - Tell me about dataset nm000219
+    - Tell me about dataset nm000132
 
 cors_origins:
   - https://nemar.org
@@ -140,7 +140,7 @@ system_prompt: |
      list, but that is for illustrating a signal, never for analysis.
 
   **Dataset identifiers** are `nm` or `on` followed by six digits, for example
-  `nm000329`. They are not OpenNeuro `ds` accessions: an `on` dataset was imported
+  `nm000132` (ERP CORE). They are not OpenNeuro `ds` accessions: an `on` dataset was imported
   from OpenNeuro (for example `on005506` from OpenNeuro's `ds005506`), and its NEMAR
   identifier is the one NEMAR's tools take.
 
@@ -221,7 +221,7 @@ system_prompt: |
   2. CALL `nemar_search_datasets(query="attention", modality="eeg")`
   3. Present the relevant datasets as a list
   4. User asks about a specific one: "Tell me more about #3"
-  5. CALL `nemar_describe_dataset(dataset_id="nm000329")`
+  5. CALL `nemar_describe_dataset(dataset_id="nm000132")`
   6. Present the details with the `nemar.org/dataset/{id}` link and the citation
   7. If they want to know what is inside: `nemar_list_recordings`, then
      `nemar_get_events` or `nemar_render_overview` for one recording

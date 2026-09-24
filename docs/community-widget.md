@@ -250,7 +250,7 @@ than deliberate.
 The embedding page tells the widget which dataset, if any, is on screen:
 
 ```js
-OSAChatWidget.setDataset({ id: 'nm000103', zarr: true });
+OSAChatWidget.setDataset({ id: 'nm000132', zarr: true });
 OSAChatWidget.setDataset(null); // not a dataset page
 ```
 
