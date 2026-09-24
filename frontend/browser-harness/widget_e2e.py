@@ -84,6 +84,9 @@ CSP = (
     f"script-src 'self' 'wasm-unsafe-eval' {CDN}; "
     f"connect-src 'self' {CDN} https://zarr.nemar.org; "
     "default-src 'self'; worker-src 'self' blob:; child-src 'self' blob:; "
+    # The notebook tab (#470) frames the notebook site; a host page must allow it
+    # as nemar.org does. develop's notebook admits loopback pages to frame it.
+    "frame-src 'self' https://develop-notebook.osc.earth https://notebook.osc.earth; "
     "img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; form-action 'self'"
 )
 

@@ -54,6 +54,19 @@ The check sends exactly that first message, and checks that a later change of th
 
 A JupyterLab extension was rejected: building one needs `jupyter labextension build`, which brings Node and webpack in beside this repository's Bun-only JavaScript toolchain, for about 150 lines of code against an app JupyterLite already exposes.
 
+**The widget shows the notebook as a tab of its own panel**, next to the chat, and the capsule's filled indicator marks which tab is open.
+It makes one frame, the first time the tab opens, and keeps it while the reader is on chat, so the notebook's Python keeps running; a new dataset on screen replaces it, and a dataset with no Zarr copy drops it.
+The frame has no `sandbox` attribute: the notebook needs scripts, its own origin's storage and service worker, downloads (File > Download) and its own dialogs, and the notebook site's separate origin already keeps it from the host page.
+Because the bridge posts to any origin, the widget does the filtering: it acts on a message only if it comes from the frame it made and from the notebook site's origin, and it addresses its theme messages to that origin only.
+A frame that loads but has not said it is ready within 12 seconds, or has not said so within 45 seconds of being created, or whose bridge reports a startup error before it is ready, is covered by a fallback that retries in a fresh frame or opens the same address in a browser tab.
+A page whose own `frame-src` refuses the notebook still fires the frame's load event, for the error page, and then hears nothing (measured in Chrome 153: one load, no messages; an allowed frame loads twice, through `open.html`'s redirect, and speaks), which is why the shorter timeout counts from the load.
+A startup error after ready is ignored, because the bridge's error path also covers the work it does after the notebook is on screen.
+A failed frame is kept until the reader asks for another with "Try again", so returning to the tab shows the same fallback instead of quietly spending another load, and a notebook that was only slow recovers when it reports ready.
+`launcher: capsule` now requires a `notebook` section, because without one the notebook icon could open only an error.
+
+A browser tab as the notebook's primary surface (#468's behavior) was rejected: moving between the assistant and the notebook meant leaving the page.
+So was unloading the frame on a switch to chat, which would restart Python, and its setup, on every return.
+
 **Two settings change from JupyterLab's defaults**, through `settingsOverrides` in the built `jupyter-lite.json`.
 `adaptive-theme` is on, so a notebook opened on its own follows the device.
 `autosaveInterval` is 5 seconds instead of 120, so the pop-out reopens a reader's latest edits.
@@ -71,9 +84,14 @@ Measured with a control: with the override, an edit with no Save reached storage
 - **Embedders with a Content Security Policy (CSP)** need `frame-src` for the notebook host, `https://notebook.osc.earth` (or `https://develop-notebook.osc.earth` on staging); the widget's documentation says so.
 - **Safari is not in the automated check.**
   Chrome's partitioned storage and third-party service worker are exercised by the framed run; Safari's are checked by hand on staging.
+- **The pop-out does not carry the notebook yet.**
+  Its button is hidden on the notebook tab, and a pop-out shows the chat only, until the pop-out gets its own tabs (#470).
+- **A frame kept alive costs memory while the reader is on chat.**
+  One Pyodide stays loaded for as long as the page is open once the tab has been used; the tab is opened only by a reader asking for it.
 
 ## References
 
 - Issues #470 (the notebook tab) and #453 (the site); ADR [0011](0011-the-notebook-site.md).
 - `notebook/osa-bridge.js`, `scripts/build_notebook_site.py` (`embed_origins`, `inject_bridge`, `NOTEBOOK_SETTINGS_OVERRIDES`), `notebook/e2e-check.js` (the framed runs).
-- `docs/community-notebook.md` (the adopter-facing how-to).
+- `frontend/osa-chat-widget.js` (`ensureNotebookFrame`, `handleNotebookMessage`, `setTab`), `frontend/test-widget-notebook-tab.js`, `frontend/browser-harness/notebook-tab-check.mjs` (the widget's half, in Chrome against the develop notebook).
+- `docs/community-notebook.md` (the adopter-facing how-to) and `docs/community-widget.md`, "The notebook tab".

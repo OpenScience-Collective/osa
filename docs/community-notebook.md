@@ -7,7 +7,8 @@ this one is a full notebook, on its own origin, running the reader's OWN code, w
 
 ## What the site is
 
-The widget's notebook button (built separately, not part of this config surface) opens `https://notebook.osc.earth/osa/open.html?community=<id>&dataset=<dataset_id>` in a new tab today; with #470 it will load the same link as a tab inside the widget, in a frame, which this site already allows.
+The widget's notebook button, on a community whose widget sets `launcher: capsule`, opens `https://notebook.osc.earth/osa/open.html?community=<id>&dataset=<dataset_id>` as a tab inside the widget's panel, in a frame, which this site allows (#470; `docs/community-widget.md`, "The notebook tab").
+A community on the capsule launcher must have a `notebook` section, and the config loader refuses one without it.
 That page validates the link, drops a filled-in starter notebook into JupyterLite's own browser storage, and redirects into it.
 The same link also works on its own, in any browser tab.
 Nothing here talks to this application programming interface (API) server: once the site is built and deployed, opening a notebook is a static, client-side operation.
@@ -79,8 +80,8 @@ A community's wheel is served from `wheels/<community_id>/<file_name>` on the no
 ## What the reader's browser keeps
 
 Once a reader opens a link, the filled-in notebook lives in JupyterLite's own storage (IndexedDB, via `localforage`), on the notebook site's own origin -- NOT the widget's own workspace storage, and not this server.
-In the widget's tab (#470) the notebook is a third-party frame, so the browser keeps that storage separately for each site that embeds it: a notebook edited in nemar.org's tab, or its pop-out, is not the one the reader sees when opening the notebook site on its own.
-Edits reach storage within about five seconds without a Save, so a pop-out reopens the latest ones.
+In the widget's tab (#470) the notebook is a third-party frame, so the browser keeps that storage separately for each site that embeds it: a notebook edited in nemar.org's tab is not the one the reader sees when opening the notebook site on its own.
+Edits reach storage within about five seconds without a Save, so a pop-out, once it carries the notebook (#470), reopens the latest ones.
 Opening the same dataset again never overwrites it: `open.js` checks for an existing notebook at that path first, and if one is already there, it is left alone and the reader is taken straight to it, edits intact.
 Deleting it, or starting over, is a plain file operation inside JupyterLite's own file browser; nothing here ever does it for the reader.
 

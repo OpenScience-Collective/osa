@@ -1332,8 +1332,11 @@ class WidgetConfig(BaseModel):
 
     "bubble" (default) is today's single chat button. "capsule" adds two more circular
     icons, a notebook and a high-performance computing (HPC) placeholder, that expand
-    upward above the chat button once it is clicked; the chat button itself never moves
-    and keeps its own behavior.
+    out of the chat button once it is clicked (upward, or into a row on a narrow
+    window); the chat button itself never moves. The
+    notebook icon opens the community's starter notebook as a tab of the widget's panel
+    (#470), so "capsule" requires a top-level ``notebook`` section
+    (``CommunityConfig.validate_capsule_needs_notebook``).
     A community that never sets this renders exactly as it did before this field existed.
     """
 
@@ -1645,7 +1648,9 @@ class CommunityConfig(BaseModel):
 
     Requires ``runtime.python.pyodide_version`` to equal the notebook site's own
     pin (``validate_notebook_needs_matching_pyodide`` below), the same way
-    ``extensions.client_tools`` requires a matching ``runtime`` section.
+    ``extensions.client_tools`` requires a matching ``runtime`` section. Required in
+    turn by ``widget.launcher: capsule``, whose notebook icon opens this starter
+    (``validate_capsule_needs_notebook`` below).
 
     Example:
         notebook:
@@ -2105,6 +2110,23 @@ class CommunityConfig(BaseModel):
                 "notebook is configured but runtime.python.pyodide_version is "
                 f"{pinned!r}, not {NOTEBOOK_SITE_PYODIDE_VERSION!r}, the notebook "
                 "site's own pin. One notebook site loads one Pyodide."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_capsule_needs_notebook(self) -> "CommunityConfig":
+        """The capsule launcher's notebook icon opens the community's starter on the
+        notebook site as a tab of the widget's panel (#470). Without a ``notebook``
+        section the site has no starter for the community, so the icon would open
+        a tab that can only report an error. Refused here rather than hidden in the
+        widget, so a community asking for the capsule learns what it also needs.
+        """
+        widget = self.widget
+        if widget is not None and widget.launcher == "capsule" and self.notebook is None:
+            raise ValueError(
+                "widget.launcher is 'capsule' but no notebook section is configured. "
+                "The capsule's notebook icon opens the community's starter notebook "
+                "(docs/community-notebook.md)."
             )
         return self
 
