@@ -32,8 +32,11 @@ T = TypeVar("T")
 
 
 def current_deployment() -> Deployment:
-    """``OSA_DEPLOYMENT`` when it is set; otherwise ``develop`` for the container
-    mounted at ``/osa-dev``, and ``production`` for anything else.
+    """``OSA_DEPLOYMENT`` when it is set and not blank; otherwise ``develop`` for the
+    container mounted at ``/osa-dev``, and ``production`` for anything else.
+
+    Blank counts as unset, because that is what an env file referencing an unset
+    host variable passes; it falls to the mount, as an unset one does.
 
     The fallback exists because the develop container's launch script lives on the
     host and runs from there: a deploy of this repository does not change what it
@@ -62,17 +65,20 @@ def check_deployment_map(value: object, field: str) -> None:
     keys = set(value)
     missing = [d for d in DEPLOYMENTS if d not in keys]
     unknown = sorted(str(k) for k in keys - set(DEPLOYMENTS))
+    # Both in one message: {"production", "staging"} is a typo for "develop", and
+    # naming only the unknown key would hide that develop is the one missing.
+    problems = []
     if unknown:
-        raise ValueError(
-            f"{field} names an unknown deployment {unknown}; the deployments are {DEPLOYMENTS}"
-        )
+        problems.append(f"names an unknown deployment {unknown}")
     if missing:
+        problems.append(f"has no value for {missing}")
+    if problems:
         raise ValueError(
-            f"{field} has no value for {missing}; a per-deployment map names {DEPLOYMENTS}"
+            f"{field} {' and '.join(problems)}; a per-deployment map names {DEPLOYMENTS}"
         )
 
 
-def for_deployment(value: T | dict[str, T], deployment: Deployment) -> T:
+def for_deployment(value: T | dict[Deployment, T], deployment: Deployment) -> T:
     """The value for ``deployment``: the map's entry, or the one value every
     deployment shares."""
     if isinstance(value, dict):

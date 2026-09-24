@@ -38,7 +38,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 from src.core.config.runtime_lock import (
@@ -69,7 +69,7 @@ DATASET_PAGE_BASE_TOKEN = "{{dataset_page_base}}"
 
 #: The only keys ``NotebookConfig.zarr_base`` and ``.dataset_page_base`` accept, and
 #: the only values ``--environment`` accepts; a typo is refused at config load.
-NOTEBOOK_ENVIRONMENTS = ("production", "develop")
+NOTEBOOK_ENVIRONMENTS: tuple[Literal["production", "develop"], ...] = ("production", "develop")
 
 
 def environment_base_url_problem(url: str) -> str | None:

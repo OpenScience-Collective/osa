@@ -48,6 +48,18 @@ class TestCurrentDeployment:
         monkeypatch.setenv("OSA_DEPLOYMENT", " Develop ")
         assert current_deployment() == "develop"
 
+    @pytest.mark.parametrize(
+        ("root_path", "expected"), [(None, "production"), ("/osa-dev", "develop")]
+    )
+    def test_a_blank_osa_deployment_counts_as_unset(
+        self, monkeypatch: pytest.MonkeyPatch, root_path: str | None, expected: str
+    ) -> None:
+        """An env file that references an unset host variable passes it blank."""
+        monkeypatch.setenv("OSA_DEPLOYMENT", "  ")
+        if root_path is not None:
+            monkeypatch.setenv("ROOT_PATH", root_path)
+        assert current_deployment() == expected
+
     def test_an_unknown_deployment_is_an_error_not_a_default(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -92,7 +104,11 @@ class TestMcpServerUrl:
                     "develop": "https://b/mcp",
                     "staging": "https://c/mcp",
                 },
-                "url names an unknown deployment \\['staging'\\]",
+                "url names an unknown deployment \\['staging'\\];",
+            ),
+            (
+                {"production": "https://a/mcp", "staging": "https://b/mcp"},
+                "url names an unknown deployment \\['staging'\\] and has no value for \\['develop'\\]",
             ),
             ({"production": "https://a/mcp", "develop": "not a url"}, "develop"),
         ],
@@ -134,11 +150,13 @@ class TestPythonRuntimePerDeployment:
     def test_no_prelude_stays_none(self) -> None:
         assert self._runtime().for_deployment("develop").prelude is None
 
-    def test_every_deployments_prelude_is_compiled(self) -> None:
-        """A syntax error in the develop prelude fails the config check in production too,
-        rather than the first staging reader's boot."""
-        with pytest.raises(ValidationError, match="prelude for develop does not compile"):
-            self._runtime(prelude={"production": "x = 1", "develop": "def ("})
+    @pytest.mark.parametrize("broken", DEPLOYMENTS)
+    def test_every_deployments_prelude_is_compiled(self, broken: str) -> None:
+        """A syntax error in either prelude fails the config check wherever it runs,
+        rather than the first reader's boot in the deployment that uses it."""
+        prelude = {d: ("def (" if d == broken else "x = 1") for d in DEPLOYMENTS}
+        with pytest.raises(ValidationError, match=f"prelude for {broken} does not compile"):
+            self._runtime(prelude=prelude)
 
     def test_every_deployments_prelude_is_bounded(self) -> None:
         from src.core.config.community import MAX_PRELUDE_CHARS
