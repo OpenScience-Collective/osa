@@ -210,9 +210,12 @@ Both run in CI.
 The floating launcher has two shapes: `bubble`, a single chat button (today's only
 behavior), and `capsule`, a vertical stack of three circular icons (issue #436).
 Collapsed, a `capsule` widget shows one chat button, bottom right, as a `bubble` one
-does, at 46px instead of the bubble's 56px.
+does, drawn at 58px so it is easy to see (issue #490).
 Clicking it opens the chat panel and expands the capsule, revealing a notebook icon
-and an HPC placeholder; the chat button itself never moves.
+and an HPC placeholder, and the chat button settles to 46px, the size of the other
+circles; closing the panel grows it back.
+Its bottom-right corner stays 20px from the window's edges throughout, where the
+bubble's is, so the chat button itself never moves.
 The notebook opens as a second tab of the same panel (issue #470, "The notebook tab"
 below), and the capsule shows which tab is open.
 Above 600px wide, the capsule expands upward into a vertical stack, and the chat
@@ -245,7 +248,13 @@ either way.
 ### The three icons
 
 Bottom to top: chat, notebook, HPC.
-Every circle is 46px, about 15% larger than the panel's 40px Send button.
+With the panel open, every circle is 46px, about 15% larger than the panel's 40px Send button.
+At rest the chat circle is 25% larger, 58px with a 26px icon.
+It is drawn larger rather than laid out larger (CSS `scale` and `translate`), so its
+box stays 46px and nothing else in the capsule, the indicator, the pill or the panel's
+place beside it, depends on whether the panel is open.
+A browser without those two properties draws it at 46px at rest too.
+The collapsed launcher's tooltip sits 10px to the left of the 58px circle, centered on it.
 Each is an accessible button with an `aria-label` naming its current state and a
 hover/keyboard-focus tooltip in the same look as the collapsed launcher's own tooltip.
 An icon that cannot be used right now carries `aria-disabled="true"`, never the
@@ -258,11 +267,12 @@ A circle that can be clicked but is not the open tab is outlined in the accent c
 The inactive and coming-soon look is a fixed neutral surface that never changes with
 a community's theme, which is what keeps a disabled button from ever reading as active.
 
-Opening the panel grows the capsule's pill out of the chat button, and the notebook
-and HPC circles arrive 30ms and 70ms after it; the views, the header's title and the
-indicator animate between tabs.
+Opening the panel grows the capsule's pill out of the chat button, the chat button
+shrinks from 58px to 46px over 280ms, and the notebook and HPC circles arrive 30ms and
+70ms after the pill; the views, the header's title and the indicator animate between tabs.
 With `prefers-reduced-motion: reduce`, every change is immediate except a short plain
-fade between the views, and nothing slides, scales or turns.
+fade between the views, and nothing slides, scales or turns: the chat button is 58px
+or 46px, never in between.
 
 The HPC icon is a placeholder everywhere: always `aria-disabled`, always tooltipped
 "HPC submission is coming soon", and always carrying a small "Soon" badge.
@@ -376,6 +386,9 @@ config for a manual or scripted Chrome check (`widget-e2e-dataset.js` drives
 console), and `frontend/browser-harness/notebook-tab-check.mjs` drives the notebook
 tab in Chrome against the live develop notebook; it needs the network, so it is not
 in CI.
+`frontend/browser-harness/first-paint-check.mjs` (below) also opens and closes NEMAR's
+panel in Chrome, sampling the chat button on every frame: 58px to 46px and back, with
+its corner 20px from the window's edges in every frame.
 
 ## The pop-out window
 
@@ -432,7 +445,7 @@ The `widget:` block reaches the page with the community config request, some
 hundreds of milliseconds after the widget script runs.
 Until then the widget has only its built-in defaults, so it used to draw the
 launcher in the platform blue, at the bubble's 56px, and then change: to the
-community's colors, and for a capsule community, to the 46px capsule (issue #475).
+community's colors, and for a capsule community, to the capsule (issue #475).
 It no longer does, for any community:
 
 - **The look is remembered.** Each time the config arrives, the widget keeps its
