@@ -377,33 +377,38 @@ console.log('\nthe four notebook states from setDataset');
       apply: () => {},
       active: false,
       tooltip: 'Open a dataset page to start a notebook',
+      ariaLabel: 'Notebook: open a dataset page to start a notebook',
     },
     {
       label: 'no dataset (explicit null)',
       apply: (widget) => widget.setDataset(null),
       active: false,
       tooltip: 'Open a dataset page to start a notebook',
+      ariaLabel: 'Notebook: open a dataset page to start a notebook',
     },
     {
       label: 'dataset, zarr unknown',
       apply: (widget) => widget.setDataset({ id: 'nm000103' }),
       active: false,
       tooltip: 'Checking whether this dataset has a Zarr copy',
+      ariaLabel: 'Notebook: checking for a Zarr copy',
     },
     {
       label: 'dataset, zarr: false',
       apply: (widget) => widget.setDataset({ id: 'nm000103', zarr: false }),
       active: false,
       tooltip: 'This dataset has no Zarr copy yet, so there is nothing to open in a notebook',
+      ariaLabel: 'Notebook: this dataset has no Zarr copy',
     },
     {
       label: 'dataset, zarr: true',
       apply: (widget) => widget.setDataset({ id: 'nm000103', zarr: true }),
       active: true,
       tooltip: 'Open nm000103 in a Python notebook (JupyterLite, opens a new tab)',
+      ariaLabel: 'Open nm000103 in a Python notebook, opens a new tab',
     },
   ];
-  for (const { label, apply, active, tooltip } of cases) {
+  for (const { label, apply, active, tooltip, ariaLabel } of cases) {
     const config = configResponse({ launcher: 'capsule' });
     const { window, widget } = loadWidget({ fetch: fetchReturning(config) });
     widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: `osa-test-notebook-${label}` });
@@ -415,8 +420,7 @@ console.log('\nthe four notebook states from setDataset');
     assertEqual(notebookBtn.getAttribute('aria-disabled'), active ? 'false' : 'true', `${label}: aria-disabled`);
     assert(notebookBtn.classList.contains('osa-icon-active') === active, `${label}: osa-icon-active class matches`);
     assertEqual(notebookBtn.querySelector('.osa-icon-tooltip').textContent, tooltip, `${label}: tooltip text`);
-    const label_ = notebookBtn.getAttribute('aria-label');
-    assert(typeof label_ === 'string' && label_.length > 0, `${label}: aria-label is set`);
+    assertEqual(notebookBtn.getAttribute('aria-label'), ariaLabel, `${label}: exact aria-label`);
   }
 }
 
@@ -529,6 +533,7 @@ console.log('\nthe HPC icon is coming soon everywhere, with a badge and no click
   await waitUntil(() => container.querySelector('.osa-launcher-capsule'), 'capsule exists');
   const hpcBtn = container.querySelector('.osa-hpc-btn');
   assertEqual(hpcBtn.getAttribute('aria-disabled'), 'true', 'HPC is always aria-disabled');
+  assertEqual(hpcBtn.getAttribute('aria-label'), 'HPC submission, coming soon', 'HPC exact aria-label');
   assert(!hpcBtn.classList.contains('osa-icon-active'), 'HPC never gets the active look');
   assertEqual(hpcBtn.querySelector('.osa-icon-tooltip').textContent, 'HPC submission is coming soon', 'HPC tooltip text');
   const badge = hpcBtn.querySelector('.osa-icon-badge');
