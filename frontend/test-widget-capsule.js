@@ -571,6 +571,62 @@ console.log('\nlauncher_label sets the collapsed tooltip; unset keeps today\'s t
   }
 }
 
+console.log('\nthe capsule\'s active and neutral surfaces resolve to the color this PR assigned them, against the REAL stylesheet');
+{
+  // Same technique test-widget-tools.js's own table-driven surface/foreground
+  // audit uses (probe a throwaway element against the real, unmodified
+  // injectStyles() output, with custom properties set directly rather than
+  // round-tripping a community config): kept here, not there, so every piece
+  // of capsule classification lives in one file. The active notebook icon is a
+  // THEMED surface (same pair the launcher button and header already are);
+  // the neutral icon (inactive OR coming-soon: they share a look, see #436) is
+  // NOT, and must read identically whether or not a community themes anything,
+  // which is the property that keeps a disabled button from ever looking active.
+  const { window, widget } = loadWidget();
+  widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: 'osa-test-capsule-surfaces' });
+  widget.init(); // injects the real STYLES block; nothing here awaits its (unused) fetch
+
+  function probe(customProps, html, selector) {
+    const container = window.document.createElement('div');
+    container.className = 'osa-chat-widget';
+    for (const [prop, value] of Object.entries(customProps)) {
+      container.style.setProperty(prop, value);
+    }
+    container.innerHTML = html;
+    window.document.body.appendChild(container);
+    return container.querySelector(selector);
+  }
+
+  const NEMAR_PROPS = {
+    '--osa-primary': '#5bbad5',
+    '--osa-primary-dark': '#42a1bc',
+    '--osa-on-primary': '#04121f',
+    '--osa-accent': '#257a92',
+    '--osa-user-bg': '#5bbad5',
+    '--osa-user-text': '#04121f',
+  };
+  const UNSET_PROPS = {};
+
+  const ACTIVE_HTML = '<div class="osa-launcher-capsule"><button class="osa-launcher-icon osa-notebook-btn osa-icon-active">x</button></div>';
+  const nemarActive = probe(NEMAR_PROPS, ACTIVE_HTML, '.osa-notebook-btn');
+  const unsetActive = probe(UNSET_PROPS, ACTIVE_HTML, '.osa-notebook-btn');
+  assertEqual(window.getComputedStyle(nemarActive).backgroundColor, '#5bbad5', 'active notebook icon: NEMAR-style background is theme_color (#5bbad5)');
+  assertEqual(window.getComputedStyle(nemarActive).color, '#04121f', 'active notebook icon: NEMAR-style icon color is theme_text_color (#04121f)');
+  assertEqual(window.getComputedStyle(unsetActive).backgroundColor, '#2563eb', 'active notebook icon: unset falls back to the platform blue (#2563eb)');
+  assertEqual(window.getComputedStyle(unsetActive).color, '#ffffff', 'active notebook icon: unset falls back to white');
+
+  // Neither icon carries osa-icon-active: this is the shared inactive/coming-soon
+  // look (#436 says the two must still read differently from EACH OTHER via the
+  // badge, not via this surface, which both use).
+  const NEUTRAL_HTML = '<div class="osa-launcher-capsule"><button class="osa-launcher-icon osa-hpc-btn">x</button></div>';
+  const nemarNeutral = probe(NEMAR_PROPS, NEUTRAL_HTML, '.osa-hpc-btn');
+  const unsetNeutral = probe(UNSET_PROPS, NEUTRAL_HTML, '.osa-hpc-btn');
+  assertEqual(window.getComputedStyle(nemarNeutral).backgroundColor, '#f3f4f6', 'neutral icon: background is the neutral --osa-assistant-bg, not theme_color, even when NEMAR-styled');
+  assertEqual(window.getComputedStyle(nemarNeutral).color, '#6b7280', 'neutral icon: icon color is the neutral --osa-text-light, not theme_text_color, even when NEMAR-styled');
+  assertEqual(window.getComputedStyle(unsetNeutral).backgroundColor, window.getComputedStyle(nemarNeutral).backgroundColor, 'neutral icon: identical whether or not a community themes anything');
+  assertEqual(window.getComputedStyle(unsetNeutral).color, window.getComputedStyle(nemarNeutral).color, 'neutral icon: identical whether or not a community themes anything');
+}
+
 console.log('\n' + '='.repeat(60));
 console.log(`Total: ${passed + failed}   Passed: ${passed}   Failed: ${failed}`);
 clearTimeout(watchdog);
