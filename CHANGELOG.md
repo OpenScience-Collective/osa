@@ -27,8 +27,8 @@ the version being released and start a new `[Unreleased]` section above it.
   is set via `setConfig` (default `https://notebook.osc.earth/osa/`). `launcher_label`
   replaces the hardcoded collapsed-launcher tooltip with a short community-chosen label,
   keeping the greeting and suggested questions behind the click. NEMAR is the first
-  community on the capsule, with the label "Explore NEMAR". See
-  `docs/community-widget-launcher.md`.
+  community on the capsule, with the label "Explore NEMAR". See the
+  "Launcher" section of `docs/community-widget.md`.
 - **Three more widget colors, and NEMAR's home page teal in the widget.**
   `theme_text_color`, `accent_color` and `user_bubble_text_color` join `theme_color` and
   `user_bubble_color`: a community can now separate the color painted as a surface (the
