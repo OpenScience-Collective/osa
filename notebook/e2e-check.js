@@ -14,7 +14,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { connect, findChrome, launch } from '../frontend/browser-harness/chrome.js';
+import { attachWithNetwork, connect, findChrome, launch, NetworkRecorder } from '../frontend/browser-harness/chrome.js';
 
 const COMMUNITY = 'nemar';
 const DATASET = 'nm000103';
@@ -108,6 +108,80 @@ async function pollUntil(fn, timeoutMs, intervalMs = 500) {
   throw new Error(`timed out after ${timeoutMs}ms waiting for condition; last value: ${JSON.stringify(last)}`);
 }
 
+const MAX_LIST_ITEMS = 20;
+const MAX_ITEM_CHARS = 1000;
+
+function truncate(text) {
+  if (text.length <= MAX_ITEM_CHARS) return text;
+  return `${text.slice(0, MAX_ITEM_CHARS)}... [truncated, ${text.length} chars total]`;
+}
+
+/**
+ * Bounded, best-effort diagnostics for whichever page was active when a step
+ * (almost always a pollUntil) failed. Printed to stderr so CI shows it right
+ * next to the failure, never thrown from: called from a catch block, so a
+ * diagnostic that itself fails must not hide the real error.
+ *
+ * @param {ReturnType<typeof connect>} cdp
+ * @param {{sessionId: string, recorder: import('../frontend/browser-harness/chrome.js').NetworkRecorder} | null} page
+ * @param {string[]} consoleErrors - console.error/warn text seen on any page so far.
+ * @param {string[]} exceptions - uncaught page exceptions seen on any page so far.
+ */
+async function diagnose(cdp, page, consoleErrors, exceptions) {
+  const lines = ['--- diagnostics (bounded) ---'];
+  if (!page) {
+    lines.push('no page was open yet when this failed.');
+  } else {
+    try {
+      const url = await evaluate(cdp, page.sessionId, 'window.location.href');
+      lines.push(`page url: ${url}`);
+    } catch (err) {
+      lines.push(`page url: <could not read: ${err.message}>`);
+    }
+
+    try {
+      const cells = await evaluate(
+        cdp,
+        page.sessionId,
+        `Array.from(document.querySelectorAll('.jp-Cell')).map((cell) => ({
+          prompt: (cell.querySelector('.jp-InputPrompt')?.textContent || '').trim(),
+          output: (cell.querySelector('.jp-OutputArea')?.innerText || '').trim(),
+        }))`
+      );
+      lines.push(`cells (${cells.length}, showing up to ${MAX_LIST_ITEMS}):`);
+      for (const [i, cell] of cells.slice(0, MAX_LIST_ITEMS).entries()) {
+        lines.push(`  [${i}] prompt=${JSON.stringify(cell.prompt)}`);
+        if (cell.output) lines.push(`      output: ${truncate(cell.output).replace(/\n/g, '\n      ')}`);
+      }
+    } catch (err) {
+      lines.push(`cells: <could not read: ${err.message}>`);
+    }
+
+    if (page.recorder) {
+      const bad = Array.from(page.recorder.requests.values()).filter(
+        (r) => r.failed || (typeof r.status === 'number' && r.status >= 400)
+      );
+      lines.push(`network requests that failed or returned 4xx/5xx (${bad.length}, showing up to ${MAX_LIST_ITEMS}):`);
+      for (const r of bad.slice(0, MAX_LIST_ITEMS)) {
+        lines.push(`  - [session ${r.sessionId}] ${r.url} -> status=${r.status ?? '(none)'}${r.failed ? ` failed=${r.failed}` : ''}`);
+      }
+      if (page.recorder.attachFailures.length > 0) {
+        lines.push(`could not watch some workers' network (${page.recorder.attachFailures.length}):`);
+        for (const f of page.recorder.attachFailures.slice(0, MAX_LIST_ITEMS)) lines.push(`  - ${f}`);
+      }
+    }
+  }
+
+  lines.push(`console errors/warnings seen this run (${consoleErrors.length}, showing up to ${MAX_LIST_ITEMS}):`);
+  for (const line of consoleErrors.slice(0, MAX_LIST_ITEMS)) lines.push(`  - ${truncate(line)}`);
+
+  lines.push(`page exceptions seen this run (${exceptions.length}, showing up to ${MAX_LIST_ITEMS}):`);
+  for (const line of exceptions.slice(0, MAX_LIST_ITEMS)) lines.push(`  - ${truncate(line)}`);
+
+  lines.push('--- end diagnostics ---');
+  console.error(lines.join('\n'));
+}
+
 async function main() {
   const screenshotPath = process.argv[2] || null;
   const chromePath = findChrome();
@@ -142,6 +216,12 @@ async function main() {
   let chrome = null;
   let cdp = null;
   const exceptions = [];
+  const consoleErrors = [];
+  // Whichever page is currently active, so a failure anywhere in the flow
+  // below (almost always a pollUntil) can be diagnosed against the right
+  // page and the right worker-inclusive network recording, without every
+  // call site having to say which page it was.
+  let currentPage = null;
 
   try {
     const launched = await launch(chromePath, profileDir);
@@ -155,12 +235,32 @@ async function main() {
         if (message.sessionId !== sessionId) return;
         if (message.method === 'Runtime.exceptionThrown') {
           exceptions.push(message.params.exceptionDetails.text);
+        } else if (
+          message.method === 'Runtime.consoleAPICalled' &&
+          (message.params.type === 'error' || message.params.type === 'warning')
+        ) {
+          const text = message.params.args.map((a) => a.value ?? a.description ?? '').join(' ');
+          consoleErrors.push(`[console.${message.params.type}] ${text}`);
+        } else if (
+          message.method === 'Log.entryAdded' &&
+          (message.params.entry.level === 'error' || message.params.entry.level === 'warning')
+        ) {
+          consoleErrors.push(`[log:${message.params.entry.level}] ${message.params.entry.text}`);
         }
       });
       await cdp.send('Runtime.enable', {}, sessionId);
+      await cdp.send('Log.enable', {}, sessionId);
       await cdp.send('Page.enable', {}, sessionId);
+      // Pyodide runs in a Worker, so its own fetches (jsDelivr, this site's
+      // wheels, zarr.nemar.org) never reach the page's own Network domain;
+      // attachWithNetwork follows every worker the page spawns and folds
+      // both into one recorder (frontend/browser-harness/chrome.js).
+      const recorder = new NetworkRecorder();
+      await attachWithNetwork(cdp, sessionId, recorder);
       await cdp.send('Page.navigate', { url }, sessionId);
-      return { targetId, sessionId };
+      const page = { targetId, sessionId, recorder };
+      currentPage = page;
+      return page;
     }
 
     async function waitForNotebookReady(sessionId, timeoutMs) {
@@ -198,166 +298,176 @@ async function main() {
       return evaluate(cdp, sessionId, `document.body.innerText.includes(${JSON.stringify(SENTINEL)})`);
     }
 
-    // --- 1. Cold run: open the dataset link, run all cells, check the result ---
-    log('cold run: opening the dataset link');
-    const coldStart = Date.now();
-    const first = await openPage(`${base}/open.html?community=${COMMUNITY}&dataset=${DATASET}`);
-    await pollUntil(
-      () => evaluate(cdp, first.sessionId, "window.location.pathname.includes('/notebooks/index.html')"),
-      15_000,
-      300
-    );
-    await waitForNotebookReady(first.sessionId, 30_000);
-    await runAllCells(first.sessionId);
-    await pollUntil(
-      async () => (await sentinelPresent(first.sessionId)) && (await promptsDone(first.sessionId)),
-      120_000,
-      500
-    );
-    const coldSeconds = (Date.now() - coldStart) / 1000;
-    log(`cold: ${coldSeconds.toFixed(1)}s`);
+    // Steps 1-4 below are wrapped so ANY failure in them (almost always a
+    // pollUntil timeout, but any thrown error works the same way) prints
+    // bounded diagnostics for whichever page was active, before the error
+    // still propagates and this process still exits non-zero exactly as
+    // before -- this only adds a diagnosis, it never changes the verdict.
+    try {
+      // --- 1. Cold run: open the dataset link, run all cells, check the result ---
+      log('cold run: opening the dataset link');
+      const coldStart = Date.now();
+      const first = await openPage(`${base}/open.html?community=${COMMUNITY}&dataset=${DATASET}`);
+      await pollUntil(
+        () => evaluate(cdp, first.sessionId, "window.location.pathname.includes('/notebooks/index.html')"),
+        15_000,
+        300
+      );
+      await waitForNotebookReady(first.sessionId, 30_000);
+      await runAllCells(first.sessionId);
+      await pollUntil(
+        async () => (await sentinelPresent(first.sessionId)) && (await promptsDone(first.sessionId)),
+        120_000,
+        500
+      );
+      const coldSeconds = (Date.now() - coldStart) / 1000;
+      log(`cold: ${coldSeconds.toFixed(1)}s`);
 
-    const indexLineOk = await evaluate(
-      cdp,
-      first.sessionId,
-      "document.body.innerText.includes('recordings with a Zarr copy')"
-    );
-    report(indexLineOk, 'the index line ("N recordings with a Zarr copy") is present');
+      const indexLineOk = await evaluate(
+        cdp,
+        first.sessionId,
+        "document.body.innerText.includes('recordings with a Zarr copy')"
+      );
+      report(indexLineOk, 'the index line ("N recordings with a Zarr copy") is present');
 
-    const readLineOk = await sentinelPresent(first.sessionId);
-    report(readLineOk, `the read line ("${SENTINEL}") is present`);
+      const readLineOk = await sentinelPresent(first.sessionId);
+      report(readLineOk, `the read line ("${SENTINEL}") is present`);
 
-    const figureCount = await evaluate(
-      cdp,
-      first.sessionId,
-      "document.querySelectorAll('.jp-OutputArea-output img').length"
-    );
-    report(figureCount === 1, `exactly one rendered figure (got ${figureCount})`);
+      const figureCount = await evaluate(
+        cdp,
+        first.sessionId,
+        "document.querySelectorAll('.jp-OutputArea-output img').length"
+      );
+      report(figureCount === 1, `exactly one rendered figure (got ${figureCount})`);
 
-    const noTraceback = await evaluate(cdp, first.sessionId, "!document.body.innerText.includes('Traceback')");
-    report(noTraceback, 'no error output (no "Traceback" anywhere on the page)');
+      const noTraceback = await evaluate(cdp, first.sessionId, "!document.body.innerText.includes('Traceback')");
+      report(noTraceback, 'no error output (no "Traceback" anywhere on the page)');
 
-    if (screenshotPath) {
-      // Scroll the figure into view first: a bare captureScreenshot only sees
-      // whatever the viewport happened to be scrolled to when the last cell
-      // finished, which is usually its own source, not its rendered output.
+      if (screenshotPath) {
+        // Scroll the figure into view first: a bare captureScreenshot only sees
+        // whatever the viewport happened to be scrolled to when the last cell
+        // finished, which is usually its own source, not its rendered output.
+        await evaluate(
+          cdp,
+          first.sessionId,
+          "document.querySelector('.jp-OutputArea-output img')?.scrollIntoView({block: 'center'})"
+        );
+        await Bun.sleep(300);
+        const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' }, first.sessionId);
+        await Bun.write(screenshotPath, Buffer.from(data, 'base64'));
+        log(`screenshot saved to ${screenshotPath}`);
+      }
+
+      // --- 2. Edit a cell, save, and prove a second open does not overwrite it ---
+      log('editing the intro cell and saving');
+      const marker = `EDIT_MARKER_${Date.now()}`;
       await evaluate(
         cdp,
         first.sessionId,
-        "document.querySelector('.jp-OutputArea-output img')?.scrollIntoView({block: 'center'})"
+        `(() => {
+          const panel = window.jupyterapp.shell.currentWidget;
+          const cell = panel.content.model.cells.get(0);
+          cell.sharedModel.setSource(cell.sharedModel.getSource() + '\\n\\n${marker}');
+          return true;
+        })()`
       );
-      await Bun.sleep(300);
-      const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' }, first.sessionId);
-      await Bun.write(screenshotPath, Buffer.from(data, 'base64'));
-      log(`screenshot saved to ${screenshotPath}`);
+      await evaluate(cdp, first.sessionId, "window.jupyterapp.commands.execute('docmanager:save'); true");
+      // docmanager:save's own promise is not awaited either, for the same reason
+      // as run-all-cells; poll the model's own dirty flag instead of a fixed sleep.
+      await pollUntil(
+        () => evaluate(cdp, first.sessionId, '!window.jupyterapp.shell.currentWidget.context.model.dirty'),
+        15_000,
+        300
+      );
+
+      log('warm run: opening the same dataset link again');
+      const warmStart = Date.now();
+      const second = await openPage(`${base}/open.html?community=${COMMUNITY}&dataset=${DATASET}`);
+      await pollUntil(
+        () => evaluate(cdp, second.sessionId, "window.location.pathname.includes('/notebooks/index.html')"),
+        15_000,
+        300
+      );
+      await waitForNotebookReady(second.sessionId, 30_000);
+      const warmSeconds = (Date.now() - warmStart) / 1000;
+      log(`warm (open, no re-run): ${warmSeconds.toFixed(1)}s`);
+
+      const editSurvived = await evaluate(
+        cdp,
+        second.sessionId,
+        `document.body.innerText.includes(${JSON.stringify(marker)})`
+      );
+      report(editSurvived, 'the edit survived opening the same dataset again (no overwrite)');
+
+      // --- 3. Re-run in the warm profile, to measure a genuinely warm cell run too ---
+      const rerunStart = Date.now();
+      await runAllCells(second.sessionId);
+      await pollUntil(
+        async () => (await sentinelPresent(second.sessionId)) && (await promptsDone(second.sessionId)),
+        60_000,
+        500
+      );
+      const warmRerunSeconds = (Date.now() - rerunStart) / 1000;
+      log(`warm (re-run all cells): ${warmRerunSeconds.toFixed(1)}s`);
+
+      // --- 4. Refusals: unknown community and malformed dataset write nothing ---
+      log('checking refusals');
+      // The placeholder text ("Opening your notebook...") is itself non-empty, so
+      // the poll condition has to wait for it to CHANGE, not merely exist.
+      const refusalShown = async (targetSessionId) => {
+        const text = await evaluate(cdp, targetSessionId, "document.getElementById('app').textContent");
+        return text && !text.includes('Opening') ? text : null;
+      };
+
+      const unknownCommunity = await openPage(`${base}/open.html?community=doesnotexist&dataset=nm000103`);
+      const unknownMsg = await pollUntil(() => refusalShown(unknownCommunity.sessionId), 10_000, 300);
+      report(
+        unknownMsg.length > 0,
+        `an unknown community shows a plain sentence and stays put (got: ${JSON.stringify(unknownMsg)})`
+      );
+
+      const badDataset = await openPage(`${base}/open.html?community=${COMMUNITY}&dataset=not-a-real-id`);
+      const badMsg = await pollUntil(() => refusalShown(badDataset.sessionId), 10_000, 300);
+      report(
+        badMsg.length > 0,
+        `a malformed dataset id shows a plain sentence and stays put (got: ${JSON.stringify(badMsg)})`
+      );
+
+      // Neither refusal should have written anything: the community/dataset pair
+      // used above for the real run is the only key that should exist.
+      // JupyterLite's own resolved baseUrl at this site's own path prefix (see
+      // resolveBaseUrl in open.js and docs/adr/0011-the-notebook-site.md).
+      const dbName = await evaluate(cdp, unknownCommunity.sessionId, `'JupyterLite Storage - /${SITE_SUBDIR}/'`);
+      const badCommunityWroteNothing = await evaluate(
+        cdp,
+        unknownCommunity.sessionId,
+        `(async () => {
+          const req = indexedDB.open(${JSON.stringify(dbName)});
+          return await new Promise((resolve) => {
+            req.onsuccess = () => {
+              const db = req.result;
+              if (!db.objectStoreNames.contains('files')) { resolve(true); return; }
+              const tx = db.transaction('files', 'readonly');
+              const getReq = tx.objectStore('files').get('doesnotexist');
+              getReq.onsuccess = () => resolve(getReq.result === undefined);
+              getReq.onerror = () => resolve(true);
+            };
+            req.onerror = () => resolve(true);
+          });
+        })()`
+      );
+      report(badCommunityWroteNothing, 'the unknown-community link wrote no directory entry to IndexedDB');
+
+      report(exceptions.length === 0, `no page exceptions (got ${exceptions.length}: ${exceptions.join(' | ')})`);
+
+      console.log('');
+      console.log(`Timings: cold ${coldSeconds.toFixed(1)}s, warm-open ${warmSeconds.toFixed(1)}s, warm-rerun ${warmRerunSeconds.toFixed(1)}s`);
+      console.log(`${failed === 0 ? 'ALL CHECKS PASSED' : `${failed} CHECK(S) FAILED`}`);
+      return failed === 0 ? 0 : 1;
+    } catch (err) {
+      await diagnose(cdp, currentPage, consoleErrors, exceptions);
+      throw err;
     }
-
-    // --- 2. Edit a cell, save, and prove a second open does not overwrite it ---
-    log('editing the intro cell and saving');
-    const marker = `EDIT_MARKER_${Date.now()}`;
-    await evaluate(
-      cdp,
-      first.sessionId,
-      `(() => {
-        const panel = window.jupyterapp.shell.currentWidget;
-        const cell = panel.content.model.cells.get(0);
-        cell.sharedModel.setSource(cell.sharedModel.getSource() + '\\n\\n${marker}');
-        return true;
-      })()`
-    );
-    await evaluate(cdp, first.sessionId, "window.jupyterapp.commands.execute('docmanager:save'); true");
-    // docmanager:save's own promise is not awaited either, for the same reason
-    // as run-all-cells; poll the model's own dirty flag instead of a fixed sleep.
-    await pollUntil(
-      () => evaluate(cdp, first.sessionId, '!window.jupyterapp.shell.currentWidget.context.model.dirty'),
-      15_000,
-      300
-    );
-
-    log('warm run: opening the same dataset link again');
-    const warmStart = Date.now();
-    const second = await openPage(`${base}/open.html?community=${COMMUNITY}&dataset=${DATASET}`);
-    await pollUntil(
-      () => evaluate(cdp, second.sessionId, "window.location.pathname.includes('/notebooks/index.html')"),
-      15_000,
-      300
-    );
-    await waitForNotebookReady(second.sessionId, 30_000);
-    const warmSeconds = (Date.now() - warmStart) / 1000;
-    log(`warm (open, no re-run): ${warmSeconds.toFixed(1)}s`);
-
-    const editSurvived = await evaluate(
-      cdp,
-      second.sessionId,
-      `document.body.innerText.includes(${JSON.stringify(marker)})`
-    );
-    report(editSurvived, 'the edit survived opening the same dataset again (no overwrite)');
-
-    // --- 3. Re-run in the warm profile, to measure a genuinely warm cell run too ---
-    const rerunStart = Date.now();
-    await runAllCells(second.sessionId);
-    await pollUntil(
-      async () => (await sentinelPresent(second.sessionId)) && (await promptsDone(second.sessionId)),
-      60_000,
-      500
-    );
-    const warmRerunSeconds = (Date.now() - rerunStart) / 1000;
-    log(`warm (re-run all cells): ${warmRerunSeconds.toFixed(1)}s`);
-
-    // --- 4. Refusals: unknown community and malformed dataset write nothing ---
-    log('checking refusals');
-    // The placeholder text ("Opening your notebook...") is itself non-empty, so
-    // the poll condition has to wait for it to CHANGE, not merely exist.
-    const refusalShown = async (targetSessionId) => {
-      const text = await evaluate(cdp, targetSessionId, "document.getElementById('app').textContent");
-      return text && !text.includes('Opening') ? text : null;
-    };
-
-    const unknownCommunity = await openPage(`${base}/open.html?community=doesnotexist&dataset=nm000103`);
-    const unknownMsg = await pollUntil(() => refusalShown(unknownCommunity.sessionId), 10_000, 300);
-    report(
-      unknownMsg.length > 0,
-      `an unknown community shows a plain sentence and stays put (got: ${JSON.stringify(unknownMsg)})`
-    );
-
-    const badDataset = await openPage(`${base}/open.html?community=${COMMUNITY}&dataset=not-a-real-id`);
-    const badMsg = await pollUntil(() => refusalShown(badDataset.sessionId), 10_000, 300);
-    report(
-      badMsg.length > 0,
-      `a malformed dataset id shows a plain sentence and stays put (got: ${JSON.stringify(badMsg)})`
-    );
-
-    // Neither refusal should have written anything: the community/dataset pair
-    // used above for the real run is the only key that should exist.
-    // JupyterLite's own resolved baseUrl at this site's own path prefix (see
-    // resolveBaseUrl in open.js and docs/adr/0011-the-notebook-site.md).
-    const dbName = await evaluate(cdp, unknownCommunity.sessionId, `'JupyterLite Storage - /${SITE_SUBDIR}/'`);
-    const badCommunityWroteNothing = await evaluate(
-      cdp,
-      unknownCommunity.sessionId,
-      `(async () => {
-        const req = indexedDB.open(${JSON.stringify(dbName)});
-        return await new Promise((resolve) => {
-          req.onsuccess = () => {
-            const db = req.result;
-            if (!db.objectStoreNames.contains('files')) { resolve(true); return; }
-            const tx = db.transaction('files', 'readonly');
-            const getReq = tx.objectStore('files').get('doesnotexist');
-            getReq.onsuccess = () => resolve(getReq.result === undefined);
-            getReq.onerror = () => resolve(true);
-          };
-          req.onerror = () => resolve(true);
-        });
-      })()`
-    );
-    report(badCommunityWroteNothing, 'the unknown-community link wrote no directory entry to IndexedDB');
-
-    report(exceptions.length === 0, `no page exceptions (got ${exceptions.length}: ${exceptions.join(' | ')})`);
-
-    console.log('');
-    console.log(`Timings: cold ${coldSeconds.toFixed(1)}s, warm-open ${warmSeconds.toFixed(1)}s, warm-rerun ${warmRerunSeconds.toFixed(1)}s`);
-    console.log(`${failed === 0 ? 'ALL CHECKS PASSED' : `${failed} CHECK(S) FAILED`}`);
-    return failed === 0 ? 0 : 1;
   } finally {
     if (cdp) cdp.close();
     if (chrome) {
