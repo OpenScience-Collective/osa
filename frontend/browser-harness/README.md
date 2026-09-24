@@ -312,5 +312,32 @@ Measured 2026-09-24 in Chrome 153:
 - after it, 42 of 42: every first visit's launcher first shown between 650 and 665 ms, just after the held config, already in the community's look (NEMAR's at 46px in its teal, dark on the dark device; the bubble at 56px, dark); every reload's between 19 and 27 ms, in the remembered look; no visible frame in any run shows anything else
 - the widget as it was on `develop` fails 12 of its checks, and each of these fails it too: leaving transitions on while waiting (the reveal fades from blue), setting the colors after the widget joins the page (a reload fades from blue), not remembering the config, and not waiting on a first visit
 
+### The pop-out
+
+```bash
+bun frontend/browser-harness/popout-check.mjs --serve [screenshot-dir]
+```
+
+starts `widget_e2e.py --nemar` on a free port and opens the widget's pop-out window (#470) under the harness's policy, whose `script-src` has no `'unsafe-inline'`.
+It is what CI runs, beside the first paint check; pass a running server's base URL instead of `--serve` to check that one.
+The pop-out is an `about:blank` window of the page's own origin and inherits the page's policy;
+it is a new DevTools target, which the check finds by discovering targets and attaches to by the one whose opener is the page.
+The notebook's address points at the harness server itself, so the notebook tab's frame loads nothing from the network; its address is what is checked.
+
+Measured 2026-09-24 in Chrome 153, 46 checks:
+
+- from the capsule's chat tab and from its notebook tab, the pop-out renders, with the tab strip, on the tab it was opened from;
+  every script in its document has a `src`, the widget's being the page tag's own address;
+  it reports the page's address (the page context it sends), and has the page's community title
+- from the notebook tab, the frame is at `${notebookUrl}open.html?community=nemar&dataset=nm000103` and on screen, the header reads "Notebook", the chat is hidden, and the page keeps its own frame;
+  the strip's Chat and Notebook tabs switch the pop-out's views
+- **controls**: the page and every pop-out refuse an inline script, so the policy is in force in both;
+  on `widget-e2e-sri.html`, which `widget_e2e.py` serves with the widget's tag pinned by `integrity` and `crossorigin` as nemar.org pins it, the pop-out carries both and renders,
+  and after the page's tag is given a wrong digest, the next pop-out is refused by the browser and says so in its own window
+- opened on the notebook tab, the pop-out starts no transition on its views or titles, recorded from the moment its document is written; the strip's next switch starts one, which shows the record sees them.
+  With the fading `setTab` in place of `showTabAtOnce`, the pop-out opens showing the chat and records its fade, and the check fails
+
+The widget as it was before it loaded the pop-out's script by address times out waiting for the pop-out's widget in `color-scheme-check.mjs`, which opens one under the same policy.
+
 `notebook-bench.js` times any page's boot, cold and warm, reusing `chrome.js`'s own Chrome-driving primitives;
 see ADR 0010 (`docs/adr/0010-the-notebook-surface.md`) and `.context/notebook-surface-measurements.md` for what it was built to measure.

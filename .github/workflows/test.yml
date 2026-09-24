@@ -102,6 +102,14 @@ jobs:
         if: matrix.python-version == '3.12'
         run: bun frontend/browser-harness/first-paint-check.mjs --serve
 
+      # The pop-out under the harness's copy of nemar.org's policy, with no
+      # 'unsafe-inline' in script-src (#470): it renders from the capsule's chat and
+      # notebook tabs, on the tab it came from, and carries the widget tag's
+      # integrity, which the browser checks there. Needs the same server.
+      - name: Check the widget's pop-out in headless Chrome
+        if: matrix.python-version == '3.12'
+        run: bun frontend/browser-harness/popout-check.mjs --serve
+
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.12'
         uses: codecov/codecov-action@v4
