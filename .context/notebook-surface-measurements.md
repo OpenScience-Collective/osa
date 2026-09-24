@@ -438,11 +438,15 @@ Two independent runs, `nemar`/`nm000103`, same machine, same Chrome, `--expose-a
 | 2 (repeat, bare host) | 7.6 s | 1.5 s | 4.0 s |
 | 3 (site url `.../osa`, served AND opened under `/osa/`, matching production) | 7.6 s | 1.5 s | 4.0 s |
 | 4 (repeat, under `/osa/`) | 7.6 s | 1.5 s | 4.0 s |
+| 5 (final re-verification after committing, under `/osa/`, cited in the handback report but not recorded here until the PR review flagged the gap) | 9.1 s | 1.5 s | 4.0 s |
+| 6 (PR review pass, after the review's own findings were applied, under `/osa/`) | 10.1 s | 1.5 s | 4.0 s |
+| 7 (repeat, same review pass) | 8.6 s | 1.5 s | 4.0 s |
 
 "Cold" times from navigating `open.html?community=nemar&dataset=nm000103` to every code cell showing a numbered prompt and the read line's sentinel text present -- includes fetching Pyodide and every package (interpreter, numpy, matplotlib, zarr, eegprep-lean, all from jsDelivr/this site, no prior cache) and the real `zarr.nemar.org` read.
-"Warm (open again)" times only the bootstrap-to-notebook-ready step, no re-run: 1.5 s both times, reusing the already-populated notebook.
-"Warm re-run" re-executes all cells in the SAME kernel (packages already imported, connection already warm): 4.0 s both times, close to the maintainer's own hand-measured "4.3 s warm" figure for the identical workload.
-The maintainer's own hand-built spike measured "10.8 s cold ... to every cell done"; this PR's from-scratch, scripted build measured 7.6-8.6 s cold for the same workload, within the range expected from day-to-day CDN/network variance rather than a discrepancy worth chasing.
+"Warm (open again)" times only the bootstrap-to-notebook-ready step, no re-run: 1.5 s in every run, reusing the already-populated notebook.
+"Warm re-run" re-executes all cells in the SAME kernel (packages already imported, connection already warm): 4.0 s in every run, close to the maintainer's own hand-measured "4.3 s warm" figure for the identical workload.
+The maintainer's own hand-built spike measured "10.8 s cold ... to every cell done"; this PR's from-scratch, scripted build has measured 7.6-10.1 s cold across seven runs on two separate days, within the range expected from day-to-day CDN/network variance rather than a discrepancy worth chasing.
+Every run actually measured and cited (including the one this table originally omitted, row 5, a discrepancy a PR review caught between the table and the handback report) is recorded above; the warm figures have never varied.
 
 Checked end to end in every run: the index line (`N recordings with a Zarr copy`), the exact read line (`(4, 500) uV 250.0 ('E1', 'E2', 'E3', 'E4')`, matching the maintainer's own recorded output for `nm000103`'s first store), exactly one rendered `<img>` figure, no `Traceback` text anywhere on the page, and zero page exceptions.
 Runs 3-4 (under `/osa/`) also confirm `open.js`'s `resolveBaseUrl` derives `/osa/` correctly at this path (not just at a site root): the IndexedDB database it writes to and the refusal checks both read back against `JupyterLite Storage - /osa/`, the exact name JupyterLite's own drive opens when served from that path.
