@@ -319,6 +319,39 @@ class TestWriteRootRedirect:
         assert (publish_root / "_redirects").read_text().strip() == "/  /osa/  302"
 
 
+class TestFinalizePublishRoot:
+    """The exact wiring a real build's own end-to-end test cannot gate a PR with
+    (it is network-marked): _headers/_redirects must land at the true publish
+    root, never inside the site subdirectory. Proven against a synthetic output
+    tree -- a site subdirectory with a placeholder file, standing in for a real
+    jupyterlite build's output -- so this runs with no network and no subprocess.
+    """
+
+    def test_headers_and_redirects_land_at_the_publish_root_not_the_site_subdir(
+        self, tmp_path: Path
+    ) -> None:
+        output_dir = tmp_path / "out"
+        site_root = output_dir / "osa"
+        site_root.mkdir(parents=True)
+        (site_root / "index.html").write_text("<html></html>")  # stands in for a real build
+
+        site.finalize_publish_root(output_dir, "osa")
+
+        assert (output_dir / "_headers").is_file()
+        assert (output_dir / "_redirects").is_file()
+        assert not (site_root / "_headers").exists()
+        assert not (site_root / "_redirects").exists()
+
+    def test_a_bare_host_writes_no_redirect_file(self, tmp_path: Path) -> None:
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        site.finalize_publish_root(output_dir, "")
+
+        assert (output_dir / "_headers").is_file()
+        assert not (output_dir / "_redirects").exists()
+
+
 class TestStripSourcemaps:
     def test_removes_every_map_file_and_nothing_else(self, tmp_path: Path) -> None:
         output_dir = tmp_path / "out"
