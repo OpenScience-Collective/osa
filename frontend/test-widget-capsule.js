@@ -151,6 +151,15 @@ console.log('\ncapsule markup exists only under launcher: capsule');
     assert(order[0].includes('osa-hpc-btn'), 'DOM order: HPC first (top when expanded)');
     assert(order[1].includes('osa-notebook-btn'), 'DOM order: notebook second (middle)');
     assert(order[2].includes('osa-chat-button'), 'DOM order: chat last (bottom, anchored, never moves)');
+
+    // The tooltip <span>s repeat the button's own aria-label verbatim; without
+    // aria-hidden a screen reader would read each one twice. The pre-existing
+    // .osa-chat-tooltip (the collapsed launcher's own) is untouched, since it
+    // has no button-owning aria-label to duplicate.
+    for (const btn of [capsule.querySelector('.osa-hpc-btn'), capsule.querySelector('.osa-notebook-btn')]) {
+      assertEqual(btn.querySelector('.osa-icon-tooltip').getAttribute('aria-hidden'), 'true', `${btn.className}: its tooltip span is aria-hidden`);
+    }
+    assert(!container.querySelector('.osa-chat-tooltip').hasAttribute('aria-hidden'), 'the pre-existing launcher tooltip is untouched, no aria-hidden added to it');
   }
 
   // Set at creation time via setConfig before init(), not just from the API.

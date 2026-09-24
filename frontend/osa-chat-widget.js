@@ -1825,6 +1825,13 @@
     button.appendChild(badge);
     const tooltip = document.createElement('span');
     tooltip.className = 'osa-icon-tooltip';
+    // The button's own aria-label already states this text; without this, a
+    // screen reader would read it twice (once for the label, once for this
+    // span's text content, which the label duplicates verbatim). The
+    // pre-existing .osa-chat-tooltip (the collapsed launcher's own tooltip)
+    // is untouched: it has no button-owning aria-label to duplicate, since
+    // the chat button's aria-label is just "Open chat"/"Close chat".
+    tooltip.setAttribute('aria-hidden', 'true');
     button.appendChild(tooltip);
     return button;
   }
