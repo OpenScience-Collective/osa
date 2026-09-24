@@ -64,6 +64,8 @@ const DATASET = ENVIRONMENTS[ARGS.environment].dataset;
 // builds and serves under that same prefix so it matches production exactly.
 const SITE_SUBDIR = 'osa';
 const SENTINEL = ENVIRONMENTS[ARGS.environment].sentinel;
+// The cells of NEMAR's starter that draw a figure, each exactly once.
+const EXPECTED_FIGURES = 2;
 // Matches open.js's own notebookPath(community, dataset); this is the one
 // file whose save the edit/reopen step below has to confirm.
 const NOTEBOOK_PATH = `${COMMUNITY}/${DATASET}.ipynb`;
@@ -646,10 +648,12 @@ async function main() {
       report(readLineOk, `the read line ("${SENTINEL}") is present`);
 
       const outputs = await cellOutputs(first.sessionId);
+      // NEMAR's starter plots twice: the read cell's window, and the power spectrum.
+      // Counted per cell, so a plotting cell that silently draws nothing fails here.
       const figures = outputs.map((cell) => cell.images);
       report(
-        figures.some((n) => n > 0) && figures.every((n) => n <= 1),
-        `a rendered figure, and no cell rendering one twice (figures per code cell: ${JSON.stringify(figures)})`
+        figures.filter((n) => n === 1).length === EXPECTED_FIGURES && figures.every((n) => n <= 1),
+        `${EXPECTED_FIGURES} rendered figures, one per plotting cell (figures per code cell: ${JSON.stringify(figures)})`
       );
 
       const errors = outputs.flatMap((cell) => cell.errors.map((e) => `cell ${cell.index}: ${e}`));
