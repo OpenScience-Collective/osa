@@ -216,6 +216,61 @@ def recipe_problems(code: str, wheel_path: Path) -> list[str]:
     return problems
 
 
+class TestTheDevelopPreludeReachesReadIndex:
+    """NEMAR's develop prelude points eegprep-lean at staging by assigning
+    `eegprep_lean.index.INDEX_URL_TEMPLATE` (#480). That only works while `read_index`
+    reads that module global at each call; a re-vendored wheel that renamed it, or
+    captured it in a default argument, would leave the develop chat reading production
+    with nothing failing until a staging reader tried. Offline: ast over the wheel."""
+
+    def _index_module(self) -> ast.Module:
+        with zipfile.ZipFile(WHEEL_PATH) as wheel:
+            return ast.parse(wheel.read("eegprep_lean/index.py").decode("utf-8"))
+
+    def test_the_template_is_a_module_global_holding_the_production_host(self) -> None:
+        assigned = {
+            target.id: node.value
+            for node in self._index_module().body
+            if isinstance(node, ast.Assign)
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        }
+        template = assigned.get("INDEX_URL_TEMPLATE")
+        assert isinstance(template, ast.Constant)
+        assert template.value == "https://zarr.nemar.org/{dataset_id}/zarr/index.json"
+
+    def test_read_index_reads_it_at_call_time(self) -> None:
+        [read_index] = [
+            node
+            for node in self._index_module().body
+            if isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef)
+            and node.name == "read_index"
+        ]
+        loads = {
+            n.id
+            for n in ast.walk(read_index)
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+        }
+        assert "INDEX_URL_TEMPLATE" in loads
+        # Not bound at definition time, where assigning the global later changes nothing.
+        defaults = read_index.args.defaults + [d for d in read_index.args.kw_defaults if d]
+        assert not any(isinstance(d, ast.Name) and d.id == "INDEX_URL_TEMPLATE" for d in defaults)
+
+    def test_the_develop_prelude_assigns_that_global_to_the_staging_host(self) -> None:
+        config = CommunityConfig.from_yaml(NEMAR_DIR / "config.yaml")
+        assert config.runtime is not None
+        develop = config.runtime.for_deployment("develop").python
+        assert develop is not None and develop.prelude is not None
+        [assignment] = [
+            node
+            for node in ast.parse(develop.prelude).body
+            if isinstance(node, ast.Assign)
+            and ast.unparse(node.targets[0]) == "eegprep_lean.index.INDEX_URL_TEMPLATE"
+        ]
+        assert isinstance(assignment.value, ast.Constant)
+        assert assignment.value.value == "https://zarr-test.nemar.org/{dataset_id}/zarr/index.json"
+
+
 class TestEegprepLeanExportedNames:
     """Runs against the wheel actually committed beside the prompt, so this is
     not a network test: something here runs in every CI sweep."""

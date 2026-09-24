@@ -64,17 +64,44 @@ class TestTheShippedConfig:
         assert "`path`" in prompt and "never its `zarr` name" in prompt
 
     def test_it_reaches_only_the_data_plane(self, nemar: CommunityConfig) -> None:
-        assert nemar.runtime is not None and nemar.runtime.python is not None
-        assert nemar.runtime.python.fetch_allow == ["https://zarr.nemar.org/"]
+        """Production's data plane in production, staging's on develop, which test.nemar.org
+        embeds and whose datasets only the staging host has (#480)."""
+        assert nemar.runtime is not None
+        production = nemar.runtime.for_deployment("production").python
+        develop = nemar.runtime.for_deployment("develop").python
+        assert production is not None and develop is not None
+        assert production.fetch_allow == ["https://zarr.nemar.org/"]
+        assert develop.fetch_allow == ["https://zarr-test.nemar.org/"]
+
+    def test_the_develop_prelude_points_read_index_at_the_staging_host(
+        self, nemar: CommunityConfig
+    ) -> None:
+        """read_index takes its URL from eegprep_lean.index.INDEX_URL_TEMPLATE at each call;
+        on develop the prelude sets it to the host fetch_allow names, and production's
+        prelude leaves eegprep-lean's own default alone."""
+        assert nemar.runtime is not None
+        develop = nemar.runtime.for_deployment("develop").python
+        production = nemar.runtime.for_deployment("production").python
+        assert develop is not None and production is not None
+        assert (
+            'eegprep_lean.index.INDEX_URL_TEMPLATE = "https://zarr-test.nemar.org/{dataset_id}/zarr/index.json"'
+            in (develop.prelude or "")
+        )
+        assert develop.fetch_allow[0].rstrip("/") in (develop.prelude or "")
+        assert "INDEX_URL_TEMPLATE" not in (production.prelude or "")
 
     def test_its_prelude_hands_eegprep_lean_the_runtime_client(
         self, nemar: CommunityConfig
     ) -> None:
         """Without it, eegprep-lean reaches for pyodide.http, which the seal removes,
         and the recipe fails with an import error that names neither."""
-        assert nemar.runtime is not None and nemar.runtime.python is not None
-        prelude = nemar.runtime.python.prelude or ""
-        assert "set_default_transport(eegprep_lean.FetchTransport(osa.fetch))" in prelude
+        assert nemar.runtime is not None
+        for deployment in ("production", "develop"):
+            python = nemar.runtime.for_deployment(deployment).python
+            assert python is not None
+            assert "set_default_transport(eegprep_lean.FetchTransport(osa.fetch))" in (
+                python.prelude or ""
+            ), deployment
 
     def test_the_prompt_teaches_the_browser_lane(self, nemar: CommunityConfig) -> None:
         prompt = nemar.system_prompt

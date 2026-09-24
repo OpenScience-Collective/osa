@@ -282,14 +282,19 @@ documentation:
     category: reference
     description: Brain Imaging Data Structure specification that all NEMAR datasets follow.
 
-# Dataset tools come from NEMAR's MCP server (https://mcp.nemar.org/mcp), which is
-# anonymous and needs no credentials. It replaced two python_plugins tools that
+# Dataset tools come from NEMAR's MCP server (https://mcp.nemar.org/mcp in production),
+# which is anonymous and needs no credentials. It replaced two python_plugins tools that
 # called nemar.org/api/dataexplorer/datapipeline/... -- that endpoint returns 404,
 # because the legacy dataexplorer site is gone, so those tools had been dead.
+# The develop deployment, which test.nemar.org embeds, reads NEMAR's staging server:
+# production's does not know staging's datasets (the xx0999NN exemplar fleet), and
+# staging has no others (#480, docs/adr/0013-the-chat-follows-its-deployment.md).
 extensions:
   mcp_servers:
     - name: nemar
-      url: https://mcp.nemar.org/mcp
+      url:
+        production: https://mcp.nemar.org/mcp
+        develop: https://mcp-test.nemar.org/mcp
   # Runs model-written Python in the reader's own browser, after they approve it
   # (epic OpenScience-Collective/osa#429). The runtime it needs is below.
   client_tools:
@@ -305,7 +310,7 @@ extensions:
         boto3, s3fs or zarr.open, none of which can work here. Anything that touches
         the network is async, so use await at the top level. numpy, matplotlib, zarr
         and eegprep_lean are installed and nothing else can be; only
-        https://zarr.nemar.org/ is reachable. eegprep_lean draws on its own figure
+        NEMAR's Zarr host is reachable. eegprep_lean draws on its own figure
         rather than pyplot's, so hand the figure over with
         display(eegprep_lean.plot_window(window).figure). Print a few summary lines
         rather than whole arrays. Every run's code and output are saved automatically
@@ -332,15 +337,31 @@ runtime:
     # download with the model's own first turn, and never charges a reader who only
     # opens the chat.
     preload_on: first_message
+    # Per deployment, as the MCP server above: staging's Zarr copies are on
+    # zarr-test.nemar.org, and production's host has none of them (#480).
     fetch_allow:
-      - https://zarr.nemar.org/
+      production:
+        - https://zarr.nemar.org/
+      develop:
+        - https://zarr-test.nemar.org/
     # eegprep-lean reads through pyodide.http by default, which the sealed runtime
-    # does not offer; its reads go through the runtime's own client instead.
-    prelude: |
-      import eegprep_lean
-      import osa
+    # does not offer; its reads go through the runtime's own client instead. On
+    # develop, read_index also has to look on the staging host: it takes its URL
+    # from eegprep_lean.index.INDEX_URL_TEMPLATE at each call, and has no other
+    # setting for it, so the develop prelude sets that.
+    prelude:
+      production: |
+        import eegprep_lean
+        import osa
 
-      eegprep_lean.set_default_transport(eegprep_lean.FetchTransport(osa.fetch))
+        eegprep_lean.set_default_transport(eegprep_lean.FetchTransport(osa.fetch))
+      develop: |
+        import eegprep_lean
+        import eegprep_lean.index
+        import osa
+
+        eegprep_lean.set_default_transport(eegprep_lean.FetchTransport(osa.fetch))
+        eegprep_lean.index.INDEX_URL_TEMPLATE = "https://zarr-test.nemar.org/{dataset_id}/zarr/index.json"
 
 # The separate notebook.osc.earth/osa site (issue #453, docs/adr/0011-the-notebook-site.md):
 # the capsule's notebook circle opens notebook.osc.earth/osa/open.html?community=nemar&

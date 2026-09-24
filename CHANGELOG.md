@@ -15,6 +15,16 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Added
 
+- **Config values per deployment** (issue #480):
+  `extensions.mcp_servers[].url`, `runtime.python.fetch_allow` and `runtime.python.prelude`
+  each take one value or a `{production, develop}` map, the shape `notebook.zarr_base` already has.
+  The backend resolves a map for the deployment it is:
+  `OSA_DEPLOYMENT` when set, otherwise `develop` for the container mounted at `/osa-dev`,
+  so the public config response still carries one `fetch_allow` list and one prelude.
+  NEMAR's develop chat, which test.nemar.org embeds, now reads `mcp-test.nemar.org` and `zarr-test.nemar.org`,
+  where staging's datasets are; it used to read production's hosts, which have none of them.
+  Every launch script in `deploy/` names the deployment, production included.
+  See `docs/adr/0013-the-chat-follows-its-deployment.md`.
 - **Questions about the dataset on screen** (issue #477):
   `widget.dataset_suggested_questions` holds question templates with `{dataset_id}`, `{subject}` and `{task}` blanks,
   and `needs_zarr` on the ones that run code against a recording.

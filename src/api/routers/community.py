@@ -68,6 +68,7 @@ from src.core.config.community import (
     RuntimeConfig,
     WidgetConfig,
 )
+from src.core.config.deployment import current_deployment
 from src.core.config.runtime_lock import (
     RuntimeLockError,
     RuntimeLockOverlay,
@@ -408,7 +409,8 @@ class CommunityConfigResponse(BaseModel):
     runtime: RuntimeConfig | None = Field(
         default=None,
         description=(
-            "The execution environment those tools run in, exactly as configured. None "
+            "The execution environment those tools run in, as configured for the deployment "
+            "serving this response (one fetch_allow list and one prelude). None "
             "whenever client_tools is empty."
         ),
     )
@@ -420,6 +422,21 @@ class CommunityConfigResponse(BaseModel):
             "when the runtime names no lockfile, and whenever client_tools is empty."
         ),
     )
+
+    @field_validator("runtime")
+    @classmethod
+    def _runtime_is_resolved(cls, value: RuntimeConfig | None) -> RuntimeConfig | None:
+        """A per-deployment map never reaches the widget, which reads one list and one
+        prelude and, handed a map, would run with no egress and no prelude and say
+        nothing (docs/adr/0013-the-chat-follows-its-deployment.md). The one caller
+        resolves it first; this makes a caller that forgets a server error instead."""
+        python = value.python if value else None
+        if python and (isinstance(python.fetch_allow, dict) or isinstance(python.prelude, dict)):
+            raise ValueError(
+                "runtime is served resolved for one deployment: call "
+                "RuntimeConfig.for_deployment(current_deployment()) first"
+            )
+        return value
 
 
 class FAQEntryResponse(BaseModel):
@@ -1841,7 +1858,9 @@ def _client_tool_config(config: CommunityConfig | None) -> dict[str, Any]:
             )
             for entry in configured
         ],
-        "runtime": config.runtime,
+        # Resolved for the deployment serving this response (#480): the develop
+        # widget gets the staging hosts, and never a per-deployment map.
+        "runtime": config.runtime.for_deployment(current_deployment()) if config.runtime else None,
         "runtime_lock": runtime_lock,
     }
 

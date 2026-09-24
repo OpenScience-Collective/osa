@@ -349,7 +349,8 @@ def discover_mcp_tools(server: McpServer, *, allow_images: bool = False) -> list
         )
         return []
 
-    url = str(server.url)
+    # The URL for this deployment (#480): the develop chat reads a staging server.
+    url = str(server.resolved_url)
     key = (server.name, url, allow_images)
 
     with _tool_cache_lock:

@@ -88,6 +88,8 @@ if [ "$ENVIRONMENT" = "dev" ]; then
     HOST_PORT=38529
     # Dev uses DEV_ROOT_PATH, defaults to /osa-dev
     ROOT_PATH_OVERRIDE="${DEV_ROOT_PATH:-/osa-dev}"
+    # Which deployment's config values the backend resolves (ADR 0013).
+    OSA_DEPLOYMENT_NAME=develop
 else
     IMAGE_NAME="osa:latest"
     CONTAINER_NAME="osa"
@@ -95,6 +97,9 @@ else
     HOST_PORT=38528
     # Prod uses ROOT_PATH from .env
     ROOT_PATH_OVERRIDE=""
+    # Named, not inferred: the .env both containers share must never be able to
+    # make production resolve develop's values (ADR 0013).
+    OSA_DEPLOYMENT_NAME=production
 fi
 
 CONTAINER_PORT=38528
@@ -246,9 +251,9 @@ deploy_update() {
     # Run the new container using the pulled image
     log "Starting new container on port ${HOST_PORT}..."
     # Build environment overrides
-    ENV_OVERRIDE=""
+    ENV_OVERRIDE="-e OSA_DEPLOYMENT=${OSA_DEPLOYMENT_NAME}"
     if [ -n "$ROOT_PATH_OVERRIDE" ]; then
-        ENV_OVERRIDE="-e ROOT_PATH=${ROOT_PATH_OVERRIDE}"
+        ENV_OVERRIDE="${ENV_OVERRIDE} -e ROOT_PATH=${ROOT_PATH_OVERRIDE}"
     fi
 
     docker run -d \

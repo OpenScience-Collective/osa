@@ -27,7 +27,7 @@ import logging
 import re
 import warnings
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal
 from urllib.parse import urlparse
 
 import yaml
@@ -41,6 +41,12 @@ from pydantic import (
     model_validator,
 )
 
+from src.core.config.deployment import (
+    Deployment,
+    check_deployment_map,
+    current_deployment,
+    for_deployment,
+)
 from src.core.config.notebook_lock import (
     NOTEBOOK_ENVIRONMENTS,
     NOTEBOOK_SITE_PYODIDE_VERSION,
@@ -524,8 +530,24 @@ class McpServer(BaseModel):
     command: list[str] | None = None
     """Command to start local MCP server."""
 
-    url: HttpUrl | None = None
-    """URL for remote MCP server."""
+    url: HttpUrl | dict[Deployment, HttpUrl] | None = None
+    """URL for remote MCP server: one URL, or one per deployment (``production``,
+    ``develop``) for a server with a staging copy, so the develop chat reads the
+    staging server rather than production's (#480, ``src/core/config/deployment.py``).
+    Read it through :attr:`resolved_url`."""
+
+    @property
+    def resolved_url(self) -> HttpUrl | None:
+        """The URL for the deployment this process is."""
+        if self.url is None:
+            return None
+        return for_deployment(self.url, current_deployment())
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def _url_map_names_every_deployment(cls, value: object) -> object:
+        check_deployment_map(value, "url")
+        return value
 
     @model_validator(mode="after")
     def validate_command_or_url(self) -> "McpServer":
@@ -699,6 +721,10 @@ class RuntimeLimits(BaseModel):
 MAX_PRELUDE_CHARS = 4000
 
 
+_Prelude = Annotated[str, Field(max_length=MAX_PRELUDE_CHARS)]
+"""One prelude's source, bounded as every reader's startup pays for it."""
+
+
 class PythonRuntimeConfig(BaseModel):
     """Configuration for the browser-side Python (Pyodide) runtime.
 
@@ -732,9 +758,10 @@ class PythonRuntimeConfig(BaseModel):
     default index, PyPI. Nothing is installed after startup. A wheel pinned by sha256
     belongs in the lock overlay instead."""
 
-    prelude: str | None = Field(default=None, max_length=MAX_PRELUDE_CHARS)
+    prelude: _Prelude | dict[Deployment, _Prelude] | None = None
     """Python run once in the reader's browser after the runtime is sealed and before
-    the first execution, with exactly the privileges executed code has.
+    the first execution, with exactly the privileges executed code has. One prelude,
+    or one per deployment (``production``, ``develop``), as ``fetch_allow`` below.
 
     For setup every execution needs, such as registering a library's transport over
     ``osa.fetch``. It runs without the permission gate, which exists for code a model
@@ -752,8 +779,11 @@ class PythonRuntimeConfig(BaseModel):
     Run gate.
     """
 
-    fetch_allow: list[str] = Field(default_factory=list)
-    """URL prefixes the runtime is allowed to fetch from."""
+    fetch_allow: list[str] | dict[Deployment, list[str]] = Field(default_factory=list)
+    """URL prefixes the runtime is allowed to fetch from: one list, or one per
+    deployment (``production``, ``develop``) for data with a staging copy, so the
+    develop chat reads the staging host (#480). The public config response carries
+    the list for the deployment that serves it (:meth:`for_deployment`)."""
 
     index_urls: list[str] = Field(default_factory=list)
     """Package index URLs the runtime may install from."""
@@ -775,15 +805,39 @@ class PythonRuntimeConfig(BaseModel):
 
     @field_validator("prelude")
     @classmethod
-    def _prelude_compiles(cls, value: str | None) -> str | None:
-        """Compiled here so a syntax error fails a config check, not a reader's boot."""
+    def _prelude_compiles(
+        cls, value: str | dict[Deployment, str] | None
+    ) -> str | dict[Deployment, str] | None:
+        """Compiled here so a syntax error fails a config check, not a reader's boot:
+        every deployment's prelude, not only the one this process runs."""
         if value is None:
             return None
-        try:
-            compile(value, "<prelude>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
-        except SyntaxError as err:
-            raise ValueError(f"prelude does not compile: {err}") from err
+        for deployment, source in value.items() if isinstance(value, dict) else [(None, value)]:
+            where = f" for {deployment}" if deployment else ""
+            try:
+                compile(source, "<prelude>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+            except SyntaxError as err:
+                raise ValueError(f"prelude{where} does not compile: {err}") from err
         return value
+
+    @field_validator("fetch_allow", "prelude", mode="before")
+    @classmethod
+    def _maps_name_every_deployment(cls, value: object, info: ValidationInfo) -> object:
+        """Before type validation, so a misspelled deployment gets this message rather
+        than the literal-type error."""
+        check_deployment_map(value, info.field_name or "")
+        return value
+
+    def for_deployment(self, deployment: Deployment) -> "PythonRuntimeConfig":
+        """This runtime with one ``prelude`` and one ``fetch_allow``: ``deployment``'s."""
+        return self.model_copy(
+            update={
+                "prelude": None
+                if self.prelude is None
+                else for_deployment(self.prelude, deployment),
+                "fetch_allow": for_deployment(self.fetch_allow, deployment),
+            }
+        )
 
 
 class RuntimeConfig(BaseModel):
@@ -793,6 +847,12 @@ class RuntimeConfig(BaseModel):
 
     python: PythonRuntimeConfig | None = None
     """The browser-side Python (Pyodide) runtime, if configured."""
+
+    def for_deployment(self, deployment: Deployment) -> "RuntimeConfig":
+        """This config with every per-deployment value resolved to ``deployment``'s."""
+        if self.python is None:
+            return self
+        return self.model_copy(update={"python": self.python.for_deployment(deployment)})
 
 
 #: A dataset id reaches the starter's Python source unescaped (``{{dataset_id}}``,
