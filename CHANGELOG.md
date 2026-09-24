@@ -13,6 +13,21 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A failed request no longer hangs Python in Safari** (issue #496):
+  Safari's fetch rejects with a TypeError that has no `stack`,
+  which Pyodide 0.29.5 does not take for an error,
+  so the `await` on it never returned.
+  In the notebook the cell stayed running and the kernel busy for good;
+  in the chat the run was stopped at its 120-second deadline and the runtime's state was lost.
+  Both runtimes now raise instead, as they already did in Chrome and Firefox:
+  the chat's runtime installs a rejection guard before its seal,
+  and the notebook site's bridge sends the same guard to each new kernel.
+  The notebook's own reads still fail in Safari and Firefox until eegprep-lean stops sending a `User-Agent` header,
+  which makes each read a CORS preflight whose answer from zarr.nemar.org does not allow that header;
+  they now fail at once, naming the URL.
+
 ## [0.8.14] - 2026-09-24
 
 ### Added
