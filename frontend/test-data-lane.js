@@ -746,7 +746,7 @@ def refused(x, rate):
 
 out = []
 rng = np.random.default_rng(0)
-for rate, channels, seconds in ((250.0, 33, 120), (1000.0, 4, 200)):
+for rate, channels, seconds in ((250.0, 33, 120), (1000.0, 4, 300)):
     t = np.arange(int(seconds * rate)) / rate
     eeg = rng.standard_normal((channels, t.size)) + 3 * np.sin(2 * np.pi * 10 * t)
     freqs, power, most = prompt_spectrum(eeg, rate)
@@ -755,6 +755,7 @@ for rate, channels, seconds in ((250.0, 33, 120), (1000.0, 4, 200)):
         "shape": list(power.shape), "bins": int(freqs.size),
         "peak_hz": float(freqs[np.argmax(power.mean(axis=0))]),
         "whole": refused(eeg, rate), "one_channel": refused(eeg[0], rate),
+        "twice_most": refused(eeg[0, : 2 * most], rate) if 2 * most <= t.size else None,
     })
 print(json.dumps(out))
 `);
@@ -772,6 +773,10 @@ print(json.dumps(out))
         `control: welch on the whole 33-channel array is refused here (${String(many.whole).slice(0, 80)})`);
       assert(/array is too big/.test(long.one_channel),
         `control: and so is one channel of the 1000 Hz read, past most (${String(long.one_channel).slice(0, 80)})`);
+      // And the bound is not needlessly short: twice it is already refused, so
+      // `most` cuts a long read by less than half of what one call could take.
+      assert(/array is too big/.test(long.twice_most),
+        `control: one channel of twice most samples is refused too (${String(long.twice_most).slice(0, 80)})`);
     }
   }
 } finally {
