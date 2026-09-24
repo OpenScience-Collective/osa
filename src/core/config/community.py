@@ -782,8 +782,17 @@ class RuntimeConfig(BaseModel):
     """The browser-side Python (Pyodide) runtime, if configured."""
 
 
+#: A dataset id reaches the starter's Python source unescaped (``{{dataset_id}}``,
+#: substituted client-side by ``notebook/open.js``), so a community's
+#: ``dataset_pattern`` must never accept any of these, regardless of how loose
+#: or careless the pattern's author was: a quote (either kind), a backslash, a
+#: newline, and a space. Checked by ``NotebookConfig``'s own field validator
+#: below, independent of ``open.js``'s generic client-side shape guard.
+HOSTILE_DATASET_PROBES = ('"', "'", "\\", "\n", " ")
+
+
 class NotebookConfig(BaseModel):
-    """A community's starter notebook for the separate notebook.osc.earth site.
+    """A community's starter notebook for the separate notebook.osc.earth/osa site.
 
     Optional, and unrelated to ``extensions.client_tools``/``runtime.python``
     above: those run model-written code in the chat widget, in the reader's
@@ -836,6 +845,28 @@ class NotebookConfig(BaseModel):
             re.compile(value)
         except re.error as err:
             raise ValueError(f"dataset_pattern does not compile: {err}") from err
+        return value
+
+    @field_validator("dataset_pattern")
+    @classmethod
+    def _dataset_pattern_refuses_hostile_probes(cls, value: str) -> str:
+        """Defense in depth: a starter substitutes the dataset id unescaped into
+        Python source (``{{dataset_id}}``, filled in client-side by
+        ``notebook/open.js``), so a pattern that would accept a quote, a
+        backslash, a newline or a space is never safe to ship, independent of
+        ``open.js``'s own generic shape guard (``^[A-Za-z0-9._-]{1,64}$``,
+        checked before any community's own pattern). This check exists so a
+        community's pattern can never rely on that client-side guard alone.
+        """
+        pattern = re.compile(value)
+        hostile = [probe for probe in HOSTILE_DATASET_PROBES if pattern.match(probe)]
+        if hostile:
+            raise ValueError(
+                f"dataset_pattern {value!r} would accept a hostile probe "
+                f"{hostile!r}; a dataset id is substituted unescaped into the "
+                "starter's Python source, so the pattern must never match a "
+                "quote, a backslash, a newline, or a space"
+            )
         return value
 
 
@@ -1505,7 +1536,7 @@ class CommunityConfig(BaseModel):
     """
 
     notebook: NotebookConfig | None = None
-    """A starter notebook for the separate notebook.osc.earth site (issue #453).
+    """A starter notebook for the separate notebook.osc.earth/osa site (issue #453).
 
     Requires ``runtime.python.pyodide_version`` to equal the notebook site's own
     pin (``validate_notebook_needs_matching_pyodide`` below), the same way
