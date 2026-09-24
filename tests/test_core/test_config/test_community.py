@@ -2743,3 +2743,38 @@ class TestCommunityConfigNotebook:
                 ),
                 runtime=mismatched,
             )
+
+
+class TestCommunityConfigCapsule:
+    """The capsule launcher opens the community's notebook as a tab (#470), so it
+    needs a notebook section; the bubble does not."""
+
+    def test_capsule_without_notebook_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="no notebook section is configured"):
+            CommunityConfig(
+                id="test",
+                name="Test",
+                description="Test",
+                widget=WidgetConfig(launcher="capsule"),
+            )
+
+    def test_capsule_with_notebook_accepted(self) -> None:
+        config = CommunityConfig(
+            id="test",
+            name="Test",
+            description="Test",
+            widget=WidgetConfig(launcher="capsule"),
+            notebook=NotebookConfig(
+                starter="notebook/starter.ipynb",
+                dataset_pattern="^nm[0-9]{6}$",
+                **_notebook_kwargs(),
+            ),
+            runtime=_python_runtime_config(),
+        )
+        assert config.widget.launcher == "capsule"
+
+    def test_bubble_needs_no_notebook(self) -> None:
+        config = CommunityConfig(
+            id="test", name="Test", description="Test", widget=WidgetConfig(launcher="bubble")
+        )
+        assert config.notebook is None

@@ -2108,6 +2108,23 @@ class CommunityConfig(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def validate_capsule_needs_notebook(self) -> "CommunityConfig":
+        """The capsule launcher's notebook icon opens the community's starter on the
+        notebook site as a tab of the widget's panel (#470). Without a ``notebook``
+        section the site has no starter for the community, so the icon would open
+        a tab that can only report an error. Refused here rather than hidden in the
+        widget, so a community asking for the capsule learns what it also needs.
+        """
+        widget = self.widget
+        if widget is not None and widget.launcher == "capsule" and self.notebook is None:
+            raise ValueError(
+                "widget.launcher is 'capsule' but no notebook section is configured. "
+                "The capsule's notebook icon opens the community's starter notebook "
+                "(docs/community-notebook.md)."
+            )
+        return self
+
     def get_sync_config(self) -> dict[str, Any]:
         """Generate sync_config dict for registry compatibility.
 
