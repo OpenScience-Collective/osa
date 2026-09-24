@@ -673,6 +673,74 @@ class TestWidgetConfig:
         result = WidgetConfig(user_bubble_text_color="#04121f").resolve("Test")
         assert result["user_bubble_text_color"] == "#04121f"
 
+    def test_launcher_defaults_to_bubble(self) -> None:
+        """Should default to 'bubble', today's single-icon launcher."""
+        widget = WidgetConfig()
+        assert widget.launcher == "bubble"
+
+    def test_launcher_accepts_capsule(self) -> None:
+        """Should accept the three-icon capsule launcher (#436)."""
+        widget = WidgetConfig(launcher="capsule")
+        assert widget.launcher == "capsule"
+
+    def test_launcher_rejects_invalid_value(self) -> None:
+        """Should reject any value other than 'bubble' or 'capsule'."""
+        with pytest.raises(ValidationError):
+            WidgetConfig(launcher="pill")
+
+    def test_resolve_omits_launcher_when_bubble(self) -> None:
+        """resolve() should omit launcher for the 'bubble' default, so a community that
+        never sets it renders exactly as it did before this field existed."""
+        result = WidgetConfig().resolve("Test")
+        assert "launcher" not in result
+
+    def test_resolve_includes_launcher_when_capsule(self) -> None:
+        """resolve() should include launcher when it is 'capsule'."""
+        result = WidgetConfig(launcher="capsule").resolve("Test")
+        assert result["launcher"] == "capsule"
+
+    def test_launcher_label_valid(self) -> None:
+        """Should accept a short plain-text tooltip label."""
+        widget = WidgetConfig(launcher_label="Explore NEMAR")
+        assert widget.launcher_label == "Explore NEMAR"
+
+    def test_launcher_label_strips_whitespace(self) -> None:
+        """Should strip surrounding whitespace."""
+        widget = WidgetConfig(launcher_label="  Explore NEMAR  ")
+        assert widget.launcher_label == "Explore NEMAR"
+
+    def test_launcher_label_empty_normalizes_to_none(self) -> None:
+        """A whitespace-only label should normalize to None, like other text fields."""
+        widget = WidgetConfig(launcher_label="   ")
+        assert widget.launcher_label is None
+
+    def test_launcher_label_rejects_markup(self) -> None:
+        """Should reject values containing '<' or '>' as not plain text."""
+        with pytest.raises(ValidationError):
+            WidgetConfig(launcher_label="<b>Explore</b>")
+
+    def test_launcher_label_max_length(self) -> None:
+        """Should enforce the 40-character maximum."""
+        with pytest.raises(ValidationError):
+            WidgetConfig(launcher_label="x" * 41)
+        widget = WidgetConfig(launcher_label="x" * 40)
+        assert widget.launcher_label == "x" * 40
+
+    def test_launcher_label_defaults_to_none(self) -> None:
+        """Should default to None, keeping the widget's hardcoded tooltip text."""
+        widget = WidgetConfig()
+        assert widget.launcher_label is None
+
+    def test_resolve_omits_launcher_label_when_unset(self) -> None:
+        """resolve() should omit launcher_label when not specified."""
+        result = WidgetConfig().resolve("Test")
+        assert "launcher_label" not in result
+
+    def test_resolve_includes_launcher_label_when_set(self) -> None:
+        """resolve() should include launcher_label when specified."""
+        result = WidgetConfig(launcher_label="Explore NEMAR").resolve("Test")
+        assert result["launcher_label"] == "Explore NEMAR"
+
     def test_placeholder_max_length(self) -> None:
         """Should enforce placeholder max length."""
         with pytest.raises(ValidationError):
