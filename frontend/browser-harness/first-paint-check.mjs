@@ -7,18 +7,24 @@
  * A recorder installed before any page script runs samples the chat button on
  * every animation frame (whether it is visible, its width and its background), so a
  * default look drawn for even one frame is caught; transitions run, as they do for a
- * reader. The community config request is held for 600 ms, about what it takes
- * over the network on test.nemar.org, so the window in which the defaults could
- * show is as wide as a reader's. Run twice in one profile: a first visit, which
- * must keep the launcher hidden until the config arrives, then a reload, which
- * must draw it in the community's look at once, before the config arrives.
+ * reader. Each frame also records whether the widget is dark. The community
+ * config request is held for 600 ms, about what it takes over the network on
+ * test.nemar.org, so the window in which the defaults could show is as wide as a
+ * reader's. Each run is two loads in one profile: a first visit, which must keep
+ * the launcher hidden until the config arrives, then a reload, which must draw it
+ * in the community's look at once, before the config arrives.
+ *
+ * Three runs: NEMAR (a capsule, its theme color, color_scheme auto) on a light
+ * device and on a dark one, whose first frame must already be dark; and the
+ * harness's own bubble community with color_scheme auto on a dark device, so the
+ * bubble's path is drawn and timed in a real browser too.
  *
  * Usage:
  *   bun frontend/browser-harness/first-paint-check.mjs --serve
- *     starts `widget_e2e.py --nemar` on a free port, runs the check, and stops it
- *     (NEMAR's config, for its capsule and theme color); what CI runs
+ *     starts `widget_e2e.py --nemar` and `widget_e2e.py --color-scheme auto` on
+ *     free ports, runs the check, and stops them; what CI runs
  *   bun frontend/browser-harness/first-paint-check.mjs http://127.0.0.1:PORT
- *     checks a `widget_e2e.py PORT --nemar` already running
+ *     checks NEMAR's runs against a `widget_e2e.py PORT --nemar` already running
  */
 
 import { connect, findChrome, launch } from './chrome.js';
@@ -48,7 +54,8 @@ const RECORDER = `(() => {
     if (button) {
       const style = getComputedStyle(button);
       if (style.visibility !== 'hidden' && style.display !== 'none' && Number(style.opacity) > 0) {
-        window.__osaFrames.push({ t: Math.round(performance.now()), w: Math.round(button.getBoundingClientRect().width), bg: style.backgroundColor });
+        const widget = document.querySelector('.osa-chat-widget');
+        window.__osaFrames.push({ t: Math.round(performance.now()), w: Math.round(button.getBoundingClientRect().width), bg: style.backgroundColor, dark: !!(widget && widget.classList.contains('osa-dark')) });
       }
     }
     if (performance.now() < ${WATCH_MS}) requestAnimationFrame(tick);
@@ -56,7 +63,10 @@ const RECORDER = `(() => {
   requestAnimationFrame(tick);
 })();`;
 
-async function check(base) {
+// One run: a first visit and a reload in a fresh profile. `community` names the
+// config's community (the request held is `${origin}/api/<community>`); `capsule`
+// says which launcher it has; `device` is the emulated color scheme.
+async function check(base, { label, community, capsule, device }) {
   const chromePath = findChrome();
   if (!chromePath) {
     if (process.env.CI) {
@@ -83,9 +93,10 @@ async function check(base) {
     await cdp.send('Runtime.enable', {}, s);
     await cdp.send('Page.enable', {}, s);
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }, s);
+    await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: device }] }, s);
     await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: RECORDER }, s);
 
-    // Hold the community config (`${origin}/api/nemar`, the harness page's
+    // Hold the community config (`${origin}/api/<community>`, the harness page's
     // endpoint) as the network would.
     let heldCount = 0;
     cdp.on(async (message) => {
@@ -98,33 +109,37 @@ async function check(base) {
         // the page went away first
       }
     });
-    await cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*/api/nemar', requestStage: 'Request' }] }, s);
+    await cdp.send('Fetch.enable', { patterns: [{ urlPattern: `*/api/${community}`, requestStage: 'Request' }] }, s);
 
-    for (const pass of ['first visit', 'reload']) {
+    for (const load of ['first visit', 'reload']) {
+      const pass = `${label}, ${load}`;
       await cdp.send('Page.navigate', { url: page }, s);
       await Bun.sleep(WATCH_MS + 300);
       const frames = await evaluate('window.__osaFrames');
       const final = await evaluate(`(() => {
-        const b = document.querySelector('.osa-launcher-capsule .osa-chat-button');
-        return b ? { w: Math.round(b.getBoundingClientRect().width), bg: getComputedStyle(b).backgroundColor } : null;
+        const b = document.querySelector('.osa-launcher-capsule .osa-chat-button') || document.querySelector('.osa-chat-button');
+        const widget = document.querySelector('.osa-chat-widget');
+        return b ? { w: Math.round(b.getBoundingClientRect().width), bg: getComputedStyle(b).backgroundColor, dark: widget.classList.contains('osa-dark'), capsule: widget.classList.contains('osa-capsule') } : null;
       })()`);
-      report(!!final, `${pass}: the capsule is there once the config has arrived`, final);
+      report(!!final, `${pass}: the launcher is there once the config has arrived`, final);
       if (!final) continue;
-      report(final.w === 46, `${pass}: at the capsule's 46px`, final.w);
+      report(final.capsule === capsule && final.w === (capsule ? 46 : 56), `${pass}: ${capsule ? 'the capsule, at 46px' : 'the bubble, at 56px'}`, final);
+      report(final.dark === (device === 'dark'), `${pass}: ${device === 'dark' ? 'dark, following the dark device' : 'light'}`, final.dark);
       report(frames.length > 0, `${pass}: the launcher was visible in ${frames.length} frames`);
-      const wrong = frames.filter((f) => f.w !== final.w || f.bg !== final.bg);
-      report(wrong.length === 0, `${pass}: every visible frame shows the community's look (${final.bg}), none the defaults or a fade from them`,
+      const wrong = frames.filter((f) => f.w !== final.w || f.bg !== final.bg || f.dark !== final.dark);
+      report(wrong.length === 0, `${pass}: every visible frame shows the community's look (${final.bg}${final.dark ? ', dark' : ''}), none the defaults or a fade from them`,
         wrong.slice(0, 5));
       const first = frames[0]?.t;
-      if (pass === 'first visit') {
-        report(first >= CONFIG_DELAY_MS, `first visit: the launcher stayed hidden until the held config arrived (first shown at ${first} ms, config held ${CONFIG_DELAY_MS} ms)`, first);
-        const remembered = await evaluate(`localStorage.getItem('osa-widget-config-nemar')`);
-        report(!!remembered && JSON.parse(remembered).widget.launcher === 'capsule', 'first visit: the community\'s widget config is remembered', remembered && remembered.slice(0, 120));
+      if (load === 'first visit') {
+        report(first >= CONFIG_DELAY_MS, `${pass}: the launcher stayed hidden until the held config arrived (first shown at ${first} ms, config held ${CONFIG_DELAY_MS} ms)`, first);
+        const remembered = await evaluate(`localStorage.getItem('osa-widget-config-${community}')`);
+        // A bubble's launcher arrives as null, which the widget treats as unset.
+        report(!!remembered && (JSON.parse(remembered).widget.launcher || 'bubble') === (capsule ? 'capsule' : 'bubble'), `${pass}: the community's widget config is remembered`, remembered && remembered.slice(0, 120));
       } else {
-        report(first < CONFIG_DELAY_MS, `reload: the launcher was drawn in the remembered look before the config arrived (first shown at ${first} ms)`, first);
+        report(first < CONFIG_DELAY_MS, `${pass}: the launcher was drawn in the remembered look before the config arrived (first shown at ${first} ms)`, first);
       }
     }
-    report(heldCount >= 2, `the config request was held on both loads (${heldCount})`);
+    report(heldCount >= 2, `${label}: the config request was held on both loads (${heldCount})`);
     await cdp.send('Target.closeTarget', { targetId });
   } finally {
     cdp?.close();
@@ -133,21 +148,38 @@ async function check(base) {
   }
 }
 
+// The community a harness server serves, as its page configures the widget.
+async function communityOf(base) {
+  const script = await (await fetch(`${base}/browser-harness/widget-e2e-config.js`)).text();
+  const match = script.match(/"communityId":\s*"([^"]+)"/);
+  if (!match) throw new Error(`no communityId in ${base}'s widget-e2e-config.js`);
+  return match[1];
+}
+
 async function main() {
   const args = process.argv.slice(2);
   if (args.length === 1 && args[0] === '--serve') {
-    const server = startServer(['--nemar']);
+    const servers = { nemar: startServer(['--nemar']), bubble: startServer(['--color-scheme', 'auto']) };
     try {
-      if (!(await waitForServer(server))) {
-        report(false, `the widget_e2e.py server on port ${server.port} did not start`, server.output.slice(-2000));
-      } else {
-        await check(`http://127.0.0.1:${server.port}`);
+      for (const [name, server] of Object.entries(servers)) {
+        if (!(await waitForServer(server))) {
+          report(false, `the ${name} widget_e2e.py server on port ${server.port} did not start`, server.output.slice(-2000));
+        }
+      }
+      if (failed === 0) {
+        const nemar = `http://127.0.0.1:${servers.nemar.port}`;
+        await check(nemar, { label: 'NEMAR, light device', community: 'nemar', capsule: true, device: 'light' });
+        await check(nemar, { label: 'NEMAR, dark device', community: 'nemar', capsule: true, device: 'dark' });
+        const bubbleCommunity = await communityOf(`http://127.0.0.1:${servers.bubble.port}`);
+        await check(`http://127.0.0.1:${servers.bubble.port}`, { label: 'a bubble community, dark device', community: bubbleCommunity, capsule: false, device: 'dark' });
       }
     } finally {
-      server.proc.kill();
+      for (const server of Object.values(servers)) server.proc.kill();
     }
   } else if (args.length === 1 && /^https?:\/\//.test(args[0])) {
-    await check(args[0].replace(/\/$/, ''));
+    const base = args[0].replace(/\/$/, '');
+    await check(base, { label: 'NEMAR, light device', community: 'nemar', capsule: true, device: 'light' });
+    await check(base, { label: 'NEMAR, dark device', community: 'nemar', capsule: true, device: 'dark' });
   } else {
     console.error('usage: bun frontend/browser-harness/first-paint-check.mjs --serve | http://127.0.0.1:PORT');
     process.exit(2);

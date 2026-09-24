@@ -301,15 +301,16 @@ Also measured, with a one-off page: a frame refused by the host page's own `fram
 bun frontend/browser-harness/first-paint-check.mjs --serve
 ```
 
-starts `widget_e2e.py --nemar` on a free port and checks what a reader sees while the widget starts (#475): a recorder installed before any page script samples the chat button on every animation frame, and the community config request is held for 600 ms, about what it takes over the network on test.nemar.org.
+starts `widget_e2e.py --nemar` and `widget_e2e.py --color-scheme auto` on free ports and checks what a reader sees while the widget starts (#475): a recorder installed before any page script samples the chat button, and whether the widget is dark, on every animation frame, and the community config request is held for 600 ms, about what it takes over the network on test.nemar.org.
 Every frame in which the launcher is visible must show the community's look, on a first visit (which must keep it hidden until the config arrives) and on a reload in the same profile (which must draw it at once, from the remembered config).
+Three runs: NEMAR on a light device and on a dark one, and the harness's bubble community, with `color_scheme: auto`, on a dark device.
 It is what CI runs, beside the light and dark check; pass a running server's base URL instead of `--serve` to check that one.
 
 Measured 2026-09-24 in Chrome 153:
 
 - before the fix, on test.nemar.org, sampled every 50 ms: the 56px default bubble in `#2563eb` for about 450 ms on every load, a reload included, then the capsule, fading to NEMAR's teal over another 250 ms
-- after it: the first visit's launcher first shown at 671 ms, just after the held config, already at 46px in NEMAR's teal; the reload's at 27 ms, in the remembered look; no visible frame in either shows anything else
-- the widget as it was on `develop` fails it, and so does each of: leaving transitions on while waiting (the reveal fades from blue), setting the colors after the widget joins the page (a reload fades from blue), not remembering the config, and not waiting on a first visit
+- after it, 42 of 42: every first visit's launcher first shown between 650 and 665 ms, just after the held config, already in the community's look (NEMAR's at 46px in its teal, dark on the dark device; the bubble at 56px, dark); every reload's between 19 and 27 ms, in the remembered look; no visible frame in any run shows anything else
+- the widget as it was on `develop` fails 12 of its checks, and each of these fails it too: leaving transitions on while waiting (the reveal fades from blue), setting the colors after the widget joins the page (a reload fades from blue), not remembering the config, and not waiting on a first visit
 
 `notebook-bench.js` times any page's boot, cold and warm, reusing `chrome.js`'s own Chrome-driving primitives;
 see ADR 0010 (`docs/adr/0010-the-notebook-surface.md`) and `.context/notebook-surface-measurements.md` for what it was built to measure.
