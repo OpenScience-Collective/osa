@@ -584,9 +584,10 @@ console.log('\nthe aria-disabled attribute is its own guard, independent of curr
   // Under the normal render path, aria-disabled and currentDataset.zarr always
   // agree (both come from the same notebookIconState() call), so the test above
   // cannot tell the aria-disabled check apart from the currentDataset re-check
-  // beside it. This forces them apart directly on the DOM, so a click is
-  // guarded by aria-disabled ALONE, exactly as the accessibility contract
-  // promises (aria-disabled="true" means a click does nothing, full stop).
+  // beside it. This forces them apart directly on the DOM: currentDataset.zarr
+  // stays true, so the handler's OTHER guard would let the click through on
+  // its own, isolating whether the aria-disabled check is doing real work
+  // rather than riding along on an always-agreeing currentDataset check.
   const config = configResponse({ launcher: 'capsule' });
   const { window, widget } = loadWidget({ fetch: fetchReturning(config) });
   widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: 'osa-test-aria-guard-alone' });
