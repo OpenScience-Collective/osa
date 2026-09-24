@@ -9,7 +9,7 @@ this one is a full notebook, on its own origin, running the reader's OWN code, w
 
 A widget's own button (built separately, not part of this config surface) opens `https://notebook.osc.earth/osa/open.html?community=<id>&dataset=<dataset_id>` in a new tab.
 That page validates the link, drops a filled-in starter notebook into JupyterLite's own browser storage, and redirects into it.
-Nothing here talks to this API server: once the site is built and deployed, opening a notebook is a static, client-side operation.
+Nothing here talks to this application programming interface (API) server: once the site is built and deployed, opening a notebook is a static, client-side operation.
 
 ## Adding a starter
 

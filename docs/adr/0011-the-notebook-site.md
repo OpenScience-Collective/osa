@@ -10,24 +10,28 @@ Amends [0010](0010-the-notebook-surface.md): 0010 decided the notebook surface (
 
 ## Context
 
-0010's four prerequisites for the follow-up were: a pruned, pinned JupyterLite build; a hosting origin; that origin reachable by `zarr.nemar.org`'s CORS allowlist; and a content drive receiving the widget's exported workspace.
+0010's four prerequisites for the follow-up were: a pruned, pinned JupyterLite build; a hosting origin; that origin reachable by `zarr.nemar.org`'s Cross-Origin Resource Sharing (CORS) allowlist; and a content drive receiving the widget's exported workspace.
 This record settles the first three now, on the maintainer's direction (2026-09-23): host a JupyterLite notebook site now, on `osc.earth`, in this repository, as the follow-up 0010 deferred.
 The fourth prerequisite -- handing the widget's IndexedDB workspace to the notebook -- stays out of scope; see "The workspace hand-off" below.
 
 The maintainer built a working end-to-end spike by hand before this PR:
 `uv tool run --from "jupyterlite-core==0.8.4" --with "jupyterlite-pyodide-kernel==0.8.0" --with jupyter-server jupyter lite build` produces a 66 MB, 780-file site (this PR's own from-scratch build, same versions: 768 files, 66.9 MB, sourcemaps not yet stripped -- consistent within measurement noise of a live spike versus a from-scratch rebuild); stripping sourcemaps and adding the merged lock, wheels, starters and bootstrap files brings the deployed site to 501 files, 19.9 MB;
-the real NEMAR read (`eegprep_lean.read_index`/`read_window` against `zarr.nemar.org`) completes and renders a figure once `%matplotlib inline` is run, because eegprep-lean's `plot_window` returns a Figure object through the object-oriented API rather than pyplot's implicit current figure.
+the real NEMAR read (`eegprep_lean.read_index`/`read_window` against `zarr.nemar.org`) completes and renders a figure once `%matplotlib inline` is run, because eegprep-lean's `plot_window` returns a Figure object through the object-oriented application programming interface (API) rather than pyplot's implicit current figure.
 This record and its companion measurements (`.context/notebook-surface-measurements.md`, "2026-09-23: the notebook site build") reproduce that spike as committed, tested code, and record what running it revealed that reasoning about it did not.
 
 ## Decision
 
 **Host a JupyterLite notebook site at `notebook.osc.earth/osa` (`develop-notebook.osc.earth/osa` on `develop`), built and deployed from this repository** (`notebook/`, `scripts/build_notebook_site.py`, `.github/workflows/deploy-notebook.yml`), the same repository the widget and its community configs already live in, rather than a new repository or service.
-The `/osa` path is OSC's own naming rule, not a choice specific to this site: a subdomain is a PLANE serving several projects, and the project itself is the PATH (`api.osc.earth/osa`, `widget.osc.earth/osa`, `docs.osc.earth/osa/...`), so a notebook site does not get to own its subdomain's root either. `scripts/build_notebook_site.py` turns `--site-url`'s path component into a subdirectory of the build (`site_subdir`), and writes `_headers` (path-prefixed) and a root `_redirects` (`/` -> `/osa/`) at the TRUE publish root, since Cloudflare Pages reads both only from exactly there.
+The `/osa` path is OSC's own naming rule, not a choice specific to this site:
+a subdomain is a PLANE serving several projects, and the project itself is the PATH (`api.osc.earth/osa`, `widget.osc.earth/osa`, `docs.osc.earth/osa/...`), so a notebook site does not get to own its subdomain's root either.
+`scripts/build_notebook_site.py` turns `--site-url`'s path component into a subdirectory of the build (`site_subdir`),
+and writes `_headers` (path-prefixed) and a root `_redirects` (`/` -> `/osa/`) at the TRUE publish root,
+since Cloudflare Pages reads both only from exactly there.
 A community opts in with a `notebook:` block in its own `config.yaml` (`starter`, `dataset_pattern`); only NEMAR has one today.
 
 **Pyodide 0.29.5 loads from jsDelivr through `pyodideUrl`, not self-hosted.**
 `jupyter lite build --pyodide=<tarball>` was measured, in 0010, at 529-531 MB total because the full Pyodide distribution is extracted and copied into the site rather than referenced.
-Patching the built `jupyter-lite.json`'s `litePluginSettings["@jupyterlite/pyodide-kernel-extension:kernel"]` with an explicit `pyodideUrl` and `loadPyodideOptions` (`lockFileURL`, `packageBaseUrl`) keeps the interpreter a CDN reference: 67 MB versus 530 MB for what is otherwise the identical build.
+Patching the built `jupyter-lite.json`'s `litePluginSettings["@jupyterlite/pyodide-kernel-extension:kernel"]` with an explicit `pyodideUrl` and `loadPyodideOptions` (`lockFileURL`, `packageBaseUrl`) keeps the interpreter a content delivery network (CDN) reference: 67 MB versus 530 MB for what is otherwise the identical build.
 `--lite-dir`'s own build-time config merge cannot do this safely: reading `jupyterlite_core.addons.base.BaseAddon.merge_jupyter_config_data` shows only `disabledExtensions`/`federated_extensions`/`settingsOverrides` are merged -- every other key, `litePluginSettings` included, is a plain overwrite -- so a `--lite-dir` seed would silently drop the build's own `pipliteUrls` entry.
 `scripts/build_notebook_site.py` instead post-processes the built `jupyter-lite.json` directly, and asserts `pipliteUrls` is still present after patching (`patch_root_config`), which is what stops that regression from shipping silently if a future `jupyterlite-pyodide-kernel` release changes how it writes that file.
 
@@ -59,7 +63,7 @@ Bridging them is real, separate scope (a cross-origin transfer mechanism, or a s
 - **Easier:** a community adds browser-executable exploration with a four-line config block and one `.ipynb` file; no code deploys with it.
   The site itself needs no secrets to build (`scripts/build_notebook_site.py` fetches only public PyPI/jsDelivr resources) and runs in CI.
 - **Harder:** a community sharing a package name with another must keep their wheels byte-identical, or the build refuses outright rather than silently picking one -- a real constraint once a second community adopts this, not yet exercised by two real ones.
-- **CSP is loose by necessity, for now.**
+- **Content Security Policy (CSP) is loose by necessity, for now.**
   `notebook/_headers` sets `frame-ancestors 'none'` and `Referrer-Policy: no-referrer` site-wide (plus `X-Content-Type-Options: nosniff`, which changes nothing this site depends on and is included as a free hardening step).
   A tighter `script-src`/`connect-src` was considered and not attempted: proving it does not break JupyterLite's own webpack-split chunks, its blob Worker, jsDelivr, and `zarr.nemar.org` needs the same kind of headless-Chrome verification the chat widget's own CSP variants went through (`frontend/browser-harness/serve.js`'s `POLICIES`), and that verification is future work, not done in this PR.
 - **`cleanup-preview-dns.yml` never touches this site.**
