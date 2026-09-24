@@ -175,8 +175,10 @@ jobs:
 
       # The worker core runs against the REAL Pyodide from npm, so the Python half
       # of the runtime is tested in CI rather than only by hand in a browser. The
-      # npm package carries the interpreter; numpy and matplotlib are fetched from
-      # the CDN on the first run and cached between runs.
+      # npm package carries the interpreter; every wheel a suite loads (numpy, SciPy,
+      # matplotlib and the rest) is fetched from the CDN on the first run and cached
+      # between runs. The cache is keyed on package.json alone, so a wheel added to a
+      # preload list after it was saved is fetched on every run until the key moves.
       - name: Install frontend test dependencies
         run: bun install
 

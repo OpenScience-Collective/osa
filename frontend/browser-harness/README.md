@@ -139,7 +139,7 @@ a cache hit reports 0 because nothing crosses the network, not because the file 
   while zarr, at its unchanged URL, stayed cached (0 B, `fromDiskCache=true`).
   Measured with 0.1.0.dev1 first, where the renamed wheel crossed at the cold row's exact byte count;
   re-measured with 0.1.0.dev2 for the table above.
-- **jsDelivr's own assets** (the interpreter, and the stock wheels numpy and matplotlib pull in)
+- **jsDelivr's own assets** (the interpreter, and the stock wheels the preload lists pull in, SciPy's among them since #495)
   were ALSO cache hits in the warm run, each sent with `Cache-Control: public, max-age=31536000`.
   This is reported, not asserted on, since jsDelivr's cache behavior is not this project's to enforce.
 - **mutation-checked**: reverting `serve.js`'s wheel routes to `no-store` fails the warm and lock-change checks,

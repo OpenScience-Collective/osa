@@ -270,6 +270,12 @@ The message schema is identical either way.
   (scipy alone is 16.3 MB), which is the tradeoff dropping it from `preload`
   avoids. ADR 0049's "50 to 60 MB" was an estimate, and a high one; its
   amendment of 2026-09-22 records these measured figures.
+  **As built (#495, 2026-09-24):** NEMAR now preloads scipy and pays it: 35.4 MB
+  over the network in a cold Chrome 153 profile, 42.9 MB decoded. The figures
+  above were over-the-network sizes too, labeled uncompressed. SciPy also needs
+  `runtime.python.import_before_seal`, since it imports `ctypes` as it loads and
+  the seal refuses `ctypes`; see "Importing before the seal" in
+  `docs/community-browser-runtime.md`.
   Keep the worker warm across turns.
 - Execution: `pyodide.loadPackagesFromImports(code)` for packages Pyodide ships,
   then `micropip.install` for imports that resolve to pure-Python wheels and are on the community allowlist,
@@ -425,7 +431,7 @@ requires a matching `runtime` section.
 `src/assistants/nemar/config.yaml`, and the model is `PythonRuntimeConfig` in
 `src/core/config/community.py`, which also has `prelude`. NEMAR pins Pyodide 0.29.5 (zarr 3.4.0 needs
 its `google-crc32c`), names its lock overlay in `lockfile`, preloads numpy, matplotlib, zarr and
-eegprep-lean, reaches only `https://zarr.nemar.org/`, installs nothing with `allow_install`, keeps the
+eegprep-lean (and, since #495, scipy, imported before the seal), reaches only `https://zarr.nemar.org/`, installs nothing with `allow_install`, keeps the
 default limits, and registers eegprep-lean's transport in its prelude. The analysis engine ADR 0049
 asks to be named is named in NEMAR's prompt, as eegprep-lean. `frontend/test-data-lane.js` requires every
 community runtime to pin the Pyodide CI runs.

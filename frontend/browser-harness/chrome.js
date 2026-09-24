@@ -25,7 +25,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startServer } from './serve.js';
 
-// A cold run downloads Pyodide, numpy and matplotlib, boots three runtimes and
+// A cold run downloads Pyodide, numpy and matplotlib, and SciPy for NEMAR's runtime, boots three runtimes and
 // waits out a 10-second deadline once; the control waits out its 45-second boot
 // deadline. Both bounds are generous so that a slow runner is not a failure.
 // warm and lockchange boot NEMAR's overlay once more, on the SAME origin, so
