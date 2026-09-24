@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the notebook.osc.earth static site (issue #453, docs/adr/0011-the-notebook-site.md).
+"""Build the notebook.osc.earth/osa static site (issue #453, docs/adr/0011-the-notebook-site.md).
 
     uv run python scripts/build_notebook_site.py \\
         --site-url https://notebook.osc.earth/osa --output-dir dist/notebook-site
@@ -340,6 +340,24 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def finalize_publish_root(output_dir: Path, subdir: str) -> None:
+    """Write ``_headers`` (and ``_redirects``, when ``subdir`` is non-empty) at the
+    true Cloudflare Pages publish root, ``output_dir`` -- NEVER at ``output_dir /
+    subdir`` (the site itself): Cloudflare Pages reads ``_headers``/``_redirects``
+    only from the exact root of the published directory, never from a
+    subdirectory (see this module's own docstring).
+
+    Pulled out of ``build()`` as its own step, callable on its own against a
+    synthetic output tree, so a regression in exactly this wiring -- passing the
+    site subdirectory instead of the publish root to either write -- is caught
+    by a fast offline test (``tests/test_scripts/test_build_notebook_site.py::
+    TestFinalizePublishRoot``) rather than only by the network-marked full build.
+    """
+    write_headers(output_dir, subdir)
+    if subdir:
+        write_root_redirect(output_dir, subdir)
+
+
 def build(site_url: str, output_dir: Path, expose_app: bool = False) -> None:
     """The whole build, callable directly (tests use this; main() is the CLI wrapper)."""
     site_url = site_url.rstrip("/")
@@ -381,9 +399,7 @@ def build(site_url: str, output_dir: Path, expose_app: bool = False) -> None:
     write_starters(site_root, communities)
     copy_bootstrap_files(site_root)
 
-    write_headers(output_dir, subdir)
-    if subdir:
-        write_root_redirect(output_dir, subdir)
+    finalize_publish_root(output_dir, subdir)
 
     removed = strip_sourcemaps(site_root)
     print(f"stripped {removed} sourcemap file(s)")
