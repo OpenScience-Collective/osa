@@ -21,10 +21,13 @@ from __future__ import annotations
 import hashlib
 import http.server
 import json
+import os
+import subprocess
 import threading
 from pathlib import Path
 
 import pytest
+import yaml
 
 from scripts import build_notebook_site as site
 
@@ -313,6 +316,193 @@ class TestWriteStarters:
             site.NotebookSiteBuildError, match="no zarr_base declared for environment 'develop'"
         ):
             site.write_starters(output_dir, communities, "develop")
+
+    def test_refuses_an_environment_missing_only_its_dataset_page_base(
+        self, assistants_dir: Path, tmp_path: Path
+    ) -> None:
+        _write_community(
+            assistants_dir,
+            "nemarlike",
+            with_overlay=False,
+            dataset_page_base={"production": "https://example.org"},  # no "develop"
+        )
+        communities = site.discover_notebook_communities()
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+
+        with pytest.raises(
+            site.NotebookSiteBuildError,
+            match="no dataset_page_base declared for environment 'develop'",
+        ):
+            site.write_starters(output_dir, communities, "develop")
+
+
+class TestNemarStarterPerEnvironment:
+    """The SHIPPED NEMAR config and starter, filled for each environment, offline.
+
+    A typo in config.yaml's develop hosts (say, dataset_page_base.develop set to
+    production's https://nemar.org) builds cleanly and passes e2e-check.js, which
+    only reads data; only an exact assertion on the filled starter catches it.
+    """
+
+    @pytest.mark.parametrize(
+        ("environment", "zarr_base", "page_base", "other_zarr_base", "other_page_base"),
+        [
+            (
+                "production",
+                "https://zarr.nemar.org",
+                "https://nemar.org",
+                "https://zarr-test.nemar.org",
+                "https://test.nemar.org",
+            ),
+            (
+                "develop",
+                "https://zarr-test.nemar.org",
+                "https://test.nemar.org",
+                "https://zarr.nemar.org",
+                "https://nemar.org",
+            ),
+        ],
+    )
+    def test_the_starter_reads_and_links_this_environments_hosts_only(
+        self,
+        tmp_path: Path,
+        environment: str,
+        zarr_base: str,
+        page_base: str,
+        other_zarr_base: str,
+        other_page_base: str,
+    ) -> None:
+        communities = site.discover_notebook_communities()
+        assert "nemar" in communities
+
+        site.write_starters(tmp_path, communities, environment)
+
+        starter = json.loads((tmp_path / "starters" / "nemar.ipynb").read_text())
+        source = "\n".join(
+            "".join(cell["source"]) if isinstance(cell["source"], list) else cell["source"]
+            for cell in starter["cells"]
+        )
+        assert f'index_url="{zarr_base}/{{{{dataset_id}}}}/zarr/index.json"' in source
+        assert f"]({page_base}/dataset/{{{{dataset_id}}}})" in source
+        assert f"{other_zarr_base}/" not in source
+        assert f"]({other_page_base}/" not in source
+
+
+class TestEnvironmentIsRequired:
+    def test_the_cli_refuses_a_build_that_names_no_environment(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with pytest.raises(SystemExit) as exited:
+            site.main(["--site-url", "https://x.example/osa", "--output-dir", str(tmp_path)])
+
+        assert exited.value.code == 2
+        assert "--environment" in capsys.readouterr().err
+
+    def test_the_cli_refuses_an_unknown_environment(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with pytest.raises(SystemExit) as exited:
+            site.main(
+                [
+                    "--site-url",
+                    "https://x.example/osa",
+                    "--output-dir",
+                    str(tmp_path),
+                    "--environment",
+                    "staging",
+                ]
+            )
+
+        assert exited.value.code == 2
+        assert "invalid choice: 'staging'" in capsys.readouterr().err
+
+    def test_build_refuses_an_unknown_environment_before_touching_the_output(
+        self, tmp_path: Path
+    ) -> None:
+        output_dir = tmp_path / "out"
+
+        with pytest.raises(site.NotebookSiteBuildError, match="must be one of"):
+            site.build("https://x.example/osa", output_dir, "staging")
+
+        assert not output_dir.exists()
+
+    def test_build_refuses_an_undeclared_environment_before_the_jupyterlite_build(
+        self, assistants_dir: Path, tmp_path: Path
+    ) -> None:
+        """The pre-flight check has to fire before run_jupyterlite_build, which
+        needs the network and writes the site: if it only fired in
+        write_starters, the build would get this far and leave a site behind."""
+        _write_community(
+            assistants_dir,
+            "nemarlike",
+            with_overlay=False,
+            zarr_base={"production": "https://zarr.example.org"},
+        )
+        output_dir = tmp_path / "out"
+
+        with pytest.raises(
+            site.NotebookSiteBuildError, match="no zarr_base declared for environment 'develop'"
+        ):
+            site.build("https://x.example/osa", output_dir, "develop")
+
+        assert not output_dir.exists()
+
+
+def _deploy_steps() -> dict[str, dict]:
+    workflow = yaml.safe_load(
+        (site.ROOT / ".github" / "workflows" / "deploy-notebook.yml").read_text()
+    )
+    return {step.get("name"): step for step in workflow["jobs"]["deploy"]["steps"]}
+
+
+class TestDeployWorkflowEnvironment:
+    """deploy-notebook.yml's branch-to-environment mapping, run for real.
+
+    e2e-check.js always names its environment explicitly, so a swap of
+    production and develop here would pass every other check and ship a
+    production site that reads staging's data host.
+    """
+
+    @pytest.mark.parametrize(
+        ("branch", "url", "environment"),
+        [
+            ("main", "https://notebook.osc.earth/osa", "production"),
+            ("develop", "https://develop-notebook.osc.earth/osa", "develop"),
+        ],
+    )
+    def test_each_branch_builds_for_its_own_environment(
+        self, tmp_path: Path, branch: str, url: str, environment: str
+    ) -> None:
+        script = _deploy_steps()["Pick the site URL for this branch"]["run"]
+        script = script.replace("${{ github.ref_name }}", branch)
+        assert "${{" not in script, "the step reads an expression this test does not fill in"
+        github_output = tmp_path / "github_output"
+
+        subprocess.run(
+            ["bash", "-euo", "pipefail", "-c", script],
+            env={**os.environ, "GITHUB_OUTPUT": str(github_output)},
+            check=True,
+        )
+
+        outputs = dict(line.split("=", 1) for line in github_output.read_text().splitlines())
+        assert outputs["url"] == url
+        assert outputs["environment"] == environment
+
+    def test_the_build_step_passes_the_picked_url_and_environment(self) -> None:
+        run = _deploy_steps()["Build the notebook site"]["run"]
+
+        assert '--site-url "${{ steps.site.outputs.url }}"' in run
+        assert '--environment "${{ steps.site.outputs.environment }}"' in run
+
+    def test_the_site_check_runs_the_browser_check_for_every_environment(self) -> None:
+        workflow = yaml.safe_load(
+            (site.ROOT / ".github" / "workflows" / "notebook-site-check.yml").read_text()
+        )
+        runs = [step.get("run", "") for job in workflow["jobs"].values() for step in job["steps"]]
+
+        for environment in site.NOTEBOOK_ENVIRONMENTS:
+            assert f"bun notebook/e2e-check.js --environment {environment}" in runs
 
 
 class TestCopyBootstrapFiles:
