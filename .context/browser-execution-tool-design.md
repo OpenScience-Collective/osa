@@ -256,7 +256,8 @@ The message schema is identical either way.
 ## Client changes
 
 - Worker lifecycle: boot on `preload_on: widget_open` for communities that opt in,
-  otherwise on the first `tool_request`.
+  on `preload_on: first_message` for communities that want the download to overlap
+  the model's first turn instead, or otherwise on the first `tool_request`.
   Show a progress bar keyed to package downloads, by step rather than by byte
   (see `docs/community-browser-runtime.md`, "First-load cost, and what a warm
   reader pays", for why: the browser keeps the download after the first boot,
@@ -392,7 +393,7 @@ runtime:
     lockfile: runtime/nemar-pyodide-lock.json
     preload: [numpy, scipy, matplotlib, zarr, numcodecs]
     allow_install: [mne, mne-bids, eegprep, nemar-zarr]
-    preload_on: first_run        # or widget_open
+    preload_on: first_run        # or widget_open, or first_message
     fetch_allow:
       - https://zarr.nemar.org
       - https://nemar.s3.us-east-2.amazonaws.com

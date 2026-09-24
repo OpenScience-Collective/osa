@@ -589,6 +589,90 @@ class TestWidgetConfig:
         result = WidgetConfig(user_bubble_color="#257a92").resolve("Test")
         assert result["user_bubble_color"] == "#257a92"
 
+    def test_theme_text_color_valid(self) -> None:
+        """Should accept a valid hex color for text drawn on theme_color surfaces."""
+        widget = WidgetConfig(theme_text_color="#04121f")
+        assert widget.theme_text_color == "#04121f"
+
+    def test_theme_text_color_rejects_invalid_format(self) -> None:
+        """Should reject the same non-hex values theme_color does."""
+        for bad in ("navy", "04121f", "#abc", "#04121f;background:red"):
+            with pytest.raises(ValidationError):
+                WidgetConfig(theme_text_color=bad)
+
+    def test_theme_text_color_defaults_to_none(self) -> None:
+        """Should default to None when not specified."""
+        widget = WidgetConfig()
+        assert widget.theme_text_color is None
+
+    def test_theme_color_alone_sets_no_theme_text_color(self) -> None:
+        """A community that sets only theme_color keeps the widget's white on-primary
+        text: resolve() adds no theme_text_color, so the widget never derives one."""
+        result = WidgetConfig(theme_color="#008a79").resolve("Test")
+        assert result["theme_color"] == "#008a79"
+        assert "theme_text_color" not in result
+
+    def test_resolve_includes_theme_text_color_when_set(self) -> None:
+        """resolve() should include theme_text_color when specified."""
+        result = WidgetConfig(theme_text_color="#04121f").resolve("Test")
+        assert result["theme_text_color"] == "#04121f"
+
+    def test_accent_color_valid(self) -> None:
+        """Should accept a valid hex color for theme_color used as a foreground."""
+        widget = WidgetConfig(accent_color="#257a92")
+        assert widget.accent_color == "#257a92"
+
+    def test_accent_color_rejects_invalid_format(self) -> None:
+        """Should reject the same non-hex values theme_color does."""
+        for bad in ("teal", "257a92", "#abc", "#257a92;background:red"):
+            with pytest.raises(ValidationError):
+                WidgetConfig(accent_color=bad)
+
+    def test_accent_color_defaults_to_none(self) -> None:
+        """Should default to None when not specified."""
+        widget = WidgetConfig()
+        assert widget.accent_color is None
+
+    def test_theme_color_alone_sets_no_accent_color(self) -> None:
+        """A community that sets only theme_color keeps the widget's own default, which
+        tracks theme_color directly in the stylesheet: resolve() adds no accent_color."""
+        result = WidgetConfig(theme_color="#008a79").resolve("Test")
+        assert result["theme_color"] == "#008a79"
+        assert "accent_color" not in result
+
+    def test_resolve_includes_accent_color_when_set(self) -> None:
+        """resolve() should include accent_color when specified."""
+        result = WidgetConfig(accent_color="#257a92").resolve("Test")
+        assert result["accent_color"] == "#257a92"
+
+    def test_user_bubble_text_color_valid(self) -> None:
+        """Should accept a valid hex color for text in the reader's own bubbles."""
+        widget = WidgetConfig(user_bubble_text_color="#04121f")
+        assert widget.user_bubble_text_color == "#04121f"
+
+    def test_user_bubble_text_color_rejects_invalid_format(self) -> None:
+        """Should reject the same non-hex values user_bubble_color does."""
+        for bad in ("navy", "04121f", "#abc", "#04121f;background:red"):
+            with pytest.raises(ValidationError):
+                WidgetConfig(user_bubble_text_color=bad)
+
+    def test_user_bubble_text_color_defaults_to_none(self) -> None:
+        """Should default to None when not specified."""
+        widget = WidgetConfig()
+        assert widget.user_bubble_text_color is None
+
+    def test_user_bubble_color_alone_sets_no_text_color(self) -> None:
+        """A community that sets only user_bubble_color keeps the widget's white
+        bubble text: resolve() adds no user_bubble_text_color."""
+        result = WidgetConfig(user_bubble_color="#5bbad5").resolve("Test")
+        assert result["user_bubble_color"] == "#5bbad5"
+        assert "user_bubble_text_color" not in result
+
+    def test_resolve_includes_user_bubble_text_color_when_set(self) -> None:
+        """resolve() should include user_bubble_text_color when specified."""
+        result = WidgetConfig(user_bubble_text_color="#04121f").resolve("Test")
+        assert result["user_bubble_text_color"] == "#04121f"
+
     def test_placeholder_max_length(self) -> None:
         """Should enforce placeholder max length."""
         with pytest.raises(ValidationError):
@@ -2129,6 +2213,17 @@ class TestPythonRuntimeConfig:
             limits=RuntimeLimits(),
         )
         assert config.preload_on == "widget_open"
+
+    def test_preload_on_accepts_first_message(self) -> None:
+        """preload_on should accept 'first_message': boot as soon as the reader
+        sends their first message, overlapping the download with the model's turn."""
+        config = PythonRuntimeConfig(
+            pyodide_version="0.29.5",
+            lockfile="pyodide-lock-2026-01.json",
+            preload_on="first_message",
+            limits=RuntimeLimits(),
+        )
+        assert config.preload_on == "first_message"
 
     def test_rejects_unknown_preload_on(self) -> None:
         """Should reject a preload_on value outside the known literal set."""

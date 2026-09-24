@@ -86,9 +86,12 @@ runtime:
   and a wheel that needs its own sha256 pin belongs in the lock overlay instead.
 - `prelude`: Python run once, after the runtime is sealed.
   See "The prelude" below.
-- `preload_on`: `"first_run"` (the default) or `"widget_open"`:
-  whether the runtime boots lazily, on the first execution,
-  or eagerly, as soon as the chat widget opens.
+- `preload_on`: `"first_run"` (the default), `"widget_open"`, or `"first_message"`:
+  whether the runtime boots lazily, on the first execution;
+  eagerly, as soon as the chat widget opens;
+  or as soon as the reader sends their first message,
+  which overlaps the download with the model's own first turn
+  without charging a reader who only opens the chat.
 - `fetch_allow`: Uniform Resource Locator (URL) prefixes executed code may fetch from, through the runtime's own `osa.fetch` client.
   See "`fetch_allow` is the egress control" below.
 - `index_urls`: package index URLs `allow_install` may install from.
@@ -241,6 +244,17 @@ about 13.6 MB, and 18.9 MB together with the interpreter.
 Adding `scipy` to that list would bring the total to about 35.2 MB (scipy alone is about 16.3 MB),
 which is the cost dropping it from `preload` avoids
 (`.context/browser-execution-tool-design.md`, "Client changes").
+
+Measured on test.nemar.org in a cold Chrome profile:
+the model's first turn takes about 8.1 seconds until the Run gate appears,
+and under `preload_on: first_run` the download (18.9 MB for NEMAR) only starts once the reader clicks Run,
+adding its own time on top before the code actually runs.
+`preload_on: first_message` starts that download the moment the reader sends their first message,
+well before the model has answered,
+so it overlaps the model's turn instead of following it;
+NEMAR uses this value.
+A reader who only opens the chat and never sends anything is never charged for it,
+unlike `widget_open`, which downloads for every visitor regardless of whether they ask anything.
 
 That cost is paid once per browser, not once per session.
 Every wheel route is served immutable (see "The lock overlay" above),

@@ -19,11 +19,25 @@ widget:
   title: NEMAR Assistant
   initial_message: "Hi! I'm the NEMAR Assistant. I can help you discover and explore BIDS-formatted EEG, MEG, and iEEG datasets from the NEMAR archive. What are you looking for?"
   placeholder: Search for datasets...
-  # NEMAR's brand teal (#5bbad5, nemar.org's --brand-teal) darkened in lightness only, to
-  # 4.9:1 against the widget's white header and bubble text; the brand teal itself is 2.2:1.
-  theme_color: "#257a92"
-  # The reader's own bubbles in the same teal, rather than the platform blue.
-  user_bubble_color: "#257a92"
+  # nemar.org's own brand teal (#5bbad5, its --brand-teal), the exact color of its home
+  # page search button. White text on it is only 2.2:1, so unlike the platform default
+  # this surface pairs with a dark theme_text_color rather than white.
+  theme_color: "#5bbad5"
+  # That search button's own text color: nemar.org hard-codes color: #04121f on
+  # .hero__search button rather than naming it as a token (its tokens are
+  # --brand-navy #0b1a3a and --brand-navy-deep #06112a, neither of which is this
+  # value). 8.5:1 on theme_color, and still 6.3:1 on the widget's derived hover shade.
+  theme_text_color: "#04121f"
+  # The reader's own bubbles in the same teal, with the same dark text, rather than the
+  # platform's blue-with-white-text.
+  user_bubble_color: "#5bbad5"
+  user_bubble_text_color: "#04121f"
+  # theme_color used as a FOREGROUND on the widget's white panel (links, borders, focus
+  # rings) reads poorly at brand-teal lightness, so this names a separate, darker step of
+  # the same 193-degree hue for that use: nemar.org's brand teal darkened in lightness
+  # only, to 4.9:1 on white (the brand teal itself is 2.2:1). This was the ENTIRE theme
+  # before the redesign above; it now serves only as a foreground color.
+  accent_color: "#257a92"
   suggested_questions:
     - Find EEG datasets with resting state recordings
     - What datasets have HED annotations?
@@ -290,7 +304,10 @@ runtime:
     # eegprep-lean's lock entry pulls in zarr and zarr's dependencies. numpy and
     # matplotlib are listed first so progress names the large downloads.
     preload: [numpy, matplotlib, zarr, eegprep-lean]
-    preload_on: first_run
+    # Boots on the reader's first message rather than the first run: overlaps the
+    # download with the model's own first turn, and never charges a reader who only
+    # opens the chat.
+    preload_on: first_message
     fetch_allow:
       - https://zarr.nemar.org/
     # eegprep-lean reads through pyodide.http by default, which the sealed runtime

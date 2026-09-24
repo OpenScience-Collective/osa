@@ -175,6 +175,18 @@
   // {phase: 'asking', prompt, decide} while the person is asked,
   // {phase: 'running', prompt, progress} while code runs, else null.
   let toolActivity = null;
+  // The runtime's own last boot-progress display, kept independent of toolActivity:
+  // a preload_on: first_message boot can advance through several steps before the
+  // reader ever sees a Run gate, and toolActivity does not exist yet to receive them
+  // (onRuntimeProgress only writes into a 'running' toolActivity). Seeded onto a
+  // freshly-created running activity so the panel shows the real current step
+  // instead of a blank bar; cleared whenever the runtime leaves `booting`, so a
+  // later run never inherits a stale step from an earlier boot.
+  let lastBootProgress = null;
+  // True once this session's reader has sent a message, so a runtime bundle or
+  // config that finishes loading afterward still knows to boot immediately under
+  // preload_on: first_message rather than waiting for a run.
+  let firstMessageSent = false;
   const CHAT_HISTORY_VERSION = 2;
   let responseSequence = 0;
 
@@ -216,7 +228,7 @@
   // browser before any of it runs. Written by scripts/build-runtime-bundle.js;
   // CI rebuilds and fails if the committed bundle or this line is stale.
   // BEGIN GENERATED: runtime bundle integrity
-  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-1WTZYJoWjK+pyL4w+fDBxetGp01oU02sco1CPqsCTRP7WoX8bVfLNPqSddEC46dm';
+  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-MpNwiHNmaJuDp3ZsjArh0vZEHgyyVupVlc3K8yMs+s0wq+FAn3X5TYWAlaLXp+SK';
   // END GENERATED: runtime bundle integrity
 
   // Icons (SVG)
@@ -239,6 +251,12 @@
     .osa-chat-widget {
       --osa-primary: #2563eb;
       --osa-primary-dark: #1d4ed8;
+      /* Text/icons drawn ON a --osa-primary surface (header, launcher, Run, Send, Save). */
+      --osa-on-primary: #ffffff;
+      /* --osa-primary used as a FOREGROUND on the white panel (links, borders, focus
+         rings, accent-color). Tracks --osa-primary by default, so an unset accent_color
+         changes nothing: this is exactly today's behavior. */
+      --osa-accent: var(--osa-primary);
       --osa-bg: #ffffff;
       --osa-text: #1f2937;
       --osa-text-light: #6b7280;
@@ -260,7 +278,7 @@
       height: 56px;
       border-radius: 50%;
       background: var(--osa-primary);
-      color: white;
+      color: var(--osa-on-primary);
       border: none;
       cursor: pointer;
       box-shadow: var(--osa-shadow);
@@ -349,7 +367,7 @@
     .osa-chat-header {
       padding: 12px 16px;
       background: var(--osa-primary);
-      color: white;
+      color: var(--osa-on-primary);
       display: flex;
       align-items: center;
       gap: 12px;
@@ -440,7 +458,7 @@
     .osa-header-btn {
       background: transparent;
       border: none;
-      color: white;
+      color: var(--osa-on-primary);
       cursor: pointer;
       padding: 6px;
       border-radius: 6px;
@@ -572,7 +590,7 @@
     }
 
     .osa-message-content a {
-      color: var(--osa-primary);
+      color: var(--osa-accent);
       text-decoration: none;
     }
 
@@ -625,7 +643,7 @@
     }
 
     .osa-citation a {
-      color: var(--osa-primary);
+      color: var(--osa-accent);
       text-decoration: none;
     }
 
@@ -657,7 +675,7 @@
     }
 
     .osa-message-sources a:hover {
-      color: var(--osa-primary);
+      color: var(--osa-accent);
     }
 
     /* Copy button styles */
@@ -706,7 +724,7 @@
     }
 
     .osa-message-copy-btn:hover {
-      color: var(--osa-primary);
+      color: var(--osa-accent);
       background: rgba(0,0,0,0.05);
     }
 
@@ -808,7 +826,7 @@
 
     .osa-feedback-comment-input:focus {
       outline: none;
-      border-color: var(--osa-primary);
+      border-color: var(--osa-accent);
     }
 
     .osa-feedback-comment-actions {
@@ -833,7 +851,7 @@
 
     .osa-feedback-send {
       background: var(--osa-primary);
-      color: #fff;
+      color: var(--osa-on-primary);
       border-color: var(--osa-primary);
     }
 
@@ -898,7 +916,7 @@
     }
 
     .osa-chat-input input:focus {
-      border-color: var(--osa-primary);
+      border-color: var(--osa-accent);
     }
 
     .osa-chat-input input:disabled {
@@ -910,7 +928,7 @@
       height: 40px;
       border-radius: 50%;
       background: var(--osa-primary);
-      color: white;
+      color: var(--osa-on-primary);
       border: none;
       cursor: pointer;
       display: flex;
@@ -1081,7 +1099,7 @@
       height: 11px;
       margin: 0;
       cursor: pointer;
-      accent-color: var(--osa-primary);
+      accent-color: var(--osa-accent);
     }
 
     .osa-combined-footer label {
@@ -1101,7 +1119,7 @@
     }
 
     .osa-combined-footer .osa-footer-powered a:hover {
-      color: var(--osa-primary);
+      color: var(--osa-accent);
       text-decoration: underline;
     }
 
@@ -1226,7 +1244,7 @@
     }
 
     .osa-settings-input:focus {
-      border-color: var(--osa-primary);
+      border-color: var(--osa-accent);
     }
 
     .osa-settings-select {
@@ -1243,7 +1261,7 @@
     }
 
     .osa-settings-select:focus {
-      border-color: var(--osa-primary);
+      border-color: var(--osa-accent);
     }
 
     .osa-settings-footer {
@@ -1276,7 +1294,7 @@
 
     .osa-settings-btn-save {
       background: var(--osa-primary);
-      color: white;
+      color: var(--osa-on-primary);
     }
 
     .osa-settings-btn-save:hover {
@@ -1394,7 +1412,7 @@
     .osa-tool-actions button.osa-tool-run {
       background: var(--osa-primary);
       border-color: var(--osa-primary);
-      color: #ffffff;
+      color: var(--osa-on-primary);
     }
 
     .osa-tool-autorun {
@@ -1464,7 +1482,7 @@
     }
 
     .osa-execution-local-note {
-      color: var(--osa-primary);
+      color: var(--osa-accent);
       font-weight: 600;
       margin: 6px 0;
     }
@@ -1496,7 +1514,7 @@
     .osa-rerun-buttons button.osa-rerun-run {
       background: var(--osa-primary);
       border-color: var(--osa-primary);
-      color: #ffffff;
+      color: var(--osa-on-primary);
     }
 
     .osa-rerun-buttons button:disabled {
@@ -2320,6 +2338,18 @@
           CONFIG.userBubbleColor = w.user_bubble_color;
           changed = true;
         }
+        if (w.theme_text_color != null && !_userSetKeys.has('themeTextColor')) {
+          CONFIG.themeTextColor = w.theme_text_color;
+          changed = true;
+        }
+        if (w.accent_color != null && !_userSetKeys.has('accentColor')) {
+          CONFIG.accentColor = w.accent_color;
+          changed = true;
+        }
+        if (w.user_bubble_text_color != null && !_userSetKeys.has('userBubbleTextColor')) {
+          CONFIG.userBubbleTextColor = w.user_bubble_text_color;
+          changed = true;
+        }
         if (w.logo_url != null && !_userSetKeys.has('logo')) {
           // Resolve path-only logo URLs (starting with '/') against the API endpoint
           if (w.logo_url.startsWith('/')) {
@@ -2500,6 +2530,10 @@
         return null;
       }
       if (isOpen) preloadRuntime();
+      // The reader may have already sent their first message while this bundle
+      // was still loading (the runtime object did not exist yet to boot then);
+      // catch up now that it does.
+      if (firstMessageSent) preloadRuntimeOnFirstMessage();
       return browserTools;
     });
   }
@@ -2514,11 +2548,18 @@
     startBrowserTools();
   }
 
+  // `state` describes the WIRING: whether a bundle was requested, is loading, failed,
+  // or is ready to hand the controller a runtime to boot. It does NOT describe Pyodide
+  // itself, which boots separately (lazily under first_run, eagerly under widget_open
+  // or first_message) and can be idle, booting, ready, failed or terminated at any
+  // point after `state` already reads 'ready'. `runtime` carries that separately, from
+  // the PyodideRuntime instance's own `.state` (see RUNTIME_STATE in osa-runtime.js),
+  // and is null whenever no such instance exists yet (every state but 'ready').
   function browserRuntimeStatus() {
-    if (!browserToolsSetup) return { state: 'off', reason: null };
-    if (browserToolsUnavailable) return { state: 'unavailable', ...browserToolsUnavailable };
-    if (!browserTools) return { state: 'loading', reason: null };
-    return { state: 'ready', reason: null };
+    if (!browserToolsSetup) return { state: 'off', reason: null, runtime: null };
+    if (browserToolsUnavailable) return { state: 'unavailable', ...browserToolsUnavailable, runtime: null };
+    if (!browserTools) return { state: 'loading', reason: null, runtime: null };
+    return { state: 'ready', reason: null, runtime: browserRuntime ? browserRuntime.state : null };
   }
 
   // The workspace exists only for a community that declares client tools, and
@@ -2634,6 +2675,19 @@
     });
   }
 
+  // Boot as soon as the reader's first message is sent, rather than waiting for a
+  // run, for a community configured with preload_on: first_message. Overlaps the
+  // Python download with the model's first turn instead of paying for it serially.
+  // Fire-and-forget exactly like preloadRuntime(): boot() is idempotent, so calling
+  // this more than once (open + first message, or a retry once the bundle loads)
+  // never starts a second boot.
+  function preloadRuntimeOnFirstMessage() {
+    if (!browserRuntime || !browserRuntime.preloadsOnFirstMessage) return;
+    browserRuntime.boot().catch((err) => {
+      console.warn('[OSA] Preloading the browser runtime on first message failed:', err && err.message);
+    });
+  }
+
   // The client tools this page can run, once known. Waits briefly for the
   // config and the runtime, so a question typed the moment the page opens is
   // not sent without them; after that it resolves at once.
@@ -2681,7 +2735,14 @@
   }
 
   function runningActivity(prompt) {
-    return { phase: 'running', prompt, progress: null };
+    // A preload_on: first_message boot can already be under way when the reader
+    // clicks Run, having advanced past steps this panel never existed to receive
+    // (onRuntimeProgress only writes into a 'running' toolActivity, and there was
+    // none until now). Seed the panel with the runtime's last known step instead
+    // of a blank bar; null whenever the runtime is not actually mid-boot, so a
+    // run that starts with no preload under way behaves exactly as before.
+    const progress = (browserRuntime && browserRuntime.state === 'booting') ? lastBootProgress : null;
+    return { phase: 'running', prompt, progress };
   }
 
   // Shown when the interpreter has loaded and its packages are about to: the
@@ -2701,7 +2762,6 @@
   }
 
   function onRuntimeProgress(event) {
-    if (!toolActivity || toolActivity.phase !== 'running') return;
     const phase = event && event.phase;
     let text;
     if (phase === 'loading_runtime') {
@@ -2718,15 +2778,23 @@
     const rawStep = Number.isInteger(event.step) && event.step > 0 ? event.step : null;
     const rawSteps = Number.isInteger(event.steps) && event.steps > 0 ? event.steps : null;
     const hasBar = rawStep !== null && rawSteps !== null && rawStep <= rawSteps;
-    toolActivity.progress = { text, step: hasBar ? rawStep : null, steps: hasBar ? rawSteps : null };
+    const progress = { text, step: hasBar ? rawStep : null, steps: hasBar ? rawSteps : null };
+    // Cached independent of toolActivity (see runningActivity()): a
+    // preload_on: first_message boot can emit several of these before any
+    // 'running' panel exists to show them.
+    lastBootProgress = progress;
+    if (!toolActivity || toolActivity.phase !== 'running') return;
+    toolActivity.progress = progress;
     renderIfMounted();
   }
 
   // Boot progress describes a boot. Once the runtime leaves `booting`, for
   // ready, failed, terminated or idle, the boot's last label and bar no longer
   // say what is happening, so the panel goes back to its running label until
-  // the answer ends it.
+  // the answer ends it, and a later boot's runningActivity() has nothing stale
+  // to inherit.
   function onRuntimeStateChange(state) {
+    if (state !== 'booting') lastBootProgress = null;
     if (state === 'booting' || !toolActivity || toolActivity.phase !== 'running') return;
     if (!toolActivity.progress) return;
     toolActivity.progress = null;
@@ -3242,38 +3310,94 @@
     }).join('');
   }
 
+  // A malformed value is named here rather than dropped in silence: an embedder's
+  // typo through setConfig() (or a hand-edited widget: block) otherwise looks
+  // exactly like "not set", with no way to tell the two apart short of reading
+  // this source.
+  function warnInvalidColor(field, value) {
+    console.warn(`[OSA] Ignoring invalid ${field} (not a recognized color): ${JSON.stringify(value)}`);
+  }
+
   // Update DOM elements to reflect current CONFIG values (called after API config load)
   function applyWidgetConfig() {
     const container = document.querySelector('.osa-chat-widget');
     if (!container) return;
 
     // Apply theme color if configured (must be valid #RRGGBB hex)
-    if (CONFIG.themeColor && /^#[0-9a-fA-F]{6}$/.test(CONFIG.themeColor)) {
-      container.style.setProperty('--osa-primary', CONFIG.themeColor);
-      // Derive a darker shade for hover states
-      const r = parseInt(CONFIG.themeColor.slice(1, 3), 16);
-      const g = parseInt(CONFIG.themeColor.slice(3, 5), 16);
-      const b = parseInt(CONFIG.themeColor.slice(5, 7), 16);
-      const darker = '#' +
-        Math.max(0, r - 25).toString(16).padStart(2, '0') +
-        Math.max(0, g - 25).toString(16).padStart(2, '0') +
-        Math.max(0, b - 25).toString(16).padStart(2, '0');
-      container.style.setProperty('--osa-primary-dark', darker);
+    if (CONFIG.themeColor) {
+      if (/^#[0-9a-fA-F]{6}$/.test(CONFIG.themeColor)) {
+        container.style.setProperty('--osa-primary', CONFIG.themeColor);
+        // Derive a darker shade for hover states
+        const r = parseInt(CONFIG.themeColor.slice(1, 3), 16);
+        const g = parseInt(CONFIG.themeColor.slice(3, 5), 16);
+        const b = parseInt(CONFIG.themeColor.slice(5, 7), 16);
+        const darker = '#' +
+          Math.max(0, r - 25).toString(16).padStart(2, '0') +
+          Math.max(0, g - 25).toString(16).padStart(2, '0') +
+          Math.max(0, b - 25).toString(16).padStart(2, '0');
+        container.style.setProperty('--osa-primary-dark', darker);
+      } else {
+        warnInvalidColor('themeColor', CONFIG.themeColor);
+      }
     }
 
     // The reader's bubbles have their own color, so a theme_color alone leaves
     // them the platform blue every community has had (must be valid #RRGGBB hex).
-    if (CONFIG.userBubbleColor && /^#[0-9a-fA-F]{6}$/.test(CONFIG.userBubbleColor)) {
-      container.style.setProperty('--osa-user-bg', CONFIG.userBubbleColor);
+    if (CONFIG.userBubbleColor) {
+      if (/^#[0-9a-fA-F]{6}$/.test(CONFIG.userBubbleColor)) {
+        container.style.setProperty('--osa-user-bg', CONFIG.userBubbleColor);
+      } else {
+        warnInvalidColor('userBubbleColor', CONFIG.userBubbleColor);
+      }
+    }
+
+    // Text/icons drawn ON a theme_color surface (header, launcher, Run, Send, Save).
+    // Left at the stylesheet's own white default when unset, so a community that never
+    // names this sees no change.
+    if (CONFIG.themeTextColor) {
+      if (/^#[0-9a-fA-F]{6}$/.test(CONFIG.themeTextColor)) {
+        container.style.setProperty('--osa-on-primary', CONFIG.themeTextColor);
+      } else {
+        warnInvalidColor('themeTextColor', CONFIG.themeTextColor);
+      }
+    }
+
+    // theme_color used as a FOREGROUND on the white panel (links, borders, focus rings,
+    // native checkbox accent-color). Left at the stylesheet's own `var(--osa-primary)`
+    // default when unset, so it tracks theme_color exactly as it always has.
+    if (CONFIG.accentColor) {
+      if (/^#[0-9a-fA-F]{6}$/.test(CONFIG.accentColor)) {
+        container.style.setProperty('--osa-accent', CONFIG.accentColor);
+      } else {
+        warnInvalidColor('accentColor', CONFIG.accentColor);
+      }
+    }
+
+    // Text in the reader's own bubbles, painted on user_bubble_color (or the platform
+    // blue, if that is unset too). Left at the stylesheet's own white default otherwise.
+    if (CONFIG.userBubbleTextColor) {
+      if (/^#[0-9a-fA-F]{6}$/.test(CONFIG.userBubbleTextColor)) {
+        container.style.setProperty('--osa-user-text', CONFIG.userBubbleTextColor);
+      } else {
+        warnInvalidColor('userBubbleTextColor', CONFIG.userBubbleTextColor);
+      }
     }
 
     // Apply disclaimer colors if configured (must be valid CSS color: hex, named, rgb, hsl)
     const cssColorPattern = /^(#[0-9a-fA-F]{3,8}|[a-zA-Z]+|rgba?\([^)]+\)|hsla?\([^)]+\))$/;
-    if (CONFIG.disclaimerColor && cssColorPattern.test(CONFIG.disclaimerColor.trim())) {
-      container.style.setProperty('--osa-disclaimer-color', CONFIG.disclaimerColor.trim());
+    if (CONFIG.disclaimerColor) {
+      if (cssColorPattern.test(CONFIG.disclaimerColor.trim())) {
+        container.style.setProperty('--osa-disclaimer-color', CONFIG.disclaimerColor.trim());
+      } else {
+        warnInvalidColor('disclaimerColor', CONFIG.disclaimerColor);
+      }
     }
-    if (CONFIG.disclaimerBackground && cssColorPattern.test(CONFIG.disclaimerBackground.trim())) {
-      container.style.setProperty('--osa-disclaimer-bg', CONFIG.disclaimerBackground.trim());
+    if (CONFIG.disclaimerBackground) {
+      if (cssColorPattern.test(CONFIG.disclaimerBackground.trim())) {
+        container.style.setProperty('--osa-disclaimer-bg', CONFIG.disclaimerBackground.trim());
+      } else {
+        warnInvalidColor('disclaimerBackground', CONFIG.disclaimerBackground);
+      }
     }
 
     // Update header title
@@ -3900,7 +4024,7 @@
             </div>
             <div class="osa-settings-field" id="osa-settings-custom-model-field" style="display: none;">
               <label class="osa-settings-label" for="osa-settings-custom-model">
-                Model name, requires your own <a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer" style="color: var(--osa-primary); text-decoration: underline;">OpenRouter</a> key
+                Model name, requires your own <a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer" style="color: var(--osa-accent); text-decoration: underline;">OpenRouter</a> key
               </label>
               <input
                 type="text"
@@ -4606,6 +4730,15 @@
     isLoading = true;
     isThinking = false;
 
+    // Boot the browser runtime now if this community preloads on first message,
+    // so the Python download overlaps this turn instead of waiting for a Run gate.
+    // Fires once per session; a runtime that is not built yet catches up in
+    // startBrowserTools() once it is (see firstMessageSent there).
+    if (!firstMessageSent) {
+      firstMessageSent = true;
+      preloadRuntimeOnFirstMessage();
+    }
+
     // Track message indices to avoid corruption on error
     const userMessageIndex = messages.length;
     messages.push({ role: 'user', content: question });
@@ -5216,8 +5349,15 @@
       return { ...CONFIG };
     },
     // Whether this page can run the assistant's code, and if not, why:
-    // {state: 'off' | 'loading' | 'ready' | 'unavailable', reason, detail?}.
-    // For an embedder checking their page's policy, and for support.
+    // {state: 'off' | 'loading' | 'ready' | 'unavailable', reason, detail?, runtime}.
+    // `state` is the bundle/controller WIRING, not Pyodide itself: `runtime` is
+    // Pyodide's own boot state ('idle' | 'booting' | 'ready' | 'failed' |
+    // 'terminated', from PyodideRuntime.state / RUNTIME_STATE in osa-runtime.js),
+    // null until `state` is 'ready' (no PyodideRuntime instance exists before
+    // then). A community configured with preload_on: 'first_message' or
+    // 'widget_open' can show `runtime: 'booting'` well before any Run gate; a
+    // 'first_run' community stays 'idle' until the model actually asks to run
+    // code. For an embedder checking their page's policy, and for support.
     getBrowserRuntimeStatus: function() {
       return browserRuntimeStatus();
     },

@@ -728,9 +728,15 @@ class PythonRuntimeConfig(BaseModel):
     allowed. If it raises, the runtime fails to start, because every later execution
     would otherwise fail in a way that names the wrong cause."""
 
-    preload_on: Literal["first_run", "widget_open"] = "first_run"
-    """When to trigger preloading: at the first execution, or as soon as the
-    widget opens."""
+    preload_on: Literal["first_run", "widget_open", "first_message"] = "first_run"
+    """When to trigger preloading: at the first execution, as soon as the widget opens, or
+    as soon as the reader sends their first message.
+
+    `first_message` overlaps the Python download with the model's first turn, without
+    charging a reader who only opens the chat: the boot starts the moment the reader sends
+    something, before the model has answered and well before any code execution asks for a
+    Run gate.
+    """
 
     fetch_allow: list[str] = Field(default_factory=list)
     """URL prefixes the runtime is allowed to fetch from."""
@@ -1124,8 +1130,13 @@ class WidgetConfig(BaseModel):
     theme_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
     """Primary theme color as a hex code (e.g., '#008a79').
 
-    Applied to the widget button, header, and accent elements.
-    Defaults to the platform blue (#2563eb) if not specified.
+    Paints the launcher button and header surfaces (and every other surface that
+    otherwise reads the platform blue). Defaults to the platform blue (#2563eb) if
+    not specified. Pairs with `theme_text_color` (defaults to white, the text and
+    icon color drawn on this surface) and `accent_color` (defaults to `theme_color`
+    itself, this same color used as a foreground on the widget's white panel rather
+    than as a surface); set `theme_text_color` when `theme_color` is too light for
+    white text, and `accent_color` when `theme_color` is too light to read on white.
     """
 
     user_bubble_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
@@ -1133,7 +1144,35 @@ class WidgetConfig(BaseModel):
 
     Separate from `theme_color` so that setting one never changes the other: a community
     that sets only `theme_color` keeps the platform blue (#2563eb) bubbles it has always had.
-    The widget draws white text on it, so choose a color with at least 4.5:1 contrast.
+    Pairs with `user_bubble_text_color` (default white); set both when the surface is light.
+    """
+
+    theme_text_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    """Text and icon color drawn ON surfaces painted with `theme_color`: the header, the
+    launcher button, the send button, the primary buttons (such as Run), and any other
+    element whose background is `theme_color`.
+
+    Separate from `theme_color` so a community that sets only the theme keeps the white
+    text every community has always had. Set this when `theme_color` is light enough that
+    white text would fail contrast (below 4.5:1); the widget does not check this for you.
+    """
+
+    accent_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    """`theme_color` used as a FOREGROUND on the widget's white panel: link colors, icon
+    colors, borders, focus rings, and `accent-color` on native checkboxes. Every one of
+    these normally just reads `theme_color` directly, which is fine for a color dark
+    enough to read on white; this field lets a community whose `theme_color` is a light
+    surface color (and so unreadable as text on white) name a separate, darker foreground
+    for the same brand hue. Defaults to `theme_color` itself when unset, so a community
+    that only sets `theme_color` sees no change here.
+    """
+
+    user_bubble_text_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    """Text color in the reader's own message bubbles, painted on `user_bubble_color`.
+
+    Separate from `user_bubble_color` for the same reason `theme_text_color` is separate
+    from `theme_color`: a community that sets only `user_bubble_color` keeps white bubble
+    text. Set this when `user_bubble_color` is too light for white text to read.
     """
 
     logo_url: str | None = Field(default=None, max_length=500)
@@ -1197,6 +1236,12 @@ class WidgetConfig(BaseModel):
             result["theme_color"] = self.theme_color
         if self.user_bubble_color:
             result["user_bubble_color"] = self.user_bubble_color
+        if self.theme_text_color:
+            result["theme_text_color"] = self.theme_text_color
+        if self.accent_color:
+            result["accent_color"] = self.accent_color
+        if self.user_bubble_text_color:
+            result["user_bubble_text_color"] = self.user_bubble_text_color
         return result
 
 

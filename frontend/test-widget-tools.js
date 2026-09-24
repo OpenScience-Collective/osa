@@ -196,8 +196,8 @@ console.log('\nthe permission gate puts only our markup on the page, whatever it
 // The editable re-run panel: "Edit and run" on a recorded run.
 // ---------------------------------------------------------------------------
 
-function loadWidgetWithRealBundle() {
-  const loaded = loadWidget({ bundleLoads: true });
+function loadWidgetWithRealBundle({ fetch = noNetwork } = {}) {
+  const loaded = loadWidget({ bundleLoads: true, fetch });
   // eslint-disable-next-line no-new-func
   new Function(readFileSync(new URL('./osa-runtime.bundle.js', import.meta.url), 'utf8'))();
   loaded.window.OSARuntime = globalThis.OSARuntime;
@@ -901,6 +901,89 @@ console.log('\na determinate progress bar tracks a real boot sequence, and never
   }
 }
 
+console.log('\na freshly-opened run panel shows the boot progress a first_message preload already made, not a blank bar');
+{
+  // preload_on: first_message boots on the reader's first message, well before the
+  // model answers and asks to run code, so the boot can advance through several
+  // steps before any tool_request (and so any 'running' toolActivity) exists to
+  // receive them via onRuntimeProgress. Without a fix, the panel that opens once
+  // Run is finally clicked starts at progress: null and stays that way until the
+  // NEXT event arrives, which reads as a frozen or missing bar for however much of
+  // the boot already happened silently.
+  const { window, api } = loadWidgetWithRealBundle();
+  const { runtime } = await useLocalController({ api, window }, { worker: 'happy' });
+
+  const bootPromise = runtime.boot();
+  assertEqual(runtime.state, 'booting', 'boot() takes effect synchronously, before any worker message can arrive');
+  assertEqual(api.getToolActivity(), null, 'no panel exists yet to receive a progress event');
+
+  // Capture the shape onRuntimeProgress computes, the same way every other test
+  // above does: seed a running activity, feed it the event, and read what it
+  // wrote. This is the panel state the reader would have seen, had one existed.
+  api.setToolActivity(api.runningActivity({ code: 'x', description: '' }));
+  api.onRuntimeProgress({ phase: 'loading_runtime', step: 1, steps: 2 });
+  const expected = api.getToolActivity().progress;
+  api.setToolActivity(null);
+
+  // The model now asks to run code and the reader clicks Run: a FRESH running
+  // activity is created, well after the boot (and its progress) began.
+  const activity = api.runningActivity({ code: 'x', description: '' });
+  assertEqual(activity.progress, expected, 'the panel opens already showing the step under way, not a blank bar');
+
+  await bootPromise;
+  api.onRuntimeStateChange('ready');
+  const after = api.runningActivity({ code: 'x', description: '' });
+  assertEqual(after.progress, null, 'once the runtime is no longer booting, a later run seeds no stale step');
+}
+
+console.log('\nsending the first message boots the runtime under preload_on: first_message, and not under first_run');
+{
+  async function stateRightAfterFirstMessage(preloadOn) {
+    const config = {
+      default_model: 'm',
+      offered_models: [],
+      widget: {},
+      client_tools: [{ name: 'execute_code', runtime: 'python', requires_permission: true }],
+      runtime: { python: { ...LOCAL_RUNTIME_CONFIG, preload_on: preloadOn } },
+    };
+    const fetch = async (url) => {
+      const s = String(url);
+      if (s.endsWith('/health')) return new Response(JSON.stringify({ status: 'healthy' }));
+      if (s.endsWith('/chat')) {
+        return new Response(JSON.stringify({ message: { content: 'hi' }, session_id: 's1' }),
+          { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify(config), { headers: { 'content-type': 'application/json' } });
+    };
+    const { window, api, widget } = loadWidgetWithRealBundle({ fetch });
+    widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: `osa-test-first-msg-${preloadOn}` });
+    widget.init();
+    // Swap in a runtime over the real test worker, with the preload_on under test.
+    // Its own two setter calls at the end unconditionally replace whatever
+    // setUpBrowserTools's own (never-booted, so harmless) real construction built.
+    await useLocalController({ api, window }, { worker: 'happy', runtimeConfig: { ...LOCAL_RUNTIME_CONFIG, preload_on: preloadOn } });
+
+    const container = window.document.querySelector('.osa-chat-widget');
+    const input = container.querySelector('.osa-chat-input input');
+    input.value = 'hello';
+    click(window, container.querySelector('.osa-send-btn'));
+
+    // sendMessage is async but calls boot() (fire-and-forget) in its synchronous
+    // prefix, before its first await, so the state change (if any) has already
+    // happened by the time dispatchEvent returns control here.
+    const state = api.getBrowserRuntime().state;
+    // Let the rest of the send (the fetch, the reply, saveHistory) finish before
+    // this window is abandoned for the next case, so nothing dangles across it.
+    await waitUntil(() => !container.querySelector('.osa-send-btn').disabled, 'the send settles', 3000);
+    return state;
+  }
+
+  assertEqual(await stateRightAfterFirstMessage('first_message'), 'booting',
+    'preload_on: first_message boots the moment the first message is sent');
+  assertEqual(await stateRightAfterFirstMessage('first_run'), RUNTIME_STATE.IDLE,
+    'preload_on: first_run does not boot on send; only an actual execution does');
+}
+
 console.log('\nwhat is stored is what is read back, within the same bounds');
 {
   const { api } = loadWidget();
@@ -1142,6 +1225,23 @@ console.log('\nthe real bundle, loaded into the page, answers through the widget
   assertEqual(api.getToolActivity(), null, 'and the panel is cleared');
 }
 
+console.log('\ngetBrowserRuntimeStatus() carries Pyodide\'s own boot state separately from the wiring state');
+{
+  // state describes the bundle/controller wiring; runtime describes Pyodide's
+  // OWN boot, which first_message and widget_open can start well before any
+  // Run gate exists. Proven against a REAL boot, over the real test worker.
+  const { window, api, widget } = loadWidgetWithRealBundle();
+  const { runtime } = await useLocalController({ api, window }, { worker: 'happy' });
+  assertEqual(widget.getBrowserRuntimeStatus().state, 'ready', 'the wiring is ready (bundle loaded, controller built)');
+  assertEqual(widget.getBrowserRuntimeStatus().runtime, 'idle', 'but Pyodide itself has not booted yet');
+
+  const bootPromise = runtime.boot();
+  assertEqual(widget.getBrowserRuntimeStatus().runtime, 'booting', 'a real boot already under way is reflected at once');
+
+  await bootPromise;
+  assertEqual(widget.getBrowserRuntimeStatus().runtime, 'ready', 'and once it settles, the field reflects that too');
+}
+
 console.log('\na community\'s lock overlay reaches the runtime, with its wheels served by the API that sent it');
 {
   const { window, api } = loadWidget({ bundleLoads: true });
@@ -1379,6 +1479,385 @@ console.log('\nthe reader\'s bubbles take a community color only when its config
     await waitUntil(() => container.style.getPropertyValue('--osa-primary') === widgetConfig.theme_color, `the theme is applied (${label})`);
     assertEqual(container.style.getPropertyValue('--osa-user-bg'), bubble, `${label}: the bubbles are ${bubble || 'left at the default'}`);
   }
+}
+
+console.log('\nthree more widget colors: theme_text_color, accent_color and user_bubble_text_color');
+{
+  // Stylesheet defaults: white text on a theme_color surface, and the accent
+  // tracks theme_color itself, both exactly today's behavior.
+  assert(SOURCE.includes('--osa-on-primary: #ffffff;'), 'the stylesheet default for on-primary text stays white');
+  assert(SOURCE.includes('--osa-accent: var(--osa-primary);'), 'the stylesheet default for the accent tracks theme_color');
+  const cases = [
+    {
+      label: 'all three set',
+      widget: {
+        theme_color: '#5bbad5', theme_text_color: '#04121f',
+        user_bubble_color: '#5bbad5', user_bubble_text_color: '#04121f',
+        accent_color: '#257a92',
+      },
+      onPrimary: '#04121f', userText: '#04121f', accent: '#257a92',
+    },
+    {
+      label: 'theme_color only, the three new fields unset',
+      widget: { theme_color: '#008a79' },
+      onPrimary: '', userText: '', accent: '',
+    },
+    {
+      label: 'malformed values for all three',
+      widget: {
+        theme_color: '#257a92', theme_text_color: 'red;x:y',
+        user_bubble_color: '#257a92', user_bubble_text_color: 'not-a-color',
+        accent_color: '12345',
+      },
+      onPrimary: '', userText: '', accent: '',
+    },
+  ];
+  for (const [index, { label, widget: widgetConfig, onPrimary, userText, accent }] of cases.entries()) {
+    const config = { default_model: 'm', offered_models: [], widget: widgetConfig, client_tools: [], runtime: null };
+    const fetch = async (url) => {
+      if (String(url).endsWith('/health')) return new Response(JSON.stringify({ status: 'healthy' }));
+      return new Response(JSON.stringify(config), { headers: { 'content-type': 'application/json' } });
+    };
+    const { window, widget } = loadWidget({ fetch });
+    widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: `osa-test-textcolors-${index}` });
+    widget.init();
+    const container = window.document.querySelector('.osa-chat-widget');
+    await waitUntil(() => container.style.getPropertyValue('--osa-primary') === widgetConfig.theme_color, `the theme is applied (${label})`);
+    assertEqual(container.style.getPropertyValue('--osa-on-primary'), onPrimary, `${label}: on-primary text is ${onPrimary || 'left at the default'}`);
+    assertEqual(container.style.getPropertyValue('--osa-user-text'), userText, `${label}: bubble text is ${userText || 'left at the default'}`);
+    assertEqual(container.style.getPropertyValue('--osa-accent'), accent, `${label}: accent is ${accent || 'left at the default (tracks theme_color)'}`);
+  }
+}
+
+console.log('\nevery classified surface and foreground resolves to the color this PR assigned it, against the REAL stylesheet');
+{
+  // Against the real, unmodified <style> block (injectStyles(), called by init()):
+  // a probe element carries the exact class/selector structure a mutation to the
+  // CSS text would break, inside a throwaway .osa-chat-widget container whose
+  // custom properties this test sets directly -- the same properties
+  // applyWidgetConfig() would have set from a resolved community config, without
+  // needing a config round trip for every one of the ~20 cases below.
+  //
+  // happy-dom's getComputedStyle does NOT match :hover or :focus (confirmed
+  // empirically: a real :focus() call is reflected in element.matches(':focus')
+  // but never changes getComputedStyle's result), so the seven hover/focus-gated
+  // foregrounds are checked against the stylesheet text instead, immediately
+  // below the computed-style table.
+  const { window, widget } = loadWidget();
+  widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: 'osa-test-css-audit' });
+  widget.init(); // injects the real STYLES block; nothing here awaits its (unused) fetch
+
+  function probe(customProps, html, selector) {
+    const container = window.document.createElement('div');
+    container.className = 'osa-chat-widget';
+    for (const [prop, value] of Object.entries(customProps)) {
+      container.style.setProperty(prop, value);
+    }
+    container.innerHTML = html;
+    window.document.body.appendChild(container);
+    return container.querySelector(selector);
+  }
+
+  const NEMAR_PROPS = {
+    '--osa-primary': '#5bbad5',
+    '--osa-primary-dark': '#42a1bc',
+    '--osa-on-primary': '#04121f',
+    '--osa-accent': '#257a92',
+    '--osa-user-bg': '#5bbad5',
+    '--osa-user-text': '#04121f',
+  };
+  const UNSET_PROPS = {};
+
+  // Surfaces: background painted with theme_color, text/icons on it. NEMAR sets
+  // theme_text_color (#04121f); left unset, the stylesheet's own white applies.
+  const SURFACES = [
+    { label: 'launcher button (.osa-chat-button)', html: '<button class="osa-chat-button">x</button>', selector: '.osa-chat-button' },
+    { label: 'header (.osa-chat-header)', html: '<div class="osa-chat-header">x</div>', selector: '.osa-chat-header' },
+    { label: 'header icon buttons (.osa-header-btn)', html: '<button class="osa-header-btn">x</button>', selector: '.osa-header-btn' },
+    { label: 'feedback Send (.osa-feedback-send)', html: '<button class="osa-feedback-send">x</button>', selector: '.osa-feedback-send' },
+    { label: 'chat Send (.osa-send-btn)', html: '<button class="osa-send-btn">x</button>', selector: '.osa-send-btn' },
+    { label: 'Settings Save (.osa-settings-btn-save)', html: '<button class="osa-settings-btn-save">x</button>', selector: '.osa-settings-btn-save' },
+    { label: 'the Run button (.osa-tool-actions button.osa-tool-run)', html: '<div class="osa-tool-actions"><button class="osa-tool-run">Run</button></div>', selector: '.osa-tool-run' },
+    { label: 'the re-run Run button (.osa-rerun-buttons button.osa-rerun-run)', html: '<div class="osa-rerun-buttons"><button class="osa-rerun-run">Run</button></div>', selector: '.osa-rerun-run' },
+  ];
+  for (const { label, html, selector } of SURFACES) {
+    const nemar = probe(NEMAR_PROPS, html, selector);
+    const unset = probe(UNSET_PROPS, html, selector);
+    assertEqual(window.getComputedStyle(nemar).color, '#04121f', `${label}: NEMAR-style text is theme_text_color`);
+    assertEqual(window.getComputedStyle(unset).color, '#ffffff', `${label}: unset falls back to white`);
+  }
+
+  // Foregrounds: theme_color used AS a foreground on the widget's white panel.
+  // NEMAR sets accent_color (#257a92, deliberately different from theme_color
+  // #5bbad5, so a mutation reverting one of these to --osa-primary directly is
+  // caught); left unset, --osa-accent's own default (var(--osa-primary)) applies.
+  const FOREGROUNDS = [
+    { label: 'message links (.osa-message-content a)', html: '<div class="osa-message-content"><a href="#">x</a></div>', selector: 'a', property: 'color' },
+    { label: 'citation links (.osa-citation a)', html: '<span class="osa-citation"><a href="#">x</a></span>', selector: 'a', property: 'color' },
+    { label: "the reader's own page-context checkbox (.osa-combined-footer input[type=checkbox])", html: '<div class="osa-combined-footer"><input type="checkbox"></div>', selector: 'input', property: 'accentColor' },
+    { label: 'the local-run note (.osa-execution-local-note)', html: '<div class="osa-execution-local-note">x</div>', selector: '.osa-execution-local-note', property: 'color' },
+    // The literal inline style attribute the widget's own settings template
+    // writes for the OpenRouter link (custom-model-field, applyWidgetConfig's
+    // sibling markup), copied verbatim so a change to either drifts this test.
+    { label: 'the OpenRouter link (inline style)', html: '<a href="#" style="color: var(--osa-accent); text-decoration: underline;">OpenRouter</a>', selector: 'a', property: 'color' },
+  ];
+  for (const { label, html, selector, property } of FOREGROUNDS) {
+    const nemar = probe(NEMAR_PROPS, html, selector);
+    const unset = probe(UNSET_PROPS, html, selector);
+    assertEqual(window.getComputedStyle(nemar)[property], '#257a92', `${label}: NEMAR-style is accent_color`);
+    assertEqual(window.getComputedStyle(unset)[property], '#2563eb', `${label}: unset tracks theme_color's own default`);
+  }
+  assert(SOURCE.includes('style="color: var(--osa-accent); text-decoration: underline;">OpenRouter</a>'),
+    'the OpenRouter link\'s inline style is exactly what the probe above copied');
+
+  // Hover/focus-gated foregrounds: not reachable through getComputedStyle under
+  // happy-dom (see the note above the probe() helper), so checked as source text.
+  const HOVER_AND_FOCUS_FOREGROUNDS = [
+    ['sources hover (.osa-message-sources a:hover)', '.osa-message-sources a:hover {\n      color: var(--osa-accent);'],
+    ["copy button hover (.osa-message-copy-btn:hover)", '.osa-message-copy-btn:hover {\n      color: var(--osa-accent);'],
+    ['feedback comment focus border (.osa-feedback-comment-input:focus)', '.osa-feedback-comment-input:focus {\n      outline: none;\n      border-color: var(--osa-accent);'],
+    ['chat input focus border (.osa-chat-input input:focus)', '.osa-chat-input input:focus {\n      border-color: var(--osa-accent);'],
+    ['footer-powered link hover (.osa-footer-powered a:hover)', '.osa-combined-footer .osa-footer-powered a:hover {\n      color: var(--osa-accent);'],
+    ['settings input focus border (.osa-settings-input:focus)', '.osa-settings-input:focus {\n      border-color: var(--osa-accent);'],
+    ['settings select focus border (.osa-settings-select:focus)', '.osa-settings-select:focus {\n      border-color: var(--osa-accent);'],
+  ];
+  for (const [label, needle] of HOVER_AND_FOCUS_FOREGROUNDS) {
+    assert(SOURCE.includes(needle), `${label}: the rule reads var(--osa-accent), not var(--osa-primary) or a fixed color`);
+  }
+}
+
+console.log('\napplyWidgetConfig() warns on a malformed color instead of dropping it in silence, for every color field');
+{
+  // console.warn is the real widget's own real call: the widget script runs with the
+  // REAL global console injected (see loadWidget's run(...) call), so intercepting it
+  // here observes exactly what a browser's devtools console would show.
+  const BAD = 'not-a-color';
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (...args) => { warnings.push(args.join(' ')); };
+  try {
+    const config = {
+      default_model: 'm', offered_models: [], client_tools: [], runtime: null,
+      widget: {
+        theme_color: BAD,
+        user_bubble_color: BAD,
+        theme_text_color: BAD,
+        accent_color: BAD,
+        user_bubble_text_color: BAD,
+      },
+    };
+    const fetch = async (url) => {
+      if (String(url).endsWith('/health')) return new Response(JSON.stringify({ status: 'healthy' }));
+      return new Response(JSON.stringify(config), { headers: { 'content-type': 'application/json' } });
+    };
+    const { window, widget } = loadWidget({ fetch });
+    widget.setConfig({
+      apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: 'osa-test-warn-colors',
+      disclaimerColor: BAD, disclaimerBackground: BAD,
+    });
+    widget.init();
+    const container = window.document.querySelector('.osa-chat-widget');
+    // applyWidgetConfig() only runs once the server config resolves and reports a
+    // change; every field here is malformed, so nothing should ever land inline.
+    await waitUntil(() => warnings.length >= 7, 'all seven malformed colors are warned about', 3000);
+
+    const fields = [
+      'themeColor', 'userBubbleColor', 'themeTextColor', 'accentColor', 'userBubbleTextColor',
+      'disclaimerColor', 'disclaimerBackground',
+    ];
+    for (const field of fields) {
+      assert(warnings.some((w) => w.includes(field) && w.includes(BAD)), `a warning names ${field} and the rejected value`);
+    }
+
+    const properties = [
+      '--osa-primary', '--osa-primary-dark', '--osa-user-bg', '--osa-on-primary', '--osa-accent',
+      '--osa-user-text', '--osa-disclaimer-color', '--osa-disclaimer-bg',
+    ];
+    for (const property of properties) {
+      assertEqual(container.style.getPropertyValue(property), '', `${property} still falls back to the stylesheet default`);
+    }
+  } finally {
+    console.warn = originalWarn;
+  }
+}
+
+console.log('\nan embedder\'s own color survives the server config, for every color field');
+{
+  // _userSetKeys (set by setConfig, read by the config loader) means an embedder's
+  // explicit value is never overwritten by whatever the server sends for the same
+  // field. Table-driven over every color field the loader gates this way, old and
+  // new, each proven against the actual rendered CSS custom property, not just the
+  // in-memory CONFIG object.
+  const cases = [
+    { camelKey: 'themeColor', snakeKey: 'theme_color', property: '--osa-primary' },
+    { camelKey: 'userBubbleColor', snakeKey: 'user_bubble_color', property: '--osa-user-bg' },
+    { camelKey: 'themeTextColor', snakeKey: 'theme_text_color', property: '--osa-on-primary' },
+    { camelKey: 'accentColor', snakeKey: 'accent_color', property: '--osa-accent' },
+    { camelKey: 'userBubbleTextColor', snakeKey: 'user_bubble_text_color', property: '--osa-user-text' },
+  ];
+  const EMBEDDER_VALUE = '#111111';
+  const SERVER_VALUE = '#222222';
+  for (const [index, { camelKey, snakeKey, property }] of cases.entries()) {
+    // placeholder is a field the embedder never sets here, so the loader always
+    // has a reason to call applyWidgetConfig() even when the field under test is
+    // fully guarded away (each of these five applies independently of the others).
+    const widget = {
+      [snakeKey]: SERVER_VALUE,
+      placeholder: `server placeholder ${index}`,
+    };
+    const config = { default_model: 'm', offered_models: [], widget, client_tools: [], runtime: null };
+    const fetch = async (url) => {
+      if (String(url).endsWith('/health')) return new Response(JSON.stringify({ status: 'healthy' }));
+      return new Response(JSON.stringify(config), { headers: { 'content-type': 'application/json' } });
+    };
+    const { window, widget: widgetApi } = loadWidget({ fetch });
+    widgetApi.setConfig({
+      apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: `osa-test-usersetkeys-${index}`,
+      [camelKey]: EMBEDDER_VALUE,
+    });
+    widgetApi.init();
+    const container = window.document.querySelector('.osa-chat-widget');
+    await waitUntil(() => container.querySelector('.osa-chat-input input').placeholder === widget.placeholder,
+      `the server config has loaded (${camelKey})`);
+    assertEqual(widgetApi.getConfig()[camelKey], EMBEDDER_VALUE, `${camelKey}: the embedder's own value is never overwritten in CONFIG`);
+    assertEqual(container.style.getPropertyValue(property), EMBEDDER_VALUE,
+      `${camelKey}: the rendered ${property} is the embedder's value, not the server's`);
+  }
+}
+
+console.log('\na failed first_message preload is retried by the next run, which reports it');
+{
+  const config = {
+    default_model: 'm', offered_models: [], widget: {},
+    client_tools: [{ name: 'execute_code', runtime: 'python', requires_permission: true }],
+    runtime: { python: { ...LOCAL_RUNTIME_CONFIG, preload_on: 'first_message' } },
+  };
+  const fetch = async (url) => {
+    const s = String(url);
+    if (s.endsWith('/health')) return new Response(JSON.stringify({ status: 'healthy' }));
+    if (s.endsWith('/chat')) {
+      return new Response(JSON.stringify({ message: { content: 'hi' }, session_id: 's1' }),
+        { headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify(config), { headers: { 'content-type': 'application/json' } });
+  };
+  const { window, api, widget } = loadWidgetWithRealBundle({ fetch });
+  widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: 'osa-test-failed-preload' });
+  widget.init();
+  // The real test worker that fails to boot every time (real boot protocol, a real
+  // WebAssembly-style failure message), and a gate that answers RUN without a real
+  // click, since this test drives execute() directly rather than a rendered gate.
+  await useLocalController({ api, window }, {
+    worker: 'failing',
+    runtimeConfig: { ...LOCAL_RUNTIME_CONFIG, preload_on: 'first_message' },
+    gate: async () => window.OSARuntime.GATE_DECISION.RUN,
+  });
+  const runtime = api.getBrowserRuntime();
+  assertEqual(runtime.state, 'idle', 'sanity: nothing has booted yet');
+
+  // The REAL first-message path: sendMessage's own click handler, not a direct
+  // call to the boot-trigger function.
+  const container = window.document.querySelector('.osa-chat-widget');
+  const input = container.querySelector('.osa-chat-input input');
+  input.value = 'hello';
+  click(window, container.querySelector('.osa-send-btn'));
+
+  await waitUntil(() => runtime.state === 'failed', 'the first-message preload boot fails');
+  assertEqual(runtime.failure && runtime.failure.message, 'no WebAssembly.instantiate',
+    'with the failing worker\'s own reported reason');
+  await waitUntil(() => !container.querySelector('.osa-send-btn').disabled, 'the send settles before the next run');
+
+  // The model now asks to run code. execute() calls boot() again (osa-runtime.js's
+  // boot() has no special case for FAILED, so a FAILED runtime retries exactly like
+  // a fresh one); the same failing worker fails it again, and the controller reports
+  // that as THIS run's result rather than throwing out of answerToolRequest.
+  const result = await api.answerToolRequest(container, {
+    call_id: 'r1', tool: 'execute_code', args: { code: 'print(1)', description: 'd' },
+  }, 0);
+  assert(result.status === 'error' && result.stderr.includes('[runtime] the code could not be run:'),
+    `the run reports the retried boot's failure through the controller's own wording (got ${JSON.stringify(result)})`);
+  assertEqual(runtime.state, 'failed', 'boot() retried from FAILED and failed again the same way, against the same worker');
+}
+
+console.log('\nsending the first message while the runtime bundle is still loading is not lost: it boots once the bundle resolves');
+try {
+  const config = {
+    default_model: 'm', offered_models: [], widget: {},
+    client_tools: [{ name: 'execute_code', runtime: 'python', requires_permission: true }],
+    runtime: { python: { ...LOCAL_RUNTIME_CONFIG, preload_on: 'first_message' } },
+  };
+  const fetch = async (url) => {
+    const s = String(url);
+    if (s.endsWith('/health')) return new Response(JSON.stringify({ status: 'healthy' }));
+    if (s.endsWith('/chat')) {
+      return new Response(JSON.stringify({ message: { content: 'hi' }, session_id: 's1' }),
+        { headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify(config), { headers: { 'content-type': 'application/json' } });
+  };
+  const { window, api, widget } = loadWidget({ fetch });
+
+  // The gate: intercept the script element loadRuntimeBundle() appends, WITHOUT
+  // connecting it to the live document, so nothing (not even happy-dom's own
+  // disabled-file-loading behavior, which otherwise auto-fires onerror or onload
+  // within a tick or two on its own schedule) can settle its load/error before
+  // this test decides to. loadRuntimeBundle/setUpBrowserTools/startBrowserTools
+  // all run completely unmodified; only the DOM's own script-loading mechanism
+  // (a platform boundary, exactly like fetch elsewhere in this file) is held open.
+  let capturedScript = null;
+  const realAppendChild = window.document.head.appendChild.bind(window.document.head);
+  window.document.head.appendChild = (node) => {
+    if (node && node.tagName === 'SCRIPT' && String(node.src).includes('osa-runtime.bundle.js')) {
+      capturedScript = node;
+      return node;
+    }
+    return realAppendChild(node);
+  };
+
+  widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: 'osa-test-bundle-race' });
+  widget.init();
+
+  await waitUntil(() => capturedScript !== null, 'the community config resolved and the bundle script was built');
+  assertEqual(api.getBrowserRuntime(), null, 'no runtime exists yet: the bundle has not resolved');
+
+  // The reader sends their first message before the bundle resolves.
+  const container = window.document.querySelector('.osa-chat-widget');
+  const input = container.querySelector('.osa-chat-input input');
+  input.value = 'hello';
+  click(window, container.querySelector('.osa-send-btn'));
+  assertEqual(api.getBrowserRuntime(), null, 'still no runtime: sending it does not itself construct one');
+
+  // Now the real loading path resolves, by this test's own hand: the real bundle
+  // bytes and the real PyodideRuntime class (every method, including boot()'s
+  // real state machine, is inherited unchanged), with only its workerFactory
+  // extension point (the same seam useLocalController substitutes elsewhere in
+  // this file) pointed at the real test worker protocol instead of a real
+  // network Pyodide boot.
+  // eslint-disable-next-line no-new-func
+  new Function(readFileSync(new URL('./osa-runtime.bundle.js', import.meta.url), 'utf8'))();
+  const RealOSARuntime = globalThis.OSARuntime;
+  window.OSARuntime = {
+    ...RealOSARuntime,
+    PyodideRuntime: class extends RealOSARuntime.PyodideRuntime {
+      constructor(options) {
+        super({ ...options, workerFactory: () => new Worker(new URL('./test-workers/happy.js', import.meta.url).href) });
+      }
+    },
+  };
+  capturedScript.onload();
+
+  await waitUntil(() => api.getBrowserRuntime() !== null, 'setUpBrowserTools constructs the runtime once the bundle resolves');
+  const runtime = api.getBrowserRuntime();
+  await waitUntil(() => runtime.state !== 'idle',
+    'and the catch-up in startBrowserTools boots it right away, since the first message was already sent');
+  await waitUntil(() => runtime.state === 'ready', 'the (test-worker) boot completes');
+} catch (err) {
+  // waitUntil throws on timeout, and this block's own awaits are otherwise
+  // uncaught: without this, a real regression here crashes the whole process
+  // (Bun exits on the uncaught exception) and hides every test that would have
+  // run after it, rather than reporting one tallied FAIL like the rest of the
+  // file. The message is the same one an uncaught throw would have shown.
+  assert(false, err.message);
 }
 
 console.log('\n' + '='.repeat(60));

@@ -101,9 +101,28 @@ class TestCommunitiesEndpoint:
         data = client.get("/communities").json()
 
         by_id = {community["id"]: community["widget"] for community in data}
-        assert by_id["nemar"].get("user_bubble_color") == "#257a92"
+        assert by_id["nemar"].get("user_bubble_color") == "#5bbad5"
         others = {cid: w.get("user_bubble_color") for cid, w in by_id.items() if cid != "nemar"}
         assert others and all(color is None for color in others.values()), others
+
+    def test_only_nemar_sets_its_own_text_colors(self) -> None:
+        """NEMAR's home-page-teal widget needs dark text on its light surfaces, which
+        every other community's widget does not: theme_text_color, accent_color and
+        user_bubble_text_color are all NEMAR-only, checked against every real
+        community's config rather than a hard-coded list of the others."""
+        client = _create_test_client()
+        data = client.get("/communities").json()
+
+        by_id = {community["id"]: community["widget"] for community in data}
+        assert by_id["nemar"].get("theme_text_color") == "#04121f"
+        assert by_id["nemar"].get("accent_color") == "#257a92"
+        assert by_id["nemar"].get("user_bubble_text_color") == "#04121f"
+
+        others = {cid: w for cid, w in by_id.items() if cid != "nemar"}
+        assert others, "expected at least one non-NEMAR community to compare against"
+        for field in ("theme_text_color", "accent_color", "user_bubble_text_color"):
+            leaked = {cid: w.get(field) for cid, w in others.items() if w.get(field) is not None}
+            assert not leaked, f"{field} is NEMAR-only, but is also set on {leaked}"
 
     def test_widget_title_defaults_to_name(self) -> None:
         """If widget title is not set, it should default to community name."""
