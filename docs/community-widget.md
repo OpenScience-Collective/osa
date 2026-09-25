@@ -400,6 +400,14 @@ The header's pop-out button opens the widget in a window of its own, which the p
   A later `setColorScheme` or `setDataset` on the page reaches an open pop-out too, including one whose script is still loading.
 - **It shares the page's storage.** The pop-out is an `about:blank` window of the page's own origin,
   so it has the page's chat history and browser runtime workspace (`docs/community-browser-runtime.md`).
+- **It carries the page's figures** (issue #493). A run's figures are kept only in the page's memory and never stored,
+  so the page hands them to the pop-out when it opens it, as it hands it its settings: a window property, `__OSA_RUN_IMAGES__`, keyed by each run's `callId`.
+  The pop-out puts each figure back in the run that drew it, holding it to the rules a figure from the runtime meets (a PNG, in plain base64, at most three a run),
+  and lets go of the hand-off once it has used it; nothing is stored, in either window.
+  The hand-off is bounded: a run returns at most three figures of at most 2,000,000 bytes each (`MAX_IMAGES` and `MAX_IMAGE_BYTES`, `src/core/limits.py`),
+  and the page hands over at most 32 MiB of them in all, the newest runs first, stopping at the first run that does not fit whole.
+  A typical figure is tens to a few hundred kilobytes, so that is hundreds of them; a run left out shows in the pop-out as it does after a reload, without its figures.
+  Figures that runs draw in the pop-out stay in the pop-out.
 - **A capsule community's pop-out has the panel's tabs** (issue #470), Chat and Notebook, as a strip under its header, since a pop-out has no launcher.
   It opens on the tab the reader was on when they clicked the pop-out button, drawn there at once.
   The strip's notebook tab follows the page's dataset as the notebook circle does:
@@ -437,9 +445,9 @@ and opened blank on a page whose policy did not allow `'unsafe-inline'`.
   Allow the widget's host in `script-src`, as the policy above does.
 
 Testing: `frontend/test-widget-popout.js` runs the real widget source in happy-dom windows, a host page and the pop-out it opens,
-with the widget loaded by its script tag in both,
+with the widget loaded by its script tag in both (the figures included: which reach the pop-out, the bound, and what it refuses),
 and `frontend/browser-harness/popout-check.mjs --serve` opens the pop-out in Chrome under a policy without `'unsafe-inline'`,
-from both tabs, on a plain and a pinned widget tag (see the harness README); both run in CI.
+from both tabs, on a plain and a pinned widget tag, and with two runs' figures on the page (see the harness README); both run in CI.
 
 ## The first paint: remembering the community's look
 

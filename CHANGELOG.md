@@ -24,6 +24,10 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Fixed
 
+- **Figures survive the move to the pop-out** (issue #493): the pop-out rebuilt the conversation from storage, where figures are never kept, so every figure was lost.
+  The page now hands the pop-out its figures when it opens it, keyed by each run, and the pop-out puts them back in their runs;
+  storage still holds none. The hand-off is capped at 32 MiB, the newest runs first.
+  See "The pop-out window" in `docs/community-widget.md`.
 - **An OSA address without its trailing slash works** (issue #500). `widget.osc.earth/osa` and `develop-widget.osc.earth/osa` answered 522,
   because the Worker's `/osa/*` routes do not match the bare path; each host now also routes `/osa*`, and the Worker answers `/osa` with a 308 to `/osa/`, keeping the query string, and a path outside the mount such as `/osafoo` with a 404.
   `deploy/apache-api.osc.earth.conf` redirects `api.osc.earth/osa` and `/osa-dev` the same way; the server's copy is applied by hand.

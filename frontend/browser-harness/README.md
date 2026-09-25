@@ -330,6 +330,8 @@ it is a new DevTools target, which the check finds by discovering targets and at
 The notebook's address points at the harness server itself, so the notebook tab's frame loads nothing from the network; its address is what is checked.
 `--live-notebook` points it at the develop notebook instead, which admits loopback pages to frame it, and requires the pop-out's own notebook to report "Python ready" through the bridge;
 it needs the network, so CI does not pass it.
+Last, it loads the page once more with the widget's test hooks (that load only; the pop-out, a target of its own, never has them), puts two runs on it with three figures it draws on a canvas, as a finished reply leaves them, and opens the pop-out (#493):
+each figure must be in the run that drew it, decoded by the browser under the page's policy, with no figure's bytes in the storage the two windows share.
 
 Measured 2026-09-24 in Chrome 153, 49 checks:
 
