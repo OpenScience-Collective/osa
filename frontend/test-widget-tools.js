@@ -2130,6 +2130,86 @@ console.log('\nDownload saves the run\'s exact code as a .py file named for the 
   assertEqual(api.runFileStem(2, 0), 'nm000132-run-1', 'the first run of the conversation is run 1');
   api.getMessages()[1].dataset = '.hidden';
   assertEqual(api.runFileStem(2, 0), 'hidden-run-1', 'a leading dot, which would hide the file, is dropped');
+
+  // The community's id is the name when the question named no dataset. setConfig
+  // holds it to letters, digits, '-' and '_', but a pop-out's preset config is
+  // assigned whole, so the name is held to safe characters on its own.
+  const config = api.getConfig();
+  for (const [communityId, stem] of [['a/b c', 'a_b_c-run-3'], ['..\\x:y', '_x_y-run-3'], ['...', 'osa-run-3'], ['', 'osa-run-3']]) {
+    config.communityId = communityId;
+    assertEqual(api.runFileStem(4, 0), stem, `a community id of ${JSON.stringify(communityId)} names the file ${stem}.py`);
+  }
+  config.communityId = 'nemar';
+}
+
+console.log('\nSettings\' "Download workspace" goes through the same download, and says why when it cannot build one (#491)');
+{
+  // The button the reader presses, wired by init, with a REAL WorkspaceStore:
+  // happy-dom has no IndexedDB, so this one is genuinely unavailable and its
+  // export fails as it would in a browser that blocks storage. The zip itself
+  // is built and read in real Chrome by frontend/browser-harness/workspace.js.
+  const fetch = async (url) => {
+    if (String(url).endsWith('/health')) return new Response(JSON.stringify({ status: 'healthy' }));
+    return new Response(JSON.stringify({ default_model: 'm', offered_models: [], widget: {}, client_tools: [], runtime: null }), { headers: { 'content-type': 'application/json' } });
+  };
+  const { window, api, widget } = loadWidget({ fetch });
+  widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: 'osa-test-workspace-download' });
+  widget.init();
+  const container = window.document.querySelector('.osa-chat-widget');
+  api.setWorkspaceStore(new WorkspaceStore({ community: 'widget-test' }));
+  const button = container.querySelector('.osa-workspace-download-btn');
+  assert(!!button, 'Settings has the button');
+  const made = recordDownloads(window);
+  const errorEl = container.querySelector('.osa-error');
+  // The widget's console.error, kept while it works; assert reports through
+  // console.error too, so every check comes after it is handed back.
+  const errors = [];
+  const realError = console.error;
+  console.error = (...args) => { errors.push(args.map(String).join(' ')); };
+  let shown = false;
+  try {
+    click(window, button);
+    const started = Date.now();
+    while (!(shown = errorEl.style.display === 'block') && Date.now() - started < 3000) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  } finally {
+    console.error = realError;
+    made.restore();
+  }
+  assert(shown, 'pressing it shows an error');
+  assert(/^Could not build the workspace download: .*IndexedDB is not available/.test(errorEl.textContent),
+    `the reader is told the download could not be built, and why (${JSON.stringify(errorEl.textContent)})`);
+  assertEqual(made.length, 0, 'and nothing is saved');
+  assert(errors.some((e) => e.includes('Workspace export failed')), 'the console says so too');
+}
+
+console.log('\nthe address a download is saved from is freed once the download has started (#491)');
+{
+  const { window, api } = loadWidget();
+  api.setMessages(codeConversation());
+  const container = mountedContainer(window);
+  api.renderMessages(container);
+  api.setSaveFileRevokeMs(50);
+  const made = recordDownloads(window);
+  try {
+    click(window, container.querySelectorAll('.osa-code-download')[1]);
+    assertEqual(made.length, 1, 'sanity: one download');
+    const url = made[0] && made[0].href;
+    // Bun's own blob: addresses, real ones: fetched while they live, refused once revoked.
+    const served = await fetch(url).then((response) => response.text(), () => null);
+    assertEqual(served, RUN_CODE, 'right after the click, the address still serves the file, so the download can read it');
+    let freed = false;
+    const started = Date.now();
+    while (!freed && Date.now() - started < 3000) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      freed = await fetch(url).then(() => false, () => true);
+    }
+    assert(freed, 'and after the wait it is revoked: fetching it fails');
+  } finally {
+    made.restore();
+    api.setSaveFileRevokeMs(5000);
+  }
 }
 
 console.log('\nthe permission gate\'s Copy copies the code it asks about, and decides nothing (#491)');

@@ -3443,7 +3443,10 @@
   // Hand the reader a file built in the page (#491), as the workspace export
   // does: a Blob's address on a link with `download`, clicked, and the address
   // freed once the download has had a chance to start, since revoking it at once
-  // can cancel the download itself.
+  // can cancel the download itself. A variable, not a constant, only so the
+  // test hooks can shorten the wait.
+  let SAVE_FILE_REVOKE_MS = 5000;
+
   function saveFile(blob, filename) {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -3452,7 +3455,7 @@
     document.body.appendChild(link);
     link.click();
     link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    setTimeout(() => URL.revokeObjectURL(url), SAVE_FILE_REVOKE_MS);
   }
 
   // Generate unique ID for code blocks
@@ -7855,6 +7858,7 @@
       localExecutionRecord,
       runEditedCode,
       runFileStem,
+      setSaveFileRevokeMs: (ms) => { SAVE_FILE_REVOKE_MS = ms; },
       canRunLocalCode,
       localRunBlockedReason,
       renderMessages,
