@@ -6,6 +6,12 @@ These tests verify that the tool functions work correctly for:
 - Discovery via descriptions
 - Error handling
 - Tool docstring generation
+
+Several tests here fetch a real, live documentation URL (no mocked HTTP
+boundary) rather than a registry-only lookup or a respx-mocked response;
+those carry ``@pytest.mark.network`` so the unit job's `-m "not network"`
+leaves them to the network job instead of spending the local suite's time
+on a real request (#397).
 """
 
 import logging
@@ -44,6 +50,7 @@ class TestRetrieveDocsTool:
         tool_names = [t.name for t in hed_assistant.tools]
         assert "retrieve_hed_docs" in tool_names
 
+    @pytest.mark.network
     def test_retrieve_preloaded_doc_success(self, retrieve_tool) -> None:
         """Test retrieving a preloaded document returns content."""
         assert retrieve_tool is not None
@@ -64,6 +71,7 @@ class TestRetrieveDocsTool:
         assert not result.startswith("Document not found")
         assert "Source:" in result or len(result) > 100
 
+    @pytest.mark.network
     def test_retrieve_ondemand_doc_success(self, retrieve_tool) -> None:
         """Test retrieving an on-demand document returns content."""
         assert retrieve_tool is not None
@@ -134,6 +142,7 @@ class TestRetrieveDocsToolCitations:
         tools = {t.name: t for t in hed_assistant_citable.tools}
         return tools.get("retrieve_hed_docs")
 
+    @pytest.mark.network
     def test_returns_search_result_block_on_success(self, retrieve_tool_citable) -> None:
         """A successful fetch with citations=True returns one search_result block."""
         info = registry.get("hed")
@@ -278,6 +287,10 @@ class TestPreloadedContent:
         assert len(prompt) < 100000, "Prompt too large, preloaded content may be included"
 
 
+# Every test below calls DocumentFetcher.fetch() against a real URL (a
+# registry doc or example.com), so the unit job's `-m "not network"` leaves
+# them to the network job.
+@pytest.mark.network
 class TestDocumentFetcher:
     """Tests for DocumentFetcher functionality."""
 
@@ -376,6 +389,7 @@ class TestToolNaming:
 class TestErrorHandling:
     """Tests for error handling in tools."""
 
+    @pytest.mark.network
     def test_retrieve_tool_handles_network_error_gracefully(self) -> None:
         """Retrieve tool should handle network errors without crashing."""
         model = FakeListChatModel(responses=["Test"])
