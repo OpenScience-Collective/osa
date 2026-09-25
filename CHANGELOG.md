@@ -13,6 +13,8 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ## [Unreleased]
 
+## [0.8.15] - 2026-09-25
+
 ### Added
 
 - **A run's code in place, with Copy and Download** (issue #491):
