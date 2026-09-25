@@ -370,7 +370,7 @@ class TestTheGenerator:
     ) -> None:
         """Wheels are served as immutable for a year, so a rebuilt wheel under an old
         name would reach some readers and not others."""
-        wheel = runtime_copy.parent / "wheels" / "eegprep_lean-0.1.0.dev2-py3-none-any.whl"
+        wheel = runtime_copy.parent / "wheels" / "eegprep_lean-0.1.0.dev3-py3-none-any.whl"
         wheel.write_bytes(wheel.read_bytes() + b"\0")
         before = runtime_copy.read_text()
 

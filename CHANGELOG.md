@@ -38,6 +38,10 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Fixed
 
+- **NEMAR's notebook reads data in Safari and Firefox** (issue #496).
+  eegprep-lean's browser transport sent `User-Agent`, which Safari and Firefox send and Chrome drops,
+  so every read in those browsers became a CORS preflight that `zarr.nemar.org` refuses.
+  eegprep-lean 0.1.0.dev3 (sccn/eegprep#420, #423) sends only `Range`; the wheel is re-vendored at `50c50879`, which the chat runtime and the notebook site both serve.
 - **A failed request no longer hangs Python in Safari** (issue #496):
   Safari's fetch rejects with a TypeError that has no `stack`,
   which Pyodide 0.29.5 does not take for an error,
