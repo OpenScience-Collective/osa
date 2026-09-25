@@ -16,9 +16,10 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from src.api.config import get_settings
 from src.api.routers.community import _is_authorized_origin
 from src.assistants import registry
-from src.metrics.db import FeedbackEntry, now_iso, write_feedback
+from src.metrics.db import FeedbackEntry, metrics_connection, now_iso, write_feedback
 
 logger = logging.getLogger(__name__)
 
@@ -147,4 +148,44 @@ async def submit_feedback(
     # escalates after repeated failures) rather than failing the user's request,
     # so the widget always receives a clean acknowledgement.
     write_feedback(entry)
+    send_feedback_to_langfuse(entry)
     return FeedbackResponse(feedback_id=entry.feedback_id)
+
+
+def send_feedback_to_langfuse(entry: FeedbackEntry) -> None:
+    """Attach a rating to the LangFuse trace of the answer it rates (issue #515).
+
+    The trace id comes from request_log.langfuse_trace_id, looked up by the
+    feedback's request_id. Best-effort, like write_feedback: a missing trace,
+    LangFuse not being configured or installed, or a LangFuse error is logged
+    and never fails the user's request.
+    """
+    if not entry.request_id or not entry.sentiment:
+        return
+    settings = get_settings()
+    if not settings.langfuse_public_key or not settings.langfuse_secret_key:
+        return
+    try:
+        with metrics_connection() as conn:
+            row = conn.execute(
+                "SELECT langfuse_trace_id FROM request_log WHERE request_id = ?",
+                (entry.request_id,),
+            ).fetchone()
+        if not row or not row[0]:
+            return
+
+        from langfuse import Langfuse
+
+        Langfuse(
+            public_key=settings.langfuse_public_key,
+            secret_key=settings.langfuse_secret_key,
+            host=settings.langfuse_host,
+        ).create_score(
+            trace_id=row[0],
+            name="user_feedback",
+            value=entry.sentiment,
+            data_type="CATEGORICAL",
+            comment=entry.comment,
+        )
+    except Exception as e:
+        logger.warning("Could not send feedback %s to LangFuse: %s", entry.feedback_id, e)
