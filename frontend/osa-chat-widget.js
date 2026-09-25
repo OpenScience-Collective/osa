@@ -5217,7 +5217,7 @@
         if (!located) return img;
         const filename = figureFileName(located.msgIndex, located.runIndex, figureNumber);
         return `<div class="osa-execution-figure">${img}<div class="osa-figure-actions">` +
-          `<button type="button" class="osa-figure-download" data-msg-index="${located.msgIndex}" data-run-index="${located.runIndex}" data-image-index="${imageIndex}" ` +
+          `<button type="button" class="osa-figure-download" data-msg-index="${escapeHtml(String(located.msgIndex))}" data-run-index="${escapeHtml(String(located.runIndex))}" data-image-index="${escapeHtml(String(imageIndex))}" ` +
           `aria-label="Download figure ${figureNumber} as ${escapeHtml(filename)}" title="Download ${escapeHtml(filename)}">${ICONS.download}<span>Download</span></button></div></div>`;
       })
       .join('');
