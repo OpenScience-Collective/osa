@@ -1,0 +1,711 @@
+# NWB Assistant configuration.
+# Documentation list generated from https://github.com/magland/nwb-doc-index (index.md):
+# each entry keeps the index's URL and description; source_url is the raw file on GitHub.
+# default_model is platform-funded Haiku for now; the plan is to switch to GPT-6 Luna once OSA
+# offers it through Bedrock (see issue #514).
+
+id: nwb
+name: NWB
+description: 'Neurodata Without Borders: data standard and software ecosystem (PyNWB, HDMF, NeuroConv, NWB Inspector) for neurophysiology data'
+status: available
+default_model: claude-haiku-4-5
+maintainers:
+- bendichter
+links:
+  homepage: https://nwb.org
+  documentation: https://nwb-overview.readthedocs.io
+  repository: https://github.com/NeurodataWithoutBorders
+widget:
+  title: NWB Assistant
+  initial_message: 'Hi! I''m the NWB Assistant. I can help with NWB, PyNWB, HDMF, NeuroConv, and NWB Inspector: creating and converting NWB files, fixing Inspector messages, and preparing data for DANDI.'
+  placeholder: Ask about NWB...
+  suggested_questions:
+  - How do I create an NWB file with PyNWB?
+  - How do I convert my recordings to NWB with NeuroConv?
+  - What does this NWB Inspector message mean?
+  - What metadata do I need before uploading to DANDI?
+cors_origins:
+- https://pynwb.readthedocs.io
+- https://nwb.org
+- https://www.nwb.org
+enable_page_context: true
+budget:
+  daily_limit_usd: 5.0
+  monthly_limit_usd: 50.0
+  alert_threshold_pct: 80.0
+system_prompt: |
+  You are a technical assistant specialized in helping users with Neurodata Without Borders (NWB) software.
+  You provide explanations, troubleshooting, and step-by-step guidance for using NWB, pynwb, and related tools effectively.
+  You must stick strictly to the topic of NWB and avoid digressions.
+  All responses should be accurate and based on the official provided documentation.
+  When a user’s question is ambiguous, you should assume the most likely meaning and provide a useful starting point,
+  but also ask clarifying questions when necessary.
+  You should communicate in a formal and technical style, prioritizing precision and accuracy while remaining clear.
+  By default, you should balance clarity and technical accuracy, starting with accessible explanations and then expanding into more detail when needed.
+  Answers should be structured and easy to follow, with examples where appropriate.
+  The tone should reflect that of technical documentation, making NWB more accessible to both beginners and advanced users.
+
+  The home page of Neurodata Without Borders is https://nwb.org
+
+  Do not suggest further exploration unless it is for something where you explicitly know how to help with in the documentation.
+
+  You will respond with markdown formatted text.
+
+  You should be concise in your answers, and only include the most relevant information, unless told otherwise.
+
+  Before responding you should use the retrieve_nwb_docs tool get any documentation you are going to need.
+  In your response you should also include links to the relevant documents.
+
+  Do not retrieve docs that have already been loaded or preloaded.
+
+  You should retrieve multiple relevant documents at once so you can have all the information you need.
+  Don't just retrieve one document at a time.
+  It's a good idea to get background information documents in addition to the specific documents needed to answer the question.
+  If you have already loaded a document, you don't need to load it again.
+
+  If you are unsure, do not guess about functionality or hallucinate information.
+  Stick to what you can learn from the documents.
+  Feel free to read as many documents as you need.
+
+  If a question is not related to NWB or neurophysiology data, politely decline to answer it.
+
+  {preloaded_docs_section}
+
+  {available_docs_section}
+
+  {page_context_section}
+
+  {additional_instructions}
+documentation:
+- title: 'NeuroConv: user guide / datainterfaces'
+  url: https://neuroconv.readthedocs.io/en/main/user_guide/datainterfaces.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/user_guide/datainterfaces.rst
+  category: neuroconv-user_guide
+  type: markdown
+  description: The document describes the BaseDataInterface class in NeuroConv, which provides a unified API for converting data into NWB format, covering its installation with specific dependencies, initialization with source data, extraction and adjustment of metadata, and running the conversion process either directly to a file or by creating an in-memory NWB file that can be modified before saving.
+  preload: true
+- title: 'PyNWB: general / file'
+  url: https://pynwb.readthedocs.io/en/latest/tutorials/general/plot_file.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/pynwb/refs/heads/dev/docs/gallery/general/plot_file.py
+  category: pynwb-general
+  type: markdown
+  description: The document provides a comprehensive overview of working with NWB (Neurodata Without Borders) files in Python, including creating and manipulating files, storing time series data, adding subject information, handling spatial position data, organizing data in processing modules, and reading/writing/appending to NWB files.
+  preload: true
+- title: 'HDMF: multicontainerinterface'
+  url: https://hdmf.readthedocs.io/en/stable/tutorials/multicontainerinterface.html
+  source_url: https://raw.githubusercontent.com/hdmf-dev/hdmf/refs/heads/dev/docs/gallery/multicontainerinterface.py
+  category: hdmf-general
+  type: markdown
+  description: The document explains the MultiContainerInterface class in HDMF which provides a framework for creating container classes that manage collections of other containers, including how to configure collection attributes, generate methods for adding/retrieving items, handle parent-child relationships, and customize functionality through class configuration settings.
+- title: 'HDMF: aligneddynamictable'
+  url: https://hdmf.readthedocs.io/en/stable/tutorials/plot_aligneddynamictable.html
+  source_url: https://raw.githubusercontent.com/hdmf-dev/hdmf/refs/heads/dev/docs/gallery/plot_aligneddynamictable.py
+  category: hdmf-general
+  type: markdown
+  description: A user guide explaining the AlignedDynamicTable class in HDMF, which is a column-based table that supports grouping columns by category, describing its features, construction, and how to interact with it through adding and accessing data, rows, columns, categories, and cells.
+- title: 'HDMF: dynamictable howto'
+  url: https://hdmf.readthedocs.io/en/stable/tutorials/plot_dynamictable_howto.html
+  source_url: https://raw.githubusercontent.com/hdmf-dev/hdmf/refs/heads/dev/docs/gallery/plot_dynamictable_howto.py
+  category: hdmf-general
+  type: markdown
+  description: A user guide for working with DynamicTable objects, covering how to create tables, add columns and rows, work with ragged array data, reference other tables, and convert between DynamicTable and pandas DataFrame formats.
+- title: 'HDMF: dynamictable tutorial'
+  url: https://hdmf.readthedocs.io/en/stable/tutorials/plot_dynamictable_tutorial.html
+  source_url: https://raw.githubusercontent.com/hdmf-dev/hdmf/refs/heads/dev/docs/gallery/plot_dynamictable_tutorial.py
+  category: hdmf-general
+  type: markdown
+  description: A tutorial on how to create, manipulate, and access DynamicTable objects in HDMF, covering basic operations like adding columns (including ragged arrays and references to other tables), adding rows, and displaying table contents as pandas DataFrames with examples of different access patterns.
+- title: 'HDMF: external resources'
+  url: https://hdmf.readthedocs.io/en/stable/tutorials/plot_external_resources.html
+  source_url: https://raw.githubusercontent.com/hdmf-dev/hdmf/refs/heads/dev/docs/gallery/plot_external_resources.py
+  category: hdmf-general
+  type: markdown
+  description: HERD (HDMF External Resources Data Structure) is an experimental class that provides a way to link data in files to external ontologies or resources, organizing connections between internal keys and external entities through a system of interlinked tables (KeyTable, FileTable, EntityTable, etc.) with convenience functions for treating these as a unified structure.
+- title: 'HDMF: generic data chunk tutorial'
+  url: https://hdmf.readthedocs.io/en/stable/tutorials/plot_generic_data_chunk_tutorial.html
+  source_url: https://raw.githubusercontent.com/hdmf-dev/hdmf/refs/heads/dev/docs/gallery/plot_generic_data_chunk_tutorial.py
+  category: hdmf-general
+  type: markdown
+  description: This tutorial explains how to use GenericDataChunkIterator to create custom data iterators for efficiently processing large datasets, with a focus on implementing the core methods (_get_data, _get_maxshape, _get_dtype) and how to write data iteratively to HDF5 files while managing memory usage through buffer and chunk sizing.
+- title: 'HDMF: term set'
+  url: https://hdmf.readthedocs.io/en/stable/tutorials/plot_term_set.html
+  source_url: https://raw.githubusercontent.com/hdmf-dev/hdmf/refs/heads/dev/docs/gallery/plot_term_set.py
+  category: hdmf-general
+  type: markdown
+  description: This document explains how to use HDMF's TermSet and TermSetWrapper classes for creating and validating against custom term sets from ontologies, allowing users to ensure data and attributes conform to standardized terminology from sources like brain atlases, species taxonomies, and other scientific ontologies.
+- title: 'NeuroConv: behavior / audio'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/behavior/audio.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/behavior/audio.rst
+  category: neuroconv-behavior
+  type: markdown
+  description: The document explains how to convert audio data from WAV format to NWB format using NeuroConv's AudioInterface class, including installation instructions, sample code for executing a conversion, and steps for adding metadata such as session start time.
+- title: 'NeuroConv: behavior / deeplabcut'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/behavior/deeplabcut.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/behavior/deeplabcut.rst
+  category: neuroconv-behavior
+  type: markdown
+  description: The document describes how to convert DeepLabCut pose estimation data to NWB format using NeuroConv, including installation instructions and sample Python code demonstrating the conversion process with the DeepLabCutInterface class.
+- title: 'NeuroConv: behavior / fictrac'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/behavior/fictrac.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/behavior/fictrac.rst
+  category: neuroconv-behavior
+  type: markdown
+  description: This document explains how to convert FicTrac behavioral data (spherical motion and fictive animal path) to the NWB (Neurodata Without Borders) format using the NeuroConv Python package, providing installation instructions and code examples for the conversion process.
+- title: 'NeuroConv: behavior / lightningpose'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/behavior/lightningpose.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/behavior/lightningpose.rst
+  category: neuroconv-behavior
+  type: markdown
+  description: This document explains how to convert LightningPose pose estimation data to NWB format using the NeuroConv package, showing how to install dependencies and use the LightningPoseConverter with sample code for loading data files, setting metadata, and executing the conversion.
+- title: 'NeuroConv: behavior / medpc'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/behavior/medpc.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/behavior/medpc.rst
+  category: neuroconv-behavior
+  type: markdown
+  description: A guide for converting MedPC operant behavior data (like nose pokes and rewards) to NWB format using the NeuroConv Python package, including code examples for installation, data interface setup, metadata extraction, and file conversion.
+- title: 'NeuroConv: behavior / neuralynx nvt'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/behavior/neuralynx_nvt.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/behavior/neuralynx_nvt.rst
+  category: neuroconv-behavior
+  type: markdown
+  description: The document explains how to convert Neuralynx NVT position tracking data to Neurodata Without Borders (NWB) format using the NeuralynxNvtInterface from the NeuroConv package, including installation instructions and a code example for the conversion process.
+- title: 'NeuroConv: behavior / sleap'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/behavior/sleap.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/behavior/sleap.rst
+  category: neuroconv-behavior
+  type: markdown
+  description: A guide on converting SLEAP pose estimation data to NWB format using NeuroConv's SLEAPInterface, including installation instructions and a Python code example showing how to extract metadata, set required parameters, and run the conversion.
+- title: 'NeuroConv: behavior / video'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/behavior/video.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/behavior/video.rst
+  category: neuroconv-behavior
+  type: markdown
+  description: The document explains how to convert video data to NWB format using NeuroConv, covering both external storage (ExternalVideoInterface) and internal storage (InternalVideoInterface) approaches. It includes code examples for installation, basic conversion, and proper metadata specification for each method, with recommendations based on whether videos contain natural behavior or neural data.
+- title: 'NeuroConv: combinations / ecephys pose estimation'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/combinations/ecephys_pose_estimation.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/combinations/ecephys_pose_estimation.rst
+  category: neuroconv-combinations
+  type: markdown
+  description: This example demonstrates how to combine electrophysiology (using BlackrockRecordingInterface and KiloSortSortingInterface) and behavioral data (using SLEAPInterface for pose estimation) into a single NWB file using the ConverterPipe class from NeuroCONV.
+- title: 'NeuroConv: combinations / spikeglx and phy'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/combinations/spikeglx_and_phy.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/combinations/spikeglx_and_phy.rst
+  category: neuroconv-combinations
+  type: markdown
+  description: This document outlines a workflow for combining electrophysiology recordings from SpikeGLX with spike sorting data from Phy using NeuroConv's conversion tools, including code examples that demonstrate how to create interface objects, extract metadata, and run the conversion to NWB format.
+- title: 'NeuroConv: combinations / tiff and suite2p'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/combinations/tiff_and_suite2p.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/combinations/tiff_and_suite2p.rst
+  category: neuroconv-combinations
+  type: markdown
+  description: A code example demonstrating how to use NeuroConv to convert optical physiology data from Tiff imaging files processed with Suite2p segmentation algorithm into NWB format, showing the workflow for combining imaging data with segmentation results using TiffImagingInterface and Suite2pSegmentationInterface classes.
+- title: 'NeuroConv: fiberphotometry / tdt fp'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/fiberphotometry/tdt_fp.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/fiberphotometry/tdt_fp.rst
+  category: neuroconv-fiberphotometry
+  type: markdown
+  description: A guide for converting TDT Fiber Photometry data to NWB format using NeuroConv, including detailed metadata specification for optical fibers, excitation sources, photodetectors, filters, indicators, and instructions for running the conversion with sample Python code.
+- title: 'NeuroConv: imaging / brukertiff'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/imaging/brukertiff.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/imaging/brukertiff.rst
+  category: neuroconv-imaging
+  type: markdown
+  description: This document explains how to convert Bruker TIFF imaging data to NWB format using NeuroConv, showing examples for both single plane conversion (BrukerTiffSinglePlaneConverter) and multi-plane/volumetric imaging data (BrukerTiffMultiPlaneConverter) with code snippets for installation and implementation.
+- title: 'NeuroConv: imaging / hdf5imaging'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/imaging/hdf5imaging.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/imaging/hdf5imaging.rst
+  category: neuroconv-imaging
+  type: markdown
+  description: This document provides instructions for converting HDF5 imaging data to NWB format using the NeuroConv library, including how to install the necessary dependencies and sample Python code for performing the conversion with the Hdf5ImagingInterface.
+- title: 'NeuroConv: imaging / image'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/imaging/image.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/imaging/image.rst
+  category: neuroconv-imaging
+  type: markdown
+  description: The document describes the ImageInterface in NeuroConv for converting various image formats (PNG, JPG, TIFF) to NWB format, including supported image modes, example usage, and key features such as memory efficiency, automatic mode conversion, multiple input methods, and options for storing images in acquisition or stimulus groups.
+- title: 'NeuroConv: imaging / micromanagertiff'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/imaging/micromanagertiff.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/imaging/micromanagertiff.rst
+  category: neuroconv-imaging
+  type: markdown
+  description: This document explains how to use NeuroConv to convert Micro-Manager TIFF imaging data to NWB format, including installation instructions and Python code examples that demonstrate the conversion process using the MicroManagerTiffImagingInterface.
+- title: 'NeuroConv: imaging / miniscope'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/imaging/miniscope.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/imaging/miniscope.rst
+  category: neuroconv-imaging
+  type: markdown
+  description: The document explains how to convert Miniscope data (which records optical physiology and behavior as video data) to NWB format using the NeuroConv library, including installation instructions and Python code examples showing how to use the MiniscopeConverter class to combine recording and behavioral data streams into a single NWB file.
+- title: 'NeuroConv: imaging / scanbox'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/imaging/scanbox.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/imaging/scanbox.rst
+  category: neuroconv-imaging
+  type: markdown
+  description: This document explains how to convert Scanbox imaging data to NWB format using the NeuroConv Python package, including installation instructions and a code example demonstrating the SbxImagingInterface conversion workflow.
+- title: 'NeuroConv: imaging / scanimage'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/imaging/scanimage.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/imaging/scanimage.rst
+  category: neuroconv-imaging
+  type: markdown
+  description: A guide for converting ScanImage imaging data to NWB format using NeuroConv, covering single and multi-plane imaging data from both single files and multiple buffered files with code examples for each conversion scenario.
+- title: 'NeuroConv: imaging / thor'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/imaging/thor.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/imaging/thor.rst
+  category: neuroconv-imaging
+  type: markdown
+  description: This document explains how to convert Thor TIFF imaging data to NWB format using the ThorImagingInterface from NeuroConv, including installation instructions and a code example showing the conversion process for data acquired with ThorImageLS software.
+- title: 'NeuroConv: imaging / tiff'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/imaging/tiff.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/imaging/tiff.rst
+  category: neuroconv-imaging
+  type: markdown
+  description: A guide for converting TIFF imaging data to NWB format using NeuroConv's TiffImagingInterface, including installation instructions and Python code example for handling multi-page TIFF files with metadata specification.
+- title: 'NeuroConv: recording / abf'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/recording/abf.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/recording/abf.rst
+  category: neuroconv-recording
+  type: markdown
+  description: A guide for converting ABF (Axon Binary Format) intracellular electrophysiology data to NWB (Neurodata Without Borders) format using NeuroConv, with examples of both single and multiple ABF file conversions including metadata assignment.
+- title: 'NeuroConv: recording / alphaomega'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/recording/alphaomega.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/recording/alphaomega.rst
+  category: neuroconv-recording
+  type: markdown
+  description: This document provides instructions for converting AlphaOmega electrophysiology data to the NWB (Neuro Data Without Borders) format using the NeuroConv package, including installation commands and Python code examples for the conversion process.
+- title: 'NeuroConv: recording / axona'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/recording/axona.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/recording/axona.rst
+  category: neuroconv-recording
+  type: markdown
+  description: The document provides instructions for converting Axona electrophysiology data to NWB format using NeuroConv, including code examples for installing the required packages, initializing the AxonaRecordingInterface with a .bin file, extracting metadata, and executing the conversion process.
+- title: 'NeuroConv: recording / biocam'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/recording/biocam.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/recording/biocam.rst
+  category: neuroconv-recording
+  type: markdown
+  description: The document outlines the process for converting Biocam electrophysiology data to Neurodata Without Borders (NWB) format using NeuroConv, including installation instructions with required dependencies and a Python code example demonstrating the conversion workflow with the BiocamRecordingInterface.
+- title: 'NeuroConv: recording / blackrock'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/recording/blackrock.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/recording/blackrock.rst
+  category: neuroconv-recording
+  type: markdown
+  description: This document provides instructions for converting Blackrock/Ripple Neuro neurophysiological data to the NWB (Neurodata Without Borders) format using the NeuroConv Python package, including code examples for installation and implementation of the BlackrockRecordingInterface.
+- title: 'NeuroConv: recording / edf'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/recording/edf.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/recording/edf.rst
+  category: neuroconv-recording
+  type: markdown
+  description: The document explains how to convert European Data Format (EDF) files to Neurodata Without Borders (NWB) format using the NeuroConv package, including installation instructions, code examples for implementing the EDFRecordingInterface, and how to extract and add metadata during conversion.
+- title: 'NeuroConv: recording / intan'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/recording/intan.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/recording/intan.rst
+  category: neuroconv-recording
+  type: markdown
+  description: The document provides instructions for converting Intan electrophysiology data to Neurodata Without Borders (NWB) format using NeuroConv, including code examples showing the installation process and conversion steps with the IntanRecordingInterface.
+- title: 'NeuroConv: recording / maxwell'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/recording/maxwell.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/recording/maxwell.rst
+  category: neuroconv-recording
+  type: markdown
+  description: This document explains how to convert MaxOne electrophysiology data to the NWB format using NeuroConv, including installation instructions, code examples, and essential metadata configuration for proper data conversion.
+- title: 'NeuroConv: recording / mcsraw'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/recording/mcsraw.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/recording/mcsraw.rst
+  category: neuroconv-recording
+  type: markdown
+  description: The document provides instructions for converting MCSRaw electrophysiology data to NWB format using NeuroConv, including installation commands with required dependencies and a Python code example that demonstrates the conversion process with the MCSRawRecordingInterface.
+- title: 'NeuroConv: recording / mearec'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/recording/mearec.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/recording/mearec.rst
+  category: neuroconv-recording
+  type: markdown
+  description: This document explains how to convert MEArec electrophysiology data to the Neurodata Without Borders (NWB) format using NeuroConv, including installation instructions and a Python code example that demonstrates creating a MEArecRecordingInterface, extracting metadata, and running the conversion process.
+- title: 'NeuroConv: recording / neuralynx'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/recording/neuralynx.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/recording/neuralynx.rst
+  category: neuroconv-recording
+  type: markdown
+  description: This document provides instructions for converting Neuralynx electrophysiology data to NWB format using NeuroConv, including code examples for installation, metadata extraction, and running the conversion process with the NeuralynxRecordingInterface.
+- title: 'NeuroConv: recording / neuroscope'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/recording/neuroscope.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/recording/neuroscope.rst
+  category: neuroconv-recording
+  type: markdown
+  description: This document provides instructions for converting NeuroScope electrophysiology data to NWB format using the NeuroConv Python package, including installation steps and a code example demonstrating how to use the NeuroScopeRecordingInterface to perform the conversion.
+- title: 'NeuroConv: recording / openephys'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/recording/openephys.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/recording/openephys.rst
+  category: neuroconv-recording
+  type: markdown
+  description: This document explains how to convert OpenEphys electrophysiology data to the NWB (Neurodata Without Borders) format using the NeuroConv Python package, including installation instructions and a code example demonstrating the conversion process with the OpenEphysRecordingInterface.
+- title: 'NeuroConv: recording / plexon'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/recording/plexon.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/recording/plexon.rst
+  category: neuroconv-recording
+  type: markdown
+  description: The document explains how to convert Plexon recording data to NWB format using NeuroConv, including installation instructions, code examples for using the PlexonRecordingInterface, and steps for extracting metadata and running the conversion process.
+- title: 'NeuroConv: recording / plexon2'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/recording/plexon2.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/recording/plexon2.rst
+  category: neuroconv-recording
+  type: markdown
+  description: This document explains how to convert Plexon2 recording data to NWB format using the NeuroConv Python package, including installation instructions, a warning about non-Windows platforms requiring wine, and code examples showing how to initialize the interface, extract metadata, and run the conversion process.
+- title: 'NeuroConv: recording / spike2'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/recording/spike2.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/recording/spike2.rst
+  category: neuroconv-recording
+  type: markdown
+  description: The document provides instructions for converting Spike2 electrophysiology data to Neurodata Without Borders (NWB) format using the NeuroConv Python package, including code examples for installation and the conversion process.
+- title: 'NeuroConv: recording / spikegadgets'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/recording/spikegadgets.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/recording/spikegadgets.rst
+  category: neuroconv-recording
+  type: markdown
+  description: This guide explains how to install NeuroConv with Spikegadgets dependencies and convert Spikegadgets neurophysiology data to the NWB format using the SpikeGadgetsRecordingInterface, including code examples for installation, metadata extraction, and file conversion.
+- title: 'NeuroConv: recording / spikeglx'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/recording/spikeglx.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/recording/spikeglx.rst
+  category: neuroconv-recording
+  type: markdown
+  description: This document explains how to convert SpikeGLX electrophysiology data to NWB format using NeuroConv, including methods for converting entire SpikeGLX folder structures with SpikeGLXConverterPipe or individual data streams (AP/LF) with SpikeGLXRecordingInterface.
+- title: 'NeuroConv: recording / tdt'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/recording/tdt.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/recording/tdt.rst
+  category: neuroconv-recording
+  type: markdown
+  description: The document explains how to convert Tucker-Davis Technologies (TDT) data to NWB format using NeuroConv, providing installation instructions and sample Python code that demonstrates creating a TdtRecordingInterface instance, extracting metadata, and running the data conversion process.
+- title: 'NeuroConv: segmentation / caiman'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/segmentation/caiman.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/segmentation/caiman.rst
+  category: neuroconv-segmentation
+  type: markdown
+  description: This document explains how to convert CaImAn segmentation data to NWB format using NeuroConv's CaimanSegmentationInterface, providing installation instructions and a code example with metadata configuration for the conversion process.
+- title: 'NeuroConv: segmentation / cnmfe'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/segmentation/cnmfe.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/segmentation/cnmfe.rst
+  category: neuroconv-segmentation
+  type: markdown
+  description: A guide for installing NeuroConv with CNMF-E dependencies and converting CNMF-E segmentation data to NWB format using the CnmfeSegmentationInterface, including sample code for initialization, metadata setup, and running the conversion process.
+- title: 'NeuroConv: segmentation / extract'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/segmentation/extract.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/segmentation/extract.rst
+  category: neuroconv-segmentation
+  type: markdown
+  description: A guide for converting EXTRACT segmentation data to NWB format using NeuroConv's ExtractSegmentationInterface, including installation instructions with additional dependencies and Python code example demonstrating the conversion process with metadata handling.
+- title: 'NeuroConv: segmentation / suite2p'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/segmentation/suite2p.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/segmentation/suite2p.rst
+  category: neuroconv-segmentation
+  type: markdown
+  description: This document explains how to convert suite2p segmentation data to NWB format using NeuroConv, including installation instructions, basic usage of Suite2pSegmentationInterface with code examples, and guidance for handling multiple planes and channels from the same dataset.
+- title: 'NeuroConv: sorting / blackrock'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/sorting/blackrock.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/sorting/blackrock.rst
+  category: neuroconv-sorting
+  type: markdown
+  description: The document describes how to convert Blackrock sorting data to NWB format using NeuroConv, providing installation instructions and Python code examples with the BlackrockSortingInterface class to extract metadata and run the conversion process.
+- title: 'NeuroConv: sorting / cellexplorer'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/sorting/cellexplorer.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/sorting/cellexplorer.rst
+  category: neuroconv-sorting
+  type: markdown
+  description: A guide for converting CellExplorer neural recording data to NWB format using NeuroConv's CellExplorerSortingInterface, including installation instructions and Python code examples for the conversion process.
+- title: 'NeuroConv: sorting / kilosort'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/sorting/kilosort.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/sorting/kilosort.rst
+  category: neuroconv-sorting
+  type: markdown
+  description: The document explains how to convert KiloSort spike-sorting data to the NWB (Neurodata Without Borders) format using the NeuroConv package, including installation instructions and a Python code example demonstrating the conversion process with the KiloSortSortingInterface.
+- title: 'NeuroConv: sorting / neuralynx'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/sorting/neuralynx.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/sorting/neuralynx.rst
+  category: neuroconv-sorting
+  type: markdown
+  description: This guide explains how to convert Neuralynx data to NWB format using the NeuroConv package, including installation steps with required dependencies and a Python code example demonstrating the conversion process with the NeuralynxSortingInterface.
+- title: 'NeuroConv: sorting / neuroscope'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/sorting/neuroscope.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/sorting/neuroscope.rst
+  category: neuroconv-sorting
+  type: markdown
+  description: This document explains how to convert NeuroScope sorting data to NWB format using NeuroConv, showing installation instructions and Python code for using the NeuroScopeSortingInterface to perform the conversion with required parameters.
+- title: 'NeuroConv: sorting / phy'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/sorting/phy.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/sorting/phy.rst
+  category: neuroconv-sorting
+  type: markdown
+  description: This document explains how to convert Phy sorting data to the NWB format using the PhySortingInterface from NeuroConv, including installation instructions with pip and a Python code example demonstrating the conversion process with metadata configuration.
+- title: 'NeuroConv: sorting / plexon'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/sorting/plexon.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/sorting/plexon.rst
+  category: neuroconv-sorting
+  type: markdown
+  description: The document provides instructions for converting Plexon spiking data (.plx) files to Neurodata Without Borders (NWB) format using the PlexonSortingInterface from the NeuroConv package, including code examples for installation and data conversion with metadata handling.
+- title: 'NeuroConv: text / csv'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/text/csv.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/text/csv.rst
+  category: neuroconv-text
+  type: markdown
+  description: A guide for converting CSV files to NWB format using NeuroConv's CsvTimeIntervalsInterface, with code examples showing how to properly install the package, read CSV files containing time interval data, and convert them to trials in an NWB file.
+- title: 'NeuroConv: text / excel'
+  url: https://neuroconv.readthedocs.io/en/main/conversion_examples_gallery/text/excel.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/conversion_examples_gallery/text/excel.rst
+  category: neuroconv-text
+  type: markdown
+  description: A guide for converting Excel data to Neurodata Without Borders (NWB) format using the ExcelTimeIntervalsInterface from NeuroConv, including installation instructions, code examples for reading Excel files with time interval data, and steps for properly configuring metadata.
+- title: 'NeuroConv: user guide / adding trials'
+  url: https://neuroconv.readthedocs.io/en/main/user_guide/adding_trials.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/user_guide/adding_trials.rst
+  category: neuroconv-user_guide
+  type: markdown
+  description: The document explains how to add trial timing information to NWB files using PyNWB, including adding custom columns to trials tables, adding trial entries with specific parameters, and saving the NWB file to disk with optimized storage settings.
+- title: 'NeuroConv: user guide / aws demo'
+  url: https://neuroconv.readthedocs.io/en/main/user_guide/aws_demo.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/user_guide/aws_demo.rst
+  category: neuroconv-user_guide
+  type: markdown
+  description: The document outlines how to deploy NWB data conversions in AWS cloud services using NeuroConv's AWS tools. It provides a detailed tutorial on setting up a pipeline that transfers source data from cloud storage to AWS, performs NWB conversion, and uploads results to the Dandi Archive, covering prerequisites like Google Drive setup, Rclone configuration, AWS account access, and the steps to create and deploy an AWS Batch job for neurophysiology data conversion.
+- title: 'NeuroConv: user guide / backend configuration'
+  url: https://neuroconv.readthedocs.io/en/main/user_guide/backend_configuration.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/user_guide/backend_configuration.rst
+  category: neuroconv-user_guide
+  type: markdown
+  description: The document explains how to configure backend file storage in NeuroConv, including controlling chunking, compression, and buffering patterns for NWB files. It covers retrieving default configurations, customizing dataset configurations, and applying them when writing NWB files through DataInterfaces or Converters, with examples showing how to modify compression methods and other parameters.
+- title: 'NeuroConv: user guide / csvs'
+  url: https://neuroconv.readthedocs.io/en/main/user_guide/csvs.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/user_guide/csvs.rst
+  category: neuroconv-user_guide
+  type: markdown
+  description: This document describes how to specify metadata using tabular formats (CSV files) in the NeurConv library, showing example CSV file structures for sessions and subjects, and providing Python code to read the CSV files, process the data, and convert it to NWB format using SpikeGLXRecordingInterface and DeepLabCutInterface.
+- title: 'NeuroConv: user guide / docker demo'
+  url: https://neuroconv.readthedocs.io/en/main/user_guide/docker_demo.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/user_guide/docker_demo.rst
+  category: neuroconv-user_guide
+  type: markdown
+  description: The document demonstrates how to use NeuroConv's Docker implementation to convert neurophysiology data to NWB format using YAML specifications. It walks through a complete example showing how to set up directories, create a YAML configuration file, and run the Docker container with proper volume mounting to convert SpikeGLX and Phy data. The second section explains how to use NeuroConv's Rclone Docker image for data transfers between remote storage systems and local directories.
+- title: 'NeuroConv: user guide / expand path'
+  url: https://neuroconv.readthedocs.io/en/main/user_guide/expand_path.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/user_guide/expand_path.rst
+  category: neuroconv-user_guide
+  type: markdown
+  description: The document describes the path expansion tools in NeuroConv that allow users to identify data files and extract metadata from their file paths. It explains how to use LocalPathExpander to match file patterns and automatically extract metadata like subject IDs and session timestamps from organized directory structures, with examples from real datasets including Allen Institute, Buszaki Lab, and IBL Brain Wide Map data.
+- title: 'NeuroConv: user guide / nwbconverter'
+  url: https://neuroconv.readthedocs.io/en/main/user_guide/nwbconverter.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/user_guide/nwbconverter.rst
+  category: neuroconv-user_guide
+  type: markdown
+  description: NWBConverter is a Python class that simplifies converting multiple neurophysiological data sources with different proprietary formats into a single NWB file, allowing users to combine data interfaces (like SpikeGLXRecording and PhySorting), specify metadata, and control conversion options for each interface.
+- title: 'NeuroConv: user guide / temporal alignment'
+  url: https://neuroconv.readthedocs.io/en/main/user_guide/temporal_alignment.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/user_guide/temporal_alignment.rst
+  category: neuroconv-user_guide
+  type: markdown
+  description: 'The document explains temporal alignment methods in NeuroConv for synchronizing data across multiple acquisition systems in neurophysiology experiments. It covers three synchronization approaches: 1) aligning start times for simple offset correction, 2) synchronizing timestamps using signals at every sample to correct for drift, and 3) using regular synchronization signals with interpolation. It includes details on extracting TTL pulse signals and implementing temporal alignment within the NWBConverter framework, with code examples for each method.'
+- title: 'NeuroConv: user guide / yaml'
+  url: https://neuroconv.readthedocs.io/en/main/user_guide/yaml.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/neuroconv/refs/heads/main/docs/user_guide/yaml.rst
+  category: neuroconv-user_guide
+  type: markdown
+  description: This document explains how to use YAML files to specify metadata for NWB conversions, showing the format for NWBFile and Subject metadata, indicating required fields, and demonstrating how to incorporate YAML metadata into Python conversion pipelines using NeuroConv's utilities.
+- title: 'NWB Inspector: behavior'
+  url: https://nwbinspector.readthedocs.io/en/dev/best_practices/behavior.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/nwbinspector/refs/heads/dev/docs/best_practices/behavior.rst
+  category: nwbinspector-general
+  type: markdown
+  description: This document explains best practices for the SpatialSeries object in NWB format, covering dimensionality requirements (1-3 columns), appropriate units for compass directions ("degrees" or "radians"), and the valid value ranges for data with those units (-2π to 2π for radians, -360 to 360 for degrees).
+- title: 'NWB Inspector: best practices index'
+  url: https://nwbinspector.readthedocs.io/en/dev/best_practices/best_practices_index.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/nwbinspector/refs/heads/dev/docs/best_practices/best_practices_index.rst
+  category: nwbinspector-general
+  type: markdown
+  description: This document provides guidelines and best practices for using the NWB (Neurodata Without Borders) data standard, covering topics such as file metadata, time series, tables, behavior, electrophysiology, optical physiology, and extensions, while emphasizing the need to balance flexibility with standardization to support diverse neuroscience use cases.
+- title: 'NWB Inspector: ecephys'
+  url: https://nwbinspector.readthedocs.io/en/dev/best_practices/ecephys.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/nwbinspector/refs/heads/dev/docs/best_practices/ecephys.rst
+  category: nwbinspector-general
+  type: markdown
+  description: The document provides best practices for extracellular electrophysiology data in NWB format, covering electrode location documentation, anatomical coordinate systems, avoiding metadata duplication, and proper formatting of spike time data in the Units Table, including requirements for positive timestamps and proper observation intervals.
+- title: 'NWB Inspector: extensions'
+  url: https://nwbinspector.readthedocs.io/en/dev/best_practices/extensions.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/nwbinspector/refs/heads/dev/docs/best_practices/extensions.rst
+  category: nwbinspector-general
+  type: markdown
+  description: The document explains NWB schema extensions best practices, emphasizing that extensions should only be created when necessary, recommending the use of existing neurodata types or pre-existing extensions first, and providing guidance on documentation and caching specifications within NWBFiles.
+- title: 'NWB Inspector: general'
+  url: https://nwbinspector.readthedocs.io/en/dev/best_practices/general.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/nwbinspector/refs/heads/dev/docs/best_practices/general.rst
+  category: nwbinspector-general
+  type: markdown
+  description: This document outlines best practices for naming and describing neurodata types in NWB files, including using class names for object instances, avoiding slashes and colons in names, providing detailed descriptions for metadata, avoiding placeholder text in required fields, and preventing duplication of metadata across objects.
+- title: 'NWB Inspector: image series'
+  url: https://nwbinspector.readthedocs.io/en/dev/best_practices/image_series.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/nwbinspector/refs/heads/dev/docs/best_practices/image_series.rst
+  category: nwbinspector-general
+  type: markdown
+  description: This document provides best practices for storing different types of video data in NWB format, recommending external storage with compression for animal behavior videos and internal storage with lossless compression for neurophysiological data, along with guidance on using relative paths for external files.
+- title: 'NWB Inspector: images'
+  url: https://nwbinspector.readthedocs.io/en/dev/best_practices/images.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/nwbinspector/refs/heads/dev/docs/best_practices/images.rst
+  category: nwbinspector-general
+  type: markdown
+  description: The document provides best practices for image storage in NWB format, focusing on proper use of the "order_of_images" field in Images objects (which should contain unique values equal to the number of Image objects) and advising that IndexSeries objects should point to an Images container rather than TimeSeries (noting this latter usage will be deprecated).
+- title: 'NWB Inspector: nwbfile metadata'
+  url: https://nwbinspector.readthedocs.io/en/dev/best_practices/nwbfile_metadata.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/nwbinspector/refs/heads/dev/docs/best_practices/nwbfile_metadata.rst
+  category: nwbinspector-general
+  type: markdown
+  description: The document describes NWBFile metadata best practices, covering file organization principles, global time references, acquisition vs. processing data, metadata requirements (experimenter, subject information, etc.), and formatting standards for fields like subject sex, species, and age that should follow specific conventions.
+- title: 'NWB Inspector: ogen'
+  url: https://nwbinspector.readthedocs.io/en/dev/best_practices/ogen.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/nwbinspector/refs/heads/dev/docs/best_practices/ogen.rst
+  category: nwbinspector-general
+  type: markdown
+  description: The document outlines the best practice requirement that each OptogeneticStimulusSite object should be linked to at least one OptogeneticSeries within the same NWB file, and includes reference to a check function that validates this relationship.
+- title: 'NWB Inspector: ophys'
+  url: https://nwbinspector.readthedocs.io/en/dev/best_practices/ophys.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/nwbinspector/refs/heads/dev/docs/best_practices/ophys.rst
+  category: nwbinspector-general
+  type: markdown
+  description: The document explains a requirement for plane segmentation in optical physiology, specifically that the image_mask column of a PlaneSegmentation must have the same shape as each item in the reference_images for proper consistency.
+- title: 'NWB Inspector: simulated data'
+  url: https://nwbinspector.readthedocs.io/en/dev/best_practices/simulated_data.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/nwbinspector/refs/heads/dev/docs/best_practices/simulated_data.rst
+  category: nwbinspector-general
+  type: markdown
+  description: The document explains that simulated data can be stored in NWB (Neurodata Without Borders) format to facilitate comparison with in vivo results, but simulation settings should not be included. It describes the "simulation_output" extension for storing simulation data from multiple cells and compartments, noting that users need to create custom extensions if they want to store simulation parameters.
+- title: 'NWB Inspector: tables'
+  url: https://nwbinspector.readthedocs.io/en/dev/best_practices/tables.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/nwbinspector/refs/heads/dev/docs/best_practices/tables.rst
+  category: nwbinspector-general
+  type: markdown
+  description: This document explains best practices for using dynamic tables in NWB files, including recommendations to avoid storing JSON in string columns, not writing empty tables, using appropriate data structures for single-row data, omitting columns with only NaN values, optimizing table layout with more rows than columns, using boolean data types properly, storing time values in seconds relative to a reference time, and maintaining unique IDs in tables.
+- title: 'NWB Inspector: time series'
+  url: https://nwbinspector.readthedocs.io/en/dev/best_practices/time_series.html
+  source_url: https://raw.githubusercontent.com/catalystneuro/nwbinspector/refs/heads/dev/docs/best_practices/time_series.rst
+  category: nwbinspector-general
+  type: markdown
+  description: This document covers best practices for using TimeSeries objects in NWB files, including guidelines for data orientation, units of measurement, time references, timestamps handling, chunking, compression, and proper usage of TimeSeries subtypes.
+- title: 'PyNWB: advanced io / h5dataio'
+  url: https://pynwb.readthedocs.io/en/latest/tutorials/advanced_io/h5dataio.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/pynwb/refs/heads/dev/docs/gallery/advanced_io/h5dataio.py
+  category: pynwb-advanced_io
+  type: markdown
+  description: This document explains how to customize HDF5 dataset I/O settings in PyNWB, including chunking, compression, and filters, using the H5DataIO wrapper to optimize storage and performance while maintaining backend independence.
+- title: 'PyNWB: advanced io / parallelio'
+  url: https://pynwb.readthedocs.io/en/latest/tutorials/advanced_io/parallelio.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/pynwb/refs/heads/dev/docs/gallery/advanced_io/parallelio.py
+  category: pynwb-advanced_io
+  type: markdown
+  description: This tutorial explains how to use parallel I/O with MPI in PyNWB, covering how to instantiate datasets for parallel writing, write to NWB files in parallel using MPI, and read from NWB files in parallel, with code examples demonstrating the process using mpi4py, NWBHDF5IO, and H5DataIO.
+- title: 'PyNWB: advanced io / editing'
+  url: https://pynwb.readthedocs.io/en/latest/tutorials/advanced_io/plot_editing.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/pynwb/refs/heads/dev/docs/gallery/advanced_io/plot_editing.py
+  category: pynwb-advanced_io
+  type: markdown
+  description: The document explains how to edit NWB files in-place, covering techniques for modifying datasets (changing values, attributes, and shapes), renaming groups, and adding new datasets to existing groups, with examples showing how to use PyNWB and h5py to make these edits while maintaining file validity.
+- title: 'PyNWB: advanced io / iterative write'
+  url: https://pynwb.readthedocs.io/en/latest/tutorials/advanced_io/plot_iterative_write.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/pynwb/refs/heads/dev/docs/gallery/advanced_io/plot_iterative_write.py
+  category: pynwb-advanced_io
+  type: markdown
+  description: A tutorial on iterative data writing in PyNWB, covering techniques for efficiently handling large data arrays, streaming data, and sparse arrays without loading everything into memory at once.
+- title: 'PyNWB: advanced io / linking data'
+  url: https://pynwb.readthedocs.io/en/latest/tutorials/advanced_io/plot_linking_data.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/pynwb/refs/heads/dev/docs/gallery/advanced_io/plot_linking_data.py
+  category: pynwb-advanced_io
+  type: markdown
+  description: This document explains how to link and store data across multiple files in PyNWB, showing methods for external linking to datasets or containers from separate NWB files, copying NWBFiles with links to original data, consolidating linked files for sharing, and automatically splitting large datasets across multiple files using the HDF5 family driver.
+- title: 'PyNWB: advanced io / zarr io'
+  url: https://pynwb.readthedocs.io/en/latest/tutorials/advanced_io/plot_zarr_io.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/pynwb/refs/heads/dev/docs/gallery/advanced_io/plot_zarr_io.py
+  category: pynwb-advanced_io
+  type: markdown
+  description: The document explains how to use Zarr as an alternative backend for NWB (Neurodata Without Borders) files, highlighting its advantages for large datasets and cloud storage, and demonstrating how to configure datasets with compression, write NWB files to Zarr format, and read them back using the hdmf-zarr package.
+- title: 'PyNWB: advanced io / streaming'
+  url: https://pynwb.readthedocs.io/en/latest/tutorials/advanced_io/streaming.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/pynwb/refs/heads/dev/docs/gallery/advanced_io/streaming.py
+  category: pynwb-advanced_io
+  type: markdown
+  description: 'Summary of methods for streaming NWB files from remote sources, particularly DANDI Archive. The document explains three approaches: using remfile (a lightweight, fast library optimized for HDF5), fsspec (a flexible virtual filesystem solution), and ROS3 driver in h5py (requires special installation), with code examples showing how to retrieve and access data from each method.'
+- title: 'PyNWB: domain / ecephys'
+  url: https://pynwb.readthedocs.io/en/latest/tutorials/domain/ecephys.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/pynwb/refs/heads/dev/docs/gallery/domain/ecephys.py
+  category: pynwb-domain
+  type: markdown
+  description: This document is a tutorial on storing extracellular electrophysiology data in NWB format using PyNWB, covering the creation of electrode tables, adding raw voltage data, LFP data, and spike data. It demonstrates how to create NWB files, define electrode groups and devices, store different types of neural recordings, and handle both sorted and unsorted spike times, with code examples for writing and reading the data.
+- title: 'PyNWB: domain / images'
+  url: https://pynwb.readthedocs.io/en/latest/tutorials/domain/images.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/pynwb/refs/heads/dev/docs/gallery/domain/images.py
+  category: pynwb-domain
+  type: markdown
+  description: The document provides a tutorial on storing image data in NWB (Neuro Data Without Borders) format using PyNWB, demonstrating how to add various types of image data including OpticalSeries for stimuli presentation, ImageSeries for acquisition data, static images (RGB/RGBA/Grayscale), and IndexSeries for efficient storage of repeated images, along with code examples for writing and reading these image datasets.
+- title: 'PyNWB: domain / ogen'
+  url: https://pynwb.readthedocs.io/en/latest/tutorials/domain/ogen.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/pynwb/refs/heads/dev/docs/gallery/domain/ogen.py
+  category: pynwb-domain
+  type: markdown
+  description: This tutorial demonstrates how to create and write optogenetics data to an NWB (Neurodata Without Borders) file, including how to add devices, stimulus sites (OptogeneticStimulusSite), and time series data (OptogeneticSeries) with proper metadata.
+- title: 'PyNWB: domain / ophys'
+  url: https://pynwb.readthedocs.io/en/latest/tutorials/domain/ophys.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/pynwb/refs/heads/dev/docs/gallery/domain/ophys.py
+  category: pynwb-domain
+  type: markdown
+  description: This document provides a comprehensive tutorial on writing calcium imaging data to NWB files, covering the creation of imaging planes, adding two-photon images, implementing motion correction, adding image segmentation with ROI definitions, and storing fluorescence responses with code examples for writing and reading NWB files.
+- title: 'PyNWB: domain / behavior'
+  url: https://pynwb.readthedocs.io/en/latest/tutorials/domain/plot_behavior.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/pynwb/refs/heads/dev/docs/gallery/domain/plot_behavior.py
+  category: pynwb-domain
+  type: markdown
+  description: The tutorial explains how to add behavioral data to an NWBFile using the pynwb.behavior module, covering how to store continuous position data, view angles, behavioral time series, events, and epochs, as well as eye-tracking data, with examples of creating, writing, and reading specific behavior data types.
+- title: 'PyNWB: domain / icephys'
+  url: https://pynwb.readthedocs.io/en/latest/tutorials/domain/plot_icephys.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/pynwb/refs/heads/dev/docs/gallery/domain/plot_icephys.py
+  category: pynwb-domain
+  type: markdown
+  description: This document explains storage of intracellular electrophysiology data in NWB (Neurodata Without Borders) format, covering TimeSeries data types, metadata organization in hierarchical tables, and the process of creating and populating NWB files with electrophysiology recordings, stimuli, and experimental conditions.
+- title: 'PyNWB: domain / icephys pandas'
+  url: https://pynwb.readthedocs.io/en/latest/tutorials/domain/plot_icephys_pandas.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/pynwb/refs/heads/dev/docs/gallery/domain/plot_icephys_pandas.py
+  category: pynwb-domain
+  type: markdown
+  description: The document is a tutorial on using pandas to query intracellular electrophysiology metadata in NWB (Neurodata Without Borders) files, demonstrating how to convert hierarchical metadata tables into pandas DataFrames, access related tables, and perform common metadata queries on experimental conditions, recordings, stimuli, and responses.
+- title: 'PyNWB: general / add remove containers'
+  url: https://pynwb.readthedocs.io/en/latest/tutorials/general/add_remove_containers.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/pynwb/refs/heads/dev/docs/gallery/general/add_remove_containers.py
+  category: pynwb-general
+  type: markdown
+  description: 'The document provides a tutorial on adding and removing containers from NWB files using PyNWB, explaining two main approaches: modifying files in read/write mode, and exporting data to new files with the ability to add or remove components.'
+- title: 'PyNWB: general / extensions'
+  url: https://pynwb.readthedocs.io/en/latest/tutorials/general/extensions.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/pynwb/refs/heads/dev/docs/gallery/general/extensions.py
+  category: pynwb-general
+  type: markdown
+  description: This document provides a tutorial on extending the Neurodata Without Borders (NWB) format, explaining how to create, document, and use Neurodata Extensions (NDX), including creating custom data types, caching extensions, implementing MultiContainerInterface, and working with specialized data structures like cortical surface meshes.
+- title: 'PyNWB: general / object id'
+  url: https://pynwb.readthedocs.io/en/latest/tutorials/general/object_id.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/pynwb/refs/heads/dev/docs/gallery/general/object_id.py
+  category: pynwb-general
+  type: markdown
+  description: The document explains how to work with object IDs in NWB (Neurodata Without Borders) files, showing how every NWB container has a UUID string identifier that can be accessed via the object_id method and how these IDs can be used to retrieve objects from an NWBFile's objects dictionary.
+- title: 'PyNWB: general / configurator'
+  url: https://pynwb.readthedocs.io/en/latest/tutorials/general/plot_configurator.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/pynwb/refs/heads/dev/docs/gallery/general/plot_configurator.py
+  category: pynwb-general
+  type: markdown
+  description: A guide explaining how to use configuration files in PyNWB to validate specific fields against allowed term sets, including how to create, load, and unload configuration files, with examples showing the validation of "experimenter" and "species" fields in NWBFile and Subject classes.
+- title: 'PyNWB: general / read basics'
+  url: https://pynwb.readthedocs.io/en/latest/tutorials/general/plot_read_basics.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/pynwb/refs/heads/dev/docs/gallery/general/plot_read_basics.py
+  category: pynwb-general
+  type: markdown
+  description: This document explains how to read and explore NWB (Neurodata Without Borders) files using Python, covering how to download neurophysiology data from DANDI archive, access the file contents including stimulus data, single unit recordings, and trial information, and visualize neural activity and stimuli with basic plots.
+- title: 'PyNWB: general / timeintervals'
+  url: https://pynwb.readthedocs.io/en/latest/tutorials/general/plot_timeintervals.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/pynwb/refs/heads/dev/docs/gallery/general/plot_timeintervals.py
+  category: pynwb-general
+  type: markdown
+  description: The document explains how to annotate time intervals in neuroscience data using NWB's TimeIntervals structure, detailing methods for creating, accessing, and storing trials, epochs, and custom time intervals with TimeSeries references, including code examples for defining intervals and linking them to specific data ranges.
+- title: 'PyNWB: general / scratch'
+  url: https://pynwb.readthedocs.io/en/latest/tutorials/general/scratch.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/pynwb/refs/heads/dev/docs/gallery/general/scratch.py
+  category: pynwb-general
+  type: markdown
+  description: A tutorial on using PyNWB's scratch space for storing exploratory or non-standardized analysis results, demonstrating how to copy NWB files, add processed data to processing modules, and use scratch space for storing intermediate analyses that don't require formal extensions.
