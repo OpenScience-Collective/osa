@@ -358,6 +358,62 @@ class TestCreateCommunityAssistant:
         assert awm.key_source == "byok"
 
 
+class TestLangfuseTracing:
+    """Trace ids and trace metadata passed to LangFuse (issue #515)."""
+
+    def test_trace_metadata_tags_community(self) -> None:
+        from src.api.routers.community import _langfuse_trace_metadata
+
+        assert _langfuse_trace_metadata("hed", None, None) == {"langfuse_tags": ["hed"]}
+
+    def test_trace_metadata_includes_user_and_session(self) -> None:
+        from src.api.routers.community import _langfuse_trace_metadata
+
+        assert _langfuse_trace_metadata("hed", "user-1", "sess-1") == {
+            "langfuse_tags": ["hed"],
+            "langfuse_user_id": "user-1",
+            "langfuse_session_id": "sess-1",
+        }
+
+    def test_trace_id_is_32_hex_and_metadata_attached(self, monkeypatch) -> None:
+        """LangFuse rejects trace ids that are not 32 lowercase hex characters.
+
+        The old "<community>-<12 hex>" form was rejected, which split every
+        conversation into one trace per LLM/tool call. The tracing service is
+        faked here so the test doesn't need the optional langfuse package.
+        """
+        import re
+
+        from src.api.routers.community import create_community_assistant
+        from src.api.security import ByokCredential
+        from src.core.services import llm
+
+        requested_ids: list[str | None] = []
+
+        class FakeLLMService:
+            def get_config_with_tracing(self, trace_id=None):
+                requested_ids.append(trace_id)
+                return {"callbacks": [object()]}
+
+        monkeypatch.setattr(llm, "get_llm_service", lambda _settings=None: FakeLLMService())
+
+        awm = create_community_assistant(
+            "hed",
+            byok=ByokCredential(key="sk-or-fake-test-key", provider="openrouter"),
+            user_id="user-1",
+            session_id="sess-1",
+            preload_docs=False,
+        )
+
+        assert re.fullmatch(r"[0-9a-f]{32}", awm.langfuse_trace_id)
+        assert requested_ids == [awm.langfuse_trace_id]
+        assert awm.langfuse_config["metadata"] == {
+            "langfuse_tags": ["hed"],
+            "langfuse_user_id": "user-1",
+            "langfuse_session_id": "sess-1",
+        }
+
+
 class TestSessionEndpointBehavior:
     """Tests for session endpoint behavior using unit-level functions."""
 

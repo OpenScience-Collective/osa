@@ -1447,6 +1447,22 @@ class AssistantWithMetrics:
     langfuse_trace_id: str | None = None
 
 
+def _langfuse_trace_metadata(
+    community_id: str, user_id: str | None, session_id: str | None
+) -> dict[str, Any]:
+    """LangChain run metadata the LangFuse callback handler maps onto the trace.
+
+    Lets traces be filtered by community, and grouped by user (``X-User-ID``)
+    and by chat session.
+    """
+    metadata: dict[str, Any] = {"langfuse_tags": [community_id]}
+    if user_id:
+        metadata["langfuse_user_id"] = user_id
+    if session_id:
+        metadata["langfuse_session_id"] = session_id
+    return metadata
+
+
 def create_community_assistant(
     community_id: str,
     byok: ByokCredential | None = None,
@@ -1457,6 +1473,7 @@ def create_community_assistant(
     page_context: PageContext | None = None,
     declared_client_tools: set[str] | None = None,
     browser_runs_left: int | None = None,
+    session_id: str | None = None,
 ) -> AssistantWithMetrics:
     """Create a community assistant instance with authorization checks.
 
@@ -1477,6 +1494,8 @@ def create_community_assistant(
         requested_model: Optional model override from request body
         preload_docs: Whether to preload documents
         page_context: Optional context about the page where the widget is embedded
+        session_id: Chat session ID, recorded on the LangFuse trace so a
+            conversation's turns can be grouped (chat endpoints only)
 
     Returns:
         AssistantWithMetrics containing the assistant, resolved model, and key source.
@@ -1586,9 +1605,15 @@ def create_community_assistant(
     else:
         try:
             llm_service = get_llm_service(settings)
-            trace_id = f"{community_id}-{uuid.uuid4().hex[:12]}"
+            # LangFuse requires a 32-char lowercase hex trace id. It rejects
+            # anything else (such as a community prefix), which leaves the root
+            # span unset: every LLM and tool call then becomes its own trace and
+            # request_log.langfuse_trace_id matches nothing (issue #515). The
+            # community is recorded as a tag instead.
+            trace_id = uuid.uuid4().hex
             config = llm_service.get_config_with_tracing(trace_id=trace_id)
             if config.get("callbacks"):
+                config["metadata"] = _langfuse_trace_metadata(community_id, user_id, session_id)
                 langfuse_config = config
                 langfuse_trace_id = trace_id
         except (AttributeError, ValueError, RuntimeError, OSError, ImportError) as e:
@@ -2076,6 +2101,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 user_id=user_id,
                 requested_model=body.model,
                 page_context=body.page_context,
+                session_id=session.session_id,
             )
             result = await awm.assistant.ainvoke(session.messages, config=awm.langfuse_config)
 
@@ -3258,6 +3284,7 @@ async def _stream_chat_response(
             page_context=page_context,
             declared_client_tools=declared_client_tools,
             browser_runs_left=MAX_BROWSER_RUNS_PER_REPLY - browser_runs_answered,
+            session_id=session.session_id,
         )
         graph = awm.assistant.build_graph()
 
