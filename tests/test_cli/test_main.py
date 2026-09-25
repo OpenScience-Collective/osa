@@ -30,8 +30,25 @@ class TestVersionCommand:
 
         result = runner.invoke(cli, ["version"])
         assert result.exit_code == 0
-        assert "OSA v" in result.output
-        assert __version__ in result.output
+        # Unstyled: Rich colors part of the version when FORCE_COLOR is set (#507).
+        assert f"OSA v{__version__}" in unstyle(result.output)
+
+    def test_version_reads_the_same_when_styled(self, monkeypatch) -> None:
+        """A styled console, as under FORCE_COLOR=1, still shows the version (#507)."""
+        from rich.console import Console
+
+        from src.cli import output
+        from src.version import __version__
+
+        monkeypatch.setattr(
+            output, "console", Console(force_terminal=True, color_system="standard")
+        )
+        result = runner.invoke(cli, ["version"])
+        assert result.exit_code == 0
+        assert "\x1b[" in result.output, (
+            "the console did not style its output, so this test proves nothing"
+        )
+        assert f"OSA v{__version__}" in unstyle(result.output)
 
 
 class TestHealthCommand:
