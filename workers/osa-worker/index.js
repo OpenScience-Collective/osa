@@ -317,14 +317,17 @@ function isAllowedOrigin(origin) {
     'https://metabci.readthedocs.io',
     'https://mne.tools',
     'https://nemar.org',
+    'https://nwb.org',
     'https://openneuropet.github.io',
+    'https://pynwb.readthedocs.io',
     'https://sccn.github.io',
     'https://test.nemar.org',
     'https://www.eeglab.org',
     'https://www.fieldtriptoolbox.org',
     'https://www.hedtags.org',
     'https://www.hedtools.org',
-    'https://www.nemar.org'
+    'https://www.nemar.org',
+    'https://www.nwb.org'
   ];
 
   // Check exact matches
@@ -339,6 +342,7 @@ function isAllowedOrigin(origin) {
   if (origin.startsWith('https://') && origin.endsWith('.mne.tools')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.nemar.org')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.neuroimaging.io')) return true;
+  if (origin.startsWith('https://') && origin.endsWith('.nwb.org')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.readthedocs.build')) return true;
   if (origin.startsWith('https://') && origin.endsWith('.readthedocs.io')) return true;
 
