@@ -95,6 +95,7 @@ def _build_config(
     openalex_email: str | None = None,
     semantic_scholar_api_key: str | None = None,
     pubmed_api_key: str | None = None,
+    timeout: float | None = None,
 ) -> Config:
     """Build an opencite Config from explicit args and configure_openalex().
 
@@ -103,13 +104,22 @@ def _build_config(
     than Config.from_env() so paper sync never depends on ambient ``.env``
     files in the working directory, which are environment-specific and have
     tripped opencite's dotenv loader.
+
+    Args:
+        timeout: Optional per-request timeout (seconds) forwarded to
+            opencite's Config. Left unset, Config keeps its own default
+            (30s). Callers that need to fail fast (e.g. smoke tests) pass an
+            explicit shorter value.
     """
-    return Config(
-        openalex_api_key=openalex_api_key or _OPENALEX_API_KEY or "",
-        contact_email=openalex_email or _OPENALEX_EMAIL or "",
-        semantic_scholar_api_key=semantic_scholar_api_key or "",
-        pubmed_api_key=pubmed_api_key or "",
-    )
+    config_kwargs: dict[str, Any] = {
+        "openalex_api_key": openalex_api_key or _OPENALEX_API_KEY or "",
+        "contact_email": openalex_email or _OPENALEX_EMAIL or "",
+        "semantic_scholar_api_key": semantic_scholar_api_key or "",
+        "pubmed_api_key": pubmed_api_key or "",
+    }
+    if timeout is not None:
+        config_kwargs["timeout"] = timeout
+    return Config(**config_kwargs)
 
 
 def _native_id(paper: Paper, osa_source: str) -> str:
@@ -280,10 +290,27 @@ def _sync_single_source(
     return count
 
 
-def sync_openalex_papers(query: str, max_results: int = 100, project: str = "hed") -> int:
-    """Sync papers from OpenAlex matching query (via opencite)."""
+def sync_openalex_papers(
+    query: str,
+    max_results: int = 100,
+    project: str = "hed",
+    timeout: float | None = None,
+) -> int:
+    """Sync papers from OpenAlex matching query (via opencite).
+
+    Args:
+        query: Search query.
+        max_results: Maximum number of papers to sync.
+        project: Project/community ID for database isolation.
+        timeout: Optional per-request timeout (seconds), forwarded to the
+            opencite Config. Defaults to Config's own 30s when unset; a
+            smoke test can pass a short bound so an unreachable or slow
+            OpenAlex fails fast instead of hanging the run.
+    """
     logger.info("Syncing OpenAlex papers for query: %s", query)
-    return _sync_single_source(query, max_results, project, "openalex", _build_config())
+    return _sync_single_source(
+        query, max_results, project, "openalex", _build_config(timeout=timeout)
+    )
 
 
 def sync_semanticscholar_papers(
