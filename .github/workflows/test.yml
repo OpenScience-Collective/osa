@@ -189,20 +189,19 @@ jobs:
       # wheel added after the cache was saved was fetched again on every run: the key
       # already existed, and a cache is never overwritten.
       #
-      # A restore key that matches a cache EXACTLY wins over a newer prefix match
-      # (measured on #504: with only the second line, a rerun restored the old
-      # 13 MB cache over the newer one holding SciPy). So the dash-terminated
-      # prefix, which matches no key exactly, comes first and finds the newest
-      # cache saved below; the second line is the old key, used only until one is.
+      #
+      # The restore key is a prefix only. Measured on #504: listing the old
+      # package.json-only key as well restored the old 13 MB cache over a newer
+      # one holding SciPy, in either order, since an exact match of any restore key
+      # beats every prefix match. So a scope with no cache under this scheme yet
+      # downloads every wheel once and saves one.
       - name: Restore Pyodide packages
         id: pyodide-cache
         uses: actions/cache/restore@v4
         with:
           path: .cache/pyodide-packages
           key: pyodide-packages-${{ hashFiles('package.json') }}-
-          restore-keys: |
-            pyodide-packages-${{ hashFiles('package.json') }}-
-            pyodide-packages-${{ hashFiles('package.json') }}
+          restore-keys: pyodide-packages-${{ hashFiles('package.json') }}-
 
       - name: Run worker core tests against real Pyodide
         run: bun frontend/test-worker-core.js
