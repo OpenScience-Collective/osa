@@ -169,19 +169,26 @@ jobs:
       # The worker core runs against the REAL Pyodide from npm, so the Python half
       # of the runtime is tested in CI rather than only by hand in a browser. The
       # npm package carries the interpreter; every wheel a suite loads (numpy, SciPy,
-      # matplotlib and the rest) is fetched from the CDN on the first run and cached
-      # between runs. The cache is keyed on package.json alone, so a wheel added to a
-      # preload list after it was saved is fetched on every run until the key moves.
+      # matplotlib and the rest) is fetched from the CDN into .cache/pyodide-packages
+      # and cached between runs, by the restore and save steps around the suites
+      # that load Pyodide (the worker core, the data lane and the built bundle).
       - name: Install frontend test dependencies
         run: bun install
 
-      - name: Cache Pyodide packages
-        uses: actions/cache@v4
+      # Restores the newest cache for this Pyodide. Saved (below) under the hash of
+      # the wheels it holds, not of any config, since which wheels a run fetches is
+      # decided by every preload list, every lock overlay's depends and whatever a
+      # suite loads itself. Keyed on package.json alone, as it was until #495, a
+      # wheel added after the cache was saved was fetched again on every run: the key
+      # already existed, and a cache is never overwritten. The prefix without a
+      # trailing dash also restores a cache saved under that old key.
+      - name: Restore Pyodide packages
+        id: pyodide-cache
+        uses: actions/cache/restore@v4
         with:
           path: .cache/pyodide-packages
-          # Keyed on the manifest that pins Pyodide, so a version bump starts a
-          # fresh cache instead of relying on someone to edit a second copy here.
-          key: pyodide-packages-${{ hashFiles('package.json') }}
+          key: pyodide-packages-${{ hashFiles('package.json') }}-
+          restore-keys: pyodide-packages-${{ hashFiles('package.json') }}
 
       - name: Run worker core tests against real Pyodide
         run: bun frontend/test-worker-core.js
@@ -202,6 +209,24 @@ jobs:
 
       - name: Run runtime bundle tests, as built
         run: bun frontend/test-runtime-bundle.js
+
+      # What the suites that load Pyodide left in the cache, against what was
+      # restored: equal hashes mean no wheel was fetched and nothing needs saving.
+      - name: Show the Pyodide package cache
+        if: ${{ !cancelled() }}
+        run: |
+          echo "restored:  ${{ steps.pyodide-cache.outputs.cache-matched-key || '(nothing)' }}"
+          echo "now holds: pyodide-packages-${{ hashFiles('package.json') }}-${{ hashFiles('.cache/pyodide-packages/**') }}"
+          echo "wheels:    $(find .cache/pyodide-packages -name "*.whl" 2>/dev/null | wc -l)"
+
+      # Saved only when a run fetched a wheel the restored cache lacked, and after a
+      # failed suite too, since the wheels it fetched are still good.
+      - name: Save Pyodide packages
+        if: ${{ !cancelled() && hashFiles('.cache/pyodide-packages/**') != '' && steps.pyodide-cache.outputs.cache-matched-key != format('pyodide-packages-{0}-{1}', hashFiles('package.json'), hashFiles('.cache/pyodide-packages/**')) }}
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/pyodide-packages
+          key: pyodide-packages-${{ hashFiles('package.json') }}-${{ hashFiles('.cache/pyodide-packages/**') }}
 
       - name: Run widget browser-execution tests on a real DOM
         run: bun frontend/test-widget-tools.js
