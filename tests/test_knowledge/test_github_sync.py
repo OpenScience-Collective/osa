@@ -1,6 +1,11 @@
 """Tests for GitHub sync module.
 
-Note: These are real API tests, not mocks, per project guidelines.
+Note: These are real API tests, not mocks, per project guidelines. The
+tests that call the live GitHub API carry ``@pytest.mark.network`` so the
+unit job's `-m "not network"` leaves them to the network job (#397); the
+sync functions tolerate a failed request and return 0 rather than raising,
+so an unmarked run wouldn't hang, but it would still spend the local suite's
+time on a real network round trip.
 """
 
 import os
@@ -25,6 +30,7 @@ def temp_db(tmp_path: Path):
 class TestGitHubSync:
     """Test GitHub sync functionality."""
 
+    @pytest.mark.network
     def test_sync_repo_issues_basic_flow(self, temp_db: Path):
         """Test basic GitHub issues sync for a known public repo.
 
@@ -62,6 +68,7 @@ class TestGitHubSync:
             count = sync_repo_issues("owner/repo/extra", project="test")
             assert count == 0
 
+    @pytest.mark.network
     def test_sync_repo_full_flow(self, temp_db: Path):
         """Test full repo sync (issues + PRs)."""
         repo = "hed-standard/hed-specification"
@@ -83,6 +90,7 @@ class TestGitHubSync:
                     assert row is not None
                     assert row["items_synced"] == total
 
+    @pytest.mark.network
     @pytest.mark.skipif(
         os.getenv("GITHUB_TOKEN") is None,
         reason="Requires GITHUB_TOKEN for rate limits",
