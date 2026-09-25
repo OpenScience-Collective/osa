@@ -89,6 +89,17 @@ console.log('\nrun as the bridge runs it, a failed request raises instead of han
     `without the guard, the await on a refused connection never returns (got ${JSON.stringify(unguarded)}); ` +
       'if this fails, Pyodide no longer hangs here and the guard may be removable');
 
+  // And for the shape itself, which the AbortError case below builds by hand.
+  const unguardedShape = await settleWithin(
+    pyodide.runPythonAsync(
+      `import js\ntry:\n    await js.Promise.reject(js.JSON.parse('{"name": "AbortError", "message": "x"}'))\n` +
+        'except BaseException as e:\n    out = "raised"\nout'
+    ),
+    3_000
+  );
+  assert(unguardedShape === null,
+    `without the guard, a rejection with a name and a message and no stack never returns either (got ${JSON.stringify(unguardedShape)})`);
+
   pyodide.runPython(bridgeGuard);
   const guarded = await settleWithin(attempt(refused), 10_000);
   assert(typeof guarded === 'string' && /^AbortError: \S/.test(guarded),
@@ -104,35 +115,44 @@ console.log('\nrun as the bridge runs it, a failed request raises instead of han
   assert(pyodide.runPython('_h.set_exception is _first'), 'sent twice to one kernel, it wraps once');
   pyodide.runPython('del _h, _first');
 
-  const passthrough = await settleWithin(
-    pyodide.runPythonAsync(
-      'import js\ntry:\n    await js.Promise.reject(js.Error.new("an ordinary error"))\n' +
-        'except Exception as e:\n    out = f"{type(e).__name__}: {e}"\nout'
-    ),
-    10_000
-  );
-  assert(passthrough === 'JsException: Error: an ordinary error',
-    `an error Pyodide already recognizes is passed through untouched (got ${JSON.stringify(passthrough)})`);
+  // Each case awaits `await <expression>` inside a try, and reads back what was
+  // raised as "<type>: <message>", or null when the await never returned.
+  const raised = (expression) =>
+    settleWithin(
+      pyodide.runPythonAsync(
+        `import js\ntry:\n    await ${expression}\n    out = "no error"\n` +
+          'except BaseException as e:\n    out = f"{type(e).__name__}: {e}"\nout'
+      ),
+      10_000
+    );
 
-  const plainValue = await settleWithin(
-    pyodide.runPythonAsync(
-      'import js\ntry:\n    await js.Promise.reject("just a string")\n' +
-        'except Exception as e:\n    out = f"{type(e).__name__}: {e}"\nout'
-    ),
-    10_000
-  );
+  // A Python exception that went through JavaScript comes back as itself. Only
+  // what asyncio would refuse is wrapped, so a guard that wrapped everything
+  // would turn this into a JsException and fail here.
+  const own = await raised('js.Promise.reject(ValueError("the reader\'s own"))');
+  assert(own === "ValueError: the reader's own",
+    `a rejection with a Python exception keeps its type (got ${JSON.stringify(own)})`);
+
+  const ordinary = await raised('js.Promise.reject(js.Error.new("an ordinary error"))');
+  assert(ordinary === 'JsException: Error: an ordinary error',
+    `an error Pyodide already recognizes is passed through untouched (got ${JSON.stringify(ordinary)})`);
+
+  // An aborted request, as Safari rejects one: a name and a message, and no
+  // stack. Under Bun a real AbortController rejects with a DOMException, which
+  // Pyodide already recognizes, so the shape is built by hand.
+  const aborted = await raised(`js.Promise.reject(js.JSON.parse('{"name": "AbortError", "message": "The operation was aborted."}'))`);
+  assert(aborted === 'JsException: AbortError: The operation was aborted.',
+    `a stackless AbortError raises as one, keeping its name and message (got ${JSON.stringify(aborted)})`);
+
+  const plainValue = await raised('js.Promise.reject("just a string")');
   assert(plainValue === 'JsException: Error: just a string',
-    `and a rejection with no error at all raises too, naming the value (got ${JSON.stringify(plainValue)})`);
+    `a rejection with no error at all raises too, naming the value (got ${JSON.stringify(plainValue)})`);
 
-  const noReason = await settleWithin(
-    pyodide.runPythonAsync(
-      'import js\ntry:\n    await js.Promise.reject(js.undefined)\n' +
-        'except Exception as e:\n    out = f"{type(e).__name__}: {e}"\nout'
-    ),
-    10_000
-  );
-  assert(noReason === 'JsException: Error: a promise was rejected with no reason',
-    `and so does one with no reason at all, saying so rather than "None" (got ${JSON.stringify(noReason)})`);
+  for (const [kind, expression] of [['undefined', 'js.Promise.reject(js.undefined)'], ['null', 'js.Promise.reject(js.JSON.parse("null"))']]) {
+    const empty = await raised(expression);
+    assert(empty === 'JsException: Error: a promise was rejected with no reason',
+      `and one with ${kind} for its reason says so, rather than printing the value (got ${JSON.stringify(empty)})`);
+  }
 }
 
 console.log(`\n${'='.repeat(60)}`);

@@ -117,9 +117,13 @@ async function bootRuntime({
       namespaceSeal: buildNamespaceSealSource(),
     },
   };
+  // Kept so a test can reach the interpreter the core booted, as the host sees it.
+  let pyodide = null;
   const runtime = createFromSource(config, {
-    load: (indexURL, options) =>
-      loadPyodide({ packageCacheDir: PACKAGE_CACHE, stdout: () => {}, stderr: () => {}, ...options }),
+    load: async (indexURL, options) => {
+      pyodide = await loadPyodide({ packageCacheDir: PACKAGE_CACHE, stdout: () => {}, stderr: () => {}, ...options });
+      return pyodide;
+    },
     stockLock: readStockLock,
     seal: (prefixes) => sealed.push({ prefixes, sentBefore: messages.length }),
     send: (message) => messages.push(message),
@@ -133,7 +137,7 @@ async function bootRuntime({
     await runtime.handle({ type: 'execute', call_id: id, code });
     return messages.slice(from).find((m) => m.type === 'result');
   };
-  return { runtime, messages, sealed, run, ready: messages.find((m) => m.type === 'ready') };
+  return { runtime, pyodide, messages, sealed, run, ready: messages.find((m) => m.type === 'ready') };
 }
 
 console.log('='.repeat(60));
@@ -698,6 +702,16 @@ console.log('\na request that gets no response raises, rather than hanging the r
   // fetch_allow is checked in the browser harness, where the guard is real.
   const lost = await bootRuntime();
   const refused = await refusedUrl();
+
+  // The canary. This section reproduces Safari only while Bun's rejection has
+  // Safari's shape; with a stack, Pyodide would convert it without the guard's
+  // help, and every check below would pass with the guard removed.
+  const shape = await fetch(`${refused}x`).then(() => null, (err) => err);
+  assert(shape !== null && typeof shape.message === 'string' && !('stack' in shape),
+    "Bun's fetch rejects a refused connection with a message and no stack, as Safari's does; if this fails, " +
+      'a Bun upgrade gave that rejection a stack, and this section no longer tests the guard: find another stackless rejection for it ' +
+      `(got ${shape === null ? 'a response' : JSON.stringify(Object.getOwnPropertyNames(shape))})`);
+
   const noResponse = await settleWithin(
     lost.run(
       `try:\n    await osa.fetch(${JSON.stringify(`${refused}x`)})\nexcept OSError as e:\n` +
@@ -711,8 +725,52 @@ console.log('\na request that gets no response raises, rather than hanging the r
   assertEqual(cause, 'JsException', 'it is an OSError, chained to what the browser raised');
   assert(/^no response from http:\/\/127\.0\.0\.1:\d+\/x: a network failure, a redirect .* or a URL outside fetch_allow\. The browser said: TypeError: \S/.test(message),
     `and it lists what "no response" can mean, then what the browser said (got ${JSON.stringify(message)})`);
-  const after = await settleWithin(lost.run('print("still answering")'), 15_000);
-  assertEqual(after && after.stdout, 'still answering\n', 'and the runtime is free for the next run');
+
+  // The same session still reads, from a server that answers.
+  const server = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch: () => new Response('still-reading') });
+  try {
+    const after = await settleWithin(
+      lost.run(`data = await osa.fetch_bytes("http://127.0.0.1:${server.port}/data")\nprint(len(data), data.decode())`),
+      15_000
+    );
+    assertEqual(after && after.stdout, '13 still-reading\n', 'and after it, the same runtime reads from a server that answers');
+  } finally {
+    server.stop(true);
+  }
+
+  // What else a promise can be rejected with, in the interpreter the core booted,
+  // after its seal: a promise made on the host's side, awaited in a namespace of
+  // its own. Each reads back "<type>: <message>", or null when the await never
+  // returned.
+  const raised = async (make) => {
+    const namespace = lost.pyodide.globals.get('dict')();
+    namespace.set('make', make);
+    try {
+      return await settleWithin(
+        lost.pyodide.runPythonAsync(
+          'try:\n    await make()\n    out = "no error"\nexcept BaseException as e:\n    out = f"{type(e).__name__}: {e}"\nout',
+          { globals: namespace }
+        ),
+        10_000
+      );
+    } finally {
+      namespace.destroy();
+    }
+  };
+  // Only what asyncio would refuse is wrapped, so a guard that wrapped
+  // everything would turn this into a JsException and fail here.
+  const pythonError = lost.pyodide.runPython('ValueError("raised in Python")');
+  const own = await raised(() => Promise.reject(pythonError));
+  pythonError.destroy();
+  assertEqual(own, 'ValueError: raised in Python', 'a rejection with a Python exception keeps its type');
+  // Safari's abort shape: a name and a message, no stack. A real AbortController
+  // under Bun rejects with a DOMException, which Pyodide already recognizes.
+  assertEqual(await raised(() => Promise.reject({ name: 'AbortError', message: 'The operation was aborted.' })),
+    'JsException: AbortError: The operation was aborted.', 'a stackless AbortError raises as one, keeping its name and message');
+  assertEqual(await raised(() => Promise.reject(null)), 'JsException: Error: a promise was rejected with no reason',
+    'a rejection with null for its reason says so, rather than printing the value');
+  assertEqual(await raised(() => Promise.reject(undefined)), 'JsException: Error: a promise was rejected with no reason',
+    'and so does one with undefined');
 }
 
 console.log('\nosa.save_script and osa.save_artifact write into the run\'s workspace result (#433)');
