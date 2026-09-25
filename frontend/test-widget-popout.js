@@ -107,7 +107,7 @@ function configResponse(widgetOverrides = {}) {
  * `tag` is the widget tag's attributes beyond src and data-no-auto-init; `config`
  * is what the community endpoint answers, for the page and for its pop-out.
  */
-async function hostPage({ config = configResponse(), tag = { integrity: INTEGRITY, crossorigin: 'anonymous' }, dataset, colorScheme, setConfig = {} } = {}) {
+async function hostPage({ config = configResponse(), tag = { integrity: INTEGRITY, crossorigin: 'anonymous' }, dataset, colorScheme, setConfig = {}, testHooks = false } = {}) {
   const requests = [];
   const window = new Window({
     url: 'http://localhost/dataset/nm000103',
@@ -140,6 +140,9 @@ async function hostPage({ config = configResponse(), tag = { integrity: INTEGRIT
   });
   const alerts = [];
   window.alert = (message) => alerts.push(message);
+  // The page's widget test hooks (__browser), for a test that puts runs on the
+  // page as a reply would; the pop-out never has them.
+  if (testHooks) window.__OSA_TEST__ = true;
 
   const script = window.document.createElement('script');
   for (const [name, value] of Object.entries(tag)) script.setAttribute(name, value);
@@ -528,6 +531,74 @@ console.log('\na pop-out whose community config no longer asks for the capsule g
   const { container, q } = await openPopout(page);
   assert(!container.classList.contains('osa-capsule'), 'no capsule class');
   assert(!q('.osa-tab-strip') && !q('.osa-views'), 'and no tab strip or views left behind');
+}
+
+// Open the pop-out and hand it the page's stored history, as the browser does for
+// an about:blank window of the page's own origin: each happy-dom window has a
+// storage of its own, so the test copies it across before the pop-out's widget
+// starts (a task after its script is added). popout-check.mjs sees the real one.
+async function openPopoutSharingStorage(page) {
+  page.click('.osa-popout-btn');
+  const { popup } = page.opened.at(-1);
+  assert(!popup.document.querySelector('.osa-chat-widget'), 'sanity: the pop-out\'s widget has not started yet');
+  for (let i = 0; i < page.window.localStorage.length; i++) {
+    const key = page.window.localStorage.key(i);
+    popup.localStorage.setItem(key, page.window.localStorage.getItem(key));
+  }
+  return { popup, ...(await popoutReady(page, popup)) };
+}
+
+console.log('\na run\'s code block, Copy and Download work in the pop-out, and it opens closed there (#491)');
+{
+  const RUN_CODE = 'import numpy as np\nprint("<b>&amp;</b>")\n';
+  const page = await hostPage({ testHooks: true, dataset: { id: 'nm000103', zarr: true } });
+  const hooks = page.api.__browser;
+  hooks.setMessages([
+    { role: 'assistant', content: 'Hi' },
+    { role: 'user', content: 'plot it', dataset: 'nm000103' },
+    { role: 'assistant', content: 'done', executions: [{
+      callId: 'call-1', tool: 'execute_code', description: 'plot', code: RUN_CODE,
+      status: 'ok', stdout: '', stderr: '', images: [], local: false, workspaceNote: '',
+    }] },
+  ]);
+  hooks.saveHistory();
+  hooks.renderMessages(page.container);
+  // The reader opened the code on the page.
+  const pageBlock = page.q('.osa-execution-code');
+  pageBlock.open = true;
+  pageBlock.dispatchEvent(new page.window.Event('toggle'));
+  assertEqual(hooks.getMessages()[2].executions[0]._codeOpen, true, 'sanity: open on the page');
+  // A later save, as the next reply's end makes, with the block still open.
+  hooks.saveHistory();
+
+  const { popup, q } = await openPopoutSharingStorage(page);
+  const block = q('.osa-execution-code');
+  assert(!!block, 'the pop-out shows the run\'s code block');
+  assertEqual(block.querySelector('pre code').textContent, RUN_CODE, 'with the exact code, escaped');
+  assert(!block.hasAttribute('open'), 'closed: the pop-out rebuilds the conversation from storage, which does not keep an open block, as a reload does');
+
+  block.querySelector('.osa-code-copy').dispatchEvent(new popup.Event('click', { bubbles: true }));
+  await waitUntil(() => block.querySelector('.osa-code-status').textContent === 'Copied', 'the pop-out\'s copy');
+  assertEqual(await popup.navigator.clipboard.readText(), RUN_CODE, 'Copy in the pop-out puts the exact code on its clipboard');
+
+  // The pop-out's own address for the file, and its own link, recorded on the way through.
+  const blobs = new Map();
+  const realCreate = popup.URL.createObjectURL;
+  popup.URL.createObjectURL = (blob) => {
+    const url = realCreate.call(popup.URL, blob);
+    blobs.set(url, blob);
+    return url;
+  };
+  const saved = [];
+  popup.document.addEventListener('click', (event) => {
+    if (event.target.tagName !== 'A' || !event.target.hasAttribute('download')) return;
+    event.preventDefault();
+    saved.push({ filename: event.target.download, blob: blobs.get(event.target.href) });
+  }, true);
+  block.querySelector('.osa-code-download').dispatchEvent(new popup.Event('click', { bubbles: true }));
+  assertEqual(saved.map((file) => file.filename), ['nm000103-run-1.py'], 'Download in the pop-out saves the file, named as on the page');
+  assertEqual(saved[0] && await saved[0].blob.text(), RUN_CODE, 'holding the exact code');
+  popup.URL.createObjectURL = realCreate;
 }
 
 console.log('\n' + '='.repeat(60));
