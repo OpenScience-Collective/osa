@@ -461,7 +461,11 @@ The code's bar has two buttons:
   It never opens a browser dialog.
 - **Download** saves the code as a `.py` file built in the page, named for the dataset the question was about and the run's place in the conversation, counted from 1: `nm000132-run-3.py`.
   The dataset is the one the page named with `setDataset` when the reader sent the question; a question sent from a page that named none takes the community's id instead (`nemar-run-3.py`).
-  The count is of every run the conversation shows, one that was declined or stopped included, so it can differ from the `run-NNN` numbering of the workspace download, which counts only the runs whose Python finished, with or without an error.
+  The count is of every run the conversation shows, one that was declined, stopped, timed out or ran out of memory included.
+  The workspace download numbers its `run-NNN` files differently: per chat session, and only the runs it saved files for, which are the runs whose Python ran to an end, successfully or with an error, in a browser that could store them (`ClientToolController#persist`, `frontend/osa-controller.js`).
+  So the two numbers agree only while every run has ended that way.
+
+The pop-out window (above) shows each run's code the same way, with the same Copy and Download; it rebuilds the conversation from storage, so a code block the reader opened on the page is closed there, as after a reload.
 
 The permission gate ("Run this Python in your browser?") has the same Copy over the code it asks about, and copying it neither runs nor denies it; Download waits until the code has run.
 
@@ -469,7 +473,8 @@ Both copy and download the code the run's record keeps, its first 20,000 charact
 The code is the model's, so it is escaped wherever it is shown, highlighted or not.
 
 Testing: `frontend/test-widget-tools.js` runs the real widget source in a happy-dom window:
-the two disclosures and their markup for hostile code, Copy through happy-dom's own clipboard, when it refuses and without it, Download's Blob and file name, the gate's Copy, the code's open state across a re-render, and a reply that ran no code rendering none of it.
+the two disclosures and their markup for hostile code, Copy through happy-dom's own clipboard, when it refuses and without it, Download's Blob, file name and freed address, the gate's Copy, the code's open state across a re-render, and a reply that ran no code rendering none of it.
+`frontend/test-widget-popout.js` checks the code block, Copy and Download in the pop-out.
 
 ## The first paint: remembering the community's look
 
