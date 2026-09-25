@@ -56,8 +56,8 @@ widget:
   # that fit replace the list above (#477). nemar.org passes {subject} and {task} from
   # the dataset's first recording with a Zarr copy (nemarOrg/website#356), so a dataset
   # with one gets the first three; a dataset without one gets the three with no
-  # needs_zarr. The ones that run code stay within the chat runtime (numpy, matplotlib,
-  # zarr, eegprep-lean; no scipy), which the prompt's "Spectra, events and ERP images"
+  # needs_zarr. The ones that run code stay within the chat runtime (numpy, SciPy,
+  # matplotlib, zarr, eegprep-lean), which the prompt's "Spectra, events and ERP images"
   # section teaches, with ERP CORE (nm000132) as its worked example.
   dataset_suggested_questions:
     - text: "What is {dataset_id} about, and how was it recorded?"
@@ -231,53 +231,75 @@ system_prompt: |
 
   ### Spectra, events and ERP images
 
-  The runtime has numpy, matplotlib, zarr and eegprep-lean, and nothing else: there
-  is no SciPy or MNE, so write spectra and filters with numpy. Read a recording once
+  The runtime has numpy, SciPy, matplotlib, zarr and eegprep-lean; there is no MNE,
+  so use `scipy.signal` for spectra and filters. Read a recording once
   and compute everything from that read; a read per event or per channel is slow and
   shows nothing one read does not.
 
   - **Which channels.** Read every channel of the group for these analyses: leave out
     `channels`, rather than the short list the snippet above uses to plot a window.
     A group can hold electrooculography (EOG), electrocardiography (ECG) or other
-    channels beside the EEG (ERP CORE's `eeg_250hz` has 30 EEG channels and three EOG);
-    choose from `window.labels`, and say which you left out.
-  - **Power spectrum.** Welch's method: split a long read (a minute or more, or the
-    whole recording) into 2-second segments that overlap by half, taper each with
-    `np.hanning`, average `abs(np.fft.rfft(...))**2`, and scale to power per Hz. Plot
-    on a log axis over the band that matters (1 to 40 Hz for most EEG), and name any
-    peak you describe with its channel and frequency.
+    channels beside the EEG (ERP CORE's `eeg_250hz` has 30 EEG channels and three EOG,
+    labeled `HEOG_left`, `HEOG_right` and `VEOG_lower`). Leave out every label that
+    contains `EOG`, `ECG`, `EKG` or `EMG`, matched in upper case anywhere in the label
+    rather than by exact name, and say which you left out and how many EEG channels remain.
+  - **Power spectrum.** Welch's method over a long read (a minute or more, or the
+    whole recording), with 2-second segments, ONE CHANNEL AT A TIME and at most
+    `most` samples of it:
+
+    ```python
+    from scipy import signal
+    nperseg = int(2 * rate)
+    most = 2**28 // nperseg  # the most samples one welch call takes here
+    freqs = signal.welch(eeg[0, :most], fs=rate, nperseg=nperseg)[0]
+    power = np.array([signal.welch(ch[:most], fs=rate, nperseg=nperseg)[1] for ch in eeg])
+    ```
+
+    `signal.welch` makes a view of every window at once, and this runtime (32-bit
+    WebAssembly) refuses a view of 2 GiB or more, which is channels x samples x
+    nperseg x 8 bytes. So a channels-by-samples array raises "array is too big" even
+    at 33 channels by 30,000 samples, and so does one channel past `most` samples
+    (about 36 minutes at 250 Hz, 2 at 1000 Hz). Never pass it more than one channel,
+    and when `most` cut the read short, say how many seconds the spectrum covers.
+    Plot on a log axis over the band that matters (1 to 40 Hz for most EEG), and name
+    any peak you describe with its channel and frequency.
   - **Events.** Call `nemar_get_events` with `limit: 1` first. Its `columns_summary`
     lists every column and, when a column has few, its values, and that is where the
     conditions are: BIDS names them in `trial_type`, but datasets also use `value` or
     columns of their own (ERP CORE's `trial_type` is only stimulus or response; its
-    faces and cars are in `event_type`). Then ask for only what the code needs, for
-    example `where: {"event_type": ["face", "scrambled_face"]}` and
-    `columns: ["event_type"]`. If the answer has no `columns_summary`, the server
-    predates these filters and ignores them: every row comes back, so take what you
-    need from it. `sample_index` counts at the group's rate, so it indexes the data you
-    read directly. Put the indices into the code as a list literal per condition. If
-    the recording has no events, or none that name conditions (a resting-state
+    faces and cars are in `event_type`). Then ask for one condition per call, for
+    example `where: {"event_type": ["face"]}` and `columns: ["event_type"]`, and a
+    second call for `scrambled_face`; `total_count` is how many that condition has.
+    A call returns at most `limit` rows (1000 unless you ask for more, 5000 at most):
+    when `truncated` is true, call again with a larger `limit`, or page with `offset`,
+    until you have all `total_count` rows. Never sort one call's mixed rows into
+    conditions by hand. `sample_index` counts at
+    the group's rate, so it indexes the data you read directly. Copy each call's
+    `sample_index` values into the code verbatim, in order, as that condition's list,
+    and assert its length, so a slip in copying stops the run instead of averaging the
+    wrong epochs:
+
+    ```python
+    face = [5291, 5683, ...]  # every sample_index from the face call, as returned
+    assert len(face) == 80, len(face)  # that call's total_count
+    ```
+
+    If a call's rows are not all the condition you asked for, the server ignored the
+    filter: say so, rather than sorting them yourself. If the recording has no events, or none that name conditions (a resting-state
     recording, for one), say so and offer its power spectrum instead.
   - **Epochs and ERP images.** Re-reference to the average of the EEG channels
-    (subtract their mean at each sample). Then low-pass at 30 Hz with this
-    windowed-sinc filter, written as it is here; `x` is one channel or the whole
+    (subtract their mean at each sample). Then low-pass at 30 Hz, zero-phase, on the
+    continuous data before cutting epochs; `x` is one channel or the whole
     channels-by-samples array:
 
     ```python
+    from scipy import signal
     cutoff = min(30.0, rate / 4)  # Hz, kept well under the Nyquist frequency
-    taps = int(0.4 * rate) // 2 * 2 + 1  # odd, about 0.4 s: one center tap
-    k = np.arange(taps) - taps // 2
-    kernel = np.sinc(2 * cutoff / rate * k) * np.hamming(taps)
-    kernel /= kernel.sum()
-    size = x.shape[-1] + taps - 1
-    spectrum = np.fft.rfft(x, size) * np.fft.rfft(kernel, size)
-    filtered = np.fft.irfft(spectrum, size)[..., taps // 2 : taps // 2 + x.shape[-1]]
+    sos = signal.butter(4, cutoff, btype="low", fs=rate, output="sos")
+    filtered = signal.sosfiltfilt(sos, x, axis=-1)
     ```
 
-    The `2 * cutoff / rate` inside `np.sinc` is what makes it a low-pass; without it
-    the kernel is a single spike and filters nothing. The last three lines are
-    `np.convolve(x, kernel, mode="same")` done by FFT, which gives the same values,
-    takes every channel at once, and stays fast at high sampling rates. Cut epochs
+    `sosfiltfilt` runs the filter forward and back, so nothing shifts in time. Cut epochs
     from 200 ms before each event to 800 ms after, subtract each epoch's pre-event
     mean, and drop epochs over 100 µV, saying how many you dropped (if none pass, show
     them all and say so). An ERP image is one channel's epochs as the rows of an
@@ -376,9 +398,12 @@ extensions:
         is in physical units, with channel labels. An open_array read returns stored
         digital counts, so never plot from it, and never use a python_zarr snippet,
         boto3, s3fs or zarr.open, none of which can work here. Anything that touches
-        the network is async, so use await at the top level. numpy, matplotlib, zarr
-        and eegprep_lean are installed and nothing else can be; only
-        NEMAR's Zarr host is reachable. eegprep_lean draws on its own figure
+        the network is async, so use await at the top level. numpy, SciPy, matplotlib,
+        zarr and eegprep_lean are installed and nothing else can be; only
+        NEMAR's Zarr host is reachable. Call scipy.signal.welch one channel at a time,
+        on at most 2**28 // nperseg samples, as your instructions show: past either
+        it raises "array is too big" in this runtime.
+        eegprep_lean draws on its own figure
         rather than pyplot's, so hand the figure over with
         display(eegprep_lean.plot_window(window).figure). Print a few summary lines
         rather than whole arrays. Every run's code and output are saved automatically
@@ -398,9 +423,19 @@ runtime:
     # 0.29.5 is the first release shipping google-crc32c, which zarr imports.
     pyodide_version: "0.29.5"
     lockfile: runtime/nemar-pyodide-lock.json
-    # eegprep-lean's lock entry pulls in zarr and zarr's dependencies. numpy and
-    # matplotlib are listed first so progress names the large downloads.
-    preload: [numpy, matplotlib, zarr, eegprep-lean]
+    # eegprep-lean's lock entry pulls in zarr and zarr's dependencies. numpy, scipy and
+    # matplotlib are listed first so progress names the large downloads. scipy is about
+    # 16 MB of the first load (docs/community-browser-runtime.md); spectra and filters
+    # need it, and a model reaches for it first.
+    preload: [numpy, scipy, matplotlib, zarr, eegprep-lean]
+    # SciPy imports ctypes as it loads, and the seal refuses ctypes to executed code,
+    # so these three are imported before it (#495): `import scipy` does through
+    # scipy._lib._ccallback, scipy.stats through _continuous_distns, and scipy.io
+    # through arff. Measured, not guessed: with them loaded, every public SciPy module
+    # imports under the seal (frontend/test-data-lane.js walks all of them), and with
+    # `scipy` alone, scipy.stats, scipy.io and scipy.signal (which imports scipy.stats)
+    # do not. They add about 1.1 s to a boot under Bun.
+    import_before_seal: [scipy, scipy.stats, scipy.io]
     # Boots on the reader's first message rather than the first run: overlaps the
     # download with the model's own first turn, and never charges a reader who only
     # opens the chat.

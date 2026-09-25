@@ -13,6 +13,75 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ## [Unreleased]
 
+## [0.8.15] - 2026-09-25
+
+### Added
+
+- **A run's code in place, with Copy and Download** (issue #491):
+  each run in the chat now shows its code as a disclosure of its own, `Code · N lines`, under the run's output and figures,
+  so it opens without them.
+  Its bar copies the exact code (with a fallback that selects it for the reader where the browser will not copy, and never a dialog)
+  and downloads it as a `.py` file named for the dataset and the run, such as `nm000132-run-3.py`.
+  The permission gate gets the same Copy.
+  Only a community whose model runs code sees any of it.
+  See "A run in the chat" in `docs/community-widget.md`.
+- **A figure's Download** (issue #492): each figure a run shows has a Download button under it,
+  which saves the figure's PNG as, for example, `nm000132-run-3-figure-1.png`, named for the dataset, the run and the figure;
+  it is keyboard reachable and labeled for screen readers.
+- **SciPy in NEMAR's chat runtime** (issue #495): NEMAR preloads SciPy,
+  and its prompt uses `scipy.signal.welch` for spectra and `butter` with `sosfiltfilt` for the ERP low-pass,
+  in place of the hand-written Welch's method and windowed-sinc filter models got wrong,
+  which also retires the note on keeping that filter's slice from the ERP entry under Fixed.
+  `welch` makes a view of every window at once, which 32-bit WebAssembly refuses at 2 GiB,
+  so the prompt calls it one channel at a time on at most `2**28 // nperseg` samples;
+  `execute_code`'s description, which the model reads on every call, now names SciPy and that rule.
+  The first load is about 35.4 MB over the network, from 19.1 MB.
+  The notebook starter's setup cell installs SciPy too.
+- **`runtime.python.import_before_seal`**: modules the browser runtime imports after its installs and before its namespace seal,
+  for a package that imports a sealed module as it loads.
+  SciPy imports `ctypes`, which the seal refuses, so under the seal it did not import at all;
+  NEMAR imports `scipy`, `scipy.stats` and `scipy.io` first, about 1.2 seconds of its boot.
+  Empty by default, so every other community boots as before.
+  The seal still refuses `import ctypes` to executed code, and SciPy's own modules keep the reference they imported,
+  which is consistent with the seal's purpose; see "Importing before the seal" in `docs/community-browser-runtime.md`.
+
+### Changed
+
+- **A larger capsule launcher at rest** (issue #490):
+  with the panel closed, a capsule community's chat circle is drawn 25% larger, 58px instead of 46px, so it is easier to see,
+  and settles to 46px as the panel opens, where the open layout is exactly as before;
+  with reduced motion it changes size at once.
+  A bubble community is unchanged.
+  See "Launcher" in `docs/community-widget.md`.
+
+### Fixed
+
+- **NEMAR's notebook reads data in Safari and Firefox** (issue #496).
+  eegprep-lean's browser transport sent `User-Agent`, which Safari and Firefox send and Chrome drops,
+  so every read in those browsers became a CORS preflight that `zarr.nemar.org` refuses.
+  eegprep-lean 0.1.0.dev3 (sccn/eegprep#420, #423) sends only `Range`; the wheel is re-vendored at `50c50879`, which the chat runtime and the notebook site both serve.
+- **A failed request no longer hangs Python in Safari** (issue #496):
+  Safari's fetch rejects with a TypeError that has no `stack`,
+  which Pyodide 0.29.5 does not take for an error,
+  so the `await` on it never returned.
+  In the notebook the cell stayed running and the kernel busy for good;
+  in the chat the run was stopped at its 120-second deadline and the runtime's state was lost.
+  Both runtimes now raise instead, as they already did in Chrome and Firefox:
+  the chat's runtime installs a rejection guard before its seal,
+  and the notebook site's bridge sends the same guard to each new kernel.
+  The notebook's own reads still fail in Safari and Firefox until eegprep-lean stops sending a `User-Agent` header,
+  which makes each read a CORS preflight whose answer from zarr.nemar.org does not allow that header;
+  they now fail at once, naming the URL.
+- **An OSA address without its trailing slash works** (issue #500). `widget.osc.earth/osa` and `develop-widget.osc.earth/osa` answered 522,
+  because the Worker's `/osa/*` routes do not match the bare path; each host now also routes `/osa*`, and the Worker answers `/osa` with a 308 to `/osa/`, keeping the query string, and a path outside the mount such as `/osafoo` with a 404.
+  `deploy/apache-api.osc.earth.conf` redirects `api.osc.earth/osa` and `/osa-dev` the same way; the server's copy is applied by hand.
+- **NEMAR's ERP images use the events they name.** On nemar.org a model asked for every stimulus of ERP CORE's N170 recording in one call,
+  sorted the rows into faces and scrambled faces while copying them into code, and averaged 282 "faces" of a recording that has 80.
+  The prompt now asks for one condition per `nemar_get_events` call,
+  and has the code assert each list's length against that call's `total_count`.
+- **NEMAR's spectra and ERPs leave out every EOG channel.** The prompt names ERP CORE's labels (`HEOG_left`, `HEOG_right`, `VEOG_lower`)
+  and says to match `EOG`, `ECG`, `EKG` and `EMG` anywhere in a label, since exact names missed all three.
+
 ## [0.8.14] - 2026-09-24
 
 ### Added

@@ -56,6 +56,26 @@ class TestTheShippedConfig:
         assert "python_zarr" in description
         assert "display(eegprep_lean.plot_window(window).figure)" in description
 
+    def test_the_tool_names_every_package_the_runtime_preloads(
+        self, nemar: CommunityConfig
+    ) -> None:
+        """The model reads this on every call, and it says nothing else can be installed,
+        so a preloaded package it leaves out is one the model will not use: SciPy was
+        preloaded before the description said so (#495). The welch rule is here too, one
+        channel at a time and a bounded length, since past either the call fails in
+        this runtime."""
+        assert nemar.extensions is not None and nemar.runtime is not None
+        assert nemar.runtime.python is not None
+        description = nemar.extensions.client_tools[0].description.lower()
+        head, marker, _ = description.partition("are installed and nothing else can be")
+        assert marker, "the description no longer says what is installed"
+        installed = head.rsplit(".", 1)[-1]
+        for package in nemar.runtime.python.preload:
+            assert package.replace("-", "_") in installed, (package, installed)
+        assert "scipy.signal.welch one channel at a time" in description
+        assert "2**28 // nperseg samples" in description
+        assert "array is too big" in description
+
     def test_the_prompt_says_where_each_value_comes_from(self, nemar: CommunityConfig) -> None:
         """index.store matches a store's path only, and nemar_read_window also accepts
         the zarr name, so the prompt must name the field."""
@@ -102,6 +122,34 @@ class TestTheShippedConfig:
             assert "set_default_transport(eegprep_lean.FetchTransport(osa.fetch))" in (
                 python.prelude or ""
             ), deployment
+
+    def test_the_prompt_asks_for_one_condition_per_events_call(
+        self, nemar: CommunityConfig
+    ) -> None:
+        """On nemar.org (2026-09-24) a model asked for every stimulus of ERP CORE's N170
+        recording in one call, sorted the 320 rows into faces and scrambled faces while
+        copying them into code, and averaged 282 "faces" of a recording that has 80. The
+        prompt asks for one condition per call and an assert on each list's length, so a
+        copying slip stops the run; this keeps both instructions from being dropped.
+        Compared with whitespace collapsed, so reflowing the prose does not break it."""
+        prompt = " ".join(nemar.system_prompt.split())
+        assert "ask for one condition per call" in prompt
+        assert 'where: {"event_type": ["face"]}' in prompt
+        assert "Never sort one call's mixed rows into conditions by hand" in prompt
+        assert "assert len(face) == 80" in prompt
+        # A condition longer than `limit` comes back truncated; without this, the
+        # assert fires and a model may "fix" it by matching the short list.
+        assert "when `truncated` is true" in prompt
+
+    def test_the_prompt_leaves_out_non_eeg_channels_by_substring(
+        self, nemar: CommunityConfig
+    ) -> None:
+        """ERP CORE labels its EOG channels HEOG_left, HEOG_right and VEOG_lower, so a
+        model that excluded "HEOG" and "VEOG" by exact name kept all three."""
+        prompt = " ".join(nemar.system_prompt.split())
+        assert "`HEOG_left`, `HEOG_right` and `VEOG_lower`" in prompt
+        assert "`EOG`, `ECG`, `EKG` or `EMG`" in prompt
+        assert "anywhere in the label" in prompt
 
     def test_the_prompt_teaches_the_browser_lane(self, nemar: CommunityConfig) -> None:
         prompt = nemar.system_prompt
@@ -342,7 +390,7 @@ class TestTheGenerator:
     ) -> None:
         """Wheels are served as immutable for a year, so a rebuilt wheel under an old
         name would reach some readers and not others."""
-        wheel = runtime_copy.parent / "wheels" / "eegprep_lean-0.1.0.dev2-py3-none-any.whl"
+        wheel = runtime_copy.parent / "wheels" / "eegprep_lean-0.1.0.dev3-py3-none-any.whl"
         wheel.write_bytes(wheel.read_bytes() + b"\0")
         before = runtime_copy.read_text()
 

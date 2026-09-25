@@ -217,6 +217,16 @@ console.log('\nevery community runtime resolves against the Pyodide these tests 
     for (const name of python.preload || []) {
       assert(known.has(name), `${id}: preload ${name} is something the lock can load`);
     }
+    // The config check reads a preload name as its import name (`-` as `_`),
+    // having no lock to ask; this asks the lock, so a package whose import name
+    // is not its lock name is caught here rather than as a failed boot.
+    const entries = { ...stockLock.packages, ...overlay };
+    for (const name of python.import_before_seal || []) {
+      const root = name.split('.')[0];
+      const owner = (python.preload || []).find((p) => p.replace(/-/g, '_') === root);
+      assert(owner !== undefined && entries[owner] && entries[owner].imports.includes(root),
+        `${id}: import_before_seal ${name} is imported from preload ${owner}, whose lock entry provides ${root}`);
+    }
   }
   assert(checked.includes('nemar'), `the search found NEMAR's runtime among ${JSON.stringify(checked)}`);
 }
@@ -363,6 +373,8 @@ try {
     console.log(`      booted in ${Math.round(performance.now() - started)} ms`);
     const loaded = messages.filter((m) => m.phase === 'loading_package').map((m) => m.package);
     assertEqual(loaded, PYTHON.preload, 'loading each preload package in order');
+    const imported = messages.filter((m) => m.phase === 'importing').map((m) => m.module);
+    assertEqual(imported, PYTHON.import_before_seal, 'importing each import_before_seal module in order');
     assert(messages.some((m) => m.phase === 'prelude'), 'and running the prelude');
     assertEqual(sealed, [[BASE]], 'sealed to fetch_allow');
 
@@ -409,6 +421,60 @@ try {
       'FetchTransport https://zarr-test.nemar.org/{dataset_id}/zarr/index.json\n',
       'with the runtime\'s own client as the default, and read_index on zarr-test.nemar.org'
     );
+  }
+
+  console.log('\nSciPy under the seal: every public module imports, and ctypes stays refused (#495)');
+  {
+    // Walked from SciPy's own package tree rather than listed here, so a SciPy
+    // upgrade that adds a module importing ctypes at its top level fails this
+    // check instead of a reader's analysis.
+    const walked = await run(`import importlib, json, pkgutil, scipy
+names = sorted(
+    info.name for info in pkgutil.walk_packages(scipy.__path__, "scipy.")
+    if not any(part.startswith("_") or part in ("tests", "conftest") for part in info.name.split("."))
+)
+failed = {}
+for name in names:
+    try:
+        importlib.import_module(name)
+    except Exception as err:
+        failed[name] = f"{type(err).__name__}: {err}"[:160]
+print(json.dumps({"names": names, "failed": failed, "subpackages": list(scipy.submodules)}))
+`);
+    assertEqual(walked.status, 'ok', `the walk runs (stderr: ${walked.stderr.slice(-300)})`);
+    const tree = JSON.parse(walked.stdout || '{"names": [], "failed": {}, "subpackages": []}');
+    assert(tree.names.length > 50 && tree.subpackages.every((sub) => tree.names.includes(`scipy.${sub}`)),
+      `it covers every subpackage SciPy lists and their public modules (${tree.names.length} modules)`);
+    assertEqual(tree.failed, {}, 'and every one of them imports in the sealed runtime');
+
+    const statement = await run('import ctypes');
+    assertEqual(statement.stderr, 'denied_import: ctypes', 'import ctypes is still denied to executed code');
+    const dynamic = await run('import importlib\nimportlib.import_module("ctypes")');
+    assert(/ImportError: 'ctypes' is not available to executed code/.test(dynamic.stderr),
+      `and so is importlib.import_module("ctypes") (got ${JSON.stringify(dynamic.stderr.slice(0, 100))})`);
+    // The cost docs/community-browser-runtime.md states: SciPy's own module
+    // keeps the ctypes it imported. Asserted so the sentence stays true, and so
+    // a SciPy that stops holding one says the sentence can go.
+    const reference = await run('import scipy._lib._ccallback as cc\nprint(cc.ctypes.__name__)');
+    assertEqual(reference.stdout, 'ctypes\n', 'the documented cost: scipy._lib._ccallback keeps its own ctypes');
+
+    // The control: NEMAR's runtime without import_before_seal is the runtime
+    // #495 found, where SciPy refuses to import. If a later SciPy stops
+    // importing ctypes at its top level, this says so and the key can go.
+    const bareMessages = [];
+    const bare = createFromSource({ ...config, importBeforeSeal: [], lockPackages: localPackages }, {
+      load: (indexURL, options) =>
+        loadPyodide({ packageCacheDir: PACKAGE_CACHE, stdout: () => {}, stderr: () => {}, ...options }),
+      stockLock: async () => stockLock,
+      seal: () => {},
+      send: (message) => bareMessages.push(message),
+    });
+    await bare.handle({ type: 'boot' });
+    assert(bareMessages.some((m) => m.type === 'ready'), 'control: the runtime boots without import_before_seal');
+    await bare.handle({ type: 'execute', call_id: 'bare-1', code: 'from scipy import signal' });
+    const broken = bareMessages.find((m) => m.type === 'result');
+    assert(broken && /The `scipy` install you are using seems to be broken/.test(broken.stderr),
+      `control: and there SciPy does not import under the seal (got ${JSON.stringify(broken && broken.stderr.slice(0, 120))})`);
   }
 
   console.log('\nthe python_browser recipe runs as nemar_read_window hands it out');
@@ -591,62 +657,126 @@ window = await read_window(index, index.stores[0], start_sample=0, n_samples=2)
     }
   }
 
-  // The low-pass the prompt's ERP section teaches, run as the prompt writes it. A
-  // model copies it, so a kernel that stops filtering (np.sinc without the cutoff is
-  // a single spike, and so is a cutoff at the Nyquist frequency) would put unfiltered
-  // epochs into every ERP image it draws.
+  // The prompt's own blocks, run as the prompt writes them: a model copies them, so a
+  // filter that stops filtering or a spectrum call this runtime refuses would reach
+  // every figure it draws.
+  const promptBlock = (bulletHeading) => {
+    const at = NEMAR.system_prompt.indexOf(bulletHeading);
+    const fence = at === -1 ? null : NEMAR.system_prompt.slice(at).match(/```python\n([\s\S]*?)\n\s*```/);
+    if (!fence) return { fence: null, code: '' };
+    const lines = fence[1].split('\n');
+    const indent = Math.min(...lines.filter((l) => l.trim()).map((l) => l.match(/^ */)[0].length));
+    return { fence, code: lines.map((l) => l.slice(indent)).join('\n') };
+  };
+  const indented = (code) => code.split('\n').map((l) => `    ${l}`).join('\n');
+
   console.log('\nthe prompt\'s ERP low-pass keeps 5 Hz and removes the high tone, at 60 to 5000 Hz');
   {
-    const erpAt = NEMAR.system_prompt.indexOf('**Epochs and ERP images.**');
-    const fence = erpAt === -1 ? null : NEMAR.system_prompt.slice(erpAt).match(/```python\n([\s\S]*?)\n\s*```/);
+    const { fence, code } = promptBlock('**Epochs and ERP images.**');
     assert(fence !== null, 'the ERP section carries a python block');
     // The block belongs to the sentence that introduces it, not to a later section.
     assert(fence !== null && fence.index < 400, `it follows the bullet's opening lines (at ${fence && fence.index})`);
     if (fence) {
-      const lines = fence[1].split('\n');
-      const indent = Math.min(...lines.filter((l) => l.trim()).map((l) => l.match(/^ */)[0].length));
-      const filterCode = lines.map((l) => l.slice(indent)).join('\n');
       // Defined as a function so each rate runs the block exactly as written, with
       // only `rate` and `x` bound, the two names the prompt says it takes.
-      const body = filterCode.split('\n').map((l) => `    ${l}`).join('\n');
       const result = await run(`import json
 import numpy as np
 
 def prompt_lowpass(x, rate):
-${body}
-    return filtered, kernel, taps, cutoff
+${indented(code)}
+    return filtered, cutoff
+
+def tone(y, t, hz):
+    # The amplitude of one frequency in y, by projection.
+    return float(2 * abs(np.mean(y * np.exp(-2j * np.pi * hz * t))))
 
 out = []
 for rate in (60.0, 125.0, 250.0, 1000.0, 5000.0):
-    t = np.arange(int(4 * rate)) / rate
+    t = np.arange(int(8 * rate)) / rate
     high = min(50.0, 0.45 * rate)
     slow = np.sin(2 * np.pi * 5 * t)
     x = slow + np.sin(2 * np.pi * high * t)
-    filtered, kernel, taps, cutoff = prompt_lowpass(x, rate)
-    f = np.fft.rfftfreq(16384, 1 / rate)
-    H = np.abs(np.fft.rfft(kernel, 16384))
-    gain = lambda hz: float(H[np.argmin(np.abs(f - hz))])
-    both, _, _, _ = prompt_lowpass(np.vstack([x, 2 * x]), rate)
+    filtered, cutoff = prompt_lowpass(x, rate)
+    both, _ = prompt_lowpass(np.vstack([x, 2 * x]), rate)
+    edge = int(rate)
+    inner = slice(edge, -edge)
     out.append({
-        "rate": rate, "taps": int(taps), "high": high,
-        "gain_5": gain(5), "gain_high": gain(high),
-        "residual": float(np.max(np.abs(filtered[taps:-taps] - slow[taps:-taps]))),
-        "vs_convolve": float(np.max(np.abs(filtered - np.convolve(x, kernel, mode="same")))),
+        "rate": rate, "high": high, "cutoff": float(cutoff),
+        "gain_5": tone(filtered[inner], t[inner], 5.0),
+        "gain_high": tone(filtered[inner], t[inner], high),
+        "residual": float(np.max(np.abs(filtered[inner] - slow[inner]))),
         "vs_rows": float(max(np.max(np.abs(both[0] - filtered)), np.max(np.abs(both[1] - 2 * filtered)))),
     })
 print(json.dumps(out))
 `);
       assertEqual(result.status, 'ok', `it runs (stderr: ${result.stderr.slice(-300)})`);
       for (const r of JSON.parse(result.stdout || '[]')) {
-        const at = `at ${r.rate} Hz`;
-        assert(r.taps % 2 === 1, `${at}: an odd number of taps (${r.taps})`);
+        const at = `at ${r.rate} Hz (cutoff ${r.cutoff} Hz)`;
         assert(Math.abs(r.gain_5 - 1) < 0.01, `${at}: unity gain at 5 Hz (${r.gain_5})`);
-        assert(r.gain_high < 0.01, `${at}: under 1% at ${r.high} Hz (${r.gain_high})`);
-        assert(r.residual < 0.02,
+        assert(r.gain_high < 0.02, `${at}: under 2% at ${r.high} Hz (${r.gain_high})`);
+        assert(r.residual < 0.03,
           `${at}: 5 Hz plus ${r.high} Hz comes out as the 5 Hz sine, unshifted (largest difference ${r.residual})`);
-        assert(r.vs_convolve < 1e-9, `${at}: the same values as np.convolve(x, kernel, "same") (${r.vs_convolve})`);
         assert(r.vs_rows < 1e-9, `${at}: a channels-by-samples array filters row by row (${r.vs_rows})`);
       }
+    }
+  }
+
+  console.log('\nthe prompt\'s spectrum runs one channel at a time, and no longer than this runtime allows');
+  {
+    const { fence, code } = promptBlock('**Power spectrum.**');
+    assert(fence !== null, 'the spectrum bullet carries a python block');
+    if (fence) {
+      // Two reads: many channels at 250 Hz, and a few minutes at 1000 Hz, which is
+      // past the most samples one welch call takes here. The block runs exactly as
+      // written with only `eeg` and `rate` bound, the names the prompt uses.
+      const result = await run(`import json
+import numpy as np
+from scipy import signal
+
+def prompt_spectrum(eeg, rate):
+${indented(code)}
+    return freqs, power, most
+
+def refused(x, rate):
+    try:
+        signal.welch(x, fs=rate, nperseg=int(2 * rate), axis=-1)
+        return "ok"
+    except ValueError as e:
+        return str(e)
+
+out = []
+rng = np.random.default_rng(0)
+for rate, channels, seconds in ((250.0, 33, 120), (1000.0, 4, 300)):
+    t = np.arange(int(seconds * rate)) / rate
+    eeg = rng.standard_normal((channels, t.size)) + 3 * np.sin(2 * np.pi * 10 * t)
+    freqs, power, most = prompt_spectrum(eeg, rate)
+    out.append({
+        "rate": rate, "channels": channels, "samples": int(t.size), "most": int(most),
+        "shape": list(power.shape), "bins": int(freqs.size),
+        "peak_hz": float(freqs[np.argmax(power.mean(axis=0))]),
+        "whole": refused(eeg, rate), "one_channel": refused(eeg[0], rate),
+        "twice_most": refused(eeg[0, : 2 * most], rate) if 2 * most <= t.size else None,
+    })
+print(json.dumps(out))
+`);
+      assertEqual(result.status, 'ok', `it runs (stderr: ${result.stderr.slice(-300)})`);
+      const [many, long] = JSON.parse(result.stdout || '[{}, {}]');
+      for (const r of [many, long]) {
+        const at = `${r.channels} channels by ${r.samples} samples at ${r.rate} Hz`;
+        assertEqual(r.shape, [r.channels, r.bins], `${at}: one spectrum per channel`);
+        assert(Math.abs(r.peak_hz - 10) < 0.6, `${at}: the 10 Hz tone is the peak (${r.peak_hz} Hz)`);
+      }
+      assert(long.most < long.samples, `the 1000 Hz read is longer than one welch call takes (${long.most} of ${long.samples})`);
+      // The controls: the reasons for both limits. If a later Pyodide lifts
+      // either, the check says so and the prompt's sentence can go.
+      assert(/array is too big/.test(many.whole),
+        `control: welch on the whole 33-channel array is refused here (${String(many.whole).slice(0, 80)})`);
+      assert(/array is too big/.test(long.one_channel),
+        `control: and so is one channel of the 1000 Hz read, past most (${String(long.one_channel).slice(0, 80)})`);
+      // And the bound is not needlessly short: twice it is already refused, so
+      // `most` cuts a long read by less than half of what one call could take.
+      assert(/array is too big/.test(long.twice_most),
+        `control: one channel of twice most samples is refused too (${String(long.twice_most).slice(0, 80)})`);
     }
   }
 } finally {

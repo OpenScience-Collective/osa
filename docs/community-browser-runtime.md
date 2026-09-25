@@ -58,6 +58,7 @@ runtime:
     lockfile: runtime/my-tool-pyodide-lock.json
     preload: [numpy, matplotlib]
     allow_install: []
+    import_before_seal: []
     preload_on: first_run
     fetch_allow:
       - https://api.example.org/
@@ -84,6 +85,10 @@ runtime:
   from `index_urls` when the community gives any, otherwise from PyPI.
   Nothing installs after startup,
   and a wheel that needs its own sha256 pin belongs in the lock overlay instead.
+- `import_before_seal`: modules imported once at startup, after the installs and before the runtime is sealed,
+  for a package that imports a sealed module as it loads, which SciPy does.
+  Empty by default.
+  See "Importing before the seal" below.
 - `prelude`: Python run once, after the runtime is sealed.
   See "The prelude" below.
 - `preload_on`: `"first_run"` (the default), `"widget_open"`, or `"first_message"`:
@@ -214,6 +219,95 @@ It is not for anything the person should be asked to approve:
 it runs before the permission gate exists to ask,
 which is exactly why it must be the community's own code, never anything derived from a model or a reader.
 
+## Importing before the seal
+
+The namespace seal refuses `micropip`, `js`, `pyodide`, `pyodide_js`, `pyodide_http` and `ctypes` to executed code,
+at a `sys.meta_path` finder and at `builtins.__import__`,
+and evicts any of them already in `sys.modules` (`buildNamespaceSealSource`, `frontend/osa-egress.js`).
+A package that imports one of them as it loads cannot then be imported at all.
+SciPy is one: `import scipy` imports `ctypes` through `scipy._lib._ccallback`,
+and `scipy.stats` and `scipy.io` import it too,
+so in a sealed runtime `from scipy import signal` fails with
+"The `scipy` install you are using seems to be broken, (extension modules cannot be imported)".
+
+`runtime.python.import_before_seal` names modules the worker imports after `preload` and `allow_install`
+and before the seal (`osa-worker-core.js`, `boot()`),
+one progress step each (`phase: "importing"`, naming the `module`).
+The chat widget does not label that phase yet, so through these steps it keeps showing the last "Loading" line.
+A module that does not import fails the boot, with `kind: "import_before_seal"` and the module's own exception,
+since every later execution that needs it would fail for a reason that does not say so.
+Nothing is bound into the namespace executed code runs in:
+executed code still writes its own `import scipy`, which `sys.modules` answers.
+`PythonRuntimeConfig` (`src/core/config/community.py`) checks at load that each entry is a dotted module name,
+at most 16 of them and each once,
+whose top-level package is one `preload` names, written as its import name (`eegprep-lean` is `eegprep_lean`),
+and that none is a module the seal removes (`SEALED_IMPORT_ROOTS`, which a test compares with the seal's own list).
+`frontend/test-data-lane.js` checks each entry's package against its lock entry's `imports`.
+
+NEMAR sets `[scipy, scipy.stats, scipy.io]`, measured rather than guessed:
+with `scipy` alone, `scipy.stats`, `scipy.io` and `scipy.signal` (which imports `scipy.stats`) still fail under the seal,
+and with all three every public SciPy module imports
+(`frontend/test-data-lane.js` walks SciPy's package tree, 153 modules, and imports each in the sealed runtime).
+Measured on Pyodide 0.29.5 on 2026-09-24, from a warm package cache:
+
+| NEMAR's runtime | interpreter, preload and seal, under Bun | WebAssembly heap after boot |
+|---|---|---|
+| without SciPy | 1.0 s | 35 MB |
+| SciPy preloaded, nothing imported before the seal (SciPy broken) | 1.6 s | 72 MB |
+| SciPy preloaded, `[scipy, scipy.stats, scipy.io]` imported before the seal | 2.7 to 2.8 s | 104 MB |
+
+So the three imports add about 1.1 seconds under Bun, three runs each,
+and about 1.2 seconds in Chrome 153 (`scipy` 0.18, `scipy.stats` 0.96, `scipy.io` 0.06),
+and their 32 MB of heap is what the first `from scipy import signal` would claim anyway;
+after a first spectrum and filter the heap is 149 MB either way.
+Listing `scipy.signal` and `scipy.fft` as well added up to 0.1 seconds to the boot
+and saved about 0.06 seconds on the first spectrum, so they are left off.
+
+### What it costs
+
+The seal still refuses `import ctypes`, `importlib.import_module("ctypes")` and `__import__("ctypes")` to executed code,
+and leaves no `ctypes` in `sys.modules`.
+But a module imported before the seal keeps the `ctypes` it imported, as an ordinary attribute:
+executed code can reach it as `scipy._lib._ccallback.ctypes`,
+and numpy, imported before the seal as SciPy's dependency,
+keeps a real `ctypes` in `numpy._core._internal` where a sealed import would have left `None`.
+`frontend/test-data-lane.js` asserts that SciPy's reference exists, so this paragraph stays true.
+
+That is consistent with what the namespace seal is for.
+It removes the obvious routes, so a model does not stumble onto one;
+it is not the boundary, and was never able to be one:
+a function handed to executed code exposes its closure,
+and any Pyodide proxy of a JavaScript object reaches the whole JavaScript world through its constructor.
+The boundary is the fetch shim (`frontend/osa-egress.js`, "WHAT THIS IS AND IS NOT A BOUNDARY AGAINST"):
+the native `fetch` is deleted from the prototype chain, the shim is installed non-writable and non-configurable,
+and nested workers are refused, so code that reaches `ctypes`, or JavaScript itself, still finds only the guarded `fetch`.
+Name a module here only when a package needs it to import under the seal,
+and only from packages the community trusts as much as the rest of its `preload`:
+it runs at boot, with boot's reach.
+
+### SciPy in 32-bit WebAssembly
+
+`scipy.signal.welch` makes a view of every window at once,
+and Pyodide's 32-bit WebAssembly refuses a view of 2 GiB or more,
+which is channels × samples × `nperseg` × 8 bytes,
+with "array is too big; `arr.size * arr.dtype.itemsize` is larger than the maximum possible size".
+Measured under Bun on Pyodide 0.29.5 and SciPy 1.14.1, with 2-second segments:
+
+| call | result |
+|---|---|
+| `welch` on 33 channels × 30,000 samples at 250 Hz, as one array | refused |
+| `welch` on each of 33 channels × 170,750 samples at 250 Hz | 0.07 s |
+| `welch` on one channel at 250 Hz | refused past about 537,000 samples (36 minutes) |
+| `welch` on one channel at 1000 Hz | refused past about 136,000 samples (2.3 minutes) |
+| `firwin` (101 taps) + `filtfilt` on 33 × 170,750 | 0.49 s |
+| `butter` + `sosfiltfilt` on 33 × 170,750 | 0.04 s |
+
+So NEMAR's prompt calls `welch` one channel at a time on at most `2**28 // nperseg` samples,
+and filters the whole channels-by-samples array with `butter` and `sosfiltfilt`.
+`frontend/test-data-lane.js` runs both of the prompt's blocks as written,
+with controls that the whole array and one over-long channel are refused,
+so a Pyodide that lifts the limit says so.
+
 ## The Pyodide pin
 
 `pyodide_version` names an exact Pyodide distribution,
@@ -261,17 +355,20 @@ because a control that boots successfully would mean the policy variant under te
 
 ## First-load cost, and what a warm reader pays
 
-Measured on Pyodide 0.29.5, in uncompressed bytes, the interpreter itself is about 5.3 MB.
-NEMAR's `preload` list is four names (`numpy`, `matplotlib`, `zarr`, `eegprep-lean`),
-which resolve to 23 packages once each one's own dependencies are included:
-about 13.6 MB, and 18.9 MB together with the interpreter.
-Adding `scipy` to that list would bring the total to about 35.2 MB (scipy alone is about 16.3 MB),
-which is the cost dropping it from `preload` avoids
-(`.context/browser-execution-tool-design.md`, "Client changes").
+Measured on Pyodide 0.29.5 in a cold Chrome 153 profile, on 2026-09-24,
+in bytes over the network: the interpreter itself is about 5.5 MB
+(12.5 MB once decoded; its WebAssembly binary is served compressed).
+NEMAR's `preload` list is five names (`numpy`, `scipy`, `matplotlib`, `zarr`, `eegprep-lean`),
+which resolve to 24 packages once each one's own dependencies are included:
+about 29.9 MB, and 35.4 MB together with the interpreter (42.9 MB decoded).
+SciPy alone is 16.3 MB of that, and without it the total is 19.1 MB.
+Spectra and filters need it, and a model reaches for it first,
+so NEMAR pays it (#495).
+The figures this section gave before (5.3, 18.9 and 35.2 MB) match this over-the-network measure to within 0.2 MB, though they were labeled uncompressed.
 
 Measured on test.nemar.org in a cold Chrome profile:
 the model's first turn takes about 8.1 seconds until the Run gate appears,
-and under `preload_on: first_run` the download (18.9 MB for NEMAR) only starts once the reader clicks Run,
+and under `preload_on: first_run` the download (35.4 MB for NEMAR) only starts once the reader clicks Run,
 adding its own time on top before the code actually runs.
 `preload_on: first_message` starts that download the moment the reader sends their first message,
 well before the model has answered,
@@ -297,6 +394,7 @@ Because that download happens once,
 the widget's progress bar is keyed to boot STEPS rather than to bytes:
 one for the interpreter, one per `preload` name,
 one for `micropip` plus one per `allow_install` entry when there is one,
+one per `import_before_seal` module,
 and one for the prelude when there is one (`osa-worker-core.js`, `boot()`).
 A byte figure would be accurate on a reader's very first visit and misleading on every one after,
 since the browser already has most or all of it cached.
@@ -444,6 +542,8 @@ an assistant call queued behind a reader's run still in progress.
 The result becomes its own entry among the reply's other runs,
 so it survives a reload,
 and is labeled plainly as the reader's own: the assistant never sees it.
+How a run is drawn in the chat, its code behind a disclosure of its own with Copy and Download,
+is in [`docs/community-widget.md`](community-widget.md), "A run in the chat".
 It is stored in the workspace the same way any other run is,
 marked `local` in the stored run record,
 so the derived `manifest.json` and the exported `notebook.ipynb` (see "Workspace" above)

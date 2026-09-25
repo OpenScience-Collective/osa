@@ -219,6 +219,12 @@ class TestRunHelper:
         assert asyncio.run(driver()) == 42
 
 
+# These smoke tests hit the real OpenAlex API through opencite, so the unit
+# job's `-m "not network"` leaves them to the network job; unmarked, a slow
+# or unreachable OpenAlex hung the local suite indefinitely (#397). The
+# explicit `timeout` bounds each opencite call so an unresponsive service
+# fails fast instead of blocking, even when the class is deliberately run.
+@pytest.mark.network
 class TestPapersSync:
     """Smoke tests using real opencite/network calls."""
 
@@ -226,7 +232,7 @@ class TestPapersSync:
         """Basic OpenAlex sync through opencite (real API call)."""
         with patch("src.knowledge.db.get_db_path", return_value=temp_db):
             count = sync_openalex_papers(
-                "Hierarchical Event Descriptors", max_results=5, project="test"
+                "Hierarchical Event Descriptors", max_results=5, project="test", timeout=15
             )
 
             # Accept 0 for transient network issues.
@@ -241,7 +247,7 @@ class TestPapersSync:
     def test_sync_respects_max_results(self, temp_db: Path):
         """max_results is respected for a single-source sync."""
         with patch("src.knowledge.db.get_db_path", return_value=temp_db):
-            count = sync_openalex_papers("neuroscience", max_results=2, project="test")
+            count = sync_openalex_papers("neuroscience", max_results=2, project="test", timeout=15)
             assert count <= 2
 
 
@@ -300,6 +306,7 @@ class TestSourceConstants:
         assert set(ps.LIVE_SOURCES) < set(ps.DEFAULT_SOURCES)
 
 
+@pytest.mark.network
 class TestLivePaperSearch:
     """Live opencite search (real network)."""
 

@@ -758,8 +758,21 @@ class TestNemarStarterSetupCell:
 
         assert tagged == [code[0]]
         source = "".join(code[0]["source"])
-        assert "%pip install eegprep-lean" in source
+        installs = [
+            line.split()[2:] for line in source.splitlines() if line.startswith("%pip install")
+        ]
+        assert len(installs) == 1 and {"eegprep-lean", "scipy"} <= set(installs[0])
         assert "import eegprep_lean" in source
+
+    def test_only_the_setup_cell_installs_anything(self) -> None:
+        """SciPy is installed once, by the cell that runs on open (#495), so the spectrum
+        cell that imports it runs without a %pip of its own, as it used to have."""
+        config = site.discover_notebook_communities()["nemar"]
+        assert config.notebook is not None
+        starter = json.loads((site.ASSISTANTS_DIR / "nemar" / config.notebook.starter).read_text())
+        code = [cell for cell in starter["cells"] if cell["cell_type"] == "code"]
+        installing = [cell["id"] for cell in code if "%pip" in "".join(cell["source"])]
+        assert installing == [code[0]["id"]]
 
 
 class TestWriteRootRedirect:
@@ -887,7 +900,7 @@ class TestFullBuildEndToEnd:
         assert (site_root / "lab" / "index.html").exists()
         assert (site_root / "lock" / "pyodide-lock.json").exists()
         assert (
-            site_root / "wheels" / "nemar" / "eegprep_lean-0.1.0.dev2-py3-none-any.whl"
+            site_root / "wheels" / "nemar" / "eegprep_lean-0.1.0.dev3-py3-none-any.whl"
         ).exists()
         assert (site_root / "wheels" / "nemar" / "zarr-3.4.0-py3-none-any.whl").exists()
         assert (site_root / "starters" / "nemar.ipynb").exists()
@@ -937,5 +950,5 @@ class TestFullBuildEndToEnd:
         merged_lock = json.loads((site_root / "lock" / "pyodide-lock.json").read_text())
         assert "numpy" in merged_lock["packages"]  # stock package, untouched
         assert merged_lock["packages"]["eegprep-lean"]["file_name"] == (
-            "https://notebook.osc.earth/osa/wheels/nemar/eegprep_lean-0.1.0.dev2-py3-none-any.whl"
+            "https://notebook.osc.earth/osa/wheels/nemar/eegprep_lean-0.1.0.dev3-py3-none-any.whl"
         )

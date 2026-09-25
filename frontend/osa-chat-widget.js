@@ -300,7 +300,7 @@
   // browser before any of it runs. Written by scripts/build-runtime-bundle.js;
   // CI rebuilds and fails if the committed bundle or this line is stale.
   // BEGIN GENERATED: runtime bundle integrity
-  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-MpNwiHNmaJuDp3ZsjArh0vZEHgyyVupVlc3K8yMs+s0wq+FAn3X5TYWAlaLXp+SK';
+  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-Uyrn5XHg6Z+5c14REIxmRJiBevXpWxq9TegsgzCCnxg8l5JgiLo1bhUZVWbUel2x';
   // END GENERATED: runtime bundle integrity
 
   // Icons (SVG)
@@ -312,6 +312,8 @@
     brain: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/></svg>',
     copy: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>',
     check: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>',
+    // A run's code and figures as a file (#491): an arrow into a tray.
+    download: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>',
     popout: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>',
     settings: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="2"></circle><circle cx="12" cy="12" r="2"></circle><circle cx="12" cy="19" r="2"></circle></svg>',
     thumbUp: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/></svg>',
@@ -529,7 +531,8 @@
 
     /* Inside the capsule, the flex parent positions the chat button; its own
        fixed/bottom/right (still true for a bubble-mode widget) would fight that.
-       46px, as are the other circles: about 15% larger than the Send button. */
+       46px, as are the other circles: about 15% larger than the Send button. At
+       rest it is drawn larger; see the rule after the next. */
     .osa-launcher-capsule .osa-chat-button {
       position: relative;
       bottom: auto;
@@ -541,12 +544,40 @@
       pointer-events: auto;
       box-sizing: border-box;
       border: 1.5px solid transparent;
-      transition: transform 0.2s, background-color 200ms ease, color 200ms ease, border-color 200ms ease, box-shadow 200ms ease;
+      transition: transform 0.2s, scale 280ms cubic-bezier(0.22, 1, 0.36, 1), translate 280ms cubic-bezier(0.22, 1, 0.36, 1),
+        background-color 200ms ease, color 200ms ease, border-color 200ms ease, box-shadow 200ms ease;
     }
 
     .osa-launcher-capsule .osa-chat-button svg {
       width: 21px;
       height: 21px;
+    }
+
+    /* At rest, with the panel closed, the chat circle is drawn 25% larger (58px,
+       its icon about 26px), so the launcher is easy to see; it settles to 46px as
+       the panel opens (#490). Drawn larger rather than laid out larger: its box
+       stays 46px, so the indicator, the pill, the other circles and the panel's
+       offset are the same open or closed, and nothing reflows while it shrinks.
+       The translate puts its bottom-right corner where the 46px box's is, 20px
+       from the window's edges, as the bubble's; since the translate is the growth
+       past the box on each side, 23px x (58/46 - 1) = 6px, that corner holds
+       still through the whole transition, because scale and translate share one
+       duration and curve. A browser without the scale and translate properties
+       draws today's 46px. */
+    .osa-chat-widget:not(.chat-open) .osa-launcher-capsule .osa-chat-button {
+      scale: 1.2609;
+      translate: -6px -6px;
+    }
+
+    /* Hovered at rest, it grows 5% more, as every launcher does, with its corner
+       held in the same place: the scale and translate take the hover in place of
+       the shared transform: scale(1.05), which would grow it around its center
+       and push the corner out, on a curve of its own. 1.2609 x 1.05 is 1.3239,
+       and 23px x 0.3239 is 7.45px. */
+    .osa-chat-widget:not(.chat-open) .osa-launcher-capsule .osa-chat-button:hover {
+      transform: none;
+      scale: 1.3239;
+      translate: -7.45px -7.45px;
     }
 
     /* Open: the indicator is the chat circle's fill, so the button itself is clear. */
@@ -728,10 +759,12 @@
       display: none;
     }
 
-    /* The collapsed label, beside the smaller chat circle. */
+    /* The collapsed label, beside the chat circle as it is drawn at rest (58px,
+       #490): the same 10px gap and vertical center the bubble's label has. It is
+       hidden while the panel is open, when the circle is 46px. */
     .osa-chat-widget.osa-capsule .osa-chat-tooltip {
-      right: 76px;
-      bottom: 24px;
+      right: 88px;
+      bottom: 29px;
     }
 
     @media (min-width: 601px) {
@@ -1012,7 +1045,8 @@
     }
 
     /* Reduced motion: every change is immediate except a short plain fade
-       between the views, and nothing turns or slides. */
+       between the views, and nothing turns or slides. The chat circle's resting
+       size (#490) is among them: it is 58px or 46px, never between. */
     @media (prefers-reduced-motion: reduce) {
       .osa-launcher-capsule::before,
       .osa-capsule-indicator,
@@ -2201,6 +2235,92 @@
       color: var(--osa-text-light);
     }
 
+    /* A run and its code (#491): the run's own disclosure (its output and
+       figures), then its code as a disclosure of its own, so the code opens
+       without the output and the output without the code. A rule down the left
+       ties the two together. Only a reply that ran code has one. */
+    .osa-execution-run {
+      margin: 0 0 8px 0;
+      padding-left: 8px;
+      border-left: 2px solid var(--osa-border);
+    }
+
+    .osa-execution-run .osa-execution {
+      margin: 0 0 4px 0;
+    }
+
+    .osa-execution-code {
+      font-size: 13px;
+    }
+
+    .osa-execution-code summary {
+      cursor: pointer;
+      color: var(--osa-text-light);
+    }
+
+    .osa-execution-code-lines {
+      font-size: 12px;
+    }
+
+    /* The bar over a code block: a status line, then Copy and, for a run,
+       Download. On the run's code and on the permission gate's. */
+    .osa-code-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 2px;
+      margin: 4px 0;
+    }
+
+    /* The gate spaces its own rows. */
+    .osa-tool-panel .osa-code-toolbar {
+      margin: -4px 0 2px;
+    }
+
+    .osa-code-status {
+      flex: 1 1 auto;
+      min-width: 0;
+      margin-right: 4px;
+      text-align: right;
+      font-size: 12px;
+      color: var(--osa-text-light);
+    }
+
+    .osa-code-action {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 auto;
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border: none;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--osa-text-light);
+      cursor: pointer;
+      transition: color 0.2s, background 0.2s;
+    }
+
+    .osa-code-action:hover {
+      color: var(--osa-accent);
+      background: rgba(0,0,0,0.05);
+    }
+
+    .osa-code-action:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 1px;
+    }
+
+    .osa-code-action svg {
+      width: 15px;
+      height: 15px;
+    }
+
+    .osa-code-action.copied {
+      color: #15803d;
+    }
+
     .osa-execution-output {
       background: rgba(0,0,0,0.05);
       border-radius: 6px;
@@ -2221,6 +2341,57 @@
       /* Stays white on the dark panel too: a figure drawn with a transparent
          background keeps its dark axes and labels readable. */
       background: #ffffff;
+    }
+
+    /* A figure and its Download (#492), in a row under the figure, right-aligned,
+       as the code block's bar sits over the code: never over the figure, where
+       matplotlib often puts a legend. The box is the figure's own width, so the
+       row ends where the figure does, however narrow it is. The button is drawn
+       on the panel, so it takes the panel's colors, dark ones included. */
+    .osa-execution-figure {
+      width: fit-content;
+      max-width: 100%;
+      margin-top: 6px;
+    }
+
+    .osa-execution .osa-execution-figure img {
+      margin-top: 0;
+    }
+
+    .osa-figure-actions {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 2px;
+    }
+
+    .osa-figure-download {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 6px;
+      border: none;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--osa-text-light);
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+      transition: color 0.2s, background 0.2s;
+    }
+
+    .osa-figure-download:hover {
+      color: var(--osa-accent);
+      background: rgba(0,0,0,0.05);
+    }
+
+    .osa-figure-download:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 1px;
+    }
+
+    .osa-figure-download svg {
+      width: 14px;
+      height: 14px;
     }
 
     .osa-execution-local-note {
@@ -2367,6 +2538,18 @@
 
     .osa-chat-widget.osa-dark .osa-message-copy-btn:hover {
       background: rgba(255, 255, 255, 0.08);
+    }
+
+    .osa-chat-widget.osa-dark .osa-code-action:hover {
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .osa-chat-widget.osa-dark .osa-figure-download:hover {
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .osa-chat-widget.osa-dark .osa-code-action.copied {
+      color: #4ade80;
     }
 
     .osa-chat-widget.osa-dark .osa-feedback-up.selected,
@@ -3225,6 +3408,111 @@
     }
   }
 
+  // Put text on the clipboard for the Copy button of a run's code (#491): the
+  // Clipboard API first, then, where the page may not use it (an insecure page, a
+  // frame without clipboard-write, a browser that refuses), the older copy
+  // command on a hidden textarea. Resolves true or false; never throws and never
+  // opens a dialog. copyToClipboard above, the chat's own code blocks' and
+  // messages', is left exactly as it was.
+  async function writeClipboard(text) {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch (err) {
+        console.warn('[OSA] The browser refused the clipboard; trying the copy command instead:', (err && err.name) || err);
+      }
+    }
+    return copyWithCommand(text);
+  }
+
+  // The copy command, on a textarea off screen, focus handed back afterward.
+  // False where the command is gone or refused.
+  function copyWithCommand(text) {
+    if (typeof document.execCommand !== 'function' || !document.body) return false;
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', '');
+    area.setAttribute('aria-hidden', 'true');
+    area.style.position = 'fixed';
+    area.style.top = '0';
+    area.style.left = '-9999px';
+    area.style.opacity = '0';
+    const focused = document.activeElement;
+    document.body.appendChild(area);
+    area.focus();
+    area.select();
+    let copied = false;
+    try {
+      copied = document.execCommand('copy') === true;
+    } catch (err) {
+      console.warn('[OSA] The copy command failed:', (err && err.message) || err);
+    } finally {
+      area.remove();
+      if (focused && typeof focused.focus === 'function') focused.focus();
+    }
+    return copied;
+  }
+
+  function isApplePlatform() {
+    const platform = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || navigator.userAgent || '';
+    return /Mac|iPhone|iPad|iPod/i.test(platform);
+  }
+
+  // How long "Copied" shows on a code block's bar.
+  const CODE_COPIED_MS = 2000;
+
+  // A code block's Copy (#491): the exact code, never the highlighted page text,
+  // onto the clipboard, and "Copied" beside the button for a moment. Where the
+  // browser allows neither way to copy, the code is opened and selected in place
+  // and the bar names the keys that copy it, since nothing the page can do will.
+  async function copyCodeFromButton(button, code) {
+    const block = button.closest('.osa-code-block');
+    const status = block && block.querySelector('.osa-code-status');
+    if (await writeClipboard(code)) {
+      button.classList.add('copied');
+      button.innerHTML = ICONS.check;
+      if (status) status.textContent = 'Copied';
+      setTimeout(() => {
+        button.classList.remove('copied');
+        button.innerHTML = ICONS.copy;
+        if (status && status.textContent === 'Copied') status.textContent = '';
+      }, CODE_COPIED_MS);
+      return true;
+    }
+    if (block && block.tagName === 'DETAILS') block.open = true;
+    const codeElement = block && block.querySelector('pre code');
+    if (codeElement && typeof window.getSelection === 'function') {
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(codeElement);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+    if (status) {
+      status.textContent = `This page cannot copy for you: the code is selected, so press ${isApplePlatform() ? 'Cmd' : 'Ctrl'}+C`;
+    }
+    return false;
+  }
+
+  // Hand the reader a file built in the page (#491), as the workspace export
+  // does: a Blob's address on a link with `download`, clicked, and the address
+  // freed once the download has had a chance to start, since revoking it at once
+  // can cancel the download itself. A variable, not a constant, only so the
+  // test hooks can shorten the wait.
+  let SAVE_FILE_REVOKE_MS = 5000;
+
+  function saveFile(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), SAVE_FILE_REVOKE_MS);
+  }
+
   // Generate unique ID for code blocks
   let codeBlockId = 0;
   function getCodeBlockId() {
@@ -3685,12 +3973,13 @@
         const { _feedbackCommitting, _feedbackJustOpened, _responseId, feedbackDraft, ...rest } = m;
         if (rest.feedback && !rest.feedbackCommitted) delete rest.feedback;
         // Figures are shown for the life of the page and not stored. An open
-        // "Edit and run" editor, its draft and its live echo are the same
-        // kind of transient, in-page-only state as the feedback flags above:
-        // a reload always starts back at the plain recorded view.
+        // "Edit and run" editor, its draft and its live echo, and an opened
+        // code block (#491), are the same kind of transient, in-page-only state
+        // as the feedback flags above: a reload always starts back at the plain
+        // recorded view.
         if (Array.isArray(rest.executions)) {
           rest.executions = rest.executions.map((run) => {
-            const { _editing, _draft, _runningLocal, _localResult, ...keep } = run;
+            const { _editing, _draft, _runningLocal, _localResult, _codeOpen, ...keep } = run;
             return { ...keep, images: [] };
           });
         }
@@ -4338,17 +4627,7 @@
     if (!store) return;
     try {
       const bytes = await store.exportZip();
-      const blob = new Blob([bytes], { type: 'application/zip' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${CONFIG.communityId}-workspace.zip`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      // Freed after the click has had a chance to start the download, rather
-      // than immediately: revoking too early can cancel the download itself.
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      saveFile(new Blob([bytes], { type: 'application/zip' }), `${CONFIG.communityId}-workspace.zip`);
     } catch (err) {
       console.error('[OSA] Workspace export failed:', err);
       showError(container, `Could not build the workspace download: ${(err && err.message) || err}`);
@@ -4841,7 +5120,10 @@
         <div class="osa-tool-panel" role="group" aria-label="Run code in your browser?">
           <div class="osa-tool-panel-title">Run this Python in your browser?</div>
           ${description}
-          <pre class="osa-tool-code"><code>${highlightOrEscape(prompt.code || '')}</code></pre>
+          <div class="osa-code-block">
+            ${codeToolbarHtml()}
+            <pre class="osa-tool-code"><code>${highlightOrEscape(prompt.code || '')}</code></pre>
+          </div>
           <div class="osa-tool-actions">
             <button type="button" class="osa-tool-run">Run</button>
             <button type="button" class="osa-tool-deny">Don't run</button>
@@ -4908,7 +5190,10 @@
   // recorded run's own body already is. Shared by the normal per-run block
   // and by the live echo runEditedCode() shows under an open editor, so the
   // two can never disagree about what "bounded on screen" means.
-  function runOutputHtml(run) {
+  //
+  // `located` ({msgIndex, runIndex}) names the run record the figures belong
+  // to, and gives each one a Download (#492); without it they show alone.
+  function runOutputHtml(run, located = null) {
     const stdout = run.stdout ? `<pre class="osa-execution-output">${escapeHtml(run.stdout)}</pre>` : '';
     const stderr = run.stderr && run.status !== 'ok'
       ? `<pre class="osa-execution-output">${escapeHtml(run.stderr)}</pre>`
@@ -4920,11 +5205,38 @@
     const workspaceNote = run.workspaceNote
       ? `<div class="osa-execution-workspace-note">${escapeHtml(run.workspaceNote)}</div>`
       : '';
+    // Figures are numbered among the ones shown, from 1, as the workspace
+    // numbers a run's figure-K.png; data-image-index is the figure's place in
+    // the record, which the click reads the bytes from.
+    let figureNumber = 0;
     const images = (Array.isArray(run.images) ? run.images : [])
-      .filter(isShowableImage)
-      .map((image) => `<img alt="Figure produced by the code" src="data:image/png;base64,${image.data_base64}">`)
+      .map((image, imageIndex) => {
+        if (!isShowableImage(image)) return '';
+        figureNumber += 1;
+        const img = `<img alt="Figure ${figureNumber} produced by the code" src="data:image/png;base64,${image.data_base64}">`;
+        if (!located) return img;
+        const filename = figureFileName(located.msgIndex, located.runIndex, figureNumber);
+        return `<div class="osa-execution-figure">${img}<div class="osa-figure-actions">` +
+          `<button type="button" class="osa-figure-download" data-msg-index="${escapeHtml(String(located.msgIndex))}" data-run-index="${escapeHtml(String(located.runIndex))}" data-image-index="${escapeHtml(String(imageIndex))}" ` +
+          `aria-label="Download figure ${figureNumber} as ${escapeHtml(filename)}" title="Download ${escapeHtml(filename)}">${ICONS.download}<span>Download</span></button></div></div>`;
+      })
       .join('');
     return `${stdout}${stderr}${workspaceNote}${images}`;
+  }
+
+  // A figure's file name (#492): its run's, then the figure's number among the
+  // ones the run shows: nm000132-run-3-figure-1.png.
+  function figureFileName(msgIndex, runIndex, figureNumber) {
+    return `${runFileStem(msgIndex, runIndex)}-figure-${figureNumber}.png`;
+  }
+
+  // A figure's PNG bytes, from the base64 the run returned (isShowableImage has
+  // already held it to the base64 alphabet).
+  function pngBytes(base64) {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
   }
 
   // The inline "Edit and run" editor for one run record: a labeled textarea
@@ -4956,10 +5268,14 @@
       const label = Object.prototype.hasOwnProperty.call(EXECUTION_LABELS, run._localResult.status)
         ? EXECUTION_LABELS[run._localResult.status]
         : 'Python';
+      // The echo is of the record the run added to this reply, which its
+      // figures' Download names and reads from.
+      const runs = messages[msgIndex] && messages[msgIndex].executions;
+      const recordIndex = Array.isArray(runs) ? runs.findIndex((entry) => entry && entry.callId === run._localResult.callId) : -1;
       result = `
         <div class="osa-execution-local-note">This run is yours. The assistant has not seen it.</div>
         <div class="osa-rerun-result-status">${escapeHtml(label)}</div>
-        ${runOutputHtml(run._localResult)}`;
+        ${runOutputHtml(run._localResult, recordIndex >= 0 ? { msgIndex, runIndex: recordIndex } : null)}`;
     }
     return `
       <div class="osa-rerun">
@@ -4973,13 +5289,74 @@
       </div>`;
   }
 
-  // What ran for a reply, as HTML: one collapsible entry per run. Every field
-  // is escaped: the description is the model's, the output is whatever the
-  // code printed, and a stored record is whatever storage holds.
+  // The bar over a code block (#491): a status line for "Copied", Copy, and,
+  // given a file name, Download. `where` names the run the buttons act on, so a
+  // click reads the code from the run's record rather than from the page; the
+  // permission gate's bar has neither, and its Copy reads the gate's own prompt.
+  function codeToolbarHtml({ where = '', filename = '' } = {}) {
+    const download = filename
+      ? `<button type="button" class="osa-code-action osa-code-download"${where} aria-label="Download the code as ${escapeHtml(filename)}" title="Download ${escapeHtml(filename)}">${ICONS.download}</button>`
+      : '';
+    return `<div class="osa-code-toolbar">
+        <span class="osa-code-status" role="status" aria-live="polite"></span>
+        <button type="button" class="osa-code-action osa-code-copy"${where} aria-label="Copy the code" title="Copy the code">${ICONS.copy}</button>${download}
+      </div>`;
+  }
+
+  function codeLineCount(code) {
+    const lines = code.split('\n');
+    if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
+    return lines.length;
+  }
+
+  // What a run's files are called when the reader saves them (#491): the dataset
+  // the reply was about, as the page named it when the reader sent the question
+  // (#477), or the community when it named none, then the run's place among the
+  // conversation's runs, counted from 1: nm000132-run-3. Both parts are held to
+  // characters any file system takes, and a leading dot, which would hide the
+  // file, is dropped.
+  function runFileStem(msgIndex, runIndex) {
+    let dataset = null;
+    for (let i = msgIndex - 1; i >= 0; i--) {
+      if (messages[i] && messages[i].role === 'user') {
+        dataset = isValidDatasetId(messages[i].dataset) ? messages[i].dataset : null;
+        break;
+      }
+    }
+    let ordinal = runIndex + 1;
+    for (let i = 0; i < msgIndex; i++) {
+      const runs = messages[i] && messages[i].executions;
+      if (Array.isArray(runs)) ordinal += runs.length;
+    }
+    const prefix = String(dataset || CONFIG.communityId || 'osa').replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '') || 'osa';
+    return `${prefix}-run-${ordinal}`;
+  }
+
+  // A run's code as a disclosure of its own (#491), closed unless the reader
+  // opened it (run._codeOpen, which a re-render keeps and storage does not), with
+  // Copy and Download over it once the reply it belongs to is known.
+  function runCodeHtml(run, msgIndex, runIndex) {
+    const lines = codeLineCount(run.code);
+    const located = typeof msgIndex === 'number';
+    const where = located ? ` data-msg-index="${msgIndex}" data-run-index="${runIndex}"` : '';
+    const toolbar = located ? codeToolbarHtml({ where, filename: `${runFileStem(msgIndex, runIndex)}.py` }) : '';
+    return `
+        <details class="osa-execution-code osa-code-block"${where}${run._codeOpen === true ? ' open' : ''}>
+          <summary>Code <span class="osa-execution-code-lines">· ${lines} ${lines === 1 ? 'line' : 'lines'}</span></summary>
+          ${toolbar}
+          <pre class="osa-tool-code"><code>${highlightOrEscape(run.code)}</code></pre>
+        </details>`;
+  }
+
+  // What ran for a reply, as HTML: one entry per run, its output and figures
+  // behind one disclosure and its code behind another (#491). Every field is
+  // escaped: the description and the code are the model's, the output is
+  // whatever the code printed, and a stored record is whatever storage holds.
   //
   // msgIndex names the reply these runs belong to, so the edit/run/cancel
-  // controls below know which record to act on; omitted, no "Edit and run"
-  // controls render at all (canRunLocalCode() still gates them first).
+  // controls and the code's Copy and Download know which record to act on;
+  // omitted, none of them render (canRunLocalCode() still gates "Edit and run"
+  // first).
   //
   // A run whose OWN editor is open and has a live result (run._localResult)
   // is shown inline under that editor rather than as its own separate
@@ -5001,13 +5378,11 @@
         ? EXECUTION_LABELS[run.status]
         : 'Python';
       const title = `${isLocal ? 'Your run: ' : ''}${label}${run.description ? `: ${run.description}` : ''}`;
-      const code = run.code
-        ? `<pre class="osa-tool-code"><code>${highlightOrEscape(run.code)}</code></pre>`
-        : '';
+      const code = run.code ? runCodeHtml(run, msgIndex, runIndex) : '';
       const localNote = isLocal
         ? '<div class="osa-execution-local-note">This run is yours. The assistant has not seen it.</div>'
         : '';
-      const output = runOutputHtml(run);
+      const output = runOutputHtml(run, typeof msgIndex === 'number' ? { msgIndex, runIndex } : null);
       const hasImages = Array.isArray(run.images) && run.images.some(isShowableImage);
       const editing = run._editing === true;
       let rerun = '';
@@ -5019,12 +5394,15 @@
             </div>`;
       }
       // Figures, a local run, or an open editor all open by default: each is
-      // the point of looking at that particular run.
+      // the point of looking at that particular run. The code is a disclosure
+      // of its own, after the run's (#491), so it opens without the output.
       return `
-        <details class="osa-execution"${(isLocal || editing || hasImages) ? ' open' : ''}>
-          <summary>${escapeHtml(title)}</summary>
-          ${localNote}${code}${output}${rerun}
-        </details>`;
+        <div class="osa-execution-run">
+          <details class="osa-execution"${(isLocal || editing || hasImages) ? ' open' : ''}>
+            <summary>${escapeHtml(title)}</summary>
+            ${localNote}${output}${rerun}
+          </details>${code}
+        </div>`;
     }).join('');
   }
 
@@ -6206,6 +6584,59 @@
       });
     });
 
+    // A run's code (#491): Copy and Download read the code from the run's record,
+    // and whether the reader opened it is kept on the record, so a re-render (a
+    // streamed chunk, runtime progress) does not close it again.
+    messagesEl.querySelectorAll('.osa-code-copy[data-msg-index]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const run = runAt(btn);
+        if (run && run.code) copyCodeFromButton(btn, run.code);
+      });
+    });
+    messagesEl.querySelectorAll('.osa-code-download[data-msg-index]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const run = runAt(btn);
+        if (!run || !run.code) return;
+        const msgIndex = parseInt(btn.getAttribute('data-msg-index'), 10);
+        const runIndex = parseInt(btn.getAttribute('data-run-index'), 10);
+        try {
+          saveFile(new Blob([run.code], { type: 'text/x-python' }), `${runFileStem(msgIndex, runIndex)}.py`);
+        } catch (err) {
+          console.error('[OSA] Could not build the code download:', err);
+          showError(container, `Could not download the code: ${(err && err.message) || err}`);
+        }
+      });
+    });
+    // A figure's Download (#492): the PNG's bytes from the run's record, named
+    // for the run and the figure's number among the ones it shows.
+    messagesEl.querySelectorAll('.osa-figure-download[data-msg-index]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const run = runAt(btn);
+        const images = run && Array.isArray(run.images) ? run.images : [];
+        const imageIndex = parseInt(btn.getAttribute('data-image-index'), 10);
+        const image = images[imageIndex];
+        if (!isShowableImage(image)) return;
+        const msgIndex = parseInt(btn.getAttribute('data-msg-index'), 10);
+        const runIndex = parseInt(btn.getAttribute('data-run-index'), 10);
+        const figureNumber = images.slice(0, imageIndex + 1).filter(isShowableImage).length;
+        try {
+          saveFile(new Blob([pngBytes(image.data_base64)], { type: 'image/png' }), figureFileName(msgIndex, runIndex, figureNumber));
+        } catch (err) {
+          console.error('[OSA] Could not build the figure download:', err);
+          showError(container, `Could not download the figure: ${(err && err.message) || err}`);
+        }
+      });
+    });
+    messagesEl.querySelectorAll('details.osa-execution-code[data-msg-index]').forEach((details) => {
+      details.addEventListener('toggle', () => {
+        const run = runAt(details);
+        if (run) run._codeOpen = details.open;
+      });
+    });
+
     // "Edit and run": open the inline editor for a specific run.
     messagesEl.querySelectorAll('.osa-rerun-open[data-msg-index]').forEach((btn) => {
       btn.addEventListener('click', (e) => {
@@ -6274,6 +6705,12 @@
         const always = panelEl.querySelector('.osa-tool-autorun-input');
         activity.decide(decision, !!(always && always.checked));
       };
+      // The gate's Copy (#491) copies the code it is asking about, as rendered.
+      const shownPrompt = toolActivity.prompt || {};
+      panelEl.querySelector('.osa-code-copy')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        copyCodeFromButton(e.currentTarget, shownPrompt.code || '');
+      });
       panelEl.querySelector('.osa-tool-run')?.addEventListener('click', () => decide(runtimeApi.GATE_DECISION.RUN));
       panelEl.querySelector('.osa-tool-deny')?.addEventListener('click', () => decide(runtimeApi.GATE_DECISION.DENY));
       panelEl.querySelector('.osa-tool-stop')?.addEventListener('click', (e) => {
@@ -7530,6 +7967,9 @@
       // The editable re-run panel.
       localExecutionRecord,
       runEditedCode,
+      runFileStem,
+      setSaveFileRevokeMs: (ms) => { SAVE_FILE_REVOKE_MS = ms; },
+      figureFileName,
       canRunLocalCode,
       localRunBlockedReason,
       renderMessages,

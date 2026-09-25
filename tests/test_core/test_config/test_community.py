@@ -6,6 +6,7 @@ Tests cover:
 - Config serialization
 """
 
+import re
 import warnings
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -21,7 +22,9 @@ from src.api.tool_results import (
 )
 from src.core.config.community import (
     MAX_CONFIGURED_CLIENT_TOOLS,
+    MAX_IMPORT_BEFORE_SEAL,
     MAX_PRELUDE_CHARS,
+    SEALED_IMPORT_ROOTS,
     BudgetConfig,
     CitationConfig,
     ClientToolConfig,
@@ -2469,6 +2472,107 @@ class TestPythonRuntimeConfig:
 
         with pytest.raises(ValidationError, match="at most"):
             PythonRuntimeConfig(pyodide_version="0.29.5", prelude=at_the_cap + "\n")
+
+
+class TestImportBeforeSeal:
+    """runtime.python.import_before_seal: modules the worker imports before its seal (#495)."""
+
+    @staticmethod
+    def _runtime(names: list[str], preload: list[str] | None = None) -> PythonRuntimeConfig:
+        return PythonRuntimeConfig(
+            pyodide_version="0.29.5",
+            preload=["numpy", "scipy", "eegprep-lean"] if preload is None else preload,
+            import_before_seal=names,
+        )
+
+    def test_it_defaults_to_nothing(self) -> None:
+        """Every community that does not set it boots exactly as before."""
+        assert PythonRuntimeConfig(pyodide_version="0.29.5").import_before_seal == []
+
+    def test_modules_of_preloaded_packages_are_accepted_in_order(self) -> None:
+        names = ["scipy", "scipy.stats", "scipy.io", "eegprep_lean.index"]
+        assert self._runtime(names).import_before_seal == names
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "scipy/signal",
+            "scipy..signal",
+            "scipy.",
+            ".scipy",
+            "1scipy",
+            "scipy signal",
+            "import scipy",
+            "scipy.signal;import os",
+            "scipy-signal",
+            "",
+        ],
+    )
+    def test_only_dotted_module_names(self, name: str) -> None:
+        with pytest.raises(ValidationError, match="import_before_seal"):
+            self._runtime([name])
+
+    def test_a_name_is_bounded(self) -> None:
+        with pytest.raises(ValidationError, match="at most 200 characters"):
+            self._runtime(["scipy." + "a" * 200])
+
+    def test_a_name_given_twice_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="names 'scipy.stats' twice"):
+            self._runtime(["scipy.stats", "scipy.stats"])
+
+    def test_the_list_is_bounded(self) -> None:
+        names = [f"scipy.m{i}" for i in range(MAX_IMPORT_BEFORE_SEAL)]
+        assert self._runtime(names).import_before_seal == names
+        with pytest.raises(ValidationError, match=f"at most {MAX_IMPORT_BEFORE_SEAL} items"):
+            self._runtime(names + ["scipy.one_more"])
+
+    @pytest.mark.parametrize("name", ["pandas", "pandas.core", "os", "json.decoder"])
+    def test_a_module_from_a_package_preload_does_not_name_is_refused(self, name: str) -> None:
+        """Not installed when the imports run, or not what this list is for."""
+        with pytest.raises(ValidationError, match="is not one preload names"):
+            self._runtime([name])
+
+    def test_a_package_from_allow_install_is_not_enough(self) -> None:
+        """allow_install names requirements and wheel URLs, not imports, so only preload
+        can vouch for a module's package, although the imports run after both."""
+        with pytest.raises(ValidationError, match="only a package preload names"):
+            PythonRuntimeConfig(
+                pyodide_version="0.29.5",
+                preload=["numpy"],
+                allow_install=["pandas"],
+                import_before_seal=["pandas"],
+            )
+
+    def test_a_preload_name_is_read_as_its_import_name(self) -> None:
+        """eegprep-lean is imported as eegprep_lean, and a lock name as PEP 503 spells it."""
+        assert self._runtime(["eegprep_lean"]).import_before_seal == ["eegprep_lean"]
+        with pytest.raises(ValidationError, match="is not a module name"):
+            self._runtime(["eegprep-lean"])  # the lock name, which no import spells
+        with pytest.raises(ValidationError, match="is not one preload names"):
+            self._runtime(["scipy"], preload=[])
+
+    @pytest.mark.parametrize("root", sorted(SEALED_IMPORT_ROOTS))
+    def test_a_module_the_seal_removes_is_refused(self, root: str) -> None:
+        """Even when preloaded: the seal evicts it and refuses it by name afterward."""
+        preload = [root.replace("_", "-")]
+        with pytest.raises(ValidationError, match="is a module the seal removes"):
+            self._runtime([root], preload=preload)
+        with pytest.raises(ValidationError, match="is a module the seal removes"):
+            self._runtime([f"{root}.util"], preload=preload)
+
+    def test_the_sealed_roots_are_the_ones_the_seal_blocks(self) -> None:
+        """SEALED_IMPORT_ROOTS mirrors _BLOCKED_ROOTS in the namespace seal's source,
+        which the server cannot import; a root added there must be refused here too.
+
+        The regex reads buildNamespaceSealSource's convention of Python written as one
+        single-quoted JavaScript string per line; if that source changes shape, this
+        fails loudly on the missing literal rather than passing."""
+        source = (Path(__file__).resolve().parents[3] / "frontend" / "osa-egress.js").read_text()
+        block = re.search(
+            r"'_BLOCKED_ROOTS = frozenset\(\{',\n((?:\s*'[^']*',\n)+?)\s*'\}\)',", source
+        )
+        assert block is not None, "the seal's _BLOCKED_ROOTS literal was not found"
+        assert set(re.findall(r'"([A-Za-z_]+)"', block.group(1))) == SEALED_IMPORT_ROOTS
 
 
 class TestRuntimeConfig:

@@ -57,15 +57,32 @@ const PACKAGE_CACHE = new URL('../.cache/pyodide-packages/', import.meta.url).pa
 
 const createFromSource = new Function(`return (${createWorkerRuntime.toString()});`)();
 
-// A request that gets no response at all. A browser rejects one with an ordinary
-// TypeError; Bun's own rejection is an object Pyodide's future helper refuses, so
-// an await on it never settles (measured 2026-09-22 on 0.29.5). This host is
-// refused the way a browser refuses it, which is the one thing that stands in
-// here: installed before any runtime boots, since the data client captures fetch.
-const UNREACHABLE = 'http://unreachable.invalid/';
-const bunFetch = globalThis.fetch;
-globalThis.fetch = (input, init) =>
-  String(input).startsWith(UNREACHABLE) ? Promise.reject(new TypeError('Failed to fetch')) : bunFetch(input, init);
+// A request that gets no response at all, for real: a loopback port that was
+// just released, so nothing listens on it. Bun's fetch rejects it with a
+// TypeError that has no `stack`, the same shape Safari's fetch rejects with
+// (both run JavaScriptCore; measured 2026-09-24 in WebKit 26.6, #496). Pyodide
+// 0.29.5 takes a JavaScript value for an error only when it has a name, a
+// message AND a stack, so before the rejection guard in osa-egress.js such a
+// rejection reached asyncio's Future.set_exception as a plain object, which
+// refuses it, and the await never settled. This suite used to stand a
+// JavaScript-made TypeError in for Bun's rejection here; that one has a stack,
+// which is how it hid the hang Safari's readers hit.
+async function refusedUrl() {
+  const probe = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch: () => new Response('') });
+  const url = `http://127.0.0.1:${probe.port}/`;
+  await probe.stop(true);
+  return url;
+}
+
+// An await that never settles reports nothing, so each one that could is raced
+// against a timer and reads as null when the timer wins.
+function settleWithin(promise, ms) {
+  let timer;
+  const expired = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(null), ms);
+  });
+  return Promise.race([promise, expired]).finally(() => clearTimeout(timer));
+}
 
 /**
  * Boot a runtime exactly as the worker does, recording what it sends and seals.
@@ -75,6 +92,7 @@ async function bootRuntime({
   allowInstall = [],
   indexUrls = [],
   fetchAllow = ['http://127.0.0.1/allowed/'],
+  importBeforeSeal = [],
   limits = {},
   lockPackages = {},
   prelude = '',
@@ -91,6 +109,7 @@ async function bootRuntime({
     allowInstall,
     indexUrls,
     fetchAllow,
+    importBeforeSeal,
     lockPackages,
     prelude,
     python: {
@@ -100,9 +119,13 @@ async function bootRuntime({
       namespaceSeal: buildNamespaceSealSource(),
     },
   };
+  // Kept so a test can reach the interpreter the core booted, as the host sees it.
+  let pyodide = null;
   const runtime = createFromSource(config, {
-    load: (indexURL, options) =>
-      loadPyodide({ packageCacheDir: PACKAGE_CACHE, stdout: () => {}, stderr: () => {}, ...options }),
+    load: async (indexURL, options) => {
+      pyodide = await loadPyodide({ packageCacheDir: PACKAGE_CACHE, stdout: () => {}, stderr: () => {}, ...options });
+      return pyodide;
+    },
     stockLock: readStockLock,
     seal: (prefixes) => sealed.push({ prefixes, sentBefore: messages.length }),
     send: (message) => messages.push(message),
@@ -116,7 +139,7 @@ async function bootRuntime({
     await runtime.handle({ type: 'execute', call_id: id, code });
     return messages.slice(from).find((m) => m.type === 'result');
   };
-  return { runtime, messages, sealed, run, ready: messages.find((m) => m.type === 'ready') };
+  return { runtime, pyodide, messages, sealed, run, ready: messages.find((m) => m.type === 'ready') };
 }
 
 console.log('='.repeat(60));
@@ -138,6 +161,7 @@ console.log('\na malformed configuration is named, not discovered deep inside th
     allowInstall: [],
     indexUrls: [],
     fetchAllow: [],
+    importBeforeSeal: [],
     lockPackages: {},
     prelude: '',
     python: { helpers: 'a', outputCapture: 'b', dataClient: 'c', namespaceSeal: 'd' },
@@ -147,6 +171,11 @@ console.log('\na malformed configuration is named, not discovered deep inside th
   await createFromSource({ ...good, fetchAllow: 'https://zarr.nemar.org/' }, env).handle({ type: 'boot' });
   assert(messages.length === 1 && messages[0].kind === 'config' && /config\.fetchAllow is not a list of strings/.test(messages[0].message),
     `a wrong type is reported by the field's name, before loading anything (got ${JSON.stringify(messages[0])})`);
+
+  messages.length = 0;
+  await createFromSource({ ...good, importBeforeSeal: 'scipy' }, env).handle({ type: 'boot' });
+  assert(/config\.importBeforeSeal is not a list of strings/.test(messages[0] && messages[0].message),
+    'so is an import_before_seal that is not a list of names');
 
   messages.length = 0;
   await createFromSource({ ...good, python: { ...good.python, namespaceSeal: '' } }, env).handle({ type: 'boot' });
@@ -571,6 +600,121 @@ console.log('\na prelude runs after the seal, as executed code, and a failing on
   assertEqual(refusal && refusal.kind, 'prelude', 'as a prelude failure, not a runtime one');
 }
 
+console.log('\nimport_before_seal: a package that imports ctypes at its top level works under the seal, and ctypes stays refused');
+{
+  // The shape SciPy has (#495): scipy._lib._ccallback imports ctypes at its top
+  // level and builds this very expression, and `import scipy` runs it. The
+  // wheel is real and micropip installs it from a real local server, as in the
+  // step-budget section above. osasealprobe_broken fails the way a module a
+  // community names by mistake would.
+  const wheel = buildMinimalWheel({
+    distribution: 'osasealprobe',
+    version: '1.0.0',
+    modules: {
+      'osasealprobe/__init__.py': 'import ctypes\n\nFUNCTION_POINTER = ctypes.CFUNCTYPE(ctypes.c_void_p).__bases__[0].__name__\n',
+      'osasealprobe_broken/__init__.py': 'raise RuntimeError("osasealprobe_broken refuses to import")\n',
+    },
+  });
+  const wheelServer = Bun.serve({
+    port: 0,
+    hostname: '127.0.0.1',
+    fetch(request) {
+      if (new URL(request.url).pathname === `/${wheel.fileName}`) {
+        return new Response(wheel.bytes, { headers: { 'Content-Type': 'application/octet-stream' } });
+      }
+      return new Response('Not Found', { status: 404 });
+    },
+  });
+  const progress = (messages) =>
+    messages.filter((m) => m.type === 'progress').map((m) => [m.phase, m.package || m.module || null, m.step, m.steps]);
+  try {
+    const wheelUrl = `http://127.0.0.1:${wheelServer.port}/${wheel.fileName}`;
+
+    // The control: installed but not imported before the seal, the package
+    // cannot import at all, for the reason SciPy could not.
+    const unimported = await bootRuntime({ allowInstall: [wheelUrl] });
+    assert(unimported.ready !== undefined, `the control boots (got ${JSON.stringify(unimported.messages.at(-1))})`);
+    const refused = await unimported.run('import osasealprobe');
+    assertEqual(refused.status, 'error', 'control: without import_before_seal, the package does not import under the seal');
+    assert(/ImportError: 'ctypes' is not available to executed code/.test(refused.stderr),
+      `control: because its own import of ctypes is refused (got ${JSON.stringify(refused.stderr.slice(0, 120))})`);
+
+    const imported = await bootRuntime({
+      allowInstall: [wheelUrl],
+      importBeforeSeal: ['osasealprobe'],
+      prelude: 'prelude_ran = True\n',
+    });
+    assert(imported.ready !== undefined, `with it, the runtime boots (got ${JSON.stringify(imported.messages.at(-1))})`);
+    assertEqual(JSON.stringify(progress(imported.messages)), JSON.stringify([
+      ['loading_runtime', null, 1, 5],
+      ['runtime_loaded', null, 1, 5],
+      ['loading_package', 'micropip', 2, 5],
+      ['installing', wheelUrl, 3, 5],
+      ['importing', 'osasealprobe', 4, 5],
+      ['prelude', null, 5, 5],
+    ]), 'one step per module, after the installs and before the prelude, inside a budget fixed at the start');
+    const importingAt = imported.messages.findIndex((m) => m.phase === 'importing');
+    assert(importingAt !== -1 && importingAt < imported.sealed[0].sentBefore, 'and the import happens before the seal');
+
+    // Nothing is bound: executed code writes its own import, as it would for
+    // any other installed package. Checked first, because a run's names stay.
+    const unbound = await imported.run('osasealprobe');
+    assert(/NameError: name 'osasealprobe' is not defined/.test(unbound.stderr),
+      `the module is not put into the namespace executed code runs in (got ${JSON.stringify(unbound.stderr.slice(0, 100))})`);
+
+    const works = await imported.run('import osasealprobe\nprint(osasealprobe.FUNCTION_POINTER)');
+    assertEqual(works.status, 'ok', `the package imports under the seal (stderr: ${works.stderr.slice(-200)})`);
+    assertEqual(works.stdout, 'CFuncPtr\n', 'with the ctypes it imported working');
+
+    // The seal still refuses ctypes to executed code, by every route: the
+    // static gate, the finder, the __import__ guard, a submodule, and the
+    // module cache, which the seal emptied of ctypes after the import above.
+    const statement = await imported.run('import ctypes');
+    assertEqual(statement.stderr, 'denied_import: ctypes', 'import ctypes is still denied by the import gate');
+    for (const code of ['import importlib\nimportlib.import_module("ctypes")', '__import__("ctypes")',
+      'import importlib\nimportlib.import_module("ctypes.util")']) {
+      const r = await imported.run(code);
+      assert(r.status === 'error' && /ImportError: 'ctypes(\.util)?' is not available to executed code/.test(r.stderr),
+        `${JSON.stringify(code.split('\n').at(-1))} is still refused (got ${r.status}: ${JSON.stringify(r.stderr.slice(0, 100))})`);
+    }
+    const cached = await imported.run('import sys\nprint(sorted(n for n in sys.modules if n.partition(".")[0] == "ctypes"))');
+    assertEqual(cached.stdout, '[]\n', 'and no ctypes module is left in sys.modules');
+
+    // What the docs say this costs: the package's own reference to ctypes is an
+    // ordinary attribute. The namespace seal never claimed to hide a reference
+    // (osa-egress.js, "WHAT THIS IS AND IS NOT A BOUNDARY AGAINST"); asserted so
+    // the sentence in docs/community-browser-runtime.md stays true.
+    const attribute = await imported.run('import osasealprobe\nprint(osasealprobe.ctypes.__name__)');
+    assertEqual(attribute.stdout, 'ctypes\n', 'the documented cost: the package keeps its own ctypes as an attribute');
+
+    // A module that is not there fails the boot, naming it, before the seal
+    // and the prelude, and as its own kind of failure.
+    const missing = await bootRuntime({ importBeforeSeal: ['osa_no_such_module'], prelude: 'prelude_ran = True\n' });
+    const missingError = missing.messages.find((m) => m.type === 'error');
+    assertEqual(missing.ready, undefined, 'a module that does not exist does not get a runtime');
+    assertEqual(missingError && missingError.kind, 'import_before_seal', 'the failure is an import_before_seal one');
+    assert(missingError && /^the community's import_before_seal module osa_no_such_module did not import: /.test(missingError.message)
+      && /ModuleNotFoundError: No module named 'osa_no_such_module'/.test(missingError.message),
+      `and it names the module and why (got ${JSON.stringify(missingError && missingError.message)})`);
+    assertEqual(missing.sealed.length, 0, 'the boot stops before the seal');
+    assert(!missing.messages.some((m) => m.phase === 'prelude'), 'and never runs the prelude');
+
+    // A module that raises: the error carries the module's own exception, and
+    // the steps stop at the module that failed.
+    const raising = await bootRuntime({ allowInstall: [wheelUrl], importBeforeSeal: ['osasealprobe', 'osasealprobe_broken'] });
+    const raisingError = raising.messages.find((m) => m.type === 'error');
+    assert(raisingError && /module osasealprobe_broken did not import: /.test(raisingError.message)
+      && /RuntimeError: osasealprobe_broken refuses to import/.test(raisingError.message),
+      `a module that raises is named with its own exception (got ${JSON.stringify(raisingError && raisingError.message.slice(-200))})`);
+    assertEqual(JSON.stringify(progress(raising.messages).slice(-2)), JSON.stringify([
+      ['importing', 'osasealprobe', 4, 5],
+      ['importing', 'osasealprobe_broken', 5, 5],
+    ]), 'counted the way a succeeding boot counts, up to the module that failed');
+  } finally {
+    wheelServer.stop(true);
+  }
+}
+
 console.log('\na lock overlay may add packages and never replace one');
 {
   const shadowed = await bootRuntime({
@@ -667,21 +811,89 @@ console.log('\nosa.fetch reads byte ranges, and reports a status rather than rai
     );
     assertEqual(typed.stdout, 'TypeError the Range header must be a str, not int\n', 'a Range value that is not a string is refused');
     assertEqual(seen.length, before, 'and neither refused call reached the network');
-
-    // No response at all, through the host that is refused the way a browser
-    // refuses it (see UNREACHABLE). The egress guard's refusal of a URL outside
-    // fetch_allow is checked in the browser harness, where the guard is real.
-    const lost = await plain.run(
-      `try:\n    await osa.fetch(${JSON.stringify(`${UNREACHABLE}x`)})\nexcept OSError as e:\n` +
-        '    print(type(e.__cause__).__name__)\n    print(e)'
-    );
-    const [cause, message] = lost.stdout.split('\n');
-    assertEqual(cause, 'JsException', 'a fetch the browser rejects is an OSError, chained to what the browser raised');
-    assert(/^no response from http:\/\/unreachable\.invalid\/x: a network failure, a redirect .* or a URL outside fetch_allow\. The browser said: TypeError: Failed to fetch$/.test(message),
-      `and it lists what "no response" can mean, since the browser says so little (got ${JSON.stringify(message)})`);
   } finally {
     server.stop(true);
   }
+}
+
+console.log('\na request that gets no response raises, rather than hanging the run (Safari, #496)');
+{
+  // A runtime of its own: without the rejection guard the await never settles,
+  // and a runtime left mid-execution answers every later call with "another
+  // execution is already running", which would fail later sections for a reason
+  // that is not their own. The egress guard's refusal of a URL outside
+  // fetch_allow is checked in the browser harness, where the guard is real.
+  const lost = await bootRuntime();
+  const refused = await refusedUrl();
+
+  // The canary. This section reproduces Safari only while Bun's rejection has
+  // Safari's shape; with a stack, Pyodide would convert it without the guard's
+  // help, and every check below would pass with the guard removed.
+  const shape = await fetch(`${refused}x`).then(() => null, (err) => err);
+  assert(shape !== null && typeof shape.message === 'string' && !('stack' in shape),
+    "Bun's fetch rejects a refused connection with a message and no stack, as Safari's does; if this fails, " +
+      'a Bun upgrade gave that rejection a stack, and this section no longer tests the guard: find another stackless rejection for it ' +
+      `(got ${shape === null ? 'a response' : JSON.stringify(Object.getOwnPropertyNames(shape))})`);
+
+  const noResponse = await settleWithin(
+    lost.run(
+      `try:\n    await osa.fetch(${JSON.stringify(`${refused}x`)})\nexcept OSError as e:\n` +
+        '    print(type(e.__cause__).__name__)\n    print(e)'
+    ),
+    15_000
+  );
+  assertEqual(noResponse && noResponse.status, 'ok',
+    'a refused connection settles the await, although its rejection has no stack, as in Safari');
+  const [cause, message] = noResponse ? noResponse.stdout.split('\n') : [];
+  assertEqual(cause, 'JsException', 'it is an OSError, chained to what the browser raised');
+  assert(/^no response from http:\/\/127\.0\.0\.1:\d+\/x: a network failure, a redirect .* or a URL outside fetch_allow\. The browser said: TypeError: \S/.test(message),
+    `and it lists what "no response" can mean, then what the browser said (got ${JSON.stringify(message)})`);
+
+  // The same session still reads, from a server that answers.
+  const server = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch: () => new Response('still-reading') });
+  try {
+    const after = await settleWithin(
+      lost.run(`data = await osa.fetch_bytes("http://127.0.0.1:${server.port}/data")\nprint(len(data), data.decode())`),
+      15_000
+    );
+    assertEqual(after && after.stdout, '13 still-reading\n', 'and after it, the same runtime reads from a server that answers');
+  } finally {
+    server.stop(true);
+  }
+
+  // What else a promise can be rejected with, in the interpreter the core booted,
+  // after its seal: a promise made on the host's side, awaited in a namespace of
+  // its own. Each reads back "<type>: <message>", or null when the await never
+  // returned.
+  const raised = async (make) => {
+    const namespace = lost.pyodide.globals.get('dict')();
+    namespace.set('make', make);
+    try {
+      return await settleWithin(
+        lost.pyodide.runPythonAsync(
+          'try:\n    await make()\n    out = "no error"\nexcept BaseException as e:\n    out = f"{type(e).__name__}: {e}"\nout',
+          { globals: namespace }
+        ),
+        10_000
+      );
+    } finally {
+      namespace.destroy();
+    }
+  };
+  // Only what asyncio would refuse is wrapped, so a guard that wrapped
+  // everything would turn this into a JsException and fail here.
+  const pythonError = lost.pyodide.runPython('ValueError("raised in Python")');
+  const own = await raised(() => Promise.reject(pythonError));
+  pythonError.destroy();
+  assertEqual(own, 'ValueError: raised in Python', 'a rejection with a Python exception keeps its type');
+  // Safari's abort shape: a name and a message, no stack. A real AbortController
+  // under Bun rejects with a DOMException, which Pyodide already recognizes.
+  assertEqual(await raised(() => Promise.reject({ name: 'AbortError', message: 'The operation was aborted.' })),
+    'JsException: AbortError: The operation was aborted.', 'a stackless AbortError raises as one, keeping its name and message');
+  assertEqual(await raised(() => Promise.reject(null)), 'JsException: Error: a promise was rejected with no reason',
+    'a rejection with null for its reason says so, rather than printing the value');
+  assertEqual(await raised(() => Promise.reject(undefined)), 'JsException: Error: a promise was rejected with no reason',
+    'and so does one with undefined');
 }
 
 console.log('\nosa.save_script and osa.save_artifact write into the run\'s workspace result (#433)');

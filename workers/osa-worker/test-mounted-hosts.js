@@ -76,11 +76,12 @@ const mountedHosts = mountedMatch
 // A pattern looks like "widget.osc.earth/osa/*"; the hostname is everything
 // before the first slash. Commented-out lines are ignored, which matters
 // because this file carries a lot of explanatory prose containing examples.
+// A host carries two routes (#500), so the hostnames are de-duplicated.
 const routeHosts = [
-  ...wranglerSource.matchAll(/^\s*pattern\s*=\s*["']([^"']+)["']/gm),
-]
-  .map((m) => m[1].split('/')[0])
-  .sort();
+  ...new Set(
+    [...wranglerSource.matchAll(/^\s*pattern\s*=\s*["']([^"']+)["']/gm)].map((m) => m[1].split('/')[0])
+  ),
+].sort();
 
 // Prefix the worker actually strips, so the patterns can be checked for it.
 const prefixMatch = indexSource.match(/const MOUNT_PREFIX = ['"]([^'"]+)['"]/);
@@ -118,12 +119,24 @@ for (const host of mountedHosts) {
 // worker strips. A route on "widget.osc.earth/something-else/*" with
 // MOUNT_PREFIX "/osa" would pass the hostname check above and still be wrong.
 console.log('');
-for (const [, pattern] of wranglerSource.matchAll(/^\s*pattern\s*=\s*["']([^"']+)["']/gm)) {
+const patterns = [...wranglerSource.matchAll(/^\s*pattern\s*=\s*["']([^"']+)["']/gm)].map((m) => m[1]);
+for (const pattern of patterns) {
   const path = pattern.slice(pattern.indexOf('/'));
   assert(
-    path.startsWith(`${mountPrefix}/`),
+    path === `${mountPrefix}*` || path.startsWith(`${mountPrefix}/`),
     `route pattern ${pattern} mounts at MOUNT_PREFIX ${mountPrefix}`
   );
+}
+
+// Each mounted host needs BOTH routes (#500): "/osa/*" does not match the bare
+// "/osa", which otherwise reaches the placeholder origin and answers 522. The
+// bare route ends in "*" because a pattern without a trailing wildcard never
+// matches a URL with a query string, so "/osa?x=1" would still 522.
+console.log('');
+for (const host of mountedHosts) {
+  assert(patterns.includes(`${host}${mountPrefix}/*`), `${host} routes ${mountPrefix}/*`);
+  assert(patterns.includes(`${host}${mountPrefix}*`), `${host} routes the bare ${mountPrefix}, query included (${mountPrefix}*)`);
+  assert(!patterns.includes(`${host}${mountPrefix}`), `${host} has no exact ${mountPrefix} route, which a query string would miss`);
 }
 
 console.log('\n' + '='.repeat(60));

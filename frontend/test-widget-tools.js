@@ -123,6 +123,10 @@ function markupProblems(window, html, allowedTags) {
   return { problems, holder };
 }
 
+// The elements the widget's own ICONS are drawn with, which the code blocks'
+// Copy and Download buttons carry (#491).
+const ICON_TAGS = ['svg', 'rect', 'path', 'polyline', 'line'];
+
 const HOSTILE = [
   '<img src=x onerror=alert(1)>',
   '</code></pre><script>alert(1)</script>',
@@ -165,9 +169,9 @@ console.log('\na run record puts only our markup on the page, whatever it holds'
     ],
   }));
   const html = api.executionsHtml(runs);
-  const { problems, holder } = markupProblems(window, html, ['details', 'summary', 'pre', 'code', 'img', 'span']);
+  const { problems, holder } = markupProblems(window, html, ['div', 'details', 'summary', 'pre', 'code', 'img', 'span']);
   assertEqual(problems, [], 'no foreign element, handler or source survives parsing');
-  const summaries = Array.from(holder.querySelectorAll('summary')).map((s) => s.textContent);
+  const summaries = Array.from(holder.querySelectorAll('details.osa-execution > summary')).map((s) => s.textContent);
   assertEqual(summaries[1], `Python raised an error: ${HOSTILE[1]}`, 'hostile text comes back as the same text');
   assert(summaries[0].startsWith('Python: '), 'a status that names an Object.prototype key gets the plain label');
   assertEqual(holder.querySelectorAll('img').length, HOSTILE.length, 'exactly one image per run survives: the real PNG');
@@ -183,7 +187,7 @@ console.log('\nthe permission gate puts only our markup on the page, whatever it
     const running = api.toolPanelHtml({ phase: 'running', prompt: { code: text, description: text }, progress: { text, step: null, steps: null } });
     for (const [label, html] of [['asking', asking], ['running', running]]) {
       const { problems, holder } = markupProblems(window, html,
-        ['div', 'pre', 'code', 'button', 'label', 'input', 'span']);
+        ['div', 'pre', 'code', 'button', 'label', 'input', 'span', ...ICON_TAGS]);
       assert(problems.length === 0, `${label}: ${JSON.stringify(text.slice(0, 24))} leaves no foreign markup${problems.length ? ` (${problems.join('; ')})` : ''}`);
       const description = holder.querySelector('.osa-tool-panel-description');
       assert(description && description.textContent === text, `${label}: the description reads back unchanged`);
@@ -289,7 +293,7 @@ console.log('\nthe editor opens prefilled with the run\'s code, and escapes host
   };
   const openHtml = api.executionsHtml([run], 2);
   const { problems: openProblems, holder: openHolder } = markupProblems(window, openHtml,
-    ['details', 'summary', 'pre', 'code', 'div', 'button', 'span']);
+    ['details', 'summary', 'pre', 'code', 'div', 'button', 'span', ...ICON_TAGS]);
   assertEqual(openProblems, [], 'the closed record leaves no foreign markup');
   const openBtn = openHolder.querySelector('.osa-rerun-open');
   assert(openBtn, 'the "Edit and run" button is offered');
@@ -299,7 +303,7 @@ console.log('\nthe editor opens prefilled with the run\'s code, and escapes host
   const editingRun = { ...run, _editing: true };
   const editorHtml = api.executionsHtml([editingRun], 2);
   const { problems: editorProblems, holder: editorHolder } = markupProblems(window, editorHtml,
-    ['details', 'summary', 'pre', 'code', 'div', 'label', 'textarea', 'button', 'span']);
+    ['details', 'summary', 'pre', 'code', 'div', 'label', 'textarea', 'button', 'span', ...ICON_TAGS]);
   assertEqual(editorProblems, [], 'the open editor leaves no foreign markup either, for hostile code');
   const textarea = editorHolder.querySelector('.osa-rerun-textarea');
   assert(textarea, 'the editor has a textarea');
@@ -1617,6 +1621,8 @@ console.log('\nevery classified surface and foreground resolves to the color thi
   const HOVER_AND_FOCUS_FOREGROUNDS = [
     ['sources hover (.osa-message-sources a:hover)', '.osa-message-sources a:hover {\n      color: var(--osa-accent);'],
     ["copy button hover (.osa-message-copy-btn:hover)", '.osa-message-copy-btn:hover {\n      color: var(--osa-accent);'],
+    ['a code block\'s Copy and Download hover (.osa-code-action:hover)', '.osa-code-action:hover {\n      color: var(--osa-accent);'],
+    ['a code block\'s Copy and Download focus ring (.osa-code-action:focus-visible)', '.osa-code-action:focus-visible {\n      outline: 2px solid var(--osa-accent);'],
     ['feedback comment focus border (.osa-feedback-comment-input:focus)', '.osa-feedback-comment-input:focus {\n      outline: none;\n      border-color: var(--osa-accent);'],
     ['chat input focus border (.osa-chat-input input:focus)', '.osa-chat-input input:focus {\n      border-color: var(--osa-accent);'],
     ['footer-powered link hover (.osa-footer-powered a:hover)', '.osa-combined-footer .osa-footer-powered a:hover {\n      color: var(--osa-accent);'],
@@ -1860,6 +1866,554 @@ try {
   // run after it, rather than reporting one tallied FAIL like the rest of the
   // file. The message is the same one an uncaught throw would have shown.
   assert(false, err.message);
+}
+
+// ---------------------------------------------------------------------------
+// A run's code in place, with Copy and Download (#491).
+// ---------------------------------------------------------------------------
+
+// A 1x1 PNG, the same one the markup test above draws.
+const PNG_1PX = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+// Code that reads as markup and as entities, so a copy or a download that took
+// the page's text, or escaped it, would not come back equal.
+const RUN_CODE = 'import numpy as np\nprint("<b>&amp;</b>")  # </code></pre>\nx = np.arange(3)\n';
+
+// A conversation with three runs over two replies: the first question asked on
+// nm000132's page, the second on a page that named no dataset.
+function codeConversation() {
+  const run = (callId, description, code, extra = {}) => ({
+    callId, tool: 'execute_code', description, code, status: 'ok', stdout: '', stderr: '', images: [], ...extra,
+  });
+  return [
+    { role: 'assistant', content: 'Hi' },
+    { role: 'user', content: 'plot it', dataset: 'nm000132' },
+    { role: 'assistant', content: 'done', executions: [
+      run('c-1', 'read the index', 'print(1)', { stdout: '1\n' }),
+      run('c-2', 'plot', RUN_CODE, { images: [{ mime: 'image/png', data_base64: PNG_1PX, width: 1, height: 1 }] }),
+    ] },
+    { role: 'user', content: 'again, off the dataset page' },
+    { role: 'assistant', content: 'again', executions: [run('c-3', 'plot again', 'print(3)', { stdout: '3\n' })] },
+  ];
+}
+
+// waitUntil, tallied: a wait that times out is one failed check rather than an
+// uncaught throw that stops the file and hides every check after it.
+async function settles(predicate, label, timeoutMs = 3000) {
+  try {
+    await waitUntil(predicate, label, timeoutMs);
+    return true;
+  } catch (err) {
+    assert(false, err.message);
+    return false;
+  }
+}
+
+// Every file the widget hands the reader, as a browser would save it: the Blob
+// behind each address it makes (URL.createObjectURL, recorded on its way to the
+// real one), and each link it clicks with `download`. happy-dom follows such a
+// link, where a browser saves the file, so the recorder stops it there.
+function recordDownloads(window) {
+  const made = [];
+  const blobs = new Map();
+  const realCreate = URL.createObjectURL;
+  URL.createObjectURL = (blob) => {
+    const url = realCreate.call(URL, blob);
+    blobs.set(url, blob);
+    return url;
+  };
+  const onClick = (event) => {
+    const link = event.target;
+    if (!link || link.tagName !== 'A' || !link.hasAttribute('download')) return;
+    event.preventDefault();
+    made.push({ filename: link.download, href: link.href, blob: blobs.get(link.href), inDocument: link.isConnected });
+  };
+  window.document.addEventListener('click', onClick, true);
+  made.restore = () => {
+    URL.createObjectURL = realCreate;
+    window.document.removeEventListener('click', onClick, true);
+  };
+  return made;
+}
+
+// The console.warn calls a block makes, kept rather than printed.
+async function withWarnings(fn) {
+  const warnings = [];
+  const realWarn = console.warn;
+  console.warn = (...args) => { warnings.push(args.map(String).join(' ')); };
+  try {
+    await fn();
+  } finally {
+    console.warn = realWarn;
+  }
+  return warnings;
+}
+
+console.log('\na run\'s code is a disclosure of its own, closed, beside the run\'s output (#491)');
+{
+  const { window, api } = loadWidget();
+  api.setMessages(codeConversation());
+  const holder = window.document.createElement('div');
+  holder.innerHTML = api.executionsHtml(api.getMessages()[2].executions, 2);
+  const runs = [...holder.children].filter((el) => el.classList.contains('osa-execution-run'));
+  assertEqual(runs.length, 2, 'one entry per run');
+  const [first, second] = runs;
+  assertEqual([...second.children].map((el) => `${el.tagName.toLowerCase()}.${el.classList[0]}`),
+    ['details.osa-execution', 'details.osa-execution-code'], 'each entry is the run\'s own disclosure, then its code\'s');
+  const code = second.querySelector('details.osa-execution-code');
+  assert(!code.hasAttribute('open'), 'the code is closed until the reader opens it');
+  assert(second.querySelector('details.osa-execution').hasAttribute('open'), 'while a run that drew a figure still opens its output, as before');
+  assertEqual(code.querySelector('summary').textContent, 'Code · 3 lines', 'labeled Code, with its length');
+  assertEqual(first.querySelector('details.osa-execution-code summary').textContent, 'Code · 1 line', 'one line is "1 line"');
+  assert(!second.querySelector('details.osa-execution pre.osa-tool-code'), 'the run\'s own disclosure no longer holds the code');
+  assert(!code.querySelector('.osa-execution-output') && !code.querySelector('img'), 'and the code\'s holds no output or figure');
+  assertEqual(code.querySelector('pre code').textContent, RUN_CODE, 'the code reads back exactly, markup-looking text and all');
+  assertEqual(code.querySelector('.osa-code-copy').getAttribute('aria-label'), 'Copy the code', 'Copy says what it copies');
+  assertEqual(code.querySelector('.osa-code-download').getAttribute('aria-label'), 'Download the code as nm000132-run-2.py', 'Download says the file it saves');
+  for (const button of code.querySelectorAll('.osa-code-action')) {
+    assertEqual(button.getAttribute('type'), 'button', `${button.classList[1]} is a real button, in the tab order`);
+  }
+  assertEqual(code.querySelector('.osa-code-status').getAttribute('role'), 'status', 'the bar\'s status line is announced politely');
+
+  holder.innerHTML = api.executionsHtml([{ callId: 'c-9', tool: 'execute_code', description: '', code: '', status: 'denied', stdout: '', stderr: '', images: [] }], 0);
+  assert(!holder.querySelector('.osa-execution-code'), 'a run with no code has no code block');
+  holder.innerHTML = api.executionsHtml(api.getMessages()[2].executions);
+  assert(holder.querySelector('.osa-execution-code') && !holder.querySelector('.osa-code-toolbar'),
+    'with no reply to act on, the code still shows, without the bar');
+}
+
+console.log('\na run\'s code block puts only our markup on the page, with its bar, whatever the code holds (#491)');
+for (const highlighted of [false, true]) {
+  const loaded = highlighted ? loadWidgetWithRealBundle() : loadWidget();
+  const { window, api } = loaded;
+  if (highlighted) {
+    api.setUpBrowserTools({ client_tools: LOCAL_TOOLS, runtime: { python: LOCAL_RUNTIME_CONFIG } });
+    await api.declaredClientTools();
+  }
+  const label = highlighted ? 'highlighted' : 'escaped plainly';
+  const runs = HOSTILE.map((text, i) => ({
+    callId: `h${i}`, tool: 'execute_code', description: text, code: text, status: 'ok', stdout: '', stderr: '', images: [],
+  }));
+  api.setMessages([{ role: 'user', content: 'q', dataset: 'nm000132' }, { role: 'assistant', content: '', executions: runs }]);
+  const { problems, holder } = markupProblems(window, api.executionsHtml(runs, 1),
+    ['div', 'details', 'summary', 'pre', 'code', 'span', 'button', 'label', 'textarea', ...ICON_TAGS]);
+  assertEqual(problems, [], `${label}: no foreign element, handler or source survives parsing`);
+  assertEqual([...holder.querySelectorAll('.osa-execution-code pre code')].map((c) => c.textContent), HOSTILE,
+    `${label}: every hostile code reads back as the same text`);
+  if (highlighted) assert(holder.querySelector('.osa-execution-code pre code span'), 'sanity: the highlighter ran');
+}
+
+console.log('\nCopy puts the run\'s exact code on the clipboard, and says so for a moment (#491)');
+{
+  const { window, api } = loadWidgetWithRealBundle();
+  api.setUpBrowserTools({ client_tools: LOCAL_TOOLS, runtime: { python: LOCAL_RUNTIME_CONFIG } });
+  await api.declaredClientTools();
+  api.setMessages(codeConversation());
+  const container = mountedContainer(window);
+  api.renderMessages(container);
+  const block = container.querySelectorAll('.osa-execution-code')[1];
+  assert(block.querySelector('pre code .osa-py-kw'), 'sanity: the code on the page is highlighted');
+  const copy = block.querySelector('.osa-code-copy');
+  const status = block.querySelector('.osa-code-status');
+  assertEqual(status.textContent, '', 'the status line starts empty');
+  const warnings = await withWarnings(async () => {
+    click(window, copy);
+    await settles(() => status.textContent === 'Copied', 'the copy finishes');
+  });
+  assertEqual(await window.navigator.clipboard.readText(), RUN_CODE, 'the clipboard holds the run\'s code exactly, not the highlighted page text');
+  assert(copy.classList.contains('copied') && copy.innerHTML.includes('20 6 9 17 4 12'), 'the button shows a check');
+  assertEqual(copy.getAttribute('aria-label'), 'Copy the code', 'and keeps its label');
+  assertEqual(warnings, [], 'nothing is warned when the clipboard takes it');
+  await new Promise((resolve) => setTimeout(resolve, 2100));
+  assertEqual(status.textContent, '', '"Copied" goes after a moment');
+  assert(!copy.classList.contains('copied') && !copy.innerHTML.includes('20 6 9 17 4 12'), 'and the button is Copy again');
+
+  click(window, container.querySelectorAll('.osa-code-copy')[0]);
+  await settles(() => container.querySelectorAll('.osa-code-status')[0].textContent === 'Copied', 'the first run\'s copy finishes');
+  assertEqual(await window.navigator.clipboard.readText(), 'print(1)', 'each run\'s Copy copies its own code');
+}
+
+console.log('\nwhere the browser refuses the clipboard, Copy opens and selects the code and names the keys, with no dialog (#491)');
+{
+  const { window, api } = loadWidget();
+  const dialogs = [];
+  for (const name of ['alert', 'confirm', 'prompt']) window[name] = () => { dialogs.push(name); };
+  // A page the browser does not let write the clipboard (a frame without
+  // clipboard-write, for one): happy-dom's own Clipboard refuses writeText then.
+  (await window.navigator.permissions.query({ name: 'clipboard-write' })).state = 'denied';
+  let refused = null;
+  try {
+    await window.navigator.clipboard.writeText('x');
+  } catch (err) {
+    refused = err;
+  }
+  assert(refused !== null, 'sanity: the browser refuses writeText');
+  api.setMessages(codeConversation());
+  const container = mountedContainer(window);
+  api.renderMessages(container);
+  const block = container.querySelectorAll('.osa-execution-code')[1];
+  const status = block.querySelector('.osa-code-status');
+  assert(!block.open, 'sanity: the code is closed');
+  const warnings = await withWarnings(async () => {
+    click(window, block.querySelector('.osa-code-copy'));
+    await settles(() => status.textContent !== '', 'the copy gives up');
+  });
+  assert(/^This page cannot copy for you: the code is selected, so press (Cmd|Ctrl)\+C$/.test(status.textContent), `the bar says what to press (${JSON.stringify(status.textContent)})`);
+  assert(block.open, 'the code is opened');
+  assertEqual(window.getSelection().toString(), RUN_CODE, 'and selected in full, ready to copy by hand');
+  assert(!block.querySelector('.osa-code-copy').classList.contains('copied'), 'the button does not claim it copied');
+  assert(warnings.some((w) => w.includes('refused the clipboard')), 'the refusal is warned in the console');
+  assertEqual(dialogs, [], 'no browser dialog, ever');
+}
+
+console.log('\nwithout the Clipboard API, Copy uses the browser\'s copy command, on the exact code (#491)');
+{
+  const { window, api } = loadWidget();
+  // An insecure page has no navigator.clipboard at all.
+  Object.defineProperty(window.navigator, 'clipboard', { value: undefined, configurable: true });
+  // happy-dom has no copy command, so this stands in for the browser's: it records
+  // what is selected, and where, at the moment the widget runs it.
+  const commands = [];
+  window.document.execCommand = (command) => {
+    const active = window.document.activeElement;
+    commands.push({
+      command,
+      selected: active && active.tagName === 'TEXTAREA' ? active.value.slice(active.selectionStart, active.selectionEnd) : null,
+      attached: !!active && active.isConnected,
+    });
+    return true;
+  };
+  api.setMessages(codeConversation());
+  const container = mountedContainer(window);
+  api.renderMessages(container);
+  const block = container.querySelectorAll('.osa-execution-code')[1];
+  const copy = block.querySelector('.osa-code-copy');
+  copy.focus();
+  click(window, copy);
+  await settles(() => block.querySelector('.osa-code-status').textContent === 'Copied', 'the copy finishes');
+  assertEqual(commands, [{ command: 'copy', selected: RUN_CODE, attached: true }], 'the copy command ran once, on the run\'s exact code, selected in the page');
+  assert(!window.document.querySelector('textarea[aria-hidden="true"]'), 'the textarea it used is gone');
+  assert(window.document.activeElement === copy, 'and focus is back on Copy');
+
+  commands.length = 0;
+  window.document.execCommand = () => false;
+  const other = container.querySelectorAll('.osa-execution-code')[0];
+  click(window, other.querySelector('.osa-code-copy'));
+  await settles(() => other.querySelector('.osa-code-status').textContent !== '', 'the command refuses');
+  assert(/press (Cmd|Ctrl)\+C$/.test(other.querySelector('.osa-code-status').textContent) && other.open,
+    'a command that refuses falls through to selecting the code');
+}
+
+console.log('\nDownload saves the run\'s exact code as a .py file named for the dataset and the run (#491)');
+{
+  const { window, widget, api } = loadWidget();
+  widget.setConfig({ communityId: 'nemar' });
+  api.setMessages(codeConversation());
+  const container = mountedContainer(window);
+  api.renderMessages(container);
+  const made = recordDownloads(window);
+  try {
+    const buttons = container.querySelectorAll('.osa-code-download');
+    assertEqual(buttons.length, 3, 'every run with code has Download');
+    click(window, buttons[1]);
+    click(window, buttons[2]);
+    assertEqual(made.map((d) => d.filename), ['nm000132-run-2.py', 'nemar-run-3.py'],
+      'named for the dataset the question was asked on, or the community when it named none, and the run\'s place in the conversation');
+    assert(made[0].blob instanceof Blob, 'the file is a Blob built in the page');
+    assertEqual(await made[0].blob.text(), RUN_CODE, 'holding the run\'s exact code');
+    assertEqual(made[0].blob.type, 'text/x-python', 'as Python');
+    assertEqual(await made[1].blob.text(), 'print(3)', 'each run\'s own');
+    assert(made.every((d) => d.href.startsWith('blob:') && d.inDocument), 'saved through a link to the Blob\'s address, clicked while in the page');
+    assert(!window.document.querySelector('a[download]'), 'the link is removed afterward');
+  } finally {
+    made.restore();
+  }
+  assertEqual(api.runFileStem(2, 0), 'nm000132-run-1', 'the first run of the conversation is run 1');
+  api.getMessages()[1].dataset = '.hidden';
+  assertEqual(api.runFileStem(2, 0), 'hidden-run-1', 'a leading dot, which would hide the file, is dropped');
+
+  // The community's id is the name when the question named no dataset. setConfig
+  // holds it to letters, digits, '-' and '_', but a pop-out's preset config is
+  // assigned whole, so the name is held to safe characters on its own.
+  const config = api.getConfig();
+  for (const [communityId, stem] of [['a/b c', 'a_b_c-run-3'], ['..\\x:y', '_x_y-run-3'], ['...', 'osa-run-3'], ['', 'osa-run-3']]) {
+    config.communityId = communityId;
+    assertEqual(api.runFileStem(4, 0), stem, `a community id of ${JSON.stringify(communityId)} names the file ${stem}.py`);
+  }
+  config.communityId = 'nemar';
+}
+
+console.log('\nSettings\' "Download workspace" goes through the same download, and says why when it cannot build one (#491)');
+{
+  // The button the reader presses, wired by init, with a REAL WorkspaceStore:
+  // happy-dom has no IndexedDB, so this one is genuinely unavailable and its
+  // export fails as it would in a browser that blocks storage. The zip itself
+  // is built and read in real Chrome by frontend/browser-harness/workspace.js.
+  const fetch = async (url) => {
+    if (String(url).endsWith('/health')) return new Response(JSON.stringify({ status: 'healthy' }));
+    return new Response(JSON.stringify({ default_model: 'm', offered_models: [], widget: {}, client_tools: [], runtime: null }), { headers: { 'content-type': 'application/json' } });
+  };
+  const { window, api, widget } = loadWidget({ fetch });
+  widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: 'osa-test-workspace-download' });
+  widget.init();
+  const container = window.document.querySelector('.osa-chat-widget');
+  api.setWorkspaceStore(new WorkspaceStore({ community: 'widget-test' }));
+  const button = container.querySelector('.osa-workspace-download-btn');
+  assert(!!button, 'Settings has the button');
+  const made = recordDownloads(window);
+  const errorEl = container.querySelector('.osa-error');
+  // The widget's console.error, kept while it works; assert reports through
+  // console.error too, so every check comes after it is handed back.
+  const errors = [];
+  const realError = console.error;
+  console.error = (...args) => { errors.push(args.map(String).join(' ')); };
+  let shown = false;
+  try {
+    click(window, button);
+    const started = Date.now();
+    while (!(shown = errorEl.style.display === 'block') && Date.now() - started < 3000) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  } finally {
+    console.error = realError;
+    made.restore();
+  }
+  assert(shown, 'pressing it shows an error');
+  assert(/^Could not build the workspace download: .*IndexedDB is not available/.test(errorEl.textContent),
+    `the reader is told the download could not be built, and why (${JSON.stringify(errorEl.textContent)})`);
+  assertEqual(made.length, 0, 'and nothing is saved');
+  assert(errors.some((e) => e.includes('Workspace export failed')), 'the console says so too');
+}
+
+console.log('\nthe address a download is saved from is freed once the download has started (#491)');
+{
+  const { window, api } = loadWidget();
+  api.setMessages(codeConversation());
+  const container = mountedContainer(window);
+  api.renderMessages(container);
+  api.setSaveFileRevokeMs(50);
+  const made = recordDownloads(window);
+  try {
+    click(window, container.querySelectorAll('.osa-code-download')[1]);
+    assertEqual(made.length, 1, 'sanity: one download');
+    const url = made[0] && made[0].href;
+    // Bun's own blob: addresses, real ones: fetched while they live, refused once revoked.
+    const served = await fetch(url).then((response) => response.text(), () => null);
+    assertEqual(served, RUN_CODE, 'right after the click, the address still serves the file, so the download can read it');
+    let freed = false;
+    const started = Date.now();
+    while (!freed && Date.now() - started < 3000) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      freed = await fetch(url).then(() => false, () => true);
+    }
+    assert(freed, 'and after the wait it is revoked: fetching it fails');
+  } finally {
+    made.restore();
+    api.setSaveFileRevokeMs(5000);
+  }
+}
+
+console.log('\nthe permission gate\'s Copy copies the code it asks about, and decides nothing (#491)');
+{
+  const { window, api } = loadWidget();
+  api.setMessages([{ role: 'assistant', content: 'Hi' }]);
+  const decisions = [];
+  api.setToolActivity({ phase: 'asking', prompt: { code: RUN_CODE, description: 'plot' }, decide: (d) => decisions.push(d) });
+  const container = mountedContainer(window);
+  api.renderMessages(container);
+  const panel = container.querySelector('.osa-tool-panel');
+  const copy = panel.querySelector('.osa-code-copy');
+  assert(copy && !panel.querySelector('.osa-code-download'), 'the gate has Copy, and no Download: nothing has run yet');
+  assert(copy.closest('.osa-code-block').querySelector('pre.osa-tool-code'), 'over the code it shows');
+  click(window, copy);
+  await settles(() => panel.querySelector('.osa-code-status').textContent === 'Copied', 'the copy finishes');
+  assertEqual(await window.navigator.clipboard.readText(), RUN_CODE, 'the clipboard holds the code the gate shows, exactly');
+  assertEqual(decisions, [], 'copying neither runs nor denies it');
+  assertEqual(api.getToolActivity().phase, 'asking', 'the gate is still asking');
+  api.setToolActivity(null);
+}
+
+console.log('\nan opened code block stays open across a re-render, and is not stored (#491)');
+{
+  const { window, api } = loadWidget();
+  api.setMessages(codeConversation());
+  const container = mountedContainer(window);
+  api.renderMessages(container);
+  let block = container.querySelectorAll('.osa-execution-code')[1];
+  // A reader's click on the summary opens it, and the browser fires toggle;
+  // happy-dom does neither for a summary click, so the test does both.
+  block.open = true;
+  block.dispatchEvent(new window.Event('toggle'));
+  assertEqual(api.getMessages()[2].executions[1]._codeOpen, true, 'the run records that its code is open');
+  api.renderMessages(container);
+  block = container.querySelectorAll('.osa-execution-code')[1];
+  assert(block.hasAttribute('open'), 'still open after a re-render');
+  assert(!container.querySelectorAll('.osa-execution-code')[0].hasAttribute('open'), 'and only that one');
+  block.open = false;
+  block.dispatchEvent(new window.Event('toggle'));
+  api.renderMessages(container);
+  assert(!container.querySelectorAll('.osa-execution-code')[1].hasAttribute('open'), 'closed, it stays closed');
+
+  api.getMessages()[2].executions[1]._codeOpen = true;
+  api.saveHistory();
+  const saved = JSON.parse(window.localStorage.getItem(api.getConfig().storageKey)).messages[2].executions[1];
+  assert(!('_codeOpen' in saved), 'whether it was open is not stored: a reload shows it closed');
+  assertEqual(saved.code, RUN_CODE, 'while the code itself is');
+}
+
+console.log('\na reply that ran no code renders nothing new (#491)');
+{
+  // What every community without execute_code ever renders.
+  const { window, api } = loadWidget();
+  api.setMessages([
+    { role: 'assistant', content: 'Hi' },
+    { role: 'user', content: 'how?' },
+    { role: 'assistant', content: 'Use this:\n\n```python\nprint(1)\n```' },
+  ]);
+  const container = mountedContainer(window);
+  api.renderMessages(container);
+  assertEqual(api.executionsHtml([], 2), '', 'no runs, no markup');
+  assertEqual(api.executionsHtml(undefined, 2), '', 'nor for a reply with no runs field at all');
+  for (const selector of ['.osa-execution-run', '.osa-execution-code', '.osa-code-block', '.osa-code-toolbar', '.osa-code-action']) {
+    assert(!container.querySelector(selector), `nothing of ${selector}`);
+  }
+  const chatCopy = container.querySelector('.osa-message-content pre .osa-copy-btn');
+  assert(chatCopy && chatCopy.getAttribute('title') === 'Copy code' && chatCopy.hasAttribute('data-copy-target'),
+    'the chat\'s own code block keeps its own Copy, as before');
+}
+
+// ---------------------------------------------------------------------------
+// A figure's Download (#492).
+// ---------------------------------------------------------------------------
+
+// A 2x2 red PNG, so the two figures of a run differ byte for byte.
+const PNG_2PX = 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg==';
+
+// codeConversation's, with a figure the widget will not show ahead of two it
+// will, so a figure's number is its place among the shown ones.
+function figureConversation() {
+  const conversation = codeConversation();
+  conversation[2].executions[1].images = [
+    { mime: 'image/svg+xml', data_base64: PNG_1PX, width: 1, height: 1 },
+    { mime: 'image/png', data_base64: PNG_1PX, width: 1, height: 1 },
+    { mime: 'image/png', data_base64: PNG_2PX, width: 2, height: 2 },
+  ];
+  return conversation;
+}
+
+console.log('\neach figure a run shows has its own Download, labeled with the file it saves (#492)');
+{
+  const { window, api } = loadWidget();
+  api.setMessages(figureConversation());
+  const { problems, holder } = markupProblems(window, api.executionsHtml(api.getMessages()[2].executions, 2),
+    ['div', 'details', 'summary', 'pre', 'code', 'span', 'button', 'img', ...ICON_TAGS]);
+  assertEqual(problems, [], 'no foreign element, handler or source survives parsing');
+  const figures = [...holder.querySelectorAll('.osa-execution-figure')];
+  assertEqual(figures.length, 2, 'one per figure shown: the one it will not show gets neither a figure nor a button');
+  assertEqual(figures.map((f) => f.querySelector('img').getAttribute('alt')), ['Figure 1 produced by the code', 'Figure 2 produced by the code'],
+    'numbered among the figures shown');
+  const buttons = figures.map((f) => f.querySelector('button.osa-figure-download'));
+  assertEqual(buttons.map((b) => b.getAttribute('aria-label')),
+    ['Download figure 1 as nm000132-run-2-figure-1.png', 'Download figure 2 as nm000132-run-2-figure-2.png'],
+    'each labeled for a screen reader with the figure and the file it saves');
+  assert(buttons.every((b) => b.getAttribute('type') === 'button' && !b.hasAttribute('tabindex') && !b.disabled),
+    'real buttons, reachable with Tab and pressed with Enter or Space');
+  assertEqual(buttons.map((b) => b.textContent), ['Download', 'Download'], 'with visible text');
+  assertEqual(buttons.map((b) => b.getAttribute('data-image-index')), ['1', '2'], 'each naming its figure\'s place in the record');
+  assert(figures.every((f) => f.closest('details.osa-execution')), 'inside the run\'s own disclosure, with the output');
+  assert(figures.every((f) => f.children.length === 2 && f.children[0].tagName === 'IMG' && f.children[1].classList.contains('osa-figure-actions')
+    && f.children[1].contains(f.querySelector('.osa-figure-download'))), 'each button in a row under its figure, not over it');
+
+  holder.innerHTML = api.executionsHtml(api.getMessages()[2].executions);
+  assertEqual(holder.querySelectorAll('img').length, 2, 'with no reply to act on, the figures still show');
+  assert(!holder.querySelector('.osa-figure-download') && !holder.querySelector('.osa-execution-figure'), 'as before, with no button');
+  holder.innerHTML = api.executionsHtml(api.getMessages()[4].executions, 4);
+  assert(!holder.querySelector('.osa-figure-download'), 'a run with no figure has no figure Download');
+}
+
+console.log('\nthe figure\'s Download sits in a row under the figure, against the real stylesheet (#492)');
+{
+  // Over the figure it could hide data (matplotlib's legend often sits in that
+  // corner), so it is laid out in the flow, after the image.
+  const fetch = async (url) => {
+    if (String(url).endsWith('/health')) return new Response(JSON.stringify({ status: 'healthy' }));
+    return new Response(JSON.stringify({ default_model: 'm', offered_models: [], widget: {}, client_tools: [], runtime: null }), { headers: { 'content-type': 'application/json' } });
+  };
+  const { window, api, widget } = loadWidget({ fetch });
+  widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: 'osa-test-figure-row' });
+  widget.init();
+  api.setMessages(figureConversation());
+  const container = window.document.querySelector('.osa-chat-widget');
+  api.renderMessages(container);
+  const button = container.querySelector('.osa-figure-download');
+  const row = button.parentElement;
+  // happy-dom reports an unset position as '', a browser as 'static'.
+  const position = window.getComputedStyle(button).position;
+  assert(position === '' || position === 'static', `the button is in the flow, not placed over the figure (position ${JSON.stringify(position)})`);
+  assertEqual([window.getComputedStyle(row).display, window.getComputedStyle(row).justifyContent], ['flex', 'flex-end'], 'its row is right-aligned');
+  assert(row.previousElementSibling && row.previousElementSibling.tagName === 'IMG', 'and follows the figure');
+  assertEqual(window.getComputedStyle(button).color, '#6b7280', 'in the panel\'s muted text color, as the code block\'s buttons are');
+}
+
+console.log('\nDownload saves the figure\'s exact PNG, named for the dataset, the run and the figure (#492)');
+{
+  const { window, api } = loadWidget();
+  api.setMessages(figureConversation());
+  const container = mountedContainer(window);
+  api.renderMessages(container);
+  const made = recordDownloads(window);
+  try {
+    const buttons = container.querySelectorAll('.osa-figure-download');
+    click(window, buttons[1]);
+    click(window, buttons[0]);
+    assertEqual(made.map((d) => d.filename), ['nm000132-run-2-figure-2.png', 'nm000132-run-2-figure-1.png'], 'each figure its own file');
+    assertEqual(made.map((d) => d.blob && d.blob.type), ['image/png', 'image/png'], 'as PNG');
+    const bytes = await Promise.all(made.map(async (d) => Buffer.from(await d.blob.arrayBuffer())));
+    assert(bytes[0].equals(Buffer.from(PNG_2PX, 'base64')), 'the second figure\'s file is its PNG, byte for byte');
+    assert(bytes[1].equals(Buffer.from(PNG_1PX, 'base64')), 'and the first\'s is its own');
+    assert(bytes.every((b) => b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))), 'real PNG files, signature and all');
+    assert(made.every((d) => d.href.startsWith('blob:') && d.inDocument), 'saved through a link to the Blob\'s address');
+  } finally {
+    made.restore();
+  }
+
+  // A figure the record no longer holds as a PNG (a stale button, the record
+  // changed under it) saves nothing, rather than other bytes under a .png name.
+  const stale = container.querySelectorAll('.osa-figure-download')[0];
+  api.getMessages()[2].executions[1].images[1] = { mime: 'image/svg+xml', data_base64: PNG_1PX, width: 1, height: 1 };
+  const none = recordDownloads(window);
+  try {
+    click(window, stale);
+    assertEqual(none.length, 0, 'a figure that is no longer a PNG downloads nothing');
+  } finally {
+    none.restore();
+  }
+}
+
+console.log('\nthe figure under an open editor downloads as the run it belongs to (#492)');
+{
+  const { window, api } = loadWidgetWithRealBundle();
+  api.setUpBrowserTools({ client_tools: LOCAL_TOOLS, runtime: { python: LOCAL_RUNTIME_CONFIG } });
+  await api.declaredClientTools();
+  const conversation = codeConversation();
+  const images = [{ mime: 'image/png', data_base64: PNG_2PX, width: 2, height: 2 }];
+  // The reader's own run, added to the reply, and echoed under the editor it came from.
+  conversation[2].executions.push({ callId: 'local-1', tool: 'execute_code', description: 'mine', code: 'print(4)', status: 'ok', stdout: '', stderr: '', images, local: true });
+  Object.assign(conversation[2].executions[0], { _editing: true, _localResult: { callId: 'local-1', status: 'ok', stdout: '', stderr: '', images } });
+  api.setMessages(conversation);
+  const container = mountedContainer(window);
+  api.renderMessages(container);
+  const echo = container.querySelector('.osa-rerun .osa-figure-download');
+  assert(!!echo, 'the echo\'s figure has a Download');
+  assertEqual(echo && echo.getAttribute('aria-label'), 'Download figure 1 as nm000132-run-3-figure-1.png',
+    'named for the reader\'s run, the reply\'s third, not the run whose editor it is under');
+  const made = recordDownloads(window);
+  try {
+    click(window, echo);
+    assertEqual(made.map((d) => d.filename), ['nm000132-run-3-figure-1.png'], 'and saves as it');
+    assert(made[0] && Buffer.from(await made[0].blob.arrayBuffer()).equals(Buffer.from(PNG_2PX, 'base64')), 'with its PNG');
+  } finally {
+    made.restore();
+  }
 }
 
 console.log('\n' + '='.repeat(60));

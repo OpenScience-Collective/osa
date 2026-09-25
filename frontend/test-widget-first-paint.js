@@ -191,7 +191,9 @@ console.log('\na later load is drawn in the remembered look before the config ar
   assert(!container.classList.contains('osa-launcher-waiting'), 'remembered: no wait');
   assert(!widget.__firstPaint.waiting(), 'and the widget does not wait');
   assert(container.classList.contains('osa-capsule'), 'the capsule, already, with the config still in flight');
-  assertEqual(window.getComputedStyle(q('.osa-launcher-capsule .osa-chat-button')).width, '46px', 'at the capsule\'s 46px, never the bubble\'s 56px first');
+  const restingButton = window.getComputedStyle(q('.osa-launcher-capsule .osa-chat-button'));
+  assertEqual(restingButton.width, '46px', 'laid out at the capsule\'s 46px, never the bubble\'s 56px first');
+  assertEqual([restingButton.scale, restingButton.translate], ['1.2609', '-6px -6px'], 'and drawn at its resting 58px from the first frame (#490)');
   assertEqual(container.style.getPropertyValue('--osa-primary'), '#5bbad5', 'in the remembered theme color');
   assertEqual(container.style.getPropertyValue('--osa-on-primary'), '#0b1f2a', 'and its text color');
   assertEqual(q('.osa-chat-title').firstChild.textContent.trim(), 'NEMAR Assistant', 'the remembered title');

@@ -1,7 +1,9 @@
 """Tests for document fetching utility.
 
-These tests use real HTTP requests to verify the fetching and caching
-functionality. They require network access but test actual behavior.
+Most tests here exercise caching and configuration logic offline. A few
+(marked ``network``) make real HTTP requests to verify actual fetch
+behavior against a live document; see the ``@pytest.mark.network`` tests
+below.
 """
 
 import time
@@ -117,6 +119,7 @@ class TestDocumentFetcher:
         cached = fetcher.get_cached(url)
         assert cached == content
 
+    @pytest.mark.network
     def test_fetch_real_document(self, fetcher: DocumentFetcher) -> None:
         """Test fetching a real document from GitHub.
 
@@ -137,6 +140,7 @@ class TestDocumentFetcher:
         # The README should mention HED
         assert "HED" in result.content
 
+    @pytest.mark.network
     def test_fetch_caches_result(self, fetcher: DocumentFetcher) -> None:
         """Test that fetched documents are cached."""
         doc = DocPage(
@@ -176,6 +180,7 @@ class TestDocumentFetcher:
         assert result.success is True
         assert result.content == cached_content
 
+    @pytest.mark.network
     def test_fetch_invalid_url(self, fetcher: DocumentFetcher) -> None:
         """Test fetching from an invalid URL."""
         doc = DocPage(
@@ -190,6 +195,7 @@ class TestDocumentFetcher:
         assert result.error is not None
         assert "404" in result.error or "Not Found" in result.error
 
+    @pytest.mark.network
     def test_fetch_many(self, fetcher: DocumentFetcher) -> None:
         """Test fetching multiple documents."""
         # Pre-cache one doc to test mixed cache/fetch
@@ -216,6 +222,7 @@ class TestDocumentFetcher:
         assert results[1].title == "HED README"
         assert results[1].success is True
 
+    @pytest.mark.network
     def test_preload(self, fetcher: DocumentFetcher) -> None:
         """Test preloading documents."""
         docs = [
