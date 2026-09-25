@@ -469,9 +469,9 @@ The pop-out window (above) shows each run's code the same way, with the same Cop
 
 The permission gate ("Run this Python in your browser?") has the same Copy over the code it asks about, and copying it neither runs nor denies it; Download waits until the code has run.
 
-Each figure a run shows has a **Download** button over its top-right corner (issue #492), which saves that figure's PNG, byte for byte, as `nm000132-run-3-figure-1.png`: the run's name, then the figure's number among the ones the run shows, counted from 1, as the workspace names a run's `figure-K.png`.
+Each figure a run shows has a **Download** button in a row under it, right-aligned, as the code's bar is (issue #492), never over the figure, where a legend often sits; it saves that figure's PNG, byte for byte, as `nm000132-run-3-figure-1.png`: the run's name, then the figure's number among the ones the run shows, counted from 1, as the workspace names a run's `figure-K.png`.
 It is a real button, reached with Tab and pressed with Enter or Space, and its label names the figure and the file (`Download figure 1 as nm000132-run-3-figure-1.png`), as the figure's own alternative text numbers it (`Figure 1 produced by the code`).
-It keeps its light colors on the dark panel, where the figure stays white.
+It is drawn on the panel, in the panel's colors, the dark panel's included.
 A figure under an open "Edit and run" editor downloads as the reader's run it came from, not the run whose editor it is under.
 Figures live only in the page's memory (they are never stored), so a run read back after a reload shows none, and has none to download.
 
