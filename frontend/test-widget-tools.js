@@ -2281,6 +2281,141 @@ console.log('\na reply that ran no code renders nothing new (#491)');
     'the chat\'s own code block keeps its own Copy, as before');
 }
 
+// ---------------------------------------------------------------------------
+// A figure's Download (#492).
+// ---------------------------------------------------------------------------
+
+// A 2x2 red PNG, so the two figures of a run differ byte for byte.
+const PNG_2PX = 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg==';
+
+// codeConversation's, with a figure the widget will not show ahead of two it
+// will, so a figure's number is its place among the shown ones.
+function figureConversation() {
+  const conversation = codeConversation();
+  conversation[2].executions[1].images = [
+    { mime: 'image/svg+xml', data_base64: PNG_1PX, width: 1, height: 1 },
+    { mime: 'image/png', data_base64: PNG_1PX, width: 1, height: 1 },
+    { mime: 'image/png', data_base64: PNG_2PX, width: 2, height: 2 },
+  ];
+  return conversation;
+}
+
+console.log('\neach figure a run shows has its own Download, labeled with the file it saves (#492)');
+{
+  const { window, api } = loadWidget();
+  api.setMessages(figureConversation());
+  const { problems, holder } = markupProblems(window, api.executionsHtml(api.getMessages()[2].executions, 2),
+    ['div', 'details', 'summary', 'pre', 'code', 'span', 'button', 'img', ...ICON_TAGS]);
+  assertEqual(problems, [], 'no foreign element, handler or source survives parsing');
+  const figures = [...holder.querySelectorAll('.osa-execution-figure')];
+  assertEqual(figures.length, 2, 'one per figure shown: the one it will not show gets neither a figure nor a button');
+  assertEqual(figures.map((f) => f.querySelector('img').getAttribute('alt')), ['Figure 1 produced by the code', 'Figure 2 produced by the code'],
+    'numbered among the figures shown');
+  const buttons = figures.map((f) => f.querySelector('button.osa-figure-download'));
+  assertEqual(buttons.map((b) => b.getAttribute('aria-label')),
+    ['Download figure 1 as nm000132-run-2-figure-1.png', 'Download figure 2 as nm000132-run-2-figure-2.png'],
+    'each labeled for a screen reader with the figure and the file it saves');
+  assert(buttons.every((b) => b.getAttribute('type') === 'button' && !b.hasAttribute('tabindex') && !b.disabled),
+    'real buttons, reachable with Tab and pressed with Enter or Space');
+  assertEqual(buttons.map((b) => b.textContent), ['Download', 'Download'], 'with visible text');
+  assertEqual(buttons.map((b) => b.getAttribute('data-image-index')), ['1', '2'], 'each naming its figure\'s place in the record');
+  assert(figures.every((f) => f.closest('details.osa-execution')), 'inside the run\'s own disclosure, with the output');
+  assert(figures.every((f) => f.children.length === 2 && f.children[0].tagName === 'IMG' && f.children[1].classList.contains('osa-figure-actions')
+    && f.children[1].contains(f.querySelector('.osa-figure-download'))), 'each button in a row under its figure, not over it');
+
+  holder.innerHTML = api.executionsHtml(api.getMessages()[2].executions);
+  assertEqual(holder.querySelectorAll('img').length, 2, 'with no reply to act on, the figures still show');
+  assert(!holder.querySelector('.osa-figure-download') && !holder.querySelector('.osa-execution-figure'), 'as before, with no button');
+  holder.innerHTML = api.executionsHtml(api.getMessages()[4].executions, 4);
+  assert(!holder.querySelector('.osa-figure-download'), 'a run with no figure has no figure Download');
+}
+
+console.log('\nthe figure\'s Download sits in a row under the figure, against the real stylesheet (#492)');
+{
+  // Over the figure it could hide data (matplotlib's legend often sits in that
+  // corner), so it is laid out in the flow, after the image.
+  const fetch = async (url) => {
+    if (String(url).endsWith('/health')) return new Response(JSON.stringify({ status: 'healthy' }));
+    return new Response(JSON.stringify({ default_model: 'm', offered_models: [], widget: {}, client_tools: [], runtime: null }), { headers: { 'content-type': 'application/json' } });
+  };
+  const { window, api, widget } = loadWidget({ fetch });
+  widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: 'osa-test-figure-row' });
+  widget.init();
+  api.setMessages(figureConversation());
+  const container = window.document.querySelector('.osa-chat-widget');
+  api.renderMessages(container);
+  const button = container.querySelector('.osa-figure-download');
+  const row = button.parentElement;
+  // happy-dom reports an unset position as '', a browser as 'static'.
+  const position = window.getComputedStyle(button).position;
+  assert(position === '' || position === 'static', `the button is in the flow, not placed over the figure (position ${JSON.stringify(position)})`);
+  assertEqual([window.getComputedStyle(row).display, window.getComputedStyle(row).justifyContent], ['flex', 'flex-end'], 'its row is right-aligned');
+  assert(row.previousElementSibling && row.previousElementSibling.tagName === 'IMG', 'and follows the figure');
+  assertEqual(window.getComputedStyle(button).color, '#6b7280', 'in the panel\'s muted text color, as the code block\'s buttons are');
+}
+
+console.log('\nDownload saves the figure\'s exact PNG, named for the dataset, the run and the figure (#492)');
+{
+  const { window, api } = loadWidget();
+  api.setMessages(figureConversation());
+  const container = mountedContainer(window);
+  api.renderMessages(container);
+  const made = recordDownloads(window);
+  try {
+    const buttons = container.querySelectorAll('.osa-figure-download');
+    click(window, buttons[1]);
+    click(window, buttons[0]);
+    assertEqual(made.map((d) => d.filename), ['nm000132-run-2-figure-2.png', 'nm000132-run-2-figure-1.png'], 'each figure its own file');
+    assertEqual(made.map((d) => d.blob && d.blob.type), ['image/png', 'image/png'], 'as PNG');
+    const bytes = await Promise.all(made.map(async (d) => Buffer.from(await d.blob.arrayBuffer())));
+    assert(bytes[0].equals(Buffer.from(PNG_2PX, 'base64')), 'the second figure\'s file is its PNG, byte for byte');
+    assert(bytes[1].equals(Buffer.from(PNG_1PX, 'base64')), 'and the first\'s is its own');
+    assert(bytes.every((b) => b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))), 'real PNG files, signature and all');
+    assert(made.every((d) => d.href.startsWith('blob:') && d.inDocument), 'saved through a link to the Blob\'s address');
+  } finally {
+    made.restore();
+  }
+
+  // A figure the record no longer holds as a PNG (a stale button, the record
+  // changed under it) saves nothing, rather than other bytes under a .png name.
+  const stale = container.querySelectorAll('.osa-figure-download')[0];
+  api.getMessages()[2].executions[1].images[1] = { mime: 'image/svg+xml', data_base64: PNG_1PX, width: 1, height: 1 };
+  const none = recordDownloads(window);
+  try {
+    click(window, stale);
+    assertEqual(none.length, 0, 'a figure that is no longer a PNG downloads nothing');
+  } finally {
+    none.restore();
+  }
+}
+
+console.log('\nthe figure under an open editor downloads as the run it belongs to (#492)');
+{
+  const { window, api } = loadWidgetWithRealBundle();
+  api.setUpBrowserTools({ client_tools: LOCAL_TOOLS, runtime: { python: LOCAL_RUNTIME_CONFIG } });
+  await api.declaredClientTools();
+  const conversation = codeConversation();
+  const images = [{ mime: 'image/png', data_base64: PNG_2PX, width: 2, height: 2 }];
+  // The reader's own run, added to the reply, and echoed under the editor it came from.
+  conversation[2].executions.push({ callId: 'local-1', tool: 'execute_code', description: 'mine', code: 'print(4)', status: 'ok', stdout: '', stderr: '', images, local: true });
+  Object.assign(conversation[2].executions[0], { _editing: true, _localResult: { callId: 'local-1', status: 'ok', stdout: '', stderr: '', images } });
+  api.setMessages(conversation);
+  const container = mountedContainer(window);
+  api.renderMessages(container);
+  const echo = container.querySelector('.osa-rerun .osa-figure-download');
+  assert(!!echo, 'the echo\'s figure has a Download');
+  assertEqual(echo && echo.getAttribute('aria-label'), 'Download figure 1 as nm000132-run-3-figure-1.png',
+    'named for the reader\'s run, the reply\'s third, not the run whose editor it is under');
+  const made = recordDownloads(window);
+  try {
+    click(window, echo);
+    assertEqual(made.map((d) => d.filename), ['nm000132-run-3-figure-1.png'], 'and saves as it');
+    assert(made[0] && Buffer.from(await made[0].blob.arrayBuffer()).equals(Buffer.from(PNG_2PX, 'base64')), 'with its PNG');
+  } finally {
+    made.restore();
+  }
+}
+
 console.log('\n' + '='.repeat(60));
 console.log(`Total: ${passed + failed}   Passed: ${passed}   Failed: ${failed}`);
 clearTimeout(watchdog);

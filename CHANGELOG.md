@@ -23,6 +23,9 @@ the version being released and start a new `[Unreleased]` section above it.
   The permission gate gets the same Copy.
   Only a community whose model runs code sees any of it.
   See "A run in the chat" in `docs/community-widget.md`.
+- **A figure's Download** (issue #492): each figure a run shows has a Download button under it,
+  which saves the figure's PNG as, for example, `nm000132-run-3-figure-1.png`, named for the dataset, the run and the figure;
+  it is keyboard reachable and labeled for screen readers.
 
 ### Changed
 

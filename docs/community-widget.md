@@ -469,11 +469,18 @@ The pop-out window (above) shows each run's code the same way, with the same Cop
 
 The permission gate ("Run this Python in your browser?") has the same Copy over the code it asks about, and copying it neither runs nor denies it; Download waits until the code has run.
 
+Each figure a run shows has a **Download** button in a row under it, right-aligned, as the code's bar is (issue #492), never over the figure, where a legend often sits; it saves that figure's PNG, byte for byte, as `nm000132-run-3-figure-1.png`: the run's name, then the figure's number among the ones the run shows, counted from 1, as the workspace names a run's `figure-K.png`.
+It is a real button, reached with Tab and pressed with Enter or Space, and its label names the figure and the file (`Download figure 1 as nm000132-run-3-figure-1.png`), as the figure's own alternative text numbers it (`Figure 1 produced by the code`).
+It is drawn on the panel, in the panel's colors, the dark panel's included.
+A figure under an open "Edit and run" editor downloads as the reader's run it came from, not the run whose editor it is under.
+Figures live only in the page's memory (they are never stored), so a run read back after a reload shows none, and has none to download.
+
 Both copy and download the code the run's record keeps, its first 20,000 characters; the workspace download in Settings keeps every script whole ([`docs/community-browser-runtime.md`](community-browser-runtime.md), "Workspace").
 The code is the model's, so it is escaped wherever it is shown, highlighted or not.
 
 Testing: `frontend/test-widget-tools.js` runs the real widget source in a happy-dom window:
-the two disclosures and their markup for hostile code, Copy through happy-dom's own clipboard, when it refuses and without it, Download's Blob, file name and freed address, the gate's Copy, the code's open state across a re-render, and a reply that ran no code rendering none of it.
+the two disclosures and their markup for hostile code, Copy through happy-dom's own clipboard, when it refuses and without it, Download's Blob, file name and freed address, the gate's Copy, the code's open state across a re-render, and a reply that ran no code rendering none of it;
+and each figure's Download, its label and numbering, and its file's bytes and name.
 `frontend/test-widget-popout.js` checks the code block, Copy and Download in the pop-out.
 
 ## The first paint: remembering the community's look

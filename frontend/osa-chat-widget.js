@@ -2343,6 +2343,57 @@
       background: #ffffff;
     }
 
+    /* A figure and its Download (#492), in a row under the figure, right-aligned,
+       as the code block's bar sits over the code: never over the figure, where
+       matplotlib often puts a legend. The box is the figure's own width, so the
+       row ends where the figure does, however narrow it is. The button is drawn
+       on the panel, so it takes the panel's colors, dark ones included. */
+    .osa-execution-figure {
+      width: fit-content;
+      max-width: 100%;
+      margin-top: 6px;
+    }
+
+    .osa-execution .osa-execution-figure img {
+      margin-top: 0;
+    }
+
+    .osa-figure-actions {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 2px;
+    }
+
+    .osa-figure-download {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 6px;
+      border: none;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--osa-text-light);
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+      transition: color 0.2s, background 0.2s;
+    }
+
+    .osa-figure-download:hover {
+      color: var(--osa-accent);
+      background: rgba(0,0,0,0.05);
+    }
+
+    .osa-figure-download:focus-visible {
+      outline: 2px solid var(--osa-accent);
+      outline-offset: 1px;
+    }
+
+    .osa-figure-download svg {
+      width: 14px;
+      height: 14px;
+    }
+
     .osa-execution-local-note {
       color: var(--osa-accent);
       font-weight: 600;
@@ -2490,6 +2541,10 @@
     }
 
     .osa-chat-widget.osa-dark .osa-code-action:hover {
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .osa-chat-widget.osa-dark .osa-figure-download:hover {
       background: rgba(255, 255, 255, 0.08);
     }
 
@@ -5135,7 +5190,10 @@
   // recorded run's own body already is. Shared by the normal per-run block
   // and by the live echo runEditedCode() shows under an open editor, so the
   // two can never disagree about what "bounded on screen" means.
-  function runOutputHtml(run) {
+  //
+  // `located` ({msgIndex, runIndex}) names the run record the figures belong
+  // to, and gives each one a Download (#492); without it they show alone.
+  function runOutputHtml(run, located = null) {
     const stdout = run.stdout ? `<pre class="osa-execution-output">${escapeHtml(run.stdout)}</pre>` : '';
     const stderr = run.stderr && run.status !== 'ok'
       ? `<pre class="osa-execution-output">${escapeHtml(run.stderr)}</pre>`
@@ -5147,11 +5205,38 @@
     const workspaceNote = run.workspaceNote
       ? `<div class="osa-execution-workspace-note">${escapeHtml(run.workspaceNote)}</div>`
       : '';
+    // Figures are numbered among the ones shown, from 1, as the workspace
+    // numbers a run's figure-K.png; data-image-index is the figure's place in
+    // the record, which the click reads the bytes from.
+    let figureNumber = 0;
     const images = (Array.isArray(run.images) ? run.images : [])
-      .filter(isShowableImage)
-      .map((image) => `<img alt="Figure produced by the code" src="data:image/png;base64,${image.data_base64}">`)
+      .map((image, imageIndex) => {
+        if (!isShowableImage(image)) return '';
+        figureNumber += 1;
+        const img = `<img alt="Figure ${figureNumber} produced by the code" src="data:image/png;base64,${image.data_base64}">`;
+        if (!located) return img;
+        const filename = figureFileName(located.msgIndex, located.runIndex, figureNumber);
+        return `<div class="osa-execution-figure">${img}<div class="osa-figure-actions">` +
+          `<button type="button" class="osa-figure-download" data-msg-index="${escapeHtml(String(located.msgIndex))}" data-run-index="${escapeHtml(String(located.runIndex))}" data-image-index="${escapeHtml(String(imageIndex))}" ` +
+          `aria-label="Download figure ${figureNumber} as ${escapeHtml(filename)}" title="Download ${escapeHtml(filename)}">${ICONS.download}<span>Download</span></button></div></div>`;
+      })
       .join('');
     return `${stdout}${stderr}${workspaceNote}${images}`;
+  }
+
+  // A figure's file name (#492): its run's, then the figure's number among the
+  // ones the run shows: nm000132-run-3-figure-1.png.
+  function figureFileName(msgIndex, runIndex, figureNumber) {
+    return `${runFileStem(msgIndex, runIndex)}-figure-${figureNumber}.png`;
+  }
+
+  // A figure's PNG bytes, from the base64 the run returned (isShowableImage has
+  // already held it to the base64 alphabet).
+  function pngBytes(base64) {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
   }
 
   // The inline "Edit and run" editor for one run record: a labeled textarea
@@ -5183,10 +5268,14 @@
       const label = Object.prototype.hasOwnProperty.call(EXECUTION_LABELS, run._localResult.status)
         ? EXECUTION_LABELS[run._localResult.status]
         : 'Python';
+      // The echo is of the record the run added to this reply, which its
+      // figures' Download names and reads from.
+      const runs = messages[msgIndex] && messages[msgIndex].executions;
+      const recordIndex = Array.isArray(runs) ? runs.findIndex((entry) => entry && entry.callId === run._localResult.callId) : -1;
       result = `
         <div class="osa-execution-local-note">This run is yours. The assistant has not seen it.</div>
         <div class="osa-rerun-result-status">${escapeHtml(label)}</div>
-        ${runOutputHtml(run._localResult)}`;
+        ${runOutputHtml(run._localResult, recordIndex >= 0 ? { msgIndex, runIndex: recordIndex } : null)}`;
     }
     return `
       <div class="osa-rerun">
@@ -5293,7 +5382,7 @@
       const localNote = isLocal
         ? '<div class="osa-execution-local-note">This run is yours. The assistant has not seen it.</div>'
         : '';
-      const output = runOutputHtml(run);
+      const output = runOutputHtml(run, typeof msgIndex === 'number' ? { msgIndex, runIndex } : null);
       const hasImages = Array.isArray(run.images) && run.images.some(isShowableImage);
       const editing = run._editing === true;
       let rerun = '';
@@ -6517,6 +6606,27 @@
         } catch (err) {
           console.error('[OSA] Could not build the code download:', err);
           showError(container, `Could not download the code: ${(err && err.message) || err}`);
+        }
+      });
+    });
+    // A figure's Download (#492): the PNG's bytes from the run's record, named
+    // for the run and the figure's number among the ones it shows.
+    messagesEl.querySelectorAll('.osa-figure-download[data-msg-index]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const run = runAt(btn);
+        const images = run && Array.isArray(run.images) ? run.images : [];
+        const imageIndex = parseInt(btn.getAttribute('data-image-index'), 10);
+        const image = images[imageIndex];
+        if (!isShowableImage(image)) return;
+        const msgIndex = parseInt(btn.getAttribute('data-msg-index'), 10);
+        const runIndex = parseInt(btn.getAttribute('data-run-index'), 10);
+        const figureNumber = images.slice(0, imageIndex + 1).filter(isShowableImage).length;
+        try {
+          saveFile(new Blob([pngBytes(image.data_base64)], { type: 'image/png' }), figureFileName(msgIndex, runIndex, figureNumber));
+        } catch (err) {
+          console.error('[OSA] Could not build the figure download:', err);
+          showError(container, `Could not download the figure: ${(err && err.message) || err}`);
         }
       });
     });
@@ -7859,6 +7969,7 @@
       runEditedCode,
       runFileStem,
       setSaveFileRevokeMs: (ms) => { SAVE_FILE_REVOKE_MS = ms; },
+      figureFileName,
       canRunLocalCode,
       localRunBlockedReason,
       renderMessages,
