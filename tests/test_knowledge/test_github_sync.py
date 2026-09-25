@@ -115,7 +115,9 @@ class TestSyncReposTypeGuard:
         with pytest.raises(TypeError, match="must be a list of strings"):
             sync_repos("fieldtrip")  # type: ignore[arg-type]
 
+    @pytest.mark.network
     def test_accepts_list(self, temp_db: Path) -> None:
+        # sync_repos reaches api.github.com for the listed repo, unauthenticated.
         with patch("src.knowledge.db.get_db_path", return_value=temp_db):
             result = sync_repos(["nonexistent/repo"], project="test")
             assert isinstance(result, dict)
