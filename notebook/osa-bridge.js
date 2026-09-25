@@ -111,15 +111,40 @@
     'del _osa_guard_rejections',
   ].join('\n');
 
+  const guardMissing = (err) =>
+    warn('a failed request may hang this kernel in Safari: the rejection guard was not installed', err);
+
+  // Sends the guard to the panel's kernel, and resolves once it is SENT, which
+  // is all the ordering needs. JupyterLite 0.8.4 runs a kernel's requests one at
+  // a time, in the order they arrive: every message waits on one async-mutex
+  // per kernel, whose queue is first in, first out (processMsg in
+  // packages/services/src/kernel/client.ts), and the page's kernel connection
+  // queues what it sends first in, first out while it connects. So every
+  // request sent after this one, the setup cells included, runs after it.
+  //
+  // Its reply is watched only for a warning. Awaiting it could hang setup:
+  // when a request fails, JupyterLite cancels every request queued behind it,
+  // and a cancelled request never gets a reply.
+  //
   // Silent, so it takes no execution count and shows nothing, and it leaves no
   // name behind in the reader's namespace. It is the kernel's and not the
   // starter's, so it runs for a notebook with no setup cells too.
-  async function guardRejections(panel) {
+  async function sendRejectionGuard(panel) {
     await panel.sessionContext.ready;
+    // From here to the request is one synchronous hop, so nothing the reader
+    // does can reach the kernel in between. What could come first is a cell the
+    // reader ran before this point. On opening there is none to speak of: the
+    // guard is sent as the session becomes ready, and a probe sent at the first
+    // moment the kernel's connection existed (polled every 5 ms) ran after it,
+    // in Chrome 153 and WebKit 26.6 (measured 2026-09-24). After a restart there
+    // can be: the guard goes out again once the kernel reports idle, so a cell
+    // the reader ran while it restarted runs before the guard, unguarded, and
+    // hangs in Safari if a request it makes fails.
     const kernel = panel.sessionContext.session?.kernel;
     if (!kernel) throw new Error('the notebook has no kernel');
-    const reply = await kernel.requestExecute({ code: REJECTION_GUARD, silent: true, store_history: false }).done;
-    if (reply.content.status !== 'ok') throw new Error(`${reply.content.ename}: ${reply.content.evalue}`);
+    kernel.requestExecute({ code: REJECTION_GUARD, silent: true, store_history: false }).done.then((reply) => {
+      if (reply.content.status !== 'ok') guardMissing(new Error(`${reply.content.ename}: ${reply.content.evalue}`));
+    }, guardMissing);
   }
 
   let setupRun = null;
@@ -130,20 +155,20 @@
   // is cleared first, since a reopened notebook already shows the count it was
   // saved with. Afterwards the cell after the last setup cell is made active,
   // so Shift+Enter carries on from where the starter wants the reader to begin.
-  function runSetup(app, panel) {
+  //
+  // `guardSent` is the guard the caller already sent to this kernel, if any.
+  function runSetup(app, panel, guardSent = null) {
     if (setupRun) return setupRun;
     setupRun = (async () => {
-      // Sent first, so the kernel runs it before any setup cell. A kernel it
+      // Sent before any setup cell, so the kernel runs it first. A kernel it
       // did not reach still runs the notebook; it only hangs, in Safari, on
       // the first request that fails, so this is a warning and not a failure.
-      const guarded = guardRejections(panel).catch((err) =>
-        warn('a failed request may hang this kernel in Safari: the rejection guard was not installed', err)
-      );
+      const guarded = guardSent || sendRejectionGuard(panel).catch(guardMissing);
       try {
         const notebook = panel.content;
         const indices = autorunIndices(notebook.model);
         if (indices.length === 0) {
-          // Setup is over once the guard is, with or without cells to run.
+          // Setup is over once the guard is sent, with or without cells to run.
           await guarded;
           post({ type: 'setup', status: 'none' });
           return;
@@ -230,6 +255,9 @@
       60_000,
       'the notebook panel'
     );
+    // As soon as the panel exists, before its document and the theme, so the
+    // guard is the first request its kernel gets (see sendRejectionGuard).
+    const firstGuard = sendRejectionGuard(panel).catch(guardMissing);
     await panel.context.ready;
     appReady = app;
     if (pendingScheme) await queueTheme(app, pendingScheme);
@@ -247,7 +275,7 @@
     panel.sessionContext.kernelChanged.connect((_, change) => {
       if (change.oldValue && change.newValue) runSetup(app, panel);
     });
-    await runSetup(app, panel);
+    await runSetup(app, panel, firstGuard);
   })().catch((err) => {
     warn('the notebook bridge did not start', err);
     post({ type: 'error', phase: 'startup' });

@@ -248,6 +248,26 @@ async function kernelStdout(cdp, sessionId, code, timeoutMs) {
   );
 }
 
+// Safari's fetch rejects with a name and a message and no stack, which Pyodide
+// 0.29.5 does not take for an error, so an await on it never returns unless
+// osa-bridge.js's rejection guard reached the kernel (#496). Chrome's own fetch
+// errors carry a stack, so a rejection of that shape is made by hand: without
+// the guard it hangs in Chrome as well. Resolves to what the kernel printed, or
+// null when the await did not return within 15 s.
+const STACKLESS_RAISED = 'JsException TypeError: Load failed\n';
+function stacklessRejection(cdp, sessionId) {
+  return kernelStdout(
+    cdp,
+    sessionId,
+    'import js\n' +
+      'try:\n' +
+      '    await js.Promise.reject(js.JSON.parse(\'{"name": "TypeError", "message": "Load failed"}\'))\n' +
+      'except Exception as e:\n' +
+      '    print(type(e).__name__, e)',
+    15_000
+  );
+}
+
 async function pollUntil(fn, timeoutMs, intervalMs = 500) {
   const deadline = Date.now() + timeoutMs;
   let last;
@@ -651,23 +671,10 @@ async function main() {
       if (!setupRanByItself) throw new Error(`the setup cell never ran by itself: ${JSON.stringify(await setupCell(first.sessionId))}`);
       await waitForKernelIdle(first.sessionId, 90_000);
 
-      // osa-bridge.js's rejection guard reached this kernel (#496). Safari's
-      // fetch rejects with a name and a message and no stack, which Pyodide
-      // 0.29.5 does not take for an error, so an await on it never returns.
-      // Chrome's own fetch errors carry a stack, so a rejection of that shape
-      // is made by hand here: without the guard it hangs in Chrome as well.
-      const stackless = await kernelStdout(
-        cdp,
-        first.sessionId,
-        'import js\n' +
-          'try:\n' +
-          '    await js.Promise.reject(js.JSON.parse(\'{"name": "TypeError", "message": "Load failed"}\'))\n' +
-          'except Exception as e:\n' +
-          '    print(type(e).__name__, e)',
-        15_000
-      );
+      // osa-bridge.js's rejection guard reached this kernel (#496).
+      const stackless = await stacklessRejection(cdp, first.sessionId);
       report(
-        stackless === 'JsException TypeError: Load failed\n',
+        stackless === STACKLESS_RAISED,
         `a rejection shaped like Safari's failed fetch raises in the kernel rather than hanging it (got ${JSON.stringify(stackless)})`
       );
       if (stackless === null) throw new Error('the kernel is stuck on a rejection it cannot raise, so nothing after this could run');
@@ -839,6 +846,13 @@ async function main() {
       report(
         beforeRestart?.prompt !== '[1]:' && rerunAfterRestart,
         `a kernel restart ran the setup cell again (prompt ${beforeRestart?.prompt} before, [1]: after)`
+      );
+      // The restarted kernel is a fresh Python, so the bridge sends it the guard again.
+      await waitForKernelIdle(second.sessionId, 90_000);
+      const stacklessAfterRestart = await stacklessRejection(cdp, second.sessionId);
+      report(
+        stacklessAfterRestart === STACKLESS_RAISED,
+        `and after the restart, that rejection still raises (got ${JSON.stringify(stacklessAfterRestart)})`
       );
 
       // --- 4. Refusals: unknown community and malformed dataset write nothing ---
