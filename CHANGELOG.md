@@ -77,8 +77,8 @@ the version being released and start a new `[Unreleased]` section above it.
   `deploy/apache-api.osc.earth.conf` redirects `api.osc.earth/osa` and `/osa-dev` the same way; the server's copy is applied by hand.
 - **NEMAR's ERP images use the events they name.** On nemar.org a model asked for every stimulus of ERP CORE's N170 recording in one call,
   sorted the rows into faces and scrambled faces while copying them into code, and averaged 282 "faces" of a recording that has 80.
-  The prompt now asks for one condition per `nemar_get_events` call, has the code assert each list's length against that call's `total_count`,
-  and says to keep the filter's slice as written when wrapping it in a function.
+  The prompt now asks for one condition per `nemar_get_events` call,
+  and has the code assert each list's length against that call's `total_count`.
 - **NEMAR's spectra and ERPs leave out every EOG channel.** The prompt names ERP CORE's labels (`HEOG_left`, `HEOG_right`, `VEOG_lower`)
   and says to match `EOG`, `ECG`, `EKG` and `EMG` anywhere in a label, since exact names missed all three.
 
