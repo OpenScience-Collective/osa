@@ -35,6 +35,18 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Fixed
 
+- **A failed request no longer hangs Python in Safari** (issue #496):
+  Safari's fetch rejects with a TypeError that has no `stack`,
+  which Pyodide 0.29.5 does not take for an error,
+  so the `await` on it never returned.
+  In the notebook the cell stayed running and the kernel busy for good;
+  in the chat the run was stopped at its 120-second deadline and the runtime's state was lost.
+  Both runtimes now raise instead, as they already did in Chrome and Firefox:
+  the chat's runtime installs a rejection guard before its seal,
+  and the notebook site's bridge sends the same guard to each new kernel.
+  The notebook's own reads still fail in Safari and Firefox until eegprep-lean stops sending a `User-Agent` header,
+  which makes each read a CORS preflight whose answer from zarr.nemar.org does not allow that header;
+  they now fail at once, naming the URL.
 - **An OSA address without its trailing slash works** (issue #500). `widget.osc.earth/osa` and `develop-widget.osc.earth/osa` answered 522,
   because the Worker's `/osa/*` routes do not match the bare path; each host now also routes `/osa*`, and the Worker answers `/osa` with a 308 to `/osa/`, keeping the query string, and a path outside the mount such as `/osafoo` with a 404.
   `deploy/apache-api.osc.earth.conf` redirects `api.osc.earth/osa` and `/osa-dev` the same way; the server's copy is applied by hand.

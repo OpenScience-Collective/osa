@@ -184,6 +184,12 @@ jobs:
       - name: Run worker core tests against real Pyodide
         run: bun frontend/test-worker-core.js
 
+      # The rejection guard notebook/osa-bridge.js sends to each notebook kernel
+      # (#496): the same Python as the runtime's, and a failed pyfetch raises
+      # under it rather than hanging, against the same real Pyodide.
+      - name: Run notebook bridge tests against real Pyodide
+        run: bun notebook/test-bridge.js
+
       # NEMAR's runtime as it ships: its config, its lock overlay and the wheels
       # beside it, loaded by the real core and reading a sharded store over HTTP.
       - name: Run the NEMAR data lane against real Pyodide

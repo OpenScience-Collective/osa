@@ -398,6 +398,81 @@ export function buildNamespaceSealSource() {
 }
 
 /**
+ * Build the Python that makes a rejected JavaScript promise raise in the
+ * coroutine awaiting it, whatever it was rejected with (#496).
+ *
+ * WHY THIS EXISTS
+ *
+ * Pyodide 0.29.5 decides whether a JavaScript value is an error by duck typing
+ * (`JsProxy_compute_typeflags` in its `jsproxy.c`): it needs a `name`, a
+ * `message` AND a `stack`, the last waived only for a `DOMException`. Anything
+ * else becomes a plain JsProxy, which `_pyodide._future_helper.set_exception`
+ * hands to asyncio's `Future.set_exception`, which raises "TypeError: invalid
+ * exception object". That TypeError escapes as an unhandled promise rejection
+ * and the future is never completed, so the `await` never returns.
+ *
+ * Safari's fetch rejects a request that gets no response with exactly such a
+ * value: a TypeError whose only own property is `message`, with no `stack`
+ * anywhere on it. Measured 2026-09-24 in WebKit 26.6 (Playwright), in a page,
+ * in a dedicated worker, inside JupyterLite's kernel and inside this runtime: a
+ * refused connection, a refused CORS preflight and an aborted request each hung
+ * the code awaiting it, where Chrome, whose fetch TypeError has a stack, raised
+ * in milliseconds. Bun's fetch rejects a refused connection the same way (Bun
+ * runs JavaScriptCore too), which is what `test-worker-core.js` tests against.
+ * Pyodide's main branch has the same check.
+ *
+ * So `set_exception` is wrapped: a value asyncio would refuse becomes a
+ * JsException carrying the JavaScript name and message, and everything else
+ * passes through untouched. A rejection Pyodide already converts, such as every
+ * failed fetch in Chrome and Firefox, takes exactly the path it took before.
+ *
+ * The same source runs in two places, kept equal by `notebook/test-bridge.js`:
+ * here, first in the data client, before the seal removes `pyodide`; and in
+ * the notebook site's kernel, sent by `notebook/osa-bridge.js` before a
+ * starter's setup cells. It wraps once per interpreter, and leaves no name
+ * behind in the namespace it runs in.
+ *
+ * @returns {string} Python source.
+ */
+export function buildRejectionGuardSource() {
+  return [
+    'def _osa_guard_rejections():',
+    '    import _pyodide._future_helper as helper',
+    '    from pyodide.ffi import JsException, jsnull',
+    '',
+    '    original = helper.set_exception',
+    '    if getattr(original, "osa_rejection_guard", False):',
+    '        return',
+    '',
+    '    def describe(value):',
+    '        # A reason left out arrives as None, and a null one as jsnull.',
+    '        if value is None or value is jsnull:',
+    '            return "Error", "a promise was rejected with no reason"',
+    '        try:',
+    '            name = getattr(value, "name", None)',
+    '            message = getattr(value, "message", None)',
+    '            if not isinstance(message, str):',
+    '                message = str(value)',
+    '        except Exception:',
+    '            name, message = None, "a promise was rejected with a value that could not be read"',
+    '        return (name if isinstance(name, str) and name else "Error"), message',
+    '',
+    '    def set_exception(fut, val):',
+    '        # asyncio takes an exception instance or class, and refuses the rest.',
+    '        if not (isinstance(val, BaseException) or (isinstance(val, type) and issubclass(val, BaseException))):',
+    '            val = JsException(*describe(val))',
+    '        original(fut, val)',
+    '',
+    '    set_exception.osa_rejection_guard = True',
+    '    helper.set_exception = set_exception',
+    '',
+    '',
+    '_osa_guard_rejections()',
+    'del _osa_guard_rejections',
+  ].join('\n');
+}
+
+/**
  * Build the Python that gives executed code its ONE sanctioned network route,
  * and its ONE way to persist a file (epic #429, phase #433: `save_script` and
  * `save_artifact`).
@@ -449,6 +524,10 @@ export function buildDataClientSource() {
   const maxRunMB = WORKSPACE_LIMITS.MAX_RUN_BYTES / (1024 * 1024);
   const maxExplicitFiles = WORKSPACE_LIMITS.MAX_EXPLICIT_FILES;
   return [
+    // First, so the OSError the client below promises for "no response" is what
+    // Safari's readers get too, rather than an await that never returns.
+    buildRejectionGuardSource(),
+    '',
     'import collections as _collections',
     'import importlib.util as _ilu',
     'import sys as _sys',
