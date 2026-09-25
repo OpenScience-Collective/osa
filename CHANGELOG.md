@@ -13,6 +13,17 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ## [Unreleased]
 
+### Added
+
+- **A run's code in place, with Copy and Download** (issue #491):
+  each run in the chat now shows its code as a disclosure of its own, `Code · N lines`, under the run's output and figures,
+  so it opens without them.
+  Its bar copies the exact code (with a fallback that selects it for the reader where the browser will not copy, and never a dialog)
+  and downloads it as a `.py` file named for the dataset and the run, such as `nm000132-run-3.py`.
+  The permission gate gets the same Copy.
+  Only a community whose model runs code sees any of it.
+  See "A run in the chat" in `docs/community-widget.md`.
+
 ### Changed
 
 - **A larger capsule launcher at rest** (issue #490):

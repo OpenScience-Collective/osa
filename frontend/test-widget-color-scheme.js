@@ -437,6 +437,7 @@ console.log('\nevery color the dark block replaces, on the widget\'s own element
     <div class="osa-feedback-modal-thanks">Thanks</div>
     <div class="osa-execution-workspace-note">not saved</div>
     <pre class="osa-execution-output">out</pre>
+    <button class="osa-code-action osa-code-copy copied">copied</button>
   </div>`;
   const CASES = [
     ['.osa-icon-badge', 'color', '#111827'],
@@ -451,6 +452,7 @@ console.log('\nevery color the dark block replaces, on the widget\'s own element
     ['.osa-execution-workspace-note', 'color', '#fca5a5'],
     ['.osa-execution-workspace-note', 'backgroundColor', 'rgba(220, 38, 38, 0.15)'],
     ['.osa-execution-output', 'backgroundColor', 'rgba(255, 255, 255, 0.06)'],
+    ['.osa-code-action.copied', 'color', '#4ade80'],
     ['.osa-error', 'color', '#fca5a5'],
     ['.osa-error', 'backgroundColor', 'rgba(220, 38, 38, 0.15)'],
     ['.osa-error', 'borderTopColor', 'rgba(248, 113, 113, 0.35)'],

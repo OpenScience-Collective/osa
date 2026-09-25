@@ -444,6 +444,8 @@ an assistant call queued behind a reader's run still in progress.
 The result becomes its own entry among the reply's other runs,
 so it survives a reload,
 and is labeled plainly as the reader's own: the assistant never sees it.
+How a run is drawn in the chat, its code behind a disclosure of its own with Copy and Download,
+is in [`docs/community-widget.md`](community-widget.md), "A run in the chat".
 It is stored in the workspace the same way any other run is,
 marked `local` in the stored run record,
 so the derived `manifest.json` and the exported `notebook.ipynb` (see "Workspace" above)
