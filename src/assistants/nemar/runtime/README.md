@@ -11,7 +11,7 @@ How that works is in `src/core/config/runtime_lock.py`.
 | wheel | from | sha256 |
 |---|---|---|
 | `zarr-3.4.0-py3-none-any.whl` | PyPI, byte for byte (digest matches PyPI's published one) | `0a5e6c9b...eb72395` |
-| `eegprep_lean-0.1.0.dev2-py3-none-any.whl` | `sccn/eegprep` at `b4aa18bd` (#416), `packages/eegprep-lean`, `SOURCE_DATE_EPOCH=1790128328 uv build --wheel` (reproducible; see below) | `39f33b99...7157582` |
+| `eegprep_lean-0.1.0.dev3-py3-none-any.whl` | `sccn/eegprep` at `50c50879` (#423, with #420), `packages/eegprep-lean`, `SOURCE_DATE_EPOCH=1790299289 uv build --wheel` (reproducible; see below) | `12a07ac4...4f5b15331` |
 
 zarr's own dependencies are not here:
 Pyodide 0.29.5 ships every one of them, and `depends.toml` names them.
@@ -76,7 +76,7 @@ SOURCE_DATE_EPOCH=<the commit's own timestamp> uv build --wheel
 
 Without `SOURCE_DATE_EPOCH` set to the commit's own timestamp, setuptools stamps
 the build time and two builds of the same commit differ; set to it, the wheel is
-reproducible byte for byte (verified for the 0.1.0.dev2 re-vendor: a second build
+reproducible byte for byte (verified for the 0.1.0.dev2 and 0.1.0.dev3 re-vendors: a second build
 from a fresh checkout produced the identical sha256).
 
 **Proof, in order:**

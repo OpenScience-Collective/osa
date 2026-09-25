@@ -887,7 +887,7 @@ class TestFullBuildEndToEnd:
         assert (site_root / "lab" / "index.html").exists()
         assert (site_root / "lock" / "pyodide-lock.json").exists()
         assert (
-            site_root / "wheels" / "nemar" / "eegprep_lean-0.1.0.dev2-py3-none-any.whl"
+            site_root / "wheels" / "nemar" / "eegprep_lean-0.1.0.dev3-py3-none-any.whl"
         ).exists()
         assert (site_root / "wheels" / "nemar" / "zarr-3.4.0-py3-none-any.whl").exists()
         assert (site_root / "starters" / "nemar.ipynb").exists()
@@ -937,5 +937,5 @@ class TestFullBuildEndToEnd:
         merged_lock = json.loads((site_root / "lock" / "pyodide-lock.json").read_text())
         assert "numpy" in merged_lock["packages"]  # stock package, untouched
         assert merged_lock["packages"]["eegprep-lean"]["file_name"] == (
-            "https://notebook.osc.earth/osa/wheels/nemar/eegprep_lean-0.1.0.dev2-py3-none-any.whl"
+            "https://notebook.osc.earth/osa/wheels/nemar/eegprep_lean-0.1.0.dev3-py3-none-any.whl"
         )

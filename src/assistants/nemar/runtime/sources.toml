@@ -9,14 +9,14 @@
 # README beside this file says when to set it.
 
 [eegprep-lean]
-wheel = "eegprep_lean-0.1.0.dev2-py3-none-any.whl"
+wheel = "eegprep_lean-0.1.0.dev3-py3-none-any.whl"
 repository = "sccn/eegprep"
 branch = "develop"
 path = "packages/eegprep-lean"
-commit = "b4aa18bdbc0556c943a10ca3bd4105f6b4971ed6"
+commit = "50c50879d28eae11a5e4c242dbb34e0ac1a6b6d8"
 # The commit's own timestamp, so a rebuild produces identical bytes; see
 # src/assistants/nemar/runtime/README.md for the full procedure.
-build = "git archive b4aa18bdbc0556c943a10ca3bd4105f6b4971ed6 packages/eegprep-lean | tar -x -C <dir> && cd <dir>/packages/eegprep-lean && SOURCE_DATE_EPOCH=1790128328 uv build --wheel"
+build = "git archive 50c50879d28eae11a5e4c242dbb34e0ac1a6b6d8 packages/eegprep-lean | tar -x -C <dir> && cd <dir>/packages/eegprep-lean && SOURCE_DATE_EPOCH=1790299289 uv build --wheel"
 
 [zarr]
 wheel = "zarr-3.4.0-py3-none-any.whl"
