@@ -48,6 +48,9 @@ MODEL_PRICING: dict[str, ModelRate] = {
     "anthropic/claude-3.5-sonnet": ModelRate(6.00, 30.00),
     "anthropic/claude-3.5-haiku": ModelRate(0.80, 4.00),
     # OpenAI models
+    # openai/gpt-6-luna: verified 2026-09 against https://openrouter.ai/api/v1/models
+    # (same rate as the Bedrock global inference profile, openai.gpt-6-luna).
+    "openai/gpt-6-luna": ModelRate(0.10, 0.50),
     "openai/gpt-5.2": ModelRate(1.75, 14.00),
     "openai/gpt-5.2-chat": ModelRate(1.75, 14.00),
     "openai/gpt-5.1": ModelRate(1.25, 10.00),

@@ -48,6 +48,12 @@ class TestEstimateCost:
             assert input_rate >= 0, f"{model} has negative input rate"
             assert output_rate >= 0, f"{model} has negative output rate"
 
+    def test_gpt_6_luna_cost(self):
+        """GPT-6 Luna is priced, so community keys can use it (issue #514)."""
+        cost = estimate_cost("openai/gpt-6-luna", input_tokens=1_000_000, output_tokens=1_000_000)
+        # input: 0.10, output: 0.50, total: 0.60
+        assert cost == 0.6
+
     def test_qwen_model_cost(self):
         """Verify cost for a Qwen model."""
         cost = estimate_cost(
