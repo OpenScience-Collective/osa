@@ -4619,6 +4619,76 @@
     };
   }
 
+  // Figures in the pop-out (#493). Figures live only in this page's memory
+  // (executionRecord, saveHistory), and the pop-out rebuilds the conversation
+  // from storage, so openPopout hands it the figures itself, keyed by each
+  // run's callId, and the pop-out's init puts them back on the matching runs.
+  //
+  // The bound: a run returns at most POPOUT_IMAGES_PER_RUN figures (the
+  // server's MAX_IMAGES in src/core/limits.py, which a test compares), each at
+  // most 2,000,000 bytes (MAX_IMAGE_BYTES, which the runtime enforces before a
+  // figure ever reaches the page), so one run's figures are at most about 8 MB
+  // of base64. Across a whole conversation there is no such bound, so the
+  // hand-off is capped at POPOUT_IMAGE_CHARS of base64, the newest runs first,
+  // stopping at the first run that does not fit whole: a typical figure is
+  // tens to a few hundred kilobytes, so that is hundreds of them. A run left
+  // out shows in the pop-out as it does after a reload, without its figures.
+  // A variable, not a constant, only so the test hooks can lower it.
+  const POPOUT_IMAGES_PER_RUN = 3;
+  let POPOUT_IMAGE_CHARS = 32 * 1024 * 1024;
+
+  // The figures to hand the pop-out: {callId: [{mime, data_base64, width, height}]}.
+  function runImagesForPopout() {
+    const handed = {};
+    let budget = POPOUT_IMAGE_CHARS;
+    for (let m = messages.length - 1; m >= 0; m--) {
+      const runs = messages[m] && messages[m].executions;
+      if (!Array.isArray(runs)) continue;
+      for (let r = runs.length - 1; r >= 0; r--) {
+        const run = runs[r];
+        if (!run || typeof run.callId !== 'string' || !run.callId || Object.prototype.hasOwnProperty.call(handed, run.callId)) continue;
+        const images = (Array.isArray(run.images) ? run.images : []).filter(isShowableImage).slice(0, POPOUT_IMAGES_PER_RUN);
+        if (images.length === 0) continue;
+        const size = images.reduce((total, image) => total + image.data_base64.length, 0);
+        if (size > budget) return handed;
+        budget -= size;
+        handed[run.callId] = images.map(popoutImage);
+      }
+    }
+    return handed;
+  }
+
+  // An image as the pop-out takes it: only the fields a figure is drawn from.
+  function popoutImage(image) {
+    const kept = { mime: image.mime, data_base64: image.data_base64 };
+    for (const side of ['width', 'height']) {
+      if (Number.isFinite(image[side])) kept[side] = image[side];
+    }
+    return kept;
+  }
+
+  // The pop-out's side: the figures its opener handed it, put back on the runs
+  // its history has, matched by callId, and held to the same rules as a
+  // figure straight from the runtime (isShowableImage, at most three a run),
+  // since what arrives is data, not trusted structure. Nothing is stored.
+  function restoreRunImages(handed) {
+    if (!handed || typeof handed !== 'object' || Array.isArray(handed)) return 0;
+    let restored = 0;
+    for (const message of messages) {
+      if (!message || !Array.isArray(message.executions)) continue;
+      for (const run of message.executions) {
+        if (!run || typeof run.callId !== 'string' || !run.callId || !Object.prototype.hasOwnProperty.call(handed, run.callId)) continue;
+        const images = handed[run.callId];
+        if (!Array.isArray(images)) continue;
+        const kept = images.filter(isShowableImage).slice(0, POPOUT_IMAGES_PER_RUN).map(popoutImage);
+        if (kept.length === 0) continue;
+        run.images = kept;
+        restored += kept.length;
+      }
+    }
+    return restored;
+  }
+
   // The run record a rerun control's data-msg-index/data-run-index name, or
   // null if either index is stale (the reply was cleared from under it).
   function runAt(el) {
@@ -7145,9 +7215,11 @@
     // without leaving an empty one behind.
     let configJson;
     let datasetJson;
+    let imagesJson;
     try {
       configJson = JSON.stringify(popupConfig);
       datasetJson = JSON.stringify(currentDataset);
+      imagesJson = JSON.stringify(runImagesForPopout());
     } catch (e) {
       console.error('Failed to serialize widget config:', e);
       alert('Failed to prepare widget configuration for pop-out.');
@@ -7177,6 +7249,8 @@
       popup.__OSA_HOST_COLOR_SCHEME__ = hostColorScheme;
       popup.__OSA_DATASET__ = popup.JSON.parse(datasetJson);
       popup.__OSA_TAB__ = activeTab;
+      // The figures on this page's runs (#493), which storage does not hold.
+      popup.__OSA_RUN_IMAGES__ = popup.JSON.parse(imagesJson);
       const script = doc.createElement('script');
       // The host page's own pin, when it has one: SRI, and the CORS mode a
       // cross-origin script needs for the browser to check it.
@@ -7245,6 +7319,12 @@
     loadPageContextPreference();
     loadUserSettings();
     const historyNeedsSave = loadHistory();
+    // A pop-out's figures, from its opener (#493): back on the runs history
+    // has, before anything is drawn. Let go of once used.
+    if (CONFIG.fullscreen && window.__OSA_RUN_IMAGES__ !== undefined) {
+      restoreRunImages(window.__OSA_RUN_IMAGES__);
+      window.__OSA_RUN_IMAGES__ = null;
+    }
     injectStyles();
     const container = createWidget();
     // Everything else the remembered config sets (the logo, the title, the
@@ -7499,6 +7579,14 @@
         LAUNCHER_WAIT_MS = ms;
       },
       waiting: () => launcherWaiting,
+    };
+    // The figures a pop-out is handed (#493), and the bound on them.
+    window.OSAChatWidget.__popout = {
+      POPOUT_IMAGES_PER_RUN,
+      setImageBudget(chars) {
+        POPOUT_IMAGE_CHARS = chars;
+      },
+      runImagesForPopout,
     };
     window.OSAChatWidget.__applyDoneEvent = applyDoneEvent;
     window.OSAChatWidget.__migrateLegacyCitationMarkers = migrateLegacyCitationMarkers;

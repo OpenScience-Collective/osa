@@ -21,6 +21,10 @@
  * titles (it is drawn there at once), and a later switch in the same window must
  * start one, so the record of transitions is known to see them.
  *
+ * Last, the page's figures (#493): a page with two runs' figures in memory, and
+ * stored without them as always, opens a pop-out that must show each figure in
+ * the run that drew it, decoded by the browser, with none in the shared storage.
+ *
  * A pop-out is a new DevTools target: this discovers targets and attaches to the one
  * whose opener is the page. The notebook's address points at the harness server
  * itself, so the frame loads nothing from the network; its address is what is
@@ -333,6 +337,70 @@ async function check(base, screenshotDir, { liveNotebook = false } = {}) {
         'control: a pop-out carrying a wrong integrity is refused by the browser, so the pin is checked there', refused);
       report(refused.message.includes('could not load in this window'), 'control: and the pop-out says so, rather than opening blank', refused.message);
       await screenshot(cdp, popup.sessionId, screenshotDir, 'popout-refused.png');
+    }
+    await close(popup);
+
+    // #493: the page's figures reach the pop-out, which rebuilds the conversation
+    // from storage, where figures never are. The page gets the widget's test hooks
+    // (only this load, and never the pop-out, a target of its own) to put two runs
+    // on it as a finished reply leaves them: stored without figures, drawn with
+    // them. The figures are PNGs the page draws on a canvas.
+    console.log('--- figures');
+    const { identifier: hooksScript } = await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: 'window.__OSA_TEST__ = true;' }, sessionId);
+    const figuresPage = await load('widget-e2e.html');
+    await cdp.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: hooksScript }, sessionId);
+    if (!figuresPage) return;
+    const drawn = await evaluate(cdp, sessionId, `(() => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 64;
+      canvas.height = 48;
+      const context = canvas.getContext('2d');
+      context.fillStyle = '#c00';
+      context.fillRect(0, 0, 64, 48);
+      const first = canvas.toDataURL('image/png').split(',')[1];
+      context.fillStyle = '#00c';
+      context.fillRect(8, 8, 30, 20);
+      const second = canvas.toDataURL('image/png').split(',')[1];
+      const run = (callId, description, images) => ({ callId, tool: 'execute_code', description, code: 'print(1)',
+        status: 'ok', stdout: '', stderr: '', images, local: false, workspaceNote: '' });
+      const png = (data) => ({ mime: 'image/png', data_base64: data, width: 64, height: 48 });
+      const hooks = OSAChatWidget.__browser;
+      hooks.setMessages([
+        { role: 'assistant', content: 'Hi' },
+        { role: 'user', content: 'plot it', dataset: 'nm000103' },
+        { role: 'assistant', content: 'plotted', executions: [run('call-a', 'two figures', [png(first), png(second)]), run('call-b', 'one figure', [png(second)])] },
+      ]);
+      hooks.saveHistory();
+      hooks.renderMessages(document.querySelector('.osa-chat-widget'));
+      document.querySelector('.osa-launcher-capsule .osa-chat-button').click();
+      return { first, second, pageImages: document.querySelectorAll('.osa-execution img').length };
+    })()`);
+    report(drawn.pageImages === 3 && drawn.first !== drawn.second, 'figures: sanity: the page shows its two runs\' three figures', drawn.pageImages);
+    popup = await openPopout(cdp, created, page, `document.querySelector('.osa-popout-btn').click()`);
+    if (!popup) return;
+    if (await checkRendered(cdp, page, popup, { label: 'figures', pageScript: figuresPage.pageScript, pageUrl: figuresPage.url, title: figuresPage.title })) {
+      if (await waitFor(cdp, popup.sessionId, `document.querySelectorAll('.osa-execution img').length === 3 && [...document.querySelectorAll('.osa-execution img')].every((img) => img.complete)`,
+        'figures: the pop-out\'s three figures, loaded')) {
+        const shown = await evaluate(cdp, popup.sessionId, `({
+          runs: [...document.querySelectorAll('details.osa-execution')].map((run) => ({
+            title: run.querySelector('summary').textContent,
+            images: [...run.querySelectorAll('img')].map((img) => ({ data: img.src.split(',')[1], width: img.naturalWidth, height: img.naturalHeight })),
+          })),
+          hooks: !!OSAChatWidget.__browser,
+          handOff: window.__OSA_RUN_IMAGES__,
+          stored: Object.keys(localStorage).map((key) => localStorage.getItem(key)).join('\\n'),
+        })`);
+        const expected = [[drawn.first, drawn.second], [drawn.second]];
+        report(shown.runs.length === 2 && shown.runs.every((run, i) => run.images.map((image) => image.data).join() === expected[i].join()),
+          'figures: the pop-out shows each figure, in the run that drew it', shown.runs.map((run) => ({ title: run.title, images: run.images.length })));
+        report(shown.runs.every((run) => run.images.every((image) => image.width === 64 && image.height === 48)),
+          'figures: and the browser decoded every one under the page\'s policy (64x48)', shown.runs.map((run) => run.images.map((image) => [image.width, image.height])));
+        report(!shown.hooks, 'figures: sanity: the pop-out runs the widget without its test hooks');
+        report(shown.handOff === null, 'figures: the pop-out let go of the hand-off once it used it', shown.handOff);
+        report(!shown.stored.includes(drawn.first) && !shown.stored.includes(drawn.second),
+          'figures: the storage the page and the pop-out share holds no figure\'s bytes');
+        await screenshot(cdp, popup.sessionId, screenshotDir, 'popout-figures.png');
+      }
     }
     await close(popup);
   } finally {

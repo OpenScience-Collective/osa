@@ -107,7 +107,7 @@ function configResponse(widgetOverrides = {}) {
  * `tag` is the widget tag's attributes beyond src and data-no-auto-init; `config`
  * is what the community endpoint answers, for the page and for its pop-out.
  */
-async function hostPage({ config = configResponse(), tag = { integrity: INTEGRITY, crossorigin: 'anonymous' }, dataset, colorScheme, setConfig = {} } = {}) {
+async function hostPage({ config = configResponse(), tag = { integrity: INTEGRITY, crossorigin: 'anonymous' }, dataset, colorScheme, setConfig = {}, testHooks = false, beforeScript } = {}) {
   const requests = [];
   const window = new Window({
     url: 'http://localhost/dataset/nm000103',
@@ -140,6 +140,10 @@ async function hostPage({ config = configResponse(), tag = { integrity: INTEGRIT
   });
   const alerts = [];
   window.alert = (message) => alerts.push(message);
+  // The page's widget test hooks (__browser, __popout), for a test that puts
+  // runs on the page as a reply would; the pop-out never has them.
+  if (testHooks) window.__OSA_TEST__ = true;
+  if (beforeScript) beforeScript(window);
 
   const script = window.document.createElement('script');
   for (const [name, value] of Object.entries(tag)) script.setAttribute(name, value);
@@ -528,6 +532,175 @@ console.log('\na pop-out whose community config no longer asks for the capsule g
   const { container, q } = await openPopout(page);
   assert(!container.classList.contains('osa-capsule'), 'no capsule class');
   assert(!q('.osa-tab-strip') && !q('.osa-views'), 'and no tab strip or views left behind');
+}
+
+// ---------------------------------------------------------------------------
+// The page's figures reach the pop-out (#493).
+// ---------------------------------------------------------------------------
+
+// Two small PNGs that differ, and a third.
+const PNG_A = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+const PNG_B = 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP4z8AARAwQCgAf7gP9i18U1AAAAABJRU5ErkJggg==';
+const png = (data, side = 1) => ({ mime: 'image/png', data_base64: data, width: side, height: side });
+
+// A conversation as a reply that ran code leaves it on the page: three runs over
+// two replies, the first with two figures, the second with none, the third with one.
+function figureConversation() {
+  const run = (callId, description, images) => ({
+    callId, tool: 'execute_code', description, code: `print(${JSON.stringify(description)})`,
+    status: 'ok', stdout: '', stderr: '', images, local: false, workspaceNote: '',
+  });
+  return [
+    { role: 'assistant', content: 'Hi' },
+    { role: 'user', content: 'plot it', dataset: 'nm000103' },
+    { role: 'assistant', content: 'plotted', executions: [run('call-a', 'two figures', [png(PNG_A), png(PNG_B, 2)]), run('call-b', 'no figure', [])] },
+    { role: 'user', content: 'again' },
+    { role: 'assistant', content: 'again', executions: [run('call-c', 'one figure', [png(PNG_B, 2)])] },
+  ];
+}
+
+// The page with those runs on it, stored and drawn, as at the end of a reply.
+async function pageWithFigures(options = {}) {
+  const page = await hostPage({ testHooks: true, ...options });
+  const hooks = page.api.__browser;
+  hooks.setMessages(figureConversation());
+  hooks.saveHistory();
+  hooks.renderMessages(page.container);
+  return page;
+}
+
+// Open the pop-out and hand it the page's stored history, as the browser does for
+// an about:blank window of the page's own origin: each happy-dom window has a
+// storage of its own, so the test copies it across before the pop-out's widget
+// starts (a task after its script is added). popout-check.mjs sees the real one.
+async function openPopoutSharingStorage(page, { beforeStart } = {}) {
+  page.click('.osa-popout-btn');
+  const { popup } = page.opened.at(-1);
+  assert(!popup.document.querySelector('.osa-chat-widget'), 'sanity: the pop-out\'s widget has not started yet');
+  for (let i = 0; i < page.window.localStorage.length; i++) {
+    const key = page.window.localStorage.key(i);
+    popup.localStorage.setItem(key, page.window.localStorage.getItem(key));
+  }
+  const handed = popup.__OSA_RUN_IMAGES__;
+  if (beforeStart) beforeStart(popup);
+  return { popup, handed, ...(await popoutReady(page, popup)) };
+}
+
+// Each run the panel shows, by its description, with the figures drawn in it.
+const figuresByRun = (container) => Object.fromEntries([...container.querySelectorAll('details.osa-execution')].map((run) => [
+  run.querySelector('summary').textContent.replace(/^Ran Python: /, ''),
+  [...run.querySelectorAll('img')].map((img) => img.getAttribute('src').replace('data:image/png;base64,', '')),
+]));
+
+console.log('\nthe pop-out carries the page\'s figures, each back in its own run (#493)');
+{
+  const page = await pageWithFigures({ dataset: { id: 'nm000103', zarr: true } });
+  assertEqual(figuresByRun(page.container), { 'two figures': [PNG_A, PNG_B], 'no figure': [], 'one figure': [PNG_B] }, 'sanity: the page shows its three runs\' figures');
+  const stored = page.window.localStorage.getItem(page.api.getConfig().storageKey);
+  assert(!stored.includes(PNG_A) && !stored.includes(PNG_B), 'sanity: the page\'s stored history holds no figure');
+
+  const { popup, handed, container } = await openPopoutSharingStorage(page);
+  assert(handed instanceof popup.Object && !(handed instanceof page.window.Object), 'the figures arrive as the pop-out\'s own object, as its other presets do');
+  assertEqual(Object.keys(handed).sort(), ['call-a', 'call-c'], 'keyed by the callId of each run that drew a figure');
+  assertEqual(handed['call-a'].map((image) => image.data_base64), [PNG_A, PNG_B], 'each run\'s figures, in order');
+  assert(handed['call-a'] instanceof popup.Array, 'down to its arrays');
+  assertEqual(figuresByRun(container), { 'two figures': [PNG_A, PNG_B], 'no figure': [], 'one figure': [PNG_B] },
+    'the pop-out shows every figure, in the run that drew it');
+  const opened = [...container.querySelectorAll('details.osa-execution')].map((run) => run.hasAttribute('open'));
+  assertEqual(opened, [true, false, true], 'and opens the runs that drew one, as the page does');
+  assertEqual(popup.__OSA_RUN_IMAGES__, null, 'the pop-out lets go of the hand-off once it has used it');
+  assert(!popup.document.documentElement.outerHTML.includes('__OSA_'), 'and never wrote it into its document as text');
+  for (const [where, storage] of [['page', page.window.localStorage], ['pop-out', popup.localStorage]]) {
+    const all = Array.from({ length: storage.length }, (_, i) => storage.getItem(storage.key(i))).join('\n');
+    assert(!all.includes(PNG_A) && !all.includes(PNG_B), `the ${where}'s storage still holds no figure's bytes`);
+  }
+}
+
+console.log('\nthe hand-off is bounded, newest runs first, and a run goes whole or not at all (#493)');
+{
+  const limits = readFileSync(new URL('../src/core/limits.py', import.meta.url), 'utf8');
+  const serverMaxImages = Number((limits.match(/^MAX_IMAGES = (\d+)/m) || [])[1]);
+  const page = await pageWithFigures();
+  assertEqual(page.api.__popout.POPOUT_IMAGES_PER_RUN, serverMaxImages, 'at most MAX_IMAGES figures a run, as src/core/limits.py caps what a run returns');
+  const everything = PNG_A.length + 2 * PNG_B.length;
+  assertEqual(Object.keys(page.api.__popout.runImagesForPopout()), ['call-c', 'call-a'], 'within the budget: every run with figures, newest first');
+  // Room for the newest run (one figure) but not the older one's two.
+  page.api.__popout.setImageBudget(everything - 1);
+  const { handed, container } = await openPopoutSharingStorage(page);
+  assertEqual(Object.keys(handed), ['call-c'], 'past the budget, the newest runs that fit, and nothing older');
+  assertEqual(figuresByRun(container), { 'two figures': [], 'no figure': [], 'one figure': [PNG_B] },
+    'the run left out shows as it would after a reload, with none of its figures rather than some');
+
+  page.api.__popout.setImageBudget(0);
+  assertEqual(page.api.__popout.runImagesForPopout(), {}, 'no budget, no figures');
+
+  // A small run older than one that does not fit stays out too, so the pop-out's
+  // figures are always the newest runs', never a scattering.
+  const run = (callId, images) => ({ callId, tool: 'execute_code', description: callId, code: '', status: 'ok', stdout: '', stderr: '', images });
+  page.api.__browser.setMessages([
+    { role: 'assistant', content: 'old', executions: [run('call-old', [png(PNG_A)])] },
+    { role: 'assistant', content: 'big', executions: [run('call-big', [png(PNG_B, 2), png(PNG_B, 2), png(PNG_B, 2)])] },
+    { role: 'assistant', content: 'new', executions: [run('call-new', [png(PNG_A)])] },
+  ]);
+  page.api.__popout.setImageBudget(2 * PNG_A.length);
+  assertEqual(Object.keys(page.api.__popout.runImagesForPopout()), ['call-new'], 'the hand-off stops at the first run that does not fit');
+  page.api.__popout.setImageBudget(32 * 1024 * 1024);
+  page.api.__browser.setMessages([{ role: 'assistant', content: 'many', executions: [run('call-many', [png(PNG_A), png(PNG_B, 2), png(PNG_A), png(PNG_B, 2)])] }]);
+  assertEqual(page.api.__popout.runImagesForPopout()['call-many'].length, 3, 'and hands at most three figures a run');
+}
+
+console.log('\nthe pop-out holds what it is handed to the rules of a figure from the runtime (#493)');
+{
+  const page = await pageWithFigures();
+  const originalWarn = console.warn;
+  let result;
+  try {
+    console.warn = () => {};
+    result = await openPopoutSharingStorage(page, {
+      beforeStart(popup) {
+        // What a script on the page could leave in the preset before the pop-out starts.
+        popup.__OSA_RUN_IMAGES__ = popup.JSON.parse(JSON.stringify({
+          'call-a': [
+            { mime: 'image/svg+xml', data_base64: PNG_A },
+            { mime: 'image/png', data_base64: `${PNG_A}" onerror="alert(1)` },
+            png(PNG_B, 2), png(PNG_A), png(PNG_B, 2), png(PNG_A),
+          ],
+          'call-c': 'not a list',
+          'call-unknown': [png(PNG_A)],
+          __proto__: [png(PNG_A)],
+        }));
+      },
+    });
+  } finally {
+    console.warn = originalWarn;
+  }
+  const { container } = result;
+  assertEqual(figuresByRun(container), { 'two figures': [PNG_B, PNG_A, PNG_B], 'no figure': [], 'one figure': [] },
+    'only real PNGs, at most three a run, on runs the history has; anything else is dropped');
+  const attributes = [...container.querySelectorAll('.osa-chat-messages *')].flatMap((el) => [...el.attributes].map((a) => a.name));
+  assert(!attributes.some((name) => name.startsWith('on')), 'and no handler reaches the page');
+}
+
+console.log('\na page with no figures hands the pop-out none, and a page that is not a pop-out ignores the preset (#493)');
+{
+  const page = await hostPage({ testHooks: true });
+  const { handed, container } = await openPopoutSharingStorage(page);
+  assertEqual(handed, {}, 'no runs: an empty hand-off');
+  assert(!container.querySelector('.osa-execution'), 'and nothing of a run in the pop-out');
+
+  // A preset left on an ordinary page's window is not a pop-out's hand-off: its
+  // stored runs, read at init as a pop-out's are, stay without figures.
+  const storageKey = 'osa-test-popout-preset-ignored';
+  const storedRuns = figureConversation().map((m) => (m.executions ? { ...m, executions: m.executions.map((r) => ({ ...r, images: [] })) } : m));
+  const ordinary = await hostPage({
+    setConfig: { storageKey },
+    beforeScript: (window) => {
+      window.localStorage.setItem(storageKey, JSON.stringify({ version: 2, messages: storedRuns, sessionId: null }));
+      window.__OSA_RUN_IMAGES__ = { 'call-a': [png(PNG_A)], 'call-c': [png(PNG_B, 2)] };
+    },
+  });
+  assertEqual(ordinary.container.querySelectorAll('details.osa-execution').length, 3, 'sanity: the page read its three stored runs at init');
+  assert(!ordinary.container.querySelector('.osa-execution img'), 'a page\'s own widget never takes figures from the preset');
 }
 
 console.log('\n' + '='.repeat(60));
