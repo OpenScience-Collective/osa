@@ -300,7 +300,7 @@
   // browser before any of it runs. Written by scripts/build-runtime-bundle.js;
   // CI rebuilds and fails if the committed bundle or this line is stale.
   // BEGIN GENERATED: runtime bundle integrity
-  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-ZizR14MnPo1ls6fez/s6vYzSr/ufRvTulYfk5p9TnN2XCN7cWsKk560JE1Oj/O3e';
+  const RUNTIME_BUNDLE_INTEGRITY = 'sha384-4MGmoHZmJJRQQkiWR7kHA3+MSwD4pHu2w7M4sNq1lQs38Z9Fs+YR0objW8WRfc4M';
   // END GENERATED: runtime bundle integrity
 
   // Icons (SVG)
