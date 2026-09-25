@@ -2320,12 +2320,38 @@ console.log('\neach figure a run shows has its own Download, labeled with the fi
   assertEqual(buttons.map((b) => b.textContent), ['Download', 'Download'], 'with visible text');
   assertEqual(buttons.map((b) => b.getAttribute('data-image-index')), ['1', '2'], 'each naming its figure\'s place in the record');
   assert(figures.every((f) => f.closest('details.osa-execution')), 'inside the run\'s own disclosure, with the output');
+  assert(figures.every((f) => f.children.length === 2 && f.children[0].tagName === 'IMG' && f.children[1].classList.contains('osa-figure-actions')
+    && f.children[1].contains(f.querySelector('.osa-figure-download'))), 'each button in a row under its figure, not over it');
 
   holder.innerHTML = api.executionsHtml(api.getMessages()[2].executions);
   assertEqual(holder.querySelectorAll('img').length, 2, 'with no reply to act on, the figures still show');
   assert(!holder.querySelector('.osa-figure-download') && !holder.querySelector('.osa-execution-figure'), 'as before, with no button');
   holder.innerHTML = api.executionsHtml(api.getMessages()[4].executions, 4);
   assert(!holder.querySelector('.osa-figure-download'), 'a run with no figure has no figure Download');
+}
+
+console.log('\nthe figure\'s Download sits in a row under the figure, against the real stylesheet (#492)');
+{
+  // Over the figure it could hide data (matplotlib's legend often sits in that
+  // corner), so it is laid out in the flow, after the image.
+  const fetch = async (url) => {
+    if (String(url).endsWith('/health')) return new Response(JSON.stringify({ status: 'healthy' }));
+    return new Response(JSON.stringify({ default_model: 'm', offered_models: [], widget: {}, client_tools: [], runtime: null }), { headers: { 'content-type': 'application/json' } });
+  };
+  const { window, api, widget } = loadWidget({ fetch });
+  widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: 'osa-test-figure-row' });
+  widget.init();
+  api.setMessages(figureConversation());
+  const container = window.document.querySelector('.osa-chat-widget');
+  api.renderMessages(container);
+  const button = container.querySelector('.osa-figure-download');
+  const row = button.parentElement;
+  // happy-dom reports an unset position as '', a browser as 'static'.
+  const position = window.getComputedStyle(button).position;
+  assert(position === '' || position === 'static', `the button is in the flow, not placed over the figure (position ${JSON.stringify(position)})`);
+  assertEqual([window.getComputedStyle(row).display, window.getComputedStyle(row).justifyContent], ['flex', 'flex-end'], 'its row is right-aligned');
+  assert(row.previousElementSibling && row.previousElementSibling.tagName === 'IMG', 'and follows the figure');
+  assertEqual(window.getComputedStyle(button).color, '#6b7280', 'in the panel\'s muted text color, as the code block\'s buttons are');
 }
 
 console.log('\nDownload saves the figure\'s exact PNG, named for the dataset, the run and the figure (#492)');

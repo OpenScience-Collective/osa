@@ -2343,12 +2343,12 @@
       background: #ffffff;
     }
 
-    /* A figure and its Download (#492), over the figure's top-right corner. The
-       figure stays white on the dark panel too, so the button's colors are fixed
-       rather than the panel's. The box is the figure's width, so the button sits
-       on the figure however narrow it is. */
+    /* A figure and its Download (#492), in a row under the figure, right-aligned,
+       as the code block's bar sits over the code: never over the figure, where
+       matplotlib often puts a legend. The box is the figure's own width, so the
+       row ends where the figure does, however narrow it is. The button is drawn
+       on the panel, so it takes the panel's colors, dark ones included. */
     .osa-execution-figure {
-      position: relative;
       width: fit-content;
       max-width: 100%;
       margin-top: 6px;
@@ -2358,37 +2358,40 @@
       margin-top: 0;
     }
 
+    .osa-figure-actions {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 2px;
+    }
+
     .osa-figure-download {
-      position: absolute;
-      top: 6px;
-      right: 6px;
       display: inline-flex;
       align-items: center;
       gap: 4px;
-      padding: 3px 8px;
-      border: 1px solid #d1d5db;
+      padding: 3px 6px;
+      border: none;
       border-radius: 6px;
-      background: rgba(255, 255, 255, 0.92);
-      color: #374151;
+      background: transparent;
+      color: var(--osa-text-light);
       font: inherit;
       font-size: 12px;
       cursor: pointer;
+      transition: color 0.2s, background 0.2s;
     }
 
     .osa-figure-download:hover {
-      background: #ffffff;
-      border-color: #9ca3af;
-      color: #111827;
+      color: var(--osa-accent);
+      background: rgba(0,0,0,0.05);
     }
 
     .osa-figure-download:focus-visible {
-      outline: 2px solid #1f2937;
+      outline: 2px solid var(--osa-accent);
       outline-offset: 1px;
     }
 
     .osa-figure-download svg {
-      width: 13px;
-      height: 13px;
+      width: 14px;
+      height: 14px;
     }
 
     .osa-execution-local-note {
@@ -2538,6 +2541,10 @@
     }
 
     .osa-chat-widget.osa-dark .osa-code-action:hover {
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .osa-chat-widget.osa-dark .osa-figure-download:hover {
       background: rgba(255, 255, 255, 0.08);
     }
 
@@ -5209,9 +5216,9 @@
         const img = `<img alt="Figure ${figureNumber} produced by the code" src="data:image/png;base64,${image.data_base64}">`;
         if (!located) return img;
         const filename = figureFileName(located.msgIndex, located.runIndex, figureNumber);
-        return `<div class="osa-execution-figure">${img}` +
+        return `<div class="osa-execution-figure">${img}<div class="osa-figure-actions">` +
           `<button type="button" class="osa-figure-download" data-msg-index="${located.msgIndex}" data-run-index="${located.runIndex}" data-image-index="${imageIndex}" ` +
-          `aria-label="Download figure ${figureNumber} as ${escapeHtml(filename)}" title="Download ${escapeHtml(filename)}">${ICONS.download}<span>Download</span></button></div>`;
+          `aria-label="Download figure ${figureNumber} as ${escapeHtml(filename)}" title="Download ${escapeHtml(filename)}">${ICONS.download}<span>Download</span></button></div></div>`;
       })
       .join('');
     return `${stdout}${stderr}${workspaceNote}${images}`;
