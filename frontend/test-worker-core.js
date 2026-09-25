@@ -92,6 +92,7 @@ async function bootRuntime({
   allowInstall = [],
   indexUrls = [],
   fetchAllow = ['http://127.0.0.1/allowed/'],
+  importBeforeSeal = [],
   limits = {},
   lockPackages = {},
   prelude = '',
@@ -108,6 +109,7 @@ async function bootRuntime({
     allowInstall,
     indexUrls,
     fetchAllow,
+    importBeforeSeal,
     lockPackages,
     prelude,
     python: {
@@ -159,6 +161,7 @@ console.log('\na malformed configuration is named, not discovered deep inside th
     allowInstall: [],
     indexUrls: [],
     fetchAllow: [],
+    importBeforeSeal: [],
     lockPackages: {},
     prelude: '',
     python: { helpers: 'a', outputCapture: 'b', dataClient: 'c', namespaceSeal: 'd' },
@@ -168,6 +171,11 @@ console.log('\na malformed configuration is named, not discovered deep inside th
   await createFromSource({ ...good, fetchAllow: 'https://zarr.nemar.org/' }, env).handle({ type: 'boot' });
   assert(messages.length === 1 && messages[0].kind === 'config' && /config\.fetchAllow is not a list of strings/.test(messages[0].message),
     `a wrong type is reported by the field's name, before loading anything (got ${JSON.stringify(messages[0])})`);
+
+  messages.length = 0;
+  await createFromSource({ ...good, importBeforeSeal: 'scipy' }, env).handle({ type: 'boot' });
+  assert(/config\.importBeforeSeal is not a list of strings/.test(messages[0] && messages[0].message),
+    'so is an import_before_seal that is not a list of names');
 
   messages.length = 0;
   await createFromSource({ ...good, python: { ...good.python, namespaceSeal: '' } }, env).handle({ type: 'boot' });
@@ -590,6 +598,121 @@ console.log('\na prelude runs after the seal, as executed code, and a failing on
   assert(refusal && /^the community's prelude failed: /.test(refusal.message) && /'js' is not available/.test(refusal.message),
     `and the boot fails saying so (got ${JSON.stringify(refusal && refusal.message)})`);
   assertEqual(refusal && refusal.kind, 'prelude', 'as a prelude failure, not a runtime one');
+}
+
+console.log('\nimport_before_seal: a package that imports ctypes at its top level works under the seal, and ctypes stays refused');
+{
+  // The shape SciPy has (#495): scipy._lib._ccallback imports ctypes at its top
+  // level and builds this very expression, and `import scipy` runs it. The
+  // wheel is real and micropip installs it from a real local server, as in the
+  // step-budget section above. osasealprobe_broken fails the way a module a
+  // community names by mistake would.
+  const wheel = buildMinimalWheel({
+    distribution: 'osasealprobe',
+    version: '1.0.0',
+    modules: {
+      'osasealprobe/__init__.py': 'import ctypes\n\nFUNCTION_POINTER = ctypes.CFUNCTYPE(ctypes.c_void_p).__bases__[0].__name__\n',
+      'osasealprobe_broken/__init__.py': 'raise RuntimeError("osasealprobe_broken refuses to import")\n',
+    },
+  });
+  const wheelServer = Bun.serve({
+    port: 0,
+    hostname: '127.0.0.1',
+    fetch(request) {
+      if (new URL(request.url).pathname === `/${wheel.fileName}`) {
+        return new Response(wheel.bytes, { headers: { 'Content-Type': 'application/octet-stream' } });
+      }
+      return new Response('Not Found', { status: 404 });
+    },
+  });
+  const progress = (messages) =>
+    messages.filter((m) => m.type === 'progress').map((m) => [m.phase, m.package || m.module || null, m.step, m.steps]);
+  try {
+    const wheelUrl = `http://127.0.0.1:${wheelServer.port}/${wheel.fileName}`;
+
+    // The control: installed but not imported before the seal, the package
+    // cannot import at all, for the reason SciPy could not.
+    const unimported = await bootRuntime({ allowInstall: [wheelUrl] });
+    assert(unimported.ready !== undefined, `the control boots (got ${JSON.stringify(unimported.messages.at(-1))})`);
+    const refused = await unimported.run('import osasealprobe');
+    assertEqual(refused.status, 'error', 'control: without import_before_seal, the package does not import under the seal');
+    assert(/ImportError: 'ctypes' is not available to executed code/.test(refused.stderr),
+      `control: because its own import of ctypes is refused (got ${JSON.stringify(refused.stderr.slice(0, 120))})`);
+
+    const imported = await bootRuntime({
+      allowInstall: [wheelUrl],
+      importBeforeSeal: ['osasealprobe'],
+      prelude: 'prelude_ran = True\n',
+    });
+    assert(imported.ready !== undefined, `with it, the runtime boots (got ${JSON.stringify(imported.messages.at(-1))})`);
+    assertEqual(JSON.stringify(progress(imported.messages)), JSON.stringify([
+      ['loading_runtime', null, 1, 5],
+      ['runtime_loaded', null, 1, 5],
+      ['loading_package', 'micropip', 2, 5],
+      ['installing', wheelUrl, 3, 5],
+      ['importing', 'osasealprobe', 4, 5],
+      ['prelude', null, 5, 5],
+    ]), 'one step per module, after the installs and before the prelude, inside a budget fixed at the start');
+    const importingAt = imported.messages.findIndex((m) => m.phase === 'importing');
+    assert(importingAt !== -1 && importingAt < imported.sealed[0].sentBefore, 'and the import happens before the seal');
+
+    // Nothing is bound: executed code writes its own import, as it would for
+    // any other installed package. Checked first, because a run's names stay.
+    const unbound = await imported.run('osasealprobe');
+    assert(/NameError: name 'osasealprobe' is not defined/.test(unbound.stderr),
+      `the module is not put into the namespace executed code runs in (got ${JSON.stringify(unbound.stderr.slice(0, 100))})`);
+
+    const works = await imported.run('import osasealprobe\nprint(osasealprobe.FUNCTION_POINTER)');
+    assertEqual(works.status, 'ok', `the package imports under the seal (stderr: ${works.stderr.slice(-200)})`);
+    assertEqual(works.stdout, 'CFuncPtr\n', 'with the ctypes it imported working');
+
+    // The seal still refuses ctypes to executed code, by every route: the
+    // static gate, the finder, the __import__ guard, a submodule, and the
+    // module cache, which the seal emptied of ctypes after the import above.
+    const statement = await imported.run('import ctypes');
+    assertEqual(statement.stderr, 'denied_import: ctypes', 'import ctypes is still denied by the import gate');
+    for (const code of ['import importlib\nimportlib.import_module("ctypes")', '__import__("ctypes")',
+      'import importlib\nimportlib.import_module("ctypes.util")']) {
+      const r = await imported.run(code);
+      assert(r.status === 'error' && /ImportError: 'ctypes(\.util)?' is not available to executed code/.test(r.stderr),
+        `${JSON.stringify(code.split('\n').at(-1))} is still refused (got ${r.status}: ${JSON.stringify(r.stderr.slice(0, 100))})`);
+    }
+    const cached = await imported.run('import sys\nprint(sorted(n for n in sys.modules if n.partition(".")[0] == "ctypes"))');
+    assertEqual(cached.stdout, '[]\n', 'and no ctypes module is left in sys.modules');
+
+    // What the docs say this costs: the package's own reference to ctypes is an
+    // ordinary attribute. The namespace seal never claimed to hide a reference
+    // (osa-egress.js, "WHAT THIS IS AND IS NOT A BOUNDARY AGAINST"); asserted so
+    // the sentence in docs/community-browser-runtime.md stays true.
+    const attribute = await imported.run('import osasealprobe\nprint(osasealprobe.ctypes.__name__)');
+    assertEqual(attribute.stdout, 'ctypes\n', 'the documented cost: the package keeps its own ctypes as an attribute');
+
+    // A module that is not there fails the boot, naming it, before the seal
+    // and the prelude, and as its own kind of failure.
+    const missing = await bootRuntime({ importBeforeSeal: ['osa_no_such_module'], prelude: 'prelude_ran = True\n' });
+    const missingError = missing.messages.find((m) => m.type === 'error');
+    assertEqual(missing.ready, undefined, 'a module that does not exist does not get a runtime');
+    assertEqual(missingError && missingError.kind, 'import_before_seal', 'the failure is an import_before_seal one');
+    assert(missingError && /^the community's import_before_seal module osa_no_such_module did not import: /.test(missingError.message)
+      && /ModuleNotFoundError: No module named 'osa_no_such_module'/.test(missingError.message),
+      `and it names the module and why (got ${JSON.stringify(missingError && missingError.message)})`);
+    assertEqual(missing.sealed.length, 0, 'the boot stops before the seal');
+    assert(!missing.messages.some((m) => m.phase === 'prelude'), 'and never runs the prelude');
+
+    // A module that raises: the error carries the module's own exception, and
+    // the steps stop at the module that failed.
+    const raising = await bootRuntime({ allowInstall: [wheelUrl], importBeforeSeal: ['osasealprobe', 'osasealprobe_broken'] });
+    const raisingError = raising.messages.find((m) => m.type === 'error');
+    assert(raisingError && /module osasealprobe_broken did not import: /.test(raisingError.message)
+      && /RuntimeError: osasealprobe_broken refuses to import/.test(raisingError.message),
+      `a module that raises is named with its own exception (got ${JSON.stringify(raisingError && raisingError.message.slice(-200))})`);
+    assertEqual(JSON.stringify(progress(raising.messages).slice(-2)), JSON.stringify([
+      ['importing', 'osasealprobe', 4, 5],
+      ['importing', 'osasealprobe_broken', 5, 5],
+    ]), 'counted the way a succeeding boot counts, up to the module that failed');
+  } finally {
+    wheelServer.stop(true);
+  }
 }
 
 console.log('\na lock overlay may add packages and never replace one');

@@ -746,6 +746,7 @@ class TestCommunityConfigClientTools:
                 "python": {
                     "pyodide_version": "0.29.5",
                     "preload": ["numpy"],
+                    "import_before_seal": ["numpy.linalg"],
                     "fetch_allow": ["https://zarr.nemar.org/"],
                     "limits": {"stdout_chars": 4096},
                 }
@@ -778,6 +779,9 @@ class TestCommunityConfigClientTools:
         python = data["runtime"]["python"]
         assert python["pyodide_version"] == "0.29.5"
         assert python["preload"] == ["numpy"]
+        # What the worker imports before its seal (#495): carried as configured, since
+        # buildWorkerConfig reads it from this response and nowhere else.
+        assert python["import_before_seal"] == ["numpy.linalg"]
         assert python["fetch_allow"] == ["https://zarr.nemar.org/"]
         # The configured limit comes through, and the unset ones carry their defaults,
         # so the widget and the server read one set of numbers.

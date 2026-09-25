@@ -83,6 +83,12 @@ Recorded on #431, first against Pyodide 0.28.3 and then, on the same day
 - NEMAR's runtime boots with its lock overlay's wheels fetched by URL, each
   checked against its sha256; eegprep-lean and zarr import at the versions the
   overlay records, and the prelude made `osa.fetch` eegprep-lean's transport
+- SciPy imports in NEMAR's sealed runtime (#495, through its `import_before_seal`),
+  `signal.welch` runs one channel at a time and `butter` + `sosfiltfilt` on a
+  33-channel array, and `import ctypes` is still refused to executed code.
+  Measured 2026-09-24 in Chrome 153.0.8010.53: the three imports before the seal
+  took about 1.2 s (`scipy` 0.18 s, `scipy.stats` 0.96 s, `scipy.io` 0.06 s)
+  of a 3.7 s NEMAR boot, and the spectrum and filter together 0.12 s
 - **a valid wheel with other bytes stops that runtime from starting**, and the
   same URL loads when fetched without the digest, so the digest alone refused it
 - **an infinite loop is stopped on the deadline**, measured at 10670 ms against
@@ -133,7 +139,7 @@ a cache hit reports 0 because nothing crosses the network, not because the file 
   while zarr, at its unchanged URL, stayed cached (0 B, `fromDiskCache=true`).
   Measured with 0.1.0.dev1 first, where the renamed wheel crossed at the cold row's exact byte count;
   re-measured with 0.1.0.dev2 for the table above.
-- **jsDelivr's own assets** (the interpreter, and the stock wheels numpy and matplotlib pull in)
+- **jsDelivr's own assets** (the interpreter, and the stock wheels the preload lists pull in, SciPy's among them since #495)
   were ALSO cache hits in the warm run, each sent with `Cache-Control: public, max-age=31536000`.
   This is reported, not asserted on, since jsDelivr's cache behavior is not this project's to enforce.
 - **mutation-checked**: reverting `serve.js`'s wheel routes to `no-store` fails the warm and lock-change checks,

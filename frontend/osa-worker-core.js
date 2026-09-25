@@ -29,6 +29,9 @@
  * @param {string[]} config.allowInstall - Wheels installed at boot, deps false.
  * @param {string[]} config.indexUrls - Package indexes micropip may use at boot.
  * @param {string[]} config.fetchAllow - What executed code may reach once sealed.
+ * @param {string[]} config.importBeforeSeal - Modules imported after the installs and
+ *   before the namespace seal, for a package that imports a sealed module at its own
+ *   top level (SciPy imports ctypes). Often empty.
  * @param {Object<string, object>} config.lockPackages - Lock entries the community adds
  *   to Pyodide's own lock, each file_name already an absolute URL. Often empty.
  * @param {string} config.prelude - The community's Python, run after the seal; '' for none.
@@ -65,7 +68,7 @@ export function createWorkerRuntime(config, env) {
     if (typeof env.seal !== 'function') return 'env.seal is not a function';
     if (!config || typeof config !== 'object') return 'config is missing';
     if (typeof config.indexURL !== 'string' || config.indexURL === '') return 'config.indexURL is not a non-empty string';
-    for (const key of ['preload', 'allowInstall', 'indexUrls', 'fetchAllow']) {
+    for (const key of ['preload', 'allowInstall', 'indexUrls', 'fetchAllow', 'importBeforeSeal']) {
       if (!isStringList(config[key])) return `config.${key} is not a list of strings`;
     }
     const lock = config.lockPackages;
@@ -175,11 +178,13 @@ export function createWorkerRuntime(config, env) {
     try {
       // One for the interpreter, one per preload name, and, when
       // allow_install is non-empty, one for micropip plus one per
-      // allow_install entry, and one for the prelude when there is one.
+      // allow_install entry, one per import_before_seal module, and one for
+      // the prelude when there is one.
       steps =
         1 +
         config.preload.length +
         (config.allowInstall.length > 0 ? 1 + config.allowInstall.length : 0) +
+        config.importBeforeSeal.length +
         (config.prelude !== '' ? 1 : 0);
       step = 1; // the interpreter, starting now
 
@@ -239,6 +244,39 @@ export function createWorkerRuntime(config, env) {
           }
         } finally {
           micropip.destroy();
+        }
+      }
+
+      // Modules the community names in import_before_seal, imported while the
+      // namespace is still unsealed. For a package that imports a sealed module
+      // at its own top level: SciPy imports ctypes in scipy._lib._ccallback,
+      // which `import scipy` runs, so under the seal SciPy refuses to import at
+      // all. Imported here, the package keeps the ctypes it imported, and the
+      // seal still refuses `import ctypes` from executed code, since it evicts
+      // ctypes from sys.modules and refuses it at the finder whoever asks.
+      //
+      // That package's own reference to ctypes stays reachable as an
+      // attribute, which the namespace seal was never meant to prevent; see
+      // "WHAT THIS IS AND IS NOT A BOUNDARY AGAINST" in osa-egress.js. The
+      // modules are the community's reviewed config, from packages this boot
+      // just loaded, never anything a model or a reader wrote.
+      //
+      // pyimport binds nothing in any namespace: executed code still writes
+      // its own import, which sys.modules then answers. A module that fails
+      // fails the boot, naming it, since every later execution that needs it
+      // would fail for a reason that does not say so.
+      for (const name of config.importBeforeSeal) {
+        nextStep();
+        sendProgress({ phase: 'importing', module: name });
+        try {
+          pyodide.pyimport(name).destroy();
+        } catch (err) {
+          env.send({
+            type: 'error',
+            kind: 'import_before_seal',
+            message: `the community's import_before_seal module ${name} did not import: ${describe(err).slice(-1500)}`,
+          });
+          return;
         }
       }
 

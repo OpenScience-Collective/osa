@@ -371,7 +371,9 @@ async function checkEgressRedirect() {
 // server that sent the hashes, through the egress guard, checked against its
 // digest as it loads.
 async function checkNemarOverlay(nemar) {
-  const onProgress = (p) => log(`  nemar progress: ${p.phase}${p.package ? ' ' + p.package : ''}`);
+  // Timed, so a cold boot's log says where its time went (the import_before_seal
+  // steps included, which name a module rather than a package).
+  const onProgress = (p) => log(`  nemar progress: ${Math.round(performance.now())}ms ${p.phase}${p.package ? ' ' + p.package : ''}${p.module ? ' ' + p.module : ''}`);
   const runtimeFrom = (base) => new PyodideRuntime({
     runtime: nemar.runtime,
     lock: { packages: nemar.packages, baseUrl: new URL(base, location.href).href },
@@ -392,6 +394,31 @@ async function checkNemarOverlay(nemar) {
     const expected = `${nemar.packages['eegprep-lean'].version} ${nemar.packages.zarr.version} FetchTransport\n`;
     check('the overlay packages import, and the prelude made osa.fetch their transport',
       imported.stdout === expected, `status=${imported.status} ${imported.stdout}${imported.stderr.slice(-200)}`);
+
+    // SciPy under the seal (#495), in the browser the prompt's blocks run in:
+    // imported before the seal by NEMAR's import_before_seal, welch one channel
+    // at a time and butter + sosfiltfilt on the whole array, while executed code
+    // is still refused ctypes. test-data-lane.js checks the same under Bun.
+    const scipyStarted = performance.now();
+    const spectrum = await shipped.execute([
+      'import numpy as np',
+      'from scipy import signal',
+      'rate = 250.0',
+      't = np.arange(30000) / rate',
+      'eeg = np.random.default_rng(0).standard_normal((33, t.size)) + 3 * np.sin(2 * np.pi * 10 * t)',
+      'freqs = signal.welch(eeg[0], fs=rate, nperseg=int(2 * rate))[0]',
+      'power = np.array([signal.welch(ch, fs=rate, nperseg=int(2 * rate))[1] for ch in eeg])',
+      'sos = signal.butter(4, 30.0, btype="low", fs=rate, output="sos")',
+      'filtered = signal.sosfiltfilt(sos, eeg, axis=-1)',
+      'print(power.shape, float(freqs[np.argmax(power.mean(axis=0))]), filtered.shape)',
+    ].join('\n'));
+    check('SciPy imports under the seal, and welch per channel and sosfiltfilt run',
+      spectrum.status === 'ok' && spectrum.stdout === '(33, 251) 10.0 (33, 30000)\n',
+      `status=${spectrum.status} in ${Math.round(performance.now() - scipyStarted)}ms ${spectrum.stdout}${spectrum.stderr.slice(-200)}`);
+    const ctypesRefused = await shipped.execute('import ctypes');
+    check('and import ctypes is still refused to executed code',
+      ctypesRefused.status === 'denied' && ctypesRefused.stderr === 'denied_import: ctypes',
+      `status=${ctypesRefused.status} ${ctypesRefused.stderr.slice(-120)}`);
   } catch (err) {
     check("NEMAR's runtime boots, its overlay wheels fetched by URL and checked by digest", false, err.message);
   } finally {

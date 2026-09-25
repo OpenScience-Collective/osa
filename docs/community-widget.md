@@ -70,9 +70,13 @@ widget:
 
 A question that runs code should stay within what the community's browser runtime preloads
 ([`docs/community-browser-runtime.md`](community-browser-runtime.md)).
-NEMAR's preloads numpy, matplotlib, zarr and eegprep-lean, not scipy,
-so its power-spectrum question is answered with a numpy FFT.
-Work that needs scipy belongs in the notebook, which can `%pip install` it.
+NEMAR's preloads numpy, SciPy, matplotlib, zarr and eegprep-lean,
+so its power-spectrum question is answered with `scipy.signal.welch`,
+one channel at a time and on at most `2**28 // nperseg` samples,
+since past either it raises "array is too big" in 32-bit WebAssembly
+(see "SciPy in 32-bit WebAssembly" in `docs/community-browser-runtime.md`),
+and its ERP question low-passes with `scipy.signal.butter` and `sosfiltfilt`.
+A package outside that list belongs in the notebook, which can `%pip install` it.
 
 ## Color roles
 

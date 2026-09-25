@@ -111,6 +111,7 @@ export function buildWorkerConfig(runtime, lock = null) {
     allowInstall: runtime.allow_install || [],
     indexUrls: runtime.index_urls || [],
     fetchAllow: runtime.fetch_allow || [],
+    importBeforeSeal: runtime.import_before_seal || [],
     lockPackages: resolveLockPackages(lock),
     prelude: typeof runtime.prelude === 'string' ? runtime.prelude : '',
     python: {

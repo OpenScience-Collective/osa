@@ -26,6 +26,22 @@ the version being released and start a new `[Unreleased]` section above it.
 - **A figure's Download** (issue #492): each figure a run shows has a Download button under it,
   which saves the figure's PNG as, for example, `nm000132-run-3-figure-1.png`, named for the dataset, the run and the figure;
   it is keyboard reachable and labeled for screen readers.
+- **SciPy in NEMAR's chat runtime** (issue #495): NEMAR preloads SciPy,
+  and its prompt uses `scipy.signal.welch` for spectra and `butter` with `sosfiltfilt` for the ERP low-pass,
+  in place of the hand-written Welch's method and windowed-sinc filter models got wrong,
+  which also retires the note on keeping that filter's slice from the ERP entry under Fixed.
+  `welch` makes a view of every window at once, which 32-bit WebAssembly refuses at 2 GiB,
+  so the prompt calls it one channel at a time on at most `2**28 // nperseg` samples;
+  `execute_code`'s description, which the model reads on every call, now names SciPy and that rule.
+  The first load is about 35.4 MB over the network, from 19.1 MB.
+  The notebook starter's setup cell installs SciPy too.
+- **`runtime.python.import_before_seal`**: modules the browser runtime imports after its installs and before its namespace seal,
+  for a package that imports a sealed module as it loads.
+  SciPy imports `ctypes`, which the seal refuses, so under the seal it did not import at all;
+  NEMAR imports `scipy`, `scipy.stats` and `scipy.io` first, about 1.2 seconds of its boot.
+  Empty by default, so every other community boots as before.
+  The seal still refuses `import ctypes` to executed code, and SciPy's own modules keep the reference they imported,
+  which is consistent with the seal's purpose; see "Importing before the seal" in `docs/community-browser-runtime.md`.
 
 ### Changed
 
