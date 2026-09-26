@@ -28,6 +28,11 @@ cors_origins:
 - https://pynwb.readthedocs.io
 - https://nwb.org
 - https://www.nwb.org
+- https://hdmf.readthedocs.io
+- https://neuroconv.readthedocs.io
+- https://nwbinspector.readthedocs.io
+- https://nwb-overview.readthedocs.io
+- https://matnwb.readthedocs.io
 enable_page_context: true
 budget:
   daily_limit_usd: 5.0
