@@ -1,6 +1,8 @@
 # NWB Assistant configuration.
 # Documentation list generated from https://github.com/magland/nwb-doc-index (index.md):
 # each entry keeps the index's URL and description; source_url is the raw file on GitHub.
+# The last 14 entries are pages the index lacks (NWB Inspector usage, MatNWB, DANDI, NWB overview,
+# schema release notes), added after evaluation showed answers inventing details on those topics.
 # default_model is platform-funded Haiku for now; the plan is to switch to GPT-6 Luna once OSA
 # offers it through Bedrock (see issue #514).
 
@@ -709,3 +711,87 @@ documentation:
   category: pynwb-general
   type: markdown
   description: A tutorial on using PyNWB's scratch space for storing exploratory or non-standardized analysis results, demonstrating how to copy NWB files, add processed data to processing modules, and use scratch space for storing intermediate analyses that don't require formal extensions.
+- title: 'NWB Inspector: using the command line interface'
+  url: https://nwbinspector.readthedocs.io/en/dev/user_guide/using_the_command_line_interface.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/nwbinspector/refs/heads/dev/docs/user_guide/using_the_command_line_interface.rst
+  category: nwbinspector-user_guide
+  description: How to run nwbinspector from the command line on a single file or a directory (it recurses into subdirectories), the --config dandi option that elevates checks DANDI requires, and other useful CLI options such as selecting checks, importance thresholds, and report output.
+  type: markdown
+- title: 'NWB Inspector: using the library'
+  url: https://nwbinspector.readthedocs.io/en/dev/user_guide/using_the_library.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/nwbinspector/refs/heads/dev/docs/user_guide/using_the_library.rst
+  category: nwbinspector-user_guide
+  description: 'Using NWB Inspector from Python: the InspectorMessage data structure, inspect_nwbfile for a file on disk, inspect_nwbfile_object for an in-memory NWBFile, inspecting folders, and formatting reports.'
+  type: markdown
+- title: 'MatNWB: quickstart (read and write NWB files in MATLAB)'
+  url: https://matnwb.readthedocs.io/en/latest/pages/getting_started/quickstart.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/matnwb/refs/heads/main/docs/source/pages/getting_started/quickstart.rst
+  category: matnwb-getting_started
+  description: 'Step-by-step MATLAB tutorial for MatNWB: create an NwbFile with the required identifier, session_description and session_start_time, add a TimeSeries, export with nwbExport, and read it back with nwbRead.'
+  type: markdown
+- title: 'MatNWB: reading NWB files'
+  url: https://matnwb.readthedocs.io/en/latest/pages/concepts/file_read.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/matnwb/refs/heads/main/docs/source/pages/concepts/file_read.rst
+  category: matnwb-concepts
+  description: 'Reading NWB files in MATLAB with nwbRead: what it does (opens the file, generates classes, returns an NwbFile), lazy loading with DataStubs, and the lack of Zarr support.'
+  type: markdown
+- title: 'MatNWB: creating NWB files'
+  url: https://matnwb.readthedocs.io/en/latest/pages/concepts/file_create.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/matnwb/refs/heads/main/docs/source/pages/concepts/file_create.rst
+  category: matnwb-concepts
+  description: 'Concepts for writing NWB files in MATLAB: creating neurodata objects such as types.core.TimeSeries, adding them to an NwbFile, and exporting with nwbExport, which validates against the schema.'
+  type: markdown
+- title: 'DANDI: creating a Dandiset'
+  url: https://docs.dandiarchive.org/user-guide-sharing/creating-dandiset/
+  source_url: https://raw.githubusercontent.com/dandi/dandi-docs/refs/heads/master/docs/user-guide-sharing/creating-dandiset.md
+  category: dandi-sharing
+  description: 'Creating a new Dandiset on the DANDI Archive: getting an account and API key, choosing the production or sandbox server, and creating the Dandiset that data will be uploaded to.'
+  type: markdown
+- title: 'DANDI: Dandiset metadata'
+  url: https://docs.dandiarchive.org/user-guide-sharing/dandiset-metadata/
+  source_url: https://raw.githubusercontent.com/dandi/dandi-docs/refs/heads/master/docs/user-guide-sharing/dandiset-metadata.md
+  category: dandi-sharing
+  description: 'Dandiset-level metadata: what DANDI extracts automatically from NWB files, and the fields owners set in the metadata editor (title, description, contributors, funding, license) before publishing.'
+  type: markdown
+- title: 'DANDI: validating files'
+  url: https://docs.dandiarchive.org/user-guide-sharing/validating-files/
+  source_url: https://raw.githubusercontent.com/dandi/dandi-docs/refs/heads/master/docs/user-guide-sharing/validating-files.md
+  category: dandi-sharing
+  description: 'What DANDI requires of NWB files: NWB schema validation, required DANDI metadata (a Subject with subject_id, species, sex, and age in ISO 8601 or date_of_birth), NWB Inspector critical checks, and how to run dandi validate.'
+  type: markdown
+- title: 'DANDI: uploading data'
+  url: https://docs.dandiarchive.org/user-guide-sharing/uploading-data/
+  source_url: https://raw.githubusercontent.com/dandi/dandi-docs/refs/heads/master/docs/user-guide-sharing/uploading-data.md
+  category: dandi-sharing
+  description: 'Uploading NWB files to a Dandiset with the dandi CLI: installing the client, storing the API key, dandi download of the Dandiset, dandi organize, dandi validate, and dandi upload, plus file size and path limits.'
+  type: markdown
+- title: 'NWB overview: intro to NWB'
+  url: https://nwb-overview.readthedocs.io/en/latest/intro_to_nwb/1_intro_to_nwb.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/nwb-overview/refs/heads/main/docs/source/intro_to_nwb/1_intro_to_nwb.rst
+  category: nwb-overview
+  description: 'What NWB is and why to use it: a standardized, self-describing format for neurophysiology data and metadata that enables tool reuse, data reuse, and sharing on DANDI.'
+  type: markdown
+- title: 'NWB overview: anatomy of an NWB file'
+  url: https://nwb-overview.readthedocs.io/en/latest/intro_to_nwb/2_file_structure.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/nwb-overview/refs/heads/main/docs/source/intro_to_nwb/2_file_structure.rst
+  category: nwb-overview
+  description: 'How an NWB file is structured: an HDF5 file with groups for acquisition, processing modules, stimulus, intervals, general metadata and subject, and how neurodata types map onto that hierarchy.'
+  type: markdown
+- title: 'NWB overview: creating an extension (ndx-template)'
+  url: https://nwb-overview.readthedocs.io/en/latest/extensions_tutorial/2_create_extension_spec_walkthrough.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/nwb-overview/refs/heads/main/docs/source/extensions_tutorial/2_create_extension_spec_walkthrough.rst
+  category: nwb-overview-extensions
+  description: 'How to create an NWB extension: start from the ndx-template cookiecutter repository, the generated directory layout, and writing the extension''s YAML specification with create_extension_spec.py.'
+  type: markdown
+- title: 'NWB overview: publishing extensions'
+  url: https://nwb-overview.readthedocs.io/en/latest/extensions_tutorial/7_publishing_extensions.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/nwb-overview/refs/heads/main/docs/source/extensions_tutorial/7_publishing_extensions.rst
+  category: nwb-overview-extensions
+  description: 'Sharing an extension: releasing it on GitHub, publishing versioned releases on PyPI, and submitting it to the NDX Catalog.'
+  type: markdown
+- title: 'NWB schema: release notes'
+  url: https://nwb-schema.readthedocs.io/en/latest/format_release_notes.html
+  source_url: https://raw.githubusercontent.com/NeurodataWithoutBorders/nwb-schema/refs/heads/dev/docs/format/source/format_release_notes.rst
+  category: nwb-schema
+  description: 'Release notes for every version of the NWB format schema, newest first: major changes, minor changes and bug fixes in each release.'
+  type: markdown
