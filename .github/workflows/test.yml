@@ -136,6 +136,9 @@ jobs:
       - name: Run citation marker tests
         run: bun frontend/test-citation-markers.js
 
+      - name: Run markdown rendering tests
+        run: bun frontend/test-markdown.js
+
       - name: Run streaming tests
         run: bun frontend/test-streaming.js
 
