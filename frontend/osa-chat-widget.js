@@ -3531,6 +3531,9 @@
     let remaining = text;
 
     while (remaining.length > 0) {
+      // Inline code is matched here (not only in markdownToHtml's paragraph
+      // path) so list items, headings and table cells render it too.
+      const codeMatch = remaining.match(/`([^`]+)`/);
       const boldMatch = remaining.match(/\*\*(.+?)\*\*/);
       const italicMatch = remaining.match(/(?<!\*)\*([^*]+)\*(?!\*)/);
       const linkMatch = remaining.match(/\[([^\]]+)\]\(([^)]+)\)/);
@@ -3550,20 +3553,26 @@
         }
       }
 
+      const codeIndex = codeMatch ? codeMatch.index : -1;
       const boldIndex = boldMatch ? remaining.indexOf(boldMatch[0]) : -1;
       const italicIndex = italicMatch ? remaining.indexOf(italicMatch[0]) : -1;
       const linkIndex = linkMatch ? remaining.indexOf(linkMatch[0]) : -1;
       const urlIndex = urlMatch ? remaining.indexOf(urlMatch[0]) : -1;
       const citationIndex = citationMatch ? citationMatch.index : -1;
 
-      const indices = [boldIndex, italicIndex, linkIndex, urlIndex, citationIndex].filter(i => i !== -1);
+      const indices = [codeIndex, boldIndex, italicIndex, linkIndex, urlIndex, citationIndex].filter(i => i !== -1);
       if (indices.length === 0) {
         result += escapeHtml(remaining);
         break;
       }
       const minIndex = Math.min(...indices);
 
-      if (minIndex === boldIndex && boldMatch) {
+      if (minIndex === codeIndex && codeMatch) {
+        // Code content is escaped and never parsed for further markup.
+        if (codeIndex > 0) result += escapeHtml(remaining.substring(0, codeIndex));
+        result += '<code>' + escapeHtml(codeMatch[1]) + '</code>';
+        remaining = remaining.substring(codeIndex + codeMatch[0].length);
+      } else if (minIndex === boldIndex && boldMatch) {
         if (boldIndex > 0) result += escapeHtml(remaining.substring(0, boldIndex));
         result += '<strong>' + escapeHtml(boldMatch[1]) + '</strong>';
         remaining = remaining.substring(boldIndex + boldMatch[0].length);
@@ -3699,8 +3708,10 @@
         continue;
       }
 
-      // Handle bullet points (* item or - item)
-      const bulletMatch = line.match(/^[\*\-]\s+(.+)$/);
+      // Handle bullet points (* item or - item). Indented items (nested
+      // lists) are flattened into the current list rather than falling
+      // through to a paragraph that shows a literal "*".
+      const bulletMatch = line.match(/^\s*[\*\-]\s+(.+)$/);
       if (bulletMatch) {
         if (currentListType !== 'ul') flushList();
         currentListType = 'ul';
@@ -3709,7 +3720,7 @@
       }
 
       // Handle numbered lists
-      const numberedMatch = line.match(/^\d+\.\s+(.+)$/);
+      const numberedMatch = line.match(/^\s*\d+\.\s+(.+)$/);
       if (numberedMatch) {
         if (currentListType !== 'ol') flushList();
         currentListType = 'ol';
@@ -3720,18 +3731,7 @@
       flushList();
 
       if (line.trim()) {
-        // Handle inline code first
-        let processedLine = line.replace(/`([^`]+)`/g, function(match, code) {
-          return '<code>' + escapeHtml(code) + '</code>';
-        });
-        // Process inline markdown for non-code parts
-        processedLine = processedLine.replace(/(<code[^>]*>.*?<\/code>)|([^<]+)/g, function(match, codeTag, text) {
-          if (codeTag) return codeTag;
-          if (text) return renderInlineMarkdown(text, citationsByMarker);
-          return match;
-        });
-
-        result += '<p>' + processedLine + '</p>';
+        result += '<p>' + renderInlineMarkdown(line, citationsByMarker) + '</p>';
       }
     }
 
