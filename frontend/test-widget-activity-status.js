@@ -517,6 +517,135 @@ console.log('\nparallel tools: analyzed only once the last one has ended');
   await waitUntil(() => settled(loaded), 'the send settles');
 }
 
+console.log('\na label is written once per change: a tool_call\'s label is not written again as its tool starts');
+{
+  // Each write is a change a screen reader may speak, so the count matters, not only
+  // the label left at the end.
+  const cases = {
+    'two parallel calls, announced': {
+      events: [
+        { event: 'tool_call', name: 'nemar_search_datasets' },
+        { event: 'tool_call', name: 'nemar_list_recordings' },
+        { event: 'tool_start', name: 'nemar_search_datasets', input: {} },
+        { event: 'tool_start', name: 'nemar_list_recordings', input: {} },
+        { event: 'tool_end', name: 'nemar_search_datasets', output: '' },
+        { event: 'tool_end', name: 'nemar_list_recordings', output: '' },
+      ],
+      writes: ['Searching datasets...', 'Listing recordings...', 'Analyzing results...'],
+    },
+    'one call, announced': {
+      events: [
+        { event: 'tool_call', name: 'nemar_search_datasets' },
+        { event: 'tool_start', name: 'nemar_search_datasets', input: {} },
+        { event: 'tool_end', name: 'nemar_search_datasets', output: '' },
+      ],
+      writes: ['Searching datasets...', 'Analyzing results...'],
+    },
+    'code: writing it and running it read differently, so both are written': {
+      events: [
+        { event: 'tool_call', name: 'execute_code' },
+        { event: 'tool_start', name: 'execute_code', input: {} },
+        { event: 'tool_end', name: 'execute_code', output: '' },
+      ],
+      writes: ['Writing code...', 'Running code...', 'Analyzing results...'],
+    },
+    'code and a search in parallel: the code\'s start is written, and the search\'s is not': {
+      events: [
+        { event: 'tool_call', name: 'execute_code' },
+        { event: 'tool_call', name: 'nemar_search_datasets' },
+        { event: 'tool_start', name: 'execute_code', input: {} },
+        { event: 'tool_start', name: 'nemar_search_datasets', input: {} },
+        { event: 'tool_end', name: 'execute_code', output: '' },
+        { event: 'tool_end', name: 'nemar_search_datasets', output: '' },
+      ],
+      writes: ['Writing code...', 'Searching datasets...', 'Running code...', 'Analyzing results...'],
+    },
+    'an old server, with no tool_call: each tool_start labels': {
+      events: [
+        { event: 'tool_start', name: 'nemar_search_datasets', input: {} },
+        { event: 'tool_start', name: 'nemar_list_recordings', input: {} },
+        { event: 'tool_end', name: 'nemar_search_datasets', output: '' },
+        { event: 'tool_end', name: 'nemar_list_recordings', output: '' },
+      ],
+      writes: ['Searching datasets...', 'Listing recordings...', 'Analyzing results...'],
+    },
+    'a started tool after the label moved on to analyzing is named again': {
+      events: [
+        { event: 'tool_call', name: 'nemar_search_datasets' },
+        { event: 'tool_call', name: 'nemar_list_recordings' },
+        { event: 'tool_start', name: 'nemar_search_datasets', input: {} },
+        { event: 'tool_end', name: 'nemar_search_datasets', output: '' },
+        { event: 'tool_start', name: 'nemar_list_recordings', input: {} },
+        { event: 'tool_end', name: 'nemar_list_recordings', output: '' },
+      ],
+      writes: ['Searching datasets...', 'Listing recordings...', 'Analyzing results...', 'Listing recordings...', 'Analyzing results...'],
+    },
+    // The server reads calls from the model's chunks and skips one it cannot read, so
+    // a call can start unannounced. An announcement from an earlier batch is spent by
+    // that batch's own tool_start and does not stand in for it.
+    'a call announced in an earlier batch, then started again unannounced': {
+      events: [
+        { event: 'tool_call', name: 'nemar_search_datasets' },
+        { event: 'tool_start', name: 'nemar_search_datasets', input: {} },
+        { event: 'tool_end', name: 'nemar_search_datasets', output: '' },
+        { event: 'tool_call', name: 'nemar_list_recordings' },
+        { event: 'tool_start', name: 'nemar_search_datasets', input: {} },
+        { event: 'tool_end', name: 'nemar_search_datasets', output: '' },
+      ],
+      writes: ['Searching datasets...', 'Analyzing results...', 'Listing recordings...', 'Searching datasets...', 'Analyzing results...'],
+    },
+  };
+  for (const [name, { events, writes }] of Object.entries(cases)) {
+    const loaded = loadWidget();
+    const { container, window } = loaded;
+    await sleep(20);
+    const stream = loaded.queue();
+    send(loaded);
+    await waitUntil(() => view(container).loading !== null, `${name}: the loading bubble`);
+    await handled(loaded, stream);
+    const label = container.querySelector('.osa-loading-label');
+    const seen = [];
+    const observer = new window.MutationObserver((records) => {
+      for (const record of records) if (record.addedNodes.length) seen.push(label.textContent);
+    });
+    observer.observe(label, { childList: true, characterData: true, subtree: true });
+    for (const event of events) stream.send(event);
+    await handled(loaded, stream);
+    await new Promise((resolve) => setTimeout(resolve, 0)); // the observer's records
+    observer.disconnect();
+    assert(container.querySelector('.osa-loading-label') === label, `${name}: the label was changed in place`);
+    assertEqual(seen, writes, `${name}: the label was written ${writes.length} times`);
+    stream.send({ event: 'content', content: ANSWER });
+    stream.send({ event: 'done', content: ANSWER, citations: [] });
+    stream.close();
+    await waitUntil(() => settled(loaded), `${name}: the send settles`);
+  }
+}
+
+console.log('\ntext between a call and its start ends the call\'s label, so the start names it again');
+{
+  const loaded = loadWidget();
+  const { container } = loaded;
+  await sleep(20);
+  const stream = loaded.queue();
+  send(loaded);
+  stream.send({ event: 'content', content: 'Let me search for that.' });
+  await waitUntil(() => lastReplyText(container).includes('search for that'), 'the first text');
+  stream.send({ event: 'tool_call', name: 'nemar_search_datasets' });
+  await handled(loaded, stream);
+  assertEqual(view(container).line, 'Searching datasets...', 'the call is a line under the text');
+  stream.send({ event: 'content', content: ' One moment.' });
+  await waitUntil(() => lastReplyText(container).includes('One moment.'), 'the text after the call');
+  assertEqual(view(container).line, null, 'text again: the line is gone');
+  stream.send({ event: 'tool_start', name: 'nemar_search_datasets', input: {} });
+  await handled(loaded, stream);
+  assertEqual(view(container).line, 'Searching datasets...', 'and as the search starts, it is named again');
+  stream.send({ event: 'tool_end', name: 'nemar_search_datasets', output: '' });
+  stream.send({ event: 'done', content: 'Let me search for that. One moment.', citations: [] });
+  stream.close();
+  await waitUntil(() => settled(loaded), 'the send settles');
+}
+
 console.log('\na tool whose tool_end never came does not keep the next batch from reading as analyzed');
 {
   const loaded = loadWidget();

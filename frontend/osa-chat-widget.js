@@ -7544,6 +7544,12 @@
     let receivedDoneEvent = false;
     let receivedFirstContent = false;
     let toolRequest = null;
+    // The calls this run's model has announced with tool_call (#538) and that have not
+    // started yet, by name; and whether the label on screen is the current batch of
+    // calls' own (set as they were announced, and not yet replaced by
+    // "Analyzing results..." or by text).
+    const announced = new Map();
+    let labelFromCalls = false;
 
     // Create placeholder assistant message (not rendered yet - loading dots stay
     // visible), or continue the one an earlier run of this reply wrote into.
@@ -7631,6 +7637,7 @@
             // Text again: whatever the reply was doing is over. The reveal's next
             // redraw takes the status away with the text, so nothing flickers first.
             clearActivity();
+            labelFromCalls = false;
 
             // Accumulate content; the reveal decides when the reader sees it
             accumulatedContent += event.content;
@@ -7652,18 +7659,31 @@
             // tool_start whose tool_end never came does not keep this batch from
             // reading as analyzed.
             toolsRunning = 0;
+            announced.set(event.name, (announced.get(event.name) || 0) + 1);
             setActivity(container, classifyToolActivity(event.name, 'writing', CONFIG.communityId), messageIndex);
+            labelFromCalls = true;
           } else if (event.event === 'tool_start') {
             // Log tool execution for debugging
             console.log('[OSA] Tool started:', event.name, event.input);
             toolsRunning += 1;
-            setActivity(container, classifyToolActivity(event.name, 'running', CONFIG.communityId), messageIndex);
+            const calls = announced.get(event.name) || 0;
+            if (calls > 0) announced.set(event.name, calls - 1);
+            const running = classifyToolActivity(event.name, 'running', CONFIG.communityId);
+            // A call that was announced while the label is still its batch's is not
+            // labeled again as it starts, unless running reads differently (code):
+            // parallel calls would otherwise flip the label back through each of them,
+            // and a screen reader would hear every flip. An old server sends no
+            // tool_call, so there each tool_start labels as before.
+            const saidByCall = calls > 0 && labelFromCalls
+              && classifyToolActivity(event.name, 'writing', CONFIG.communityId).label === running.label;
+            if (!saidByCall) setActivity(container, running, messageIndex);
           } else if (event.event === 'tool_end') {
             // Log tool completion
             console.log('[OSA] Tool completed:', event.name);
             toolsRunning = Math.max(0, toolsRunning - 1);
             if (toolsRunning === 0) {
               setActivity(container, { kind: 'analyze', label: ACTIVITY_ANALYZING }, messageIndex);
+              labelFromCalls = false;
             }
           } else if (event.event === 'citation') {
             // A source was cited for the first time. The backend announces
