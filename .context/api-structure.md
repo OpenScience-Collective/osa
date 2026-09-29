@@ -405,14 +405,15 @@ The section above predates the move to the Claude Platform on AWS (ADR 0004) and
    Bedrock either: the platform does. When the model came from a community's `default_model`
    rather than the request, and the caller cannot have it, the request runs the deployment's Claude
    default instead (`_claude_fallback`) and logs an error; naming the model gets the 403 or 400.
-4. For OpenRouter, `create_openrouter_llm` (`src/core/services/litellm_llm.py`) builds a
-   `TaggedCitationChatLiteLLM` (`litellm_chat.py`): the same tagged citations as Bedrock, cache
-   breakpoints on the system prompt and the last message, and the raw usage's cache and reasoning
-   counts on `usage_metadata`. Each call carries its own key (LiteLLM's module-level keys are shared
-   by every request in the process).
-5. `create_bedrock_llm` (`src/core/services/bedrock_llm.py`) builds the chat model. Tools return
+4. On Bedrock, `create_bedrock_llm` (`src/core/services/bedrock_llm.py`) builds the chat model. Tools return
    `search_result` blocks as on the Anthropic path; the model layer turns them into `[src:N]` tags
    and the model's tags back into citations (`src/core/services/tagged_citations.py`).
+5. On OpenRouter (a caller's or a community's own key), `create_openrouter_llm`
+   (`src/core/services/litellm_llm.py`) builds a `TaggedCitationChatLiteLLM` (`litellm_chat.py`):
+   the same tagged citations as Bedrock, cache breakpoints on the system prompt and the last
+   message (Anthropic slugs only), and the provider's own cache and reasoning counts on
+   `usage_metadata`. Each call carries its own key and writes none to LiteLLM's module, which every
+   request in the process shares.
 
 Per-model prompt notes come from `BedrockModel.prompt_addendum` and a community's
 `model_instructions:` config section.

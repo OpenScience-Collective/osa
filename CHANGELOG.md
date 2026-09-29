@@ -33,8 +33,9 @@ the version being released and start a new `[Unreleased]` section above it.
   Retrieved text cannot write a tag: `[src:N]` in a document is shown to the model as `(src:N)`, so a forum post cannot pass itself off as another source.
 - **Numbered citations on the OpenRouter path** (issue #526): a request funded by an OpenRouter key now gets the same numbered `[n]` markers and source list as Claude, through the same tagged-source layer, instead of the prompt-only "end the sentence with a markdown link" rule.
   It applies to every OpenRouter model, Claude slugs included.
-  Cache reads and writes and reasoning tokens in OpenRouter's usage are now recorded, so cached requests are priced at the cache rate.
-  Not yet verified against the live service (no OpenRouter key on the development machine); `tests/test_integration/test_openrouter_citations.py` is written for it.
+  Cache reads and writes and reasoning tokens in OpenRouter's usage are now recorded, so cached requests are priced at the cache rate; the token counts are the provider's own, where LiteLLM alone reported a local estimate for the usage chunk OpenRouter documents.
+  Only Anthropic's models are sent cache markers.
+  Not yet verified against the live service (no OpenRouter key on the development machine); `tests/test_integration/test_openrouter_citations.py` is written for it and should be run before relying on the cost figures.
 - **Prompt caching for GPT-6 Luna** needs no request changes (the service caches a repeated prompt prefix on its own); its cache reads and writes are recorded and priced like Claude's.
   gpt-oss-120b and Qwen3 Next do no caching.
 - **`model_instructions`** in a community's `config.yaml`: extra system-prompt text for particular models, added after the platform's own note for that model.

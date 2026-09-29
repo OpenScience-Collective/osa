@@ -200,7 +200,11 @@ class TestSystemPromptTemplate:
 
 
 class TestCitationFallbackPrompt:
-    """The prompt rule that fills in for native citations on the OpenRouter/BYOK path."""
+    """The prompt rule that fills in when tools return plain strings (``citations=False``).
+
+    No provider path the API serves is left on it (Anthropic cites natively, Bedrock and
+    OpenRouter through tagged sources); it applies to assistants built directly.
+    """
 
     @pytest.fixture
     def config(self) -> CommunityConfig:

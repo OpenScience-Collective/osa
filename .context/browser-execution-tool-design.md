@@ -502,7 +502,7 @@ LangGraph's `ToolNode` built directly) with a text placeholder before `ChatSessi
 anything. `OSA_MCP_IMAGES_DISABLED` is the incident-control kill switch, checked fresh on every call rather
 than baked in at discovery time, so it takes effect without waiting out the tool-discovery cache or a restart.
 
-**The breakpoint should move past the system block.** `CachingLLMWrapper` marks system messages only. A
+**The breakpoint should move past the system block.** (Written against `CachingLLMWrapper`, which marked system messages only; `TaggedCitationChatLiteLLM` has since replaced it and also marks the last message, and `CachingChatAnthropic` is the Claude path's.) A
 request may carry up to FOUR cache breakpoints, so the pattern this design wants is one covering tools and
 system, and a second moving forward over the stable conversation prefix, leaving only the recent tail
 uncached.
@@ -534,7 +534,7 @@ resets every few turns and the feature looks expensive for no visible reason.
 **This work belongs with the Claude Platform on AWS migration (#360), not beside it.** That epic retires the
 OpenRouter platform route and serves communities directly, which removes the open question of whether
 `cache_control` survives LiteLLM and OpenRouter; its phase 1 already owns "prompt caching that survives tool
-binding", which is exactly the `CachingLLMWrapper` and `bind_tools` nesting problem. Building conversation
+binding", which was exactly the `CachingLLMWrapper` and `bind_tools` nesting problem (the wrapper is gone; see `litellm_chat.py`). Building conversation
 caching against the path being retired would be building it twice.
 
 Three consequences of that epic for this design:

@@ -729,8 +729,8 @@ def create_community_assistant(
         config: Community configuration from YAML.
         citations: Whether tools return citable search_result blocks (see
             CommunityAssistant's `citations` flag). The API layer passes True on
-            the Anthropic path (native citations) and the Bedrock path (tagged
-            citations, see `tagged_citations`).
+            every path: native citations on Anthropic, tagged citations (see
+            `tagged_citations`) on Bedrock and OpenRouter.
         allow_mcp_images: Whether the model in use accepts the native Anthropic
             image content block (see CommunityAssistant's `allow_mcp_images`
             flag). The API layer passes True only on the Anthropic path.
@@ -739,7 +739,7 @@ def create_community_assistant(
             - page_context: PageContext for widget embedding
             - additional_tools: Extra tools to include
             - additional_instructions: Extra text for system prompt
-            - tagged_citations: Ask the model to cite with `[src:N]` tags (Bedrock)
+            - tagged_citations: Ask the model to cite with `[src:N]` tags (Bedrock, OpenRouter)
             - model_id: The offered model id this request runs, for per-model notes
 
     Returns:

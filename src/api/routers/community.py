@@ -237,11 +237,12 @@ class ToolCallInfo(BaseModel):
 class CitationInfo(BaseModel):
     """One inline citation: the [n] marker in the answer, and its source.
 
-    Only ever populated on the Anthropic path when the model actually cited
-    something (see src/tools/citations.py and src/agents/content.py's
-    CitationTracker). Empty on the OpenRouter path and whenever the model
-    cited nothing, so the field is always present on the response and never
-    lies about what was cited.
+    Populated when the model actually cited something: natively on the Anthropic
+    path, and through tagged sources on the Bedrock and OpenRouter paths (see
+    src/tools/citations.py, src/core/services/tagged_citations.py and
+    src/agents/content.py's CitationTracker). Empty whenever the model cited
+    nothing, so the field is always present on the response and never lies about
+    what was cited.
     """
 
     marker: int = Field(..., description="The [n] used inline in the answer text")
