@@ -11,6 +11,7 @@ Two levels, as in ``test_bedrock_llm.py``:
   which need a key.)
 """
 
+import asyncio
 import json
 import threading
 from collections.abc import Iterator
@@ -468,6 +469,34 @@ class TestWhatIsSent:
         assert openrouter.requests[0]["tools"][0]["function"]["name"] == "search_docs"
         assert reply.tool_calls[0]["name"] == "search_docs"
         assert reply.tool_calls[0]["args"] == {"query": "sensory"}
+
+    async def test_concurrent_requests_each_send_their_own_key(
+        self, openrouter: FakeOpenRouter
+    ) -> None:
+        """LiteLLM keeps keys on a module every instance shares; a request must not
+        go out under the key a request running beside it just wrote there."""
+        count = 40
+        openrouter.reply(*[_stream_of("ok") for _ in range(count)])
+        keys = ["sk-or-first", "sk-or-second"]
+        models = {
+            key: create_openrouter_llm(model="openai/gpt-oss-120b", api_key=key) for key in keys
+        }
+
+        async def ask(i: int) -> None:
+            key = keys[i % 2]
+            await models[key].ainvoke([HumanMessage(content=f"{i}:{key}")])
+
+        await asyncio.gather(*[ask(i) for i in range(count)])
+
+        wrong = []
+        for request, headers in zip(openrouter.requests, openrouter.headers, strict=True):
+            content = request["messages"][0]["content"]
+            asked_under = (content if isinstance(content, str) else content[0]["text"]).split(":")[
+                1
+            ]
+            if headers["authorization"] != f"Bearer {asked_under}":
+                wrong.append((asked_under, headers["authorization"]))
+        assert not wrong, f"{len(wrong)} of {count} requests went out under another request's key"
 
 
 class TestTagsBecomeCitations:

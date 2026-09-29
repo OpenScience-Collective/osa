@@ -283,6 +283,22 @@ class TaggedCitationChatLiteLLM(ChatLiteLLM):
 
     prompt_caching: bool = True
 
+    @property
+    def _client_params(self) -> dict[str, Any]:
+        """Request parameters, with this instance's key on every call.
+
+        ``ChatLiteLLM`` keeps its credentials on the ``litellm`` module (its
+        ``client``), which every instance in the process shares, and never sends
+        them with the call. Requests running at the same time under different keys
+        (a caller's own key next to the platform's) then send whichever key was
+        written last: 20 of 40 interleaved requests went out under the other key
+        when measured. A key in the call arguments takes precedence over the module's.
+        """
+        params = super()._client_params
+        if self.api_key:
+            params["api_key"] = self.api_key
+        return params
+
     def _create_message_dicts(
         self, messages: list[BaseMessage], stop: list[str] | None
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
