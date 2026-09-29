@@ -185,10 +185,34 @@ def _search_result_text(block: dict[str, Any]) -> str:
     return "\n".join(part["text"] for part in parts if isinstance(part, dict) and part.get("text"))
 
 
+#: A tag as a document might spell it: ASCII or fullwidth brackets and colon.
+_TAG_LOOKALIKE = re.compile(r"[\[［](\s*src\s*[:：][^\]\[］\n]{0,40})[\]］]", re.IGNORECASE)
+_TAG_OPENING = re.compile(r"[\[［](?=\s*src\s*[:：])", re.IGNORECASE)
+
+
+def _defang(text: str) -> str:
+    """Make text that reads like a citation tag stop reading like one.
+
+    A retrieved document is untrusted text, and the tags that number the sources
+    are plain text too: a forum post that contains ``[src:1] HED specification``
+    on a line of its own, with a ``Source:`` line under it, is indistinguishable
+    from the header this module writes, and the model may cite the post under the
+    specification's tag. Native ``search_result`` blocks cannot be forged this way
+    because their boundaries are structural. Here the boundary is kept by never
+    letting a document write a tag: ``[src:1]`` in a document becomes ``(src:1)``.
+    """
+    return _TAG_OPENING.sub("(", _TAG_LOOKALIKE.sub(r"(\1)", text))
+
+
+def _one_line(text: str) -> str:
+    """A heading field: defanged, on one line."""
+    return " ".join(_defang(text).split())
+
+
 def _render_tagged(entry: TaggedSource, text: str) -> str:
-    heading = f"[src:{entry.tag}] {entry.title}".rstrip()
+    heading = f"[src:{entry.tag}] {_one_line(entry.title)}".rstrip()
     reminder = f"(End of [src:{entry.tag}]. Cite a claim drawn from it by writing [src:{entry.tag}] after the sentence.)"
-    return f"{heading}\nSource: {entry.source}\n{text}\n\n{reminder}"
+    return f"{heading}\nSource: {_one_line(entry.source)}\n{_defang(text)}\n\n{reminder}"
 
 
 def _restore_tags(block: dict[str, Any], registry: SourceRegistry) -> dict[str, Any]:
