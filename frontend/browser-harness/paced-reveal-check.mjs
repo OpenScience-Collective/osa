@@ -6,7 +6,7 @@
  * this runs it in headless Chrome, where timers, layout and `matchMedia` are the
  * browser's own. It stands up its own server, so it needs no backend and no network:
  * the widget, a community config, and a `/chat` stream shaped like a reasoning model's.
- * The stream is silent for a while, then delivers a reply of about 1,800 characters,
+ * The stream is silent for a while, then delivers a reply of about 900 characters,
  * with a fenced code block in the middle, in well under a second: the shape of GPT-6
  * Luna at maximum effort, measured on the dev API (25 s of nothing, then over 1,000
  * characters a second).
@@ -285,7 +285,7 @@ async function check(screenshotDir) {
     report(paced.assistantBefore === 1, `control: a fresh conversation, so the reply measured is this one (${paced.assistantBefore} assistant message before it)`, paced.assistantBefore);
     report(p.firstText >= p.firstArrival - 5, `control: nothing was shown before the stream's first text (${Math.round(p.firstText)} against ${Math.round(p.firstArrival)} ms)`);
     report(p.full >= REPLY.length * 0.9, `the whole reply is on the page at the end (${p.full} characters shown)`);
-    report(p.firstText - p.firstArrival < 100, `the first words are drawn the moment the first chunk arrives (${Math.round(p.firstText - p.firstArrival)} ms after)`);
+    report(p.firstText - p.firstArrival < 50, `the first words are drawn the moment the first chunk arrives (${Math.round(p.firstText - p.firstArrival)} ms after; a tick would be 80 or more)`);
     report(p.p100 - p.firstText >= 150, `a burst is spread over a window, not one flash (${Math.round(p.p100 - p.firstText)} ms)`);
     report(p.p100 - p.lastArrival <= 650, `the whole reply is on screen within about half a second of the last chunk (${Math.round(p.p100 - p.lastArrival)} ms)`);
     report(p.p100 - p.firstText <= 700, `so the reveal adds little (${Math.round(p.p100 - p.firstText)} ms from the first words to the last)`);

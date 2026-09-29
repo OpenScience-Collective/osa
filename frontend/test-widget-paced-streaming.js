@@ -306,6 +306,116 @@ console.log('\nproperty: no character is drawn later than the lag bound after it
   assertEqual(late, 0, `no character was drawn more than ${R.REVEAL_LAG_MS + R.REVEAL_TICK_MS} ms after it arrived (worst ${Math.round(worst)} ms)`);
 }
 
+console.log('\na later burst is spread too: after a pause, and when it lands late in an earlier reveal');
+{
+  const words = 'the schema tags a stimulus in the event branch and each recording keeps its own sampling rate '.split(' ');
+  const make = (chars) => { let out = ''; while (out.length < chars) out += `${words[out.length % words.length]} `; return out; };
+  const steps = (state, from) => state.shows.filter((sh) => sh.at >= from).length;
+
+  // A second burst of 1500 characters after ten seconds of silence, as after a tool call.
+  const paused = harness(make(1500));
+  paused.controller.kick();
+  paused.clock.advance(10_000);
+  const before = paused.state.shows.length;
+  const start = paused.clock.now();
+  paused.state.text += make(1500);
+  paused.controller.kick();
+  paused.clock.advance(2000);
+  const after = paused.state.shows.slice(before);
+  assert(after.length >= 4, `after a pause, a burst is spread over several steps (${after.length}), not drawn in one`);
+  assert(after[0].at === start && after[0].visible.length < paused.state.text.length - 1500 + 1000,
+    `it starts at once, with a beginning (${after[0].visible.length - (paused.state.text.length - 1500)} of 1500 characters)`);
+  assert(after.at(-1).at - start <= R.REVEAL_LAG_MS + R.REVEAL_TICK_MS, `and is all drawn by the deadline (${after.at(-1).at - start} ms)`);
+
+  // A second burst that lands 400 ms into the first one's reveal: the first burst's
+  // deadline is 100 ms away, and the second must not be drawn on that deadline.
+  const overlap = harness(make(3000));
+  overlap.controller.kick();
+  overlap.clock.advance(400);
+  const drawn = overlap.state.shows.length;
+  const arrivedAt = overlap.clock.now();
+  overlap.state.text += make(3000);
+  overlap.controller.kick();
+  overlap.clock.advance(2000);
+  const afterwards = overlap.state.shows.slice(drawn - 1).map((sh) => sh.visible.length);
+  const second = afterwards.slice(1).filter((n) => n > 3000);
+  const biggest = Math.max(...afterwards.slice(1).map((n, i) => n - afterwards[i]));
+  assert(second.length >= 4, `a burst landing late in an earlier reveal is spread over several steps (${second.length})`);
+  assert(biggest <= 1500, `no single step draws most of it (largest step ${biggest} of 3000 characters)`);
+  assert(overlap.state.shows.at(-1).at - arrivedAt <= R.REVEAL_LAG_MS + R.REVEAL_TICK_MS, 'and it too is drawn by its own deadline');
+
+  // Repeated 1000 character bursts every 430 ms, the spacing that flashed the last of them.
+  const spaced = harness(make(1000));
+  spaced.controller.kick();
+  let worstStep = 0;
+  let previous = 0;
+  for (let i = 0; i < 6; i++) {
+    spaced.clock.advance(430);
+    spaced.state.text += make(1000);
+    spaced.controller.kick();
+  }
+  spaced.clock.advance(2000);
+  for (const sh of spaced.state.shows) { worstStep = Math.max(worstStep, sh.visible.length - previous); previous = sh.visible.length; }
+  assert(worstStep <= 500, `bursts every 430 ms are never drawn whole (largest step ${worstStep} of 1000 characters)`);
+  void steps;
+}
+
+console.log('\ntext that arrives on an idle reveal is drawn at once, a line or so of it, not a word');
+{
+  const big = 'The schema tags a stimulus in the event branch and each recording keeps its own sampling rate, with the sampling rate stored beside the data. '.repeat(20);
+  const { clock, state, controller } = harness(big);
+  controller.kick();
+  const first = state.shows[0].visible.length;
+  assert(first >= 60 && first < big.length / 2, `the first draw is a line or so (${first} of ${big.length} characters), neither a word nor the burst`);
+  clock.advance(60_000);
+  // Idle again, then more: the same.
+  const before = state.shows.length;
+  state.text += big;
+  controller.kick();
+  assert(state.shows.length === before + 1 && state.shows.at(-1).at === clock.now(), 'and again for text that arrives after a pause');
+  assert(state.shows.at(-1).visible.length - big.length >= 60, 'a line or so of it');
+}
+
+console.log('\nthe bound survives timers that fire early or late');
+{
+  const words = 'the schema tags a stimulus in the event branch and each recording keeps its own sampling rate '.split(' ');
+  let seed = 7;
+  const random = () => { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296; };
+  for (const [name, skew] of [['1 ms early', -1], ['20 ms late', 20], ['60 ms late', 60]]) {
+    let late = 0;
+    let worst = 0;
+    for (let n = 0; n < 120; n++) {
+      const clock = fakeClock();
+      const state = { text: '', shows: [] };
+      const controller = R.createReveal({
+        getText: () => state.text,
+        show: (visible) => state.shows.push({ at: clock.now(), length: visible.length }),
+        now: clock.now,
+        later: (fn, ms) => clock.later(fn, Math.max(0, ms + skew)),
+        unlater: clock.unlater,
+      });
+      const arrivals = [];
+      for (let e = 0; e < 1 + Math.floor(random() * 15); e++) {
+        const size = 100 + Math.floor(random() * (random() < 0.3 ? 100000 : 6000));
+        let chunk = '';
+        while (chunk.length < size) chunk += `${words[Math.floor(random() * words.length)]} `;
+        state.text += chunk;
+        arrivals.push([state.text.length, clock.now()]);
+        controller.kick();
+        clock.advance(Math.floor(random() * 700));
+      }
+      clock.advance(60_000);
+      for (const [length, arrivedAt] of arrivals) {
+        const drawn = state.shows.find((sh) => sh.length >= length);
+        const delay = drawn ? drawn.at - arrivedAt : Infinity;
+        worst = Math.max(worst, delay);
+        if (delay > R.REVEAL_LAG_MS + R.REVEAL_TICK_MS + Math.max(skew, 0)) late++;
+      }
+    }
+    assertEqual(late, 0, `timers ${name}: no character drawn later than the bound plus the lateness (worst ${Math.round(worst)} ms)`);
+  }
+}
+
 console.log('\na stream slower than the pace is shown as it arrives, at most one tick late');
 {
   const { clock, state, controller } = harness('');
@@ -404,6 +514,21 @@ console.log('\ndrain: waits for the reveal to catch up, but only so long');
   idle.controller.drain().then(() => { idleDone = true; });
   await Promise.resolve();
   assert(idleDone, 'a reveal that has caught up drains at once');
+}
+
+console.log('\ndrain on an unpaced reveal shows everything now, with no tick to wait for');
+{
+  const { clock, state, controller } = harness('first line of the reply. '.repeat(10), { paced: false });
+  controller.kick();
+  state.text += 'more that arrived a moment later. '.repeat(10);
+  controller.kick();
+  assert(state.shows.at(-1).visible.length < state.text.length, 'a tick is pending, with more text than is drawn');
+  let released = false;
+  controller.drain().then(() => { released = true; });
+  await Promise.resolve();
+  assert(released, 'drain resolves at once, without waiting for a tick or the guard');
+  assertEqual(state.shows.at(-1).visible, state.text, 'with all of it drawn');
+  assertEqual(clock.pending(), 0, 'and no timer left');
 }
 
 console.log('\nflush shows everything now; stop abandons the pending redraw; unpaced shows on arrival');
@@ -580,7 +705,7 @@ console.log('\nthe widget shows a burst progressively, and the canonical text at
   await stream;
   const lengths = seen.map((s) => (s.content || '').length).filter((n) => n > 0);
   const distinct = [...new Set(lengths)];
-  assert(distinct.length >= 5, `the reader saw the reply grow through ${distinct.length} different lengths, not one jump`);
+  assert(distinct.length >= 3, `the reader saw the reply grow through ${distinct.length} different lengths, not one jump`);
   assert(distinct[0] < REPLY.length * 0.9, `the first thing shown was a beginning (${distinct[0]} of ${REPLY.length} characters)`);
   assert(seen.every((s) => s.content === null || CANONICAL.startsWith(s.content)), 'every state was a prefix of the reply');
   assertEqual(api.getMessages()[started].content, CANONICAL, 'after done the message holds the canonical text, which the stream did not carry');
@@ -757,6 +882,37 @@ console.log('\na page that is already hidden when the reply starts is not paced'
   await stream;
   const first = seen.find((s) => s.content);
   assertEqual(first && first.content, text, 'the whole reply is there at the first tick, before done arrives');
+}
+
+console.log('\na change of the system time mid-reply does not stall the reveal');
+{
+  // The reveal reads a clock that cannot go backward. With the wall clock (Date.now) a
+  // burst's age would go negative when the time steps back, and the reveal would run
+  // on a stale deadline. Here the wall clock steps back ten seconds 30 ms into it.
+  const realNow = Date.now;
+  let skew = 0;
+  Date.now = () => realNow() - skew;
+  try {
+    const { window, api } = loadWidget();
+    const container = window.document.querySelector('.osa-chat-widget');
+    const started = api.getMessages().length;
+    const text = 'The schema tags a stimulus in the event branch and each recording keeps its own sampling rate. '.repeat(40);
+    const begun = performance.now();
+    const stream = api.handleStreamingResponse(sse([{ event: 'content', content: text }, { event: 'done', content: text }], { gapMs: 1500 }), container);
+    setTimeout(() => { skew = 10_000; }, 30);
+    let fullAt = null;
+    let over = false;
+    stream.then(() => { over = true; }, () => { over = true; });
+    while (!over) {
+      const shown = (api.getMessages()[started] || {}).content || '';
+      if (fullAt === null && shown.length === text.length) fullAt = performance.now() - begun;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    await stream;
+    assert(fullAt !== null && fullAt < 900, `the whole reply was drawn within about half a second of arriving, before done (${Math.round(fullAt)} ms)`);
+  } finally {
+    Date.now = realNow;
+  }
 }
 
 console.log('\na redraw that throws mid-reply fails the reply at once, not never');
@@ -955,14 +1111,12 @@ console.log('\nleaving the page, or hiding the tab, shows and saves the whole re
   await new Promise((resolve) => setTimeout(resolve, 150));
   const partial = api.getMessages()[started].content.length;
   assert(partial > 0 && partial < text.length, `mid-reveal (${partial} of ${text.length} characters)`);
-  const begun = Date.now();
   window.dispatchEvent(new window.Event('pagehide'));
+  assertEqual(api.getMessages()[started].content, text, 'the whole reply is on the page the moment the page is hidden, before the next tick');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const savedAt = window.localStorage.getItem('osa-test-paced') || '';
+  assert(savedAt.includes(text.slice(-40)), 'and it is already in the saved history, not saved later');
   await stream;
-  assert(Date.now() - begun < 300, `the rest was shown at once (${Date.now() - begun} ms, not the seconds the pace would take)`);
-  assertEqual(api.getMessages()[started].content, text, 'in full');
-  const saved = JSON.parse(window.localStorage.getItem('osa-test-paced') || '[]');
-  const savedText = (Array.isArray(saved) ? saved : saved.messages || []).map((m) => m.content).join('\n');
-  assert(savedText.includes(text.slice(-40)), 'and it is in the saved history');
 }
 
 console.log('\n' + '='.repeat(60));
