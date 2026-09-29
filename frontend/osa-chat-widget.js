@@ -6973,19 +6973,22 @@
     return earlier && text ? `${earlier}\n\n${text}` : earlier || text;
   }
 
-  // Paced reveal of streamed text (#531). The stream delivers text as the model emits
+  // Paced reveal of streamed text (#531, #538). The stream delivers text as the model emits
   // it, and a reasoning model can think for tens of seconds and then emit its whole
-  // answer in about a second: the reader sees nothing, then everything. So the text a
-  // stream has delivered is shown at a reading pace: each tick shows the larger of the
-  // floor pace and the backlog divided by REVEAL_CATCHUP_MS, so a backlog decays with
-  // that time constant (a 1,500 character burst takes about 3 seconds, 6,000 about 5)
-  // and the reader is never far behind. A model that streams slower than the pace is
-  // shown as it arrives, at most one tick late. Fenced code is the exception: a code
-  // block is shown whole as soon as the reveal reaches it, never typed out.
-  const REVEAL_MIN_CPS = 300;       // the floor pace, in characters per second
-  const REVEAL_CATCHUP_MS = 1500;   // the backlog's decay time constant
+  // answer in under a second: the reader sees nothing, then everything at once. So a
+  // burst is spread over a short window, and no more: the reveal adds a bounded delay
+  // and never makes the reader wait on it. The first text is drawn the moment it
+  // arrives, and every later character is drawn no later than REVEAL_LAG_MS after it
+  // arrived (plus a tick): each tick shows the backlog divided by the time left before
+  // the oldest undrawn character's deadline, so a burst is worked off by that deadline
+  // and a reply's whole delay is bounded by it. A backlog that small is shown at once
+  // (REVEAL_MIN_CPS a second), so a model that streams slowly is drawn as it arrives,
+  // at most one tick late. Fenced code is the exception: a code block is shown whole
+  // as soon as the reveal reaches it, never typed out.
+  const REVEAL_LAG_MS = 500;        // no character is drawn later than this after it arrived
+  const REVEAL_MIN_CPS = 1000;      // a backlog this small (per second) is drawn at once
   const REVEAL_TICK_MS = 80;        // how often the message is redrawn
-  const REVEAL_DRAIN_MAX_MS = 4000; // the most a finished reply waits for the pace to catch up
+  const REVEAL_DRAIN_MAX_MS = 700;  // the most a finished reply waits for the reveal to catch up
   const REVEAL_WORD_REACH = 24;     // a reveal ends on a word boundary within this many characters
   const REVEAL_MARKER_REACH = 6;    // ...and never inside a [n] citation marker this long
   // The message a reveal is drawing, or -1. While it is, its source list holds only the
@@ -7050,12 +7053,13 @@
 
   // The reveal of one stream's text. `getText` reads everything the stream has
   // delivered so far and `show` is handed the part to display. `kick` says there is
-  // more to show, `drain` resolves once all of it is shown (at most
-  // REVEAL_DRAIN_MAX_MS later), `flush` shows all of it now, and `stop` abandons the
-  // pending redraw. With `paced` false (a reader who asked for reduced motion, or a page
-  // nobody is looking at) each tick shows everything that has arrived: chunks are still
-  // gathered into one redraw per tick, because a redraw rebuilds the whole conversation.
-  // `paced` may be a function, asked at each tick, since a page can be hidden mid-reply.
+  // more to show (it draws the first text at once, and schedules the rest), `drain`
+  // resolves once all of it is shown (at most REVEAL_DRAIN_MAX_MS later), `flush` shows
+  // all of it now, and `stop` abandons the pending redraw. With `paced` false (a reader
+  // who asked for reduced motion, or a page nobody is looking at) each tick shows
+  // everything that has arrived: chunks are still gathered into one redraw per tick,
+  // because a redraw rebuilds the whole conversation. `paced` may be a function, asked
+  // at each tick, since a page can be hidden mid-reply.
   //
   // `show` can throw (a redraw of a detached page, say). It runs from a timer, where
   // a throw would go unseen and leave `drain` waiting for good, so the controller
@@ -7069,6 +7073,10 @@
     let timer = null;
     let waiting = [];
     let failure = null;
+    // [text length, time] for each kick that grew the text: when the oldest character
+    // not yet drawn arrived, which is the deadline the pace is set against.
+    let arrivals = [];
+    let known = 0;
     const isPaced = () => (typeof paced === 'function' ? paced() : paced);
 
     const settle = () => {
@@ -7097,10 +7105,14 @@
       const elapsed = Math.max(0, at - last);
       last = at;
       if (isPaced()) {
-        const pace = Math.max(REVEAL_MIN_CPS, ((text.length - shown) * 1000) / REVEAL_CATCHUP_MS);
+        while (arrivals.length && arrivals[0][0] <= shown) arrivals.shift();
+        const oldest = arrivals.length ? arrivals[0][1] : at;
+        const remaining = Math.max(REVEAL_LAG_MS - (at - oldest), REVEAL_TICK_MS);
+        const pace = Math.max(REVEAL_MIN_CPS, ((text.length - shown) * 1000) / remaining);
         shown = nextRevealEnd(text, Math.min(shown, text.length), (pace * elapsed) / 1000);
       } else {
         shown = text.length;
+        arrivals = [];
       }
       if (!paint(text.slice(0, shown))) return;
       if (shown < text.length) {
@@ -7115,15 +7127,27 @@
       timer = null;
       const text = getText();
       shown = text.length;
+      arrivals = [];
       if (paint(text)) settle();
     }
 
     return {
       kick() {
-        if (failure === null && timer === null && !caughtUp()) {
-          last = now();
-          timer = later(step, REVEAL_TICK_MS);
+        if (failure !== null) return;
+        const length = getText().length;
+        if (length > known) {
+          arrivals.push([length, now()]);
+          known = length;
         }
+        if (timer !== null || caughtUp()) return;
+        if (shown === 0) {
+          // The first text is drawn now, not a tick from now.
+          last = now() - REVEAL_TICK_MS;
+          step();
+          return;
+        }
+        last = now();
+        timer = later(step, REVEAL_TICK_MS);
       },
       flush,
       drain() {
@@ -8220,8 +8244,8 @@
       fencedRanges,
       nextRevealEnd,
       createReveal,
+      REVEAL_LAG_MS,
       REVEAL_MIN_CPS,
-      REVEAL_CATCHUP_MS,
       REVEAL_TICK_MS,
       REVEAL_DRAIN_MAX_MS,
     };
