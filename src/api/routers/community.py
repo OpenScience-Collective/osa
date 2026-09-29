@@ -130,8 +130,11 @@ RUNTIME_WHEEL_CACHE_CONTROL = "public, max-age=31536000, immutable"
 MODEL_OVERRIDE_DESCRIPTION = (
     "Optional model override: "
     + ", ".join(f"'{model}'" for model in sorted(OFFERED_MODELS))
-    + ", or a legacy alias of one. Any other id requires your own OpenRouter "
-    "key via the X-OpenRouter-Key header."
+    + ", or a legacy alias of one. "
+    + ", ".join(f"'{model}'" for model in sorted(BEDROCK_MODELS))
+    + " run on the service's own key only: a request carrying your own Anthropic key is "
+    "refused for them, while an OpenRouter key runs the same model there. Any other id "
+    "requires your own OpenRouter key via the X-OpenRouter-Key header."
 )
 
 
@@ -371,6 +374,14 @@ class OfferedModelResponse(BaseModel):
 
     id: str = Field(..., description="First-party model identifier")
     label: str = Field(..., description="Human-readable display label")
+    platform_only: bool = Field(
+        default=False,
+        description=(
+            "True when only the service's own key can run this model: a request that "
+            "carries the caller's own Anthropic key is refused for it. A menu should not "
+            "offer it next to such a key."
+        ),
+    )
 
 
 class ClientToolInfo(BaseModel):
@@ -1397,6 +1408,17 @@ def _bedrock_choice(choice: ProviderChoice, model: str, settings: Settings) -> P
             detail=f"Model '{model}' is not available on this server.",
         )
     return ProviderChoice(provider="bedrock", api_key=None, key_source="platform")
+
+
+def _serves_bedrock_models(settings: Settings) -> bool:
+    """Whether this deployment can route a request to a Bedrock model.
+
+    Routing moves a request to Bedrock only from the Anthropic provider (see
+    ``_route_request``), and a platform-funded request resolves to Anthropic only
+    when the platform has an Anthropic key. A deployment with a Bedrock key and an
+    OpenRouter fallback would list models it then refuses.
+    """
+    return bool(settings.bedrock_api_key and settings.anthropic_api_key)
 
 
 def _claude_fallback(settings: Settings) -> str:
@@ -2504,11 +2526,15 @@ def create_community_router(community_id: str) -> APIRouter:
             default_model=default_model,
             default_model_provider=default_provider,
             offered_models=[
-                OfferedModelResponse(id=model_id, label=label)
+                OfferedModelResponse(
+                    id=model_id, label=label, platform_only=model_id in BEDROCK_MODELS
+                )
                 for model_id, label in OFFERED_MODELS.items()
                 # A model the server cannot run would fail on first use, so it is
-                # not offered: the Bedrock ones need the deployment's Bedrock key.
-                if model_id not in BEDROCK_MODELS or get_settings().bedrock_api_key
+                # not offered. The Bedrock ones need the deployment's Bedrock key, and
+                # are routed only from a request that resolves to the Anthropic
+                # provider, which on the platform's key needs its Anthropic key too.
+                if model_id not in BEDROCK_MODELS or _serves_bedrock_models(get_settings())
             ],
             widget=WidgetConfigResponse(**widget_cfg.resolve(info.name, logo_url=conv_logo)),
             status=health_status,
