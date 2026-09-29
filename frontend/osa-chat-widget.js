@@ -6588,11 +6588,13 @@
     check: ['work', 'Checking'],
     suggest: ['work', 'Suggesting'],
     render: ['render', 'Rendering'],
-    execute: ['code', ''],
-    exec: ['code', ''],
-    run: ['code', ''],
+    // Running something is running code only if the name says it is code:
+    // nemar_run_query and execute_sql run a query, and read "Working...".
+    execute: ['run', ''],
+    exec: ['run', ''],
+    run: ['run', ''],
   };
-  // A name with none of the verbs above is about code if it has one of these.
+  // What makes a name about code: with run or no verb at all, it is code.
   const ACTIVITY_CODE_WORDS = ['code', 'python', 'script'];
   // How a word of a tool's name reads in a label; null leaves it out.
   const ACTIVITY_WORDS = {
@@ -6640,7 +6642,9 @@
       }
     }
     let kind = verb === null ? 'other' : ACTIVITY_VERBS[verb][0];
-    if (kind === 'other' && words.some((word) => ACTIVITY_CODE_WORDS.includes(word))) kind = 'code';
+    if (kind === 'run' || kind === 'other') {
+      kind = words.some((word) => ACTIVITY_CODE_WORDS.includes(word)) ? 'code' : 'other';
+    }
     if (kind === 'code') return { kind, label: phase === 'writing' ? 'Writing code...' : 'Running code...' };
     if (kind === 'render') return { kind, label: 'Rendering...' };
     if (kind === 'other') return { kind, label: 'Working...' };

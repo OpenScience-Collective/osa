@@ -7,8 +7,8 @@
  * nothing of the page is needed, and no DOM library either, which the Python job
  * that runs this does not install.
  *
- * Input on stdin: a JSON list of {name, community}. Output on stdout: the same list,
- * each entry with the `writing` and `running` classifications added.
+ * Input on stdin: a JSON list of {name, community, ...}. Output on stdout: the same
+ * list, each entry kept whole, with the `writing` and `running` classifications added.
  *
  * Run by tests/test_frontend/test_widget_activity_labels.py.
  */
@@ -26,10 +26,9 @@ if (begin === -1 || end === -1 || end < begin) {
 const classify = new Function(`${source.slice(begin, end)}\nreturn classifyToolActivity;`)();
 
 const entries = JSON.parse(readFileSync(0, 'utf8'));
-const out = entries.map(({ name, community }) => ({
-  name,
-  community,
-  writing: classify(name, 'writing', community),
-  running: classify(name, 'running', community),
+const out = entries.map((entry) => ({
+  ...entry,
+  writing: classify(entry.name, 'writing', entry.community),
+  running: classify(entry.name, 'running', entry.community),
 }));
 process.stdout.write(JSON.stringify(out));

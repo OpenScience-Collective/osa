@@ -391,7 +391,16 @@ console.log('\nthe label a tool call gets, from its name alone');
   assertEqual(label('execute_code', 'writing'), 'Writing code...', 'execute_code while the model writes it');
   assertEqual(label('execute_code', 'running'), 'Running code...', 'execute_code while it runs');
   assertEqual(label('run_python', 'writing'), 'Writing code...', 'run_python is code too');
+  assertEqual(label('run_python', 'running'), 'Running code...', 'and runs as code');
+  assertEqual(label('execute_code', 'writing'), 'Writing code...', 'execute_code: run, and a code word');
+  assertEqual(label('run_script'), 'Running code...', 'a script is code');
   assertEqual(label('python_repl'), 'Running code...', 'a name with no verb but python in it is code');
+  // Running is running code only if the name says code: a query is not code.
+  assertEqual([label('nemar_run_query', 'writing'), label('nemar_run_query'), kind('nemar_run_query')],
+    ['Working...', 'Working...', 'other'], 'nemar_run_query runs a query, not code: Working...');
+  assertEqual([label('execute_sql', 'writing'), label('execute_sql'), kind('execute_sql')],
+    ['Working...', 'Working...', 'other'], 'execute_sql: Working...');
+  assertEqual([label('exec'), label('run'), label('runTask')], ['Working...', 'Working...', 'Working...'], 'run, execute or exec alone: Working...');
   assertEqual(label('searchDatasets'), 'Searching datasets...', 'a camelCase name reads the same');
   assertEqual(label('look_up_thing'), 'Looking up thing...', 'look up, as two words');
   assertEqual(label('frobnicate_widgets'), 'Working...', 'an unknown verb is Working...');

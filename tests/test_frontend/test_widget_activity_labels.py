@@ -42,6 +42,9 @@ CLASSIFIER = Path(__file__).resolve().parent / "classify_tool_activity.js"
 #: The label shape: capitalized words, then ASCII three dots, and nothing else.
 LABEL = re.compile(r"^[A-Z][A-Za-z0-9 ]*\.\.\.$")
 
+#: The words that make a tool's name about code, as the widget reads them.
+CODE_WORDS = frozenset({"code", "python", "script"})
+
 
 def _without_mcp(config: CommunityConfig) -> CommunityConfig:
     """The config with its MCP servers taken out, which would be reached over the
@@ -78,27 +81,34 @@ def _mcp_tool_names(config: CommunityConfig) -> set[str]:
 
 
 @pytest.fixture(scope="module")
-def every_tool() -> list[dict[str, str]]:
+def every_tool() -> list[dict[str, str | bool]]:
     discover_assistants()
-    entries: list[dict[str, str]] = []
+    entries: list[dict[str, str | bool]] = []
     mcp_seen = 0
     for info in registry.list_all():
         config = registry.get_community_config(info.id)
         assert config is not None, f"{info.id} has no config"
         mcp = _mcp_tool_names(config)
         mcp_seen += len(mcp)
+        # The tools the community declares to run in the reader's browser runtime.
+        runtime_tools = {
+            tool.name for tool in (config.extensions.client_tools if config.extensions else [])
+        }
         for name in sorted(_bound_tool_names(config) | mcp):
-            entries.append({"name": name, "community": config.id})
+            entries.append(
+                {"name": name, "community": config.id, "runtime_tool": name in runtime_tools}
+            )
     # Not vacuous: the registry really does bind tools, of each source.
     assert len({e["community"] for e in entries}) >= 5, entries
     assert mcp_seen > 0, "no MCP tool names were found in any community prompt"
     assert any(e["name"].startswith("retrieve_") for e in entries)
     assert any(e["name"] == "execute_code" for e in entries)
+    assert any(e["runtime_tool"] for e in entries), "no community declares a runtime client tool"
     return entries
 
 
 @pytest.fixture(scope="module")
-def classified(every_tool: list[dict[str, str]]) -> list[dict]:
+def classified(every_tool: list[dict[str, str | bool]]) -> list[dict]:
     bun = shutil.which("bun")
     if bun is None:
         if os.environ.get("CI"):
@@ -149,3 +159,18 @@ def test_only_code_reads_differently_while_it_is_written(classified: list[dict])
     for entry in classified:
         if entry["running"]["kind"] != "code":
             assert entry["writing"] == entry["running"], entry
+
+
+def test_code_is_said_only_of_tools_that_run_code(classified: list[dict]) -> None:
+    """The widget says "Writing code..." of a tool whose name says it is code, and of
+    every tool a community declares to run in the reader's browser. Running anything
+    else (a query, say) is not running code."""
+    for entry in classified:
+        words = set(re.split(r"[^a-z0-9]+", entry["name"].lower()))
+        if entry["running"]["kind"] == "code":
+            assert words & CODE_WORDS or entry["runtime_tool"], (
+                f"{entry['community']}: {entry['name']} reads as code, but its name has none "
+                f"of {sorted(CODE_WORDS)} and it is not a declared runtime client tool"
+            )
+        if entry["runtime_tool"]:
+            assert entry["running"]["kind"] == "code", entry
