@@ -450,6 +450,75 @@ class TestTokenCallbacks:
         assert "".join(tokens) == "It marks a stimulus. Group them. Done."
 
 
+class TestARunManagerIsTokenSafeToo:
+    """A caller that hands _stream a run manager (langchain-core's protocol streaming
+    does) must see the same tag-free tokens the returned chunks carry."""
+
+    def test_tokens_reported_to_a_run_manager_carry_no_tag(self) -> None:
+        from langchain_core.callbacks import BaseCallbackHandler, CallbackManager
+
+        class Recorder(BaseCallbackHandler):
+            def __init__(self) -> None:
+                self.tokens: list[str] = []
+
+            def on_llm_new_token(self, token: str, **_kwargs: Any) -> None:
+                self.tokens.append(token)
+
+        llm = create_bedrock_llm("openai.gpt-6-luna", settings=_settings())
+        _Wire(
+            llm,
+            _stream_reply(["It marks a stim", "ulus.[sr", "c:1] Group th", "em.[src:2]"]),
+            "application/vnd.amazon.eventstream",
+        )
+        recorder = Recorder()
+        (run_manager,) = CallbackManager.configure(
+            inheritable_callbacks=[recorder]
+        ).on_chat_model_start({}, [[HumanMessage(content="q")]])
+
+        returned = list(llm._stream(_conversation(), run_manager=run_manager))
+
+        assert recorder.tokens
+        assert not any("[src" in token for token in recorder.tokens), recorder.tokens
+        assert "".join(recorder.tokens) == "It marks a stimulus. Group them."
+        assert len(returned) >= 3
+
+
+class TestStreamingWaitsOnItsOwnThreads:
+    async def test_the_async_stream_reads_on_the_bedrock_stream_pool(self) -> None:
+        import threading
+
+        llm = create_bedrock_llm("openai.gpt-6-luna", settings=_settings())
+        _Wire(llm, _stream_reply(["Hello there."]), "application/vnd.amazon.eventstream")
+        threads: list[str] = []
+
+        def note_thread(*_args: Any, **_kwargs: Any) -> None:
+            threads.append(threading.current_thread().name)
+
+        llm.client.meta.events.register_first("before-send.bedrock-runtime.*", note_thread)
+
+        async for _ in llm.astream(_conversation()):
+            pass
+
+        assert threads
+        assert all(name.startswith("bedrock-stream") for name in threads), threads
+
+    async def test_more_streams_than_the_default_pool_has_threads_all_finish(self) -> None:
+        import asyncio
+        import os
+
+        streams = (os.cpu_count() or 4) + 12  # more than the loop's default executor holds
+
+        async def one() -> str:
+            llm = create_bedrock_llm("openai.gpt-6-luna", settings=_settings())
+            _Wire(llm, _stream_reply(["Done."]), "application/vnd.amazon.eventstream")
+            text = ""
+            async for chunk in llm.astream(_conversation()):
+                text += "".join(b.get("text", "") for b in chunk.content if isinstance(b, dict))
+            return text
+
+        assert await asyncio.gather(*[one() for _ in range(streams)]) == ["Done."] * streams
+
+
 class TestReplayingHistory:
     """A tool loop and a model switch both send earlier turns back to the model."""
 
