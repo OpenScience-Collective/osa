@@ -81,10 +81,12 @@ class TestThinkingPlaceholderRendering:
     def test_empty_streaming_assistant_is_skipped_while_loading(self) -> None:
         source = _widget_source()
         guard = (
-            "if (isLoading && msg.role === 'assistant' && !msg.content && !ranCode "
-            "&& msgIndex === messages.length - 1)"
+            "if (isLoading && msg.role === 'assistant' && !hasVisibleText(msg.content) "
+            "&& !ranCode && msgIndex === messages.length - 1)"
         )
         assert guard in source
+        # Whitespace is not text (#538): a placeholder holding only "\n\n" stays hidden.
+        assert "return typeof text === 'string' && /\\S/.test(text);" in source
         # A reply that ran code is never the hidden placeholder: the record of the
         # run is visible while the rest of the reply is still coming.
         assert "const ranCode = Array.isArray(msg.executions)" in source
