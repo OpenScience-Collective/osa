@@ -30,6 +30,7 @@ from src.core.config.community import CommunityConfig
 from tests.helpers.chat_models import ScriptedChatModel
 
 COMMUNITY = "resumetest"
+ALLOWED_ORIGIN = "https://resume.example"
 CALL_ID = "toolu_01aaaaaaaaaaaaaaaaaaaaaa"
 OTHER_CALL_ID = "toolu_01bbbbbbbbbbbbbbbbbbbbbb"
 
@@ -49,6 +50,7 @@ def _config() -> CommunityConfig:
             ]
         },
         runtime={"python": {"pyodide_version": "314.0.6", "lockfile": "runtime/l.json"}},
+        cors_origins=[ALLOWED_ORIGIN],
     )
 
 
@@ -368,7 +370,9 @@ class TestTheProviderDecidesWhetherImagesGo:
     dropped or inverted at this call site fails here and nowhere else.
     """
 
-    def _what_run_two_saw(self, client, monkeypatch, headers: dict) -> tuple[list, str]:
+    def _what_run_two_saw(
+        self, client, monkeypatch, headers: dict, requested_model: str | None = None
+    ) -> tuple[list, str]:
         import base64
 
         from langchain_core.messages import ToolMessage
@@ -396,7 +400,9 @@ class TestTheProviderDecidesWhetherImagesGo:
         result = {"call_id": CALL_ID, "status": "ok", "summary": "plotted", "images": [image]}
 
         response = client.post(
-            f"/{COMMUNITY}/chat/resume", json=_body(result=result), headers=headers
+            f"/{COMMUNITY}/chat/resume",
+            json=_body(result=result, model=requested_model),
+            headers=headers,
         )
 
         assert response.status_code == 200
@@ -428,6 +434,40 @@ class TestTheProviderDecidesWhetherImagesGo:
             "[image: 6x4 image/png, not attached: images are not sent to this model]"
             in (content[0]["text"])
         )
+
+    @staticmethod
+    def _platform_keys(monkeypatch) -> None:
+        """A deployment with the platform's Anthropic and Bedrock keys set."""
+        from src.api.config import get_settings
+
+        settings = get_settings()
+        monkeypatch.setattr(settings, "anthropic_api_key", "platform-anthropic-key")
+        monkeypatch.setattr(settings, "bedrock_api_key", "platform-bedrock-key")
+
+    def test_a_platform_claude_model_sends_the_image(self, client: TestClient, monkeypatch) -> None:
+        """The control for the Bedrock case: the same request, a Claude model."""
+        self._platform_keys(monkeypatch)
+
+        content, png = self._what_run_two_saw(
+            client, monkeypatch, {"Origin": ALLOWED_ORIGIN}, requested_model="claude-haiku-4-5"
+        )
+
+        assert [b["source"]["data"] for b in content if b.get("type") == "image"] == [png]
+
+    def test_a_bedrock_model_sends_a_placeholder_instead(
+        self, client: TestClient, monkeypatch
+    ) -> None:
+        """Nothing shows the Bedrock models take Anthropic's image block, and the
+        endpoint must ask the routing that runs the model, not assume the provider."""
+        self._platform_keys(monkeypatch)
+
+        content, png = self._what_run_two_saw(
+            client, monkeypatch, {"Origin": ALLOWED_ORIGIN}, requested_model="openai.gpt-6-luna"
+        )
+
+        assert not any(b.get("type") == "image" for b in content)
+        assert png not in json.dumps(content)
+        assert "not attached" in content[0]["text"]
 
     def test_no_resolvable_provider_sends_no_image(self, client: TestClient, monkeypatch) -> None:
         """No key and no allowed origin: the real run would answer 403, and until then
