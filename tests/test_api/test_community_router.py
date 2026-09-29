@@ -343,10 +343,10 @@ class TestCreateCommunityAssistant:
         assert awm.key_source == "byok"
 
     def test_openrouter_byok_constructs_litellm_model(self) -> None:
-        """A BYOK OpenRouter credential builds the LiteLLM caching wrapper."""
+        """A BYOK OpenRouter credential builds the LiteLLM chat model."""
         from src.api.routers.community import create_community_assistant
         from src.api.security import ByokCredential
-        from src.core.services.litellm_llm import CachingLLMWrapper
+        from src.core.services.litellm_chat import TaggedCitationChatLiteLLM
 
         awm = create_community_assistant(
             "hed",
@@ -354,7 +354,7 @@ class TestCreateCommunityAssistant:
             preload_docs=False,
         )
 
-        assert isinstance(awm.assistant.model, CachingLLMWrapper)
+        assert isinstance(awm.assistant.model, TaggedCitationChatLiteLLM)
         assert awm.key_source == "byok"
 
 

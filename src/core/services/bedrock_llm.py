@@ -37,7 +37,7 @@ from botocore.tokens import FrozenAuthToken, TokenProviderChain
 from langchain_aws import ChatBedrockConverse
 from langchain_core.callbacks import AsyncCallbackManagerForLLMRun, CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGenerationChunk, ChatResult
 from langchain_core.runnables.config import run_in_executor
 
@@ -48,9 +48,7 @@ from src.core.services.anthropic_models import (
     normalize_model,
 )
 from src.core.services.tagged_citations import (
-    MarkerStream,
-    SourceRegistry,
-    pieces_to_blocks,
+    ChunkRetagger,
     prepare_messages,
     rewrite_content,
 )
@@ -188,25 +186,22 @@ class TaggedCitationChatBedrock(ChatBedrockConverse):
     ) -> Iterator[ChatGenerationChunk]:
         """Stream a reply, releasing text as soon as it cannot be part of a tag."""
         prepared, registry = prepare_messages(_without_reasoning(messages))
-        streams: dict[int, MarkerStream] = {}
+        retagger = ChunkRetagger(registry)
 
         # ChatBedrockConverse reports each token to the run manager as it arrives,
         # tags and all. It is not given the run manager, and the tokens are reported
         # here instead, after the tags are cut out.
         for chunk in super()._stream(prepared, stop, None, **kwargs):
-            retagged = _retag_chunk(chunk, registry, streams)
+            retagged = retagger.feed(chunk)
             if run_manager:
                 run_manager.on_llm_new_token(retagged.message.text, chunk=retagged)
             yield retagged
 
         # Text held back in case it became a tag, once the reply is over.
-        for index, stream in streams.items():
-            blocks = pieces_to_blocks(stream.finish(), registry, index)
-            if blocks:
-                held = ChatGenerationChunk(message=AIMessageChunk(content=blocks))
-                if run_manager:
-                    run_manager.on_llm_new_token(held.message.text, chunk=held)
-                yield held
+        for held in retagger.finish():
+            if run_manager:
+                run_manager.on_llm_new_token(held.message.text, chunk=held)
+            yield held
 
     async def _astream(
         self,
@@ -230,35 +225,6 @@ class TaggedCitationChatBedrock(ChatBedrockConverse):
             if item is done:
                 break
             yield item  # type: ignore[misc]
-
-
-def _retag_chunk(
-    chunk: ChatGenerationChunk,
-    registry: SourceRegistry,
-    streams: dict[int, MarkerStream],
-) -> ChatGenerationChunk:
-    """Replace the text in one streamed chunk with tag-free text and citation blocks.
-
-    Every other block (reasoning, tool use) and every other field of the chunk
-    (tool-call chunks, usage) is passed through as it came.
-    """
-    content = chunk.message.content
-    if isinstance(content, str):
-        content = [{"type": "text", "text": content, "index": 0}] if content else []
-    blocks: list[Any] = []
-    changed = False
-    for block in content:
-        if isinstance(block, dict) and block.get("type") == "text":
-            index = block.get("index") or 0
-            stream = streams.setdefault(index, MarkerStream(registry))
-            blocks.extend(pieces_to_blocks(stream.feed(block.get("text", "")), registry, index))
-            changed = True
-        else:
-            blocks.append(block)
-    if not changed:
-        return chunk
-    message = chunk.message.model_copy(update={"content": blocks})
-    return chunk.model_copy(update={"message": message})
 
 
 def create_bedrock_llm(

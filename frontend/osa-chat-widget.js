@@ -6528,7 +6528,7 @@
       const label = msg.role === 'user' ? 'You' : CONFIG.title;
 
       // Build a marker -> citation lookup for this message (empty for a
-      // message with no citations, e.g. every OpenRouter-answered reply).
+      // message with no citations, e.g. a reply that drew on no retrieved source).
       const citationsByMarker = {};
       const citations = Array.isArray(msg.citations) ? msg.citations : [];
       citations.forEach((c) => {

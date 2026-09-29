@@ -213,3 +213,8 @@ def configure_secure_logging(
     # The formatter above redacts what this process prints, but a record that reaches
     # any other handler (a tracing or error-reporting integration) is not redacted.
     logging.getLogger("botocore").setLevel(max(level, logging.WARNING))
+
+    # LiteLLM logs each completion call's arguments at DEBUG, and the caller's API key is
+    # one of them (the key travels with every call, not on a shared module).
+    for name in ("LiteLLM", "LiteLLM Router", "LiteLLM Proxy", "litellm"):
+        logging.getLogger(name).setLevel(max(level, logging.WARNING))
