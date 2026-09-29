@@ -6962,6 +6962,143 @@
     return earlier && text ? `${earlier}\n\n${text}` : earlier || text;
   }
 
+  // Paced reveal of streamed text (#531). The stream delivers text as the model emits
+  // it, and a reasoning model can think for tens of seconds and then emit its whole
+  // answer in about a second: the reader sees nothing, then everything. So the text a
+  // stream has delivered is shown at a reading pace, and faster only when that pace
+  // would fall seconds behind the stream. A model that streams slower than the pace
+  // is shown as it arrives, with no delay added. Fenced code is the exception: a code
+  // block is shown whole as soon as the reveal reaches it, never typed out.
+  const REVEAL_MIN_CPS = 300;       // the floor pace, in characters per second
+  const REVEAL_CATCHUP_MS = 1500;   // a backlog is worked off in about this long
+  const REVEAL_TICK_MS = 80;        // how often the message is redrawn
+  const REVEAL_DRAIN_MAX_MS = 4000; // the most a finished reply waits for the pace to catch up
+  const REVEAL_WORD_REACH = 24;     // a reveal ends on a word boundary within this many characters
+
+  // Where the fenced code blocks in `text` sit, as [start, end) offsets: a fence is a
+  // line that starts with ``` (what markdownToHtml reads as one), and a block that
+  // has not closed yet runs to the end of the text.
+  function fencedRanges(text) {
+    const ranges = [];
+    let open = -1;
+    let offset = 0;
+    while (offset < text.length) {
+      const newline = text.indexOf('\n', offset);
+      const next = newline === -1 ? text.length : newline + 1;
+      if (text.slice(offset, next).trim().startsWith('```')) {
+        if (open === -1) {
+          open = offset;
+        } else {
+          ranges.push([open, next]);
+          open = -1;
+        }
+      }
+      offset = next;
+    }
+    if (open !== -1) ranges.push([open, text.length]);
+    return ranges;
+  }
+
+  // How much of `text` to show next: `budget` more characters than `shown`, ending
+  // on a word boundary, and taking a code block whole (whatever of it has arrived)
+  // when the reveal reaches it or is already inside it.
+  function nextRevealEnd(text, shown, budget) {
+    if (shown >= text.length) return text.length;
+    let end = Math.min(text.length, shown + Math.max(1, Math.floor(budget)));
+    if (end < text.length && !/\s/.test(text[end - 1]) && !/\s/.test(text[end])) {
+      const reach = text.slice(end, end + REVEAL_WORD_REACH).search(/\s/);
+      if (reach !== -1) end += reach;
+    }
+    for (const [start, stop] of fencedRanges(text)) {
+      if (end > start && shown < stop) end = Math.max(end, stop);
+    }
+    return end;
+  }
+
+  // The reveal of one stream's text. `getText` reads everything the stream has
+  // delivered so far and `show` is handed the part to display. `kick` says there is
+  // more to show, `drain` resolves once all of it is shown (at most
+  // REVEAL_DRAIN_MAX_MS later), `flush` shows all of it now, and `stop` abandons the
+  // pending redraw. With `paced` false (a reader who asked for reduced motion) every
+  // kick shows everything that has arrived.
+  function createReveal({
+    getText, show, paced = true, now = Date.now, later = setTimeout, unlater = clearTimeout,
+  }) {
+    let shown = 0;
+    let last = 0;
+    let timer = null;
+    let waiting = [];
+
+    const settle = () => {
+      const resolvers = waiting;
+      waiting = [];
+      resolvers.forEach((resolve) => resolve());
+    };
+    const caughtUp = () => shown >= getText().length;
+
+    function step() {
+      timer = null;
+      const text = getText();
+      const at = now();
+      const elapsed = Math.max(0, at - last);
+      last = at;
+      const pace = Math.max(REVEAL_MIN_CPS, ((text.length - shown) * 1000) / REVEAL_CATCHUP_MS);
+      shown = nextRevealEnd(text, Math.min(shown, text.length), (pace * elapsed) / 1000);
+      show(text.slice(0, shown));
+      if (shown < text.length) {
+        timer = later(step, REVEAL_TICK_MS);
+      } else {
+        settle();
+      }
+    }
+
+    function flush() {
+      if (timer !== null) unlater(timer);
+      timer = null;
+      const text = getText();
+      shown = text.length;
+      show(text);
+      settle();
+    }
+
+    return {
+      kick() {
+        if (!paced) {
+          flush();
+        } else if (timer === null && !caughtUp()) {
+          last = now();
+          timer = later(step, REVEAL_TICK_MS);
+        }
+      },
+      flush,
+      drain() {
+        if (caughtUp()) return Promise.resolve();
+        return new Promise((resolve) => {
+          const guard = later(flush, REVEAL_DRAIN_MAX_MS);
+          waiting.push(() => {
+            unlater(guard);
+            resolve();
+          });
+        });
+      },
+      stop() {
+        if (timer !== null) unlater(timer);
+        timer = null;
+        settle();
+      },
+    };
+  }
+
+  // Whether the reader asked their system for less motion, which includes text that
+  // types itself out.
+  function prefersReducedMotion() {
+    try {
+      return Boolean(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    } catch (error) {
+      return false;
+    }
+  }
+
   // Handle streaming response from API
   // SSE Event formats:
   //   data: {"event": "content", "content": "text chunk"}
@@ -6983,9 +7120,7 @@
     const decoder = new TextDecoder();
     let buffer = '';
     let accumulatedContent = '';
-    let lastUpdateTime = 0;
     let lastChunkTime = Date.now();
-    const UPDATE_THROTTLE_MS = 100; // Update UI every 100ms max
     const STREAM_TIMEOUT_MS = 60000; // 60 seconds with no data = timeout
     let receivedDoneEvent = false;
     let receivedFirstContent = false;
@@ -7003,6 +7138,19 @@
     // What earlier runs of this reply already wrote. This run's text follows it.
     const earlier = continuation ? (messages[messageIndex].content || '') : '';
     const compose = (text) => composeReply(earlier, text);
+    // What of the delivered text the reader sees. The loading bubble stays until there
+    // is a first word to replace it with.
+    const reveal = createReveal({
+      getText: () => accumulatedContent,
+      paced: !prefersReducedMotion(),
+      show: (visible) => {
+        if (!visible) return;
+        isLoading = false;
+        isThinking = false;
+        messages[messageIndex].content = compose(visible);
+        renderMessages(container);
+      },
+    });
 
     try {
       while (true) {
@@ -7033,23 +7181,12 @@
           if (!event) continue;
 
           if (event.event === 'content' && event.content) {
-            // Hide loading dots on first content chunk
-            if (!receivedFirstContent) {
-              receivedFirstContent = true;
-              isLoading = false;
-              isThinking = false;
-            }
+            // The loading dots give way to the first word the reveal shows.
+            receivedFirstContent = true;
 
-            // Accumulate content
+            // Accumulate content; the reveal decides when the reader sees it
             accumulatedContent += event.content;
-
-            // Throttle UI updates for performance
-            const now = Date.now();
-            if (now - lastUpdateTime >= UPDATE_THROTTLE_MS) {
-              messages[messageIndex].content = compose(accumulatedContent);
-              renderMessages(container);
-              lastUpdateTime = now;
-            }
+            reveal.kick();
           } else if (event.event === 'thinking') {
             // Carries no reasoning text; only swaps the loading label to
             // "Thinking...". Scoped to before the first content chunk so a
@@ -7097,6 +7234,9 @@
             if (event.session_id && typeof event.session_id === 'string') {
               sessionId = event.session_id;
             }
+            // Let the reveal finish what the reader is still reading before the
+            // backend's canonical text (below) replaces it.
+            await reveal.drain();
             // The backend's done.content is canonical and replaces any raw
             // citation boundaries accumulated while streaming.
             const finalContent = applyDoneEvent(
@@ -7126,6 +7266,7 @@
             if (event.session_id && typeof event.session_id === 'string') {
               sessionId = event.session_id;
             }
+            await reveal.drain();
             const runText = typeof event.content === 'string' ? event.content : accumulatedContent;
             messages[messageIndex].content = compose(runText);
             if (Array.isArray(event.citations)) {
@@ -7136,6 +7277,7 @@
             // Backend sent an error event
             const errorMsg = event.message || 'An error occurred during response generation';
             console.error('[OSA] Backend error event:', errorMsg);
+            reveal.stop();
 
             // Show partial content with error indicator
             const shown = compose(accumulatedContent);
@@ -7167,6 +7309,7 @@
       // Stream ended without receiving 'done' event - this is abnormal
       if (!receivedDoneEvent) {
         console.error('[OSA] Stream ended without done event');
+        reveal.stop();
 
         const composed = compose(accumulatedContent);
         if (composed) {
@@ -7187,6 +7330,7 @@
 
     } catch (error) {
       console.error('[OSA] Streaming error:', error);
+      reveal.stop();
 
       // Keep partial content if we have any, including what earlier runs of
       // this reply wrote and any code they ran.
@@ -7219,6 +7363,7 @@
 
       throw error; // Re-throw to be handled by sendMessage
     } finally {
+      reveal.stop();
       // Always release the reader to free resources
       if (reader) {
         try {
@@ -7983,6 +8128,15 @@
       waiting: () => launcherWaiting,
     };
     window.OSAChatWidget.__applyDoneEvent = applyDoneEvent;
+    window.OSAChatWidget.__reveal = {
+      fencedRanges,
+      nextRevealEnd,
+      createReveal,
+      REVEAL_MIN_CPS,
+      REVEAL_CATCHUP_MS,
+      REVEAL_TICK_MS,
+      REVEAL_DRAIN_MAX_MS,
+    };
     window.OSAChatWidget.__migrateLegacyCitationMarkers = migrateLegacyCitationMarkers;
     window.OSAChatWidget.__isSameResponseMessage = isSameResponseMessage;
     window.OSAChatWidget.__notebook = {
