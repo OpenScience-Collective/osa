@@ -389,18 +389,36 @@ class TaggedCitationChatLiteLLM(ChatLiteLLM):
 
     @property
     def _client_params(self) -> dict[str, Any]:
-        """Request parameters, with this instance's key on every call.
+        """Request parameters, with this instance's key on every call and nothing shared.
 
-        ``ChatLiteLLM`` keeps its credentials on the ``litellm`` module (its
-        ``client``), which every instance in the process shares, and never sends
-        them with the call. Requests running at the same time under different keys
-        (a caller's own key next to the platform's) then send whichever key was
-        written last: 20 of 40 interleaved requests went out under the other key
-        when measured. A key in the call arguments takes precedence over the module's.
+        ``ChatLiteLLM`` keeps its credentials on the ``litellm`` module (its ``client``),
+        which every instance in the process shares, and never sends them with the call.
+        Requests running at the same time under different keys (a caller's own key next
+        to the platform's) then send whichever key was written last: 20 of 40
+        interleaved requests went out under the other key when measured. A key in the
+        call arguments takes precedence over the module's, and this writes nothing to
+        the module, so a caller's key is not left there for another call to find.
+
+        ``stream`` is decided by the call (``_stream`` and ``_astream`` set it); the
+        parent takes it from the ``streaming`` field, which sent ``stream: true`` with a
+        call that then read a whole reply.
+
+        Raises:
+            ValueError: If the model has no API key. It would otherwise fall back to
+                whatever key the process happens to hold.
         """
-        params = super()._client_params
-        if self.api_key:
-            params["api_key"] = self.api_key
+        if not self.api_key:
+            raise ValueError("TaggedCitationChatLiteLLM needs an api_key; none was given")
+        params: dict[str, Any] = {
+            **self._default_params,
+            "model": self.model_name or self.model,
+            "force_timeout": self.request_timeout,
+            "api_base": self.api_base,
+            "api_key": self.api_key,
+            "stream": False,
+        }
+        if self.extra_headers is not None:
+            params["extra_headers"] = self.extra_headers
         return params
 
     def _create_message_dicts(

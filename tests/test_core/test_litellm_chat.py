@@ -433,6 +433,53 @@ class TestWhatIsSent:
         assert not wrong, f"{len(wrong)} of {count} requests went out under another request's key"
 
 
+class TestTheKeyStaysOnTheCall:
+    """LiteLLM's module holds credentials for the whole process; a request must leave none."""
+
+    def test_a_request_writes_no_key_to_the_litellm_module(
+        self, openrouter: FakeOpenRouter, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import litellm
+
+        for name in ("api_key", "openrouter_key", "api_base", "extra_headers"):
+            monkeypatch.setattr(litellm, name, None, raising=False)
+        openrouter.reply(stream_of("ok"))
+
+        _llm().invoke([HumanMessage(content="hi")])
+
+        assert litellm.api_key is None
+        assert litellm.openrouter_key is None
+        assert openrouter.headers[0]["authorization"] == "Bearer sk-or-test"
+
+    def test_a_model_with_no_key_refuses_to_borrow_one(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        llm = TaggedCitationChatLiteLLM(model="openrouter/openai/gpt-6-luna", streaming=True)
+
+        with pytest.raises(ValueError, match="needs an api_key"):
+            llm.invoke([HumanMessage(content="hi")])
+
+    def test_one_reply_can_be_asked_for_on_a_streaming_model(
+        self, openrouter: FakeOpenRouter
+    ) -> None:
+        """stream=False used to send stream: true and then read a generator as a reply."""
+        openrouter.reply(whole_reply("A whole reply."))
+
+        reply = _llm().invoke([HumanMessage(content="hi")], stream=False)
+
+        assert _text_of(reply.content) == "A whole reply."
+        assert openrouter.requests[0]["stream"] is False
+
+    async def test_and_asynchronously(self, openrouter: FakeOpenRouter) -> None:
+        openrouter.reply(whole_reply("A whole reply."))
+
+        reply = await _llm().ainvoke([HumanMessage(content="hi")], stream=False)
+
+        assert _text_of(reply.content) == "A whole reply."
+        assert openrouter.requests[0]["stream"] is False
+
+
 class TestTagsBecomeCitations:
     """The reply a reader gets: no tag text, and a citation for each tag that named a source."""
 
