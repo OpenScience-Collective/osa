@@ -141,3 +141,24 @@ class TestLunaCaching:
         assert first.usage_metadata["input_token_details"]["cache_read"] == 0
         assert first.usage_metadata["input_token_details"]["cache_creation"] > 0
         assert second.usage_metadata["input_token_details"]["cache_read"] > 0
+
+    def test_input_tokens_count_the_cached_ones_once(self) -> None:
+        """OSA prices ordinary = input - cache_read - cache_creation, so input_tokens must
+        be the whole prompt. Bedrock's own inputTokens excludes cached tokens (2 of 9,216
+        in the run that established this); langchain-aws adds them back. If either side
+        changed, the same prompt would report different totals on its two calls, or a
+        total below the cached count, and cost would be over- or under-stated."""
+        llm = create_bedrock_llm("openai.gpt-6-luna", max_tokens=200)
+        prefix = f"Run {uuid.uuid4().hex}. The Open Science Assistant helps researchers. " * 400
+        messages = [SystemMessage(content=prefix), HumanMessage(content="Reply with exactly: OK")]
+
+        first = llm.invoke(messages).usage_metadata
+        second = llm.invoke(messages).usage_metadata
+
+        cached = second["input_token_details"]["cache_read"]
+        assert cached > 0
+        assert second["input_tokens"] >= cached
+        assert first["input_tokens"] == pytest.approx(second["input_tokens"], abs=16)
+        assert first["input_tokens"] == pytest.approx(
+            first["input_token_details"]["cache_creation"], rel=0.01
+        )
