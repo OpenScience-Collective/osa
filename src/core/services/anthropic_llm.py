@@ -54,11 +54,20 @@ logger = logging.getLogger(__name__)
 # Thinking policy. The two offered model generations accept different, mutually
 # exclusive `thinking` shapes and the API is strict about it (a mismatch is a
 # 400 at request time, not a graceful fallback):
-#   - claude-sonnet-5 has no budget-style thinking; it only accepts
-#     {"type": "adaptive"} or {"type": "disabled"}.
+#   - claude-sonnet-5-5 has no budget-style thinking, and no "disabled" either
+#     (a 400: "Use thinking.type.between_tools for the lowest thinking
+#     setting"). It accepts {"type": "adaptive"}, or {"type": "between_tools"}
+#     to turn extended thinking off.
 #   - claude-haiku-4-5 has no adaptive mode; it needs an explicit
 #     {"type": "enabled", "budget_tokens": N} to think at all.
-_ADAPTIVE_THINKING_MODELS = {"claude-sonnet-5"}
+_ADAPTIVE_THINKING_MODELS = {"claude-sonnet-5-5"}
+
+# The "thinking off" setting of the adaptive-thinking models. Sonnet 5.5 does
+# no extended thinking under it, though the short progress notes it writes
+# between tool calls still arrive as `thinking` blocks. The API allows it only
+# at effort "high" or below and with no other field inside `thinking`; OSA
+# never sets an effort, and the API default is "high".
+_THINKING_OFF: dict[str, Any] = {"type": "between_tools"}
 
 # Smallest thinking budget the API accepts on budget-style (Haiku) models.
 MIN_THINKING_BUDGET_TOKENS = 1024
@@ -88,11 +97,11 @@ def default_thinking(model: str | None = None, budget: int | None = None) -> dic
             budget of 0 or negative disables thinking for any model by
             returning None, which omits the ``thinking`` key from the
             request. Note that omission is only "off" for budget-style
-            models: on adaptive-default models (claude-sonnet-5) an omitted
+            models: on adaptive-default models (claude-sonnet-5-5) an omitted
             key means the API's own default, which is adaptive thinking
-            turned on. To actually disable thinking on those models, pass
+            turned on. To actually turn thinking off on those models, pass
             ``thinking=None`` to :func:`create_anthropic_llm` instead, which
-            sends ``{"type": "disabled"}`` explicitly.
+            sends ``{"type": "between_tools"}`` explicitly.
 
     Returns:
         A thinking configuration dict for the resolved model, or None when
@@ -113,9 +122,9 @@ def _validate_thinking(thinking: dict[str, Any], model: str, max_tokens: int) ->
     """Check a thinking configuration against what the model accepts.
 
     The API enforces different shapes per model generation, and a mismatch
-    is a 400 at request time: claude-sonnet-5 rejects thinking.type
-    "enabled" ("Use thinking.type adaptive"), while claude-haiku-4-5 has no
-    adaptive mode and needs an explicit token budget.
+    is a 400 at request time: claude-sonnet-5-5 rejects thinking.type
+    "enabled" and "disabled" (it takes "adaptive" or "between_tools"), while
+    claude-haiku-4-5 has no adaptive mode and needs an explicit token budget.
 
     Args:
         thinking: Thinking configuration to check.
@@ -128,16 +137,23 @@ def _validate_thinking(thinking: dict[str, Any], model: str, max_tokens: int) ->
     kind = thinking.get("type")
 
     if model in _ADAPTIVE_THINKING_MODELS:
-        if kind not in ("adaptive", "disabled"):
+        if kind not in ("adaptive", "between_tools"):
             raise ValueError(
-                f"{model} accepts thinking type 'adaptive' or 'disabled', not {kind!r}; "
-                "budget_tokens was removed on this model generation"
+                f"{model} accepts thinking type 'adaptive' or 'between_tools', not {kind!r}; "
+                "budget_tokens was removed on this model generation, and 'disabled' "
+                "is rejected (pass thinking=None to create_anthropic_llm to turn "
+                "thinking off)"
+            )
+        if kind == "between_tools" and set(thinking) != {"type"}:
+            raise ValueError(
+                "thinking type 'between_tools' takes no other field, got "
+                f"{sorted(set(thinking) - {'type'})}"
             )
         return
 
     if kind == "disabled":
         # Accepted and redundant on this model, but it lets a caller express
-        # "off" the same way for every model instead of special-casing.
+        # "off" without special-casing the model.
         return
 
     if kind != "enabled":
@@ -204,9 +220,9 @@ def create_anthropic_llm(
             ``settings.anthropic_max_output_tokens``.
         thinking: Explicit extended-thinking configuration. Leave unset to
             get the per-model default from :func:`default_thinking` (on
-            adaptive-default models such as claude-sonnet-5, that default is
+            adaptive-default models such as claude-sonnet-5-5, that default is
             adaptive thinking turned on); pass ``None`` explicitly to
-            disable thinking entirely, which sends ``{"type": "disabled"}``
+            turn thinking off, which sends ``{"type": "between_tools"}``
             on adaptive-default models and omits the ``thinking`` key on
             budget-style models (e.g. claude-haiku-4-5), where an omitted
             key already means no thinking; pass a dict to fully control it.
@@ -251,11 +267,11 @@ def create_anthropic_llm(
     elif thinking is None:
         # An omitted `thinking` key is not "off" on adaptive-default models:
         # the API's own default there is adaptive thinking turned on. Send
-        # an explicit disable so a caller's `None` actually means no
-        # thinking. Budget-style models already treat an omitted key as
-        # off, so leave the key omitted there instead of adding it.
+        # the model's lowest setting so a caller's `None` actually means no
+        # extended thinking. Budget-style models already treat an omitted key
+        # as off, so leave the key omitted there instead of adding it.
         resolved_thinking = (
-            {"type": "disabled"} if resolved_model in _ADAPTIVE_THINKING_MODELS else None
+            dict(_THINKING_OFF) if resolved_model in _ADAPTIVE_THINKING_MODELS else None
         )
     else:
         resolved_thinking = thinking
@@ -263,7 +279,10 @@ def create_anthropic_llm(
     if resolved_thinking is not None:
         _validate_thinking(resolved_thinking, resolved_model, resolved_max_tokens)
 
-    thinking_on = resolved_thinking is not None and resolved_thinking.get("type") != "disabled"
+    thinking_on = resolved_thinking is not None and resolved_thinking.get("type") not in (
+        "disabled",
+        "between_tools",
+    )
 
     kwargs: dict[str, Any] = {}
     if api_key:
@@ -296,7 +315,7 @@ def create_anthropic_llm(
                 "anthropic-workspace-id": resolved_settings.anthropic_workspace_id
             }
 
-    # claude-sonnet-5 rejects any non-default temperature/top_p/top_k with a
+    # claude-sonnet-5-5 rejects any non-default temperature/top_p/top_k with a
     # 400 unconditionally, whether or not thinking is on, which is why it is
     # not in SAMPLING_MODELS. claude-haiku-4-5 does accept temperature, but
     # not while extended thinking is on, so it is only forwarded for models
@@ -307,7 +326,7 @@ def create_anthropic_llm(
         else:
             # Debug rather than warning: this fires per request, and the two
             # cases it covers are both known ahead of time. A community that
-            # pairs a temperature with claude-sonnet-5 in config.yaml is warned
+            # pairs a temperature with claude-sonnet-5-5 in config.yaml is warned
             # once at config load (FAQGenerationConfig.validate_agent_roles),
             # and thinking-plus-temperature is a documented API constraint.
             logger.debug(

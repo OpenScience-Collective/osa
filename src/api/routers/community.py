@@ -1203,7 +1203,7 @@ def _to_openrouter_model_via_canonical(model: str) -> str | None:
     """Map a model id to its OpenRouter slug, canonicalizing aliases first.
 
     ``to_openrouter_model`` only recognizes the two canonical first-party ids
-    in ``OPENROUTER_MODEL_IDS`` ("claude-haiku-4-5", "claude-sonnet-5"), not
+    in ``OPENROUTER_MODEL_IDS`` ("claude-haiku-4-5", "claude-sonnet-5-5"), not
     the bare legacy aliases in ``MODEL_ALIASES`` (e.g. "claude-haiku-4.5",
     "claude-sonnet-4.5"). Passing one of those straight to
     ``to_openrouter_model`` returns None and falls through to the emergency
@@ -1294,7 +1294,7 @@ def _select_model(
             )
         # User has BYOK, allow custom model. A caller may name an offered
         # model by its first-party id or a legacy alias (e.g.
-        # "claude-sonnet-5" or "claude-sonnet-4.5"), neither of which is a
+        # "claude-sonnet-5-5" or "claude-sonnet-4.5"), neither of which is a
         # valid OpenRouter slug, so map it across; anything else passes
         # through untouched. Provider routing is left to OpenRouter, which
         # auto-selects the Anthropic provider for anthropic/* models.

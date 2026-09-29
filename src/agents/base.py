@@ -49,7 +49,7 @@ DEFAULT_MAX_CONVERSATION_TOKENS = 80000
 #:
 #: Sized for the models this project actually offers. Anthropic's documented cost is
 #: per tier: the standard tier caps near 1568 tokens, which is what `claude-haiku-4-5`
-#: and `claude-sonnet-5` use, and a later high-resolution tier caps near 4784. If a
+#: and `claude-sonnet-5-5` use, and a later high-resolution tier caps near 4784. If a
 #: community is ever configured onto a model in that higher tier, this constant would
 #: under-count by roughly 3x, which is the exact direction this comment exists to warn
 #: against. Revisit it when the offered model list changes, not before.

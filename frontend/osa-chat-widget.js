@@ -113,7 +113,7 @@
   // of truth; see offeredModels below.
   const DEFAULT_MODELS = [
     { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
-    { value: 'claude-sonnet-5', label: 'Claude Sonnet 5' }
+    { value: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5' }
   ];
 
   // Models to show in the settings dropdown: the live offered_models list

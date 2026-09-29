@@ -13,6 +13,13 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ## [Unreleased]
 
+### Changed
+
+- **Claude Sonnet 5.5 replaces Sonnet 5** (issue #522):
+  the offered Sonnet is now `claude-sonnet-5-5`, at the same price ($2 / $10 per 1M tokens).
+  `claude-sonnet-5` and the older Sonnet ids still resolve, to the new model, so saved widget settings and community configs keep working.
+  Sonnet 5.5 rejects `thinking: {"type": "disabled"}`, so requests that turn thinking off (FAQ generation) send `{"type": "between_tools"}` instead.
+
 ## [0.8.15] - 2026-09-25
 
 ### Added

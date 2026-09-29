@@ -28,16 +28,16 @@ class TestAcceptsTemperature:
     def test_haiku_accepts_temperature(self) -> None:
         assert accepts_temperature("claude-haiku-4-5") is True
 
-    def test_sonnet_5_does_not(self) -> None:
+    def test_sonnet_5_5_does_not(self) -> None:
         """Claude 5-generation models 400 on any non-default temperature."""
-        assert accepts_temperature("claude-sonnet-5") is False
+        assert accepts_temperature("claude-sonnet-5-5") is False
 
     @pytest.mark.parametrize("alias", sorted(MODEL_ALIASES))
     def test_aliases_answer_for_the_model_they_resolve_to(self, alias: str) -> None:
         """A legacy id must get the same answer as its first-party id.
 
         A community config still naming "anthropic/claude-sonnet-4.5" bills
-        claude-sonnet-5, so it has to be judged as claude-sonnet-5.
+        claude-sonnet-5-5, so it has to be judged as claude-sonnet-5-5.
         """
         assert accepts_temperature(alias) == accepts_temperature(MODEL_ALIASES[alias])
 
@@ -104,3 +104,31 @@ class TestImageMediaTypes:
         declared = typing.get_type_hints(Base64ImageSourceParam)["media_type"]
 
         assert set(typing.get_args(declared)) == set(IMAGE_MEDIA_TYPES)
+
+
+class TestSonnetAliases:
+    """Sonnet 5.5 replaced Sonnet 5, so every older Sonnet id must land on it."""
+
+    @pytest.mark.parametrize(
+        "legacy",
+        [
+            "claude-sonnet-5",
+            "claude-sonnet-5.5",
+            "anthropic/claude-sonnet-5",
+            "anthropic/claude-sonnet-5.5",
+            "anthropic/claude-sonnet-4.6",
+            "anthropic/claude-sonnet-4.5",
+            "claude-sonnet-4.5",
+        ],
+    )
+    def test_earlier_sonnet_ids_resolve_to_sonnet_5_5(self, legacy: str) -> None:
+        assert normalize_model(legacy) == "claude-sonnet-5-5"
+
+    def test_sonnet_5_is_no_longer_offered_but_still_resolves(self) -> None:
+        """Saved widget settings and community configs may still name it."""
+        assert "claude-sonnet-5" not in OFFERED_MODELS
+        assert normalize_model("claude-sonnet-5") in OFFERED_MODELS
+
+    def test_every_alias_resolves_to_an_offered_model(self) -> None:
+        """An alias to a model nobody can select would fail at request time."""
+        assert set(MODEL_ALIASES.values()) <= set(OFFERED_MODELS)
