@@ -444,6 +444,35 @@ class TestCreateAnthropicLLMBehavior:
         assert llm.max_tokens == 1234
 
 
+class TestThinkingOffPayload:
+    """What actually goes on the wire when a caller turns thinking off."""
+
+    def test_sonnet_5_5_sends_between_tools_and_nothing_it_rejects(self) -> None:
+        """Sonnet 5.5 400s on thinking "disabled", on any non-default sampling
+        parameter, and on a forced tool_choice, so none of them may appear."""
+        llm = create_anthropic_llm(
+            model="claude-sonnet-5-5", temperature=0.7, thinking=None, settings=_settings()
+        )
+        payload = llm._get_request_payload([HumanMessage(content="Hi")])
+
+        assert payload["thinking"] == {"type": "between_tools"}
+        for rejected in ("temperature", "top_p", "top_k", "tool_choice"):
+            assert rejected not in payload
+
+    def test_legacy_sonnet_id_sends_the_same_payload(self) -> None:
+        llm = create_anthropic_llm(model="claude-sonnet-5", thinking=None, settings=_settings())
+        payload = llm._get_request_payload([HumanMessage(content="Hi")])
+
+        assert payload["model"] == "claude-sonnet-5-5"
+        assert payload["thinking"] == {"type": "between_tools"}
+
+    def test_haiku_omits_the_thinking_key(self) -> None:
+        llm = create_anthropic_llm(model="claude-haiku-4-5", thinking=None, settings=_settings())
+        payload = llm._get_request_payload([HumanMessage(content="Hi")])
+
+        assert "thinking" not in payload
+
+
 class TestCachingChatAnthropicPayload:
     """Tests for CachingChatAnthropic._get_request_payload()."""
 
