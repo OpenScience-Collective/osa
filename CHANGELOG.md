@@ -13,6 +13,26 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ## [Unreleased]
 
+### Added
+
+- **GPT-6 Luna, Qwen3 Next 80B A3B and gpt-oss-120b** (issue #523):
+  three non-Anthropic models served from Amazon Bedrock, each priced at or below Claude Haiku 4.5
+  ($0.11 / $0.55, $0.14 / $1.20 and $0.15 / $0.60 per 1M input / output tokens; Haiku is $1 / $5).
+  They appear in the widget's model menu and can be a community's `default_model`.
+  GPT-6 Luna runs at its maximum reasoning effort.
+  A deployment turns them on with `AWS_BEARER_TOKEN_BEDROCK`; without it they are not listed and a request naming one gets a 400.
+  Requests run in Ohio (`us-east-2`, `BEDROCK_REGION`), except Qwen3 Next, whose Ohio endpoint does not answer, so it runs in N. Virginia.
+  A caller's own Anthropic key cannot select them, because the platform pays for Bedrock.
+  FAQ generation stays on Claude.
+- **Numbered citations for the Bedrock models**: they reject Anthropic's `search_result` blocks, so retrieved sources are tagged `[src:N]` and the model writes the tag after each claim it draws from one.
+  The tags come back as the same `citation` events and `[n]` markers the Anthropic path produces.
+  A tag that names no source is dropped, and the quoted passage is the closest one in the source, not a span the provider vouches for.
+  Models follow the convention less reliably than Claude's native citations.
+- **Prompt caching for GPT-6 Luna** needs no request changes (the service caches a repeated prompt prefix on its own); its cache reads and writes are recorded and priced like Claude's.
+  gpt-oss-120b and Qwen3 Next do no caching.
+- **`model_instructions`** in a community's `config.yaml`: extra system-prompt text for particular models, added after the platform's own note for that model.
+  GPT-6 Luna and gpt-oss-120b get a note that stops them searching in a loop.
+
 ### Changed
 
 - **Claude Sonnet 5.5 replaces Sonnet 5** (issue #522):

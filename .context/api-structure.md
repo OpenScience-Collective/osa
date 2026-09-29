@@ -385,3 +385,25 @@ The API routes are automatically created at startup. No code changes needed.
 - Don't hardcode model fallbacks in frontend or backend
 - Always test with the actual OpenRouter API to verify provider formats
 - Keep configuration in YAML, not code
+
+## Provider Routing and the Bedrock Models
+
+The section above predates the move to the Claude Platform on AWS (ADR 0004) and the Bedrock models
+(ADR 0014); the code is the reference. What a request goes through today, in
+`src/api/routers/community.py` (`_route_request`):
+
+1. `_resolve_provider` picks the provider by whose key pays: a caller's own key (BYOK) for the
+   provider its header names, else (on an authorized origin) the community's key, else the platform's
+   Anthropic key.
+2. `_select_model` picks the model. On the Anthropic path the requested or default id must be an
+   offered model (`OFFERED_MODELS` in `src/core/services/anthropic_models.py`), else 400.
+3. If that model is one of the Bedrock-served ones (`BEDROCK_MODELS`), `_bedrock_choice` moves the
+   request onto the Bedrock provider on the **platform's** Bedrock key: a BYOK Anthropic caller is
+   refused (403), and a deployment with no Bedrock key answers 400 and does not list the models in
+   `offered_models`.
+4. `create_bedrock_llm` (`src/core/services/bedrock_llm.py`) builds the chat model. Tools return
+   `search_result` blocks as on the Anthropic path; the model layer turns them into `[src:N]` tags
+   and the model's tags back into citations (`src/core/services/tagged_citations.py`).
+
+Per-model prompt notes come from `BedrockModel.prompt_addendum` and a community's
+`model_instructions:` config section.

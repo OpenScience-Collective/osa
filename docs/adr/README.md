@@ -27,6 +27,7 @@ letting the reasoning stay buried in a PR nobody will reread.
 | [0011](0011-the-notebook-site.md) | Host the JupyterLite notebook surface at notebook.osc.earth/osa, built from this repository, amending 0010 |
 | [0012](0012-the-notebook-as-a-widget-tab.md) | Let the widget's own sites embed the notebook as a tab, with a bridge script that runs setup cells and takes the widget's theme, amending 0011 |
 | [0013](0013-the-chat-follows-its-deployment.md) | The chat follows the deployment it runs in: per-deployment MCP, fetch and prelude values |
+| [0014](0014-bedrock-models-alongside-claude.md) | Serve GPT-6 Luna, Qwen3 Next and gpt-oss-120b from Amazon Bedrock, next to Claude, with tagged-source citations |
 
 ## Adding a new ADR
 
