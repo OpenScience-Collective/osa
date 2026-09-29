@@ -655,6 +655,7 @@ class TestCommunityConfigOfferedModels:
         from src.core.services.anthropic_llm import OFFERED_MODELS
 
         monkeypatch.setattr(get_settings(), "bedrock_api_key", "a-bedrock-key")
+        monkeypatch.setattr(get_settings(), "anthropic_api_key", "a-platform-key")
 
         response = client.get("/hed/")
         assert response.status_code == 200
@@ -664,6 +665,38 @@ class TestCommunityConfigOfferedModels:
 
         returned = {entry["id"]: entry["label"] for entry in data["offered_models"]}
         assert returned == OFFERED_MODELS
+
+    def test_the_models_only_the_service_can_run_are_flagged(
+        self, client: TestClient, monkeypatch
+    ) -> None:
+        """A menu next to a caller's own Anthropic key must not offer what that key is
+        refused for (a Bedrock model is paid for by the service's key)."""
+        from src.api.config import get_settings
+        from src.core.services.anthropic_llm import BEDROCK_MODELS
+
+        monkeypatch.setattr(get_settings(), "bedrock_api_key", "a-bedrock-key")
+        monkeypatch.setattr(get_settings(), "anthropic_api_key", "a-platform-key")
+
+        flags = {e["id"]: e["platform_only"] for e in client.get("/hed/").json()["offered_models"]}
+
+        assert {model for model, only in flags.items() if only} == set(BEDROCK_MODELS)
+        assert not all(flags.values()), "the Claude models are not platform-only"
+
+    def test_bedrock_models_are_not_offered_without_the_platforms_anthropic_key(
+        self, client: TestClient, monkeypatch
+    ) -> None:
+        """Routing reaches Bedrock only from the Anthropic provider; a deployment with a
+        Bedrock key and only an OpenRouter fallback would list models it then refuses."""
+        from src.api.config import get_settings
+        from src.core.services.anthropic_llm import BEDROCK_MODELS
+
+        monkeypatch.setattr(get_settings(), "bedrock_api_key", "a-bedrock-key")
+        monkeypatch.setattr(get_settings(), "anthropic_api_key", None)
+
+        offered = {e["id"] for e in client.get("/hed/").json()["offered_models"]}
+
+        assert offered
+        assert not offered & set(BEDROCK_MODELS)
 
     def test_bedrock_models_are_not_offered_where_the_server_cannot_run_them(
         self, client: TestClient, monkeypatch
