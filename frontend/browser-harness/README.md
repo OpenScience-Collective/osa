@@ -358,3 +358,22 @@ The widget as it was before it loaded the pop-out's script by address times out 
 
 `notebook-bench.js` times any page's boot, cold and warm, reusing `chrome.js`'s own Chrome-driving primitives;
 see ADR 0010 (`docs/adr/0010-the-notebook-surface.md`) and `.context/notebook-surface-measurements.md` for what it was built to measure.
+
+## The paced reveal (#531)
+
+`paced-reveal-check.mjs` runs the widget's paced reveal of streamed text in headless Chrome,
+against its own local server (the widget, a community config and a `/chat` stream shaped like GPT-6 Luna's:
+1.5 s of silence, then about 900 characters with a code block in about 40 ms).
+It samples what the reader sees every 25 ms and compares it with when the stream's chunks arrived.
+It needs no backend and no network, and runs in the Frontend Tests job.
+
+```bash
+bun frontend/browser-harness/paced-reveal-check.mjs [screenshot-dir]
+```
+
+It carries its controls: the page must be visible (a hidden page's timers run once a second, and every number would mean nothing),
+the stream must really be a burst, the conversation must be fresh (a saved one shows an old reply and passes vacuously, which an earlier version of this check did),
+and with `prefers-reduced-motion: reduce` emulated by the browser the same burst must be shown at once.
+Measured 2026-09-29 in Chrome 154: the first words appear about 100 ms after the first chunk,
+the reply grows through about 24 lengths over about 2 s, and the code block is drawn once, whole.
+With the widget's pacing removed the check fails five checks and exits 1.
