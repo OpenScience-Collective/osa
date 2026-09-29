@@ -20,7 +20,6 @@ from src.api.config import Settings
 from src.core.services.anthropic_llm import (
     CACHE_TTLS,
     DEFAULT_MODEL,
-    DEFAULT_THINKING_BUDGET_TOKENS,
     MIN_THINKING_BUDGET_TOKENS,
     MODEL_ALIASES,
     OFFERED_MODELS,
@@ -91,11 +90,11 @@ def test_chat_anthropic_still_calls_get_request_payload(method: str) -> None:
 
 
 def test_the_default_thinking_budget_is_the_default_levels() -> None:
-    """`default_thinking`'s fallback budget is Haiku's budget at the default level (high),
-    so a caller who names no budget and a community that sets no level agree."""
-    assert THINKING_BUDGET_TOKENS["claude-haiku-4-5"]["high"] == DEFAULT_THINKING_BUDGET_TOKENS
-    assert DEFAULT_THINKING_BUDGET_TOKENS == 4096
-    assert default_thinking("claude-haiku-4-5") == {"type": "enabled", "budget_tokens": 4096}
+    """`default_thinking` for Haiku is its budget at the default level (high), so a caller
+    who names nothing and a community that sets no level agree."""
+    high = THINKING_BUDGET_TOKENS["claude-haiku-4-5"]["high"]
+    assert default_thinking("claude-haiku-4-5") == {"type": "enabled", "budget_tokens": high}
+    assert high == 4096
 
 
 class TestNormalizeModel:
@@ -151,17 +150,16 @@ class TestDefaultThinking:
     def test_sonnet_5_5_is_adaptive(self) -> None:
         assert default_thinking("claude-sonnet-5-5") == {"type": "adaptive"}
 
-    def test_haiku_is_budget_shaped(self) -> None:
-        assert default_thinking("claude-haiku-4-5", budget=2048) == {
+    def test_haiku_is_budget_shaped_at_the_default_level(self) -> None:
+        assert default_thinking("claude-haiku-4-5") == {
             "type": "enabled",
-            "budget_tokens": 2048,
+            "budget_tokens": 4096,
         }
 
-    def test_zero_budget_disables(self) -> None:
-        assert default_thinking("claude-haiku-4-5", budget=0) is None
-
-    def test_negative_budget_disables(self) -> None:
-        assert default_thinking("claude-haiku-4-5", budget=-1) is None
+    def test_a_model_that_does_not_think_with_claude_thinking_is_refused(self) -> None:
+        """A Bedrock model has no Claude thinking configuration to default to."""
+        with pytest.raises(ValueError, match="extended thinking"):
+            default_thinking("openai.gpt-6-luna")
 
 
 class TestValidateThinking:
@@ -371,8 +369,9 @@ class TestCreateAnthropicLLMBehavior:
         llm = create_anthropic_llm(model="claude-haiku-4-5", settings=_settings())
         assert llm.thinking == {"type": "enabled", "budget_tokens": 4096}
 
-    def test_default_thinking_budget_conflicts_with_max_tokens(self) -> None:
-        """Exercise the budget-vs-max_tokens conflict through the public entry point."""
+    def test_a_max_tokens_that_leaves_no_valid_budget_is_refused(self) -> None:
+        """Exercise the budget-vs-max_tokens conflict through the public entry point: the
+        smallest budget the API takes is 1024, so a max_tokens of 1000 has none."""
         settings = _settings()
         with pytest.raises(ValueError, match="below max_tokens"):
             create_anthropic_llm(model="claude-haiku-4-5", max_tokens=1000, settings=settings)

@@ -1701,8 +1701,8 @@ def create_community_assistant(
         extra={"community_id": community_id, "origin": origin, "model": selected_model},
     )
 
-    # The community's reasoning level (issue #545), or None for each model's own
-    # default. Every provider path resolves it against the model it actually runs.
+    # The community's reasoning level (issue #545), or None for high. Every provider
+    # path resolves it against the model it actually runs.
     community_config = community_info.community_config
     reasoning_effort = community_config.reasoning_effort if community_config else None
 

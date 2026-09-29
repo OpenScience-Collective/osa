@@ -47,6 +47,9 @@ def hed(monkeypatch):
     monkeypatch.setattr(settings, "anthropic_api_key", "platform-anthropic-key")
     monkeypatch.setattr(settings, "openrouter_api_key", None)
     monkeypatch.setattr(settings, "bedrock_api_key", "bedrock-key")
+    # A Haiku thinking budget is lowered to fit under max_tokens, which get_settings reads
+    # from the environment: pin it so a machine's own value cannot decide these tests.
+    monkeypatch.setattr(settings, "anthropic_max_output_tokens", 8000)
     info = registry.get("hed")
     assert info is not None
     monkeypatch.setattr(info.community_config, "anthropic_api_key_env_var", None)
@@ -110,6 +113,7 @@ class TestTheShippedCommunities:
         monkeypatch.setattr(settings, "anthropic_api_key", "platform-anthropic-key")
         monkeypatch.setattr(settings, "openrouter_api_key", None)
         monkeypatch.setattr(settings, "bedrock_api_key", "bedrock-key")
+        monkeypatch.setattr(settings, "anthropic_max_output_tokens", 8000)
 
     def _with_platform_keys_only(self, monkeypatch, info) -> None:
         monkeypatch.setattr(info.community_config, "anthropic_api_key_env_var", None)

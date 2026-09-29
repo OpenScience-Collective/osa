@@ -44,7 +44,7 @@ the version being released and start a new `[Unreleased]` section above it.
   `none`, `low`, `medium`, `high`, `xhigh` or `max`, turned into each platform's own request field: the nested `reasoning.effort` for GPT-6 Luna and the flat `reasoning_effort` for gpt-oss-120b on Amazon Bedrock (Qwen3 Next has no control and is sent nothing), `output_config.effort` beside adaptive thinking for Claude Sonnet 5.5 on the Claude Platform, and the unified `reasoning.effort` body field on OpenRouter.
   Each model keeps its own predetermined levels, and a level it does not accept is clamped, never sent: gpt-oss-120b runs low to high, and Claude Sonnet is never run above high on any platform, whatever a community asks.
   Claude Haiku 4.5 has no effort field, so its level is a thinking budget (see the change below); Qwen3 Next ignores the key.
-  Unset, every model runs at high on every provider.
+  Unset, every model with levels runs at high on every provider.
   On the Claude Platform, Sonnet's `none` is no up-front thinking at effort low.
   A level the community's own `default_model` cannot honor is a warning when the config loads.
   NWB and NEMAR set `high`.
@@ -56,9 +56,10 @@ the version being released and start a new `[Unreleased]` section above it.
 - **Every model runs at high reasoning effort by default, Claude Haiku included** (issue #548): a community that sets no `reasoning_effort` gets `high` on every provider for Claude Sonnet 5.5, Claude Haiku 4.5, GPT-6 Luna and gpt-oss-120b (Qwen3 Next has no control).
   Claude Haiku has no effort field, so its level is a thinking budget: low 1024, medium 2048, high 4096 tokens, none no thinking, and its default goes from 2048 to 4096 tokens, so it can think up to twice as long before answering (more output tokens billed and a longer wait before the first word).
   A community that wants the old behavior sets `reasoning_effort: medium`.
-  A budget that would not fit under the request's `max_tokens` is lowered to leave 1024 tokens for the answer instead of refusing the request.
+  A budget that would not fit under the request's `max_tokens` is lowered so it does instead of refusing the request (a `max_tokens` of 1024 or less is still refused).
+  On a caller's own OpenRouter key Haiku now reasons too, with the same budget sent as `reasoning.max_tokens` (and no temperature while it thinks); OpenRouter would otherwise turn an effort into a share of an unset `max_tokens`.
   Claude Sonnet is now sent `high` explicitly, which is the Claude Platform's own default.
-  `ANTHROPIC_THINKING_BUDGET_TOKENS` is removed (a leftover value is ignored): the level sets the budget now.
+  `ANTHROPIC_THINKING_BUDGET_TOKENS` is removed and the level sets the budget now; a server that still exports it logs a warning at startup naming `reasoning_effort` as the replacement.
 - **A caller's own OpenRouter key now runs GPT-6 Luna and gpt-oss-120b at high reasoning effort** (issue #545): OpenRouter's own default for both is medium, and OSA sends its default (high) on every provider so a model behaves the same whichever key paid for it.
   More reasoning means a longer wait before the first word; a community can set `reasoning_effort` to change it.
 - **GPT-6 Luna runs at high reasoning effort, not maximum** (issue #543): at maximum, a tool-using turn took 15 to 50 seconds before its first word, all of it the model's own silent reasoning.

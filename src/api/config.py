@@ -1,6 +1,7 @@
 """Configuration management for the OSA API."""
 
 import logging
+import os
 from functools import lru_cache
 
 from pydantic import AliasChoices, Field, field_validator, model_validator
@@ -265,7 +266,29 @@ class Settings(BaseSettings):
         return result
 
 
+# Environment variables that used to set something and are now ignored (Settings ignores
+# unknown ones), with what replaced each. A server that still exports one would otherwise
+# change behavior without a word: an operator who lowered the old Haiku thinking budget to
+# save cost now gets the default level's budget.
+RETIRED_ENV_VARS: dict[str, str] = {
+    "ANTHROPIC_THINKING_BUDGET_TOKENS": (
+        "reasoning_effort in the community's config.yaml sets Claude Haiku's thinking "
+        "budget now (low 1024, medium 2048, high 4096 tokens, none no thinking; high "
+        "when unset)"
+    ),
+}
+
+
+def _warn_retired_env_vars() -> None:
+    """Log a warning for each retired environment variable that is still set."""
+    present = {name.upper() for name in os.environ}
+    for name, replacement in RETIRED_ENV_VARS.items():
+        if name in present:
+            logger.warning("%s is set but no longer used: %s", name, replacement)
+
+
 @lru_cache
 def get_settings() -> Settings:
     """Get cached settings instance."""
+    _warn_retired_env_vars()
     return Settings()
