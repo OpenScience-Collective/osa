@@ -6702,7 +6702,7 @@
     }
     if (!activity) return null;
     const message = messages[activity.messageIndex];
-    if (!message || message.role !== 'assistant' || !message.content) return null;
+    if (!message || message.role !== 'assistant' || !hasVisibleText(message.content)) return null;
     return { where: 'inline', label: activity.label, messageIndex: activity.messageIndex };
   }
 
@@ -6822,7 +6822,7 @@
       // A reply that has run code is shown even before it has text: the record
       // of what ran is already part of it.
       const ranCode = Array.isArray(msg.executions) && msg.executions.length > 0;
-      if (isLoading && msg.role === 'assistant' && !msg.content && !ranCode && msgIndex === messages.length - 1) {
+      if (isLoading && msg.role === 'assistant' && !hasVisibleText(msg.content) && !ranCode && msgIndex === messages.length - 1) {
         return;
       }
 
@@ -7237,6 +7237,15 @@
     }
   }
 
+  // Whether `text` has anything a reader would see (#538). A reply whose text so far
+  // is only whitespace ("\n\n" is a common first chunk before a reasoning model's tool
+  // call) is an empty reply: it stays hidden behind the loading bubble, gets no status
+  // line, and is dropped if it ends that way. One test, used wherever a reply's text
+  // decides whether it is drawn, so no two places disagree about an empty bubble.
+  function hasVisibleText(text) {
+    return typeof text === 'string' && /\S/.test(text);
+  }
+
   // Apply the authoritative completion payload to the active assistant
   // message. Kept separate from the stream loop so the state transition can
   // be tested without depending on a live model or browser network.
@@ -7257,7 +7266,7 @@
     // A reply that ran code is kept even when it ends with no text: what ran,
     // and any figure it drew, is part of the answer the reader asked for.
     const ranCode = Array.isArray(message.executions) && message.executions.length > 0;
-    if (finalContent || ranCode) {
+    if (hasVisibleText(finalContent) || ranCode) {
       messageList[messageIndex] = {
         ...message,
         content: finalContent,
@@ -7556,7 +7565,8 @@
       // second: show it everything at each tick rather than pace it.
       paced: () => !prefersReducedMotion() && !document.hidden,
       show: (visible) => {
-        if (!visible) return;
+        // Only text a reader can see replaces the loading bubble (#538).
+        if (!hasVisibleText(visible)) return;
         isLoading = false;
         isThinking = false;
         revealingIndex = messageIndex;
@@ -7718,7 +7728,12 @@
               sessionId = event.session_id;
             }
             await settleReveal();
-            const runText = typeof event.content === 'string' ? event.content : accumulatedContent;
+            const sent = typeof event.content === 'string' ? event.content : accumulatedContent;
+            // The canonical text, unless it has nothing to show: then what the stream
+            // showed, if anything, since the reply goes on and wiping text the reader
+            // has seen would leave an empty bubble. Only whitespace is nothing (#538).
+            const streamed = hasVisibleText(accumulatedContent) ? accumulatedContent : '';
+            const runText = hasVisibleText(sent) ? sent : streamed;
             messages[messageIndex].content = compose(runText);
             if (Array.isArray(event.citations)) {
               messages[messageIndex].citations = event.citations;
@@ -7765,7 +7780,7 @@
         clearActivity();
 
         const composed = compose(accumulatedContent);
-        if (composed) {
+        if (hasVisibleText(composed)) {
           messages[messageIndex].content = composed +
             '\n\n_[Response may be incomplete - connection ended unexpectedly]_';
           renderMessages(container);
@@ -7790,7 +7805,7 @@
       // this reply wrote and any code they ran.
       const shown = compose(accumulatedContent);
       const ran = messages[messageIndex] && messages[messageIndex].executions && messages[messageIndex].executions.length;
-      if (shown || ran) {
+      if (hasVisibleText(shown) || ran) {
         const errorType = error.name || 'Error';
         let userMessage = 'Stream interrupted';
 

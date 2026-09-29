@@ -269,19 +269,31 @@ function problemsIn(container, baseline) {
 /** Sample the page every few milliseconds until stopped; collect every label seen. */
 function sampler(container) {
   const baseline = container.querySelectorAll('.osa-message.assistant').length;
-  const state = { samples: 0, problems: [], loadingLabels: [], lineLabels: [], running: true };
+  const state = { samples: 0, mutations: 0, problems: [], loadingLabels: [], lineLabels: [], running: true };
   const note = (list, value) => {
     if (value !== null && list[list.length - 1] !== value) list.push(value);
   };
+  const sample = () => {
+    state.samples++;
+    for (const problem of problemsIn(container, baseline)) {
+      if (!state.problems.includes(problem)) state.problems.push(problem);
+    }
+    const now = view(container);
+    note(state.loadingLabels, now.loading);
+    note(state.lineLabels, now.line);
+  };
+  // Every batch of changes to the conversation, as the widget leaves it at the end of
+  // a task (which is what a browser would paint), so a state that lasts one task
+  // cannot hide between polls; and a poll besides, for what changes without a mutation.
+  const window = container.ownerDocument.defaultView;
+  const observer = new window.MutationObserver(() => {
+    state.mutations++;
+    sample();
+  });
+  observer.observe(container.querySelector('.osa-chat-messages'), { childList: true, subtree: true, characterData: true });
   (async () => {
     while (state.running) {
-      state.samples++;
-      for (const problem of problemsIn(container, baseline)) {
-        if (!state.problems.includes(problem)) state.problems.push(problem);
-      }
-      const now = view(container);
-      note(state.loadingLabels, now.loading);
-      note(state.lineLabels, now.line);
+      sample();
       await sleep(2);
     }
   })();
@@ -290,10 +302,9 @@ function sampler(container) {
     async stop() {
       // A last sample after everything has settled.
       await sleep(10);
-      for (const problem of problemsIn(container, baseline)) {
-        if (!state.problems.includes(problem)) state.problems.push(problem);
-      }
+      sample();
       state.running = false;
+      observer.disconnect();
       return state;
     },
   };
@@ -317,6 +328,8 @@ function countRedraws(window, container) {
 // Long enough to read, and a single chunk, so the paced reveal shows it within a tick.
 const ANSWER = 'Three datasets match: nm000103, nm000132 and nm000140.';
 const REVEAL_MS = 250;
+// Text a reader cannot see, as reasoning models stream it before a tool call (#538).
+const WHITESPACE = '\n\n';
 
 /** Nothing of a status is left: no element, nothing ticking, no activity. */
 function assertNothingLeft(loaded, label) {
@@ -685,6 +698,12 @@ console.log('\nthe stream handler on its own, however it ends, stops its timer a
       s.send({ event: 'tool_request', call_id: 'c', tool: 'execute_code', args: {}, content: 'Text first.' });
       s.close();
     },
+    // Not what the server sends (its content is the run's text), but the reply goes
+    // on after it, so text the reader has seen must not be wiped to nothing.
+    'tool_request with no canonical text': (s) => {
+      s.send({ event: 'tool_request', call_id: 'c', tool: 'execute_code', args: {}, content: WHITESPACE });
+      s.close();
+    },
   };
   for (const [name, end] of Object.entries(cases)) {
     const loaded = loadWidget();
@@ -827,6 +846,195 @@ console.log('\na browser run whose result the server refuses: the reply says it 
   assertEqual(run.problems, [], `no invariant broke in ${run.samples} samples`);
   assertNothingLeft(loaded, 'after the refused result');
   runtime.terminate?.();
+}
+
+// --------------------------------------------------------- whitespace is not text
+
+// A reasoning model often streams "\n\n" before its first tool call. That is not a
+// reply a reader can see: the loading bubble stays, no status line goes under it, and
+// a reply that ends as only whitespace is dropped as an empty one is.
+
+console.log('\nwhitespace before any text leaves the loading bubble up, and never becomes a bubble of its own');
+{
+  const cases = {
+    'whitespace, then a tool call, then the answer': {
+      steps: [
+        { event: 'content', content: WHITESPACE },
+        { event: 'tool_call', name: 'nemar_search_datasets' },
+        { event: 'tool_start', name: 'nemar_search_datasets', input: {} },
+        { event: 'tool_end', name: 'nemar_search_datasets', output: '' },
+        { event: 'content', content: ANSWER },
+        { event: 'done', content: WHITESPACE + ANSWER, citations: [] },
+      ],
+      loading: ['Searching datasets...', 'Analyzing results...'],
+      reply: ANSWER,
+    },
+    'whitespace, then the answer (no tool)': {
+      steps: [
+        { event: 'content', content: WHITESPACE },
+        { event: 'content', content: ANSWER },
+        { event: 'done', content: WHITESPACE + ANSWER, citations: [] },
+      ],
+      loading: [],
+      reply: ANSWER,
+    },
+    'thinking, then whitespace, then a tool call': {
+      steps: [
+        { event: 'thinking' },
+        { event: 'content', content: ' ' },
+        { event: 'tool_call', name: 'retrieve_test_docs' },
+        { event: 'content', content: ANSWER },
+        { event: 'done', content: ANSWER, citations: [] },
+      ],
+      loading: ['Thinking...', 'Looking up documentation...'],
+      reply: ANSWER,
+    },
+    'whitespace, then done with an empty canonical text': {
+      steps: [
+        { event: 'content', content: WHITESPACE },
+        { event: 'tool_call', name: 'nemar_search_datasets' },
+        { event: 'done', content: '', citations: [] },
+      ],
+      loading: ['Searching datasets...'],
+      reply: null,
+    },
+    'whitespace, then done with whitespace as the canonical text': {
+      steps: [
+        { event: 'content', content: WHITESPACE },
+        { event: 'done', content: WHITESPACE, citations: [] },
+      ],
+      loading: [],
+      reply: null,
+    },
+    'whitespace, then the stream ends with no done': {
+      steps: [{ event: 'content', content: WHITESPACE }, { event: 'tool_call', name: 'nemar_search_datasets' }],
+      loading: ['Searching datasets...'],
+      reply: null,
+    },
+    'whitespace, then the connection fails': {
+      steps: [{ event: 'content', content: WHITESPACE }, { event: 'tool_call', name: 'nemar_search_datasets' }, 'FAIL'],
+      loading: ['Searching datasets...'],
+      reply: null,
+    },
+  };
+  for (const [name, { steps, loading, reply }] of Object.entries(cases)) {
+    const loaded = loadWidget();
+    const { container, window } = loaded;
+    await sleep(20);
+    const stream = loaded.queue();
+    const watch = sampler(container);
+    const before = container.querySelectorAll('.osa-message.assistant').length;
+    send(loaded);
+    await waitUntil(() => view(container).loading !== null, `${name}: the loading bubble`);
+    let sawWhitespaceWait = false;
+    let failed = false;
+    for (const event of steps) {
+      if (event === 'FAIL') {
+        stream.fail(new Error('connection reset'));
+        failed = true;
+        continue;
+      }
+      stream.send(event);
+      await sleep(event.event === 'content' ? REVEAL_MS : 30);
+      if (event.event === 'content' && !/\S/.test(event.content)) {
+        // Only whitespace has arrived: the reader still sees the loading bubble.
+        sawWhitespaceWait = view(container).loading !== null
+          && container.querySelectorAll('.osa-message.assistant').length === before
+          && container.querySelectorAll('.osa-activity-status').length === 0;
+      }
+    }
+    if (!failed) stream.close();
+    await waitUntil(() => settled(loaded), `${name}: the send settles`);
+    const run = await watch.stop();
+    assert(sawWhitespaceWait, `${name}: after only whitespace, the loading bubble is still up and no reply is on the page`);
+    assertEqual(run.loadingLabels.filter((l) => l !== TITLE), loading,
+      `${name}: after the title, the loading bubble said ${JSON.stringify(loading)}`);
+    assertEqual(run.lineLabels, [], `${name}: no status line was ever drawn`);
+    assertEqual(run.problems, [], `${name}: no invariant broke in ${run.samples} samples (${run.mutations} of them on a change)`);
+    const after = container.querySelectorAll('.osa-message.assistant').length;
+    if (reply === null) {
+      assertEqual(after, before, `${name}: a reply that was only whitespace is dropped, not left as an empty bubble`);
+    } else {
+      assertEqual([after, lastReplyText(container).trim()], [before + 1, reply], `${name}: one reply, holding the answer`);
+    }
+    assertNothingLeft(loaded, name);
+    void window;
+  }
+}
+
+console.log('\nwhitespace, then code run in the browser, then the answer: never an empty bubble');
+{
+  const loaded = loadWidget({ runtime: true });
+  const { container } = loaded;
+  const runtime = await withLocalRuntime(loaded);
+  const first = loaded.queue();
+  const second = loaded.queue();
+  const watch = sampler(container);
+  send(loaded, 'Plot the alpha power.');
+  await waitUntil(() => view(container).loading !== null, 'the loading bubble');
+  first.send({ event: 'content', content: WHITESPACE });
+  await sleep(REVEAL_MS);
+  first.send({ event: 'tool_call', name: 'execute_code' });
+  await waitUntil(() => view(container).loading === 'Writing code...', 'Writing code... in the loading bubble');
+  assertEqual(view(container).line, null, 'the whitespace did not become text: the code being written is the loading bubble\'s label');
+  first.send({ ...CODE_REQUEST, content: WHITESPACE });
+  first.close();
+  await waitUntil(() => loaded.requests.some((r) => r.url.endsWith('/chat/resume')), 'the result goes back');
+  second.send({ event: 'content', content: 'The alpha peak is at 10 Hz.' });
+  second.send({ event: 'done', session_id: 's', content: 'The alpha peak is at 10 Hz.', citations: [] });
+  second.close();
+  await waitUntil(() => settled(loaded), 'the send settles', 10_000);
+  const run = await watch.stop();
+  assertEqual(run.problems, [], `no invariant broke in ${run.samples} samples (${run.mutations} of them on a change)`);
+  assertEqual(run.lineLabels, [], 'no status line was ever drawn under the whitespace');
+  const replies = [...container.querySelectorAll('.osa-message.assistant')];
+  assertEqual(replies.length, 2, 'the greeting and one reply');
+  assertEqual(lastReplyText(container).trim(), 'The alpha peak is at 10 Hz.', 'the reply holds run two\'s answer, with nothing of the whitespace before it');
+  assertNothingLeft(loaded, 'after whitespace, a browser run and the answer');
+  runtime.terminate?.();
+}
+
+console.log('\nthe renderer holds the same rule on its own, whatever wrote the message');
+{
+  // Every writer in the stream handler keeps whitespace out of a reply (the checks
+  // above). The renderer does not rely on it: a message that holds only whitespace is
+  // not drawn while the reply is pending, and never gets a status line under it. Here
+  // the whitespace is written into the message directly, as a writer that forgot the
+  // rule would leave it.
+  const loaded = loadWidget();
+  const { container, api } = loaded;
+  await sleep(20);
+  const stream = loaded.queue();
+  send(loaded);
+  stream.send({ event: 'tool_call', name: 'nemar_search_datasets' });
+  await waitUntil(() => view(container).loading === 'Searching datasets...', 'the loading bubble names the search');
+  const list = api.getMessages();
+  const index = list.length - 1;
+  assertEqual([list[index].role, list[index].content], ['assistant', ''], 'the reply is still an empty placeholder');
+  const greetingOnly = view(container).assistants;
+  list[index].content = WHITESPACE;
+  api.renderMessages(container);
+  assertEqual([view(container).assistants, view(container).loading], [greetingOnly, 'Searching datasets...'],
+    'while pending, a reply holding only whitespace is not drawn: the loading bubble stands for it');
+  assertEqual(problemsIn(container, greetingOnly), [], 'and nothing on the page breaks an invariant');
+  list[index].content = '';
+
+  stream.send({ event: 'content', content: ANSWER });
+  await sleep(REVEAL_MS);
+  stream.send({ event: 'tool_call', name: 'retrieve_test_docs' });
+  await waitUntil(() => view(container).line === 'Looking up documentation...', 'the status line under the text');
+  const text = list[index].content;
+  list[index].content = WHITESPACE;
+  api.renderMessages(container);
+  assertEqual(view(container).line, null, 'a reply holding only whitespace never gets a status line under it');
+  list[index].content = text;
+  api.renderMessages(container);
+  assertEqual(view(container).line, 'Looking up documentation...', 'and with its text back, the line is back');
+  stream.send({ event: 'content', content: ' More.' });
+  stream.send({ event: 'done', content: `${ANSWER} More.`, citations: [] });
+  stream.close();
+  await waitUntil(() => settled(loaded), 'the send settles');
+  assertNothingLeft(loaded, 'after the renderer\'s own checks');
 }
 
 // ------------------------------------------------------------- appearance
