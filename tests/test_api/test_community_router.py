@@ -648,8 +648,13 @@ class TestCommunityConfigOfferedModels:
 
         return TestClient(app)
 
-    def test_offered_models_matches_backend_offer_list(self, client: TestClient) -> None:
+    def test_offered_models_matches_backend_offer_list(
+        self, client: TestClient, monkeypatch
+    ) -> None:
+        from src.api.config import get_settings
         from src.core.services.anthropic_llm import OFFERED_MODELS
+
+        monkeypatch.setattr(get_settings(), "bedrock_api_key", "a-bedrock-key")
 
         response = client.get("/hed/")
         assert response.status_code == 200
@@ -659,6 +664,21 @@ class TestCommunityConfigOfferedModels:
 
         returned = {entry["id"]: entry["label"] for entry in data["offered_models"]}
         assert returned == OFFERED_MODELS
+
+    def test_bedrock_models_are_not_offered_where_the_server_cannot_run_them(
+        self, client: TestClient, monkeypatch
+    ) -> None:
+        """A menu entry that fails on first use is worse than no entry."""
+        from src.api.config import get_settings
+        from src.core.services.anthropic_llm import BEDROCK_MODELS, OFFERED_MODELS
+
+        monkeypatch.setattr(get_settings(), "bedrock_api_key", None)
+
+        data = client.get("/hed/").json()
+
+        returned = {entry["id"]: entry["label"] for entry in data["offered_models"]}
+        assert returned == {k: v for k, v in OFFERED_MODELS.items() if k not in BEDROCK_MODELS}
+        assert returned  # the Claude models remain
 
     def test_every_offered_model_id_is_accepted_by_normalize_model(
         self, client: TestClient
