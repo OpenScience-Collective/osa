@@ -5073,8 +5073,10 @@
       message.executions = (message.executions || []).concat(executionRecord(request, result));
     }
     // The result goes back to the model next, which reads it before anything else
-    // happens: said until the continuing stream shows what comes of it (#538).
+    // happens: said until the continuing stream shows what comes of it (#538). The run
+    // panel stood for the wait while the code ran; the wait for that stream begins.
     activity = { kind: 'analyze', label: ACTIVITY_ANALYZING, messageIndex };
+    beginWait();
     renderMessages(container);
     return result;
   }
@@ -5752,7 +5754,7 @@
     const loadingLabel = container.querySelector('.osa-loading-label');
     const status = statusToShow();
     if (loadingLabel && status && status.where === 'loading') {
-      noteStatus(container, status);
+      announceStatus(container, status);
       loadingLabel.textContent = status.label;
     }
   }
@@ -6681,14 +6683,23 @@
   // Tools started and not yet finished, so a batch reads as analyzed only once its
   // last tool has ended.
   let toolsRunning = 0;
-  // The status on screen and when it began to read what it reads: {label, since}.
-  let statusShown = null;
+  // When the reader's current wait began (a statusClock time), or null. A wait is one
+  // stretch with nothing new to read. It begins as each stream is asked for: when a
+  // message is sent, and when code run in the page has finished and its result goes
+  // back for the continuing stream (the run panel stood for the wait before that).
+  // It begins again at each chunk of visible text. Nothing else starts it again: a
+  // new label is the same wait, and so is a slow response or a rate-limit pause
+  // before the stream arrives, which the reader waits through all the same.
+  let waitSince = null;
   let statusTicker = null;
   let statusContainer = null;
-  // Where the elapsed time is read from. A variable only so the test hooks can turn
+  // Where the elapsed time is read from: a monotonic clock, so a wall clock set back or
+  // forward mid-wait does not show in it. A variable only so the test hooks can turn
   // the clock by hand.
   let statusClock = {
-    now: () => Date.now(),
+    now: () => (typeof performance !== 'undefined' && typeof performance.now === 'function'
+      ? performance.now()
+      : Date.now()),
     every: (fn, ms) => setInterval(fn, ms),
     cancel: (id) => clearInterval(id),
   };
@@ -6698,6 +6709,11 @@
   function clearActivity() {
     activity = null;
     toolsRunning = 0;
+  }
+
+  // A new wait begins now (see waitSince).
+  function beginWait() {
+    waitSince = statusClock.now();
   }
 
   // The reply is now doing `next` ({kind, label} or null), and the page says so.
@@ -6726,18 +6742,12 @@
     return { where: 'inline', label: activity.label, messageIndex: activity.messageIndex, spoken: true };
   }
 
-  // Note that `status` is what the page shows now (null: no status). A new label is a
-  // new wait, so its time starts again. The status announcer, one polite live region
-  // made with the widget and outside the conversation, so no redraw replaces it, says
-  // each new label once and is emptied when the status ends; the visible label is
-  // hidden from a screen reader, which would otherwise hear it twice.
-  function noteStatus(container, status) {
-    const label = status ? status.label : null;
-    if (label === null) {
-      statusShown = null;
-    } else if (!statusShown || statusShown.label !== label) {
-      statusShown = { label, since: statusClock.now() };
-    }
+  // Say `status`, what the page shows now (null: no status), to a screen reader. The
+  // status announcer, one polite live region made with the widget and outside the
+  // conversation, so no redraw replaces it, says each new label once and is emptied
+  // when the status ends; the visible label is hidden from a screen reader, which
+  // would otherwise hear it twice.
+  function announceStatus(container, status) {
     const announcer = container.querySelector('.osa-status-announcer');
     const spoken = status && status.spoken ? status.label : '';
     if (announcer && announcer.textContent !== spoken) announcer.textContent = spoken;
@@ -6745,8 +6755,8 @@
 
   // The elapsed part: nothing for a wait too short to notice, then whole seconds.
   function statusElapsedText() {
-    if (!statusShown) return '';
-    const ms = statusClock.now() - statusShown.since;
+    if (waitSince === null) return '';
+    const ms = statusClock.now() - waitSince;
     return ms >= STATUS_ELAPSED_AFTER_MS ? `${Math.floor(ms / 1000)} s` : '';
   }
 
@@ -6806,7 +6816,7 @@
     const messagesEl = container.querySelector('.osa-chat-messages');
     if (!messagesEl) return;
     const status = statusToShow();
-    noteStatus(container, status);
+    announceStatus(container, status);
     let labelEl = null;
     if (status && status.where === 'loading') {
       labelEl = messagesEl.querySelector('.osa-loading .osa-loading-label');
@@ -6839,7 +6849,7 @@
     messagesEl.innerHTML = '';
     // The loading bubble's label, or a line under the reply's text (#538), never both.
     const status = statusToShow();
-    noteStatus(container, status);
+    announceStatus(container, status);
 
     messages.forEach((msg, msgIndex) => {
       // The streaming handler keeps an empty assistant entry so the final
@@ -7668,6 +7678,7 @@
             if (hasVisibleText(event.content)) {
               clearActivity();
               labelFromCalls = false;
+              beginWait();
             }
 
             // Accumulate content; the reveal decides when the reader sees it
@@ -7915,6 +7926,7 @@
 
     isLoading = true;
     isThinking = false;
+    beginWait();
 
     // Boot the browser runtime now if this community preloads on first message,
     // so the Python download overlaps this turn instead of waiting for a Run gate.

@@ -117,9 +117,15 @@ const LOCAL_TOOLS = [{ name: 'execute_code', runtime: 'python', requires_permiss
 
 /**
  * The widget in its own window, initialized, with `fetch` answering /chat and
- * /chat/resume from the streams a test queues, in order.
+ * /chat/resume from the streams a test queues, in order. The status's clock is a hand
+ * clock unless `ownClock` is set; then the widget reads its own clock, from the
+ * `performance` and `Date` given (the real ones unless a test stands in for them, and
+ * `performance: undefined` is a page without one).
  */
-function loadWidget({ matchMedia, runtime = false } = {}) {
+function loadWidget(options = {}) {
+  const { matchMedia, runtime = false, ownClock = false } = options;
+  const perf = 'performance' in options ? options.performance : globalThis.performance;
+  const DateImpl = options.Date || Date;
   const window = new Window({
     url: 'http://localhost/page',
     settings: {
@@ -159,15 +165,15 @@ function loadWidget({ matchMedia, runtime = false } = {}) {
   // eslint-disable-next-line no-new-func
   const run = new Function(
     'window', 'document', 'localStorage', 'fetch', 'navigator', 'AbortSignal', 'URL',
-    'TextDecoder', 'setTimeout', 'clearTimeout', 'console', SOURCE
+    'TextDecoder', 'setTimeout', 'clearTimeout', 'console', 'performance', 'Date', SOURCE
   );
   run(window, window.document, window.localStorage, fetch, window.navigator, AbortSignal, URL,
-    TextDecoder, setTimeout, clearTimeout, console);
+    TextDecoder, setTimeout, clearTimeout, console, perf, DateImpl);
   const widget = window.OSAChatWidget;
   widget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: STORAGE_KEY });
   widget.init();
   const clock = handClock();
-  widget.__activity.setClock(clock);
+  if (!ownClock) widget.__activity.setClock(clock);
   const container = window.document.querySelector('.osa-chat-widget');
   return {
     window, widget, container, clock, requests,
@@ -754,15 +760,16 @@ console.log('\nan event this widget does not know is only warned about, and the 
 
 // ------------------------------------------------------------- elapsed time
 
-console.log('\nthe elapsed time: none before five seconds, then whole seconds, ticking in place');
+console.log('\nthe elapsed time: none before five seconds, then whole seconds, ticking in place, for the whole wait');
 {
   const loaded = loadWidget();
   const { container, window, clock, activity } = loaded;
   await sleep(20);
   const stream = loaded.queue();
-  send(loaded);
+  send(loaded); // the wait begins as the message is sent
+  await waitUntil(() => view(container).loading !== null, 'the loading bubble');
   stream.send({ event: 'tool_call', name: 'nemar_search_datasets' });
-  await sleep(30);
+  await handled(loaded, stream);
   const label = container.querySelector('.osa-loading-label');
   const elapsed = container.querySelector('.osa-loading .osa-status-elapsed');
   assert(activity.ticking(), 'a timer runs while the status is up');
@@ -780,26 +787,120 @@ console.log('\nthe elapsed time: none before five seconds, then whole seconds, t
   assert(container.querySelector('.osa-loading .osa-status-elapsed') === elapsed, 'the same element was written each second');
 
   stream.send({ event: 'tool_start', name: 'nemar_search_datasets', input: {} });
-  await sleep(30);
+  await handled(loaded, stream);
   clock.advance(1000);
-  assertEqual(view(container).loadingElapsed, '13 s', 'the same activity running on keeps its time');
+  assertEqual(view(container).loadingElapsed, '13 s', 'the search running on is the same wait');
   stream.send({ event: 'tool_end', name: 'nemar_search_datasets', output: '' });
-  await sleep(30);
-  assertEqual([view(container).loading, view(container).loadingElapsed], ['Analyzing results...', ''], 'a new activity starts its own time');
-  clock.advance(6000);
-  assertEqual(view(container).loadingElapsed, '6 s', 'and counts it');
+  await handled(loaded, stream);
+  assertEqual([view(container).loading, view(container).loadingElapsed], ['Analyzing results...', '13 s'],
+    'a new label is the same wait: its time runs on');
+  stream.send({ event: 'thinking' });
+  stream.send({ event: 'content', content: WHITESPACE });
+  await handled(loaded, stream);
+  clock.advance(2000);
+  assertEqual(view(container).loadingElapsed, '15 s', 'thinking, and whitespace, are nothing new to read: the time runs on');
 
   stream.send({ event: 'content', content: 'Here is what I found. ' });
-  await sleep(REVEAL_MS);
-  stream.send({ event: 'tool_call', name: 'nemar_describe_dataset' });
-  await sleep(30);
-  clock.advance(9000);
-  assertEqual([view(container).line, view(container).lineElapsed], ['Looking up dataset...', '9 s'], 'a status line counts too');
+  await waitUntil(() => lastReplyText(container).includes('Here is what I found.'), 'the first text');
+  stream.send({ event: 'tool_call', name: 'nemar_search_datasets' });
+  await handled(loaded, stream);
+  assertEqual([view(container).line, view(container).lineElapsed], ['Searching datasets...', ''],
+    'the same label in a new wait: the text began it, so its time starts again');
+  clock.advance(4999);
+  assertEqual(view(container).lineElapsed, '', 'nothing before five seconds of it');
+  clock.advance(4001);
+  assertEqual(view(container).lineElapsed, '9 s', 'then its own seconds: a status line counts too');
   stream.send({ event: 'content', content: ANSWER });
   stream.send({ event: 'done', content: `Here is what I found. ${ANSWER}`, citations: [] });
   stream.close();
   await waitUntil(() => settled(loaded), 'the send settles');
   assertNothingLeft(loaded, 'after done');
+}
+
+console.log('\na slow response is part of the wait, and the next message begins a new one');
+{
+  const loaded = loadWidget();
+  const { container, clock } = loaded;
+  await sleep(20);
+  const first = loaded.queue({ hold: true });
+  send(loaded);
+  await waitUntil(() => view(container).loading === TITLE, 'the loading bubble');
+  clock.advance(6000);
+  assertEqual([view(container).loading, view(container).loadingElapsed], [TITLE, '6 s'], 'no response yet, six seconds in');
+  first.release();
+  first.send({ event: 'thinking' });
+  await handled(loaded, first);
+  clock.advance(1000);
+  assertEqual([view(container).loading, view(container).loadingElapsed], ['Thinking...', '7 s'], 'the stream\'s start does not start the time again');
+  first.send({ event: 'content', content: ANSWER });
+  first.send({ event: 'done', content: ANSWER, citations: [] });
+  first.close();
+  await waitUntil(() => settled(loaded), 'the first send settles');
+  clock.advance(60_000); // the reader reads for a minute
+  const second = loaded.queue({ hold: true });
+  send(loaded, 'And the second question?');
+  await waitUntil(() => view(container).loading === TITLE, 'the second loading bubble');
+  assertEqual(view(container).loadingElapsed, '', 'a new message is a new wait: nothing of the minute before');
+  second.release();
+  second.send({ event: 'content', content: ANSWER });
+  second.send({ event: 'done', content: ANSWER, citations: [] });
+  second.close();
+  await waitUntil(() => settled(loaded), 'the second send settles');
+  assertNothingLeft(loaded, 'after two messages');
+}
+
+console.log('\nthe widget\'s own clock is monotonic: a wall clock set back mid-wait does not show');
+{
+  // performance.now, moved on by the test; and Date, whose now() the test sets back an
+  // hour, as a wall clock can be.
+  let ahead = 0;
+  const perf = { now: () => globalThis.performance.now() + ahead };
+  let back = 0;
+  class WallClock extends Date {
+    static now() { return Date.now() - back; }
+  }
+  const loaded = loadWidget({ ownClock: true, performance: perf, Date: WallClock });
+  const { container } = loaded;
+  await sleep(20);
+  const stream = loaded.queue();
+  send(loaded);
+  stream.send({ event: 'tool_call', name: 'nemar_search_datasets' });
+  await handled(loaded, stream);
+  ahead += 6000;
+  back += 3_600_000;
+  // A tool whose running label differs from its call's repaints the label in place,
+  // and the time beside it.
+  stream.send({ event: 'tool_start', name: 'nemar_list_recordings', input: {} });
+  await handled(loaded, stream);
+  assertEqual([view(container).loading, view(container).loadingElapsed], ['Listing recordings...', '6 s'],
+    'six seconds on the monotonic clock read "6 s", with the wall clock an hour back');
+  stream.send({ event: 'content', content: ANSWER });
+  stream.send({ event: 'done', content: ANSWER, citations: [] });
+  stream.close();
+  await waitUntil(() => settled(loaded), 'the send settles');
+}
+
+console.log('\nwith no performance clock, the elapsed time falls back to Date');
+{
+  let ahead = 0;
+  class WallClock extends Date {
+    static now() { return Date.now() + ahead; }
+  }
+  const loaded = loadWidget({ ownClock: true, performance: undefined, Date: WallClock });
+  const { container } = loaded;
+  await sleep(20);
+  const stream = loaded.queue();
+  send(loaded);
+  stream.send({ event: 'tool_call', name: 'nemar_search_datasets' });
+  await handled(loaded, stream);
+  ahead += 7000;
+  stream.send({ event: 'tool_start', name: 'nemar_list_recordings', input: {} });
+  await handled(loaded, stream);
+  assertEqual([view(container).loading, view(container).loadingElapsed], ['Listing recordings...', '7 s'], 'it reads Date.now()');
+  stream.send({ event: 'content', content: ANSWER });
+  stream.send({ event: 'done', content: ANSWER, citations: [] });
+  stream.close();
+  await waitUntil(() => settled(loaded), 'the send settles');
 }
 
 // ------------------------------------------------------- what a screen reader hears
@@ -1067,27 +1168,32 @@ console.log('\ncode run in the browser: Writing code..., the Run panel alone, th
   })();
   send(loaded, 'Plot the alpha power.');
   await waitUntil(() => view(container).loading !== null, 'the loading bubble');
-  await sleep(10);
   first.send({ event: 'session', session_id: 's' });
   first.send({ event: 'tool_call', name: 'execute_code' });
-  await sleep(40);
+  await handled(loaded, first);
   assertEqual(view(container).loading, 'Writing code...', 'while the model writes the code, the bubble says so');
+  loaded.clock.advance(9000);
+  assertEqual(view(container).loadingElapsed, '9 s', 'for nine seconds');
   first.send(CODE_REQUEST);
   first.close();
   await waitUntil(() => container.querySelector('.osa-tool-panel'), 'the run panel');
   await waitUntil(() => loaded.requests.some((r) => r.url.endsWith('/chat/resume')), 'the result goes back');
-  await sleep(30);
+  await waitUntil(() => view(container).loading === 'Analyzing results...', 'the status after the run');
   assertEqual(view(container).loading, 'Analyzing results...',
     'once the code has run, the model reads what it printed: said while the result is still on its way');
   assert(container.querySelector('.osa-execution-run'), 'with the run on the page above it');
+  assertEqual(view(container).loadingElapsed, '', 'the run panel stood for the run: the wait for what comes of it begins now');
+  loaded.clock.advance(6000);
+  assertEqual(view(container).loadingElapsed, '6 s', 'and counts on while the result is on its way');
   second.release();
-  await sleep(20);
   second.send({ event: 'session', session_id: 's' });
   second.send({ event: 'thinking' });
-  await sleep(30);
-  assertEqual(view(container).loading, 'Analyzing results...', 'the continuing stream keeps saying so');
+  await handled(loaded, second);
+  loaded.clock.advance(1000);
+  assertEqual([view(container).loading, view(container).loadingElapsed], ['Analyzing results...', '7 s'],
+    'the continuing stream keeps saying so, in the same wait');
   second.send({ event: 'content', content: 'The alpha peak is at 10 Hz.' });
-  await sleep(REVEAL_MS);
+  await waitUntil(() => lastReplyText(container).includes('10 Hz'), 'the answer');
   second.send({ event: 'done', session_id: 's', content: 'The alpha peak is at 10 Hz.', citations: [] });
   second.close();
   await waitUntil(() => settled(loaded), 'the send settles', 10_000);
