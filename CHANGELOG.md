@@ -69,6 +69,10 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Fixed
 
+- **A warning for every streamed tool-call chunk filled the production log** (issue #540).
+  Anthropic streams a tool call's arguments as `input_json_delta` blocks, and the content classifier only knew `tool_use`, so each chunk of each tool call logged "unrecognized content block type".
+  Production had 26,389 of them in four days.
+  `input_json_delta` is now a known block that carries no answer text, and a block type that really is unknown still warns once per call.
 - **Concurrent OpenRouter requests could go out under each other's API key** (issue #526).
   LiteLLM keeps credentials on a module every request in the process shares, and did not send them with the call, so requests running at the same time under different keys (a caller's own key next to the platform's) used whichever key was written last: 20 of 40 interleaved requests used the other key when measured.
   The key now travels with each call.

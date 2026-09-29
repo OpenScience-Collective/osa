@@ -197,6 +197,37 @@ class TestClassifyContentBlocks:
         assert result == [("thinking", "", []), ("text", "ok", [])]
         assert "unrecognized content block type" not in caplog.text
 
+    def test_a_streamed_tool_call_logs_nothing_and_surfaces_nothing(self, caplog):
+        """Anthropic streams a tool call's arguments as input_json_delta blocks.
+
+        A long code call is hundreds of chunks, so a warning per chunk filled the
+        production log (26,389 of them in four days). The blocks carry JSON arguments,
+        never answer text, so they are known and dropped quietly like tool_use itself.
+        """
+        chunks = [
+            [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "execute_code",
+                    "input": {},
+                    "index": 1,
+                }
+            ],
+            [{"type": "input_json_delta", "partial_json": '{"code": "import ', "index": 1}],
+            [{"type": "input_json_delta", "partial_json": 'numpy"}', "index": 1}],
+            [
+                {"type": "text", "text": "Running it now.", "index": 0},
+                {"type": "input_json_delta", "partial_json": "", "index": 1},
+            ],
+        ]
+        with caplog.at_level("WARNING"):
+            results = [classify_content_blocks(chunk) for chunk in chunks]
+
+        assert results == [[], [], [], [("text", "Running it now.", [])]]
+        assert "unrecognized content block type" not in caplog.text
+        assert "input_json_delta" not in caplog.text
+
     def test_unrecognized_block_type_warns(self, caplog):
         """An unrecognized block type logs a warning naming the type.
 
