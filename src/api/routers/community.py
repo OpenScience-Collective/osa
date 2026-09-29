@@ -77,7 +77,11 @@ from src.core.config.runtime_lock import (
 )
 from src.core.limits import MAX_BROWSER_RUNS_PER_REPLY
 from src.core.services.anthropic_llm import OFFERED_MODELS, create_anthropic_llm, normalize_model
-from src.core.services.anthropic_models import BEDROCK_MODELS, is_bedrock_model
+from src.core.services.anthropic_models import (
+    BEDROCK_MODELS,
+    DEFAULT_MODEL,
+    is_bedrock_model,
+)
 from src.core.services.bedrock_llm import create_bedrock_llm
 from src.core.services.litellm_llm import DEFAULT_MODEL as OPENROUTER_DEFAULT_MODEL
 from src.core.services.litellm_llm import DEFAULT_PROVIDER as OPENROUTER_DEFAULT_PROVIDER
@@ -1395,6 +1399,19 @@ def _bedrock_choice(choice: ProviderChoice, model: str, settings: Settings) -> P
     return ProviderChoice(provider="bedrock", api_key=None, key_source="platform")
 
 
+def _claude_fallback(settings: Settings) -> str:
+    """The Claude model that stands in for a Bedrock default that cannot be served.
+
+    The deployment's own default when that is a Claude model, else the platform-wide
+    default.
+    """
+    try:
+        candidate = normalize_model(settings.default_model)
+    except ValueError:
+        return DEFAULT_MODEL
+    return DEFAULT_MODEL if is_bedrock_model(candidate) else candidate
+
+
 @dataclass(frozen=True)
 class RequestRoute:
     """Where one request goes: its provider, and the model it runs."""
@@ -1430,7 +1447,29 @@ def _route_request(
         has_byok=choice.key_source == "byok",
     )
     if choice.provider == "anthropic" and is_bedrock_model(model):
-        choice = _bedrock_choice(choice, model, get_settings())
+        settings = get_settings()
+        try:
+            choice = _bedrock_choice(choice, model, settings)
+        except HTTPException:
+            if requested_model:
+                # The caller named this model: they are told why they cannot have it.
+                raise
+            # The community's default is a Bedrock model this request cannot use: the
+            # caller has their own key, or the deployment has no Bedrock key. Nobody
+            # asked for that model, so refusing would take the whole community down for
+            # them (the CLI never sends a model). Run a Claude model instead.
+            fallback = _claude_fallback(settings)
+            logger.error(
+                "Community %s: default model %r cannot serve this request (%s key, %s); "
+                "running %s instead",
+                community_id,
+                model,
+                choice.key_source,
+                "Bedrock key configured" if settings.bedrock_api_key else "no Bedrock key",
+                fallback,
+                extra={"community_id": community_id, "model": model, "fallback": fallback},
+            )
+            model = fallback
     return RequestRoute(choice=choice, model=model, provider_hint=provider_hint)
 
 
