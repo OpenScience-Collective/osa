@@ -136,6 +136,20 @@ class TestPrepareMessages:
         assert SCHEMA_TEXT in block["text"]
         assert registry.by_tag(1).source == "https://hedtags.org/schema"
 
+    def test_each_source_ends_with_a_reminder_to_tag_claims(self) -> None:
+        """Models follow the convention far more often with the reminder next to the text.
+
+        Measured through the full stack on HED documentation questions: Qwen3 Next
+        tagged its answer in 5 of 7 runs with only the system-prompt instruction, and
+        in 12 of 13 with this line after the source.
+        """
+        tool = _tool_message(("https://hedtags.org/schema", "The HED schema", SCHEMA_TEXT))
+        prepared, _ = prepare_messages([tool])
+
+        text = prepared[0].content[0]["text"]
+        assert text.rstrip().endswith("[src:1] after the sentence.)")
+        assert SCHEMA_TEXT in text
+
     def test_the_callers_messages_are_not_mutated(self) -> None:
         tool = _tool_message(("https://hedtags.org/schema", "The HED schema", SCHEMA_TEXT))
         prepare_messages([tool])

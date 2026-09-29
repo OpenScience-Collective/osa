@@ -47,14 +47,16 @@ CITED_TEXT_LIMIT = 300
 #: of the syntax ``MARKER_PATTERN`` parses, kept here so the two cannot drift.
 CITATION_INSTRUCTION = (
     "## Citing Sources\n\n"
-    "Retrieved documents, discussions, FAQ entries, forum posts and papers arrive "
-    "tagged like `[src:3] Title`. When you state a fact drawn from one, put its tag "
-    "immediately after the claim's final punctuation, for example: `HED tags are "
-    "assembled from a schema.[src:3]`. Use several tags, like `[src:1][src:2]`, when "
-    "a claim rests on several sources. Use only tags that appear in the tool results "
-    "and never invent one. Do not write URLs for these sources, and never write a bare "
-    "`[3]`; the reader's screen turns your tags into numbered citations. If the tool "
-    "results do not answer the question, say so and cite nothing."
+    "This section replaces any earlier instruction to link to your sources. Retrieved "
+    "documents, discussions, FAQ entries, forum posts and papers arrive tagged like "
+    "`[src:3] Title`. After each sentence that states a fact drawn from one, write its "
+    "tag immediately after the sentence's final punctuation, for example: `HED tags are "
+    "assembled from a schema.[src:3]`. Write `[src:1][src:2]` when a claim rests on "
+    "several sources. Use only tags that appear in the tool results and never invent "
+    "one. Do not write a markdown link or a URL for these sources, and never write a bare "
+    "`[3]`: the reader's screen turns each tag into a numbered, clickable citation. A "
+    "fact that did not come from a tool result gets no tag. If the tool results do not "
+    "answer the question, say so and cite nothing."
 )
 
 #: Horizontal whitespace a model may leave before a tag; it goes with the tag.
@@ -178,7 +180,8 @@ def _search_result_text(block: dict[str, Any]) -> str:
 
 def _render_tagged(entry: TaggedSource, text: str) -> str:
     heading = f"[src:{entry.tag}] {entry.title}".rstrip()
-    return f"{heading}\nSource: {entry.source}\n{text}"
+    reminder = f"(End of [src:{entry.tag}]. Cite a claim drawn from it by writing [src:{entry.tag}] after the sentence.)"
+    return f"{heading}\nSource: {entry.source}\n{text}\n\n{reminder}"
 
 
 def _restore_tags(block: dict[str, Any], registry: SourceRegistry) -> dict[str, Any]:
