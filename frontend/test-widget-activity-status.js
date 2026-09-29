@@ -179,6 +179,8 @@ function loadWidget(options = {}) {
     window, widget, container, clock, requests,
     api: widget.__browser,
     activity: widget.__activity,
+    /** Wait until the community config has been applied (the loading label reads its title). */
+    ready: () => waitUntil(() => widget.__browser.getConfig().title === TITLE, 'the community config'),
     /**
      * Queue the stream the next /chat or /chat/resume request gets. A held one is
      * answered only once `release()` is called, as a request still on the network.
@@ -347,6 +349,9 @@ function countRedraws(window, container) {
 
 // Long enough to read, and a single chunk, so the paced reveal shows it within a tick.
 const ANSWER = 'Three datasets match: nm000103, nm000132 and nm000140.';
+// Waited out only where the check is that something was NOT drawn, so there is no
+// event to wait for: by then the reveal would have drawn a chunk that arrived with
+// nothing pending (it draws one at once, or at the latest on its first 80 ms tick).
 const REVEAL_MS = 250;
 // Text a reader cannot see, as reasoning models stream it before a tool call (#538).
 const WHITESPACE = '\n\n';
@@ -416,6 +421,17 @@ console.log('\nthe label a tool call gets, from its name alone');
   assertEqual(label(undefined), 'Working...', 'no name at all is Working...');
   assertEqual(label({ toString: () => 'search_x' }), 'Working...', 'a name that is not a string is Working...');
   assertEqual(label('search'), 'Searching...', 'a verb alone');
+  // Names that are also the names of Object.prototype's own properties: a lookup table
+  // read with `in` or a bare index would find those, and read a function as a verb.
+  const prototypeBefore = Object.getOwnPropertyNames(Object.prototype).sort();
+  const hostile = ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf', 'isPrototypeOf', '__defineGetter__'];
+  assertEqual(hostile.map((n) => [label(n, 'writing'), label(n), kind(n)]), hostile.map(() => ['Working...', 'Working...', 'other']),
+    `${hostile.join(', ')}: each reads Working..., in both phases`);
+  assertEqual(
+    ['search_constructor', 'search___proto__', 'search_toString', 'search_hasOwnProperty', 'search_valueOf', 'constructor_search'].map((n) => label(n)),
+    ['Searching constructor...', 'Searching proto...', 'Searching to string...', 'Searching has own property...', 'Searching value of...', 'Searching...'],
+    'after a verb, those words are words like any other');
+  assertEqual(Object.getOwnPropertyNames(Object.prototype).sort(), prototypeBefore, 'and Object.prototype is as it was');
   assertEqual([kind('nemar_search_datasets'), kind('execute_code'), kind('nemar_render_overview'), kind('validate_x'), kind('zzz')],
     ['search', 'code', 'render', 'work', 'other'], 'each family has its kind');
   const long = label(`search_${'verylongword_'.repeat(20)}`);
@@ -432,15 +448,15 @@ console.log('\na search: the loading label says what is happening, in order, wit
 {
   const loaded = loadWidget();
   const { container, window } = loaded;
-  await sleep(20); // the community config
+  await loaded.ready();
   const stream = loaded.queue();
   const watch = sampler(container);
   send(loaded);
   await waitUntil(() => view(container).loading !== null, 'the loading bubble');
   const seen = [view(container).loading];
-  const step = async (event, wait = 25) => {
+  const step = async (event) => {
     stream.send(event);
-    await sleep(wait);
+    await handled(loaded, stream);
     seen.push(view(container).loading);
   };
   await step({ event: 'session', session_id: 's' });
@@ -456,7 +472,7 @@ console.log('\na search: the loading label says what is happening, in order, wit
   assertEqual(seen, [TITLE, TITLE, 'Thinking...', 'Searching datasets...', 'Searching datasets...', 'Analyzing results...', 'Analyzing results...'],
     'title, then Thinking..., then Searching datasets..., then Analyzing results... (a later thinking does not undo it)');
   stream.send({ event: 'content', content: ANSWER });
-  await sleep(REVEAL_MS);
+  await waitUntil(() => lastReplyText(container).includes(ANSWER), 'the answer on screen');
   const during = view(container);
   assertEqual([during.loading, during.line], [null, null], 'the first text replaces the loading bubble, and no status line is left');
   stream.send({ event: 'done', session_id: 's', content: ANSWER, citations: [] });
@@ -475,18 +491,18 @@ console.log('\ntext, then a tool, then more text: the status is a line in the sa
 {
   const loaded = loadWidget();
   const { container } = loaded;
-  await sleep(20);
+  await loaded.ready();
   const stream = loaded.queue();
   const watch = sampler(container);
   send(loaded);
   stream.send({ event: 'session', session_id: 's' });
   stream.send({ event: 'content', content: 'Let me look that up in the documentation first.' });
-  await sleep(REVEAL_MS);
+  await waitUntil(() => lastReplyText(container).includes('documentation first.'), 'the first text');
   const withText = view(container);
   assertEqual([withText.loading, withText.line], [null, null], 'the text is shown, with no loading bubble and no status yet');
   const count = withText.assistants;
   stream.send({ event: 'tool_call', name: 'retrieve_test_docs' });
-  await sleep(30);
+  await handled(loaded, stream);
   assertEqual(view(container).line, 'Looking up documentation...', 'the tool call is a status line (the widget\'s own community left out)');
   const line = container.querySelector('.osa-activity-status');
   const lineMessage = line && line.closest('.osa-message');
@@ -499,11 +515,11 @@ console.log('\ntext, then a tool, then more text: the status is a line in the sa
   assertEqual(container.querySelector('.osa-status-announcer').textContent, 'Looking up documentation...', 'which hears it from the announcer');
   stream.send({ event: 'tool_start', name: 'retrieve_test_docs', input: { url: 'https://x' } });
   stream.send({ event: 'tool_end', name: 'retrieve_test_docs', output: 'the page' });
-  await sleep(30);
+  await handled(loaded, stream);
   assertEqual(view(container).line, 'Analyzing results...', 'the line follows the tool through to its result');
   assert(label !== null && container.querySelector('.osa-activity-label') === label, 'in place');
   stream.send({ event: 'content', content: ' The page says to use NWBHDF5IO.' });
-  await sleep(REVEAL_MS);
+  await waitUntil(() => lastReplyText(container).includes('NWBHDF5IO'), 'the second text');
   assertEqual(view(container).line, null, 'more text takes the line away');
   stream.send({ event: 'done', session_id: 's', content: 'Let me look that up in the documentation first. The page says to use NWBHDF5IO.', citations: [] });
   stream.close();
@@ -519,16 +535,16 @@ console.log('\nparallel tools: analyzed only once the last one has ended');
 {
   const loaded = loadWidget();
   const { container } = loaded;
-  await sleep(20);
+  await loaded.ready();
   const stream = loaded.queue();
   send(loaded);
   stream.send({ event: 'tool_start', name: 'nemar_search_datasets', input: {} });
   stream.send({ event: 'tool_start', name: 'nemar_list_recordings', input: {} });
   stream.send({ event: 'tool_end', name: 'nemar_search_datasets', output: '' });
-  await sleep(30);
+  await handled(loaded, stream);
   assertEqual(view(container).loading, 'Listing recordings...', 'one tool still running: its label stays');
   stream.send({ event: 'tool_end', name: 'nemar_list_recordings', output: '' });
-  await sleep(30);
+  await handled(loaded, stream);
   assertEqual(view(container).loading, 'Analyzing results...', 'both done: Analyzing results...');
   stream.send({ event: 'content', content: ANSWER });
   stream.send({ event: 'done', content: ANSWER, citations: [] });
@@ -617,7 +633,7 @@ console.log('\na label is written once per change: a tool_call\'s label is not w
   for (const [name, { events, writes }] of Object.entries(cases)) {
     const loaded = loadWidget();
     const { container, window } = loaded;
-    await sleep(20);
+    await loaded.ready();
     const stream = loaded.queue();
     send(loaded);
     await waitUntil(() => view(container).loading !== null, `${name}: the loading bubble`);
@@ -641,11 +657,49 @@ console.log('\na label is written once per change: a tool_call\'s label is not w
   }
 }
 
+console.log('\ntool names that are Object.prototype\'s own are counted and labeled like any other');
+{
+  const loaded = loadWidget();
+  const { container, window, activity } = loaded;
+  await loaded.ready();
+  const prototypeBefore = Object.getOwnPropertyNames(Object.prototype).sort();
+  const stream = loaded.queue();
+  send(loaded);
+  await waitUntil(() => view(container).loading !== null, 'the loading bubble');
+  await handled(loaded, stream);
+  const label = container.querySelector('.osa-loading-label');
+  const seen = [];
+  const observer = new window.MutationObserver(() => seen.push(label.textContent));
+  observer.observe(label, { childList: true, characterData: true, subtree: true });
+  for (const event of [
+    { event: 'tool_call', name: '__proto__' },
+    { event: 'tool_call', name: 'constructor' },
+    { event: 'tool_start', name: 'constructor', input: {} },
+    { event: 'tool_start', name: 'toString', input: {} },
+    { event: 'tool_start', name: '__proto__', input: {} },
+  ]) stream.send(event);
+  await handled(loaded, stream);
+  assertEqual([view(container).loading, activity.state().toolsRunning], ['Working...', 3], 'three tools run, each Working...');
+  for (const name of ['constructor', 'toString', '__proto__']) stream.send({ event: 'tool_end', name, output: '' });
+  await handled(loaded, stream);
+  await new Promise((resolve) => setTimeout(resolve, 0)); // the observer's records
+  observer.disconnect();
+  assertEqual([view(container).loading, activity.state().toolsRunning], ['Analyzing results...', 0], 'and once all three end, the reply reads as analyzing');
+  assertEqual(seen, ['Working...', 'Analyzing results...'], 'the label was written twice: no name flipped it');
+  stream.send({ event: 'content', content: ANSWER });
+  stream.send({ event: 'done', content: ANSWER, citations: [] });
+  stream.close();
+  await waitUntil(() => settled(loaded), 'the send settles');
+  assertEqual(Object.getOwnPropertyNames(Object.prototype).sort(), prototypeBefore, 'Object.prototype is as it was');
+  assertEqual(Object.getPrototypeOf({}), Object.prototype, 'and a new object\'s prototype is still Object.prototype');
+  assertNothingLeft(loaded, 'after the prototype names');
+}
+
 console.log('\ntext between a call and its start ends the call\'s label, so the start names it again');
 {
   const loaded = loadWidget();
   const { container } = loaded;
-  await sleep(20);
+  await loaded.ready();
   const stream = loaded.queue();
   send(loaded);
   stream.send({ event: 'content', content: 'Let me search for that.' });
@@ -669,7 +723,7 @@ console.log('\na tool whose tool_end never came does not keep the next batch fro
 {
   const loaded = loadWidget();
   const { container, activity } = loaded;
-  await sleep(20);
+  await loaded.ready();
   const stream = loaded.queue();
   send(loaded);
   await waitUntil(() => view(container).loading !== null, 'the loading bubble');
@@ -698,16 +752,16 @@ console.log('\nan old server, with none of the new events, still gets the generi
 {
   const loaded = loadWidget();
   const { container } = loaded;
-  await sleep(20);
+  await loaded.ready();
   const stream = loaded.queue();
   const watch = sampler(container);
   send(loaded);
   for (const event of [{ event: 'session', session_id: 's' }, { event: 'thinking' }, { event: 'thinking' }]) {
     stream.send(event);
-    await sleep(25);
+    await handled(loaded, stream);
   }
   stream.send({ event: 'content', content: ANSWER });
-  await sleep(REVEAL_MS);
+  await waitUntil(() => lastReplyText(container).includes(ANSWER), 'the answer on screen');
   stream.send({ event: 'done', content: ANSWER, citations: [] });
   stream.close();
   await waitUntil(() => settled(loaded), 'the send settles');
@@ -726,7 +780,7 @@ console.log('\nan old server, with none of the new events, still gets the generi
     { event: 'tool_end', name: 'nemar_search_datasets', output: '' },
   ]) {
     again.send(event);
-    await sleep(25);
+    await handled(loaded, again);
   }
   again.send({ event: 'content', content: ANSWER });
   again.send({ event: 'done', content: ANSWER, citations: [] });
@@ -741,7 +795,7 @@ console.log('\nan event this widget does not know is only warned about, and the 
 {
   const loaded = loadWidget();
   const { container, window } = loaded;
-  await sleep(20);
+  await loaded.ready();
   const warnings = [];
   const realWarn = console.warn;
   console.warn = (...args) => { warnings.push(args.map(String).join(' ')); };
@@ -764,7 +818,7 @@ console.log('\nthe elapsed time: none before five seconds, then whole seconds, t
 {
   const loaded = loadWidget();
   const { container, window, clock, activity } = loaded;
-  await sleep(20);
+  await loaded.ready();
   const stream = loaded.queue();
   send(loaded); // the wait begins as the message is sent
   await waitUntil(() => view(container).loading !== null, 'the loading bubble');
@@ -821,7 +875,7 @@ console.log('\na slow response is part of the wait, and the next message begins 
 {
   const loaded = loadWidget();
   const { container, clock } = loaded;
-  await sleep(20);
+  await loaded.ready();
   const first = loaded.queue({ hold: true });
   send(loaded);
   await waitUntil(() => view(container).loading === TITLE, 'the loading bubble');
@@ -861,7 +915,7 @@ console.log('\nthe widget\'s own clock is monotonic: a wall clock set back mid-w
   }
   const loaded = loadWidget({ ownClock: true, performance: perf, Date: WallClock });
   const { container } = loaded;
-  await sleep(20);
+  await loaded.ready();
   const stream = loaded.queue();
   send(loaded);
   stream.send({ event: 'tool_call', name: 'nemar_search_datasets' });
@@ -888,7 +942,7 @@ console.log('\nwith no performance clock, the elapsed time falls back to Date');
   }
   const loaded = loadWidget({ ownClock: true, performance: undefined, Date: WallClock });
   const { container } = loaded;
-  await sleep(20);
+  await loaded.ready();
   const stream = loaded.queue();
   send(loaded);
   stream.send({ event: 'tool_call', name: 'nemar_search_datasets' });
@@ -909,7 +963,7 @@ console.log('\nthe status announcer: one live region, made with the widget, sayi
 {
   const loaded = loadWidget();
   const { container, window, clock, api } = loaded;
-  await sleep(20);
+  await loaded.ready();
   const announcer = container.querySelector('.osa-status-announcer');
   const messagesEl = container.querySelector('.osa-chat-messages');
   assert(announcer !== null && !messagesEl.contains(announcer),
@@ -970,7 +1024,7 @@ console.log('\na reader typing a comment keeps their caret: a status that needs 
 {
   const loaded = loadWidget();
   const { container, window } = loaded;
-  await sleep(20);
+  await loaded.ready();
   const first = loaded.queue();
   send(loaded);
   first.send({ event: 'content', content: ANSWER });
@@ -1025,16 +1079,16 @@ console.log('\nevery way a stream can end leaves nothing behind');
     for (const midReply of [false, true]) {
       const loaded = loadWidget();
       const { container } = loaded;
-      await sleep(20);
+      await loaded.ready();
       const stream = loaded.queue();
       const watch = sampler(container);
       send(loaded);
       if (midReply) {
         stream.send({ event: 'content', content: 'Some text first. ' });
-        await sleep(REVEAL_MS);
+        await waitUntil(() => lastReplyText(container).includes('Some text first.'), `${name}: the first text`);
       }
       stream.send({ event: 'tool_call', name: 'nemar_search_datasets' });
-      await sleep(30);
+      await handled(loaded, stream);
       const before = view(container);
       assert(midReply ? before.line === 'Searching datasets...' : before.loading === 'Searching datasets...',
         `${name}${midReply ? ', mid-reply' : ''}: the status was up (${JSON.stringify(midReply ? before.line : before.loading)})`);
@@ -1060,19 +1114,19 @@ console.log('\nthe stream handler on its own, however it ends, stops its timer a
   {
     const loaded = loadWidget();
     const { container, api } = loaded;
-    await sleep(20);
+    await loaded.ready();
     const stream = manualStream();
     const watch = sampler(container);
-    const handled = api.handleStreamingResponse(stream.response, container).catch(() => 'threw');
+    const finished = api.handleStreamingResponse(stream.response, container).catch(() => 'threw');
     stream.send({ event: 'tool_call', name: 'nemar_search_datasets' });
     stream.send({ event: 'tool_start', name: 'nemar_search_datasets', input: {} });
     stream.send({ event: 'tool_end', name: 'nemar_search_datasets', output: '' });
-    await sleep(40);
+    await handled(loaded, stream);
     assertEqual([view(container).loading, view(container).line], [null, null], 'no text yet, no loading bubble: nothing is shown');
     stream.send({ event: 'content', content: 'Text first.' });
     stream.send({ event: 'done', content: 'Text first.', citations: [] });
     stream.close();
-    await handled;
+    await finished;
     const run = await watch.stop();
     assertEqual(run.problems, [], `and no empty bubble was made for it, in ${run.samples} samples`);
     assertNothingLeft(loaded, 'a tool call before any text, called directly');
@@ -1096,16 +1150,16 @@ console.log('\nthe stream handler on its own, however it ends, stops its timer a
   for (const [name, end] of Object.entries(cases)) {
     const loaded = loadWidget();
     const { container, api } = loaded;
-    await sleep(20);
+    await loaded.ready();
     const stream = manualStream();
-    const handled = api.handleStreamingResponse(stream.response, container).catch(() => 'threw');
+    const finished = api.handleStreamingResponse(stream.response, container).catch(() => 'threw');
     stream.send({ event: 'content', content: 'Text first.' });
-    await sleep(REVEAL_MS);
+    await waitUntil(() => lastReplyText(container).includes('Text first.'), `${name}: the text`);
     stream.send({ event: 'tool_call', name: 'nemar_search_datasets' });
-    await sleep(30);
+    await handled(loaded, stream);
     assertEqual(view(container).line, 'Searching datasets...', `${name}: the line was up`);
     end(stream);
-    await handled;
+    await finished;
     assertNothingLeft(loaded, `${name}, called directly`);
     assert(lastReplyText(container).includes('Text first.'),
       `${name}: and the reply's text is still there`);
@@ -1124,7 +1178,7 @@ async function withLocalRuntime(loaded) {
   // eslint-disable-next-line no-new-func
   new Function(readFileSync(new URL('./osa-runtime.bundle.js', import.meta.url), 'utf8'))();
   window.OSARuntime = globalThis.OSARuntime;
-  await sleep(20);
+  await loaded.ready();
   api.setUpBrowserTools({ client_tools: LOCAL_TOOLS, runtime: { python: LOCAL_RUNTIME_CONFIG } });
   await api.declaredClientTools();
   const runtime = new window.OSARuntime.PyodideRuntime({
@@ -1221,14 +1275,14 @@ console.log('\na browser run whose result the server refuses: the reply says it 
   const watch = sampler(container);
   send(loaded, 'Plot the alpha power.');
   first.send({ event: 'content', content: 'I will plot it in your browser.' });
-  await sleep(REVEAL_MS);
+  await waitUntil(() => lastReplyText(container).includes('I will plot it'), 'the first text');
   first.send({ event: 'tool_call', name: 'execute_code' });
-  await sleep(30);
+  await handled(loaded, first);
   assertEqual(view(container).line, 'Writing code...', 'the reply has text, so the code being written is a line under it');
   first.send({ ...CODE_REQUEST, content: 'I will plot it in your browser.' });
   first.close();
+  // The status is drawn before the result is sent, so it is up once the request is.
   await waitUntil(() => loaded.requests.some((r) => r.url.endsWith('/chat/resume')), 'the result goes back');
-  await sleep(30);
   assertEqual(view(container).line, 'Analyzing results...', 'while the result is on its way, the line says the model will read it');
   refusal.release();
   await waitUntil(() => settled(loaded), 'the send settles', 10_000);
@@ -1313,7 +1367,7 @@ console.log('\nwhitespace before any text leaves the loading bubble up, and neve
   for (const [name, { steps, loading, reply }] of Object.entries(cases)) {
     const loaded = loadWidget();
     const { container, window } = loaded;
-    await sleep(20);
+    await loaded.ready();
     const stream = loaded.queue();
     const watch = sampler(container);
     const before = container.querySelectorAll('.osa-message.assistant').length;
@@ -1328,12 +1382,18 @@ console.log('\nwhitespace before any text leaves the loading bubble up, and neve
         continue;
       }
       stream.send(event);
-      await sleep(event.event === 'content' ? REVEAL_MS : 30);
-      if (event.event === 'content' && !/\S/.test(event.content)) {
-        // Only whitespace has arrived: the reader still sees the loading bubble.
+      if (event.event === 'content' && /\S/.test(event.content)) {
+        await waitUntil(() => lastReplyText(container).includes(event.content.trim()), `${name}: the text on screen`);
+      } else if (event.event === 'content') {
+        // Only whitespace has arrived: the reader still sees the loading bubble, once
+        // the reveal has had its chance to draw it.
+        await handled(loaded, stream);
+        await sleep(REVEAL_MS);
         sawWhitespaceWait = view(container).loading !== null
           && container.querySelectorAll('.osa-message.assistant').length === before
           && container.querySelectorAll('.osa-activity-status').length === 0;
+      } else if (event.event !== 'done') {
+        await handled(loaded, stream);
       }
     }
     if (!failed) stream.close();
@@ -1366,7 +1426,7 @@ console.log('\nwhitespace, then code run in the browser, then the answer: never 
   send(loaded, 'Plot the alpha power.');
   await waitUntil(() => view(container).loading !== null, 'the loading bubble');
   first.send({ event: 'content', content: WHITESPACE });
-  await sleep(REVEAL_MS);
+  await sleep(REVEAL_MS); // the reveal's chance to draw the whitespace, which it must not
   first.send({ event: 'tool_call', name: 'execute_code' });
   await waitUntil(() => view(container).loading === 'Writing code...', 'Writing code... in the loading bubble');
   assertEqual(view(container).line, null, 'the whitespace did not become text: the code being written is the loading bubble\'s label');
@@ -1395,7 +1455,7 @@ console.log('\nwhitespace between tool calls does not end the status');
   for (const midReply of [false, true]) {
     const loaded = loadWidget();
     const { container, api } = loaded;
-    await sleep(20);
+    await loaded.ready();
     const stream = loaded.queue();
     send(loaded);
     if (midReply) {
@@ -1429,7 +1489,7 @@ console.log('\nthe renderer holds the same rule on its own, whatever wrote the m
   // rule would leave it.
   const loaded = loadWidget();
   const { container, api } = loaded;
-  await sleep(20);
+  await loaded.ready();
   const stream = loaded.queue();
   send(loaded);
   stream.send({ event: 'tool_call', name: 'nemar_search_datasets' });
@@ -1446,7 +1506,7 @@ console.log('\nthe renderer holds the same rule on its own, whatever wrote the m
   list[index].content = '';
 
   stream.send({ event: 'content', content: ANSWER });
-  await sleep(REVEAL_MS);
+  await waitUntil(() => lastReplyText(container).includes(ANSWER), 'the answer on screen');
   stream.send({ event: 'tool_call', name: 'retrieve_test_docs' });
   await waitUntil(() => view(container).line === 'Looking up documentation...', 'the status line under the text');
   const text = list[index].content;
@@ -1496,16 +1556,15 @@ console.log('\nreduced motion: the reveal is not paced, and the labels are the s
 {
   const loaded = loadWidget({ matchMedia: (query) => ({ matches: /prefers-reduced-motion/.test(query), media: query }) });
   const { container } = loaded;
-  await sleep(20);
+  await loaded.ready();
   const stream = loaded.queue();
   const watch = sampler(container);
   send(loaded);
   await waitUntil(() => view(container).loading !== null, 'the loading bubble');
-  await sleep(10);
   stream.send({ event: 'tool_call', name: 'nemar_search_datasets' });
-  await sleep(30);
+  await handled(loaded, stream);
   stream.send({ event: 'tool_end', name: 'nemar_search_datasets', output: '' });
-  await sleep(30);
+  await handled(loaded, stream);
   stream.send({ event: 'content', content: ANSWER });
   stream.send({ event: 'done', content: ANSWER, citations: [] });
   stream.close();
