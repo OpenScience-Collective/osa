@@ -26,6 +26,7 @@ live service, decides the shape of this module:
 
 import logging
 from collections.abc import Iterator
+from functools import lru_cache
 from typing import Any
 
 import boto3
@@ -101,7 +102,10 @@ class _StaticBearerToken:
         return FrozenAuthToken(self._token)
 
 
-def _bedrock_client(service_name: str, region: str, api_key: str, config: BotocoreConfig) -> Any:
+@lru_cache(maxsize=16)
+def _bedrock_client(
+    service_name: str, region: str, api_key: str, connect_timeout: float, read_timeout: float
+) -> Any:
     """Build a boto3 client that authenticates with a Bedrock API key and nothing else.
 
     ``ChatBedrockConverse`` can take the key itself, but it then builds its
@@ -112,16 +116,25 @@ def _bedrock_client(service_name: str, region: str, api_key: str, config: Botoco
     so this gives the session placeholder credentials to stop the walk, and puts the
     key in a token chain of its own. The session is private to the client: nothing
     is read from, or written to, the process environment.
+
+    Cached per (service, Region, key, timeouts). Building a session and a client
+    costs 70 to 100 ms of CPU on the event loop's thread, and a client made per
+    request never reuses a connection; boto3 clients are safe to share between
+    threads, and ``ChatBedrockConverse`` does not change one it is handed.
     """
     session = botocore.session.get_session()
     session.set_credentials("unused", "unused")
     session.register_component(
         "token_provider", TokenProviderChain(providers=[_StaticBearerToken(api_key)])
     )
+    config = BotocoreConfig(
+        connect_timeout=connect_timeout,
+        read_timeout=read_timeout,
+        retries={"max_attempts": 2, "mode": "standard"},
+        auth_scheme_preference="httpBearerAuth",
+    )
     return boto3.Session(botocore_session=session).client(
-        service_name,
-        region_name=region,
-        config=config.merge(BotocoreConfig(auth_scheme_preference="httpBearerAuth")),
+        service_name, region_name=region, config=config
     )
 
 
@@ -244,20 +257,15 @@ def create_bedrock_llm(
         raise RuntimeError("AWS_BEARER_TOKEN_BEDROCK is not set (Bedrock models require it)")
 
     region = spec.region or resolved_settings.bedrock_region
-    client_config = BotocoreConfig(
-        connect_timeout=CONNECT_TIMEOUT,
-        read_timeout=timeout,
-        retries={"max_attempts": 2, "mode": "standard"},
-    )
     key = resolved_settings.bedrock_api_key
 
     kwargs: dict[str, Any] = {
         "model": spec.invoke_id,
         "region_name": region,
-        "client": _bedrock_client("bedrock-runtime", region, key, client_config),
+        "client": _bedrock_client("bedrock-runtime", region, key, CONNECT_TIMEOUT, timeout),
         # Only used to look up application inference profiles, which OSA does not
         # use; passed so the model does not build one through the ambient chain.
-        "bedrock_client": _bedrock_client("bedrock", region, key, client_config),
+        "bedrock_client": _bedrock_client("bedrock", region, key, CONNECT_TIMEOUT, timeout),
         "max_tokens": max_tokens
         if max_tokens is not None
         else resolved_settings.bedrock_max_output_tokens,
