@@ -9,8 +9,8 @@ the reply it needed to rewrite.) Three things are added, all at the model bounda
 
 - **Prompt-cache breakpoints.** The system prompt and the last message of the
   conversation carry ``cache_control``, so a tool loop re-reads the conversation
-  so far at the cache rate. OpenRouter passes the markers to Anthropic and ignores
-  them for models that cache on their own or not at all.
+  so far at the cache rate. Only Anthropic's models take the markers (OpenAI's cache
+  a repeated prefix on their own), so only they are sent them.
 - **Tagged citations.** Tool results carry ``search_result`` blocks, which the
   OpenAI-style chat API cannot express. They are rewritten as text tagged
   ``[src:N]``, and the tags the model writes come back as the ``citations`` the
@@ -385,11 +385,23 @@ def _take_usage_details(chunk: ChatGenerationChunk) -> None:
         _apply_usage_details(message, details)
 
 
+def takes_cache_markers(model: str) -> bool:
+    """Whether OpenRouter passes ``cache_control`` breakpoints on to this model.
+
+    Only Anthropic's models act on them. LiteLLM drops the marker for any other slug
+    but keeps the message reshaped into a one-part list, which is a compatibility risk
+    with nothing gained, so other models are sent plain strings. (OpenAI models cache
+    a repeated prefix on their own, without a marker.)
+    """
+    return model.removeprefix("openrouter/").startswith("anthropic/")
+
+
 class TaggedCitationChatLiteLLM(ChatLiteLLM):
     """``ChatLiteLLM`` with prompt-cache breakpoints, tagged citations and usage details.
 
     Attributes:
-        prompt_caching: Send ``cache_control`` breakpoints (see the module docstring).
+        prompt_caching: Send ``cache_control`` breakpoints, to the models that take them
+            (see ``takes_cache_markers``).
     """
 
     prompt_caching: bool = True
@@ -434,7 +446,8 @@ class TaggedCitationChatLiteLLM(ChatLiteLLM):
         # The parent builds the request parameters and enforces its `stop` rule; its
         # message conversion is replaced, so it is given nothing to convert.
         _, params = super()._create_message_dicts([], stop)
-        return to_message_dicts(messages, cache=self.prompt_caching), params
+        cache = self.prompt_caching and takes_cache_markers(self.model_name or self.model)
+        return to_message_dicts(messages, cache=cache), params
 
     def completion_with_retry(
         self, run_manager: CallbackManagerForLLMRun | None = None, **kwargs: Any

@@ -112,9 +112,9 @@ def create_openrouter_llm(
         provider: Specific provider to use (e.g., "Cerebras", "DeepInfra/FP8").
                  Ignored for Anthropic models, which always use "Anthropic" provider.
         user_id: User identifier for cache optimization (sticky routing)
-        enable_caching: Enable prompt caching. If None (default), caching is requested
-            for all models. Models that do not support caching will ignore the
-            cache_control markers without error.
+        enable_caching: Enable prompt caching. If None (default), it is enabled. Only
+            Anthropic's models are sent the ``cache_control`` markers; other models
+            get plain messages (see ``litellm_chat.takes_cache_markers``).
 
     Returns:
         A ``TaggedCitationChatLiteLLM`` configured for OpenRouter
@@ -171,8 +171,7 @@ def create_openrouter_llm(
         max_tokens=max_tokens,
         model_kwargs=model_kwargs,
         streaming=True,
-        # Caching is requested for every model by default: OpenRouter passes the
-        # markers to Anthropic and ignores them where a model has no use for them.
+        # Requested by default; the model only sends markers to models that take them.
         prompt_caching=True if enable_caching is None else enable_caching,
     )
 

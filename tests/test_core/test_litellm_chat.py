@@ -22,6 +22,7 @@ from langchain_core.tools import tool
 
 from src.core.services.litellm_chat import (
     TaggedCitationChatLiteLLM,
+    takes_cache_markers,
     to_message_dicts,
     usage_details,
 )
@@ -361,7 +362,22 @@ class TestWhatIsSent:
 
         _llm("openai/gpt-oss-120b").invoke(_conversation())
 
-        assert "cache_control" not in json.dumps(openrouter.requests[0]["messages"])
+        messages = openrouter.requests[0]["messages"]
+        assert "cache_control" not in json.dumps(messages)
+        # ... nor is any message reshaped into a one-part list for a marker that is not coming
+        assert all(isinstance(m["content"], str) for m in messages)
+
+    @pytest.mark.parametrize(
+        ("model", "expected"),
+        [
+            ("anthropic/claude-haiku-4.5", True),
+            ("openrouter/anthropic/claude-sonnet-5.5", True),
+            ("openai/gpt-6-luna", False),
+            ("qwen/qwen3-next-80b-a3b-instruct", False),
+        ],
+    )
+    def test_only_anthropic_slugs_take_cache_markers(self, model: str, expected: bool) -> None:
+        assert takes_cache_markers(model) is expected
 
     def test_caching_off_sends_no_markers(self, openrouter: FakeOpenRouter) -> None:
         openrouter.reply(stream_of("ok"))
