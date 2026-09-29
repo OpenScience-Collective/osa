@@ -18,8 +18,8 @@ re-exports them: the split is a packaging detail, not something every router
 and agent should have to know.
 """
 
-from dataclasses import dataclass, field
-from typing import Any, Literal
+from dataclasses import dataclass
+from typing import Any, Literal, get_args
 
 # Default offered model.
 DEFAULT_MODEL = "claude-haiku-4-5"
@@ -56,9 +56,14 @@ class BedrockModel:
         region: Region to call, or None for ``Settings.bedrock_region``. Qwen3
             Next answers in N. Virginia and Oregon but its Ohio endpoint accepts
             the request and never replies (tested 2026-09-28), so it pins us-east-1.
-        extra_request_fields: Sent as ``additionalModelRequestFields``. GPT-6 Luna's
-            reasoning effort is set here, to high (maximum made a tool-using turn take
-            15 to 50 seconds before its first word).
+        reasoning_field: How the model is told its reasoning level in
+            ``additionalModelRequestFields``: "nested" for GPT-6 Luna
+            (``{"reasoning": {"effort": level}}``), "flat" for gpt-oss-120b
+            (``{"reasoning_effort": level}``), None for Qwen3 Next, which has no
+            reasoning control and must be sent nothing. The shapes are not
+            interchangeable and a wrong one is often a silent no-op: gpt-oss ignores
+            the nested field with a 200, Luna answers the flat one with a 400, and
+            Qwen3 Next hangs on a flat ``high`` (all measured 2026-09-29).
         caching: "automatic" when the service caches a repeated prompt prefix on
             its own and reports the tokens read and written; "none" otherwise.
             Explicit cache points are rejected by all three models, so no client
@@ -69,9 +74,25 @@ class BedrockModel:
     label: str
     invoke_id: str
     region: str | None = None
-    extra_request_fields: dict[str, Any] = field(default_factory=dict)
+    reasoning_field: Literal["nested", "flat"] | None = None
     caching: Literal["automatic", "none"] = "none"
     prompt_addendum: str = ""
+
+    def reasoning_request_fields(self, level: str | None) -> dict[str, Any]:
+        """The ``additionalModelRequestFields`` that set this model's reasoning level.
+
+        Args:
+            level: A level the model accepts (see ``resolve_reasoning_effort``), or None.
+
+        Returns:
+            The fields, or an empty dict when there is no level or the model has no
+            reasoning control.
+        """
+        if level is None or self.reasoning_field is None:
+            return {}
+        if self.reasoning_field == "nested":
+            return {"reasoning": {"effort": level}}
+        return {"reasoning_effort": level}
 
 
 # Every model here is priced at or below Claude Haiku 4.5 (see
@@ -81,7 +102,7 @@ BEDROCK_MODELS: dict[str, BedrockModel] = {
     "openai.gpt-6-luna": BedrockModel(
         label="OpenAI GPT-6 Luna",
         invoke_id="us.openai.gpt-6-luna",
-        extra_request_fields={"reasoning": {"effort": "high"}},
+        reasoning_field="nested",
         caching="automatic",
         prompt_addendum=_TOOL_DISCIPLINE,
     ),
@@ -93,7 +114,7 @@ BEDROCK_MODELS: dict[str, BedrockModel] = {
     "openai.gpt-oss-120b": BedrockModel(
         label="OpenAI gpt-oss-120b",
         invoke_id="openai.gpt-oss-120b-1:0",
-        extra_request_fields={"reasoning_effort": "high"},
+        reasoning_field="flat",
         prompt_addendum=_TOOL_DISCIPLINE,
     ),
 }
@@ -132,6 +153,59 @@ MODEL_ALIASES: dict[str, str] = {
 # GPT-6 Luna rejects `temperature` and `topP` the same way (Bedrock: "This model
 # doesn't support the temperature field"); gpt-oss-120b and Qwen3 Next accept them.
 SAMPLING_MODELS = {"claude-haiku-4-5", "openai.gpt-oss-120b", "qwen.qwen3-next-80b-a3b"}
+
+# Reasoning effort (issue #545). One provider-neutral scale, lowest to highest, that a
+# community sets once (``reasoning_effort`` in its config.yaml) and that each provider
+# path turns into that platform's own request field. It is the union of what the
+# platforms name: Anthropic's ``effort`` (low to max), OpenAI's ``reasoning.effort`` on
+# Bedrock (none to max) and OpenRouter's (none to max; it treats ``max`` as ``xhigh``).
+# The tuple is derived from the Literal, so a level added to one cannot be missing from the
+# other (the config would load a level that ``resolve_reasoning_effort`` then refuses).
+ReasoningEffort = Literal["none", "low", "medium", "high", "xhigh", "max"]
+REASONING_SCALE: tuple[str, ...] = get_args(ReasoningEffort)
+
+# The levels each model accepts, in scale order. A level a model does not accept is never
+# sent: ``resolve_reasoning_effort`` clamps to the nearest one it does. The levels are
+# the models' own predetermined ones (Luna and gpt-oss measured against Bedrock on
+# 2026-09-29: Luna accepts none, low, medium, high, xhigh and max and rejects
+# ``minimal``; gpt-oss accepts low, medium and high and rejects ``max``), with one policy
+# on top: Claude Sonnet 5.5 is never run above ``high``, whatever a community asks and on
+# whichever platform it is reached, so it lists none through high even though the API
+# accepts more.
+REASONING_LEVELS: dict[str, tuple[str, ...]] = {
+    "claude-sonnet-5-5": ("none", "low", "medium", "high"),
+    "openai.gpt-6-luna": ("none", "low", "medium", "high", "xhigh", "max"),
+    "openai.gpt-oss-120b": ("low", "medium", "high"),
+}
+
+# The level a model runs at when a community sets none, sent on every provider so a
+# model behaves the same whichever key paid for it. GPT-6 Luna and gpt-oss run at
+# ``high`` (Luna at ``max`` made a tool-using turn take 15 to 50 seconds before its first
+# word, and at ``xhigh`` and ``max`` it answered with no documentation search in the median
+# of three runs on one question, so no citations). Claude Sonnet 5.5 has no entry: nothing is sent, so the
+# Claude Platform's own default (``high``) applies, as before.
+REASONING_DEFAULTS: dict[str, str] = {
+    "openai.gpt-6-luna": "high",
+    "openai.gpt-oss-120b": "high",
+}
+
+# The platforms a model can be reached on, for the levels that differ between them.
+ReasoningProvider = Literal["anthropic", "bedrock", "openrouter"]
+
+# Models whose reasoning OpenRouter does not let a request turn off (its model metadata
+# marks it mandatory and the docs say not to send ``effort: none``), so ``none`` is not
+# a level there: it is raised to the model's lowest. On the Claude Platform, ``none`` for
+# Claude Sonnet 5.5 is real (``thinking: between_tools``).
+MANDATORY_REASONING_ON_OPENROUTER: frozenset[str] = frozenset(
+    {"claude-sonnet-5-5", "openai.gpt-oss-120b"}
+)
+
+# The offered models with no reasoning levels to set: Claude Haiku 4.5 thinks with a
+# token budget rather than a level, and Qwen3 Next has no reasoning control. The key is
+# ignored for them. Together with REASONING_LEVELS this names every offered model, which
+# tests/test_core/test_reasoning_effort.py checks, so a newly offered model has to be
+# put on one side or the other.
+NO_REASONING_LEVELS: frozenset[str] = frozenset({"claude-haiku-4-5", "qwen.qwen3-next-80b-a3b"})
 
 # Image media types the Messages API accepts on a content block, including a
 # content block nested in a tool result.
@@ -192,6 +266,96 @@ def normalize_model(model: str | None) -> str:
         offered = ", ".join(sorted(OFFERED_MODELS))
         raise ValueError(f"Model '{model}' is not available. Offered models: {offered}")
     return resolved
+
+
+def reasoning_levels(
+    model: str | None, provider: ReasoningProvider | None = None
+) -> tuple[str, ...]:
+    """The reasoning levels a model accepts, lowest to highest; empty when it has none.
+
+    Args:
+        model: Model identifier, in any form ``normalize_model`` accepts.
+        provider: The platform the request goes to, for the levels that differ
+            between platforms (OpenRouter has no ``none`` for a model whose reasoning
+            it makes mandatory); None for the model's own levels.
+
+    Returns:
+        The levels from ``REASONING_LEVELS``, or an empty tuple for a model with no
+        levels to set and for an id that is not offered.
+    """
+    try:
+        resolved = normalize_model(model)
+    except ValueError:
+        return ()
+    levels = REASONING_LEVELS.get(resolved, ())
+    if provider == "openrouter" and resolved in MANDATORY_REASONING_ON_OPENROUTER:
+        levels = tuple(level for level in levels if level != "none")
+    return levels
+
+
+def resolve_reasoning_effort(
+    model: str | None, requested: str | None, provider: ReasoningProvider | None = None
+) -> str | None:
+    """The level a model will actually run at for a requested one, or None to send none.
+
+    A level the model accepts is used as asked. One above everything it accepts is
+    lowered to its highest, so a community that asks for ``max`` gets a Claude Sonnet
+    at ``high``; one below everything is raised to its lowest (gpt-oss cannot go below
+    ``low``); and one in a gap between two it accepts takes the higher of the levels
+    below it. None comes back when nothing was requested, or when the model has no
+    levels (Haiku, Qwen3 Next, an id that is not offered): there is nothing to send.
+
+    Args:
+        model: Model identifier, in any form ``normalize_model`` accepts.
+        requested: A level from ``REASONING_SCALE``, or None.
+        provider: The platform the request goes to (see ``reasoning_levels``).
+
+    Returns:
+        A level from the model's own list, or None.
+
+    Raises:
+        ValueError: If ``requested`` is not on the scale.
+    """
+    if requested is None:
+        return None
+    if requested not in REASONING_SCALE:
+        raise ValueError(
+            f"reasoning effort {requested!r} is not one of {', '.join(REASONING_SCALE)}"
+        )
+    levels = reasoning_levels(model, provider)
+    if not levels:
+        return None
+    if requested in levels:
+        return requested
+    rank = REASONING_SCALE.index(requested)
+    below = [level for level in levels if REASONING_SCALE.index(level) < rank]
+    return below[-1] if below else levels[0]
+
+
+def effective_reasoning_effort(
+    model: str | None, requested: str | None, provider: ReasoningProvider
+) -> str | None:
+    """The level to send a model on a platform: the community's, else the model's default.
+
+    Args:
+        model: Model identifier, in any form ``normalize_model`` accepts. None (a slug
+            OSA could not map to a model) sends nothing: it is not the default model
+            here, as it is for ``normalize_model``.
+        requested: The community's ``reasoning_effort``, or None.
+        provider: The platform the request goes to.
+
+    Returns:
+        A level the model accepts on that platform, or None to send nothing: the model
+        has no levels, or it has no default and none was requested.
+    """
+    if not model:
+        return None
+    if requested is None:
+        try:
+            requested = REASONING_DEFAULTS.get(normalize_model(model))
+        except ValueError:
+            return None
+    return resolve_reasoning_effort(model, requested, provider)
 
 
 def accepts_temperature(model: str | None) -> bool:

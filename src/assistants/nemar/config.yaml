@@ -11,6 +11,12 @@ name: NEMAR (NeuroElectroMagnetic Archive)
 description: BIDS-formatted EEG, MEG, and iEEG datasets, deposited to NEMAR or imported from OpenNeuro
 status: available
 default_model: openai.gpt-6-luna
+# The level every model this community runs is asked to reason at, on every provider
+# (issue #545): none, low, medium, high, xhigh or max. A model clamps it to the levels it
+# accepts (Claude Sonnet never runs above high). Luna at max took 15 to 50 s to a first
+# word, and at xhigh skipped the documentation search in the median of three runs on one
+# question, so this community runs high.
+reasoning_effort: high
 
 # External links for dashboard and discovery
 links:

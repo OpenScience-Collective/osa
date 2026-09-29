@@ -1701,6 +1701,11 @@ def create_community_assistant(
         extra={"community_id": community_id, "origin": origin, "model": selected_model},
     )
 
+    # The community's reasoning level (issue #545), or None for each model's own
+    # default. Every provider path resolves it against the model it actually runs.
+    community_config = community_info.community_config
+    reasoning_effort = community_config.reasoning_effort if community_config else None
+
     if provider_choice.provider == "anthropic":
         # Prompt caching on this path is handled by the provider layer
         # (CachingChatAnthropic's cache_control breakpoints in
@@ -1710,12 +1715,17 @@ def create_community_assistant(
             model=selected_model,
             api_key=provider_choice.api_key,
             temperature=settings.llm_temperature,
+            reasoning_effort=reasoning_effort,
         )
     elif provider_choice.provider == "bedrock":
         # Automatic prompt caching (Luna) needs nothing from this layer: the
         # provider reports cache reads and writes, and a stable prompt prefix,
         # which the agent already keeps, is what earns the reads.
-        model = create_bedrock_llm(model=selected_model, temperature=settings.llm_temperature)
+        model = create_bedrock_llm(
+            model=selected_model,
+            temperature=settings.llm_temperature,
+            reasoning_effort=reasoning_effort,
+        )
     else:
         # Determine user_id for prompt caching optimization
         cache_user_id = _get_cache_user_id(community_id, byok.key if byok else None, user_id)
@@ -1725,6 +1735,7 @@ def create_community_assistant(
             temperature=settings.llm_temperature,
             provider=selected_provider,
             user_id=cache_user_id,
+            reasoning_effort=reasoning_effort,
         )
 
     # Convert Pydantic PageContext to agent's dataclass PageContext

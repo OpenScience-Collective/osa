@@ -46,7 +46,7 @@ Calling them showed what a Claude-shaped request cannot assume:
 
 Serve the three models from Bedrock through the Converse API, one transport for all of them, on the platform's Bedrock key (`AWS_BEARER_TOKEN_BEDROCK`), and offer them next to the Claude models.
 
-- **One registry.** `BEDROCK_MODELS` in `src/core/services/anthropic_models.py` holds each model's label, invoke id, region, request fields (GPT-6 Luna at `reasoning.effort: high`; it started at `max`, and a tool-using turn then took 15 to 50 seconds before its first word), caching behavior and prompt note. `OFFERED_MODELS` is built from it, so the widget menu, the CLI and community config validation see one list.
+- **One registry.** `BEDROCK_MODELS` in `src/core/services/anthropic_models.py` holds each model's label, invoke id, region, request fields (GPT-6 Luna at `reasoning.effort: high`; it started at `max`, and a tool-using turn then took 15 to 50 seconds before its first word; a community now sets the level, see [0015](0015-community-reasoning-effort.md)), caching behavior and prompt note. `OFFERED_MODELS` is built from it, so the widget menu, the CLI and community config validation see one list.
 - **Platform-funded only.** A caller's own Anthropic key cannot select a Bedrock model: BYOK skips the origin check because it pays for itself, and the platform pays for Bedrock.
   A deployment without a Bedrock key does not list the models and answers a request for one with 400.
   A caller who brings an OpenRouter key gets the same model's OpenRouter slug.

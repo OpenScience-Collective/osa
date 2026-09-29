@@ -17,6 +17,7 @@ from src.core.services.anthropic_models import (
     IMAGE_MEDIA_TYPES,
     MODEL_ALIASES,
     OFFERED_MODELS,
+    REASONING_DEFAULTS,
     SAMPLING_MODELS,
     accepts_temperature,
     is_bedrock_model,
@@ -172,7 +173,9 @@ class TestBedrockModels:
         """Ohio calls GPT-6 Luna through the us. profile; global. is denied by SCP."""
         luna = BEDROCK_MODELS["openai.gpt-6-luna"]
         assert luna.invoke_id.startswith("us.")
-        assert luna.extra_request_fields == {"reasoning": {"effort": "high"}}
+        assert luna.reasoning_field == "nested"
+        assert luna.reasoning_request_fields("high") == {"reasoning": {"effort": "high"}}
+        assert REASONING_DEFAULTS["openai.gpt-6-luna"] == "high"
 
     def test_only_automatic_caching_is_claimed_for_luna(self) -> None:
         """Bedrock rejects cache points for all three, so only Luna's own caching exists."""

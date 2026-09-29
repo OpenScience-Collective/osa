@@ -65,7 +65,14 @@ from src.core.limits import (
 # CLI-only install (see src/core/services/anthropic_models.py). Importing
 # anthropic_llm instead would break `osa validate` for anyone without the
 # server extra.
-from src.core.services.anthropic_models import BEDROCK_MODELS, SAMPLING_MODELS, normalize_model
+from src.core.services.anthropic_models import (
+    BEDROCK_MODELS,
+    REASONING_SCALE,
+    SAMPLING_MODELS,
+    ReasoningEffort,
+    normalize_model,
+    resolve_reasoning_effort,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1962,6 +1969,28 @@ class CommunityConfig(BaseModel):
     If not specified, uses the platform-level default from Settings.
     """
 
+    reasoning_effort: ReasoningEffort | None = None
+    """How much this community's assistant thinks: one level of a provider-neutral scale.
+
+    ``none``, ``low``, ``medium``, ``high``, ``xhigh`` or ``max``, lowest to highest.
+    The same key works on every platform OSA calls (the Claude Platform on AWS, Amazon
+    Bedrock and OpenRouter): each turns it into its own request field, for every model
+    that has reasoning levels, and respects the levels that model accepts. A level the
+    model does not accept is not sent: it runs at the nearest one it does, lowered to
+    the model's highest or raised to its lowest. Claude Sonnet 5.5 never runs above
+    ``high``, so ``xhigh`` and ``max`` give ``high`` there. Models with no levels
+    (Claude Haiku 4.5, Qwen3 Next) ignore it.
+
+    It applies to whichever model a request runs, not only ``default_model``: a reader
+    who picks another model in the widget gets that model's nearest level.
+
+    Example:
+        reasoning_effort: high
+
+    If not specified, each model keeps its own default (GPT-6 Luna: ``high``; the
+    Claude Platform's default for Claude Sonnet 5.5).
+    """
+
     model_instructions: dict[str, str] = Field(default_factory=dict)
     """Extra system-prompt text for particular models, keyed by offered model id.
 
@@ -2252,6 +2281,40 @@ class CommunityConfig(BaseModel):
                 "configured here. Use one of "
                 "src.core.services.anthropic_llm.OFFERED_MODELS, or an OpenRouter "
                 "creator/model-name id if you intend to route there.",
+                UserWarning,
+                stacklevel=2,
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_reasoning_effort_is_honored(self) -> "CommunityConfig":
+        """Warn when this community's own default model cannot run at the level asked.
+
+        Not an error: the level applies to every model a request can run, and each
+        clamps it to what it accepts. But a community that asks for ``max`` on a Claude
+        Sonnet, or sets any level on a model with none, should hear that it will not
+        get what it wrote, at load time rather than as a puzzle later.
+        """
+        if self.reasoning_effort is None or not self.default_model:
+            return self
+        try:
+            model = normalize_model(self.default_model)
+        except ValueError:
+            return self  # not an offered model: warned about above, and no levels to check
+        effective = resolve_reasoning_effort(model, self.reasoning_effort)
+        if effective is None:
+            warnings.warn(
+                f"reasoning_effort={self.reasoning_effort!r} is ignored for "
+                f"default_model={self.default_model!r}, which has no reasoning levels. "
+                "It still applies to any other model a request runs.",
+                UserWarning,
+                stacklevel=2,
+            )
+        elif effective != self.reasoning_effort:
+            warnings.warn(
+                f"reasoning_effort={self.reasoning_effort!r} is not a level "
+                f"default_model={self.default_model!r} accepts here: it will run at "
+                f"{effective!r} (the scale is {', '.join(REASONING_SCALE)}).",
                 UserWarning,
                 stacklevel=2,
             )
