@@ -47,8 +47,10 @@ _THINKING_BLOCK_TYPES = frozenset(
 
 # Non-text block types with their own dedicated handling elsewhere (tool-call
 # metadata streamed via separate events), so silently contributing nothing
-# here is expected, not a sign of a problem.
-_KNOWN_NON_TEXT_BLOCK_TYPES = frozenset({"tool_use"})
+# here is expected, not a sign of a problem: a tool call (`tool_use`) and the pieces its
+# JSON arguments arrive in when Anthropic streams it (`input_json_delta`, one per chunk,
+# so hundreds for a long code call: a warning for each filled the production log).
+_KNOWN_NON_TEXT_BLOCK_TYPES = frozenset({"tool_use", "input_json_delta"})
 
 BlockKind = Literal["text", "thinking"]
 
