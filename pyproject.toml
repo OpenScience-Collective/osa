@@ -83,6 +83,7 @@ server = [
     # revision does not exist in 1.x, and langchain-mcp-adapters -- the obvious
     # alternative -- pins mcp<2.0.0, which is why this wraps the SDK directly.
     "mcp>=2.2.0,<3.0.0",
+    "langchain-aws>=1.0",
 ]
 
 observability = [
