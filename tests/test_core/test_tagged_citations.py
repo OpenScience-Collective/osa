@@ -5,7 +5,7 @@ import re
 import time
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 
 from src.agents.content import (
     CitationAssembler,
@@ -17,6 +17,7 @@ from src.core.services.tagged_citations import (
     _HELD_WHITESPACE_LIMIT,
     CITATION_INSTRUCTION,
     MARKER_PATTERN,
+    SEGMENT_INDEX_OFFSET,
     CitePiece,
     MarkerStream,
     SourceRegistry,
@@ -482,4 +483,39 @@ class TestReachesTheApiLayerUnchanged:
         blocks = pieces_to_blocks(_run(self.ANSWER, registry), registry, index_base=2)
         indexes = {b["index"] for b in blocks}
         assert len(indexes) == 3
-        assert all(2000 <= i < 3000 for i in indexes)
+        assert all(SEGMENT_INDEX_OFFSET + 2000 <= i < SEGMENT_INDEX_OFFSET + 3000 for i in indexes)
+
+
+class TestBlocksDoNotCollideWithTheProviders:
+    def test_a_tool_call_after_cited_text_keeps_its_own_block(self) -> None:
+        """Text at index 0 with two cited claims, then a tool call at index 1.
+
+        The second claim's block used to take index 1 and absorb the tool call's
+        fields when the streamed chunks were added together.
+        """
+        registry = _registry()
+        stream = MarkerStream(registry)
+        pieces = (
+            stream.feed("It marks a stimulus.[src:2] Group them.[src:1] More.") + stream.finish()
+        )
+        tool_use = {"type": "tool_use", "id": "t1", "name": "search", "input": {}, "index": 1}
+        chunks = [
+            AIMessageChunk(content=pieces_to_blocks(pieces, registry, index_base=0)),
+            AIMessageChunk(content=[tool_use]),
+        ]
+
+        merged = chunks[0] + chunks[1]
+
+        assert [b for b in merged.content if b.get("type") == "tool_use"] == [tool_use]
+        for block in merged.content:
+            if block.get("type") == "text":
+                assert not {"id", "name", "input"} & set(block), block
+        text = "".join(b["text"] for b in merged.content if b.get("type") == "text")
+        assert text == "It marks a stimulus. Group them. More."
+        sources = [c["source"] for b in merged.content for c in b.get("citations", [])]
+        assert sources == ["https://hedtags.org/sensory", "https://hedtags.org/schema"]
+
+    def test_provider_indexes_never_equal_ours(self) -> None:
+        registry = _registry()
+        blocks = pieces_to_blocks(_run("A.[src:1] B.[src:2] C.", registry), registry, index_base=0)
+        assert all(b["index"] >= SEGMENT_INDEX_OFFSET for b in blocks)

@@ -409,6 +409,14 @@ class MarkerStream:
         self._closed = True
 
 
+#: Added to every index this module gives a block, so it can never equal the index
+#: of a block the provider numbered itself. Providers number blocks by position (0, 1,
+#: 2, ...); a text block split into segments 0..k would otherwise take the indexes of
+#: the blocks after it, and a tool-use block at index 1 was merged into the second
+#: segment's text when the streamed chunks were added together.
+SEGMENT_INDEX_OFFSET = 1_000_000
+
+
 def pieces_to_blocks(
     pieces: Iterable[TextPiece | CitePiece],
     registry: SourceRegistry,
@@ -425,11 +433,12 @@ def pieces_to_blocks(
         pieces: Output of ``MarkerStream``.
         registry: Resolves tags to sources.
         index_base: The provider's index for the text block, or None when the
-            provider gave none. Segment indexes are ``index_base * 1000 + segment``.
+            provider gave none. Segment indexes are
+            ``SEGMENT_INDEX_OFFSET + index_base * 1000 + segment``.
     """
     blocks: list[dict[str, Any]] = []
     for piece in pieces:
-        index = (index_base or 0) * 1000 + piece.segment
+        index = SEGMENT_INDEX_OFFSET + (index_base or 0) * 1000 + piece.segment
         if isinstance(piece, TextPiece):
             blocks.append({"type": "text", "text": piece.text, "index": index})
         else:
