@@ -88,6 +88,11 @@ _MODEL_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]+(/[a-zA-Z0-9._-]+)?$")
 _MODEL_ID_MAX_LENGTH = 100
 
 
+#: Longest ``model_instructions`` entry, in characters. It rides in every system
+#: prompt for that model, so an essay here is paid for on every request.
+MODEL_INSTRUCTIONS_MAX_LENGTH = 4000
+
+
 def _validate_model_id(v: str | None, field_label: str = "Model identifier") -> str | None:
     """Validate a model identifier: creator/model-name, or a bare first-party id.
 
@@ -1940,17 +1945,37 @@ class CommunityConfig(BaseModel):
     """
 
     default_model: str | None = None
-    """Default LLM model for this community: one of the offered Claude models.
+    """Default LLM model for this community: one of the offered models.
 
     If specified, overrides the platform-level default_model for this community.
     Must resolve through ``MODEL_ALIASES`` to an entry in ``OFFERED_MODELS``
-    (``claude-haiku-4-5`` or ``claude-sonnet-5-5``); legacy OpenRouter-style ids
-    such as "anthropic/claude-haiku-4.5" still resolve.
+    (a Claude model such as ``claude-haiku-4-5`` or ``claude-sonnet-5-5``, or one
+    of the Bedrock-served models: ``openai.gpt-6-luna``, ``qwen.qwen3-next-80b-a3b``,
+    ``openai.gpt-oss-120b``); legacy OpenRouter-style ids such as
+    "anthropic/claude-haiku-4.5" still resolve.
 
     Example:
         default_model: "claude-haiku-4-5"
 
     If not specified, uses the platform-level default from Settings.
+    """
+
+    model_instructions: dict[str, str] = Field(default_factory=dict)
+    """Extra system-prompt text for particular models, keyed by offered model id.
+
+    Models differ in what they need to be told: GPT-6 Luna and gpt-oss-120b, for
+    example, keep searching unless they are asked to stop after a couple of
+    searches, which the platform already adds for them. Text here is appended
+    after any such built-in note, only on requests that run that model, so a
+    community can tune one model without touching the others.
+
+    Keys are model ids or aliases from ``OFFERED_MODELS`` and are stored under the
+    id they resolve to; an unknown key is an error, not a silent no-op.
+
+    Example:
+        model_instructions:
+          openai.gpt-oss-120b: |
+            Answer in the same language the question was asked in.
     """
 
     default_model_provider: str | None = None
@@ -2152,6 +2177,37 @@ class CommunityConfig(BaseModel):
     def validate_default_model(cls, v: str | None) -> str | None:
         """Validate model name format (provider/model-name)."""
         return _validate_model_id(v, field_label="Model name")
+
+    @field_validator("model_instructions")
+    @classmethod
+    def validate_model_instructions(cls, v: dict[str, str]) -> dict[str, str]:
+        """Resolve each key to an offered model id and check the text.
+
+        A misspelled key would otherwise leave the instructions unused with no
+        signal, on the one model the community meant to tune.
+        """
+        resolved: dict[str, str] = {}
+        for key, text in v.items():
+            try:
+                model_id = normalize_model(key)
+            except ValueError as e:
+                raise ValueError(
+                    f"model_instructions key {key!r} is not an offered model: {e}"
+                ) from e
+            if model_id in resolved:
+                raise ValueError(
+                    f"model_instructions names {model_id!r} twice (as {key!r} and by another alias)"
+                )
+            stripped = text.strip()
+            if not stripped:
+                raise ValueError(f"model_instructions for {key!r} is empty")
+            if len(stripped) > MODEL_INSTRUCTIONS_MAX_LENGTH:
+                raise ValueError(
+                    f"model_instructions for {key!r} is too long "
+                    f"({len(stripped)} chars; max {MODEL_INSTRUCTIONS_MAX_LENGTH})"
+                )
+            resolved[model_id] = stripped
+        return resolved
 
     @model_validator(mode="after")
     def validate_default_model_resolvable(self) -> "CommunityConfig":
