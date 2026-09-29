@@ -31,7 +31,7 @@ DEFAULT_MODEL = "claude-haiku-4-5"
 BEDROCK_MODEL_PROVIDER = "bedrock_converse"
 
 # Instruction added to the system prompt of models that go back to the search
-# tools over and over. GPT-6 Luna at maximum effort and gpt-oss-120b, given
+# tools over and over. GPT-6 Luna (measured at maximum effort) and gpt-oss-120b, given
 # the same retrieval tools as Claude, kept searching with reworded queries
 # until they ran out of output tokens without answering; with this note both
 # answered after two searches, and said so when the results did not contain
@@ -57,7 +57,8 @@ class BedrockModel:
             Next answers in N. Virginia and Oregon but its Ohio endpoint accepts
             the request and never replies (tested 2026-09-28), so it pins us-east-1.
         extra_request_fields: Sent as ``additionalModelRequestFields``. GPT-6 Luna's
-            reasoning effort is set here, to its maximum.
+            reasoning effort is set here, to high (maximum made a tool-using turn take
+            15 to 50 seconds before its first word).
         caching: "automatic" when the service caches a repeated prompt prefix on
             its own and reports the tokens read and written; "none" otherwise.
             Explicit cache points are rejected by all three models, so no client
@@ -80,7 +81,7 @@ BEDROCK_MODELS: dict[str, BedrockModel] = {
     "openai.gpt-6-luna": BedrockModel(
         label="OpenAI GPT-6 Luna",
         invoke_id="us.openai.gpt-6-luna",
-        extra_request_fields={"reasoning": {"effort": "max"}},
+        extra_request_fields={"reasoning": {"effort": "high"}},
         caching="automatic",
         prompt_addendum=_TOOL_DISCIPLINE,
     ),

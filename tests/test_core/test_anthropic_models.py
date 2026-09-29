@@ -168,11 +168,11 @@ class TestBedrockModels:
         invoke_ids = [spec.invoke_id for spec in BEDROCK_MODELS.values()]
         assert len(set(invoke_ids)) == len(invoke_ids)
 
-    def test_luna_runs_at_maximum_effort_in_the_us_profile(self) -> None:
+    def test_luna_runs_at_high_effort_in_the_us_profile(self) -> None:
         """Ohio calls GPT-6 Luna through the us. profile; global. is denied by SCP."""
         luna = BEDROCK_MODELS["openai.gpt-6-luna"]
         assert luna.invoke_id.startswith("us.")
-        assert luna.extra_request_fields == {"reasoning": {"effort": "max"}}
+        assert luna.extra_request_fields == {"reasoning": {"effort": "high"}}
 
     def test_only_automatic_caching_is_claimed_for_luna(self) -> None:
         """Bedrock rejects cache points for all three, so only Luna's own caching exists."""

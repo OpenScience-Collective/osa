@@ -212,9 +212,9 @@ class TestCreateBedrockLlm:
         )
         assert llm.client.meta.region_name == "us-west-2"
 
-    def test_luna_runs_at_maximum_effort(self) -> None:
+    def test_luna_runs_at_high_effort(self) -> None:
         llm = create_bedrock_llm("openai.gpt-6-luna", settings=_settings())
-        assert llm.additional_model_request_fields == {"reasoning": {"effort": "max"}}
+        assert llm.additional_model_request_fields == {"reasoning": {"effort": "high"}}
 
     def test_max_tokens_comes_from_settings_unless_given(self) -> None:
         settings = _settings(bedrock_max_output_tokens=9000)
@@ -334,7 +334,7 @@ class TestTheRequestOnTheWire:
 
         llm.invoke([HumanMessage(content="hi")])
 
-        assert wire.body["additionalModelRequestFields"] == {"reasoning": {"effort": "max"}}
+        assert wire.body["additionalModelRequestFields"] == {"reasoning": {"effort": "high"}}
         assert "temperature" not in wire.body.get("inferenceConfig", {})
         assert "cachePoint" not in json.dumps(wire.body)
 

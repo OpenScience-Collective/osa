@@ -34,7 +34,7 @@ Calling them showed what a Claude-shaped request cannot assume:
 - **Caching differs.** All three reject explicit cache points.
   GPT-6 Luna caches a repeated prompt prefix on its own and reports the tokens written and read (10,855 written, then read back, in the test run); the other two do no caching.
 - **Sampling.** GPT-6 Luna rejects `temperature` and `topP`.
-- **Search loops.** GPT-6 Luna at maximum effort and gpt-oss-120b, given the same retrieval tools as Claude, kept searching with reworded queries until they ran out of tokens.
+- **Search loops.** GPT-6 Luna (measured at maximum effort) and gpt-oss-120b, given the same retrieval tools as Claude, kept searching with reworded queries until they ran out of tokens.
   A two-sentence prompt note fixed it for both; Claude and Qwen3 Next did not need it.
 - **Region.** Qwen3 Next accepts the request in Ohio and never answers (nothing after 180 s; its siblings answer in under a second), while N. Virginia and Oregon answer normally.
 - **The `global.` inference profile is denied** by a service control policy on this account, and would route outside the United States.
@@ -46,7 +46,7 @@ Calling them showed what a Claude-shaped request cannot assume:
 
 Serve the three models from Bedrock through the Converse API, one transport for all of them, on the platform's Bedrock key (`AWS_BEARER_TOKEN_BEDROCK`), and offer them next to the Claude models.
 
-- **One registry.** `BEDROCK_MODELS` in `src/core/services/anthropic_models.py` holds each model's label, invoke id, region, request fields (GPT-6 Luna at `reasoning.effort: max`), caching behavior and prompt note. `OFFERED_MODELS` is built from it, so the widget menu, the CLI and community config validation see one list.
+- **One registry.** `BEDROCK_MODELS` in `src/core/services/anthropic_models.py` holds each model's label, invoke id, region, request fields (GPT-6 Luna at `reasoning.effort: high`; it started at `max`, and a tool-using turn then took 15 to 50 seconds before its first word), caching behavior and prompt note. `OFFERED_MODELS` is built from it, so the widget menu, the CLI and community config validation see one list.
 - **Platform-funded only.** A caller's own Anthropic key cannot select a Bedrock model: BYOK skips the origin check because it pays for itself, and the platform pays for Bedrock.
   A deployment without a Bedrock key does not list the models and answers a request for one with 400.
   A caller who brings an OpenRouter key gets the same model's OpenRouter slug.

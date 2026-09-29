@@ -103,7 +103,7 @@ class Settings(BaseSettings):
     bedrock_max_output_tokens: int = Field(
         default=16000,
         description="Default max_tokens for Bedrock model requests. Reasoning counts toward "
-        "it, and GPT-6 Luna at maximum effort can spend thousands of tokens thinking",
+        "it, and GPT-6 Luna at high effort can spend thousands of tokens thinking",
     )
     anthropic_thinking_budget_tokens: int = Field(
         default=2048,
