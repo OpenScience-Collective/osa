@@ -2295,12 +2295,13 @@ class CommunityConfig(BaseModel):
         Sonnet, or sets any level on a model with none, should hear that it will not
         get what it wrote, at load time rather than as a puzzle later.
         """
-        if self.reasoning_effort is None or not self.default_model or "/" in self.default_model:
+        if self.reasoning_effort is None or not self.default_model:
             return self
         try:
-            effective = resolve_reasoning_effort(self.default_model, self.reasoning_effort)
+            model = normalize_model(self.default_model)
         except ValueError:
-            return self  # an unresolvable default_model is warned about above
+            return self  # not an offered model: warned about above, and no levels to check
+        effective = resolve_reasoning_effort(model, self.reasoning_effort)
         if effective is None:
             warnings.warn(
                 f"reasoning_effort={self.reasoning_effort!r} is ignored for "

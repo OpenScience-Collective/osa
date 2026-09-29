@@ -8,6 +8,7 @@ import logging
 import os
 import subprocess
 import sys
+import warnings as python_warnings
 from pathlib import Path
 from typing import Literal
 
@@ -150,7 +151,14 @@ def validate(
     # Step 3: Pydantic Schema Validation
     console.print("[dim]Validating schema...[/dim]")
     try:
-        config = CommunityConfig.model_validate(yaml_data)
+        # The schema warns (UserWarning) about settings that load but will not do what
+        # they say (a reasoning_effort the default model clamps, a Bedrock default that
+        # may not run). Collect them here so they land in the Warnings block below
+        # instead of on stderr, where a maintainer running this command misses them.
+        with python_warnings.catch_warnings(record=True) as caught:
+            python_warnings.simplefilter("always")
+            config = CommunityConfig.model_validate(yaml_data)
+        warnings.extend(str(w.message) for w in caught if issubclass(w.category, UserWarning))
         logger.debug("Schema validation passed for community: %s", config.id)
         checks.append(("Schema Validation", "✓ Valid", "green"))
     except ValidationError as e:

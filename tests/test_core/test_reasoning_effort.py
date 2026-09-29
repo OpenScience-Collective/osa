@@ -102,6 +102,20 @@ class TestTheClamp:
         for level in REASONING_LEVELS[model]:
             assert resolve_reasoning_effort(model, level) == level
 
+    @pytest.mark.parametrize(
+        ("model", "sent"),
+        [
+            (SONNET, ["none", "low", "medium", "high", "high", "high"]),
+            ("openai.gpt-6-luna", ["none", "low", "medium", "high", "xhigh", "max"]),
+            ("openai.gpt-oss-120b", ["low", "low", "medium", "high", "high", "high"]),
+        ],
+    )
+    def test_the_pinned_result_for_every_level_of_every_model_with_levels(
+        self, model: str, sent: list[str]
+    ) -> None:
+        """Written out, not derived from the tables, so a wrong table fails here."""
+        assert [resolve_reasoning_effort(model, level) for level in REASONING_SCALE] == sent
+
     def test_a_gap_in_a_models_levels_takes_the_level_below_it_never_above(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -209,6 +223,13 @@ class TestTheEffectiveLevel:
         )
 
     @pytest.mark.parametrize("provider", PROVIDERS)
+    def test_no_model_is_not_the_default_model(self, provider: str) -> None:
+        """`normalize_model(None)` is the default model; here None means a model OSA could
+        not name, which is sent nothing whatever the level asked."""
+        assert effective_reasoning_effort(None, "max", provider) is None  # type: ignore[arg-type]
+        assert effective_reasoning_effort("", "max", provider) is None  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("provider", PROVIDERS)
     def test_an_id_that_is_not_offered_is_sent_nothing_even_by_default(self, provider: str) -> None:
         assert effective_reasoning_effort("some-lab/unknown", None, provider) is None  # type: ignore[arg-type]
         assert effective_reasoning_effort("some-lab/unknown", "high", provider) is None  # type: ignore[arg-type]
@@ -265,6 +286,22 @@ class TestTheCommunitySetting:
             == []
         )
         assert self._reasoning_warnings(default_model=SONNET, reasoning_effort="high") == []
+
+    @pytest.mark.parametrize(
+        "alias", sorted(a for a, target in MODEL_ALIASES.items() if target == SONNET)
+    )
+    def test_a_default_model_named_by_an_alias_is_checked_as_the_model_it_is(
+        self, alias: str
+    ) -> None:
+        """An OpenRouter-style slug in default_model resolves through normalize_model on the
+        Claude path, and clamps there, so the warning must not skip it."""
+        warned = self._reasoning_warnings(default_model=alias, reasoning_effort="max")
+        assert len(warned) == 1 and "will run at 'high'" in warned[0]
+
+    def test_a_default_model_that_is_not_offered_gets_one_warning_not_two(self) -> None:
+        """Its own warning covers it; a second, about levels it does not have, would
+        mislead."""
+        assert self._reasoning_warnings(default_model="claude-typo", reasoning_effort="high") == []
 
     def test_nothing_to_check_without_a_default_model(self) -> None:
         assert self._reasoning_warnings(reasoning_effort="max") == []
