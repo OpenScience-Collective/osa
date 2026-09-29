@@ -3,14 +3,15 @@
 # each entry keeps the index's URL and description; source_url is the raw file on GitHub.
 # The last 14 entries are pages the index lacks (NWB Inspector usage, MatNWB, DANDI, NWB overview,
 # schema release notes), added after evaluation showed answers inventing details on those topics.
-# default_model is platform-funded Haiku for now; the plan is to switch to GPT-6 Luna once OSA
-# offers it through Bedrock (see issue #514).
+# default_model is GPT-6 Luna (maximum reasoning effort), served from Amazon Bedrock on the
+# platform's key (issue #514). A caller with their own Anthropic key who names no model (the CLI)
+# runs Claude Haiku 4.5 instead, and so does every request on a deployment with no Bedrock key.
 
 id: nwb
 name: NWB
 description: 'Neurodata Without Borders: data standard and software ecosystem (PyNWB, HDMF, NeuroConv, NWB Inspector) for neurophysiology data'
 status: available
-default_model: claude-haiku-4-5
+default_model: openai.gpt-6-luna
 maintainers:
 - bendichter
 links:
