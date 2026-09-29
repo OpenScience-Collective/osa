@@ -271,6 +271,9 @@ jobs:
       - name: Run the paced streaming tests on a real DOM
         run: bun frontend/test-widget-paced-streaming.js
 
+      - name: Run the activity status tests on a real DOM
+        run: bun frontend/test-widget-activity-status.js
+
       # The same reveal in real Chrome, where timers, layout and prefers-reduced-motion
       # are the browser's own: a burst shaped like a reasoning model's is shown at a
       # reading pace, the code block whole, and at once with reduced motion emulated.
