@@ -5759,6 +5759,21 @@
   }
 
   // Open settings modal
+  // The model choice comes first in Settings. A custom model, and the reader's own API key
+  // that pays for it, belong to "Custom", so those two fields appear only when Custom is
+  // chosen. A key that is already filled in stays in view so the reader can see and
+  // remove it, whatever model is selected.
+  function syncCustomFields(container) {
+    const modelSelect = container.querySelector('#osa-settings-model');
+    const customModelField = container.querySelector('#osa-settings-custom-model-field');
+    const apiKeyField = container.querySelector('#osa-settings-api-key-field');
+    const apiKeyInput = container.querySelector('#osa-settings-api-key');
+    const isCustom = !!modelSelect && modelSelect.value === 'custom';
+    const hasKey = !!apiKeyInput && apiKeyInput.value.trim() !== '';
+    if (customModelField) customModelField.style.display = isCustom ? 'block' : 'none';
+    if (apiKeyField) apiKeyField.style.display = (isCustom || hasKey) ? 'block' : 'none';
+  }
+
   function openSettings(container) {
     // Don't open settings if chat window is closed
     if (!isOpen) return;
@@ -5766,7 +5781,6 @@
     const overlay = container.querySelector('.osa-settings-overlay');
     const apiKeyInput = container.querySelector('#osa-settings-api-key');
     const modelSelect = container.querySelector('#osa-settings-model');
-    const customModelField = container.querySelector('#osa-settings-custom-model-field');
     const customModelInput = container.querySelector('#osa-settings-custom-model');
     const modelHint = container.querySelector('#osa-settings-model-hint');
 
@@ -5809,14 +5823,14 @@
       const isDefaultModel = userSettings.model === null || getModelMenuOptions().some(m => m.value === userSettings.model);
       if (isDefaultModel) {
         modelSelect.value = userSettings.model || 'default';
-        if (customModelField) customModelField.style.display = 'none';
+        if (customModelInput) customModelInput.value = '';
       } else {
         // Custom model
         modelSelect.value = 'custom';
         if (customModelInput) customModelInput.value = userSettings.model;
-        if (customModelField) customModelField.style.display = 'block';
       }
     }
+    syncCustomFields(container);
 
     // Update hint with current default model
     if (modelHint) {
@@ -5849,11 +5863,13 @@
   // Save settings from modal
   function saveSettings(container) {
     const apiKeyInput = container.querySelector('#osa-settings-api-key');
+    const apiKeyField = container.querySelector('#osa-settings-api-key-field');
     const modelSelect = container.querySelector('#osa-settings-model');
     const customModelInput = container.querySelector('#osa-settings-custom-model');
 
-    // Get values
-    const apiKey = apiKeyInput ? apiKeyInput.value.trim() : '';
+    // Get values. A key the dialog is not showing is not part of what the reader chose.
+    const keyShown = !!apiKeyField && apiKeyField.style.display !== 'none';
+    const apiKey = keyShown && apiKeyInput ? apiKeyInput.value.trim() : '';
     const modelSelection = modelSelect ? modelSelect.value : 'default';
 
     // Validate API key format if provided: either an Anthropic or an
@@ -5873,6 +5889,10 @@
       }
       if (!isValidModelId(model)) {
         showError(container, 'Invalid model format. Expected a Claude model id or provider/model-name');
+        return;
+      }
+      if (!apiKey) {
+        showError(container, 'A custom model needs your own API key');
         return;
       }
     } else if (modelSelection !== 'default') {
@@ -6309,21 +6329,6 @@
           </div>
           <div class="osa-settings-body">
             <div class="osa-settings-field">
-              <label class="osa-settings-label" for="osa-settings-api-key">
-                API Key (Optional)
-              </label>
-              <input
-                type="password"
-                id="osa-settings-api-key"
-                class="osa-settings-input"
-                placeholder="sk-ant-... or sk-or-v1-..."
-                autocomplete="off"
-              />
-              <span class="osa-settings-hint">
-                Use your own Anthropic or OpenRouter API key for testing. Stored locally in your browser.
-              </span>
-            </div>
-            <div class="osa-settings-field">
               <label class="osa-settings-label" for="osa-settings-model">
                 Model Selection
               </label>
@@ -6338,7 +6343,7 @@
             </div>
             <div class="osa-settings-field" id="osa-settings-custom-model-field" style="display: none;">
               <label class="osa-settings-label" for="osa-settings-custom-model">
-                Model name, requires your own <a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer" style="color: var(--osa-accent); text-decoration: underline;">OpenRouter</a> key
+                Model name, for example from <a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer" style="color: var(--osa-accent); text-decoration: underline;">OpenRouter</a>
               </label>
               <input
                 type="text"
@@ -6347,6 +6352,21 @@
                 placeholder="provider/model-name"
                 autocomplete="off"
               />
+            </div>
+            <div class="osa-settings-field" id="osa-settings-api-key-field" style="display: none;">
+              <label class="osa-settings-label" for="osa-settings-api-key">
+                Your API key
+              </label>
+              <input
+                type="password"
+                id="osa-settings-api-key"
+                class="osa-settings-input"
+                placeholder="sk-ant-... or sk-or-v1-..."
+                autocomplete="off"
+              />
+              <span class="osa-settings-hint">
+                An Anthropic or OpenRouter key. Required for a custom model. Stored in this browser and sent with your requests.
+              </span>
             </div>
             <div class="osa-settings-field osa-workspace-field" style="display: none;">
               <label class="osa-settings-label">Workspace</label>
@@ -7698,7 +7718,6 @@
     const settingsCancelBtn = container.querySelector('.osa-settings-btn-cancel');
     const settingsSaveBtn = container.querySelector('.osa-settings-btn-save');
     const modelSelect = container.querySelector('#osa-settings-model');
-    const customModelField = container.querySelector('#osa-settings-custom-model-field');
 
     // Verify all required elements exist
     if (!chatButton || !closeBtn || !resetBtn || !input || !sendBtn || !suggestionsList) {
@@ -7772,12 +7791,8 @@
       }
     });
 
-    // Show/hide custom model input based on selection
-    modelSelect?.addEventListener('change', (e) => {
-      if (customModelField) {
-        customModelField.style.display = e.target.value === 'custom' ? 'block' : 'none';
-      }
-    });
+    // Show/hide the custom model and API key fields based on selection
+    modelSelect?.addEventListener('change', () => syncCustomFields(container));
 
     // Check backend status
     checkBackendStatus();
