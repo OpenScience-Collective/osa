@@ -48,6 +48,7 @@ from src.core.config.community import CommunityConfig
 from tests.helpers.chat_models import StreamingScriptedChatModel
 
 COMMUNITY = "toolcallstream"
+ALLOWED_ORIGIN = "https://toolcall.example"
 SEARCH_CALL_ID = "toolu_01searchsearchsearchsea"
 DOCS_CALL_ID = "toolu_01docsdocsdocsdocsdocsd"
 CODE_CALL_ID = "toolu_01codecodecodecodecodec"
@@ -82,6 +83,7 @@ def _config() -> CommunityConfig:
             ]
         },
         runtime={"python": {"pyodide_version": "314.0.6", "lockfile": "runtime/l.json"}},
+        cors_origins=[ALLOWED_ORIGIN],
     )
 
 
@@ -362,9 +364,16 @@ class TestBrowserCalls:
 
 
 @pytest.fixture
-def resume_client():
+def resume_client(monkeypatch):
+    from src.api.config import get_settings
     from src.assistants.registry import registry
 
+    # What is under test is the stream, not the API key check. The settings are cached
+    # for the whole run, and tests that ran earlier leave them with authentication on
+    # (with a local .env that supplies keys, this endpoint then answers 401), so this
+    # test builds the settings it needs and puts the cache back as it found it.
+    monkeypatch.setenv("REQUIRE_API_AUTH", "false")
+    get_settings.cache_clear()
     registry.register_from_config(_config())
     _get_session_store(COMMUNITY).clear()
     app = FastAPI()
@@ -372,6 +381,8 @@ def resume_client():
     yield TestClient(app)
     _get_session_store(COMMUNITY).clear()
     registry._assistants.pop(COMMUNITY, None)
+    monkeypatch.undo()
+    get_settings.cache_clear()
 
 
 def _parked_session() -> ChatSession:
@@ -412,6 +423,9 @@ def _resume(client: TestClient, monkeypatch, script: list[list[AIMessageChunk]])
     )
     response = client.post(
         f"/{COMMUNITY}/chat/resume",
+        # An allowed origin authorizes the request, as the widget's own does, whether or
+        # not the environment requires an API key (a local .env can turn that on).
+        headers={"Origin": ALLOWED_ORIGIN},
         json={
             "session_id": "sess-parked-toolcall",
             "result": {"call_id": CODE_CALL_ID, "status": "ok", "summary": "peak 10.2 Hz"},
