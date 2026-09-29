@@ -1166,6 +1166,39 @@ console.log('\nwhitespace, then code run in the browser, then the answer: never 
   runtime.terminate?.();
 }
 
+console.log('\nwhitespace between tool calls does not end the status');
+{
+  // After a tool's result the model often starts its next turn with "\n\n". The
+  // status on screen is still true, and must still be true after any redraw (a reader
+  // rating an earlier answer redraws the whole conversation).
+  for (const midReply of [false, true]) {
+    const loaded = loadWidget();
+    const { container, api } = loaded;
+    await sleep(20);
+    const stream = loaded.queue();
+    send(loaded);
+    if (midReply) {
+      stream.send({ event: 'content', content: 'Let me check.' });
+      await waitUntil(() => lastReplyText(container).includes('Let me check.'), 'the first text');
+    }
+    stream.send({ event: 'tool_call', name: 'nemar_search_datasets' });
+    stream.send({ event: 'tool_start', name: 'nemar_search_datasets', input: {} });
+    stream.send({ event: 'tool_end', name: 'nemar_search_datasets', output: '' });
+    stream.send({ event: 'content', content: WHITESPACE });
+    await handled(loaded, stream);
+    const where = midReply ? 'line' : 'loading';
+    const name = midReply ? 'under text' : 'before any text';
+    assertEqual(view(container)[where], 'Analyzing results...', `${name}: after the whitespace, the status still reads Analyzing results...`);
+    api.renderMessages(container);
+    assertEqual(view(container)[where], 'Analyzing results...', `${name}: and still does after a redraw`);
+    stream.send({ event: 'content', content: ' Found three.' });
+    stream.send({ event: 'done', content: `${midReply ? 'Let me check.' : ''} Found three.`.trim(), citations: [] });
+    stream.close();
+    await waitUntil(() => settled(loaded), 'the send settles');
+    assertNothingLeft(loaded, `${name}: after the answer`);
+  }
+}
+
 console.log('\nthe renderer holds the same rule on its own, whatever wrote the message');
 {
   // Every writer in the stream handler keeps whitespace out of a reply (the checks

@@ -7636,8 +7636,12 @@
             receivedFirstContent = true;
             // Text again: whatever the reply was doing is over. The reveal's next
             // redraw takes the status away with the text, so nothing flickers first.
-            clearActivity();
-            labelFromCalls = false;
+            // Only whitespace is not text (the reveal does not draw it either), and a
+            // model often sends some before its next call: the status stays.
+            if (hasVisibleText(event.content)) {
+              clearActivity();
+              labelFromCalls = false;
+            }
 
             // Accumulate content; the reveal decides when the reader sees it
             accumulatedContent += event.content;
