@@ -566,6 +566,97 @@ class TestTheKeyIsNotLogged:
         assert not [line for line in records if canary in line]
 
 
+class TestConcurrentSyncRequests:
+    """The agent's model node calls the synchronous API, on worker threads."""
+
+    def test_threads_each_send_their_own_key(self, openrouter: FakeOpenRouter) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        count = 40
+        openrouter.reply(*[stream_of("ok") for _ in range(count + 1)])
+        keys = ["sk-or-first", "sk-or-second"]
+        models = {
+            key: create_openrouter_llm(model="openai/gpt-oss-120b", api_key=key) for key in keys
+        }
+        # One call first, so LiteLLM has built its HTTP client: threads that all reach a
+        # cold LiteLLM at once race to build it, and one closes the client another is
+        # using ("Bad file descriptor"). That race is LiteLLM's, not what is tested here.
+        models[keys[0]].invoke([HumanMessage(content=f"warm-up:{keys[0]}")])
+
+        def ask(i: int) -> None:
+            key = keys[i % 2]
+            models[key].invoke([HumanMessage(content=f"{i}:{key}")])
+
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            list(pool.map(ask, range(count)))
+
+        records = openrouter.records[1:]
+        assert len(records) == count
+        for request, headers in records:
+            content = request["messages"][0]["content"]
+            text = content if isinstance(content, str) else content[0]["text"]
+            asked_under = text.split(":")[1]
+            assert headers["authorization"] == f"Bearer {asked_under}"
+
+
+class TestTheEndOfAReply:
+    """Text held back in case it became a tag is released when the reply ends."""
+
+    @pytest.mark.parametrize(
+        "ending", ["The value is [x", "Ends [src:", "Ends with a space ", "Ends [sr"]
+    )
+    def test_a_streamed_reply_ends_with_everything_it_said(
+        self, openrouter: FakeOpenRouter, ending: str
+    ) -> None:
+        openrouter.reply(stream_of("Start. ", ending))
+
+        reply = _llm().invoke(_conversation())
+
+        assert _text_of(reply.content) == "Start. " + ending
+
+    @pytest.mark.parametrize("ending", ["The value is [x", "Ends [src:", "Ends with a space "])
+    async def test_and_an_async_one(self, openrouter: FakeOpenRouter, ending: str) -> None:
+        openrouter.reply(stream_of("Start. ", ending))
+
+        reply = await _llm().ainvoke(_conversation())
+
+        assert _text_of(reply.content) == "Start. " + ending
+
+
+class TestTheOtherEntryPoints:
+    """_generate and _agenerate run when the model is called without streaming."""
+
+    async def test_an_async_complete_reply(self, openrouter: FakeOpenRouter) -> None:
+        openrouter.reply(whole_reply(ANSWER))
+        llm = _llm()
+        llm.streaming = False
+
+        reply = await llm.ainvoke(_conversation())
+
+        assert "[src" not in _text_of(reply.content)
+        assert _sources_of(reply.content) == [SCHEMA_URL, SENSORY_URL]
+        assert "[src:1] The HED schema" in _flat_tool_text(openrouter.requests[0])
+
+    def test_generate_on_the_stream_branch(self, openrouter: FakeOpenRouter) -> None:
+        openrouter.reply(stream_of(ANSWER))
+
+        result = _llm()._generate(_conversation(), stream=True)
+
+        assert _sources_of(result.generations[0].message.content) == [SCHEMA_URL, SENSORY_URL]
+
+    async def test_agenerate_on_the_stream_branch(self, openrouter: FakeOpenRouter) -> None:
+        openrouter.reply(stream_of(ANSWER))
+
+        result = await _llm()._agenerate(_conversation(), stream=True)
+
+        assert _sources_of(result.generations[0].message.content) == [SCHEMA_URL, SENSORY_URL]
+
+
+def _flat_tool_text(request: dict) -> str:
+    content = request["messages"][-1]["content"]
+    return content if isinstance(content, str) else "".join(b.get("text", "") for b in content)
+
+
 class TestTagsBecomeCitations:
     """The reply a reader gets: no tag text, and a citation for each tag that named a source."""
 

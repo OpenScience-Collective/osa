@@ -89,21 +89,30 @@ def whole_reply(text: str, usage: dict | None = None) -> dict:
 
 
 class FakeOpenRouter:
-    """Serves queued replies to ``POST /api/v1/chat/completions`` and records each request."""
+    """Serves queued replies to ``POST /api/v1/chat/completions`` and records each request.
+
+    Safe under concurrent requests: each request is recorded, with its headers, as one
+    entry, so ``requests[i]`` and ``headers[i]`` always describe the same request.
+    """
 
     def __init__(self) -> None:
-        self.requests: list[dict[str, Any]] = []
-        self.headers: list[dict[str, str]] = []
+        self._lock = threading.Lock()
+        self._records: list[tuple[dict[str, Any], dict[str, str]]] = []
         self._replies: list[Any] = []
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
+            # Keep-alive, as the real service does; without it a burst of concurrent
+            # synchronous clients sees connections reset.
+            protocol_version = "HTTP/1.1"
+
             def do_POST(self) -> None:  # noqa: N802 (http.server's interface)
                 length = int(self.headers["content-length"])
                 request = json.loads(self.rfile.read(length))
-                outer.requests.append(request)
-                outer.headers.append({k.lower(): v for k, v in self.headers.items()})
-                reply = outer._replies.pop(0)
+                headers = {k.lower(): v for k, v in self.headers.items()}
+                with outer._lock:
+                    outer._records.append((request, headers))
+                    reply = outer._replies.pop(0)
                 if request.get("stream"):
                     payload = "".join(f"data: {json.dumps(e)}\n\n" for e in reply)
                     payload += "data: [DONE]\n\n"
@@ -121,12 +130,34 @@ class FakeOpenRouter:
             def log_message(self, *args: Any) -> None:
                 pass
 
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        class Server(ThreadingHTTPServer):
+            # The default backlog of 5 resets connections when a dozen threads connect at once.
+            request_queue_size = 128
+            daemon_threads = True
+
+        self._server = Server(("127.0.0.1", 0), Handler)
         self.base_url = f"http://127.0.0.1:{self._server.server_port}/api/v1"
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
 
+    @property
+    def requests(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [request for request, _ in self._records]
+
+    @property
+    def headers(self) -> list[dict[str, str]]:
+        with self._lock:
+            return [headers for _, headers in self._records]
+
+    @property
+    def records(self) -> list[tuple[dict[str, Any], dict[str, str]]]:
+        """Each request with its own headers."""
+        with self._lock:
+            return list(self._records)
+
     def reply(self, *replies: Any) -> None:
-        self._replies.extend(replies)
+        with self._lock:
+            self._replies.extend(replies)
 
     def close(self) -> None:
         self._server.shutdown()
