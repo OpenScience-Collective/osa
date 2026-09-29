@@ -7052,9 +7052,10 @@
   // delivered so far and `show` is handed the part to display. `kick` says there is
   // more to show, `drain` resolves once all of it is shown (at most
   // REVEAL_DRAIN_MAX_MS later), `flush` shows all of it now, and `stop` abandons the
-  // pending redraw. With `paced` false (a reader who asked for reduced motion) each
-  // tick shows everything that has arrived: chunks are still gathered into one redraw
-  // per tick, because a redraw rebuilds the whole conversation.
+  // pending redraw. With `paced` false (a reader who asked for reduced motion, or a page
+  // nobody is looking at) each tick shows everything that has arrived: chunks are still
+  // gathered into one redraw per tick, because a redraw rebuilds the whole conversation.
+  // `paced` may be a function, asked at each tick, since a page can be hidden mid-reply.
   //
   // `show` can throw (a redraw of a detached page, say). It runs from a timer, where
   // a throw would go unseen and leave `drain` waiting for good, so the controller
@@ -7068,6 +7069,7 @@
     let timer = null;
     let waiting = [];
     let failure = null;
+    const isPaced = () => (typeof paced === 'function' ? paced() : paced);
 
     const settle = () => {
       const resolvers = waiting;
@@ -7094,7 +7096,7 @@
       const at = now();
       const elapsed = Math.max(0, at - last);
       last = at;
-      if (paced) {
+      if (isPaced()) {
         const pace = Math.max(REVEAL_MIN_CPS, ((text.length - shown) * 1000) / REVEAL_CATCHUP_MS);
         shown = nextRevealEnd(text, Math.min(shown, text.length), (pace * elapsed) / 1000);
       } else {
@@ -7199,7 +7201,9 @@
     // is a first word to replace it with.
     const reveal = createReveal({
       getText: () => accumulatedContent,
-      paced: !prefersReducedMotion(),
+      // A hidden page is not being read, and its timers are throttled to about one a
+      // second: show it everything at each tick rather than pace it.
+      paced: () => !prefersReducedMotion() && !document.hidden,
       show: (visible) => {
         if (!visible) return;
         isLoading = false;
@@ -7216,8 +7220,9 @@
         renderMessages(container, { follow: false });
       },
     });
-    // A reply that is hidden (a tab put away, a page being left) is not being read: show
-    // the rest now, so it is on the page, and saved, when the reader comes back.
+    // A reply that becomes hidden (a tab put away, a page being left) is not being read:
+    // show the rest now, so it is on the page, and saved, when the reader comes back.
+    // (One that is already hidden is not paced at all: see `paced` above.)
     const onLeave = (event) => {
       if (event.type === 'visibilitychange' && !document.hidden) return;
       reveal.flush();
