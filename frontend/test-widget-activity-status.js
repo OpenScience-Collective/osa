@@ -345,19 +345,21 @@ const REVEAL_MS = 250;
 // Text a reader cannot see, as reasoning models stream it before a tool call (#538).
 const WHITESPACE = '\n\n';
 
-/** Nothing of a status is left: no element, nothing ticking, no activity. */
+/** Nothing of a status is left: no element, nothing announced, nothing ticking, no activity. */
 function assertNothingLeft(loaded, label) {
   const { container, activity, clock } = loaded;
+  const announcer = container.querySelector('.osa-status-announcer');
   assertEqual(
     {
       loading: container.querySelectorAll('.osa-loading').length,
       lines: container.querySelectorAll('.osa-activity-status').length,
+      announced: announcer ? announcer.textContent : null,
       ticking: activity.ticking(),
       intervals: clock.live(),
       activity: activity.state().activity,
     },
-    { loading: 0, lines: 0, ticking: false, intervals: 0, activity: null },
-    `${label}: no loading bubble, no status line, no timer and no activity is left`,
+    { loading: 0, lines: 0, announced: '', ticking: false, intervals: 0, activity: null },
+    `${label}: no loading bubble, no status line, nothing announced, no timer and no activity is left`,
   );
 }
 
@@ -486,7 +488,9 @@ console.log('\ntext, then a tool, then more text: the status is a line in the sa
     'Let me look that up in the documentation first.', 'under the reply\'s own text');
   assertEqual(view(container).assistants, count, 'and no message was added for it');
   const label = line && line.querySelector('.osa-activity-label');
-  assertEqual(label && [label.getAttribute('role'), label.getAttribute('aria-live')], ['status', 'polite'], 'the label is a polite live region');
+  assertEqual(label && [label.getAttribute('aria-hidden'), label.getAttribute('role'), label.getAttribute('aria-live')], ['true', null, null],
+    'the line\'s label is hidden from a screen reader, and is no live region');
+  assertEqual(container.querySelector('.osa-status-announcer').textContent, 'Looking up documentation...', 'which hears it from the announcer');
   stream.send({ event: 'tool_start', name: 'retrieve_test_docs', input: { url: 'https://x' } });
   stream.send({ event: 'tool_end', name: 'retrieve_test_docs', output: 'the page' });
   await sleep(30);
@@ -762,8 +766,8 @@ console.log('\nthe elapsed time: none before five seconds, then whole seconds, t
   const label = container.querySelector('.osa-loading-label');
   const elapsed = container.querySelector('.osa-loading .osa-status-elapsed');
   assert(activity.ticking(), 'a timer runs while the status is up');
-  assertEqual(elapsed && elapsed.getAttribute('aria-live'), 'off', 'the time is not a live region');
-  assert(elapsed && !label.contains(elapsed), 'and not inside the label\'s');
+  assertEqual(elapsed && [elapsed.getAttribute('aria-live'), elapsed.closest('[aria-live]')], [null, null], 'the time is in no live region');
+  assert(elapsed && !label.contains(elapsed), 'and not inside the label');
   const counter = countRedraws(window, container);
   clock.advance(4999);
   assertEqual(view(container).loadingElapsed, '', 'at 4.999 s, nothing');
@@ -796,6 +800,108 @@ console.log('\nthe elapsed time: none before five seconds, then whole seconds, t
   stream.close();
   await waitUntil(() => settled(loaded), 'the send settles');
   assertNothingLeft(loaded, 'after done');
+}
+
+// ------------------------------------------------------- what a screen reader hears
+
+console.log('\nthe status announcer: one live region, made with the widget, saying each label once and never the time');
+{
+  const loaded = loadWidget();
+  const { container, window, clock, api } = loaded;
+  await sleep(20);
+  const announcer = container.querySelector('.osa-status-announcer');
+  const messagesEl = container.querySelector('.osa-chat-messages');
+  assert(announcer !== null && !messagesEl.contains(announcer),
+    'there is one, outside the conversation (which a redraw rebuilds)');
+  assertEqual(announcer && [announcer.getAttribute('role'), announcer.getAttribute('aria-live'), announcer.textContent],
+    ['status', 'polite', ''], 'a polite status region, empty while no reply is pending');
+  assert(announcer && announcer.classList.contains('osa-sr-only'), 'on no screen: it is for a screen reader only');
+  const said = [];
+  const observer = new window.MutationObserver(() => said.push(announcer.textContent));
+  observer.observe(announcer, { childList: true, characterData: true, subtree: true });
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const liveInConversation = () => messagesEl.querySelectorAll('[aria-live], [role="status"]').length;
+
+  const stream = loaded.queue();
+  send(loaded);
+  await waitUntil(() => view(container).loading === TITLE, 'the loading bubble');
+  await handled(loaded, stream);
+  assertEqual(announcer.textContent, '', 'the title in the bubble is a placeholder, not news: not announced');
+  stream.send({ event: 'thinking' });
+  stream.send({ event: 'tool_call', name: 'nemar_search_datasets' });
+  await handled(loaded, stream);
+  assertEqual([view(container).loading, announcer.textContent], ['Searching datasets...', 'Searching datasets...'], 'the label is announced as it changes');
+  assertEqual(liveInConversation(), 0, 'and nothing in the conversation is a live region of its own');
+  const label = container.querySelector('.osa-loading-label');
+  assertEqual(label && label.getAttribute('aria-hidden'), 'true', 'the visible label is hidden from a screen reader, which would hear it twice');
+  clock.advance(9000);
+  await flush();
+  assertEqual([view(container).loadingElapsed, announcer.textContent], ['9 s', 'Searching datasets...'], 'the time ticks on screen, and never reaches the announcer');
+  const before = said.length;
+  api.renderMessages(container);
+  api.renderMessages(container);
+  await flush();
+  assert(container.querySelector('.osa-status-announcer') === announcer, 'two redraws later, the same announcer node');
+  assertEqual(said.length, before, 'and a redraw does not write it again, so nothing is announced twice');
+  stream.send({ event: 'tool_start', name: 'nemar_search_datasets', input: {} });
+  stream.send({ event: 'tool_end', name: 'nemar_search_datasets', output: '' });
+  await handled(loaded, stream);
+  stream.send({ event: 'content', content: 'Found three datasets.' });
+  await waitUntil(() => lastReplyText(container).includes('Found three'), 'the first text');
+  assertEqual(announcer.textContent, '', 'text on screen: the status is over, and the announcer is empty');
+  stream.send({ event: 'tool_call', name: 'retrieve_test_docs' });
+  await handled(loaded, stream);
+  assertEqual([view(container).line, announcer.textContent], ['Looking up documentation...', 'Looking up documentation...'], 'a status line under text is announced too');
+  assertEqual(liveInConversation(), 0, 'and is no live region of its own');
+  stream.send({ event: 'content', content: ' Here is how to read them.' });
+  stream.send({ event: 'done', content: 'Found three datasets. Here is how to read them.', citations: [] });
+  stream.close();
+  await waitUntil(() => settled(loaded), 'the send settles');
+  await flush();
+  observer.disconnect();
+  assertEqual(said, ['Thinking...', 'Searching datasets...', 'Analyzing results...', '', 'Looking up documentation...', ''],
+    'everything it said, in order: each label once, and nothing when the status ended');
+  assert(said.every((text) => !/\d/.test(text)), 'no number, so never the seconds');
+  assertNothingLeft(loaded, 'after the announcer\'s flow');
+}
+
+console.log('\na reader typing a comment keeps their caret: a status that needs a redraw waits, and is still announced');
+{
+  const loaded = loadWidget();
+  const { container, window } = loaded;
+  await sleep(20);
+  const first = loaded.queue();
+  send(loaded);
+  first.send({ event: 'content', content: ANSWER });
+  first.send({ event: 'done', content: ANSWER, citations: [] });
+  first.close();
+  await waitUntil(() => settled(loaded), 'the first reply settles');
+  const second = loaded.queue();
+  send(loaded, 'And which of them has the most subjects?');
+  second.send({ event: 'content', content: 'Let me check each one.' });
+  await waitUntil(() => lastReplyText(container).includes('Let me check each one.'), 'the second reply\'s first text');
+  // The reader rates the first answer down, and starts to say why.
+  const down = container.querySelectorAll('.osa-message.assistant')[1].querySelector('.osa-feedback-down');
+  down.dispatchEvent(new window.Event('click', { bubbles: true }));
+  const box = container.querySelector('.osa-feedback-comment-input');
+  assert(box !== null && window.document.activeElement === box, 'the comment box opened, with the caret in it');
+  box.value = 'The list misses nm000200.';
+  box.setSelectionRange(9, 9);
+  const counter = countRedraws(window, container);
+  // The status line under the second reply has no element yet, so it needs a redraw.
+  second.send({ event: 'tool_call', name: 'retrieve_test_docs' });
+  await handled(loaded, second);
+  assertEqual(counter.redraws, 0, 'the conversation was not redrawn under the reader');
+  assertEqual([window.document.activeElement === box, box.value, box.selectionStart, box.selectionEnd],
+    [true, 'The list misses nm000200.', 9, 9], 'the comment keeps its focus, its text and its caret');
+  assertEqual(container.querySelector('.osa-status-announcer').textContent, 'Looking up documentation...',
+    'and a screen reader still hears what the reply is doing');
+  box.blur();
+  second.send({ event: 'content', content: ' nm000132 has the most.' });
+  second.send({ event: 'done', content: 'Let me check each one. nm000132 has the most.', citations: [] });
+  second.close();
+  await waitUntil(() => settled(loaded), 'the second reply settles');
+  assertNothingLeft(loaded, 'after the comment');
 }
 
 // -------------------------------------------------------- every way it ends

@@ -1799,8 +1799,8 @@
     }
 
     /* What a pending reply is doing (#538): the loading label, and after a wait long
-       enough to notice, how long it has been. The time is not uppercased, and not
-       part of the label's live region, so it is not announced every second. */
+       enough to notice, how long it has been. A screen reader hears the label from the
+       status announcer below, never the time, so it is not read out every second. */
     .osa-loading-status {
       display: flex;
       align-items: baseline;
@@ -1815,6 +1815,19 @@
 
     .osa-status-elapsed:empty {
       display: none;
+    }
+
+    /* On no screen, for a screen reader only: the status announcer (#538). */
+    .osa-sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
     }
 
     /* A reply that already has text says what it is doing on a line of its own under
@@ -5739,7 +5752,7 @@
     const loadingLabel = container.querySelector('.osa-loading-label');
     const status = statusToShow();
     if (loadingLabel && status && status.where === 'loading') {
-      noteStatus(status.label);
+      noteStatus(container, status);
       loadingLabel.textContent = status.label;
     }
   }
@@ -6401,6 +6414,7 @@
           </div>
         </div>
         <div class="osa-chat-messages"></div>
+        <div class="osa-status-announcer osa-sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
         <div class="osa-suggestions" style="display: none;">
           <span class="osa-suggestions-label">Try asking:</span>
           <div class="osa-suggestions-list"></div>
@@ -6702,22 +6716,31 @@
   function statusToShow() {
     if (toolActivity) return null;
     if (isLoading) {
-      return { where: 'loading', label: activity ? activity.label : (isThinking ? 'Thinking...' : CONFIG.title) };
+      // The title is the bubble's placeholder, not news: it is shown, and not announced.
+      const said = activity ? activity.label : (isThinking ? 'Thinking...' : null);
+      return { where: 'loading', label: said || CONFIG.title, spoken: Boolean(said) };
     }
     if (!activity) return null;
     const message = messages[activity.messageIndex];
     if (!message || message.role !== 'assistant' || !hasVisibleText(message.content)) return null;
-    return { where: 'inline', label: activity.label, messageIndex: activity.messageIndex };
+    return { where: 'inline', label: activity.label, messageIndex: activity.messageIndex, spoken: true };
   }
 
-  // Note that `label` is what the status reads now (null: no status). A new label is
-  // a new wait, so its time starts again.
-  function noteStatus(label) {
+  // Note that `status` is what the page shows now (null: no status). A new label is a
+  // new wait, so its time starts again. The status announcer, one polite live region
+  // made with the widget and outside the conversation, so no redraw replaces it, says
+  // each new label once and is emptied when the status ends; the visible label is
+  // hidden from a screen reader, which would otherwise hear it twice.
+  function noteStatus(container, status) {
+    const label = status ? status.label : null;
     if (label === null) {
       statusShown = null;
     } else if (!statusShown || statusShown.label !== label) {
       statusShown = { label, since: statusClock.now() };
     }
+    const announcer = container.querySelector('.osa-status-announcer');
+    const spoken = status && status.spoken ? status.label : '';
+    if (announcer && announcer.textContent !== spoken) announcer.textContent = spoken;
   }
 
   // The elapsed part: nothing for a wait too short to notice, then whole seconds.
@@ -6727,11 +6750,10 @@
     return ms >= STATUS_ELAPSED_AFTER_MS ? `${Math.floor(ms / 1000)} s` : '';
   }
 
-  // The label is a polite live region, so a screen reader hears it change; the time
-  // is outside it, so it is not read out every second.
+  // The label as shown; a screen reader hears it from the status announcer instead.
   function statusPartsHtml(labelClass, label) {
-    return `<span class="${escapeHtml(labelClass)}" role="status" aria-live="polite">${escapeHtml(label)}</span>`
-      + `<span class="osa-status-elapsed" aria-live="off">${escapeHtml(statusElapsedText())}</span>`;
+    return `<span class="${escapeHtml(labelClass)}" aria-hidden="true">${escapeHtml(label)}</span>`
+      + `<span class="osa-status-elapsed">${escapeHtml(statusElapsedText())}</span>`;
   }
 
   function statusLineHtml(status) {
@@ -6778,11 +6800,13 @@
   }
 
   // Show the status the state calls for: in place when its element is on screen, so
-  // nothing is rebuilt and a screen reader hears the new label, else with a redraw.
+  // nothing is rebuilt, else with a redraw. The announcer says it either way, even
+  // when the redraw waits for a reader who is typing.
   function paintStatus(container) {
     const messagesEl = container.querySelector('.osa-chat-messages');
     if (!messagesEl) return;
     const status = statusToShow();
+    noteStatus(container, status);
     let labelEl = null;
     if (status && status.where === 'loading') {
       labelEl = messagesEl.querySelector('.osa-loading .osa-loading-label');
@@ -6794,7 +6818,6 @@
       return; // nothing to show, and nothing shown
     }
     if (labelEl) {
-      noteStatus(status.label);
       if (labelEl.textContent !== status.label) labelEl.textContent = status.label;
       const elapsed = labelEl.parentElement.querySelector('.osa-status-elapsed');
       if (elapsed) elapsed.textContent = statusElapsedText();
@@ -6816,7 +6839,7 @@
     messagesEl.innerHTML = '';
     // The loading bubble's label, or a line under the reply's text (#538), never both.
     const status = statusToShow();
-    noteStatus(status ? status.label : null);
+    noteStatus(container, status);
 
     messages.forEach((msg, msgIndex) => {
       // The streaming handler keeps an empty assistant entry so the final
