@@ -45,6 +45,7 @@ from src.api.config import Settings, get_settings
 from src.core.services.anthropic_models import (
     BEDROCK_MODELS,
     accepts_temperature,
+    effective_reasoning_effort,
     normalize_model,
 )
 from src.core.services.tagged_citations import (
@@ -233,6 +234,7 @@ def create_bedrock_llm(
     max_tokens: int | None = None,
     timeout: float = 120.0,
     settings: Settings | None = None,
+    reasoning_effort: str | None = None,
 ) -> BaseChatModel:
     """Create a chat model for one of the Bedrock-served models.
 
@@ -248,6 +250,11 @@ def create_bedrock_llm(
             than the Claude path's.
         settings: Where the Bedrock API key and Region come from. Defaults to
             ``get_settings()``.
+        reasoning_effort: The community's level from the neutral scale, or None for the
+            model's own default (``REASONING_DEFAULTS``). The model is sent a level it
+            accepts (``effective_reasoning_effort`` clamps), in its own field shape
+            (``BedrockModel.reasoning_field``); a model with no reasoning control (Qwen3
+            Next) is sent nothing.
 
     Returns:
         A ``TaggedCitationChatBedrock`` that streams.
@@ -284,8 +291,11 @@ def create_bedrock_llm(
         # needs the model to stream.
         "streaming": True,
     }
-    if spec.extra_request_fields:
-        kwargs["additional_model_request_fields"] = dict(spec.extra_request_fields)
+    reasoning_fields = spec.reasoning_request_fields(
+        effective_reasoning_effort(resolved_model, reasoning_effort, "bedrock")
+    )
+    if reasoning_fields:
+        kwargs["additional_model_request_fields"] = reasoning_fields
     if temperature is not None:
         if accepts_temperature(resolved_model):
             kwargs["temperature"] = temperature

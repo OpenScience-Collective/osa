@@ -16,11 +16,15 @@ from pydantic import ValidationError
 
 from src.core.config.community import CommunityConfig
 from src.core.services.anthropic_models import (
+    BEDROCK_MODELS,
+    MANDATORY_REASONING_ON_OPENROUTER,
     MODEL_ALIASES,
     NO_REASONING_LEVELS,
     OFFERED_MODELS,
+    REASONING_DEFAULTS,
     REASONING_LEVELS,
     REASONING_SCALE,
+    effective_reasoning_effort,
     reasoning_levels,
     resolve_reasoning_effort,
 )
@@ -98,6 +102,16 @@ class TestTheClamp:
         for level in REASONING_LEVELS[model]:
             assert resolve_reasoning_effort(model, level) == level
 
+    def test_a_gap_in_a_models_levels_takes_the_level_below_it_never_above(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No offered model has a gap today, so the real tables cannot pin this: a future
+        one that skips a level (say low and high only) must not be run harder than asked."""
+        monkeypatch.setitem(REASONING_LEVELS, SONNET, ("low", "high"))
+        assert resolve_reasoning_effort(SONNET, "medium") == "low"
+        assert resolve_reasoning_effort(SONNET, "xhigh") == "high"
+        assert resolve_reasoning_effort(SONNET, "none") == "low"
+
     def test_gpt_oss_cannot_go_below_low(self) -> None:
         assert resolve_reasoning_effort("openai.gpt-oss-120b", "none") == "low"
 
@@ -122,6 +136,91 @@ class TestTheClamp:
     def test_a_level_off_the_scale_is_an_error(self) -> None:
         with pytest.raises(ValueError, match="minimal"):
             resolve_reasoning_effort("openai.gpt-6-luna", "minimal")
+
+
+PROVIDERS = ("anthropic", "bedrock", "openrouter")
+
+
+class TestTheProviderAwareLevels:
+    """OpenRouter cannot turn reasoning off for the models it makes mandatory."""
+
+    @pytest.mark.parametrize("model", sorted(MANDATORY_REASONING_ON_OPENROUTER))
+    def test_a_mandatory_model_has_no_none_on_openrouter_and_keeps_it_elsewhere(
+        self, model: str
+    ) -> None:
+        assert "none" not in reasoning_levels(model, "openrouter")
+        assert reasoning_levels(model, "openrouter") == tuple(
+            level for level in REASONING_LEVELS[model] if level != "none"
+        )
+        for provider in ("anthropic", "bedrock", None):
+            assert reasoning_levels(model, provider) == REASONING_LEVELS[model]
+
+    @pytest.mark.parametrize(
+        "model", sorted(set(REASONING_LEVELS) - MANDATORY_REASONING_ON_OPENROUTER)
+    )
+    def test_the_other_models_levels_do_not_depend_on_the_platform(self, model: str) -> None:
+        for provider in PROVIDERS:
+            assert reasoning_levels(model, provider) == REASONING_LEVELS[model]
+
+    def test_none_is_raised_to_the_lowest_level_where_reasoning_is_mandatory(self) -> None:
+        assert resolve_reasoning_effort(SONNET, "none", "openrouter") == "low"
+        assert resolve_reasoning_effort(SONNET, "none", "anthropic") == "none"
+
+    def test_the_sonnet_cap_holds_on_every_platform(self) -> None:
+        for provider in PROVIDERS:
+            for asked in ("xhigh", "max"):
+                assert resolve_reasoning_effort(SONNET, asked, provider) == "high", provider
+
+
+class TestTheEffectiveLevel:
+    """What a request is sent: the community's level, else the model's own default."""
+
+    def test_the_defaults_are_only_for_models_that_have_levels(self) -> None:
+        assert set(REASONING_DEFAULTS) <= set(REASONING_LEVELS)
+
+    @pytest.mark.parametrize("model", sorted(REASONING_DEFAULTS))
+    def test_a_default_is_one_of_the_models_levels_on_every_platform(self, model: str) -> None:
+        for provider in PROVIDERS:
+            assert REASONING_DEFAULTS[model] in reasoning_levels(model, provider)
+
+    def test_luna_and_gpt_oss_default_to_high_not_max(self) -> None:
+        """Luna at max: 15 to 50 s to a first word, and often no documentation search."""
+        assert REASONING_DEFAULTS["openai.gpt-6-luna"] == "high"
+        assert REASONING_DEFAULTS["openai.gpt-oss-120b"] == "high"
+
+    @pytest.mark.parametrize("model", sorted(OFFERED_MODELS))
+    @pytest.mark.parametrize("provider", PROVIDERS)
+    def test_a_community_that_sets_nothing_gets_the_models_default_or_nothing(
+        self, model: str, provider: str
+    ) -> None:
+        expected = REASONING_DEFAULTS.get(model)
+        assert effective_reasoning_effort(model, None, provider) == expected  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("model", sorted(REASONING_LEVELS))
+    @pytest.mark.parametrize("provider", PROVIDERS)
+    @pytest.mark.parametrize("asked", REASONING_SCALE)
+    def test_a_communitys_level_beats_the_default_and_is_clamped(
+        self, model: str, provider: str, asked: str
+    ) -> None:
+        assert effective_reasoning_effort(model, asked, provider) == resolve_reasoning_effort(  # type: ignore[arg-type]
+            model,
+            asked,
+            provider,  # type: ignore[arg-type]
+        )
+
+    @pytest.mark.parametrize("provider", PROVIDERS)
+    def test_an_id_that_is_not_offered_is_sent_nothing_even_by_default(self, provider: str) -> None:
+        assert effective_reasoning_effort("some-lab/unknown", None, provider) is None  # type: ignore[arg-type]
+        assert effective_reasoning_effort("some-lab/unknown", "high", provider) is None  # type: ignore[arg-type]
+
+    def test_a_bedrock_model_that_takes_a_level_says_how_to_send_it(self) -> None:
+        """Every model with levels that is served from Bedrock names its request field, so
+        a level chosen for it cannot silently go nowhere; one with none names none."""
+        for model, spec in BEDROCK_MODELS.items():
+            if model in REASONING_LEVELS:
+                assert spec.reasoning_field is not None, model
+            else:
+                assert spec.reasoning_field is None, model
 
 
 def _community(**fields) -> CommunityConfig:
