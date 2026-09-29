@@ -1,11 +1,11 @@
 /**
  * Paced reveal of streamed text (#531), run against the real widget source.
  *
- * The problem it answers: a reasoning model can think for tens of seconds and then
- * emit its whole answer in about a second, so a stream that is fine on the wire looks
- * like nothing and then everything. The widget now shows the delivered text at a
- * reading pace, faster only when that pace would fall seconds behind the stream, and
- * takes fenced code whole rather than typing it out.
+ * The problem it answers: a reasoning model can think for tens of seconds and then emit
+ * its whole answer in under a second, so a stream that is fine on the wire looks like
+ * nothing and then everything. The widget draws the first text the moment it arrives and
+ * spreads a burst over at most half a second (every character is drawn no later than the
+ * lag bound after it arrived), and takes fenced code whole rather than typing it out.
  *
  * Three levels, each holding the widget to something different:
  *   - the planner (`nextRevealEnd`, `fencedRanges`) is pure, so its rules are checked
@@ -232,33 +232,84 @@ function harness(text, options = {}) {
 
 const PROSE_1500 = ('The Sensory-event tag marks a sensory stimulus in a recording, and it belongs to the Event branch of the schema. ').repeat(14);
 
-console.log('\na burst is spread over a reading pace, not shown at once');
+console.log('\nthe delay the reveal may add is a promise, pinned here and not derived from the constants');
+{
+  assert(R.REVEAL_LAG_MS <= 500, `a character is drawn at most half a second after it arrived (${R.REVEAL_LAG_MS} ms)`);
+  assert(R.REVEAL_TICK_MS <= 100, `redrawn at least ten times a second (${R.REVEAL_TICK_MS} ms)`);
+  assert(R.REVEAL_DRAIN_MAX_MS <= 750, `and a finished reply waits at most three quarters of a second for it (${R.REVEAL_DRAIN_MAX_MS} ms)`);
+  assert(R.REVEAL_MIN_CPS >= 1000, `while a small backlog is drawn at once (${R.REVEAL_MIN_CPS} characters a second or more)`);
+}
+
+console.log('\na burst starts at once and is spread over a window shorter than half a second');
 {
   const { clock, state, controller } = harness(PROSE_1500);
   controller.kick();
-  clock.advance(60);
-  assertEqual(state.shows.length, 0, 'nothing is drawn before the first tick');
-  clock.advance(60);
-  assert(state.shows.length === 1, 'the first tick draws');
-  assert(state.shows[0].visible.length > 0 && state.shows[0].visible.length < 100,
-    `and only a first few words (${state.shows[0].visible.length} of ${PROSE_1500.length} characters)`);
+  assertEqual(state.shows.length, 1, 'the first text is drawn the moment it arrives, not a tick later');
+  assertEqual(state.shows[0].at, 0, 'at that same instant');
+  assert(state.shows[0].visible.length > 0 && state.shows[0].visible.length < PROSE_1500.length / 2,
+    `and it is a beginning (${state.shows[0].visible.length} of ${PROSE_1500.length} characters), not the whole burst`);
   clock.advance(60_000);
   const last = state.shows.at(-1);
   assertEqual(last.visible, PROSE_1500, 'everything ends up shown');
   assert(state.shows.every((s, i) => PROSE_1500.startsWith(s.visible) && (i === 0 || s.visible.length >= state.shows[i - 1].visible.length)),
     'every step is a growing prefix of the text');
-  assert(state.shows.length > 20, `in many steps (${state.shows.length}), not one`);
-  assert(last.at >= 2000 && last.at <= 5000, `over a few seconds (${last.at} ms), not instantly and not slowly`);
-  const speeds = state.shows.slice(1).map((s, i) => (s.visible.length - state.shows[i].visible.length) / ((s.at - state.shows[i].at) / 1000));
-  assert(Math.max(...speeds) < 1700, `never faster than the catch-up allows (peak ${Math.round(Math.max(...speeds))} chars/s)`);
-  assert(Math.min(...speeds.slice(0, -1)) >= 200, `nor slower than the floor pace (slowest ${Math.round(Math.min(...speeds.slice(0, -1)))} chars/s)`);
+  assert(state.shows.length >= 5, `in several steps (${state.shows.length}), not one flash`);
+  assert(last.at <= R.REVEAL_LAG_MS + R.REVEAL_TICK_MS, `all of it by the deadline (${last.at} ms, bound ${R.REVEAL_LAG_MS + R.REVEAL_TICK_MS})`);
+  assert(last.at >= R.REVEAL_TICK_MS * 3, `not in a single tick either (${last.at} ms)`);
   assertEqual(clock.pending(), 0, 'and no timer is left running');
+}
+
+console.log('\nproperty: no character is drawn later than the lag bound after it arrived');
+{
+  // A seeded generator, so the same schedules run every time: bursts of 100 to 9000
+  // characters, trickles, and both interleaved, with gaps from nothing to a second.
+  let seed = 20260929;
+  const random = () => { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296; };
+  const words = 'the schema tags a stimulus in the event branch and each recording keeps its own sampling rate '.split(' ');
+  let schedules = 0;
+  let late = 0;
+  let worst = 0;
+  let notPrefix = 0;
+  let unfinished = 0;
+  for (let n = 0; n < 300; n++) {
+    const clock = fakeClock();
+    const state = { text: '', shows: [] };
+    const controller = R.createReveal({
+      getText: () => state.text,
+      show: (visible) => state.shows.push({ at: clock.now(), length: visible.length, visible }),
+      now: clock.now, later: clock.later, unlater: clock.unlater,
+    });
+    const arrivals = [];
+    const events = 1 + Math.floor(random() * 25);
+    for (let e = 0; e < events; e++) {
+      const size = random() < 0.4 ? 1 + Math.floor(random() * 30) : 100 + Math.floor(random() * 9000);
+      let chunk = '';
+      while (chunk.length < size) chunk += `${words[Math.floor(random() * words.length)]} `;
+      state.text += chunk;
+      arrivals.push([state.text.length, clock.now()]);
+      controller.kick();
+      clock.advance(random() < 0.5 ? Math.floor(random() * 40) : Math.floor(random() * 1000));
+    }
+    clock.advance(60_000);
+    schedules++;
+    if (state.shows.at(-1).visible !== state.text) unfinished++;
+    if (!state.shows.every((sh) => state.text.startsWith(sh.visible))) notPrefix++;
+    for (const [length, arrivedAt] of arrivals) {
+      const drawn = state.shows.find((sh) => sh.length >= length);
+      const delay = drawn ? drawn.at - arrivedAt : Infinity;
+      worst = Math.max(worst, delay);
+      if (delay > R.REVEAL_LAG_MS + R.REVEAL_TICK_MS) late++;
+    }
+  }
+  assertEqual(unfinished, 0, `${schedules} schedules all end with the whole text shown`);
+  assertEqual(notPrefix, 0, 'every step of every schedule is a prefix of the text');
+  assertEqual(late, 0, `no character was drawn more than ${R.REVEAL_LAG_MS + R.REVEAL_TICK_MS} ms after it arrived (worst ${Math.round(worst)} ms)`);
 }
 
 console.log('\na stream slower than the pace is shown as it arrives, at most one tick late');
 {
   const { clock, state, controller } = harness('');
-  const words = 'a steady stream of small words arriving well below the floor pace of the reveal'.split(' ');
+  const words = 'a steady stream of small words arriving well below the pace the reveal can draw'.split(' ');
   const lag = [];
   for (const word of words) {
     state.text += `${word} `;
@@ -284,7 +335,7 @@ console.log('\ntext that keeps arriving while the reveal runs is picked up');
 
 console.log('\na code block is shown whole, in one step, at its place in the reply');
 {
-  const before = 'Here is how to read an NWB file with PyNWB. The handle stays open while you read.\n\n';
+  const before = 'Here is how to read an NWB file with PyNWB. The handle stays open while you read, so keep the work inside the with block and close nothing yourself. '.repeat(5) + '\n\n';
   const code = '```python\nfrom pynwb import NWBHDF5IO\n\nwith NWBHDF5IO("file.nwb", "r") as io:\n    nwbfile = io.read()\n```\n';
   const after = '\nAfter that, `nwbfile.acquisition` holds the raw series, and each one has its data and timestamps.';
   const { clock, state, controller } = harness(before + code + after);
@@ -311,31 +362,41 @@ console.log('\ncode that is still arriving passes straight through');
   assertEqual(state.shows.at(-1).visible, state.text, 'and each line that follows is shown when it arrives');
 }
 
-console.log('\ndrain: waits for the pace to catch up, but only so long');
+console.log('\ndrain: waits for the reveal to catch up, but only so long');
 {
   const { clock, state, controller } = harness(PROSE_1500);
   controller.kick();
   let done = false;
   controller.drain().then(() => { done = true; });
-  clock.advance(500);
+  clock.advance(200);
   await Promise.resolve();
   assert(!done, 'a reply still being revealed is waited for');
-  clock.advance(10_000);
+  clock.advance(R.REVEAL_DRAIN_MAX_MS);
   await Promise.resolve();
   assert(done, 'until it has all been shown');
   assertEqual(state.shows.at(-1).visible, PROSE_1500, 'which it has');
+  assert(state.shows.at(-1).at <= R.REVEAL_LAG_MS + R.REVEAL_TICK_MS, `by the deadline, not the drain bound (${state.shows.at(-1).at} ms)`);
 
-  const huge = harness('word '.repeat(40_000));
-  huge.controller.kick();
-  let hugeDone = false;
-  huge.controller.drain().then(() => { hugeDone = true; });
-  huge.clock.advance(R.REVEAL_DRAIN_MAX_MS - 50);
+  // If ticks stop coming (a timer throttled or starved), the bound still holds.
+  const clock2 = fakeClock();
+  const state2 = { text: 'word '.repeat(40_000), shows: [] };
+  const starved = R.createReveal({
+    getText: () => state2.text,
+    show: (visible) => state2.shows.push({ at: clock2.now(), visible }),
+    now: clock2.now,
+    later: (fn, ms) => (ms === R.REVEAL_TICK_MS ? 0 : clock2.later(fn, ms)),
+    unlater: clock2.unlater,
+  });
+  starved.kick();
+  let starvedDone = false;
+  starved.drain().then(() => { starvedDone = true; });
+  clock2.advance(R.REVEAL_DRAIN_MAX_MS - 50);
   await Promise.resolve();
-  assert(!hugeDone, 'a very long reply is still being waited for just under the bound');
-  huge.clock.advance(100);
+  assert(!starvedDone, 'with no ticks, a reply is still waited for just under the bound');
+  clock2.advance(100);
   await Promise.resolve();
-  assert(hugeDone, `and is shown in full at the bound (${R.REVEAL_DRAIN_MAX_MS} ms), not left to take minutes`);
-  assertEqual(huge.state.shows.at(-1).visible.length, huge.state.text.length, 'all of it');
+  assert(starvedDone, `and is shown in full at the bound (${R.REVEAL_DRAIN_MAX_MS} ms), not left waiting`);
+  assertEqual(state2.shows.at(-1).visible.length, state2.text.length, 'all of it');
 
   const idle = harness('Nothing pending.');
   idle.controller.flush();
@@ -349,22 +410,22 @@ console.log('\nflush shows everything now; stop abandons the pending redraw; unp
 {
   const a = harness(PROSE_1500);
   a.controller.kick();
-  a.clock.advance(200);
+  a.clock.advance(100);
   a.controller.flush();
   assertEqual(a.state.shows.at(-1).visible, PROSE_1500, 'flush: all of it');
   assertEqual(a.clock.pending(), 0, 'and no timer left');
 
   const b = harness(PROSE_1500);
   b.controller.kick();
+  const drawn = b.state.shows.length;
   b.controller.stop();
   b.clock.advance(60_000);
-  assertEqual(b.state.shows.length, 0, 'stop: nothing more is drawn');
+  assertEqual(b.state.shows.length, drawn, 'stop: nothing more is drawn after it');
 
   const c = harness('', { paced: false });
   c.state.text = PROSE_1500;
   c.controller.kick();
-  c.clock.advance(R.REVEAL_TICK_MS);
-  assertEqual(c.state.shows.at(-1).visible, PROSE_1500, 'unpaced: the whole burst is shown within a tick of arriving');
+  assertEqual(c.state.shows.at(-1).visible, PROSE_1500, 'unpaced: the whole burst is shown the moment it arrives');
   assertEqual(c.state.shows.length, 1, 'in one redraw');
   assertEqual(c.clock.pending(), 0, 'with no timer left');
 }
@@ -378,7 +439,7 @@ console.log('\nunpaced: chunks are gathered into one redraw per tick, not one re
     burst.controller.kick();
   }
   burst.clock.advance(R.REVEAL_TICK_MS);
-  assertEqual(burst.state.shows.length, 1, 'a 150 chunk burst is one redraw');
+  assertEqual(burst.state.shows.length, 2, 'a 150 chunk burst is two redraws: the first chunk at once, the other 149 gathered into one');
   assertEqual(burst.state.shows.at(-1).visible, burst.state.text, 'showing all of it');
 
   const steady = harness('', { paced: false });
@@ -534,7 +595,7 @@ console.log('\na code block in a streamed reply is never on the page half-typed'
   const container = window.document.querySelector('.osa-chat-widget');
   const started = api.getMessages().length;
   const code = '```python\nfrom pynwb import NWBHDF5IO\nwith NWBHDF5IO("f.nwb", "r") as io:\n    nwbfile = io.read()\n```\n\n';
-  const text = `Open the file like this, then read from the handle while it is open.\n\n${code}The series are under acquisition, and each has data and timestamps to read.`;
+  const text = `Open the file like this, then read from the handle while it is open, and keep every read inside the with block so that the handle is closed for you when the block ends. ${'The handle is the file. '.repeat(12)}\n\n${code}The series are under acquisition, and each has data and timestamps to read.`;
   const stream = api.handleStreamingResponse(sse([
     { event: 'content', content: text },
     { event: 'done', content: text },
@@ -680,7 +741,8 @@ console.log('\na paced reveal redraws at most about a dozen times a second');
   const text = 'A reply long enough that the reveal takes a couple of seconds to show all of it, sentence by sentence. '.repeat(14);
   await api.handleStreamingResponse(sse([{ event: 'content', content: text }, { event: 'done', content: text }]), container);
   const seconds = (Date.now() - began) / 1000;
-  assert(counter.redraws / seconds <= 14, `${counter.redraws} redraws over ${seconds.toFixed(1)} s`);
+  // One redraw per 80 ms tick, plus the first text (drawn at once) and the canonical text.
+  assert(counter.redraws <= 3 + seconds * 13, `${counter.redraws} redraws over ${seconds.toFixed(2)} s`);
 }
 
 console.log('\na page that is already hidden when the reply starts is not paced');
@@ -780,7 +842,7 @@ console.log('\na browser-execution reply keeps the earlier run and reveals the n
     { event: 'tool_request', call_id: 'c1', tool: 'execute_code', args: {}, content: 'Let me check that for you.' },
   ]), container);
   const index = first.messageIndex;
-  const second = 'The peak is at ten hertz, which matches the alpha band you would expect from an eyes-closed recording of this kind.';
+  const second = 'The peak is at ten hertz, which matches the alpha band you would expect from an eyes-closed recording of this kind. '.repeat(6).trim();
   const stream = api.handleStreamingResponse(sse([
     { event: 'content', content: second },
     { event: 'done', content: second },

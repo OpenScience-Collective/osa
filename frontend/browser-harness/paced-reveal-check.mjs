@@ -285,12 +285,11 @@ async function check(screenshotDir) {
     report(paced.assistantBefore === 1, `control: a fresh conversation, so the reply measured is this one (${paced.assistantBefore} assistant message before it)`, paced.assistantBefore);
     report(p.firstText >= p.firstArrival - 5, `control: nothing was shown before the stream's first text (${Math.round(p.firstText)} against ${Math.round(p.firstArrival)} ms)`);
     report(p.full >= REPLY.length * 0.9, `the whole reply is on the page at the end (${p.full} characters shown)`);
-    report(p.firstText - p.firstArrival < 400, `the first words appear within a moment of the first chunk (${Math.round(p.firstText - p.firstArrival)} ms)`);
-    report(p.p50 - p.firstText > 300, `half of it is on screen well after the first words (${Math.round(p.p50 - p.firstText)} ms later), not all at once`);
-    report(p.p100 - p.firstText >= 1200, `the whole reveal takes over a second and a quarter (${Math.round(p.p100 - p.firstText)} ms)`);
-    report(p.p100 - p.firstText <= 6000, `and does not drag on (${Math.round(p.p100 - p.firstText)} ms)`);
-    report(p.p100 - p.lastArrival > 800, `it finishes well after the last chunk arrived (${Math.round(p.p100 - p.lastArrival)} ms after)`);
-    report(p.distinctLengths >= 12, `the reader saw the reply grow through ${p.distinctLengths} different lengths`);
+    report(p.firstText - p.firstArrival < 100, `the first words are drawn the moment the first chunk arrives (${Math.round(p.firstText - p.firstArrival)} ms after)`);
+    report(p.p100 - p.firstText >= 150, `a burst is spread over a window, not one flash (${Math.round(p.p100 - p.firstText)} ms)`);
+    report(p.p100 - p.lastArrival <= 650, `the whole reply is on screen within about half a second of the last chunk (${Math.round(p.p100 - p.lastArrival)} ms)`);
+    report(p.p100 - p.firstText <= 700, `so the reveal adds little (${Math.round(p.p100 - p.firstText)} ms from the first words to the last)`);
+    report(p.distinctLengths >= 4, `the reader saw the reply grow through ${p.distinctLengths} different lengths`);
     report(p.p25 < p.p50 && p.p50 < p.p75 && p.p75 <= p.p100, `25%, 50%, 75% and 100% arrive in order (${[p.p25, p.p50, p.p75, p.p100].map(Math.round).join(', ')} ms)`);
     const codeChars = CODE.split('\n').slice(1, -1).join('\n').length;
     report(p.codeLens.length === 1 && Math.abs(p.codeLens[0] - codeChars) <= 2,
@@ -308,8 +307,7 @@ async function check(screenshotDir) {
     report(r.firstText >= r.firstArrival - 5, `control: nothing was shown before the stream's first text (${Math.round(r.firstText)} against ${Math.round(r.firstArrival)} ms)`);
     report(r.full >= REPLY.length * 0.9, 'the whole reply is on the page at the end');
     report(r.p100 - r.lastArrival < 500, `it is all shown within a moment of the last chunk (${Math.round(r.p100 - r.lastArrival)} ms after)`);
-    report(r.p100 - r.firstText < 700, `so the reveal takes a fraction of the paced one (${Math.round(r.p100 - r.firstText)} ms against ${Math.round(p.p100 - p.firstText)})`);
-    report(r.p100 - r.firstText < (p.p100 - p.firstText) / 2, 'and the pacing above is the widget\'s doing, not the network\'s');
+    report(r.p100 - r.firstText < (p.p100 - p.firstText) / 2, `so the paced reveal above is the widget's doing, not the network's (${Math.round(r.p100 - r.firstText)} ms against ${Math.round(p.p100 - p.firstText)})`);
   } finally {
     try { cdp?.close?.(); } catch (error) { /* already gone */ }
     chrome?.kill();

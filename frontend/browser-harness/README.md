@@ -374,6 +374,7 @@ bun frontend/browser-harness/paced-reveal-check.mjs [screenshot-dir]
 It carries its controls: the page must be visible (a hidden page's timers run once a second, and every number would mean nothing),
 the stream must really be a burst, the conversation must be fresh (a saved one shows an old reply and passes vacuously, which an earlier version of this check did),
 and with `prefers-reduced-motion: reduce` emulated by the browser the same burst must be shown at once.
-Measured 2026-09-29 in Chrome 154: the first words appear about 100 ms after the first chunk,
-the reply grows through about 24 lengths over about 2 s, and the code block is drawn once, whole.
+Measured 2026-09-29 in Chrome 154: the first words are drawn 0.3 to 15 ms after the first chunk,
+the reply grows through about 7 lengths and is fully on screen about 0.5 s after the last chunk
+(a reveal that took about 2 s before #538), and the code block is drawn once, whole.
 With the widget's pacing removed the check fails five checks and exits 1.
