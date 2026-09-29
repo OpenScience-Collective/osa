@@ -202,6 +202,20 @@ function send(loaded, question = 'Which datasets are about attention?') {
 
 const settled = (loaded) => !loaded.container.querySelector('.osa-send-btn').disabled;
 
+/**
+ * Wait until the widget has handled every event sent on `stream` so far. The stream is
+ * read in order, so a `session` event sent last, with an id of its own, is handled
+ * last: once the widget holds that id, everything before it has been handled (and
+ * anything it painted, it painted then). A reveal's paced redraws are the exception,
+ * on a timer of their own, and are waited for by what they show.
+ */
+let barriers = 0;
+async function handled(loaded, stream) {
+  const id = `barrier-${++barriers}`;
+  stream.send({ event: 'session', session_id: id });
+  await waitUntil(() => loaded.api.getSessionId() === id, `the widget handled the events before ${id}`);
+}
+
 /** What the page shows of the reply's status, read as a reader would. */
 function view(container) {
   const loading = container.querySelector('.osa-loading');
@@ -501,6 +515,35 @@ console.log('\nparallel tools: analyzed only once the last one has ended');
   stream.send({ event: 'done', content: ANSWER, citations: [] });
   stream.close();
   await waitUntil(() => settled(loaded), 'the send settles');
+}
+
+console.log('\na tool whose tool_end never came does not keep the next batch from reading as analyzed');
+{
+  const loaded = loadWidget();
+  const { container, activity } = loaded;
+  await sleep(20);
+  const stream = loaded.queue();
+  send(loaded);
+  await waitUntil(() => view(container).loading !== null, 'the loading bubble');
+  // A tool starts and its end never arrives (a call that failed before it ran, a
+  // lost event); the model reads the failure and writes its next call.
+  stream.send({ event: 'tool_start', name: 'nemar_search_datasets', input: {} });
+  await handled(loaded, stream);
+  assertEqual([view(container).loading, activity.state().toolsRunning], ['Searching datasets...', 1], 'the first tool runs, and is never reported ended');
+  stream.send({ event: 'tool_call', name: 'nemar_list_recordings' });
+  await handled(loaded, stream);
+  assertEqual([view(container).loading, activity.state().toolsRunning], ['Listing recordings...', 0],
+    'a new call means the tools before it are over: none is counted as running');
+  stream.send({ event: 'tool_start', name: 'nemar_list_recordings', input: {} });
+  stream.send({ event: 'tool_end', name: 'nemar_list_recordings', output: '' });
+  await handled(loaded, stream);
+  assertEqual([view(container).loading, activity.state().toolsRunning], ['Analyzing results...', 0],
+    'so once the new call ends, the reply reads as analyzing its result');
+  stream.send({ event: 'content', content: ANSWER });
+  stream.send({ event: 'done', content: ANSWER, citations: [] });
+  stream.close();
+  await waitUntil(() => settled(loaded), 'the send settles');
+  assertNothingLeft(loaded, 'after the drift');
 }
 
 console.log('\nan old server, with none of the new events, still gets the generic labels');

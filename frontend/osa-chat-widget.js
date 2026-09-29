@@ -7648,6 +7648,10 @@
           } else if (event.event === 'tool_call') {
             // The model has begun writing a call (#538), which for code can take
             // many seconds before anything runs. Only the tool's name is read.
+            // The model writes calls only once the tools before them are over, so a
+            // tool_start whose tool_end never came does not keep this batch from
+            // reading as analyzed.
+            toolsRunning = 0;
             setActivity(container, classifyToolActivity(event.name, 'writing', CONFIG.communityId), messageIndex);
           } else if (event.event === 'tool_start') {
             // Log tool execution for debugging
