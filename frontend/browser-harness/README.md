@@ -403,7 +403,7 @@ bun frontend/browser-harness/activity-status-check.mjs [screenshot-dir]
 It carries its controls: the page must be visible, the conversation fresh,
 the stream's events must arrive in the order sent, "Searching datasets..." must be on screen before any reply text is,
 the mid-search redraw must really happen, and on the whitespace page the runtime bundle must load and the code must really run.
-Measured 2026-09-29 in Chrome 154, 53 checks, three runs: about 780 frames per run;
+Measured 2026-09-29 in Chrome 154, 63 checks, three runs: about 780 frames per run;
 the loading label reads the title, "Thinking...", "Searching datasets..." (within 20 ms of its `tool_call`) and "Analyzing results...";
 the elapsed time counts the reader's whole wait from the send, so "5 s" first shows about 5.0 s after it, and "Analyzing results..." goes on from "7 s";
 the reply's text begins a new wait, so the short mid-reply lines show no time;
