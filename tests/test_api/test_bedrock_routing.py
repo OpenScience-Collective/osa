@@ -174,6 +174,87 @@ class TestRouteRequest:
         assert route.model == OPENROUTER_MODEL_IDS["openai.gpt-6-luna"]
 
 
+def _luna_default_community() -> AssistantInfo:
+    """The #514 case: a community whose default model is a Bedrock model."""
+    return AssistantInfo(
+        id="hed",
+        name="HED",
+        description="x",
+        community_config=CommunityConfig(
+            id="hed",
+            name="HED",
+            description="x",
+            default_model="openai.gpt-6-luna",
+            cors_origins=[_origin(_hed())],
+        ),
+    )
+
+
+class TestABedrockDefaultThatCannotBeServed:
+    """Nobody asked for the community's default, so refusing would take the community down."""
+
+    def test_a_caller_with_their_own_key_and_no_model_runs_claude(self, monkeypatch, caplog):
+        """The CLI never sends a model and can only use its own key."""
+        _platform(monkeypatch)
+        byok = ByokCredential(key="user-anthropic-key", provider="anthropic")
+
+        route = _route_request(_luna_default_community(), "hed", byok, None, None)
+
+        assert (route.choice.provider, route.choice.key_source) == ("anthropic", "byok")
+        assert route.model == "claude-haiku-4-5"
+        assert "openai.gpt-6-luna" in caplog.text
+
+    def test_a_deployment_without_a_bedrock_key_runs_claude(self, monkeypatch):
+        _platform(monkeypatch, bedrock=None)
+        info = _luna_default_community()
+
+        route = _route_request(info, "hed", None, _origin(_hed()), None)
+
+        assert (route.choice.provider, route.model) == ("anthropic", "claude-haiku-4-5")
+
+    def test_the_deployments_own_claude_default_is_the_fallback(self, monkeypatch):
+        _platform(monkeypatch, bedrock=None)
+        monkeypatch.setattr(get_settings(), "default_model", "claude-sonnet-5-5")
+
+        route = _route_request(_luna_default_community(), "hed", None, _origin(_hed()), None)
+
+        assert route.model == "claude-sonnet-5-5"
+
+    def test_a_bedrock_deployment_default_is_never_the_fallback(self, monkeypatch):
+        _platform(monkeypatch, bedrock=None)
+        monkeypatch.setattr(get_settings(), "default_model", "openai.gpt-oss-120b")
+
+        route = _route_request(_luna_default_community(), "hed", None, _origin(_hed()), None)
+
+        assert route.model == "claude-haiku-4-5"
+
+    def test_naming_the_model_still_gets_the_refusal(self, monkeypatch):
+        """A caller who asked for Luna with their own key is told why not."""
+        _platform(monkeypatch)
+        byok = ByokCredential(key="user-anthropic-key", provider="anthropic")
+
+        with pytest.raises(HTTPException) as caught:
+            _route_request(_luna_default_community(), "hed", byok, None, "openai.gpt-6-luna")
+
+        assert caught.value.status_code == 403
+
+    def test_naming_the_model_on_a_deployment_without_the_key_is_still_a_400(self, monkeypatch):
+        _platform(monkeypatch, bedrock=None)
+        info = _luna_default_community()
+
+        with pytest.raises(HTTPException) as caught:
+            _route_request(info, "hed", None, _origin(_hed()), "openai.gpt-6-luna")
+
+        assert caught.value.status_code == 400
+
+    def test_the_default_is_still_served_where_it_can_be(self, monkeypatch):
+        _platform(monkeypatch)
+
+        route = _route_request(_luna_default_community(), "hed", None, _origin(_hed()), None)
+
+        assert (route.choice.provider, route.model) == ("bedrock", "openai.gpt-6-luna")
+
+
 class TestBedrockChoice:
     def test_a_community_funded_anthropic_request_moves_to_platform_funded_bedrock(
         self, monkeypatch
