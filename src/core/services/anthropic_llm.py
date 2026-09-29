@@ -402,10 +402,10 @@ def create_anthropic_llm(
 class CachingChatAnthropic(ChatAnthropic):
     """``ChatAnthropic`` subclass that applies prompt-cache breakpoints.
 
-    Why a subclass and not a wrapper: a ``BaseChatModel`` wrapper (the shape
-    the old LiteLLM integration used, see ``litellm_llm.CachingLLMWrapper``)
-    has to reimplement ``invoke``/``ainvoke``/``stream``/``astream``/
-    ``_generate``/``_agenerate``/``bind_tools`` to forward to the wrapped
+    Why a subclass and not a wrapper: a ``BaseChatModel`` wrapper (the shape the
+    old LiteLLM integration used, since replaced by a subclass in ``litellm_chat``
+    for the same reasons) has to reimplement ``invoke``/``ainvoke``/``stream``/
+    ``astream``/``_generate``/``_agenerate``/``bind_tools`` to forward to the wrapped
     model, and that ``_generate`` breaks once ``bind_tools`` returns a
     ``RunnableBinding`` around the wrapped model instead of another wrapper
     instance (the wrapper's own ``_generate`` would need to special-case a
