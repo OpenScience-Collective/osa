@@ -171,23 +171,33 @@ REASONING_SCALE: tuple[str, ...] = get_args(ReasoningEffort)
 # ``minimal``; gpt-oss accepts low, medium and high and rejects ``max``), with one policy
 # on top: Claude Sonnet 5.5 is never run above ``high``, whatever a community asks and on
 # whichever platform it is reached, so it lists none through high even though the API
-# accepts more.
+# accepts more. Claude Haiku 4.5 has no effort field: it thinks with a token budget, so
+# its levels are the ones ``THINKING_BUDGET_TOKENS`` gives a budget (none is no thinking),
+# capped at ``high`` because a larger budget leaves too little of ``max_tokens`` for the
+# answer.
 REASONING_LEVELS: dict[str, tuple[str, ...]] = {
     "claude-sonnet-5-5": ("none", "low", "medium", "high"),
+    "claude-haiku-4-5": ("none", "low", "medium", "high"),
     "openai.gpt-6-luna": ("none", "low", "medium", "high", "xhigh", "max"),
     "openai.gpt-oss-120b": ("low", "medium", "high"),
 }
 
-# The level a model runs at when a community sets none, sent on every provider so a
-# model behaves the same whichever key paid for it. GPT-6 Luna and gpt-oss run at
-# ``high`` (Luna at ``max`` made a tool-using turn take 15 to 50 seconds before its first
-# word, and at ``xhigh`` and ``max`` it answered with no documentation search in the median
-# of three runs on one question, so no citations). Claude Sonnet 5.5 has no entry: nothing is sent, so the
-# Claude Platform's own default (``high``) applies, as before.
-REASONING_DEFAULTS: dict[str, str] = {
-    "openai.gpt-6-luna": "high",
-    "openai.gpt-oss-120b": "high",
+# The thinking budget, in tokens, of each level of a model that thinks with a budget rather
+# than an effort level (``none`` has no entry: no thinking). The floor is the API's
+# minimum (1024); ``medium`` is what Haiku ran at before levels existed (2048), and
+# ``high`` (4096) is the default level's.
+THINKING_BUDGET_TOKENS: dict[str, dict[str, int]] = {
+    "claude-haiku-4-5": {"low": 1024, "medium": 2048, "high": 4096},
 }
+
+# The level every model runs at when a community sets none, on every provider, so a model
+# behaves the same whichever key paid for it: ``high``. That is Claude Sonnet 5.5 (which
+# is then sent explicitly; the Claude Platform's own default is the same), Claude Haiku
+# 4.5 (a 4096-token thinking budget), GPT-6 Luna and gpt-oss-120b. Luna at ``max`` made a
+# tool-using turn take 15 to 50 seconds before its first word, and at ``xhigh`` and ``max``
+# it answered with no documentation search in the median of three runs on one question, so
+# no citations. A model with no levels (Qwen3 Next) is sent nothing.
+DEFAULT_REASONING_EFFORT = "high"
 
 # The platforms a model can be reached on, for the levels that differ between them.
 ReasoningProvider = Literal["anthropic", "bedrock", "openrouter"]
@@ -200,12 +210,11 @@ MANDATORY_REASONING_ON_OPENROUTER: frozenset[str] = frozenset(
     {"claude-sonnet-5-5", "openai.gpt-oss-120b"}
 )
 
-# The offered models with no reasoning levels to set: Claude Haiku 4.5 thinks with a
-# token budget rather than a level, and Qwen3 Next has no reasoning control. The key is
-# ignored for them. Together with REASONING_LEVELS this names every offered model, which
-# tests/test_core/test_reasoning_effort.py checks, so a newly offered model has to be
+# The offered models with no reasoning levels to set: Qwen3 Next has no reasoning control.
+# The key is ignored for it. Together with REASONING_LEVELS this names every offered model,
+# which tests/test_core/test_reasoning_effort.py checks, so a newly offered model has to be
 # put on one side or the other.
-NO_REASONING_LEVELS: frozenset[str] = frozenset({"claude-haiku-4-5", "qwen.qwen3-next-80b-a3b"})
+NO_REASONING_LEVELS: frozenset[str] = frozenset({"qwen.qwen3-next-80b-a3b"})
 
 # Image media types the Messages API accepts on a content block, including a
 # content block nested in a tool result.
@@ -335,7 +344,7 @@ def resolve_reasoning_effort(
 def effective_reasoning_effort(
     model: str | None, requested: str | None, provider: ReasoningProvider
 ) -> str | None:
-    """The level to send a model on a platform: the community's, else the model's default.
+    """The level to send a model on a platform: the community's, else ``high``.
 
     Args:
         model: Model identifier, in any form ``normalize_model`` accepts. None (a slug
@@ -346,16 +355,13 @@ def effective_reasoning_effort(
 
     Returns:
         A level the model accepts on that platform, or None to send nothing: the model
-        has no levels, or it has no default and none was requested.
+        has no levels (or is not an offered model).
     """
     if not model:
         return None
-    if requested is None:
-        try:
-            requested = REASONING_DEFAULTS.get(normalize_model(model))
-        except ValueError:
-            return None
-    return resolve_reasoning_effort(model, requested, provider)
+    return resolve_reasoning_effort(
+        model, DEFAULT_REASONING_EFFORT if requested is None else requested, provider
+    )
 
 
 def accepts_temperature(model: str | None) -> bool:

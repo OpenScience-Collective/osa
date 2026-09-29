@@ -17,11 +17,11 @@ from pydantic import ValidationError
 from src.core.config.community import CommunityConfig
 from src.core.services.anthropic_models import (
     BEDROCK_MODELS,
+    DEFAULT_REASONING_EFFORT,
     MANDATORY_REASONING_ON_OPENROUTER,
     MODEL_ALIASES,
     NO_REASONING_LEVELS,
     OFFERED_MODELS,
-    REASONING_DEFAULTS,
     REASONING_LEVELS,
     REASONING_SCALE,
     effective_reasoning_effort,
@@ -30,6 +30,10 @@ from src.core.services.anthropic_models import (
 )
 
 SONNET = "claude-sonnet-5-5"
+HAIKU = "claude-haiku-4-5"
+LUNA = "openai.gpt-6-luna"
+GPT_OSS = "openai.gpt-oss-120b"
+QWEN = "qwen.qwen3-next-80b-a3b"
 
 
 def _rank(level: str) -> int:
@@ -106,6 +110,7 @@ class TestTheClamp:
         ("model", "sent"),
         [
             (SONNET, ["none", "low", "medium", "high", "high", "high"]),
+            (HAIKU, ["none", "low", "medium", "high", "high", "high"]),
             ("openai.gpt-6-luna", ["none", "low", "medium", "high", "xhigh", "max"]),
             ("openai.gpt-oss-120b", ["low", "low", "medium", "high", "high", "high"]),
         ],
@@ -187,27 +192,34 @@ class TestTheProviderAwareLevels:
 
 
 class TestTheEffectiveLevel:
-    """What a request is sent: the community's level, else the model's own default."""
+    """What a request is sent: the community's level, else high."""
 
-    def test_the_defaults_are_only_for_models_that_have_levels(self) -> None:
-        assert set(REASONING_DEFAULTS) <= set(REASONING_LEVELS)
+    def test_the_default_is_high_and_is_a_level_of_the_scale(self) -> None:
+        """The maintainer's rule: every model runs at high unless a community says so."""
+        assert DEFAULT_REASONING_EFFORT == "high"
+        assert DEFAULT_REASONING_EFFORT in REASONING_SCALE
 
-    @pytest.mark.parametrize("model", sorted(REASONING_DEFAULTS))
-    def test_a_default_is_one_of_the_models_levels_on_every_platform(self, model: str) -> None:
+    @pytest.mark.parametrize("model", sorted(REASONING_LEVELS))
+    def test_the_default_is_a_level_every_model_with_levels_accepts_on_every_platform(
+        self, model: str
+    ) -> None:
         for provider in PROVIDERS:
-            assert REASONING_DEFAULTS[model] in reasoning_levels(model, provider)
+            assert DEFAULT_REASONING_EFFORT in reasoning_levels(model, provider)
 
-    def test_luna_and_gpt_oss_default_to_high_not_max(self) -> None:
-        """Luna at max: 15 to 50 s to a first word, and often no documentation search."""
-        assert REASONING_DEFAULTS["openai.gpt-6-luna"] == "high"
-        assert REASONING_DEFAULTS["openai.gpt-oss-120b"] == "high"
+    @pytest.mark.parametrize("provider", PROVIDERS)
+    @pytest.mark.parametrize("model", [SONNET, HAIKU, LUNA, GPT_OSS])
+    def test_unset_is_high_for_sonnet_haiku_luna_and_gpt_oss_on_every_platform(
+        self, model: str, provider: str
+    ) -> None:
+        """Written out: Claude Sonnet, Claude Haiku, GPT-6 Luna and gpt-oss all high."""
+        assert effective_reasoning_effort(model, None, provider) == "high"  # type: ignore[arg-type]
 
     @pytest.mark.parametrize("model", sorted(OFFERED_MODELS))
     @pytest.mark.parametrize("provider", PROVIDERS)
-    def test_a_community_that_sets_nothing_gets_the_models_default_or_nothing(
+    def test_a_community_that_sets_nothing_gets_high_or_nothing_if_the_model_has_no_levels(
         self, model: str, provider: str
     ) -> None:
-        expected = REASONING_DEFAULTS.get(model)
+        expected = "high" if model in REASONING_LEVELS else None
         assert effective_reasoning_effort(model, None, provider) == expected  # type: ignore[arg-type]
 
     @pytest.mark.parametrize("model", sorted(REASONING_LEVELS))
@@ -271,7 +283,7 @@ class TestTheCommunitySetting:
 
     def test_asking_a_model_with_no_levels_warns_that_it_is_ignored_there(self) -> None:
         with pytest.warns(UserWarning, match="is ignored for"):
-            _community(default_model="claude-haiku-4-5", reasoning_effort="high")
+            _community(default_model=QWEN, reasoning_effort="high")
 
     def _reasoning_warnings(self, **fields) -> list[str]:
         """Warnings about reasoning_effort only: a Bedrock default has its own, unrelated one."""

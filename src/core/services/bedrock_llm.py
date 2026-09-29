@@ -251,7 +251,7 @@ def create_bedrock_llm(
         settings: Where the Bedrock API key and Region come from. Defaults to
             ``get_settings()``.
         reasoning_effort: The community's level from the neutral scale, or None for the
-            model's own default (``REASONING_DEFAULTS``). The model is sent a level it
+            ``DEFAULT_REASONING_EFFORT`` (high). The model is sent a level it
             accepts (``effective_reasoning_effort`` clamps), in its own field shape
             (``BedrockModel.reasoning_field``); a model with no reasoning control (Qwen3
             Next) is sent nothing.

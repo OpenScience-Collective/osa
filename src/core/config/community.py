@@ -1978,8 +1978,10 @@ class CommunityConfig(BaseModel):
     that has reasoning levels, and respects the levels that model accepts. A level the
     model does not accept is not sent: it runs at the nearest one it does, lowered to
     the model's highest or raised to its lowest. Claude Sonnet 5.5 never runs above
-    ``high``, so ``xhigh`` and ``max`` give ``high`` there. Models with no levels
-    (Claude Haiku 4.5, Qwen3 Next) ignore it.
+    ``high``, so ``xhigh`` and ``max`` give ``high`` there. Claude Haiku 4.5 has no
+    effort field and thinks with a token budget, so its level is a budget (``low`` 1024,
+    ``medium`` 2048, ``high`` 4096 tokens, ``none`` no thinking; ``xhigh`` and ``max``
+    give ``high``). A model with no levels (Qwen3 Next) ignores it.
 
     It applies to whichever model a request runs, not only ``default_model``: a reader
     who picks another model in the widget gets that model's nearest level.
@@ -1987,8 +1989,7 @@ class CommunityConfig(BaseModel):
     Example:
         reasoning_effort: high
 
-    If not specified, each model keeps its own default (GPT-6 Luna: ``high``; the
-    Claude Platform's default for Claude Sonnet 5.5).
+    If not specified, every model runs at ``high``.
     """
 
     model_instructions: dict[str, str] = Field(default_factory=dict)
