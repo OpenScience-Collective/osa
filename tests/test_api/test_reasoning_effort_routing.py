@@ -49,7 +49,16 @@ def hed(monkeypatch):
     assert info is not None
     monkeypatch.setattr(info.community_config, "anthropic_api_key_env_var", None)
     monkeypatch.setattr(info.community_config, "openrouter_api_key_env_var", None)
+    _without_mcp_servers(monkeypatch, info)
     return info
+
+
+def _without_mcp_servers(monkeypatch, info) -> None:
+    """Building an assistant discovers its MCP servers' tools over the network (NEMAR's is
+    mcp.nemar.org, waited on for up to 25 s). Which tools a community has is not what these
+    tests are about, and an offline suite must not depend on a live service."""
+    if info.community_config.extensions:
+        monkeypatch.setattr(info.community_config.extensions, "mcp_servers", [])
 
 
 def _set_level(monkeypatch, info, level: str | None) -> None:
@@ -103,6 +112,7 @@ class TestTheShippedCommunities:
     def _with_platform_keys_only(self, monkeypatch, info) -> None:
         monkeypatch.setattr(info.community_config, "anthropic_api_key_env_var", None)
         monkeypatch.setattr(info.community_config, "openrouter_api_key_env_var", None)
+        _without_mcp_servers(monkeypatch, info)
 
     @pytest.mark.parametrize("community_id", ["nwb", "nemar"])
     def test_a_luna_community_runs_luna_at_the_level_its_yaml_sets(self, monkeypatch, community_id):
