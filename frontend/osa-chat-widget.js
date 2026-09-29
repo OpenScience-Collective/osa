@@ -119,6 +119,16 @@
     { value: 'openai.gpt-oss-120b', label: 'OpenAI gpt-oss-120b' }
   ];
 
+  // The offered models only the service's own key can run: a request carrying the
+  // reader's own Anthropic key is refused for them (an OpenRouter key runs the same
+  // model). Used until the live list arrives, whose entries say so themselves.
+  // tests/test_frontend/test_widget_drift.py keeps this in step with BEDROCK_MODELS.
+  const PLATFORM_ONLY_MODELS = [
+    'openai.gpt-6-luna',
+    'qwen.qwen3-next-80b-a3b',
+    'openai.gpt-oss-120b'
+  ];
+
   // Models the backend no longer offers but still resolves (MODEL_ALIASES in
   // src/core/services/anthropic_models.py). A saved setting naming one is moved to
   // the model that replaced it, so the settings dropdown shows a real choice
@@ -131,6 +141,14 @@
   // until that response arrives.
   function getModelMenuOptions() {
     return (offeredModels && offeredModels.length) ? offeredModels : DEFAULT_MODELS;
+  }
+
+  function isPlatformOnly(modelId) {
+    if (offeredModels && offeredModels.length) {
+      const live = offeredModels.find(m => m.value === modelId);
+      return !!(live && live.platformOnly);
+    }
+    return PLATFORM_ONLY_MODELS.includes(modelId);
   }
 
   // Helper to get human-readable label for a model
@@ -4359,7 +4377,11 @@
       // Offered models drive the settings model menu; DEFAULT_MODELS remains
       // the fallback if this is missing (older backend) or empty.
       if (data && Array.isArray(data.offered_models) && data.offered_models.length > 0) {
-        offeredModels = data.offered_models.map(m => ({ value: m.id, label: m.label }));
+        offeredModels = data.offered_models.map(m => ({
+          value: m.id,
+          label: m.label,
+          platformOnly: m.platform_only === true
+        }));
       } else {
         console.warn(
           '[OSA] Community config response has no offered_models; falling back to DEFAULT_MODELS. ' +
@@ -5775,6 +5797,28 @@
     const hasKey = !!apiKeyInput && apiKeyInput.value.trim() !== '';
     if (customModelField) customModelField.style.display = isCustom ? 'block' : 'none';
     if (apiKeyField) apiKeyField.style.display = (isCustom || hasKey) ? 'block' : 'none';
+    syncPlatformOnlyOptions(container);
+  }
+
+  // With the reader's own Anthropic key in the field, the models only the service's key
+  // can run are shown as unavailable, instead of failing when the reader sends a message.
+  function ownAnthropicKeyIn(container) {
+    const apiKeyInput = container.querySelector('#osa-settings-api-key');
+    const apiKey = apiKeyInput ? apiKeyInput.value.trim() : '';
+    return !!apiKey && inferKeyProvider(apiKey) === 'anthropic';
+  }
+
+  function syncPlatformOnlyOptions(container) {
+    const modelSelect = container.querySelector('#osa-settings-model');
+    if (!modelSelect) return;
+    const blocked = ownAnthropicKeyIn(container);
+    for (const option of modelSelect.options) {
+      if (!isPlatformOnly(option.value)) continue;
+      option.disabled = blocked;
+      option.textContent = blocked
+        ? `${getModelLabel(option.value)} (not with your own Anthropic key)`
+        : getModelLabel(option.value);
+    }
   }
 
   function openSettings(container) {
@@ -5899,6 +5943,10 @@
         return;
       }
     } else if (modelSelection !== 'default') {
+      if (apiKey && inferKeyProvider(apiKey) === 'anthropic' && isPlatformOnly(modelSelection)) {
+        showError(container, `${getModelLabel(modelSelection)} is provided by this service and cannot be used with your own Anthropic API key. Remove the key, or choose another model.`);
+        return;
+      }
       model = modelSelection;
     }
 
@@ -7796,6 +7844,7 @@
 
     // Show/hide the custom model and API key fields based on selection
     modelSelect?.addEventListener('change', () => syncCustomFields(container));
+    container.querySelector('#osa-settings-api-key')?.addEventListener('input', () => syncCustomFields(container));
 
     // Check backend status
     checkBackendStatus();
