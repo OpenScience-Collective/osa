@@ -410,6 +410,15 @@ class TestCreateAnthropicLLMBehavior:
                 settings=settings,
             )
 
+    @pytest.mark.parametrize(
+        "model", ["openai.gpt-6-luna", "us.openai.gpt-6-luna", "qwen.qwen3-next-80b-a3b"]
+    )
+    def test_a_bedrock_model_is_refused_with_a_pointer_to_the_right_factory(
+        self, model: str
+    ) -> None:
+        with pytest.raises(ValueError, match="create_bedrock_llm"):
+            create_anthropic_llm(model=model, settings=_settings())
+
     def test_unsupported_cache_ttl_raises(self) -> None:
         settings = _settings()
         with pytest.raises(ValueError, match="Unsupported prompt cache TTL"):

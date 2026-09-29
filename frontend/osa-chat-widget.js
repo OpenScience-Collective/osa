@@ -113,7 +113,10 @@
   // of truth; see offeredModels below.
   const DEFAULT_MODELS = [
     { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
-    { value: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5' }
+    { value: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5' },
+    { value: 'openai.gpt-6-luna', label: 'OpenAI GPT-6 Luna' },
+    { value: 'qwen.qwen3-next-80b-a3b', label: 'Qwen3 Next 80B A3B' },
+    { value: 'openai.gpt-oss-120b', label: 'OpenAI gpt-oss-120b' }
   ];
 
   // Models the backend no longer offers but still resolves (MODEL_ALIASES in

@@ -42,10 +42,12 @@ from src.core.services.anthropic_endpoints import FIRST_PARTY_BASE_URL
 # MODEL_ALIASES and OFFERED_MODELS are re-exported here because server-side
 # callers have imported them from this module all along.
 from src.core.services.anthropic_models import (
+    BEDROCK_MODELS,  # noqa: F401
     DEFAULT_MODEL,  # noqa: F401
     MODEL_ALIASES,  # noqa: F401
     OFFERED_MODELS,  # noqa: F401
     SAMPLING_MODELS,
+    is_bedrock_model,
     normalize_model,
 )
 
@@ -241,14 +243,22 @@ def create_anthropic_llm(
         instance configured for the Claude Messages API.
 
     Raises:
-        ValueError: If the model is not offered, the cache TTL is not
-            supported, or the thinking configuration is not valid for the
-            model.
+        ValueError: If the model is not offered, is served from Amazon Bedrock
+            rather than by Anthropic (see ``create_bedrock_llm``), the cache
+            TTL is not supported, or the thinking configuration is not valid
+            for the model.
         RuntimeError: If server mode is used without ANTHROPIC_API_KEY set,
             or if ANTHROPIC_BASE_URL is set without ANTHROPIC_WORKSPACE_ID.
     """
     resolved_settings = settings or get_settings()
     resolved_model = normalize_model(model)
+    if is_bedrock_model(resolved_model):
+        # Sending "openai.gpt-6-luna" to the Messages API would fail as an opaque
+        # unknown-model error, far from the caller that picked the wrong factory.
+        raise ValueError(
+            f"{resolved_model} is served from Amazon Bedrock, not by Anthropic; "
+            "build it with create_bedrock_llm"
+        )
 
     resolved_max_tokens = (
         max_tokens if max_tokens is not None else resolved_settings.anthropic_max_output_tokens

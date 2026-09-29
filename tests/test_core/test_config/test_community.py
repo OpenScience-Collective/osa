@@ -2070,6 +2070,18 @@ class TestFAQAgentRoleWarning:
             warnings.simplefilter("error", UserWarning)
             FAQGenerationConfig(**self._faq_config("claude-haiku-4-5", "claude-sonnet-5-5"))
 
+    @pytest.mark.parametrize("role", ["evaluation_agent", "summary_agent"])
+    def test_a_bedrock_model_is_warned_about_because_faq_runs_on_claude_only(
+        self, role: str
+    ) -> None:
+        from src.core.config.community import FAQGenerationConfig
+
+        config = self._faq_config("claude-haiku-4-5", "claude-haiku-4-5")
+        config[role] = {"model": "openai.gpt-oss-120b"}
+
+        with pytest.warns(UserWarning, match=rf"{role}\.model is openai\.gpt-oss-120b"):
+            FAQGenerationConfig(**config)
+
     def test_provider_field_still_loads_for_backward_compatibility(self) -> None:
         """An existing config.yaml carrying a stale provider hint must not fail
         to load; faq_summarizer logs that it is ignored instead."""

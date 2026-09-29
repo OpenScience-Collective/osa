@@ -675,10 +675,17 @@ class TestCostAccounting:
         priced but unusable. The fallback path in ``summarize_threads`` builds
         both agents on CHEAP_MODEL, so it has to be the default model too.
         """
-        from src.core.services.anthropic_models import DEFAULT_MODEL, OFFERED_MODELS
+        from src.core.services.anthropic_models import (
+            BEDROCK_MODELS,
+            DEFAULT_MODEL,
+            OFFERED_MODELS,
+        )
         from src.knowledge.faq_summarizer import CHEAP_MODEL, QUALITY_MODEL
 
-        assert {CHEAP_MODEL, QUALITY_MODEL} == set(OFFERED_MODELS)
+        # FAQ generation builds its agents with create_anthropic_llm, so the
+        # comparison is between the offered Claude models; the Bedrock-served
+        # ones are refused there (see FAQGenerationConfig.validate_agent_roles).
+        assert {CHEAP_MODEL, QUALITY_MODEL} == set(OFFERED_MODELS) - set(BEDROCK_MODELS)
         assert CHEAP_MODEL == DEFAULT_MODEL
 
     def test_strategy_estimate_prices_both_models_from_the_table(self) -> None:
