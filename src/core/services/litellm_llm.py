@@ -34,7 +34,7 @@ from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 
-from src.core.services.anthropic_models import effective_reasoning_effort, normalize_model
+from src.core.services.anthropic_models import effective_reasoning_effort
 
 logger = logging.getLogger(__name__)
 
@@ -66,19 +66,18 @@ OPENROUTER_MODEL_IDS: dict[str, str] = {
 def openrouter_model_id(slug: str | None) -> str | None:
     """The offered model id an OpenRouter slug stands for, or None when OSA does not know it.
 
-    The reverse of ``OPENROUTER_MODEL_IDS``, plus what ``normalize_model`` resolves
-    (the ``anthropic/claude-*`` aliases). A slug that is neither is a caller's own
-    choice, about which nothing is assumed, including whether it reasons at all.
+    Exactly the reverse of ``OPENROUTER_MODEL_IDS``. The ``anthropic/claude-*`` aliases
+    ``normalize_model`` resolves are deliberately not followed: they name older models
+    (Claude Sonnet 4.5, say) that OpenRouter runs as themselves, so the offered model's
+    reasoning levels say nothing about them. A slug that is not an offered model's is a
+    caller's own choice, about which nothing is assumed, including whether it reasons.
     """
     if not slug:
         return None
     for model_id, known_slug in OPENROUTER_MODEL_IDS.items():
         if known_slug == slug:
             return model_id
-    try:
-        return normalize_model(slug)
-    except ValueError:
-        return None
+    return None
 
 
 def to_openrouter_model(model: str | None) -> str | None:
@@ -141,7 +140,8 @@ def create_openrouter_llm(
             body field, only for an offered model that has levels, at a level it
             accepts on OpenRouter (Claude Sonnet is never above ``high``, and has no
             ``none`` there, where its reasoning is mandatory); a slug OSA knows nothing
-            about is sent nothing.
+            about, including the older Claude slugs that ``normalize_model`` aliases, is
+            sent nothing (and a debug line says so).
 
     Returns:
         A ``TaggedCitationChatLiteLLM`` configured for OpenRouter
@@ -185,6 +185,13 @@ def create_openrouter_llm(
     )
     if reasoning_level is not None:
         model_kwargs["reasoning"] = {"effort": reasoning_level}
+    elif reasoning_effort is not None:
+        logger.debug(
+            "reasoning_effort=%r not sent to OpenRouter model %r: it is not an offered "
+            "model with reasoning levels",
+            reasoning_effort,
+            model,
+        )
 
     # Falls back to the env var (documented above) rather than requiring
     # every caller to read it themselves, but a request with neither fails

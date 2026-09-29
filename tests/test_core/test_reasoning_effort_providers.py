@@ -16,6 +16,7 @@ and the traps found while measuring (Qwen must be sent nothing; the nested field
 no-op for gpt-oss, and the flat one a 400 for Luna).
 """
 
+import logging
 from collections.abc import Iterator
 from typing import Any
 
@@ -23,9 +24,11 @@ import pytest
 from langchain_core.messages import HumanMessage
 
 from src.api.config import Settings
-from src.core.services.anthropic_llm import create_anthropic_llm
+from src.core.services import anthropic_models
+from src.core.services.anthropic_llm import _ADAPTIVE_THINKING_MODELS, create_anthropic_llm
 from src.core.services.anthropic_models import (
     BEDROCK_MODELS,
+    MODEL_ALIASES,
     OFFERED_MODELS,
     REASONING_DEFAULTS,
     REASONING_LEVELS,
@@ -33,7 +36,11 @@ from src.core.services.anthropic_models import (
     effective_reasoning_effort,
 )
 from src.core.services.bedrock_llm import _bedrock_client, create_bedrock_llm
-from src.core.services.litellm_llm import OPENROUTER_MODEL_IDS, create_openrouter_llm
+from src.core.services.litellm_llm import (
+    OPENROUTER_MODEL_IDS,
+    create_openrouter_llm,
+    openrouter_model_id,
+)
 from tests.helpers.openrouter import FakeOpenRouter, stream_of
 from tests.test_core.test_bedrock_llm import _converse_reply, _settings, _Wire
 
@@ -138,12 +145,12 @@ class TestAnthropicPayload:
         payload = _anthropic_payload(SONNET, reasoning_effort=asked)
         assert payload["output_config"] == {"effort": "high"}
 
-    def test_none_turns_thinking_off_and_sends_no_effort(self) -> None:
-        """No API level means none: `between_tools` is Sonnet 5.5's thinking-off setting,
-        accepted only at effort `high` or below, and the API's default effort applies."""
+    def test_none_is_no_upfront_thinking_at_the_lowest_effort(self) -> None:
+        """No level is lower than `low`, and `between_tools` (Sonnet 5.5's lowest thinking
+        setting, accepted only at effort `high` or below) is what turns thinking down."""
         payload = _anthropic_payload(SONNET, reasoning_effort="none")
         assert payload["thinking"] == {"type": "between_tools"}
-        assert "output_config" not in payload
+        assert payload["output_config"] == {"effort": "low"}
 
     def test_a_community_that_sets_nothing_changes_nothing(self) -> None:
         payload = _anthropic_payload(SONNET)
@@ -162,6 +169,11 @@ class TestAnthropicPayload:
         payload = _anthropic_payload(SONNET, reasoning_effort="high", thinking=None)
         assert payload["thinking"] == {"type": "between_tools"}
         assert payload["output_config"] == {"effort": "high"}
+
+    def test_the_effort_is_sent_without_the_caching_layer_too(self) -> None:
+        payload = _anthropic_payload(SONNET, reasoning_effort="medium", enable_caching=False)
+        assert payload["output_config"] == {"effort": "medium"}
+        assert "cache_control" not in str(payload)
 
     def test_the_effort_survives_the_caching_layer(self) -> None:
         """CachingChatAnthropic rewrites the payload for cache breakpoints."""
@@ -259,7 +271,75 @@ class TestOpenRouterBody:
         assert body["provider"]["order"], "the reasoning field must not displace routing"
 
 
+class TestOpenRouterSlugs:
+    """Which slugs count as an offered model: exactly the ones OSA maps, no others."""
+
+    @pytest.mark.parametrize(("model", "slug"), sorted(OPENROUTER_MODEL_IDS.items()))
+    def test_a_slug_osa_maps_is_its_offered_model(self, model: str, slug: str) -> None:
+        assert openrouter_model_id(slug) == model
+
+    @pytest.mark.parametrize("slug", [None, "", "some-lab/unknown-model"])
+    def test_anything_else_is_not_an_offered_model(self, slug: str | None) -> None:
+        assert openrouter_model_id(slug) is None
+
+    @pytest.mark.parametrize(
+        "alias",
+        sorted(a for a in MODEL_ALIASES if "/" in a and a not in OPENROUTER_MODEL_IDS.values()),
+    )
+    def test_an_older_claude_slug_that_is_only_an_alias_is_not_the_offered_model(
+        self, alias: str
+    ) -> None:
+        """`normalize_model` maps anthropic/claude-sonnet-4.5 to the offered Sonnet, but
+        OpenRouter runs that slug as the older model, which the offered model's levels
+        say nothing about."""
+        assert openrouter_model_id(alias) is None
+
+    @pytest.mark.parametrize(
+        "alias",
+        sorted(a for a in MODEL_ALIASES if "/" in a and a not in OPENROUTER_MODEL_IDS.values()),
+    )
+    def test_an_older_claude_slug_is_sent_no_reasoning(
+        self, openrouter: FakeOpenRouter, alias: str
+    ) -> None:
+        body = _openrouter_body(openrouter, alias, reasoning_effort="high")
+        assert "reasoning" not in body
+
+    def test_an_unknown_slug_is_not_read_as_the_default_model(
+        self, openrouter: FakeOpenRouter, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`normalize_model(None)` is the default model; an unmapped slug must not become
+        it. Held apart by making the default a model that has levels."""
+        monkeypatch.setattr(anthropic_models, "DEFAULT_MODEL", SONNET)
+        body = _openrouter_body(openrouter, "openai/gpt-5", reasoning_effort="max")
+        assert "reasoning" not in body
+
+    def test_a_level_that_goes_nowhere_leaves_a_debug_line(
+        self, openrouter: FakeOpenRouter, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.DEBUG, logger="src.core.services.litellm_llm"):
+            _openrouter_body(openrouter, "some-lab/unknown-model", reasoning_effort="high")
+        assert any("some-lab/unknown-model" in r.getMessage() for r in caplog.records)
+
+    def test_nothing_is_logged_when_no_level_was_asked_for(
+        self, openrouter: FakeOpenRouter, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.DEBUG, logger="src.core.services.litellm_llm"):
+            _openrouter_body(openrouter, "some-lab/unknown-model")
+        assert not any("reasoning_effort" in r.getMessage() for r in caplog.records)
+
+
 # ---------------------------------------------------------------- one rule, three paths
+
+
+class TestEveryModelWithLevelsCanBeSentThem:
+    @pytest.mark.parametrize("model", sorted(REASONING_LEVELS))
+    def test_a_model_with_levels_has_a_path_that_sends_them(self, model: str) -> None:
+        """Bedrock models name a request field; Claude models must be in the set the
+        Anthropic factory sends `output_config` for, or their level is silently dropped."""
+        if model in BEDROCK_MODELS:
+            assert BEDROCK_MODELS[model].reasoning_field is not None
+        else:
+            assert model in _ADAPTIVE_THINKING_MODELS
 
 
 class TestTheSameRuleOnEveryPath:

@@ -19,7 +19,7 @@ and agent should have to know.
 """
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 # Default offered model.
 DEFAULT_MODEL = "claude-haiku-4-5"
@@ -158,9 +158,11 @@ SAMPLING_MODELS = {"claude-haiku-4-5", "openai.gpt-oss-120b", "qwen.qwen3-next-8
 # community sets once (``reasoning_effort`` in its config.yaml) and that each provider
 # path turns into that platform's own request field. It is the union of what the
 # platforms name: Anthropic's ``effort`` (low to max), OpenAI's ``reasoning.effort`` on
-# Bedrock (none to max) and OpenRouter's (none to xhigh).
-REASONING_SCALE: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh", "max")
+# Bedrock (none to max) and OpenRouter's (none to max; it treats ``max`` as ``xhigh``).
+# The tuple is derived from the Literal, so a level added to one cannot be missing from the
+# other (the config would load a level that ``resolve_reasoning_effort`` then refuses).
 ReasoningEffort = Literal["none", "low", "medium", "high", "xhigh", "max"]
+REASONING_SCALE: tuple[str, ...] = get_args(ReasoningEffort)
 
 # The levels each model accepts, in scale order. A level a model does not accept is never
 # sent: ``resolve_reasoning_effort`` clamps to the nearest one it does. The levels are
@@ -179,8 +181,8 @@ REASONING_LEVELS: dict[str, tuple[str, ...]] = {
 # The level a model runs at when a community sets none, sent on every provider so a
 # model behaves the same whichever key paid for it. GPT-6 Luna and gpt-oss run at
 # ``high`` (Luna at ``max`` made a tool-using turn take 15 to 50 seconds before its first
-# word, and at ``xhigh`` and ``max`` it often answered with no documentation search at
-# all, so no citations). Claude Sonnet 5.5 has no entry: nothing is sent, so the
+# word, and at ``xhigh`` and ``max`` it answered with no documentation search in the median
+# of three runs on one question, so no citations). Claude Sonnet 5.5 has no entry: nothing is sent, so the
 # Claude Platform's own default (``high``) applies, as before.
 REASONING_DEFAULTS: dict[str, str] = {
     "openai.gpt-6-luna": "high",
@@ -336,7 +338,9 @@ def effective_reasoning_effort(
     """The level to send a model on a platform: the community's, else the model's default.
 
     Args:
-        model: Model identifier, in any form ``normalize_model`` accepts.
+        model: Model identifier, in any form ``normalize_model`` accepts. None (a slug
+            OSA could not map to a model) sends nothing: it is not the default model
+            here, as it is for ``normalize_model``.
         requested: The community's ``reasoning_effort``, or None.
         provider: The platform the request goes to.
 
@@ -344,6 +348,8 @@ def effective_reasoning_effort(
         A level the model accepts on that platform, or None to send nothing: the model
         has no levels, or it has no default and none was requested.
     """
+    if not model:
+        return None
     if requested is None:
         try:
             requested = REASONING_DEFAULTS.get(normalize_model(model))

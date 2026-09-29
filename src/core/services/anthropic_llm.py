@@ -70,8 +70,9 @@ _ADAPTIVE_THINKING_MODELS = {"claude-sonnet-5-5"}
 # The "thinking off" setting of the adaptive-thinking models. Sonnet 5.5 does
 # no extended thinking under it, though the short progress notes it writes
 # between tool calls still arrive as `thinking` blocks. The API allows it only
-# at effort "high" or below and with no other field inside `thinking`; OSA
-# never sets an effort, and the API default is "high".
+# at effort "high" or below and with no other field inside `thinking`. OSA sets
+# an effort only for a community's `reasoning_effort` (its `none` sends "low" with
+# this); unset, the API default is "high".
 _THINKING_OFF: dict[str, Any] = {"type": "between_tools"}
 
 # Smallest thinking budget the API accepts on budget-style (Haiku) models.
@@ -274,11 +275,11 @@ def create_anthropic_llm(
         reasoning_effort: The community's level from the neutral scale, or None to
             change nothing. Only models with levels are affected (claude-sonnet-5-5;
             claude-haiku-4-5 thinks with a budget and ignores it). The model is sent a
-            level it accepts, never above ``high``: ``none`` turns extended thinking
-            off (``{"type": "between_tools"}``, no effort field, the API's default
-            effort applying), and ``low``, ``medium`` and ``high`` set adaptive
-            thinking and ``output_config.effort`` to that level. An explicit
-            ``thinking`` argument still wins over the thinking this implies.
+            level it accepts, never above ``high``: ``low``, ``medium`` and ``high``
+            set ``output_config.effort`` to that level, and ``none`` (no level is
+            lower than ``low``) sets it to ``low`` and turns up-front thinking off
+            (``{"type": "between_tools"}``). An explicit ``thinking`` argument still
+            wins over the thinking this implies.
 
     Returns:
         A :class:`CachingChatAnthropic` (default) or plain ``ChatAnthropic``
@@ -328,21 +329,21 @@ def create_anthropic_llm(
     else:
         resolved_thinking = thinking
 
-    # The community's reasoning level (issue #545), for the models that have levels: it
-    # picks the thinking mode (unless the caller gave one) and the effort the API is
-    # told. It is a field of its own (`output_config`), not `model_kwargs`, which
-    # langchain-anthropic rejects as supplied twice, and not the adapter's
-    # `reasoning_effort`, which can force adaptive thinking on with display settings.
+    # The community's reasoning level (issue #545), for the models that have levels. It is
+    # sent in the typed `output_config` field, not the adapter's `reasoning_effort`, which
+    # can force adaptive thinking on with display settings. Thinking stays what the caller
+    # or the default made it (adaptive, which is also what an omitted key means on Sonnet),
+    # except for `none`: there is no level below `low`, so it is no up-front thinking
+    # (`between_tools`) at the lowest effort, unless the caller chose the thinking.
     effort_level = effective_reasoning_effort(resolved_model, reasoning_effort, "anthropic")
     output_config: dict[str, Any] | None = None
     if effort_level is not None and resolved_model in _ADAPTIVE_THINKING_MODELS:
         if effort_level == "none":
+            output_config = {"effort": "low"}
             if isinstance(thinking, _Default):
                 resolved_thinking = dict(_THINKING_OFF)
         else:
             output_config = {"effort": effort_level}
-            if isinstance(thinking, _Default):
-                resolved_thinking = {"type": "adaptive"}
 
     if resolved_thinking is not None:
         _validate_thinking(resolved_thinking, resolved_model, resolved_max_tokens)
@@ -352,8 +353,9 @@ def create_anthropic_llm(
             and output_config["effort"] in ("xhigh", "max")
         ):
             # The API refuses this pairing (a 400: "not supported when thinking is
-            # disabled"); the level table never produces it for Sonnet, so this is
-            # the guard for a caller that turns thinking off by hand at a high level.
+            # disabled"). The level table caps Sonnet at `high`, so it cannot arise
+            # today; this fails at construction, not at the endpoint, if the table is
+            # ever widened.
             raise ValueError(
                 f"thinking type 'between_tools' is accepted only at effort 'high' or "
                 f"below, got {output_config['effort']!r}"
