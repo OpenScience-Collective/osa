@@ -133,6 +133,35 @@ MODEL_ALIASES: dict[str, str] = {
 # doesn't support the temperature field"); gpt-oss-120b and Qwen3 Next accept them.
 SAMPLING_MODELS = {"claude-haiku-4-5", "openai.gpt-oss-120b", "qwen.qwen3-next-80b-a3b"}
 
+# Reasoning effort (issue #545). One provider-neutral scale, lowest to highest, that a
+# community sets once (``reasoning_effort`` in its config.yaml) and that each provider
+# path turns into that platform's own request field. It is the union of what the
+# platforms name: Anthropic's ``effort`` (low to max), OpenAI's ``reasoning.effort`` on
+# Bedrock (none to max) and OpenRouter's (none to xhigh).
+REASONING_SCALE: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh", "max")
+ReasoningEffort = Literal["none", "low", "medium", "high", "xhigh", "max"]
+
+# The levels each model accepts, in scale order. A level a model does not accept is never
+# sent: ``resolve_reasoning_effort`` clamps to the nearest one it does. The levels are
+# the models' own predetermined ones (Luna and gpt-oss measured against Bedrock on
+# 2026-09-29: Luna accepts none, low, medium, high, xhigh and max and rejects
+# ``minimal``; gpt-oss accepts low, medium and high and rejects ``max``), with one policy
+# on top: Claude Sonnet 5.5 is never run above ``high``, whatever a community asks and on
+# whichever platform it is reached, so it lists none through high even though the API
+# accepts more.
+REASONING_LEVELS: dict[str, tuple[str, ...]] = {
+    "claude-sonnet-5-5": ("none", "low", "medium", "high"),
+    "openai.gpt-6-luna": ("none", "low", "medium", "high", "xhigh", "max"),
+    "openai.gpt-oss-120b": ("low", "medium", "high"),
+}
+
+# The offered models with no reasoning levels to set: Claude Haiku 4.5 thinks with a
+# token budget rather than a level, and Qwen3 Next has no reasoning control. The key is
+# ignored for them. Together with REASONING_LEVELS this names every offered model, which
+# tests/test_core/test_reasoning_effort.py checks, so a newly offered model has to be
+# put on one side or the other.
+NO_REASONING_LEVELS: frozenset[str] = frozenset({"claude-haiku-4-5", "qwen.qwen3-next-80b-a3b"})
+
 # Image media types the Messages API accepts on a content block, including a
 # content block nested in a tool result.
 #
@@ -192,6 +221,58 @@ def normalize_model(model: str | None) -> str:
         offered = ", ".join(sorted(OFFERED_MODELS))
         raise ValueError(f"Model '{model}' is not available. Offered models: {offered}")
     return resolved
+
+
+def reasoning_levels(model: str | None) -> tuple[str, ...]:
+    """The reasoning levels a model accepts, lowest to highest; empty when it has none.
+
+    Args:
+        model: Model identifier, in any form ``normalize_model`` accepts.
+
+    Returns:
+        The levels from ``REASONING_LEVELS``, or an empty tuple for a model with no
+        levels to set and for an id that is not offered.
+    """
+    try:
+        return REASONING_LEVELS.get(normalize_model(model), ())
+    except ValueError:
+        return ()
+
+
+def resolve_reasoning_effort(model: str | None, requested: str | None) -> str | None:
+    """The level a model will actually run at for a requested one, or None to send none.
+
+    A level the model accepts is used as asked. One above everything it accepts is
+    lowered to its highest, so a community that asks for ``max`` gets a Claude Sonnet
+    at ``high``; one below everything is raised to its lowest (gpt-oss cannot go below
+    ``low``); and one in a gap between two it accepts takes the higher of the levels
+    below it. None comes back when nothing was requested, or when the model has no
+    levels (Haiku, Qwen3 Next, an id that is not offered): there is nothing to send.
+
+    Args:
+        model: Model identifier, in any form ``normalize_model`` accepts.
+        requested: A level from ``REASONING_SCALE``, or None.
+
+    Returns:
+        A level from the model's own list, or None.
+
+    Raises:
+        ValueError: If ``requested`` is not on the scale.
+    """
+    if requested is None:
+        return None
+    if requested not in REASONING_SCALE:
+        raise ValueError(
+            f"reasoning effort {requested!r} is not one of {', '.join(REASONING_SCALE)}"
+        )
+    levels = reasoning_levels(model)
+    if not levels:
+        return None
+    if requested in levels:
+        return requested
+    rank = REASONING_SCALE.index(requested)
+    below = [level for level in levels if REASONING_SCALE.index(level) < rank]
+    return below[-1] if below else levels[0]
 
 
 def accepts_temperature(model: str | None) -> bool:
