@@ -3,7 +3,7 @@
 # each entry keeps the index's URL and description; source_url is the raw file on GitHub.
 # The last 14 entries are pages the index lacks (NWB Inspector usage, MatNWB, DANDI, NWB overview,
 # schema release notes), added after evaluation showed answers inventing details on those topics.
-# default_model is GPT-6 Luna (maximum reasoning effort), served from Amazon Bedrock on the
+# default_model is GPT-6 Luna (high reasoning effort), served from Amazon Bedrock on the
 # platform's key (issue #514). A caller with their own Anthropic key who names no model (the CLI)
 # runs Claude Haiku 4.5 instead, and so does every request on a deployment with no Bedrock key.
 

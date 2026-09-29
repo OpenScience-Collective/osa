@@ -1,6 +1,6 @@
 # NEMAR Assistant Configuration
 # Helps researchers discover and explore BIDS-formatted EEG/MEG/iEEG datasets
-# default_model is GPT-6 Luna (maximum reasoning effort), served from Amazon Bedrock on the
+# default_model is GPT-6 Luna (high reasoning effort), served from Amazon Bedrock on the
 # platform's key (issue #530). A caller with their own Anthropic key who names no model (the CLI)
 # runs Claude Haiku 4.5 instead, and so does every request on a deployment with no Bedrock key.
 # Luna cannot take image blocks, so the model does not see nemar_render_overview or browser-run

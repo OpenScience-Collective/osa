@@ -19,7 +19,7 @@ the version being released and start a new `[Unreleased]` section above it.
   three non-Anthropic models served from Amazon Bedrock, each priced at or below Claude Haiku 4.5
   ($0.11 / $0.55, $0.14 / $1.20 and $0.15 / $0.60 per 1M input / output tokens; Haiku is $1 / $5).
   They appear in the widget's model menu and can be a community's `default_model`.
-  GPT-6 Luna runs at its maximum reasoning effort.
+  GPT-6 Luna runs at high reasoning effort.
   A deployment turns them on with `AWS_BEARER_TOKEN_BEDROCK`; without it they are not listed and a request naming one gets a 400.
   Requests run in Ohio (`us-east-2`, `BEDROCK_REGION`), except Qwen3 Next, whose Ohio endpoint does not answer, so it runs in N. Virginia.
   A caller's own Anthropic key cannot select them, because the platform pays for Bedrock; an OpenRouter key runs the same model there.
@@ -43,8 +43,11 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Changed
 
+- **GPT-6 Luna runs at high reasoning effort, not maximum** (issue #543): at maximum, a tool-using turn took 15 to 50 seconds before its first word, all of it the model's own silent reasoning.
+  On real community questions at high, NWB answered in 7 to 9 seconds against about 27 at maximum, with one or two searches, cited sources and no tag leaks.
+  The accepted levels, measured on Bedrock, are none, low, medium, high, xhigh and max (`minimal` is rejected).
 - **The widget spreads a streamed reply's burst over half a second, at most** (issues #531 and #538): text a reply has delivered is drawn as soon as it arrives when nothing is pending (a first line or so at once, the rest within a tick), and every character is drawn no more than about half a second after it arrived, instead of the moment each chunk arrives.
-  GPT-6 Luna at maximum effort reasons silently for most of a turn and then emits its answer in about a second, so it used to appear all at once.
+  GPT-6 Luna reasons silently for most of a turn and then emits its answer in about a second, so it used to appear all at once.
   Each chunk carries its own half-second deadline, so a burst faster than a line per tick is spread over at most half a second, including one that lands late in an earlier burst's reveal, and a reply that finishes waits for the reveal for at most 0.7 seconds before the canonical text replaces it.
   A model that streams slower than that is drawn as it arrives, at most one 80 millisecond tick late.
   The wait before the first word is the model's own: OSA's model layer adds nothing over raw Bedrock (measured in issue #538), and lowering Luna's reasoning effort is what shortens it.
