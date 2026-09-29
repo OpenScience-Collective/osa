@@ -480,6 +480,45 @@ class TestTheKeyStaysOnTheCall:
         assert openrouter.requests[0]["stream"] is False
 
 
+class TestTheKeyIsNotLogged:
+    def test_litellm_does_not_log_the_callers_key_at_debug(
+        self, openrouter: FakeOpenRouter
+    ) -> None:
+        """LiteLLM logs each call's arguments at DEBUG, and the key is one of them now.
+
+        Records that reach a handler other than the redacting one (tracing, error
+        reporting) carry it raw, so the logger is held quiet rather than relied on to
+        be redacted.
+        """
+        import logging
+
+        from src.core.logging import configure_secure_logging
+
+        canary = "sk-or-canary-7f3a91c2d4e85b60a1c3e5f7092b4d6f"
+        records: list[str] = []
+
+        class Capture(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                records.append(record.getMessage())
+
+        root = logging.getLogger()
+        handler = Capture(level=logging.DEBUG)
+        try:
+            configure_secure_logging(level=logging.DEBUG)
+            root.addHandler(handler)
+            openrouter.reply(stream_of("ok"))
+            create_openrouter_llm(model="openai/gpt-6-luna", api_key=canary).invoke(
+                [HumanMessage(content="hi")]
+            )
+        finally:
+            root.removeHandler(handler)
+            configure_secure_logging(level=logging.INFO)
+            for name in ("LiteLLM", "LiteLLM Router", "LiteLLM Proxy", "litellm"):
+                logging.getLogger(name).setLevel(logging.NOTSET)
+
+        assert not [line for line in records if canary in line]
+
+
 class TestTagsBecomeCitations:
     """The reply a reader gets: no tag text, and a citation for each tag that named a source."""
 
