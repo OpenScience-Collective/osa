@@ -28,13 +28,18 @@ MODEL_PRICING: dict[str, ModelRate] = {
     # anthropic_llm.py). Kept alongside the OpenRouter-format keys below, which
     # BYOK requests through OpenRouter still need.
     "claude-haiku-4-5": ModelRate(1.00, 5.00),
+    "claude-sonnet-5-5": ModelRate(2.00, 10.00),
+    # claude-sonnet-5 is no longer offered (it resolves to claude-sonnet-5-5 at
+    # the same price), but request logs written before the switch still name
+    # it and the dashboard prices them by this table.
     "claude-sonnet-5": ModelRate(2.00, 10.00),
     # Anthropic models
-    # anthropic/claude-sonnet-5: the OpenRouter-slug form of claude-sonnet-5
+    # anthropic/claude-sonnet-5.5: the OpenRouter-slug form of claude-sonnet-5-5
     # above (see OPENROUTER_MODEL_IDS in src/core/services/litellm_llm.py).
     # A community whose default resolves to this slug over OpenRouter would
     # otherwise 403 as "not in the approved pricing list" even though the
     # first-party id is priced. Same rate as the first-party entry.
+    "anthropic/claude-sonnet-5.5": ModelRate(2.00, 10.00),
     "anthropic/claude-sonnet-5": ModelRate(2.00, 10.00),
     "anthropic/claude-opus-4.6": ModelRate(5.00, 25.00),
     "anthropic/claude-opus-4.5": ModelRate(5.00, 25.00),

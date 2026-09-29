@@ -19,7 +19,7 @@ DEFAULT_MODEL = "claude-haiku-4-5"
 # Models offered to callers (widget dropdown, CLI, community config.yaml).
 OFFERED_MODELS: dict[str, str] = {
     "claude-haiku-4-5": "Claude Haiku 4.5",
-    "claude-sonnet-5": "Claude Sonnet 5",
+    "claude-sonnet-5-5": "Claude Sonnet 5.5",
 }
 
 # Legacy OpenRouter-style identifiers that exist in saved widget settings,
@@ -28,14 +28,19 @@ MODEL_ALIASES: dict[str, str] = {
     "anthropic/claude-haiku-4.5": "claude-haiku-4-5",
     "anthropic/claude-haiku-4-5": "claude-haiku-4-5",
     "claude-haiku-4.5": "claude-haiku-4-5",
-    "anthropic/claude-sonnet-5": "claude-sonnet-5",
-    "anthropic/claude-sonnet-4.6": "claude-sonnet-5",
-    "anthropic/claude-sonnet-4.5": "claude-sonnet-5",
-    "claude-sonnet-4.5": "claude-sonnet-5",
+    # Sonnet 5.5 replaced Sonnet 5 at the same price, so a saved setting or
+    # community config that still names an earlier Sonnet runs on it.
+    "claude-sonnet-5": "claude-sonnet-5-5",
+    "claude-sonnet-5.5": "claude-sonnet-5-5",
+    "anthropic/claude-sonnet-5.5": "claude-sonnet-5-5",
+    "anthropic/claude-sonnet-5": "claude-sonnet-5-5",
+    "anthropic/claude-sonnet-4.6": "claude-sonnet-5-5",
+    "anthropic/claude-sonnet-4.5": "claude-sonnet-5-5",
+    "claude-sonnet-4.5": "claude-sonnet-5-5",
 }
 
 # Models that still accept sampling parameters. Claude 5-generation models
-# (claude-sonnet-5) reject `temperature` with a 400 because the only value
+# (claude-sonnet-5-5) reject `temperature` with a 400 because the only value
 # they accept is 1, the implicit default when the field is simply omitted.
 SAMPLING_MODELS = {"claude-haiku-4-5"}
 

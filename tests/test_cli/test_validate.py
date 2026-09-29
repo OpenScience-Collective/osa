@@ -720,4 +720,4 @@ class TestValidateWithoutServerDependencies:
         )
 
         assert result.returncode == 0, result.stderr
-        assert "claude-sonnet-5" in result.stdout
+        assert "claude-sonnet-5-5" in result.stdout

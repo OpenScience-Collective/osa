@@ -1858,7 +1858,7 @@ class TestModelNameValidation:
     def test_valid_bare_first_party_ids(self) -> None:
         """Should accept a bare first-party id with no provider prefix, and
         not warn: these are real, resolvable Anthropic ids/aliases."""
-        valid_bare_ids = ["claude-haiku-4-5", "claude-sonnet-5"]
+        valid_bare_ids = ["claude-haiku-4-5", "claude-sonnet-5-5"]
         for model in valid_bare_ids:
             with warnings.catch_warnings():
                 warnings.simplefilter("error")
@@ -2059,8 +2059,8 @@ class TestFAQAgentRoleWarning:
     def test_expensive_evaluation_agent_is_warned_about(self) -> None:
         from src.core.config.community import FAQGenerationConfig
 
-        with pytest.warns(UserWarning, match="evaluation_agent uses claude-sonnet-5"):
-            FAQGenerationConfig(**self._faq_config("claude-sonnet-5", "claude-sonnet-5"))
+        with pytest.warns(UserWarning, match="evaluation_agent uses claude-sonnet-5-5"):
+            FAQGenerationConfig(**self._faq_config("claude-sonnet-5-5", "claude-sonnet-5-5"))
 
     def test_expensive_summary_agent_alone_is_fine(self) -> None:
         """Paying more for the few hundred surviving threads is the intended shape."""
@@ -2068,7 +2068,7 @@ class TestFAQAgentRoleWarning:
 
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
-            FAQGenerationConfig(**self._faq_config("claude-haiku-4-5", "claude-sonnet-5"))
+            FAQGenerationConfig(**self._faq_config("claude-haiku-4-5", "claude-sonnet-5-5"))
 
     def test_provider_field_still_loads_for_backward_compatibility(self) -> None:
         """An existing config.yaml carrying a stale provider hint must not fail
@@ -2085,7 +2085,7 @@ class TestFAQAgentRoleWarning:
         """The check is about what gets billed, not about how it is spelled.
 
         A config that predates the migration and still says
-        "anthropic/claude-sonnet-4.5" resolves to claude-sonnet-5 and scores
+        "anthropic/claude-sonnet-4.5" resolves to claude-sonnet-5-5 and scores
         every thread at the higher rate, which is exactly the shape this
         warning exists for.
         """
@@ -2093,13 +2093,13 @@ class TestFAQAgentRoleWarning:
 
         with pytest.warns(UserWarning, match="evaluation_agent uses") as caught:
             FAQGenerationConfig(
-                **self._faq_config("anthropic/claude-sonnet-4.5", "claude-sonnet-5")
+                **self._faq_config("anthropic/claude-sonnet-4.5", "claude-sonnet-5-5")
             )
 
         # Both ids, so a maintainer can find the config line and knows what it bills.
         message = str(caught[0].message)
         assert "anthropic/claude-sonnet-4.5" in message
-        assert "claude-sonnet-5" in message
+        assert "claude-sonnet-5-5" in message
 
     def test_legacy_id_for_the_cheap_model_is_not_warned_about(self) -> None:
         """The mirror case: a legacy Haiku id is the recommended setup."""
@@ -2107,7 +2107,9 @@ class TestFAQAgentRoleWarning:
 
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
-            FAQGenerationConfig(**self._faq_config("anthropic/claude-haiku-4.5", "claude-sonnet-5"))
+            FAQGenerationConfig(
+                **self._faq_config("anthropic/claude-haiku-4.5", "claude-sonnet-5-5")
+            )
 
     def test_unresolvable_model_is_warned_about(self) -> None:
         """A model the platform will not serve should surface at config load.
@@ -2129,7 +2131,7 @@ class TestFAQAgentRoleWarning:
 class TestFAQTemperatureWarning:
     """A temperature the API never sees should not pass in silence.
 
-    ``claude-sonnet-5`` accepts only its default temperature, so
+    ``claude-sonnet-5-5`` accepts only its default temperature, so
     ``create_anthropic_llm`` drops the field instead of sending a value that
     would 400. A community that set 0.0 for deterministic scoring is entitled
     to hear that it stopped applying.
@@ -2141,7 +2143,7 @@ class TestFAQTemperatureWarning:
         with pytest.warns(UserWarning, match="summary_agent.temperature=0.4 is ignored"):
             FAQGenerationConfig(
                 evaluation_agent={"model": "claude-haiku-4-5"},
-                summary_agent={"model": "claude-sonnet-5", "temperature": 0.4},
+                summary_agent={"model": "claude-sonnet-5-5", "temperature": 0.4},
             )
 
     def test_temperature_behind_a_legacy_id_is_warned_about(self) -> None:
@@ -2182,7 +2184,7 @@ class TestFAQTemperatureWarning:
     def test_the_fields_own_default_is_not_warned_about(self) -> None:
         """Only a temperature the community actually wrote is worth a warning.
 
-        AgentConfig.temperature defaults to 0.1, which claude-sonnet-5 also
+        AgentConfig.temperature defaults to 0.1, which claude-sonnet-5-5 also
         ignores. Warning about it would fire on every config that names the
         model and sets nothing, which is the recommended summary_agent.
         """
@@ -2192,7 +2194,7 @@ class TestFAQTemperatureWarning:
             warnings.simplefilter("error", UserWarning)
             config = FAQGenerationConfig(
                 evaluation_agent={"model": "claude-haiku-4-5"},
-                summary_agent={"model": "claude-sonnet-5"},
+                summary_agent={"model": "claude-sonnet-5-5"},
             )
 
         assert config.summary_agent.temperature == 0.1

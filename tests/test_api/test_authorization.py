@@ -454,7 +454,7 @@ class TestSelectModelAnthropic:
     def test_uses_platform_default_when_no_community_model(self, monkeypatch):
         """Falls back to the platform default when community has no default_model."""
         settings = get_settings()
-        monkeypatch.setattr(settings, "default_model", "claude-sonnet-5")
+        monkeypatch.setattr(settings, "default_model", "claude-sonnet-5-5")
         community_info = AssistantInfo(
             id="test-no-model",
             name="Test Community",
@@ -464,7 +464,7 @@ class TestSelectModelAnthropic:
 
         model, provider = _select_model(community_info, None, provider="anthropic", has_byok=False)
 
-        assert model == "claude-sonnet-5"
+        assert model == "claude-sonnet-5-5"
         assert provider is None
 
     def test_unoffered_model_rejected_with_400_naming_offered_models(self):
@@ -517,7 +517,7 @@ class TestSelectModelAnthropic:
                 id="legacy-test-2",
                 name="Legacy Test 2",
                 description="x",
-                default_model="claude-sonnet-5",
+                default_model="claude-sonnet-5-5",
                 default_model_provider="Cerebras",
             )
         info = AssistantInfo(
@@ -529,7 +529,7 @@ class TestSelectModelAnthropic:
 
         model, provider = _select_model(info, None, provider="anthropic", has_byok=False)
 
-        assert model == "claude-sonnet-5"
+        assert model == "claude-sonnet-5-5"
         assert provider is None
 
 
@@ -602,10 +602,10 @@ class TestSelectModelOpenRouter:
         )
 
         model, _provider = _select_model(
-            community_info, "claude-sonnet-5", provider="openrouter", has_byok=True
+            community_info, "claude-sonnet-5-5", provider="openrouter", has_byok=True
         )
 
-        assert model == OPENROUTER_MODEL_IDS["claude-sonnet-5"]
+        assert model == OPENROUTER_MODEL_IDS["claude-sonnet-5-5"]
 
     def test_uses_community_default_model(self, monkeypatch):
         """Should use community default_model when configured."""
@@ -700,7 +700,7 @@ class TestSelectModelOpenRouter:
 
         model, provider = _select_model(community_info, None, provider="openrouter", has_byok=True)
 
-        assert model == OPENROUTER_MODEL_IDS["claude-sonnet-5"]
+        assert model == OPENROUTER_MODEL_IDS["claude-sonnet-5-5"]
         assert model != OPENROUTER_DEFAULT_MODEL
         assert provider is None
 

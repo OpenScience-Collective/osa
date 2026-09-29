@@ -479,7 +479,7 @@ faq_generation:
     enable_caching: true     # Prompt caching enabled for cost reduction
 
   # Summary Agent: Creates FAQ entries (100s of calls after filtering, optimized for quality)
-  # Model: Claude Haiku 4.5. Sonnet 5 would be the quality upgrade, but it
+  # Model: Claude Haiku 4.5. Sonnet 5.5 would be the quality upgrade, but it
   # rejects `temperature`, which would silently discard the 0.0/0.1 split
   # these two agents rely on.
   summary_agent:

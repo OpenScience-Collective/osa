@@ -5,7 +5,7 @@ id: nemar
 name: NEMAR (NeuroElectroMagnetic Archive)
 description: BIDS-formatted EEG, MEG, and iEEG datasets, deposited to NEMAR or imported from OpenNeuro
 status: available
-default_model: claude-haiku-4-5
+default_model: claude-sonnet-5-5
 
 # External links for dashboard and discovery
 links:

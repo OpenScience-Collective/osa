@@ -20,7 +20,7 @@ from pathlib import Path
 
 from src.api import security
 from src.core.logging import SecureFormatter
-from src.core.services.anthropic_llm import OFFERED_MODELS
+from src.core.services.anthropic_llm import MODEL_ALIASES, OFFERED_MODELS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WIDGET_PATH = REPO_ROOT / "frontend" / "osa-chat-widget.js"
@@ -98,6 +98,38 @@ class TestDefaultModelsMatchesOfferedModels:
     def test_default_models_matches_offered_models(self) -> None:
         widget_models = _extract_default_models(_widget_source())
         assert widget_models == OFFERED_MODELS
+
+
+def _extract_retired_model_ids(widget_source: str) -> dict[str, str]:
+    """Parse the widget's ``RETIRED_MODEL_IDS`` map into an old-id -> new-id dict."""
+    match = re.search(r"const RETIRED_MODEL_IDS = \{(.*?)\};", widget_source, re.DOTALL)
+    assert match, "Could not find RETIRED_MODEL_IDS in osa-chat-widget.js"
+    entries = re.findall(r"'([^']+)'\s*:\s*'([^']+)'", match.group(1))
+    assert entries, "RETIRED_MODEL_IDS parsed to zero entries"
+    return dict(entries)
+
+
+class TestRetiredModelIdsMatchBackendAliases:
+    """A saved widget setting naming a retired model is moved to its replacement.
+
+    The backend keeps resolving a retired id through MODEL_ALIASES, but the
+    settings dropdown lists only offered models, so a stale saved id would
+    show as "Custom". RETIRED_MODEL_IDS is the widget's own copy of those
+    aliases, and a wrong target would move users to a model the backend does
+    not resolve the same way.
+    """
+
+    def test_every_retired_id_maps_where_the_backend_resolves_it(self) -> None:
+        for retired, replacement in _extract_retired_model_ids(_widget_source()).items():
+            assert MODEL_ALIASES[retired] == replacement
+
+    def test_every_replacement_is_offered(self) -> None:
+        for replacement in _extract_retired_model_ids(_widget_source()).values():
+            assert replacement in OFFERED_MODELS
+
+    def test_no_retired_id_is_still_offered(self) -> None:
+        for retired in _extract_retired_model_ids(_widget_source()):
+            assert retired not in OFFERED_MODELS
 
 
 class TestKeyPatternsMatchBackendRedaction:

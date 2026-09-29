@@ -1126,7 +1126,7 @@ class AgentConfig(BaseModel):
 
     FAQ generation runs on the Claude Platform on AWS, so this must resolve
     through ``MODEL_ALIASES`` to an entry in ``OFFERED_MODELS``
-    (``claude-haiku-4-5`` or ``claude-sonnet-5``). Legacy OpenRouter-style ids
+    (``claude-haiku-4-5`` or ``claude-sonnet-5-5``). Legacy OpenRouter-style ids
     such as "anthropic/claude-haiku-4.5" still resolve; anything else raises
     at run time when the agent is built.
     """
@@ -1146,7 +1146,7 @@ class AgentConfig(BaseModel):
     """Sampling temperature for model responses.
 
     Only honored on models that still accept sampling parameters
-    (``claude-haiku-4-5``). ``claude-sonnet-5`` rejects ``temperature``, so it
+    (``claude-haiku-4-5``). ``claude-sonnet-5-5`` rejects ``temperature``, so it
     is not forwarded there; see ``SAMPLING_MODELS`` in
     src/core/services/anthropic_models.py. Setting one anyway is a warning at
     config load, not an error, so a community can switch models without its
@@ -1277,7 +1277,7 @@ class FAQGenerationConfig(BaseModel):
         Every check runs against the model id ``normalize_model`` resolves, not
         the literal string, so a config still carrying a legacy OpenRouter-style
         id ("anthropic/claude-sonnet-4.5") is judged as the model it will
-        actually bill (``claude-sonnet-5``).
+        actually bill (``claude-sonnet-5-5``).
 
         Three things are worth saying at config load, all as warnings rather
         than errors so that a config keeps parsing (this schema backs the whole
@@ -1295,7 +1295,7 @@ class FAQGenerationConfig(BaseModel):
         - A ``temperature`` on a model that ignores it, which is otherwise
           dropped silently at request time.
         """
-        expensive = "claude-sonnet-5"
+        expensive = "claude-sonnet-5-5"
 
         for role, agent in (
             ("evaluation_agent", self.evaluation_agent),
@@ -1933,7 +1933,7 @@ class CommunityConfig(BaseModel):
 
     If specified, overrides the platform-level default_model for this community.
     Must resolve through ``MODEL_ALIASES`` to an entry in ``OFFERED_MODELS``
-    (``claude-haiku-4-5`` or ``claude-sonnet-5``); legacy OpenRouter-style ids
+    (``claude-haiku-4-5`` or ``claude-sonnet-5-5``); legacy OpenRouter-style ids
     such as "anthropic/claude-haiku-4.5" still resolve.
 
     Example:

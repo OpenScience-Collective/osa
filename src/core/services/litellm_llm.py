@@ -57,7 +57,7 @@ DEFAULT_PROVIDER = "Cerebras"
 # anthropic_llm.OFFERED_MODELS so adding a model cannot silently skip this.
 OPENROUTER_MODEL_IDS: dict[str, str] = {
     "claude-haiku-4-5": "anthropic/claude-haiku-4.5",
-    "claude-sonnet-5": "anthropic/claude-sonnet-5",
+    "claude-sonnet-5-5": "anthropic/claude-sonnet-5.5",
 }
 
 
