@@ -116,6 +116,13 @@
     { value: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5' }
   ];
 
+  // Models the backend no longer offers but still resolves (MODEL_ALIASES in
+  // src/core/services/anthropic_models.py). A saved setting naming one is moved to
+  // the model that replaced it, so the settings dropdown shows a real choice
+  // instead of "Custom". tests/test_frontend/test_widget_drift.py keeps this in
+  // step with the backend's aliases.
+  const RETIRED_MODEL_IDS = { 'claude-sonnet-5': 'claude-sonnet-5-5' };
+
   // Models to show in the settings dropdown: the live offered_models list
   // from the community config endpoint, falling back to DEFAULT_MODELS
   // until that response arrives.
@@ -4109,6 +4116,9 @@
           queuePendingNotice('Your saved model selection is invalid and was ignored.');
           parsed.model = null;
         }
+      }
+      if (parsed.model && Object.prototype.hasOwnProperty.call(RETIRED_MODEL_IDS, parsed.model)) {
+        parsed.model = RETIRED_MODEL_IDS[parsed.model];
       }
 
       userSettings = {
