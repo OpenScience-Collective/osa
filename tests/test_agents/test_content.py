@@ -14,6 +14,8 @@ import json
 import logging
 from pathlib import Path
 
+import pytest
+
 from src.agents.content import (
     CitationAssembler,
     CitationMark,
@@ -175,6 +177,24 @@ class TestClassifyContentBlocks:
         """
         content = [{"type": "text"}, {"type": "text", "text": "ok"}]
         assert classify_content_blocks(content) == [("text", "ok", [])]
+        assert "unrecognized content block type" not in caplog.text
+
+    @pytest.mark.parametrize("reasoning_type", ["reasoning_content", "reasoning"])
+    def test_bedrock_reasoning_is_a_content_free_thinking_signal(self, caplog, reasoning_type):
+        """GPT-6 Luna and gpt-oss-120b return reasoning as reasoning_content blocks.
+
+        They are classified like Claude's thinking: the client learns the model is
+        working, never what it reasoned, and the log is not filled with a warning
+        for every model call.
+        """
+        content = [
+            {"type": reasoning_type, reasoning_type: {"text": "private reasoning"}},
+            {"type": "text", "text": "ok"},
+        ]
+        with caplog.at_level("WARNING"):
+            result = classify_content_blocks(content)
+
+        assert result == [("thinking", "", []), ("text", "ok", [])]
         assert "unrecognized content block type" not in caplog.text
 
     def test_unrecognized_block_type_warns(self, caplog):

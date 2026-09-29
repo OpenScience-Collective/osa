@@ -84,6 +84,13 @@ CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "38528"]
 #   ANTHROPIC_WORKSPACE_ID  - Workspace the key is authorized on (wrkspc_...)
 #                             See ../.env.example for the optional tuning vars.
 #
+# Optional, to offer GPT-6 Luna, Qwen3 Next and gpt-oss-120b (Amazon Bedrock):
+#   AWS_BEARER_TOKEN_BEDROCK - Bedrock API key that pays for those models. Without
+#                             it they are left out of the model menu and a request
+#                             naming one is answered with a 400.
+#   BEDROCK_REGION          - Region the models are called in (default: us-east-2;
+#                             Qwen3 Next is pinned to us-east-1, see anthropic_models.py)
+#
 # Required for full functionality:
 #   GITHUB_TOKEN            - GitHub token for syncing issues/PRs (higher rate limits)
 #

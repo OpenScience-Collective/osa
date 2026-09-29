@@ -8,10 +8,11 @@ Claude Platform) is covered by tests/test_integration/test_anthropic_platform.py
 """
 
 import inspect
+import json
 
 import pytest
 from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
 from pydantic import ValidationError
 
@@ -410,6 +411,15 @@ class TestCreateAnthropicLLMBehavior:
                 settings=settings,
             )
 
+    @pytest.mark.parametrize(
+        "model", ["openai.gpt-6-luna", "us.openai.gpt-6-luna", "qwen.qwen3-next-80b-a3b"]
+    )
+    def test_a_bedrock_model_is_refused_with_a_pointer_to_the_right_factory(
+        self, model: str
+    ) -> None:
+        with pytest.raises(ValueError, match="create_bedrock_llm"):
+            create_anthropic_llm(model=model, settings=_settings())
+
     def test_unsupported_cache_ttl_raises(self) -> None:
         settings = _settings()
         with pytest.raises(ValueError, match="Unsupported prompt cache TTL"):
@@ -675,3 +685,66 @@ class TestCachingChatAnthropicSystemListForm:
         assert "cache_control" not in system_message.content[-1]
         assert first_payload["system"][-1]["cache_control"] == {"type": "ephemeral"}
         assert second_payload["system"][-1]["cache_control"] == {"type": "ephemeral"}
+
+
+class TestReplayingABedrockTurn:
+    """A chat that switched from a Bedrock model to Claude sends the earlier turns back."""
+
+    def _bedrock_turn(self) -> AIMessage:
+        return AIMessage(
+            content=[
+                {"type": "reasoning_content", "reasoning_content": {"text": "hm"}, "index": 0},
+                {
+                    "type": "text",
+                    "text": "HED tags come from a schema.",
+                    "index": 1,
+                    "citations": [
+                        {
+                            "type": "search_result_location",
+                            "source": "https://hedtags.org/schema",
+                            "title": "Schema",
+                            "cited_text": "Tags come from a schema.",
+                            "search_result_index": 0,
+                            "start_block_index": 0,
+                            "end_block_index": 1,
+                        }
+                    ],
+                },
+            ],
+            response_metadata={"model_provider": "bedrock_converse"},
+        )
+
+    def _payload(self, messages: list) -> dict:
+        llm = create_anthropic_llm(model="claude-haiku-4-5", thinking=None, settings=_settings())
+        return llm._get_request_payload(messages)
+
+    def test_reasoning_and_tagged_citations_are_not_sent_to_claude(self) -> None:
+        payload = self._payload(
+            [
+                HumanMessage(content="What are HED tags?"),
+                self._bedrock_turn(),
+                HumanMessage(content="And validation?"),
+            ]
+        )
+        sent = json.dumps(payload["messages"])
+        assert "reasoning_content" not in sent
+        assert "search_result_location" not in sent
+        assert "HED tags come from a schema." in sent
+
+    def test_a_claude_turn_keeps_its_own_citations(self) -> None:
+        claude_turn = self._bedrock_turn().model_copy(
+            update={"response_metadata": {"model_provider": "anthropic"}}
+        )
+        claude_turn.content = [b for b in claude_turn.content if b["type"] == "text"]
+
+        payload = self._payload(
+            [HumanMessage(content="q"), claude_turn, HumanMessage(content="next")]
+        )
+
+        assert "search_result_location" in json.dumps(payload["messages"])
+
+    def test_the_callers_messages_are_left_alone(self) -> None:
+        turn = self._bedrock_turn()
+        self._payload([HumanMessage(content="q"), turn, HumanMessage(content="next")])
+        assert [b["type"] for b in turn.content] == ["reasoning_content", "text"]
+        assert "citations" in turn.content[1]

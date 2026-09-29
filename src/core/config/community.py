@@ -65,7 +65,7 @@ from src.core.limits import (
 # CLI-only install (see src/core/services/anthropic_models.py). Importing
 # anthropic_llm instead would break `osa validate` for anyone without the
 # server extra.
-from src.core.services.anthropic_models import SAMPLING_MODELS, normalize_model
+from src.core.services.anthropic_models import BEDROCK_MODELS, SAMPLING_MODELS, normalize_model
 
 logger = logging.getLogger(__name__)
 
@@ -83,9 +83,16 @@ class SSRFViolationError(ValueError):
 # creator/model-name form (e.g. "anthropic/claude-3.5-sonnet") and a bare
 # first-party id with no provider prefix (e.g. "claude-haiku-4-5", one of
 # src.core.services.anthropic_llm.OFFERED_MODELS) -- the Claude Platform on
-# AWS path has no separate "creator" segment.
-_MODEL_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]+(/[a-zA-Z0-9._-]+)?$")
+# AWS path has no separate "creator" segment. An optional ":variant" ends either
+# form: Bedrock's own invoke id for gpt-oss-120b, "openai.gpt-oss-120b-1:0", is an
+# alias of an offered model, and OpenRouter slugs carry ":free" and the like.
+_MODEL_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]+(/[a-zA-Z0-9._-]+)?(:[a-zA-Z0-9._-]+)?$")
 _MODEL_ID_MAX_LENGTH = 100
+
+
+#: Longest ``model_instructions`` entry, in characters. It rides in every system
+#: prompt for that model, so an essay here is paid for on every request.
+MODEL_INSTRUCTIONS_MAX_LENGTH = 4000
 
 
 def _validate_model_id(v: str | None, field_label: str = "Model identifier") -> str | None:
@@ -1316,6 +1323,17 @@ class FAQGenerationConfig(BaseModel):
             # alias recognizes the config line the warning is about.
             as_written = agent.model if agent.model == resolved else f"{agent.model} ({resolved})"
 
+            if resolved in BEDROCK_MODELS:
+                warnings.warn(
+                    f"{role}.model is {as_written}, which is served from Amazon Bedrock. "
+                    "FAQ generation runs on Claude models only, so it will fail for this "
+                    "community until the model is changed to claude-haiku-4-5 or "
+                    "claude-sonnet-5-5.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                continue
+
             if role == "evaluation_agent" and resolved == expensive:
                 warnings.warn(
                     f"evaluation_agent uses {as_written}, which scores every thread at "
@@ -1929,17 +1947,37 @@ class CommunityConfig(BaseModel):
     """
 
     default_model: str | None = None
-    """Default LLM model for this community: one of the offered Claude models.
+    """Default LLM model for this community: one of the offered models.
 
     If specified, overrides the platform-level default_model for this community.
     Must resolve through ``MODEL_ALIASES`` to an entry in ``OFFERED_MODELS``
-    (``claude-haiku-4-5`` or ``claude-sonnet-5-5``); legacy OpenRouter-style ids
-    such as "anthropic/claude-haiku-4.5" still resolve.
+    (a Claude model such as ``claude-haiku-4-5`` or ``claude-sonnet-5-5``, or one
+    of the Bedrock-served models: ``openai.gpt-6-luna``, ``qwen.qwen3-next-80b-a3b``,
+    ``openai.gpt-oss-120b``); legacy OpenRouter-style ids such as
+    "anthropic/claude-haiku-4.5" still resolve.
 
     Example:
         default_model: "claude-haiku-4-5"
 
     If not specified, uses the platform-level default from Settings.
+    """
+
+    model_instructions: dict[str, str] = Field(default_factory=dict)
+    """Extra system-prompt text for particular models, keyed by offered model id.
+
+    Models differ in what they need to be told: GPT-6 Luna and gpt-oss-120b, for
+    example, keep searching unless they are asked to stop after a couple of
+    searches, which the platform already adds for them. Text here is appended
+    after any such built-in note, only on requests that run that model, so a
+    community can tune one model without touching the others.
+
+    Keys are model ids or aliases from ``OFFERED_MODELS`` and are stored under the
+    id they resolve to; an unknown key is an error, not a silent no-op.
+
+    Example:
+        model_instructions:
+          openai.gpt-oss-120b: |
+            Answer in the same language the question was asked in.
     """
 
     default_model_provider: str | None = None
@@ -2142,6 +2180,37 @@ class CommunityConfig(BaseModel):
         """Validate model name format (provider/model-name)."""
         return _validate_model_id(v, field_label="Model name")
 
+    @field_validator("model_instructions")
+    @classmethod
+    def validate_model_instructions(cls, v: dict[str, str]) -> dict[str, str]:
+        """Resolve each key to an offered model id and check the text.
+
+        A misspelled key would otherwise leave the instructions unused with no
+        signal, on the one model the community meant to tune.
+        """
+        resolved: dict[str, str] = {}
+        for key, text in v.items():
+            try:
+                model_id = normalize_model(key)
+            except ValueError as e:
+                raise ValueError(
+                    f"model_instructions key {key!r} is not an offered model: {e}"
+                ) from e
+            if model_id in resolved:
+                raise ValueError(
+                    f"model_instructions names {model_id!r} twice (as {key!r} and by another alias)"
+                )
+            stripped = text.strip()
+            if not stripped:
+                raise ValueError(f"model_instructions for {key!r} is empty")
+            if len(stripped) > MODEL_INSTRUCTIONS_MAX_LENGTH:
+                raise ValueError(
+                    f"model_instructions for {key!r} is too long "
+                    f"({len(stripped)} chars; max {MODEL_INSTRUCTIONS_MAX_LENGTH})"
+                )
+            resolved[model_id] = stripped
+        return resolved
+
     @model_validator(mode="after")
     def validate_default_model_resolvable(self) -> "CommunityConfig":
         """Warn when a bare default_model id won't resolve on either path.
@@ -2163,7 +2232,17 @@ class CommunityConfig(BaseModel):
         if not self.default_model or "/" in self.default_model:
             return self
         try:
-            normalize_model(self.default_model)
+            resolved = normalize_model(self.default_model)
+            if resolved in BEDROCK_MODELS:
+                warnings.warn(
+                    f"default_model={self.default_model!r} is served from Amazon Bedrock. "
+                    "A caller who brings their own Anthropic key and names no model (the "
+                    "CLI, for one), and every request on a deployment with no "
+                    "AWS_BEARER_TOKEN_BEDROCK, will run the deployment's Claude default "
+                    "instead; the error is logged with this community's id.",
+                    UserWarning,
+                    stacklevel=2,
+                )
         except ValueError:
             warnings.warn(
                 f"default_model={self.default_model!r} is not an offered Anthropic "

@@ -32,6 +32,7 @@ from typing import Any
 
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage
 from pydantic import ConfigDict, field_validator
 
 from src.api.config import Settings, get_settings
@@ -42,10 +43,13 @@ from src.core.services.anthropic_endpoints import FIRST_PARTY_BASE_URL
 # MODEL_ALIASES and OFFERED_MODELS are re-exported here because server-side
 # callers have imported them from this module all along.
 from src.core.services.anthropic_models import (
+    BEDROCK_MODEL_PROVIDER,
+    BEDROCK_MODELS,  # noqa: F401
     DEFAULT_MODEL,  # noqa: F401
     MODEL_ALIASES,  # noqa: F401
     OFFERED_MODELS,  # noqa: F401
     SAMPLING_MODELS,
+    is_bedrock_model,
     normalize_model,
 )
 
@@ -176,6 +180,36 @@ def _validate_thinking(thinking: dict[str, Any], model: str, max_tokens: int) ->
         )
 
 
+def strip_bedrock_turns(messages: list[BaseMessage]) -> list[BaseMessage]:
+    """Make the assistant turns a Bedrock model wrote acceptable to Claude.
+
+    A chat can switch models between requests, and the history holds whatever the
+    earlier model produced. Sent to Anthropic as it is, a Bedrock turn's
+    ``reasoning_content`` block is an unknown block type (a 400), and its
+    ``citations`` are indexed against tagged sources rather than Anthropic's own
+    search results. Only the text and the tool calls are kept; the citations'
+    markers were already turned into ``[n]`` in the visible answer.
+
+    The caller's messages are not changed.
+    """
+    cleaned: list[BaseMessage] = []
+    for message in messages:
+        if (
+            isinstance(message, AIMessage)
+            and isinstance(message.content, list)
+            and message.response_metadata.get("model_provider") == BEDROCK_MODEL_PROVIDER
+        ):
+            kept: list[Any] = []
+            for block in message.content:
+                if not isinstance(block, dict) or block.get("type") == "tool_use":
+                    kept.append(block)
+                elif block.get("type") == "text":
+                    kept.append({k: v for k, v in block.items() if k != "citations"})
+            message = message.model_copy(update={"content": kept})
+        cleaned.append(message)
+    return cleaned
+
+
 class _Default:
     """Sentinel distinguishing "use the per-model default" from explicit None.
 
@@ -241,14 +275,22 @@ def create_anthropic_llm(
         instance configured for the Claude Messages API.
 
     Raises:
-        ValueError: If the model is not offered, the cache TTL is not
-            supported, or the thinking configuration is not valid for the
-            model.
+        ValueError: If the model is not offered, is served from Amazon Bedrock
+            rather than by Anthropic (see ``create_bedrock_llm``), the cache
+            TTL is not supported, or the thinking configuration is not valid
+            for the model.
         RuntimeError: If server mode is used without ANTHROPIC_API_KEY set,
             or if ANTHROPIC_BASE_URL is set without ANTHROPIC_WORKSPACE_ID.
     """
     resolved_settings = settings or get_settings()
     resolved_model = normalize_model(model)
+    if is_bedrock_model(resolved_model):
+        # Sending "openai.gpt-6-luna" to the Messages API would fail as an opaque
+        # unknown-model error, far from the caller that picked the wrong factory.
+        raise ValueError(
+            f"{resolved_model} is served from Amazon Bedrock, not by Anthropic; "
+            "build it with create_bedrock_llm"
+        )
 
     resolved_max_tokens = (
         max_tokens if max_tokens is not None else resolved_settings.anthropic_max_output_tokens
@@ -444,6 +486,7 @@ class CachingChatAnthropic(ChatAnthropic):
         """
         cache_marker = self._cache_control_marker()
         kwargs.setdefault("cache_control", cache_marker)
+        input_ = strip_bedrock_turns(self._convert_input(input_).to_messages())
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
 
         if not self._conversation_cache_control_landed(payload):

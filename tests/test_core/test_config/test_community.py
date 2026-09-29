@@ -24,6 +24,7 @@ from src.core.config.community import (
     MAX_CONFIGURED_CLIENT_TOOLS,
     MAX_IMPORT_BEFORE_SEAL,
     MAX_PRELUDE_CHARS,
+    MODEL_INSTRUCTIONS_MAX_LENGTH,
     SEALED_IMPORT_ROOTS,
     BudgetConfig,
     CitationConfig,
@@ -2070,6 +2071,18 @@ class TestFAQAgentRoleWarning:
             warnings.simplefilter("error", UserWarning)
             FAQGenerationConfig(**self._faq_config("claude-haiku-4-5", "claude-sonnet-5-5"))
 
+    @pytest.mark.parametrize("role", ["evaluation_agent", "summary_agent"])
+    def test_a_bedrock_model_is_warned_about_because_faq_runs_on_claude_only(
+        self, role: str
+    ) -> None:
+        from src.core.config.community import FAQGenerationConfig
+
+        config = self._faq_config("claude-haiku-4-5", "claude-haiku-4-5")
+        config[role] = {"model": "openai.gpt-oss-120b"}
+
+        with pytest.warns(UserWarning, match=rf"{role}\.model is openai\.gpt-oss-120b"):
+            FAQGenerationConfig(**config)
+
     def test_provider_field_still_loads_for_backward_compatibility(self) -> None:
         """An existing config.yaml carrying a stale provider hint must not fail
         to load; faq_summarizer logs that it is ignored instead."""
@@ -2962,3 +2975,72 @@ class TestCommunityConfigCapsule:
             id="test", name="Test", description="Test", widget=WidgetConfig(launcher="bubble")
         )
         assert config.notebook is None
+
+
+class TestModelInstructions:
+    """``model_instructions``: extra system-prompt text for particular models."""
+
+    def _config(self, **instructions: str) -> CommunityConfig:
+        return CommunityConfig(
+            id="instr-test", name="Instructions", description="x", model_instructions=instructions
+        )
+
+    def test_defaults_to_none(self) -> None:
+        assert self._config().model_instructions == {}
+
+    def test_keys_are_stored_under_the_id_they_resolve_to(self) -> None:
+        config = self._config(**{"us.openai.gpt-6-luna": "  Be brief.  "})
+        assert config.model_instructions == {"openai.gpt-6-luna": "Be brief."}
+
+    def test_a_claude_model_can_be_tuned_too(self) -> None:
+        config = self._config(**{"claude-sonnet-5": "Be thorough."})
+        assert config.model_instructions == {"claude-sonnet-5-5": "Be thorough."}
+
+    def test_an_unknown_model_is_an_error_not_a_silent_no_op(self) -> None:
+        with pytest.raises(ValidationError, match="not an offered model"):
+            self._config(**{"openai.gpt-oss-120": "A typo in the id."})
+
+    def test_two_names_for_one_model_are_an_error(self) -> None:
+        with pytest.raises(ValidationError, match="twice"):
+            self._config(**{"openai.gpt-6-luna": "One.", "us.openai.gpt-6-luna": "Two."})
+
+    def test_empty_text_is_an_error(self) -> None:
+        with pytest.raises(ValidationError, match="empty"):
+            self._config(**{"openai.gpt-6-luna": "   "})
+
+    def test_text_beyond_the_limit_is_an_error(self) -> None:
+        with pytest.raises(ValidationError, match="too long"):
+            self._config(**{"openai.gpt-6-luna": "x" * (MODEL_INSTRUCTIONS_MAX_LENGTH + 1)})
+
+    def test_text_at_the_limit_is_accepted(self) -> None:
+        config = self._config(**{"openai.gpt-6-luna": "x" * MODEL_INSTRUCTIONS_MAX_LENGTH})
+        assert len(config.model_instructions["openai.gpt-6-luna"]) == MODEL_INSTRUCTIONS_MAX_LENGTH
+
+    def test_a_bedrock_model_is_a_valid_default_model_that_warns_of_its_fallback(self) -> None:
+        with pytest.warns(UserWarning, match="served from Amazon Bedrock") as caught:
+            config = CommunityConfig(
+                id="d", name="D", description="x", default_model="openai.gpt-6-luna"
+            )
+        assert config.default_model == "openai.gpt-6-luna"
+        assert "Claude default" in str(caught[0].message)
+
+    def test_a_claude_default_does_not_warn(self) -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            CommunityConfig(id="d", name="D", description="x", default_model="claude-haiku-4-5")
+
+    @pytest.mark.parametrize(
+        "model",
+        ["openai.gpt-oss-120b-1:0", "openai/gpt-oss-120b:free", "qwen/qwen3-next-80b-a3b:nitro"],
+    )
+    def test_a_model_id_may_end_in_a_variant(self, model: str) -> None:
+        """Bedrock's invoke id for gpt-oss-120b is an alias of an offered model."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            config = CommunityConfig(id="d", name="D", description="x", default_model=model)
+        assert config.default_model == model
+
+    @pytest.mark.parametrize("model", ["a:b:c", "model:", ":free", "bad model", "a/b/c:d"])
+    def test_other_shapes_are_still_rejected(self, model: str) -> None:
+        with pytest.raises(ValidationError, match="Invalid model name"):
+            CommunityConfig(id="d", name="D", description="x", default_model=model)

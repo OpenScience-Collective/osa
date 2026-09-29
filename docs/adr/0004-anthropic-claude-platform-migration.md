@@ -5,7 +5,9 @@ Date: 2026-09-19 (decision made 2026, epic #360 / PR #395 and phases
 
 ## Status
 
-Accepted
+Accepted.
+Amended by [0014](0014-bedrock-models-alongside-claude.md): three non-Anthropic models are now also offered, served from Amazon Bedrock.
+The decision below is unchanged for Claude.
 
 ## Context
 

@@ -83,6 +83,11 @@ server = [
     # revision does not exist in 1.x, and langchain-mcp-adapters -- the obvious
     # alternative -- pins mcp<2.0.0, which is why this wraps the SDK directly.
     "mcp>=2.2.0,<3.0.0",
+    # Amazon Bedrock chat models (src/core/services/bedrock_llm.py). Capped below 2.x
+    # because that module relies on botocore internals a major release may change:
+    # the bearer-token client and the Converse usage arithmetic (tests/test_core/
+    # test_bedrock_llm.py asserts both).
+    "langchain-aws>=1.0,<2.0",
 ]
 
 observability = [

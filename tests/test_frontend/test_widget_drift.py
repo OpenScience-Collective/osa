@@ -21,6 +21,7 @@ from pathlib import Path
 from src.api import security
 from src.core.logging import SecureFormatter
 from src.core.services.anthropic_llm import MODEL_ALIASES, OFFERED_MODELS
+from src.core.services.anthropic_models import BEDROCK_MODELS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WIDGET_PATH = REPO_ROOT / "frontend" / "osa-chat-widget.js"
@@ -98,6 +99,24 @@ class TestDefaultModelsMatchesOfferedModels:
     def test_default_models_matches_offered_models(self) -> None:
         widget_models = _extract_default_models(_widget_source())
         assert widget_models == OFFERED_MODELS
+
+
+def _extract_platform_only_models(widget_source: str) -> set[str]:
+    """Parse the widget's ``PLATFORM_ONLY_MODELS`` array into a set of ids."""
+    match = re.search(r"const PLATFORM_ONLY_MODELS = \[(.*?)\];", widget_source, re.DOTALL)
+    assert match, "Could not find PLATFORM_ONLY_MODELS in osa-chat-widget.js"
+    entries = re.findall(r"'([^']+)'", match.group(1))
+    assert entries, "PLATFORM_ONLY_MODELS parsed to zero entries"
+    return set(entries)
+
+
+class TestPlatformOnlyModelsMatchBackend:
+    """The widget's fallback for "which models refuse the reader's own Anthropic key"
+    must be the backend's Bedrock-served models, or the fallback menu offers pairings
+    the server answers with a 403."""
+
+    def test_platform_only_models_are_the_bedrock_models(self) -> None:
+        assert _extract_platform_only_models(_widget_source()) == set(BEDROCK_MODELS)
 
 
 def _extract_retired_model_ids(widget_source: str) -> dict[str, str]:

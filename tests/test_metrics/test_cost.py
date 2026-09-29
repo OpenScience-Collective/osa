@@ -1,5 +1,8 @@
 """Tests for cost estimation."""
 
+import pytest
+
+from src.core.services.anthropic_models import BEDROCK_MODELS
 from src.metrics.cost import (
     CACHE_READ_MULTIPLIER,
     CACHE_WRITE_MULTIPLIER,
@@ -171,3 +174,33 @@ class TestEstimateCostCacheAware:
             + 300 * rate.input_per_1m * CACHE_READ_MULTIPLIER
         ) / 1_000_000
         assert cost == round(expected, 6)
+
+
+class TestBedrockModelsAreCheaperThanTheDefault:
+    """The Bedrock-served models exist to be cheaper than Claude Haiku 4.5.
+
+    The point of offering them is a cheaper option for small deployments, so a
+    price change or a newly added model that cost more than the default would
+    defeat the reason they are offered. Queried from the registry, not listed.
+    """
+
+    def test_every_bedrock_model_is_priced(self):
+        missing = set(BEDROCK_MODELS) - set(MODEL_PRICING)
+        assert not missing, f"Bedrock models missing from MODEL_PRICING: {missing}"
+
+    def test_no_bedrock_model_costs_more_than_haiku(self):
+        haiku = MODEL_PRICING["claude-haiku-4-5"]
+        for model_id in BEDROCK_MODELS:
+            rate = MODEL_PRICING[model_id]
+            assert rate.input_per_1m <= haiku.input_per_1m, model_id
+            assert rate.output_per_1m <= haiku.output_per_1m, model_id
+
+    def test_automatic_caching_uses_the_platform_cache_multipliers(self):
+        """Luna bills cache writes at 1.25x and reads at 0.1x its input rate.
+
+        The Bedrock model card lists $0.1375 to write and $0.011 to read, against
+        $0.11 for fresh input, which are the multipliers estimate_cost applies.
+        """
+        rate = MODEL_PRICING["openai.gpt-6-luna"]
+        assert rate.input_per_1m * CACHE_WRITE_MULTIPLIER == pytest.approx(0.1375)
+        assert rate.input_per_1m * CACHE_READ_MULTIPLIER == pytest.approx(0.011)
