@@ -58,6 +58,10 @@ DEFAULT_PROVIDER = "Cerebras"
 OPENROUTER_MODEL_IDS: dict[str, str] = {
     "claude-haiku-4-5": "anthropic/claude-haiku-4.5",
     "claude-sonnet-5-5": "anthropic/claude-sonnet-5.5",
+    # The Bedrock-served models, for a caller who brings an OpenRouter key.
+    "openai.gpt-6-luna": "openai/gpt-6-luna",
+    "openai.gpt-oss-120b": "openai/gpt-oss-120b",
+    "qwen.qwen3-next-80b-a3b": "qwen/qwen3-next-80b-a3b-instruct",
 }
 
 

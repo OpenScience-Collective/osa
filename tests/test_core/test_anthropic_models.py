@@ -13,11 +13,13 @@ import pytest
 
 from src.core.services import anthropic_llm, anthropic_models
 from src.core.services.anthropic_models import (
+    BEDROCK_MODELS,
     IMAGE_MEDIA_TYPES,
     MODEL_ALIASES,
     OFFERED_MODELS,
     SAMPLING_MODELS,
     accepts_temperature,
+    is_bedrock_model,
     normalize_model,
 )
 
@@ -132,3 +134,53 @@ class TestSonnetAliases:
     def test_every_alias_resolves_to_an_offered_model(self) -> None:
         """An alias to a model nobody can select would fail at request time."""
         assert set(MODEL_ALIASES.values()) <= set(OFFERED_MODELS)
+
+
+class TestBedrockModels:
+    """The models served from Amazon Bedrock are offered like any other."""
+
+    def test_every_bedrock_model_is_offered_with_its_label(self) -> None:
+        for model_id, spec in BEDROCK_MODELS.items():
+            assert OFFERED_MODELS[model_id] == spec.label
+
+    def test_no_bedrock_id_collides_with_a_claude_id(self) -> None:
+        assert all(not model_id.startswith("claude-") for model_id in BEDROCK_MODELS)
+
+    @pytest.mark.parametrize("model_id", sorted(BEDROCK_MODELS))
+    def test_a_bedrock_model_normalizes_to_itself(self, model_id: str) -> None:
+        assert normalize_model(model_id) == model_id
+        assert is_bedrock_model(model_id) is True
+
+    def test_claude_models_are_not_bedrock_models(self) -> None:
+        assert is_bedrock_model("claude-haiku-4-5") is False
+        assert is_bedrock_model("claude-sonnet-5") is False
+        assert is_bedrock_model(None) is False
+
+    def test_an_unoffered_model_is_not_a_bedrock_model(self) -> None:
+        assert is_bedrock_model("openai/gpt-5") is False
+
+    def test_bedrocks_own_ids_resolve(self) -> None:
+        """A console-copied inference profile or versioned id names the same model."""
+        assert normalize_model("us.openai.gpt-6-luna") == "openai.gpt-6-luna"
+        assert normalize_model("openai.gpt-oss-120b-1:0") == "openai.gpt-oss-120b"
+
+    def test_every_invoke_id_is_distinct(self) -> None:
+        invoke_ids = [spec.invoke_id for spec in BEDROCK_MODELS.values()]
+        assert len(set(invoke_ids)) == len(invoke_ids)
+
+    def test_luna_runs_at_maximum_effort_in_the_us_profile(self) -> None:
+        """Ohio calls GPT-6 Luna through the us. profile; global. is denied by SCP."""
+        luna = BEDROCK_MODELS["openai.gpt-6-luna"]
+        assert luna.invoke_id.startswith("us.")
+        assert luna.extra_request_fields == {"reasoning": {"effort": "max"}}
+
+    def test_only_automatic_caching_is_claimed_for_luna(self) -> None:
+        """Bedrock rejects cache points for all three, so only Luna's own caching exists."""
+        assert BEDROCK_MODELS["openai.gpt-6-luna"].caching == "automatic"
+        others = {m for m, spec in BEDROCK_MODELS.items() if spec.caching != "automatic"}
+        assert others == set(BEDROCK_MODELS) - {"openai.gpt-6-luna"}
+
+    def test_luna_takes_no_temperature_and_the_others_do(self) -> None:
+        assert accepts_temperature("openai.gpt-6-luna") is False
+        assert accepts_temperature("openai.gpt-oss-120b") is True
+        assert accepts_temperature("qwen.qwen3-next-80b-a3b") is True

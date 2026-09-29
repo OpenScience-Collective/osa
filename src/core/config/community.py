@@ -65,7 +65,7 @@ from src.core.limits import (
 # CLI-only install (see src/core/services/anthropic_models.py). Importing
 # anthropic_llm instead would break `osa validate` for anyone without the
 # server extra.
-from src.core.services.anthropic_models import SAMPLING_MODELS, normalize_model
+from src.core.services.anthropic_models import BEDROCK_MODELS, SAMPLING_MODELS, normalize_model
 
 logger = logging.getLogger(__name__)
 
@@ -1315,6 +1315,17 @@ class FAQGenerationConfig(BaseModel):
             # Name both ids when they differ, so a maintainer who wrote an
             # alias recognizes the config line the warning is about.
             as_written = agent.model if agent.model == resolved else f"{agent.model} ({resolved})"
+
+            if resolved in BEDROCK_MODELS:
+                warnings.warn(
+                    f"{role}.model is {as_written}, which is served from Amazon Bedrock. "
+                    "FAQ generation runs on Claude models only, so it will fail for this "
+                    "community until the model is changed to claude-haiku-4-5 or "
+                    "claude-sonnet-5-5.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                continue
 
             if role == "evaluation_agent" and resolved == expensive:
                 warnings.warn(
