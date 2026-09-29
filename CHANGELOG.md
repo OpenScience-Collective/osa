@@ -45,13 +45,16 @@ the version being released and start a new `[Unreleased]` section above it.
   Each model keeps its own predetermined levels, and a level it does not accept is clamped, never sent: gpt-oss-120b runs low to high, and Claude Sonnet is never run above high on any platform, whatever a community asks.
   Claude Haiku 4.5 (token-budget thinking) and Qwen3 Next ignore the key.
   Unset, a model runs at its own default on every provider: high for GPT-6 Luna and gpt-oss-120b, the Claude Platform's own for Sonnet.
+  On the Claude Platform, Sonnet's `none` is no up-front thinking at effort low.
   A level the community's own `default_model` cannot honor is a warning when the config loads.
   NWB and NEMAR set `high`.
-  Through the real NWB graph, Luna's median time to first text was 2.5 s at none, 5.2 s at medium and high, 10.6 s at xhigh and 48 s at max, and at xhigh and max it often skipped the documentation search, so the answer had no citations.
+  Through the real NWB graph, Luna's median time to first text was 2.5 s at none, 5.2 s at medium and high, 10.6 s at xhigh and 48 s at max, and at xhigh and max it skipped the documentation search in the median of three runs on one question, so the answer had no citations.
   Bedrock's request fields were measured against the live service; the Anthropic and OpenRouter shapes are tested against the requests the clients build, not yet against those services (no keys on the development machine).
 
 ### Changed
 
+- **A caller's own OpenRouter key now runs GPT-6 Luna and gpt-oss-120b at high reasoning effort** (issue #545): OpenRouter's own default for both is medium, and OSA sends its default (high) on every provider so a model behaves the same whichever key paid for it.
+  More reasoning means a longer wait before the first word; a community can set `reasoning_effort` to change it.
 - **GPT-6 Luna runs at high reasoning effort, not maximum** (issue #543): at maximum, a tool-using turn took 15 to 50 seconds before its first word, all of it the model's own silent reasoning.
   On real community questions at high, NWB answered in 7 to 9 seconds against about 27 at maximum, with one or two searches, cited sources and no tag leaks.
   The accepted levels, measured on Bedrock, are none, low, medium, high, xhigh and max (`minimal` is rejected).
