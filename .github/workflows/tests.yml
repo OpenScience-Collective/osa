@@ -264,12 +264,22 @@ jobs:
       - name: Run the paced streaming tests on a real DOM
         run: bun frontend/test-widget-paced-streaming.js
 
+      - name: Run the activity status tests on a real DOM
+        run: bun frontend/test-widget-activity-status.js
+
       # The same reveal in real Chrome, where timers, layout and prefers-reduced-motion
       # are the browser's own: a burst shaped like a reasoning model's is shown at a
       # reading pace, the code block whole, and at once with reduced motion emulated.
       # Its own server, so no backend and no network; the runner ships Chrome.
       - name: Check the paced reveal in headless Chrome
         run: bun frontend/browser-harness/paced-reveal-check.mjs
+
+      # What a pending reply says it is doing (#538), in real Chrome on every painted
+      # frame: the labels in order, the wait's length after five real seconds, a
+      # status under text that never makes a bubble of its own, and nothing left
+      # ticking after. Its own server, so no backend and no network.
+      - name: Check the activity status in headless Chrome
+        run: bun frontend/browser-harness/activity-status-check.mjs
 
       # What only a browser can check: Pyodide under a real Content-Security-Policy,
       # the egress guard on a real worker global, and NEMAR's lock overlay loaded by

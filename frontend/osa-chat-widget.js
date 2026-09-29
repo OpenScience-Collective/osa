@@ -1107,6 +1107,13 @@
       .osa-strip-tab.osa-notebook-busy .osa-strip-cue {
         animation: none;
       }
+
+      /* A reply's status line (#538) holds still. Two classes, to outrank the pulse's
+         own rule, which comes later in this sheet. */
+      .osa-activity-status .osa-activity-pulse {
+        animation: none;
+        opacity: 0.6;
+      }
     }
 
     .osa-chat-window {
@@ -1789,6 +1796,64 @@
     @keyframes osa-bounce {
       0%, 80%, 100% { transform: scale(0); }
       40% { transform: scale(1); }
+    }
+
+    /* What a pending reply is doing (#538): the loading label, and after a wait long
+       enough to notice, how long it has been. A screen reader hears the label from the
+       status announcer below, never the time, so it is not read out every second. */
+    .osa-loading-status {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+    }
+
+    .osa-status-elapsed {
+      font-size: 11px;
+      color: var(--osa-text-light);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .osa-status-elapsed:empty {
+      display: none;
+    }
+
+    /* On no screen, for a screen reader only: the status announcer (#538). */
+    .osa-sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    /* A reply that already has text says what it is doing on a line of its own under
+       that text, in place of a second loading bubble (#538). */
+    .osa-activity-status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 6px;
+      font-size: 12px;
+      color: var(--osa-text-light);
+    }
+
+    /* Held still under prefers-reduced-motion, in the widget's one reduced-motion block. */
+    .osa-activity-pulse {
+      flex: none;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--osa-text-light);
+      animation: osa-pulse 1.4s infinite ease-in-out;
+    }
+
+    @keyframes osa-pulse {
+      0%, 100% { opacity: 0.25; }
+      50% { opacity: 1; }
     }
 
 
@@ -5007,6 +5072,11 @@
     if (message && runsCode) {
       message.executions = (message.executions || []).concat(executionRecord(request, result));
     }
+    // The result goes back to the model next, which reads it before anything else
+    // happens: said until the continuing stream shows what comes of it (#538). The run
+    // panel stood for the wait while the code ran; the wait for that stream begins.
+    activity = { kind: 'analyze', label: ACTIVITY_ANALYZING, messageIndex };
+    beginWait();
     renderMessages(container);
     return result;
   }
@@ -5680,10 +5750,12 @@
       avatar.appendChild(img);
     }
 
-    // Update loading label if currently loading
+    // Update loading label if currently loading (the generic one reads the title)
     const loadingLabel = container.querySelector('.osa-loading-label');
-    if (loadingLabel) {
-      loadingLabel.textContent = isThinking ? 'Thinking...' : CONFIG.title;
+    const status = statusToShow();
+    if (loadingLabel && status && status.where === 'loading') {
+      announceStatus(container, status);
+      loadingLabel.textContent = status.label;
     }
   }
 
@@ -6344,6 +6416,7 @@
           </div>
         </div>
         <div class="osa-chat-messages"></div>
+        <div class="osa-status-announcer osa-sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
         <div class="osa-suggestions" style="display: none;">
           <span class="osa-suggestions-label">Try asking:</span>
           <div class="osa-suggestions-list"></div>
@@ -6505,6 +6578,266 @@
     return container;
   }
 
+  // What a pending reply is doing (#538), said the way "Thinking..." says it: the tool
+  // it is searching with, the code it is writing, the results it is reading. While no
+  // reply text is on screen that is the loading bubble's label; once the reply has
+  // text, a later activity (text, then a tool call, then more text) is a status line
+  // under that text in the same message, so it never makes a second bubble. After
+  // STATUS_ELAPSED_AFTER_MS the wait's length follows the label. None of this is on a
+  // message, so none of it is saved.
+  //
+  // BEGIN activity-labels. Pure, and evaluated on its own by
+  // tests/test_frontend/test_widget_activity_labels.py, for every tool the registry
+  // builds: nothing between here and END may use the rest of the widget.
+  const ACTIVITY_VERBS = {
+    search: ['search', 'Searching'],
+    find: ['search', 'Searching'],
+    query: ['search', 'Querying'],
+    retrieve: ['search', 'Looking up'],
+    lookup: ['search', 'Looking up'],
+    get: ['search', 'Looking up'],
+    describe: ['search', 'Looking up'],
+    fetch: ['search', 'Fetching'],
+    list: ['search', 'Listing'],
+    read: ['search', 'Reading'],
+    validate: ['work', 'Validating'],
+    check: ['work', 'Checking'],
+    suggest: ['work', 'Suggesting'],
+    render: ['render', 'Rendering'],
+    // Running something is running code only if the name says it is code:
+    // nemar_run_query and execute_sql run a query, and read "Working...".
+    execute: ['run', ''],
+    exec: ['run', ''],
+    run: ['run', ''],
+  };
+  // What makes a name about code: with run or no verb at all, it is code.
+  const ACTIVITY_CODE_WORDS = ['code', 'python', 'script'];
+  // How a word of a tool's name reads in a label; null leaves it out.
+  const ACTIVITY_WORDS = {
+    docs: 'documentation',
+    doc: 'documentation',
+    faq: 'FAQ',
+    recent: 'recent activity',
+    live: null,
+    window: 'recording data',
+    api: 'API',
+    bep: 'BEP',
+    bids: 'BIDS',
+    eeg: 'EEG',
+    eeglab: 'EEGLAB',
+    hed: 'HED',
+    meg: 'MEG',
+    mne: 'MNE',
+    nwb: 'NWB',
+    url: 'URL',
+  };
+  const ACTIVITY_MAX_OBJECT_CHARS = 40;
+  const ACTIVITY_ANALYZING = 'Analyzing results...';
+
+  // What a tool call is doing, read from the tool's name alone, never its arguments
+  // (which can be long, or private): {kind, label}, kind being 'search', 'code',
+  // 'render', 'work' or 'other'. `phase` is 'writing' while the model writes the call
+  // and 'running' once it runs; only code reads differently in the two. The widget's
+  // own community id is left out, since in its widget every tool is about it:
+  // retrieve_nwb_docs reads "Looking up documentation...".
+  function classifyToolActivity(name, phase, communityId) {
+    const has = (table, key) => Object.prototype.hasOwnProperty.call(table, key);
+    const words = typeof name === 'string'
+      ? name.slice(0, 200).replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+      : [];
+    const own = typeof communityId === 'string' ? communityId.toLowerCase() : '';
+    let verb = null;
+    let at = -1;
+    for (let i = 0; i < words.length && verb === null; i++) {
+      if (words[i] === 'look' && words[i + 1] === 'up') {
+        verb = 'lookup';
+        at = i + 1;
+      } else if (has(ACTIVITY_VERBS, words[i])) {
+        verb = words[i];
+        at = i;
+      }
+    }
+    let kind = verb === null ? 'other' : ACTIVITY_VERBS[verb][0];
+    if (kind === 'run' || kind === 'other') {
+      kind = words.some((word) => ACTIVITY_CODE_WORDS.includes(word)) ? 'code' : 'other';
+    }
+    if (kind === 'code') return { kind, label: phase === 'writing' ? 'Writing code...' : 'Running code...' };
+    if (kind === 'render') return { kind, label: 'Rendering...' };
+    if (kind === 'other') return { kind, label: 'Working...' };
+    let object = '';
+    for (const word of words.slice(at + 1)) {
+      if (word === own) continue;
+      const shown = has(ACTIVITY_WORDS, word) ? ACTIVITY_WORDS[word] : word.slice(0, 20);
+      if (!shown) continue;
+      const longer = object ? `${object} ${shown}` : shown;
+      if (longer.length > ACTIVITY_MAX_OBJECT_CHARS) break;
+      object = longer;
+    }
+    const gerund = ACTIVITY_VERBS[verb][1];
+    return { kind, label: object ? `${gerund} ${object}...` : `${gerund}...` };
+  }
+  // END activity-labels
+
+  // The activity of the reply being written, or null: {kind, label, messageIndex}.
+  let activity = null;
+  // Tools started and not yet finished, so a batch reads as analyzed only once its
+  // last tool has ended.
+  let toolsRunning = 0;
+  // When the reader's current wait began (a statusClock time), or null. A wait is one
+  // stretch with nothing new to read. It begins as each stream is asked for: when a
+  // message is sent, and when code run in the page has finished and its result goes
+  // back for the continuing stream (the run panel stood for the wait before that).
+  // It begins again at each chunk of visible text. Nothing else starts it again: a
+  // new label is the same wait, and so is a slow response or a rate-limit pause
+  // before the stream arrives, which the reader waits through all the same.
+  let waitSince = null;
+  let statusTicker = null;
+  let statusContainer = null;
+  // Where the elapsed time is read from: a monotonic clock, so a wall clock set back or
+  // forward mid-wait does not show in it. A variable only so the test hooks can turn
+  // the clock by hand.
+  let statusClock = {
+    now: () => (typeof performance !== 'undefined' && typeof performance.now === 'function'
+      ? performance.now()
+      : Date.now()),
+    every: (fn, ms) => setInterval(fn, ms),
+    cancel: (id) => clearInterval(id),
+  };
+  const STATUS_ELAPSED_AFTER_MS = 5000;
+  const STATUS_TICK_MS = 1000;
+
+  function clearActivity() {
+    activity = null;
+    toolsRunning = 0;
+  }
+
+  // A new wait begins now (see waitSince).
+  function beginWait() {
+    waitSince = statusClock.now();
+  }
+
+  // The reply is now doing `next` ({kind, label} or null), and the page says so.
+  function setActivity(container, next, messageIndex) {
+    const changed = !activity !== !next
+      || (activity && next && (activity.label !== next.label || activity.messageIndex !== messageIndex));
+    activity = next ? { kind: next.kind, label: next.label, messageIndex } : null;
+    if (changed && container) paintStatus(container);
+  }
+
+  // The status the conversation shows, or null. While the reply has no text on screen
+  // (`isLoading`) it is the loading bubble's label: the activity, else "Thinking...",
+  // else the community's title, as before. Once it has text, only an activity is
+  // shown, on a line under that text, and never under a message with no text: a
+  // status must not make a bubble of its own. The tool panel speaks for itself.
+  function statusToShow() {
+    if (toolActivity) return null;
+    if (isLoading) {
+      // The title is the bubble's placeholder, not news: it is shown, and not announced.
+      const said = activity ? activity.label : (isThinking ? 'Thinking...' : null);
+      return { where: 'loading', label: said || CONFIG.title, spoken: Boolean(said) };
+    }
+    if (!activity) return null;
+    const message = messages[activity.messageIndex];
+    if (!message || message.role !== 'assistant' || !hasVisibleText(message.content)) return null;
+    return { where: 'inline', label: activity.label, messageIndex: activity.messageIndex, spoken: true };
+  }
+
+  // Say `status`, what the page shows now (null: no status), to a screen reader. The
+  // status announcer, one polite live region made with the widget and outside the
+  // conversation, so no redraw replaces it, says each new label once and is emptied
+  // when the status ends; the visible label is hidden from a screen reader, which
+  // would otherwise hear it twice.
+  function announceStatus(container, status) {
+    const announcer = container.querySelector('.osa-status-announcer');
+    const spoken = status && status.spoken ? status.label : '';
+    if (announcer && announcer.textContent !== spoken) announcer.textContent = spoken;
+  }
+
+  // The elapsed part: nothing for a wait too short to notice, then whole seconds.
+  function statusElapsedText() {
+    if (waitSince === null) return '';
+    const ms = statusClock.now() - waitSince;
+    return ms >= STATUS_ELAPSED_AFTER_MS ? `${Math.floor(ms / 1000)} s` : '';
+  }
+
+  // The label as shown; a screen reader hears it from the status announcer instead.
+  function statusPartsHtml(labelClass, label) {
+    return `<span class="${escapeHtml(labelClass)}" aria-hidden="true">${escapeHtml(label)}</span>`
+      + `<span class="osa-status-elapsed">${escapeHtml(statusElapsedText())}</span>`;
+  }
+
+  function statusLineHtml(status) {
+    return `<div class="osa-activity-status" data-msg-index="${escapeHtml(String(status.messageIndex))}">`
+      + '<span class="osa-activity-pulse" aria-hidden="true"></span>'
+      + `${statusPartsHtml('osa-activity-label', status.label)}</div>`;
+  }
+
+  function stopStatusTicker() {
+    if (statusTicker !== null) statusClock.cancel(statusTicker);
+    statusTicker = null;
+  }
+
+  // Once a second, the elapsed time is written into the status's own text node. Not a
+  // redraw, which rebuilds the whole conversation.
+  function tickStatus() {
+    const shown = statusContainer ? statusContainer.querySelectorAll('.osa-status-elapsed') : [];
+    if (shown.length === 0) {
+      stopStatusTicker();
+      return;
+    }
+    const text = statusElapsedText();
+    shown.forEach((el) => {
+      if (el.textContent !== text) el.textContent = text;
+    });
+  }
+
+  function syncStatusTicker(container, showing) {
+    if (!showing) {
+      stopStatusTicker();
+      return;
+    }
+    statusContainer = container;
+    if (statusTicker === null) statusTicker = statusClock.every(tickStatus, STATUS_TICK_MS);
+  }
+
+  // Whether the reader is typing in the conversation (a thumbs-down comment), whose
+  // caret a redraw would take away.
+  function readerIsTyping(container) {
+    const typing = document.activeElement;
+    const messagesEl = container.querySelector('.osa-chat-messages');
+    return Boolean(typing && typing.matches && typing.matches('textarea, input')
+      && messagesEl && messagesEl.contains(typing));
+  }
+
+  // Show the status the state calls for: in place when its element is on screen, so
+  // nothing is rebuilt, else with a redraw. The announcer says it either way, even
+  // when the redraw waits for a reader who is typing.
+  function paintStatus(container) {
+    const messagesEl = container.querySelector('.osa-chat-messages');
+    if (!messagesEl) return;
+    const status = statusToShow();
+    announceStatus(container, status);
+    let labelEl = null;
+    if (status && status.where === 'loading') {
+      labelEl = messagesEl.querySelector('.osa-loading .osa-loading-label');
+    } else if (status && status.where === 'inline') {
+      const line = [...messagesEl.querySelectorAll('.osa-activity-status')]
+        .find((el) => el.getAttribute('data-msg-index') === String(status.messageIndex));
+      labelEl = line ? line.querySelector('.osa-activity-label') : null;
+    } else if (!messagesEl.querySelector('.osa-activity-status')) {
+      return; // nothing to show, and nothing shown
+    }
+    if (labelEl) {
+      if (labelEl.textContent !== status.label) labelEl.textContent = status.label;
+      const elapsed = labelEl.parentElement.querySelector('.osa-status-elapsed');
+      if (elapsed) elapsed.textContent = statusElapsedText();
+      syncStatusTicker(container, true);
+      return;
+    }
+    if (readerIsTyping(container)) return;
+    renderMessages(container, { follow: false });
+  }
+
   // Render messages. `follow: false` (a redraw the reader did not ask for, as a stream
   // makes many of) leaves a reader who has scrolled up where they are instead of
   // pulling them back to the bottom.
@@ -6514,6 +6847,9 @@
     const scrolledFrom = messagesEl.scrollTop;
     const awayFromBottom = messagesEl.scrollHeight - messagesEl.clientHeight - scrolledFrom;
     messagesEl.innerHTML = '';
+    // The loading bubble's label, or a line under the reply's text (#538), never both.
+    const status = statusToShow();
+    announceStatus(container, status);
 
     messages.forEach((msg, msgIndex) => {
       // The streaming handler keeps an empty assistant entry so the final
@@ -6523,7 +6859,7 @@
       // A reply that has run code is shown even before it has text: the record
       // of what ran is already part of it.
       const ranCode = Array.isArray(msg.executions) && msg.executions.length > 0;
-      if (isLoading && msg.role === 'assistant' && !msg.content && !ranCode && msgIndex === messages.length - 1) {
+      if (isLoading && msg.role === 'assistant' && !hasVisibleText(msg.content) && !ranCode && msgIndex === messages.length - 1) {
         return;
       }
 
@@ -6603,6 +6939,7 @@
         </div>
         ${msg.role === 'assistant' ? executionsHtml(msg.executions, msgIndex) : ''}
         <div class="osa-message-content">${content}</div>
+        ${status && status.where === 'inline' && status.messageIndex === msgIndex ? statusLineHtml(status) : ''}
         ${sourcesRow}
         ${feedbackRow}
       `;
@@ -6813,9 +7150,8 @@
     } else if (isLoading) {
       const loadingEl = document.createElement('div');
       loadingEl.className = 'osa-loading';
-      const loadingLabelText = isThinking ? 'Thinking...' : CONFIG.title;
       loadingEl.innerHTML = `
-        <span class="osa-loading-label">${escapeHtml(loadingLabelText)}</span>
+        <div class="osa-loading-status">${statusPartsHtml('osa-loading-label', status.label)}</div>
         <div class="osa-loading-dots">
           <span class="osa-loading-dot"></span>
           <span class="osa-loading-dot"></span>
@@ -6828,6 +7164,7 @@
     messagesEl.scrollTop = !follow && awayFromBottom > SCROLL_FOLLOW_SLACK_PX
       ? scrolledFrom
       : messagesEl.scrollHeight;
+    syncStatusTicker(container, status !== null);
   }
 
   // The dataset-page suggestions (#477) for the dataset on screen, in the community's
@@ -6937,6 +7274,15 @@
     }
   }
 
+  // Whether `text` has anything a reader would see (#538). A reply whose text so far
+  // is only whitespace ("\n\n" is a common first chunk before a reasoning model's tool
+  // call) is an empty reply: it stays hidden behind the loading bubble, gets no status
+  // line, and is dropped if it ends that way. One test, used wherever a reply's text
+  // decides whether it is drawn, so no two places disagree about an empty bubble.
+  function hasVisibleText(text) {
+    return typeof text === 'string' && /\S/.test(text);
+  }
+
   // Apply the authoritative completion payload to the active assistant
   // message. Kept separate from the stream loop so the state transition can
   // be tested without depending on a live model or browser network.
@@ -6957,7 +7303,7 @@
     // A reply that ran code is kept even when it ends with no text: what ran,
     // and any figure it drew, is part of the answer the reader asked for.
     const ranCode = Array.isArray(message.executions) && message.executions.length > 0;
-    if (finalContent || ranCode) {
+    if (hasVisibleText(finalContent) || ranCode) {
       messageList[messageIndex] = {
         ...message,
         content: finalContent,
@@ -7211,6 +7557,8 @@
   // SSE Event formats:
   //   data: {"event": "content", "content": "text chunk"}
   //   data: {"event": "thinking"}
+  //   data: {"event": "tool_call", "name": "tool_name"}  (the model began writing a
+  //          call; before its tool_start, or its tool_request. Name only.)
   //   data: {"event": "tool_start", "name": "tool_name", "input": {...}}
   //   data: {"event": "tool_end", "name": "tool_name", "output": "result"}
   //   data: {"event": "citation", "marker": 1, "source": "...", "title": "...", "cited_text": "..."}
@@ -7233,6 +7581,12 @@
     let receivedDoneEvent = false;
     let receivedFirstContent = false;
     let toolRequest = null;
+    // The calls this run's model has announced with tool_call (#538) and that have not
+    // started yet, by name; and whether the label on screen is the current batch of
+    // calls' own (set as they were announced, and not yet replaced by
+    // "Analyzing results..." or by text).
+    const announced = new Map();
+    let labelFromCalls = false;
 
     // Create placeholder assistant message (not rendered yet - loading dots stay
     // visible), or continue the one an earlier run of this reply wrote into.
@@ -7254,7 +7608,8 @@
       // second: show it everything at each tick rather than pace it.
       paced: () => !prefersReducedMotion() && !document.hidden,
       show: (visible) => {
-        if (!visible) return;
+        // Only text a reader can see replaces the loading bubble (#538).
+        if (!hasVisibleText(visible)) return;
         isLoading = false;
         isThinking = false;
         revealingIndex = messageIndex;
@@ -7314,8 +7669,18 @@
           if (!event) continue;
 
           if (event.event === 'content' && event.content) {
-            // The loading dots give way to the first word the reveal shows.
-            receivedFirstContent = true;
+            // Text again: whatever the reply was doing is over. The reveal's next
+            // redraw takes the status away with the text, so nothing flickers first.
+            // Only whitespace is not text (the reveal does not draw it either), and a
+            // model often sends some before its next call: the status stays, and so
+            // does the loading bubble's "Thinking...".
+            if (hasVisibleText(event.content)) {
+              // The loading dots give way to the first word the reveal shows.
+              receivedFirstContent = true;
+              clearActivity();
+              labelFromCalls = false;
+              beginWait();
+            }
 
             // Accumulate content; the reveal decides when the reader sees it
             accumulatedContent += event.content;
@@ -7328,14 +7693,41 @@
             // make the label flicker under already-rendered content.
             if (!receivedFirstContent && !isThinking) {
               isThinking = true;
-              renderMessages(container);
+              paintStatus(container);
             }
+          } else if (event.event === 'tool_call') {
+            // The model has begun writing a call (#538), which for code can take
+            // many seconds before anything runs. Only the tool's name is read.
+            // The model writes calls only once the tools before them are over, so a
+            // tool_start whose tool_end never came does not keep this batch from
+            // reading as analyzed.
+            toolsRunning = 0;
+            announced.set(event.name, (announced.get(event.name) || 0) + 1);
+            setActivity(container, classifyToolActivity(event.name, 'writing', CONFIG.communityId), messageIndex);
+            labelFromCalls = true;
           } else if (event.event === 'tool_start') {
             // Log tool execution for debugging
             console.log('[OSA] Tool started:', event.name, event.input);
+            toolsRunning += 1;
+            const calls = announced.get(event.name) || 0;
+            if (calls > 0) announced.set(event.name, calls - 1);
+            const running = classifyToolActivity(event.name, 'running', CONFIG.communityId);
+            // A call that was announced while the label is still its batch's is not
+            // labeled again as it starts, unless running reads differently (code):
+            // parallel calls would otherwise flip the label back through each of them,
+            // and a screen reader would hear every flip. An old server sends no
+            // tool_call, so there each tool_start labels as before.
+            const saidByCall = calls > 0 && labelFromCalls
+              && classifyToolActivity(event.name, 'writing', CONFIG.communityId).label === running.label;
+            if (!saidByCall) setActivity(container, running, messageIndex);
           } else if (event.event === 'tool_end') {
             // Log tool completion
             console.log('[OSA] Tool completed:', event.name);
+            toolsRunning = Math.max(0, toolsRunning - 1);
+            if (toolsRunning === 0) {
+              setActivity(container, { kind: 'analyze', label: ACTIVITY_ANALYZING }, messageIndex);
+              labelFromCalls = false;
+            }
           } else if (event.event === 'citation') {
             // A source was cited for the first time. The backend announces
             // metadata before sending the marker as its own content chunk, so
@@ -7365,6 +7757,7 @@
           } else if (event.event === 'done') {
             // Finalize message and capture session ID
             receivedDoneEvent = true;
+            clearActivity();
             if (event.session_id && typeof event.session_id === 'string') {
               sessionId = event.session_id;
             }
@@ -7397,11 +7790,17 @@
             // follows: the reply is not finished. content and citations are
             // this run's canonical text, as done would have carried them.
             toolRequest = event;
+            clearActivity();
             if (event.session_id && typeof event.session_id === 'string') {
               sessionId = event.session_id;
             }
             await settleReveal();
-            const runText = typeof event.content === 'string' ? event.content : accumulatedContent;
+            const sent = typeof event.content === 'string' ? event.content : accumulatedContent;
+            // The canonical text, unless it has nothing to show: then what the stream
+            // showed, if anything, since the reply goes on and wiping text the reader
+            // has seen would leave an empty bubble. Only whitespace is nothing (#538).
+            const streamed = hasVisibleText(accumulatedContent) ? accumulatedContent : '';
+            const runText = hasVisibleText(sent) ? sent : streamed;
             messages[messageIndex].content = compose(runText);
             if (Array.isArray(event.citations)) {
               messages[messageIndex].citations = event.citations;
@@ -7412,6 +7811,7 @@
             const errorMsg = event.message || 'An error occurred during response generation';
             console.error('[OSA] Backend error event:', errorMsg);
             reveal.stop();
+            clearActivity();
 
             // Show partial content with error indicator
             const shown = compose(accumulatedContent);
@@ -7444,9 +7844,10 @@
       if (!receivedDoneEvent) {
         console.error('[OSA] Stream ended without done event');
         reveal.stop();
+        clearActivity();
 
         const composed = compose(accumulatedContent);
-        if (composed) {
+        if (hasVisibleText(composed)) {
           messages[messageIndex].content = composed +
             '\n\n_[Response may be incomplete - connection ended unexpectedly]_';
           renderMessages(container);
@@ -7465,12 +7866,13 @@
     } catch (error) {
       console.error('[OSA] Streaming error:', error);
       reveal.stop();
+      clearActivity();
 
       // Keep partial content if we have any, including what earlier runs of
       // this reply wrote and any code they ran.
       const shown = compose(accumulatedContent);
       const ran = messages[messageIndex] && messages[messageIndex].executions && messages[messageIndex].executions.length;
-      if (shown || ran) {
+      if (hasVisibleText(shown) || ran) {
         const errorType = error.name || 'Error';
         let userMessage = 'Stream interrupted';
 
@@ -7525,6 +7927,7 @@
 
     isLoading = true;
     isThinking = false;
+    beginWait();
 
     // Boot the browser runtime now if this community preloads on first message,
     // so the Python download overlaps this turn instead of waiting for a Run gate.
@@ -7711,6 +8114,7 @@
     } finally {
       isLoading = false;
       isThinking = false;
+      clearActivity();
       input.disabled = false;
       sendBtn.disabled = false;
       resetBtn.disabled = messages.length <= 1;
@@ -8345,6 +8749,22 @@
       loadHistory,
       getSessionId: () => sessionId,
       setSessionId: (value) => { sessionId = value; },
+    };
+    // What a pending reply is doing (#538): the labels, and the clock the elapsed
+    // time is read from, which a test turns by hand.
+    window.OSAChatWidget.__activity = {
+      classifyToolActivity,
+      setClock: (clock) => {
+        stopStatusTicker();
+        statusClock = clock;
+      },
+      ticking: () => statusTicker !== null,
+      state: () => ({
+        activity: activity && { ...activity },
+        toolsRunning,
+        isLoading,
+        isThinking,
+      }),
     };
   }
 

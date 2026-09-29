@@ -379,3 +379,40 @@ Measured 2026-09-29 in Chrome 154: the first words are drawn within about 20 ms 
 the reply grows through about 7 lengths and is fully on screen about 0.5 s after the last chunk
 (a reveal that took about 2 s before #538), and the code block is drawn once, whole.
 With the widget's pacing removed, or with the first text waiting for a tick, the check fails and exits 1.
+
+## The activity status (#538)
+
+`activity-status-check.mjs` runs what a pending reply says it is doing in headless Chrome,
+against its own local server (the widget, a community config and two `/chat` streams:
+a plain answer, then a reply that searches for about 6 s, reads the results, writes some text, looks up documentation and finishes).
+It samples every animation frame in the page, and every change to the conversation (a MutationObserver):
+the loading bubble's label, the status line under the reply, the elapsed time beside either,
+what the status announcer (the one live region a screen reader hears) says,
+and whether any sample breaks an invariant (a status that makes a message of its own, an assistant message with no text,
+the loading bubble beside a status line, a status that is a live region of its own).
+Midway through the search it rates the earlier answer, which redraws the whole conversation while the reply is still an empty placeholder.
+A second page then runs replies with whitespace-only chunks (whitespace before a search, before the answer, after thinking,
+between a tool's result and a thinking event, before a done whose text is whitespace or empty,
+and before code run in the page through the real runtime bundle and controller over the `executing.js` test worker).
+It needs no backend and no network, and runs in the Frontend Tests job.
+
+```bash
+bun frontend/browser-harness/activity-status-check.mjs [screenshot-dir]
+```
+
+It carries its controls: the page must be visible, the conversation fresh,
+the stream's events must arrive in the order sent, "Searching datasets..." must be on screen before any reply text is,
+the mid-search redraw must really happen, and on the whitespace page the runtime bundle must load and the code must really run.
+Measured 2026-09-29 in Chrome 154, 63 checks, three runs: about 780 frames per run;
+the loading label reads the title, "Thinking...", "Searching datasets..." (within 20 ms of its `tool_call`) and "Analyzing results...";
+the elapsed time counts the reader's whole wait from the send, so "5 s" first shows about 5.0 s after it, and "Analyzing results..." goes on from "7 s";
+the reply's text begins a new wait, so the short mid-reply lines show no time;
+the announcer says each label once, in order, and nothing once a status ends, never a number, through every redraw;
+no frame or change breaks an invariant, and the once-a-second timer has stopped by the frame the reply settles on.
+Each of these, put into the widget, fails the check: drawing the empty placeholder while loading, a mid-reply status as a new message,
+the loading bubble beside a status line, a timer a redraw does not stop, `tool_call` not read, the time shown from 3 s,
+the reduced-motion rule for the pulse losing to the pulse's own rule, text that does not end the status,
+whitespace drawn as the reply, whitespace kept as a finished reply, whitespace ending a status,
+an announcer rewritten on every redraw, a visible label that is a live region, a new label restarting the time,
+and text that does not begin a new wait.
+A whitespace placeholder is reachable only by writing one into a message directly, which the Bun suite does.

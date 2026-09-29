@@ -114,6 +114,12 @@ _RELATIVE_PATH_HARNESS_ALLOWLIST = {
         "for headless Chrome driven over the DevTools protocol; a dev harness "
         "page, never published as embed guidance"
     ),
+    "frontend/browser-harness/activity-status-check.mjs": (
+        "the activity-status check's own page, served from its own loopback server "
+        "and loading the widget from that server's /osa-chat-widget.js route, "
+        "for headless Chrome driven over the DevTools protocol; a dev harness "
+        "page, never published as embed guidance"
+    ),
     "frontend/browser-harness/widget_e2e.py": (
         "the harness server's widget-e2e-sri.html route: widget-e2e.html with "
         "its relative ../osa-chat-widget.js tag given integrity and "

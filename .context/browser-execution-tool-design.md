@@ -756,6 +756,9 @@ note and do not correspond to the global phases in `.context/plan.md`.
 - Image cost in the model context; whether to downscale further by default.
 - The SSE event vocabulary listed earlier in this note is incomplete: the live stream also emits `session`
   and `warning`, and the widget handles both. Anyone adding an event needs the true list.
+  As of #538 it is `session`, `content`, `thinking`, `tool_call`, `tool_start`, `tool_end`, `citation`, `warning`, `done`, `tool_request` and `error`.
+  `tool_call` carries only a tool's name, sent when the model starts writing a call to it, which for a browser call comes before its `tool_request`.
+  The docstrings of `_stream_ask_response` and `_stream_chat_response` in `src/api/routers/community.py`, and the comment above `handleStreamingResponse` in the widget, are where the list is kept.
 - Retention of anonymous checkpoints; the sweep interval and what "expired" means for a parked tool request.
   Moot if the two-run option above is chosen.
 - Whether MCP tool calls should also become client-executed later, so a widget can run entirely against

@@ -14,13 +14,14 @@ model's own behavior is not what is being measured.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import Any
 
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.language_models.chat_models import generate_from_stream
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 
 
 class ScriptedChatModel(BaseChatModel):
@@ -86,3 +87,46 @@ def multi_tool_call_response(calls: Sequence[tuple[str, dict[str, Any], str]]) -
             for name, args, call_id in calls
         ],
     )
+
+
+class StreamingScriptedChatModel(ScriptedChatModel):
+    """A `ScriptedChatModel` that streams: each scripted reply is a list of chunks.
+
+    The chunks are `AIMessageChunk`s shaped as a provider adapter yields them
+    (`tool_call_chunks` with a name on the first chunk of a call, say), and they are
+    handed to langchain-core unchanged. So under `astream_events` each one becomes a
+    real `on_chat_model_stream` event, and langchain-core's own `generate_from_stream`
+    merges them into the message the graph routes on, as it does for a real provider.
+    Nothing about the stream's events is built by the test.
+    """
+
+    responses: list[BaseMessage] = []
+    chunk_script: list[list[AIMessageChunk]]
+
+    def _next_script(self, messages: list[BaseMessage]) -> list[AIMessageChunk]:
+        self.seen_message_lists.append(list(messages))
+        index = min(self.calls, len(self.chunk_script) - 1)
+        self.calls += 1
+        # Copied, because langchain-core writes ids and metadata onto the chunks it is
+        # handed, and the last reply repeats once the script runs out.
+        return [chunk.model_copy(deep=True) for chunk in self.chunk_script[index]]
+
+    def _stream(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,  # noqa: ARG002
+        run_manager: CallbackManagerForLLMRun | None = None,  # noqa: ARG002
+        **_kwargs: Any,
+    ) -> Iterator[ChatGenerationChunk]:
+        for chunk in self._next_script(messages):
+            yield ChatGenerationChunk(message=chunk)
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,  # noqa: ARG002
+        run_manager: CallbackManagerForLLMRun | None = None,  # noqa: ARG002
+        **_kwargs: Any,
+    ) -> ChatResult:
+        chunks = [ChatGenerationChunk(message=chunk) for chunk in self._next_script(messages)]
+        return generate_from_stream(iter(chunks))
