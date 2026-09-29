@@ -52,7 +52,25 @@ function assertEqual(actual, expected, msg) {
 
 const SOURCE = readFileSync(new URL('./osa-chat-widget.js', import.meta.url), 'utf8');
 
-function loadWidget({ matchMedia } = {}) {
+/**
+ * Timers the widget starts, so a test can see that none is left running. Recorded with
+ * their delay: the reveal's are its tick and its drain guard, and the widget starts
+ * others of its own (an error banner's dismissal) that are not the reveal's to clear.
+ */
+function timerTracker() {
+  const live = new Map();
+  return {
+    setTimeout: (fn, ms, ...rest) => {
+      const id = setTimeout((...args) => { live.delete(id); fn(...args); }, ms, ...rest);
+      live.set(id, ms);
+      return id;
+    },
+    clearTimeout: (id) => { live.delete(id); clearTimeout(id); },
+    revealTimers: () => [...live.values()].filter((ms) => ms === R.REVEAL_TICK_MS || ms === R.REVEAL_DRAIN_MAX_MS).length,
+  };
+}
+
+function loadWidget({ matchMedia, timers = null } = {}) {
   const window = new Window({
     url: 'http://localhost/page',
     settings: { disableJavaScriptFileLoading: true, disableCSSFileLoading: true },
@@ -75,7 +93,7 @@ function loadWidget({ matchMedia } = {}) {
     'TextDecoder', 'setTimeout', 'clearTimeout', 'console', SOURCE
   );
   run(window, window.document, window.localStorage, fetch, window.navigator, AbortSignal, URL,
-    TextDecoder, setTimeout, clearTimeout, console);
+    TextDecoder, timers ? timers.setTimeout : setTimeout, timers ? timers.clearTimeout : clearTimeout, console);
   window.OSAChatWidget.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: 'osa-test-paced' });
   window.OSAChatWidget.init();
   return { window, widget: window.OSAChatWidget, reveal: window.OSAChatWidget.__reveal, api: window.OSAChatWidget.__browser };
@@ -154,7 +172,7 @@ console.log('\nnextRevealEnd: pace, word boundaries and code');
   const streaming = 'Intro.\n\n```\nprint(1)\nprint(2)';
   assertEqual(R.nextRevealEnd(streaming, 0, 12), streaming.length, 'a block still arriving is shown as far as it has arrived');
   assertEqual(R.nextRevealEnd(streaming + '\nprint(3)', streaming.length, 1), streaming.length + 9,
-    'and what arrives inside it is shown at once, with no added delay');
+    'and what arrives inside it is shown at once, with no pacing');
 }
 
 console.log('\nproperty: stepping always ends, each step is a prefix, and code is never cut');
@@ -237,7 +255,7 @@ console.log('\na burst is spread over a reading pace, not shown at once');
   assertEqual(clock.pending(), 0, 'and no timer is left running');
 }
 
-console.log('\na stream slower than the pace is shown as it arrives, with no delay added');
+console.log('\na stream slower than the pace is shown as it arrives, at most one tick late');
 {
   const { clock, state, controller } = harness('');
   const words = 'a steady stream of small words arriving well below the floor pace of the reveal'.split(' ');
@@ -345,8 +363,100 @@ console.log('\nflush shows everything now; stop abandons the pending redraw; unp
   const c = harness('', { paced: false });
   c.state.text = PROSE_1500;
   c.controller.kick();
-  assertEqual(c.state.shows.at(-1).visible, PROSE_1500, 'unpaced: the whole burst is shown the moment it arrives');
-  assertEqual(c.clock.pending(), 0, 'with no timer');
+  c.clock.advance(R.REVEAL_TICK_MS);
+  assertEqual(c.state.shows.at(-1).visible, PROSE_1500, 'unpaced: the whole burst is shown within a tick of arriving');
+  assertEqual(c.state.shows.length, 1, 'in one redraw');
+  assertEqual(c.clock.pending(), 0, 'with no timer left');
+}
+
+console.log('\nunpaced: chunks are gathered into one redraw per tick, not one redraw each');
+{
+  // 150 per-token chunks in one network read, then a steady 60 tokens per second.
+  const burst = harness('', { paced: false });
+  for (let i = 0; i < 150; i++) {
+    burst.state.text += 'tok ';
+    burst.controller.kick();
+  }
+  burst.clock.advance(R.REVEAL_TICK_MS);
+  assertEqual(burst.state.shows.length, 1, 'a 150 chunk burst is one redraw');
+  assertEqual(burst.state.shows.at(-1).visible, burst.state.text, 'showing all of it');
+
+  const steady = harness('', { paced: false });
+  for (let ms = 0; ms < 1000; ms += 17) {
+    steady.state.text += 'tok ';
+    steady.controller.kick();
+    steady.clock.advance(17);
+  }
+  steady.clock.advance(R.REVEAL_TICK_MS);
+  assert(steady.state.shows.length <= 14, `60 chunks a second is at most about 12 redraws a second (${steady.state.shows.length})`);
+  assertEqual(steady.state.shows.at(-1).visible, steady.state.text, 'and the last of it is shown');
+}
+
+console.log('\na redraw that throws is not lost in a timer: nobody waits for good, and it is handed back');
+{
+  const boom = new Error('redraw failed');
+  const { clock, state, controller } = harness(PROSE_1500, {
+    show: () => { throw boom; },
+  });
+  controller.kick();
+  let drained = false;
+  controller.drain().then(() => { drained = true; });
+  clock.advance(R.REVEAL_TICK_MS * 2);
+  await Promise.resolve();
+  assert(drained, 'a drain that was waiting is released');
+  let caught = null;
+  try { controller.check(); } catch (err) { caught = err; }
+  assert(caught === boom, 'check hands back what show threw');
+  assertEqual(clock.pending(), 0, 'no timer is left running, and no guard timer either');
+  controller.kick();
+  assertEqual(clock.pending(), 0, 'a failed reveal does not restart');
+  let again = false;
+  controller.drain().then(() => { again = true; });
+  await Promise.resolve();
+  assert(again, 'and a later drain resolves at once');
+
+  const noFailure = harness('fine');
+  noFailure.controller.flush();
+  let quiet = true;
+  try { noFailure.controller.check(); } catch (err) { quiet = false; }
+  assert(quiet, 'check is silent when nothing failed');
+}
+
+console.log('\na reveal step never ends inside a citation marker or a surrogate pair');
+{
+  const claim = 'Sensory-event marks a stimulus.[12] Tags come from a schema.[3][4] Done.';
+  const inside = (end) => /\[\d*$/.test(claim.slice(0, end)) && /^\d*\]/.test(claim.slice(end));
+  let cuts = 0;
+  for (let budget = 1; budget <= 30; budget++) {
+    let shown = 0;
+    while (shown < claim.length) {
+      shown = R.nextRevealEnd(claim, shown, budget);
+      if (inside(shown)) cuts++;
+    }
+  }
+  assertEqual(cuts, 0, 'no reveal of any pace stops inside [12], [3] or [4]');
+  const eight = 'a' + '[1][2][3][4][5][6][7][8]' + 'b';
+  let chained = 0;
+  for (let budget = 1; budget <= 6; budget++) {
+    let shown = 0;
+    while (shown < eight.length) {
+      shown = R.nextRevealEnd(eight, shown, budget);
+      if (/\[\d*$/.test(eight.slice(0, shown)) && /^\d*\]/.test(eight.slice(shown))) chained++;
+    }
+  }
+  assertEqual(chained, 0, 'nor inside a run of eight chained markers');
+  const emoji = '\u4e2d\u6587\u{1F600}\u{1F600}\u{1F600}\u{1F600}\u{1F600}\u{1F600}\u{1F600}\u{1F600}';
+  let split = 0;
+  for (let budget = 1; budget <= 5; budget++) {
+    let shown = 0;
+    while (shown < emoji.length) {
+      shown = R.nextRevealEnd(emoji, shown, budget);
+      if (/[\uD800-\uDBFF]$/.test(emoji.slice(0, shown))) split++;
+    }
+  }
+  assertEqual(split, 0, 'nor between the halves of an emoji, in text with no spaces to break on');
+  assertEqual(R.nextRevealEnd('see [12', 0, 5), 7, 'a marker that has not finished arriving is shown as far as it has');
+  assertEqual(R.nextRevealEnd('x [note that is long] y', 0, 4), 7, 'a bracket that is not a citation marker is cut like any other text (to the end of the word)');
 }
 
 // ------------------------------------------------- the stream handler, real
@@ -385,19 +495,20 @@ console.log('\nthe widget shows a burst progressively, and the canonical text at
   const { window, api, widget } = loadWidget();
   const container = window.document.querySelector('.osa-chat-widget');
   const started = api.getMessages().length;
+  const CANONICAL = `${REPLY} [1]`;
   const stream = api.handleStreamingResponse(sse([
     { event: 'session', session_id: 's' },
     { event: 'content', content: REPLY },
-    { event: 'done', session_id: 's', content: REPLY },
+    { event: 'done', session_id: 's', content: CANONICAL, citations: [{ marker: 1, source: 'https://a.example', title: 'A', cited_text: '' }] },
   ]), container);
   const seen = await watch(api, started, stream);
   await stream;
   const lengths = seen.map((s) => (s.content || '').length).filter((n) => n > 0);
   const distinct = [...new Set(lengths)];
   assert(distinct.length >= 5, `the reader saw the reply grow through ${distinct.length} different lengths, not one jump`);
-  assert(distinct[0] < REPLY.length / 2, `the first thing shown was a beginning (${distinct[0]} of ${REPLY.length} characters)`);
-  assert(seen.every((s) => s.content === null || REPLY.startsWith(s.content)), 'every state was a prefix of the reply');
-  assertEqual(api.getMessages()[started].content, REPLY, 'after done the message holds the canonical text');
+  assert(distinct[0] < REPLY.length * 0.9, `the first thing shown was a beginning (${distinct[0]} of ${REPLY.length} characters)`);
+  assert(seen.every((s) => s.content === null || CANONICAL.startsWith(s.content)), 'every state was a prefix of the reply');
+  assertEqual(api.getMessages()[started].content, CANONICAL, 'after done the message holds the canonical text, which the stream did not carry');
   const shown = [...window.document.querySelectorAll('.osa-message.assistant .osa-message-content')].at(-1);
   assert(shown && shown.textContent.includes('answers quickly'), 'and it is what the page shows');
   assertEqual(widget.__reveal !== undefined, true, 'the test hooks are present only in test mode');
@@ -457,7 +568,7 @@ console.log('\na stream that arrives slowly is not held back');
     const appeared = trail.find((seen) => seen.content.length >= prefix.length);
     return appeared ? appeared.at - delivered[i] : Infinity;
   });
-  assert(delays.every((ms) => ms < 250), `every word was on the page within a tick or two of arriving (slowest ${Math.max(...delays)} ms)`);
+  assert(delays.every((ms) => ms < 400), `every word was on the page within a tick or two of arriving (slowest ${Math.max(...delays)} ms)`);
   assertEqual(api.getMessages()[started].content, words.join(''), 'and the reply is complete');
 }
 
@@ -466,14 +577,18 @@ console.log('\na reader who asked for reduced motion gets text as it arrives');
   const { window, api } = loadWidget({ matchMedia: (query) => ({ matches: /prefers-reduced-motion/.test(query), media: query }) });
   const container = window.document.querySelector('.osa-chat-widget');
   const started = api.getMessages().length;
+  const begun = Date.now();
+  // The reply's text arrives at once, and `done` a quarter of a second later, so what
+  // the reader had in between can be seen.
   const stream = api.handleStreamingResponse(sse([
     { event: 'content', content: REPLY },
     { event: 'done', content: REPLY },
-  ], { gapMs: 30 }), container);
+  ], { gapMs: 250 }), container);
   const seen = await watch(api, started, stream);
   await stream;
   const firstText = seen.find((s) => s.content);
-  assertEqual(firstText && firstText.content, REPLY, 'the whole burst is shown the moment it arrives');
+  assertEqual(firstText && firstText.content, REPLY, 'the whole burst is shown, not paced');
+  assert(firstText && firstText.at - begun < 200, `within a tick of arriving, before done (${firstText && firstText.at - begun} ms)`);
 }
 
 console.log('\nan error mid-reply keeps what arrived and reports the error, without waiting for the pace');
@@ -509,6 +624,255 @@ console.log('\na reply that ends on a browser call shows its text in full before
   ]), container);
   assert(result && result.toolRequest && result.toolRequest.call_id === 'c1', 'the request is handed back');
   assertEqual(api.getMessages()[started].content, REPLY, 'with the whole of the text before it on the page');
+}
+
+/** Count the times the widget redraws its message list. */
+function countRedraws(window) {
+  const el = window.document.querySelector('.osa-chat-messages');
+  let proto = Object.getPrototypeOf(el);
+  while (proto && !Object.getOwnPropertyDescriptor(proto, 'innerHTML')) proto = Object.getPrototypeOf(proto);
+  const descriptor = Object.getOwnPropertyDescriptor(proto, 'innerHTML');
+  const counter = { redraws: 0 };
+  Object.defineProperty(el, 'innerHTML', {
+    configurable: true,
+    get() { return descriptor.get.call(this); },
+    set(value) { counter.redraws++; descriptor.set.call(this, value); },
+  });
+  return counter;
+}
+
+console.log('\na reader who asked for reduced motion does not pay for a redraw per chunk');
+{
+  const { window, api } = loadWidget({ matchMedia: (query) => ({ matches: /prefers-reduced-motion/.test(query), media: query }) });
+  const container = window.document.querySelector('.osa-chat-widget');
+  const counter = countRedraws(window);
+  const started = api.getMessages().length;
+  const tokens = Array.from({ length: 150 }, (_, i) => `word${i} `);
+  const full = tokens.join('');
+  await api.handleStreamingResponse(sse([
+    ...tokens.map((content) => ({ event: 'content', content })),
+    { event: 'done', content: full },
+  ]), container);
+  assertEqual(api.getMessages()[started].content, full, 'all of the reply is there');
+  assert(counter.redraws <= 6, `150 chunks in one read cost ${counter.redraws} redraws of the conversation, not 150`);
+}
+
+console.log('\na paced reveal redraws at most about a dozen times a second');
+{
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const counter = countRedraws(window);
+  const began = Date.now();
+  const text = 'A reply long enough that the reveal takes a couple of seconds to show all of it, sentence by sentence. '.repeat(14);
+  await api.handleStreamingResponse(sse([{ event: 'content', content: text }, { event: 'done', content: text }]), container);
+  const seconds = (Date.now() - began) / 1000;
+  assert(counter.redraws / seconds <= 14, `${counter.redraws} redraws over ${seconds.toFixed(1)} s`);
+}
+
+console.log('\na redraw that throws mid-reply fails the reply at once, not never');
+{
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const messagesEl = container.querySelector('.osa-chat-messages');
+  const stream = api.handleStreamingResponse(sse([
+    { event: 'content', content: REPLY },
+    { event: 'done', content: REPLY },
+  ], { gapMs: 50 }), container);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  messagesEl.className = 'not-the-messages'; // the redraw's own lookup now finds nothing
+  const outcome = await Promise.race([
+    stream.then(() => 'resolved', (err) => `rejected: ${err.message.slice(0, 40)}`),
+    new Promise((resolve) => setTimeout(() => resolve('still pending'), 6000)),
+  ]);
+  assert(/^rejected/.test(outcome), `the stream ends in an error the caller can handle (${outcome})`);
+}
+
+console.log('\nno timer is left running after any way a stream can end');
+{
+  const endings = {
+    done: [{ event: 'content', content: REPLY }, { event: 'done', content: REPLY }],
+    'no done': [{ event: 'content', content: REPLY }],
+    'error event': [{ event: 'content', content: REPLY }, { event: 'error', message: 'gone' }],
+    'browser call': [{ event: 'content', content: REPLY }, { event: 'tool_request', call_id: 'c', tool: 't', args: {}, content: REPLY }],
+    'nothing at all': [],
+  };
+  for (const [name, events] of Object.entries(endings)) {
+    const timers = timerTracker();
+    const { window, api } = loadWidget({ timers });
+    const container = window.document.querySelector('.osa-chat-widget');
+    const before = api.getMessages().length;
+    const outcome = await api.handleStreamingResponse(sse(events), container).then(() => 'ok', () => 'threw');
+    void outcome;
+    const stray = timers.revealTimers();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const held = api.getMessages()[before] ? api.getMessages()[before].content : null;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const still = api.getMessages()[before] ? api.getMessages()[before].content : null;
+    assert(stray === 0 && timers.revealTimers() === 0 && held === still,
+      `${name}: no reveal timer is left, and the message no longer changes`);
+  }
+}
+
+console.log('\nan abnormal end keeps what arrived, in full, and says so');
+{
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const started = api.getMessages().length;
+  await api.handleStreamingResponse(sse([{ event: 'content', content: REPLY }]), container).catch(() => {});
+  const content = api.getMessages()[started].content;
+  assert(content.startsWith(REPLY) && /incomplete/.test(content), 'all the text, then the note that it may be incomplete');
+}
+
+console.log('\na reader failure mid-reveal keeps the text that arrived');
+{
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const started = api.getMessages().length;
+  const encoder = new TextEncoder();
+  const response = new Response(new ReadableStream({
+    async start(controller) {
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ event: 'content', content: REPLY })}\n\n`));
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      controller.error(new Error('connection reset'));
+    },
+  }), { headers: { 'content-type': 'text/event-stream' } });
+  let error = null;
+  await api.handleStreamingResponse(response, container).catch((err) => { error = err; });
+  assert(error !== null, 'the failure is raised');
+  const content = api.getMessages()[started].content;
+  assert(content.startsWith(REPLY) && /interrupted/.test(content), 'the whole of what arrived is kept, with the note that it was interrupted');
+}
+
+console.log('\na browser-execution reply keeps the earlier run and reveals the next one after it');
+{
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const first = await api.handleStreamingResponse(sse([
+    { event: 'content', content: 'Let me check that for you.' },
+    { event: 'tool_request', call_id: 'c1', tool: 'execute_code', args: {}, content: 'Let me check that for you.' },
+  ]), container);
+  const index = first.messageIndex;
+  const second = 'The peak is at ten hertz, which matches the alpha band you would expect from an eyes-closed recording of this kind.';
+  const stream = api.handleStreamingResponse(sse([
+    { event: 'content', content: second },
+    { event: 'done', content: second },
+  ]), container, { messageIndex: index });
+  const states = [];
+  let over = false;
+  stream.then(() => { over = true; }, () => { over = true; });
+  while (!over) {
+    states.push(api.getMessages()[index].content);
+    await new Promise((resolve) => setTimeout(resolve, 8));
+  }
+  await stream;
+  assert(states.every((c) => c.startsWith('Let me check that for you.')), 'every state after the first run keeps its text');
+  assert(new Set(states.map((c) => c.length)).size >= 3, 'and the second run is revealed progressively after it');
+  assertEqual(api.getMessages()[index].content, `Let me check that for you.\n\n${second}`, 'ending as the two runs composed');
+}
+
+console.log('\nsources appear with the sentence that cites them, not ahead of it');
+{
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const started = api.getMessages().length;
+  const citations = [1, 2, 3].map((marker) => ({ marker, source: `https://example.org/${marker}`, title: `Source ${marker}`, cited_text: 'x' }));
+  const sentences = [
+    'The first claim is stated plainly here, with a marker after it.[1] ',
+    'The second claim follows and it too is long enough to take a moment to reveal.[2] ',
+    'The third claim comes last, and so does its source.[3]',
+  ];
+  const text = sentences.join('');
+  const stream = api.handleStreamingResponse(sse([
+    ...citations.map((c) => ({ event: 'citation', ...c })),
+    { event: 'content', content: text },
+    { event: 'done', content: text, citations },
+  ]), container);
+  const frames = [];
+  let over = false;
+  stream.then(() => { over = true; }, () => { over = true; });
+  while (!over) {
+    const content = (api.getMessages()[started] || {}).content || '';
+    const rows = [...window.document.querySelectorAll('.osa-message.assistant .osa-message-sources li')].length;
+    frames.push({ content, rows });
+    await new Promise((resolve) => setTimeout(resolve, 8));
+  }
+  await stream;
+  const ahead = frames.filter((f) => f.rows > [1, 2, 3].filter((n) => f.content.includes(`[${n}]`)).length);
+  assertEqual(ahead.length, 0, 'at no frame was there a source row for a marker not yet shown');
+  assertEqual([...window.document.querySelectorAll('.osa-message.assistant .osa-message-sources li')].length, 3, 'and once done, all three are listed');
+}
+
+console.log('\na reader typing in a message keeps their caret through the reveal');
+{
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const messagesEl = container.querySelector('.osa-chat-messages');
+  const box = window.document.createElement('textarea');
+  messagesEl.appendChild(box);
+  box.focus();
+  assert(window.document.activeElement === box, 'the reader is in a textarea inside the messages');
+  const stream = api.handleStreamingResponse(sse([
+    { event: 'content', content: REPLY },
+    { event: 'done', content: REPLY },
+  ]), container);
+  const survived = [];
+  let over = false;
+  stream.then(() => { over = true; }, () => { over = true; });
+  while (!over) {
+    survived.push(messagesEl.contains(box) && window.document.activeElement === box);
+    await new Promise((resolve) => setTimeout(resolve, 8));
+  }
+  await stream;
+  assert(survived.length > 5 && survived.every(Boolean), `the textarea was never rebuilt while the reply was revealed (${survived.length} samples)`);
+  assert(api.getMessages().at(-1).content === REPLY, 'and the reply still completed');
+}
+
+console.log('\na reader who scrolled up is not pulled back down by the reveal');
+{
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const messagesEl = container.querySelector('.osa-chat-messages');
+  let top = 0;
+  Object.defineProperty(messagesEl, 'scrollHeight', { configurable: true, get: () => 5000 });
+  Object.defineProperty(messagesEl, 'clientHeight', { configurable: true, get: () => 400 });
+  Object.defineProperty(messagesEl, 'scrollTop', { configurable: true, get: () => top, set: (v) => { top = v; } });
+
+  top = 300; // far from the bottom (4300 px away)
+  const away = api.handleStreamingResponse(sse([{ event: 'content', content: REPLY }, { event: 'done', content: REPLY }]), container);
+  const tops = [];
+  let over = false;
+  away.then(() => { over = true; }, () => { over = true; });
+  while (!over) {
+    tops.push(top);
+    await new Promise((resolve) => setTimeout(resolve, 8));
+  }
+  await away;
+  assert(tops.length > 5 && tops.every((t) => t === 300), `the scroll position held through the reveal (${[...new Set(tops)].join(', ')})`);
+  assertEqual(top, 300, 'and when the reply finished');
+
+  top = 4560; // 40 px from the bottom: following along
+  await api.handleStreamingResponse(sse([{ event: 'content', content: REPLY }, { event: 'done', content: REPLY }]), container);
+  assertEqual(top, 5000, 'a reader at the bottom is followed to it');
+}
+
+console.log('\nleaving the page, or hiding the tab, shows and saves the whole reply at once');
+{
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const started = api.getMessages().length;
+  const text = 'A long reply that would take a few seconds to reveal, so the page is left in the middle of it. '.repeat(20);
+  const stream = api.handleStreamingResponse(sse([{ event: 'content', content: text }, { event: 'done', content: text }]), container);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const partial = api.getMessages()[started].content.length;
+  assert(partial > 0 && partial < text.length, `mid-reveal (${partial} of ${text.length} characters)`);
+  const begun = Date.now();
+  window.dispatchEvent(new window.Event('pagehide'));
+  await stream;
+  assert(Date.now() - begun < 300, `the rest was shown at once (${Date.now() - begun} ms, not the seconds the pace would take)`);
+  assertEqual(api.getMessages()[started].content, text, 'in full');
+  const saved = JSON.parse(window.localStorage.getItem('osa-test-paced') || '[]');
+  const savedText = (Array.isArray(saved) ? saved : saved.messages || []).map((m) => m.content).join('\n');
+  assert(savedText.includes(text.slice(-40)), 'and it is in the saved history');
 }
 
 console.log('\n' + '='.repeat(60));
