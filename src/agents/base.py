@@ -47,16 +47,17 @@ DEFAULT_MAX_CONVERSATION_TOKENS = 80000
 #: prompt caching is a byte-exact prefix match and a counter that varied per call would
 #: make trimming vary per call.
 #:
-#: Sized for the models this project actually offers. Anthropic's documented cost is
-#: per tier: the standard tier caps near 1568 tokens, which is what `claude-haiku-4-5`
-#: and `claude-sonnet-5-5` use, and a later high-resolution tier caps near 4784. If a
-#: community is ever configured onto a model in that higher tier, this constant would
-#: under-count by roughly 3x, which is the exact direction this comment exists to warn
-#: against. Revisit it when the offered model list changes, not before.
+#: Sized for the most expensive tier among the models this project offers. Anthropic's
+#: documented cost is per tier: the standard tier caps near 1568 tokens, which is what
+#: `claude-haiku-4-5` uses, and the high-resolution tier (Sonnet 5 onward, so
+#: `claude-sonnet-5-5`) caps near 4784. Counting Haiku's images at the high-resolution
+#: rate over-counts them by up to 3x, which only spends headroom; the reverse would
+#: under-count every Sonnet figure by the same factor, the direction this comment exists
+#: to warn against. Revisit it when the offered model list changes, not before.
 #:
 #: Requires `tokens_per_image`, which landed in langchain-core 1.2.8; pyproject floors
 #: the dependency at 1.6.0 as a margin above that.
-ANTHROPIC_TOKENS_PER_IMAGE = 1600
+ANTHROPIC_TOKENS_PER_IMAGE = 4800
 
 #: Name of the graph node that parks a browser-executed tool call.
 #:
