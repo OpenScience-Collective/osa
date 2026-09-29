@@ -63,17 +63,29 @@ OPENROUTER_MODEL_IDS: dict[str, str] = {
 }
 
 
+# OpenRouter's routing variants ("Model variants" in its documentation): a suffix accepted
+# on any model that only changes which providers serve the request (fastest, cheapest,
+# best at tool calls), so the same model runs. The others (":free", ":batch", ":thinking",
+# ":extended") are catalog entries of their own and are not looked through.
+OPENROUTER_ROUTING_VARIANTS = ("nitro", "floor", "exacto")
+
+
 def openrouter_model_id(slug: str | None) -> str | None:
     """The offered model id an OpenRouter slug stands for, or None when OSA does not know it.
 
-    Exactly the reverse of ``OPENROUTER_MODEL_IDS``. The ``anthropic/claude-*`` aliases
-    ``normalize_model`` resolves are deliberately not followed: they name older models
-    (Claude Sonnet 4.5, say) that OpenRouter runs as themselves, so the offered model's
-    reasoning levels say nothing about them. A slug that is not an offered model's is a
-    caller's own choice, about which nothing is assumed, including whether it reasons.
+    The reverse of ``OPENROUTER_MODEL_IDS``, looking through a routing variant
+    (``openai/gpt-oss-120b:nitro`` is ``openai.gpt-oss-120b``, run through faster
+    providers). The ``anthropic/claude-*`` aliases ``normalize_model`` resolves are
+    deliberately not followed: they name older models (Claude Sonnet 4.5, say) that
+    OpenRouter runs as themselves, so the offered model's reasoning levels say nothing
+    about them. A slug that is not an offered model's is a caller's own choice, about
+    which nothing is assumed, including whether it reasons.
     """
     if not slug:
         return None
+    base, _, variant = slug.partition(":")
+    if variant in OPENROUTER_ROUTING_VARIANTS:
+        slug = base
     for model_id, known_slug in OPENROUTER_MODEL_IDS.items():
         if known_slug == slug:
             return model_id
