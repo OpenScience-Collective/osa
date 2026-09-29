@@ -392,6 +392,20 @@ console.log('\nunpaced: chunks are gathered into one redraw per tick, not one re
   assertEqual(steady.state.shows.at(-1).visible, steady.state.text, 'and the last of it is shown');
 }
 
+console.log('\npacing is asked at each tick: a page that becomes hidden mid-reply gets the rest at once');
+{
+  let visible = true;
+  const { clock, state, controller } = harness(PROSE_1500, { paced: () => visible });
+  controller.kick();
+  clock.advance(R.REVEAL_TICK_MS * 3);
+  const before = state.shows.at(-1).visible.length;
+  assert(before > 0 && before < PROSE_1500.length, `paced while it is on screen (${before} of ${PROSE_1500.length})`);
+  visible = false;
+  clock.advance(R.REVEAL_TICK_MS);
+  assertEqual(state.shows.at(-1).visible, PROSE_1500, 'and shown in full at the next tick once it is hidden');
+  assertEqual(clock.pending(), 0, 'with nothing left running');
+}
+
 console.log('\na redraw that throws is not lost in a timer: nobody waits for good, and it is handed back');
 {
   const boom = new Error('redraw failed');
@@ -667,6 +681,20 @@ console.log('\na paced reveal redraws at most about a dozen times a second');
   await api.handleStreamingResponse(sse([{ event: 'content', content: text }, { event: 'done', content: text }]), container);
   const seconds = (Date.now() - began) / 1000;
   assert(counter.redraws / seconds <= 14, `${counter.redraws} redraws over ${seconds.toFixed(1)} s`);
+}
+
+console.log('\na page that is already hidden when the reply starts is not paced');
+{
+  const { window, api } = loadWidget();
+  Object.defineProperty(window.document, 'hidden', { configurable: true, get: () => true });
+  const container = window.document.querySelector('.osa-chat-widget');
+  const started = api.getMessages().length;
+  const text = 'A reply for a tab nobody is looking at, long enough that pacing it would take seconds. '.repeat(20);
+  const stream = api.handleStreamingResponse(sse([{ event: 'content', content: text }, { event: 'done', content: text }], { gapMs: 250 }), container);
+  const seen = await watch(api, started, stream);
+  await stream;
+  const first = seen.find((s) => s.content);
+  assertEqual(first && first.content, text, 'the whole reply is there at the first tick, before done arrives');
 }
 
 console.log('\na redraw that throws mid-reply fails the reply at once, not never');
