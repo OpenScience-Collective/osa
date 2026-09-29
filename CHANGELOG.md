@@ -19,6 +19,8 @@ the version being released and start a new `[Unreleased]` section above it.
   the offered Sonnet is now `claude-sonnet-5-5`, at the same price ($2 / $10 per 1M tokens).
   `claude-sonnet-5` and the older Sonnet ids still resolve, to the new model, so saved widget settings and community configs keep working.
   Sonnet 5.5 rejects `thinking: {"type": "disabled"}`, so requests that turn thinking off (FAQ generation) send `{"type": "between_tools"}` instead.
+- **NEMAR answers with Sonnet by default** (issue #522): `default_model` is now `claude-sonnet-5-5`.
+  Each request costs about twice what Haiku 4.5 does per input token.
 
 ## [0.8.15] - 2026-09-25
 
