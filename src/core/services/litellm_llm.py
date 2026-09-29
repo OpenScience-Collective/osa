@@ -34,6 +34,8 @@ from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 
+from src.core.services.anthropic_models import effective_reasoning_effort, normalize_model
+
 logger = logging.getLogger(__name__)
 
 # Default OpenRouter model/provider for callers that name neither. This is
@@ -59,6 +61,24 @@ OPENROUTER_MODEL_IDS: dict[str, str] = {
     "openai.gpt-oss-120b": "openai/gpt-oss-120b",
     "qwen.qwen3-next-80b-a3b": "qwen/qwen3-next-80b-a3b-instruct",
 }
+
+
+def openrouter_model_id(slug: str | None) -> str | None:
+    """The offered model id an OpenRouter slug stands for, or None when OSA does not know it.
+
+    The reverse of ``OPENROUTER_MODEL_IDS``, plus what ``normalize_model`` resolves
+    (the ``anthropic/claude-*`` aliases). A slug that is neither is a caller's own
+    choice, about which nothing is assumed, including whether it reasons at all.
+    """
+    if not slug:
+        return None
+    for model_id, known_slug in OPENROUTER_MODEL_IDS.items():
+        if known_slug == slug:
+            return model_id
+    try:
+        return normalize_model(slug)
+    except ValueError:
+        return None
 
 
 def to_openrouter_model(model: str | None) -> str | None:
@@ -89,6 +109,7 @@ def create_openrouter_llm(
     provider: str | None = DEFAULT_PROVIDER,
     user_id: str | None = None,
     enable_caching: bool | None = None,
+    reasoning_effort: str | None = None,
 ) -> BaseChatModel:
     """Create an OpenRouter LLM instance with prompt caching and tagged citations.
 
@@ -115,6 +136,12 @@ def create_openrouter_llm(
         enable_caching: Enable prompt caching. If None (default), it is enabled. Only
             Anthropic's models are sent the ``cache_control`` markers; other models
             get plain messages (see ``litellm_chat.takes_cache_markers``).
+        reasoning_effort: The community's level from the neutral scale, or None for the
+            model's own default. Sent as OpenRouter's ``reasoning: {"effort": level}``
+            body field, only for an offered model that has levels, at a level it
+            accepts on OpenRouter (Claude Sonnet is never above ``high``, and has no
+            ``none`` there, where its reasoning is mandatory); a slug OSA knows nothing
+            about is sent nothing.
 
     Returns:
         A ``TaggedCitationChatLiteLLM`` configured for OpenRouter
@@ -147,6 +174,17 @@ def create_openrouter_llm(
     # User ID for sticky cache routing
     if user_id:
         model_kwargs["user"] = user_id
+
+    # The reasoning level (issue #545). OpenRouter's unified body field, which LiteLLM
+    # passes through untouched like `provider` above. LiteLLM's own `reasoning_effort`
+    # parameter is not used: it is the top-level OpenAI name (no "max"), and LiteLLM
+    # refuses it outright for a model its map does not list as reasoning, which would
+    # fail every request for a slug it does not know.
+    reasoning_level = effective_reasoning_effort(
+        openrouter_model_id(model), reasoning_effort, "openrouter"
+    )
+    if reasoning_level is not None:
+        model_kwargs["reasoning"] = {"effort": reasoning_level}
 
     # Falls back to the env var (documented above) rather than requiring
     # every caller to read it themselves, but a request with neither fails

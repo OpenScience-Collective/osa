@@ -49,6 +49,7 @@ from src.core.services.anthropic_models import (
     MODEL_ALIASES,  # noqa: F401
     OFFERED_MODELS,  # noqa: F401
     SAMPLING_MODELS,
+    effective_reasoning_effort,
     is_bedrock_model,
     normalize_model,
 )
@@ -237,6 +238,7 @@ def create_anthropic_llm(
     cache_ttl: str | None = None,
     timeout: float = 60.0,
     settings: Settings | None = None,
+    reasoning_effort: str | None = None,
 ) -> BaseChatModel:
     """Create a Claude LLM instance for the Claude Platform on AWS.
 
@@ -269,6 +271,14 @@ def create_anthropic_llm(
         timeout: Per-request timeout in seconds.
         settings: Settings instance to read server-mode credentials and
             defaults from. Defaults to ``get_settings()``.
+        reasoning_effort: The community's level from the neutral scale, or None to
+            change nothing. Only models with levels are affected (claude-sonnet-5-5;
+            claude-haiku-4-5 thinks with a budget and ignores it). The model is sent a
+            level it accepts, never above ``high``: ``none`` turns extended thinking
+            off (``{"type": "between_tools"}``, no effort field, the API's default
+            effort applying), and ``low``, ``medium`` and ``high`` set adaptive
+            thinking and ``output_config.effort`` to that level. An explicit
+            ``thinking`` argument still wins over the thinking this implies.
 
     Returns:
         A :class:`CachingChatAnthropic` (default) or plain ``ChatAnthropic``
@@ -318,8 +328,36 @@ def create_anthropic_llm(
     else:
         resolved_thinking = thinking
 
+    # The community's reasoning level (issue #545), for the models that have levels: it
+    # picks the thinking mode (unless the caller gave one) and the effort the API is
+    # told. It is a field of its own (`output_config`), not `model_kwargs`, which
+    # langchain-anthropic rejects as supplied twice, and not the adapter's
+    # `reasoning_effort`, which can force adaptive thinking on with display settings.
+    effort_level = effective_reasoning_effort(resolved_model, reasoning_effort, "anthropic")
+    output_config: dict[str, Any] | None = None
+    if effort_level is not None and resolved_model in _ADAPTIVE_THINKING_MODELS:
+        if effort_level == "none":
+            if isinstance(thinking, _Default):
+                resolved_thinking = dict(_THINKING_OFF)
+        else:
+            output_config = {"effort": effort_level}
+            if isinstance(thinking, _Default):
+                resolved_thinking = {"type": "adaptive"}
+
     if resolved_thinking is not None:
         _validate_thinking(resolved_thinking, resolved_model, resolved_max_tokens)
+        if (
+            output_config is not None
+            and resolved_thinking.get("type") == "between_tools"
+            and output_config["effort"] in ("xhigh", "max")
+        ):
+            # The API refuses this pairing (a 400: "not supported when thinking is
+            # disabled"); the level table never produces it for Sonnet, so this is
+            # the guard for a caller that turns thinking off by hand at a high level.
+            raise ValueError(
+                f"thinking type 'between_tools' is accepted only at effort 'high' or "
+                f"below, got {output_config['effort']!r}"
+            )
 
     thinking_on = resolved_thinking is not None and resolved_thinking.get("type") not in (
         "disabled",
@@ -382,6 +420,8 @@ def create_anthropic_llm(
 
     if resolved_thinking is not None:
         kwargs["thinking"] = resolved_thinking
+    if output_config is not None:
+        kwargs["output_config"] = output_config
 
     common_kwargs: dict[str, Any] = {
         "model": resolved_model,
