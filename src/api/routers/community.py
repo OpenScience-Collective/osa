@@ -2959,6 +2959,61 @@ def _sse_safe_tool_output(tool_output: Any) -> str:
     return "\n".join(parts)
 
 
+#: The longest tool name a `tool_call` event carries. The name is the model's output,
+#: not a value this server chose, so it is bounded before it goes to the client.
+_TOOL_CALL_NAME_MAX_CHARS = 128
+
+
+def _tool_call_sse_events(
+    chunk: Any, run_id: Any, announced: set[tuple[Any, ...]]
+) -> list[dict[str, str]]:
+    """The `tool_call` events a streamed model chunk starts: one per call, named only.
+
+    `on_tool_start` fires once a tool starts executing, which is after the model has
+    finished writing the call. For a long code call that is many seconds with no event,
+    so the widget could only say it was waiting. The first chunk that names a call is
+    the earliest the reader can be told what is coming, so a `tool_call` event carrying
+    the tool's name, never its arguments (which can be long or private), is sent then.
+
+    Providers shape `tool_call_chunks` differently. Anthropic and Bedrock put the name
+    and id on the first chunk of a content block and only the block's `index` on the
+    rest; OpenAI-style streams (OpenRouter through LiteLLM) do the same with the call's
+    position as `index`, and some repeat the name on later chunks. So a call is known by
+    its `index` when it has one, else by its `id`, else by its name, within its model
+    run: `run_id` keeps the runs of one turn apart, since their indices restart at 0.
+    `announced` belongs to the caller, one per stream, and remembers what was sent.
+
+    Never raises. This is a courtesy to the reader, and a stream must not fail over it.
+    """
+    try:
+        call_chunks = getattr(chunk, "tool_call_chunks", None)
+        if not call_chunks or not isinstance(call_chunks, list):
+            return []
+        events: list[dict[str, str]] = []
+        for call in call_chunks:
+            if not isinstance(call, dict):
+                continue
+            name = call.get("name")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            index = call.get("index")
+            call_id = call.get("id")
+            if isinstance(index, int):
+                slot: tuple[Any, ...] = (run_id, "index", index)
+            elif isinstance(call_id, str) and call_id:
+                slot = (run_id, "id", call_id)
+            else:
+                slot = (run_id, "name", name)
+            if slot in announced:
+                continue
+            announced.add(slot)
+            events.append({"event": "tool_call", "name": name.strip()[:_TOOL_CALL_NAME_MAX_CHARS]})
+        return events
+    except Exception:
+        logger.warning("Could not read the tool calls in a streamed model chunk", exc_info=True)
+        return []
+
+
 def _extract_token_usage(event_data: dict) -> tuple[int, int, int, int]:
     """Extract token counts from an on_chat_model_end event.
 
@@ -3082,6 +3137,7 @@ async def _stream_ask_response(
     Event format:
         data: {"event": "content", "content": "text chunk"}
         data: {"event": "thinking"}
+        data: {"event": "tool_call", "name": "tool_name"}
         data: {"event": "tool_start", "name": "tool_name", "input": {...}}
         data: {"event": "tool_end", "name": "tool_name", "output": {...}}
         data: {"event": "citation", "marker": 1, "source": "...", "title": "...", "cited_text": "..."}
@@ -3091,6 +3147,10 @@ async def _stream_ask_response(
     The `thinking` event is a liveness signal only -- it never carries the
     model's reasoning text (see src/agents/content.py's module docstring);
     clients that do not recognize it are expected to ignore it.
+
+    `tool_call` fires once per call, when the model starts writing it, which for a
+    long call is well before `tool_start` (see `_tool_call_sse_events`). It carries
+    the tool's name only, and is a liveness signal like `thinking`.
 
     A `citation` event fires the first time a source is cited, after the text
     block it supports; its marker text (e.g. "[1]") is also appended to the
@@ -3109,6 +3169,7 @@ async def _stream_ask_response(
     total_cache_read_tokens = 0
     total_cache_creation_tokens = 0
     citation_assembler = CitationAssembler()
+    announced_tool_calls: set[tuple[Any, ...]] = set()
 
     # Per-request id (set by metrics middleware) so the widget can attach feedback.
     request_id = getattr(http_request.state, "request_id", None) if http_request else None
@@ -3154,6 +3215,10 @@ async def _stream_ask_response(
                                 yield f"data: {json.dumps(sse_event)}\n\n"
                         elif block.kind == "thinking":
                             yield f"data: {json.dumps({'event': 'thinking'})}\n\n"
+                for sse_event in _tool_call_sse_events(
+                    chunk, event.get("run_id"), announced_tool_calls
+                ):
+                    yield f"data: {json.dumps(sse_event)}\n\n"
 
             elif kind == "on_chat_model_end":
                 inp, out, cache_read, cache_creation = _extract_token_usage(event.get("data", {}))
@@ -3359,6 +3424,7 @@ async def _stream_chat_response(
     Event format:
         data: {"event": "content", "content": "text chunk"}
         data: {"event": "thinking"}
+        data: {"event": "tool_call", "name": "tool_name"}
         data: {"event": "tool_start", "name": "tool_name", "input": {...}}
         data: {"event": "tool_end", "name": "tool_name", "output": {...}}
         data: {"event": "session", "session_id": "..."}  (sent first)
@@ -3370,6 +3436,10 @@ async def _stream_chat_response(
     The `thinking` event is a liveness signal only -- it never carries the
     model's reasoning text (see src/agents/content.py's module docstring);
     clients that do not recognize it are expected to ignore it.
+
+    `tool_call` fires once per call when the model starts writing it, before any
+    `tool_start`, and for a browser call before its `tool_request` (see
+    `_tool_call_sse_events`). It carries the tool's name only.
 
     A `citation` event fires the first time a source is cited after the text
     block it supports; its marker text is also appended to the `content`
@@ -3478,6 +3548,7 @@ async def _stream_chat_response(
 
         stream_config = awm.langfuse_config or {}
         full_response = ""
+        announced_tool_calls: set[tuple[Any, ...]] = set()
         final_state: dict[str, Any] | None = None
         # Whether the run ENDED on the client_tools node, tracked as the last graph
         # node to finish. A parked call ends the run there; a node that refused
@@ -3507,6 +3578,10 @@ async def _stream_chat_response(
                                 yield f"data: {json.dumps(sse_event)}\n\n"
                         elif block.kind == "thinking":
                             yield f"data: {json.dumps({'event': 'thinking'})}\n\n"
+                for sse_event in _tool_call_sse_events(
+                    chunk, event.get("run_id"), announced_tool_calls
+                ):
+                    yield f"data: {json.dumps(sse_event)}\n\n"
 
             elif kind == "on_chat_model_end":
                 inp, out, cache_read, cache_creation = _extract_token_usage(event.get("data", {}))
