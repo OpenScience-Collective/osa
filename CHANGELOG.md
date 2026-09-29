@@ -53,13 +53,21 @@ the version being released and start a new `[Unreleased]` section above it.
   A reveal never ends inside a `[n]` citation marker, a source is listed only once its marker has been shown, and a reader who is typing in a message, or has scrolled up, is not interrupted by the redraws.
   A reader who asked their system for reduced motion gets every chunk on arrival, gathered into one redraw per tick; a hidden tab or a page being left shows and saves the rest of the reply at once, and a page that is already hidden is not paced at all.
 - **The widget says what a pending reply is doing** (issue #538), where it used to say only "Thinking..." or the community's title.
-  While a tool runs the label names it from the tool's name ("Searching datasets...", "Looking up documentation...", "Listing recordings..."), never from its arguments.
-  While the model writes a call to run code it reads "Writing code...", and once a tool has answered, or a browser run has finished, "Analyzing results..." until the model's next text.
-  "Thinking..." stays for a wait with no tool in it, and a server that sends none of the new events gets the labels it always did.
-  After 5 seconds the label is followed by how long the wait has lasted ("Searching datasets... 12 s"), updated once a second without redrawing the conversation, and not announced to a screen reader each second.
-  Before any reply text is on screen this is the loading bubble's label; once the reply has text, a later activity is a status line under that text in the same message, so it never makes a second or empty bubble.
+  The label names the tool from its name alone, never its arguments ("Searching datasets...", "Looking up documentation...", "Listing recordings..."), from the moment the model starts writing the call.
+  A call to run code reads "Writing code..." while it is written and "Running code..." once it runs; a tool is called code only if its name says so (code, python or script), so one that runs a query reads "Working...".
+  Once a batch of tools has answered, or a browser run has finished, it reads "Analyzing results..." until the model's next text; "Thinking..." stays for a wait with no tool in it.
+  A tool's label is written once: parallel calls announced as the model writes them are not relabeled one by one as they start.
+  A server without the new `tool_call` event still sends `tool_start` and `tool_end`, and the widget labels from those: a tool is named once it starts rather than while it is written, and "Analyzing results..." follows its end.
+  After 5 seconds of waiting, the label is followed by how long the reader has waited ("Searching datasets... 12 s"): the time since the message was sent, since a browser run's result went back, or since the reply's last visible text.
+  A new label, whitespace, or a slow response does not start the time again.
+  It is read from a monotonic clock (`performance.now`, else `Date.now`) and updated once a second without redrawing the conversation.
+  Before any reply text is on screen the status is the loading bubble's label; once the reply has visible text, a later activity is a status line under that text in the same message.
+  A status never adds a message of its own and never stands under an empty one: a pending reply is drawn only once it has visible text or a record of code it ran.
+  Text that is only whitespace (a reasoning model's `"\n\n"` before a tool call) is not text: the loading bubble and any status stay, and a reply that ends as only whitespace is dropped, as an empty one is.
+  A screen reader hears each new label once, from one polite status region made with the widget and kept outside the conversation, so redraws do not repeat it; the visible label is hidden from it, the title placeholder and the seconds are never announced, and the region is emptied when the status ends.
   None of it is saved with the conversation.
 - **A new `tool_call` SSE event** on `/chat`, `/chat/resume` and `/ask` (issue #538): `{"event": "tool_call", "name": "..."}`, sent once per call when the model starts writing it, which for a long code call is many seconds before `tool_start` (or `tool_request`, for a browser call).
+  It is read from the model's streamed tool-call chunks in the shapes the Anthropic, Bedrock and OpenAI-style adapters yield, and is tested against Claude's own streamed events.
   It carries the tool's name only; no existing event, answer, citation or token count changes, and a widget that does not know it only logs a console warning.
 - **The OpenRouter chat model is a `ChatLiteLLM` subclass, not a wrapper around one** (`src/core/services/litellm_chat.py`, replacing `CachingLLMWrapper`): `bind_tools` and streaming are native, and tool results and earlier assistant turns are sent as their text instead of a stringified block list.
 - **Claude Sonnet 5.5 replaces Sonnet 5** (issue #522):
