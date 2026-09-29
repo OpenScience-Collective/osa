@@ -24,6 +24,7 @@ from src.core.config.community import (
     MAX_CONFIGURED_CLIENT_TOOLS,
     MAX_IMPORT_BEFORE_SEAL,
     MAX_PRELUDE_CHARS,
+    MODEL_INSTRUCTIONS_MAX_LENGTH,
     SEALED_IMPORT_ROOTS,
     BudgetConfig,
     CitationConfig,
@@ -2974,3 +2975,51 @@ class TestCommunityConfigCapsule:
             id="test", name="Test", description="Test", widget=WidgetConfig(launcher="bubble")
         )
         assert config.notebook is None
+
+
+class TestModelInstructions:
+    """``model_instructions``: extra system-prompt text for particular models."""
+
+    def _config(self, **instructions: str) -> CommunityConfig:
+        return CommunityConfig(
+            id="instr-test", name="Instructions", description="x", model_instructions=instructions
+        )
+
+    def test_defaults_to_none(self) -> None:
+        assert self._config().model_instructions == {}
+
+    def test_keys_are_stored_under_the_id_they_resolve_to(self) -> None:
+        config = self._config(**{"us.openai.gpt-6-luna": "  Be brief.  "})
+        assert config.model_instructions == {"openai.gpt-6-luna": "Be brief."}
+
+    def test_a_claude_model_can_be_tuned_too(self) -> None:
+        config = self._config(**{"claude-sonnet-5": "Be thorough."})
+        assert config.model_instructions == {"claude-sonnet-5-5": "Be thorough."}
+
+    def test_an_unknown_model_is_an_error_not_a_silent_no_op(self) -> None:
+        with pytest.raises(ValidationError, match="not an offered model"):
+            self._config(**{"openai.gpt-oss-120": "A typo in the id."})
+
+    def test_two_names_for_one_model_are_an_error(self) -> None:
+        with pytest.raises(ValidationError, match="twice"):
+            self._config(**{"openai.gpt-6-luna": "One.", "us.openai.gpt-6-luna": "Two."})
+
+    def test_empty_text_is_an_error(self) -> None:
+        with pytest.raises(ValidationError, match="empty"):
+            self._config(**{"openai.gpt-6-luna": "   "})
+
+    def test_text_beyond_the_limit_is_an_error(self) -> None:
+        with pytest.raises(ValidationError, match="too long"):
+            self._config(**{"openai.gpt-6-luna": "x" * (MODEL_INSTRUCTIONS_MAX_LENGTH + 1)})
+
+    def test_text_at_the_limit_is_accepted(self) -> None:
+        config = self._config(**{"openai.gpt-6-luna": "x" * MODEL_INSTRUCTIONS_MAX_LENGTH})
+        assert len(config.model_instructions["openai.gpt-6-luna"]) == MODEL_INSTRUCTIONS_MAX_LENGTH
+
+    def test_a_bedrock_model_is_a_valid_default_model(self) -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            config = CommunityConfig(
+                id="d", name="D", description="x", default_model="openai.gpt-6-luna"
+            )
+        assert config.default_model == "openai.gpt-6-luna"
