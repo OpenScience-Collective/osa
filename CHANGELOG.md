@@ -43,6 +43,11 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Changed
 
+- **The widget reveals a streamed reply at a reading pace** (issue #531): the text a reply has delivered is shown at a floor of about 300 characters per second, faster only when the pace would fall about 1.5 seconds behind the stream, instead of the moment each chunk arrives.
+  GPT-6 Luna at maximum effort reasons silently for most of a turn and then emits over 1,000 characters per second, so its answer used to appear all at once (a 1,500 character reply arrived in about a second, after about 25 seconds of nothing) and now grows over about 3 to 4 seconds.
+  A model that streams slower than the pace is shown as it arrives, with no delay added, and a reader who asked their system for reduced motion gets every chunk on arrival.
+  A fenced code block is not typed out: it is shown whole once the reveal reaches it, and code still arriving inside a block is shown as it arrives.
+  A reply that finishes waits for the reveal for at most 4 seconds before the canonical text replaces it.
 - **The OpenRouter chat model is a `ChatLiteLLM` subclass, not a wrapper around one** (`src/core/services/litellm_chat.py`, replacing `CachingLLMWrapper`): `bind_tools` and streaming are native, and tool results and earlier assistant turns are sent as their text instead of a stringified block list.
 - **Claude Sonnet 5.5 replaces Sonnet 5** (issue #522):
   the offered Sonnet is now `claude-sonnet-5-5`, at the same price ($2 / $10 per 1M tokens).
