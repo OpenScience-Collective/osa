@@ -385,6 +385,33 @@ class TestStreaming:
         assert cited == ["https://hedtags.org/sensory"]
 
 
+class TestTokenCallbacks:
+    """LangGraph's astream_events reads tokens from callbacks, not from what stream() returns."""
+
+    async def _events(self, deltas: list[str]) -> list[str]:
+        llm = create_bedrock_llm("openai.gpt-6-luna", settings=_settings())
+        _Wire(llm, _stream_reply(deltas), "application/vnd.amazon.eventstream")
+        tokens: list[str] = []
+        async for event in llm.bind_tools([_search_tool()]).astream_events(_conversation()):
+            if event["event"] == "on_chat_model_stream":
+                content = event["data"]["chunk"].content
+                tokens.append(
+                    content
+                    if isinstance(content, str)
+                    else "".join(b.get("text", "") for b in content if isinstance(b, dict))
+                )
+        return tokens
+
+    async def test_no_tag_reaches_a_token_callback(self) -> None:
+        tokens = await self._events(
+            ["It marks a stim", "ulus.[sr", "c:1] Group th", "em.[src:2", "]", " Done."]
+        )
+
+        assert tokens
+        assert not any("[src" in token for token in tokens), tokens
+        assert "".join(tokens) == "It marks a stimulus. Group them. Done."
+
+
 class TestReplayingHistory:
     """A tool loop and a model switch both send earlier turns back to the model."""
 
