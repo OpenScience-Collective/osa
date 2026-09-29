@@ -282,5 +282,58 @@ console.log('\nan OpenRouter key with a service-only model is saved');
   assertEqual(saved(), { apiKey: OPENROUTER_KEY, model: 'openai.gpt-6-luna', keyProvider: 'openrouter' }, 'the pair is saved');
 }
 
+// The ids the server's community config validator accepts and refuses (issue #552): one
+// list, read here and by tests/test_core/test_model_id_corpus.py, so the widget refuses
+// exactly what the server would and nothing more. Its variants (":nitro", ":floor",
+// ":free") are OpenRouter's, and the dialog used to refuse them.
+const MODEL_IDS = JSON.parse(
+  readFileSync(new URL('../tests/fixtures/model_ids.json', import.meta.url), 'utf8')
+);
+
+console.log('\na custom model the server accepts is saved, variant suffixes included');
+for (const modelId of MODEL_IDS.valid) {
+  const { window, q, saved } = await openSettingsDialog();
+  choose(window, q, 'custom');
+  q('#osa-settings-custom-model').value = modelId;
+  q('#osa-settings-api-key').value = OPENROUTER_KEY;
+  click(window, q('.osa-settings-btn-save'));
+  assertEqual(
+    saved(),
+    { apiKey: OPENROUTER_KEY, model: modelId, keyProvider: 'openrouter' },
+    `${modelId.length > 60 ? `${modelId.slice(0, 20)}... (${modelId.length} characters)` : modelId} is saved`
+  );
+}
+
+console.log('\na custom model the server would refuse is refused, with the reason');
+for (const modelId of MODEL_IDS.invalid) {
+  const { window, q, saved } = await openSettingsDialog();
+  choose(window, q, 'custom');
+  q('#osa-settings-custom-model').value = modelId;
+  q('#osa-settings-api-key').value = OPENROUTER_KEY;
+  click(window, q('.osa-settings-btn-save'));
+  const label = modelId.length > 60 ? `${modelId.slice(0, 20)}... (${modelId.length} characters)` : JSON.stringify(modelId);
+  assertEqual(saved(), null, `${label} is not saved`);
+  assert(q('.osa-error').textContent.includes('Invalid model format'), `and the reader is told why (${label})`);
+}
+
+console.log('\nthe refusal says a :variant is allowed');
+{
+  const { window, q } = await openSettingsDialog();
+  choose(window, q, 'custom');
+  q('#osa-settings-custom-model').value = 'not a model';
+  q('#osa-settings-api-key').value = OPENROUTER_KEY;
+  click(window, q('.osa-settings-btn-save'));
+  assert(q('.osa-error').textContent.includes(':nitro'), 'the message names a variant such as :nitro');
+}
+
+console.log('\na saved model with a variant suffix comes back as Custom, kept');
+{
+  const slug = 'openai/gpt-oss-120b:nitro';
+  const { window, q } = await openSettingsDialog({ saved: { apiKey: OPENROUTER_KEY, model: slug } });
+  assertEqual(q('#osa-settings-model').value, 'custom', 'the menu is on Custom');
+  assertEqual(q('#osa-settings-custom-model').value, slug, 'the model name is kept whole');
+  assert(!window.document.body.textContent.includes('was ignored'), 'and no notice says it was dropped');
+}
+
 console.log(`\nTotal: ${passed + failed}   Passed: ${passed}   Failed: ${failed}`);
 process.exit(failed ? 1 : 0);
