@@ -62,10 +62,17 @@ CITATION_INSTRUCTION = (
 #: Horizontal whitespace a model may leave before a tag; it goes with the tag.
 _HSPACE = " \t  "
 
+#: The most whitespace a tag takes with it, and so the most held back in case one
+#: follows. A longer run is released as text: nothing legitimate pads a tag with that
+#: much, and the bound keeps a whitespace loop from stalling the event loop (an
+#: unbounded ``[ ]*`` before the tag made ``re.search`` quadratic in the run's length).
+_HELD_WHITESPACE_LIMIT = 64
+
 #: A complete tag, with the horizontal whitespace before it. Tolerates the small
 #: variations models produce: ``[src: 3]``, ``[src:1,2]``, ``[src:1, src:2]``.
 MARKER_PATTERN = re.compile(
-    rf"[{_HSPACE}]*\[\s*src\s*:\s*(\d+(?:\s*[,;]\s*(?:src\s*:\s*)?\d+)*)\s*\]",
+    rf"[{_HSPACE}]{{0,{_HELD_WHITESPACE_LIMIT}}}"
+    r"\[\s*src\s*:\s*(\d+(?:\s*[,;]\s*(?:src\s*:\s*)?\d+)*)\s*\]",
     re.IGNORECASE,
 )
 
@@ -336,8 +343,10 @@ class MarkerStream:
             and _PARTIAL_MARKER.fullmatch(buffer[bracket:])
         ):
             cut = bracket
-        while cut > 0 and buffer[cut - 1] in _HSPACE:
+        held = 0
+        while cut > 0 and buffer[cut - 1] in _HSPACE and held < _HELD_WHITESPACE_LIMIT:
             cut -= 1
+            held += 1
         return cut
 
     def _emit_text(self, text: str, pieces: list[TextPiece | CitePiece]) -> None:

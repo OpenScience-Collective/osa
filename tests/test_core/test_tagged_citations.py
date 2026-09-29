@@ -1,6 +1,7 @@
 """Tests for tagged-source citations (models with no native search_result support)."""
 
 import random
+import time
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -12,6 +13,7 @@ from src.agents.content import (
     normalize_citation_markers,
 )
 from src.core.services.tagged_citations import (
+    _HELD_WHITESPACE_LIMIT,
     CITATION_INSTRUCTION,
     MARKER_PATTERN,
     CitePiece,
@@ -302,6 +304,47 @@ class TestMarkerStream:
             sizes = [rng.randint(1, 6) for _ in range(rng.randint(1, len(text)))]
             assert _merged(_run(text, registry, sizes)) == whole
         assert _merged(_run(text, registry, [1] * len(text))) == whole
+
+
+class TestLongWhitespaceRuns:
+    """A model stuck emitting whitespace must not stall the server that reads it."""
+
+    def test_a_long_run_is_read_in_linear_time(self) -> None:
+        registry = _registry()
+        # A run that no tag ends: the search fails from every position inside it.
+        text = "Answer." + " " * 50_000 + "and more."
+
+        started = time.perf_counter()
+        stream = MarkerStream(registry)
+        for i in range(0, len(text), 16):
+            stream.feed(text[i : i + 16])
+        stream.finish()
+        streamed = time.perf_counter() - started
+
+        started = time.perf_counter()
+        rewrite_content(text, registry)
+        whole = time.perf_counter() - started
+
+        # Quadratic reading took over two seconds at this length, and the event loop
+        # is stuck for all of it.
+        assert streamed < 1.0
+        assert whole < 1.0
+
+    def test_a_tag_takes_the_whitespace_before_it_up_to_a_limit(self) -> None:
+        registry = _registry()
+        pieces = _merged(_run("Claim." + " " * 100 + "[src:1]", registry))
+
+        assert pieces[0] == TextPiece(0, "Claim." + " " * (100 - _HELD_WHITESPACE_LIMIT))
+        assert isinstance(pieces[1], CitePiece)
+
+    def test_however_the_run_is_cut_the_reading_is_the_same(self) -> None:
+        registry = _registry()
+        text = "Claim." + " " * 150 + "[src:1] Next." + "\t" * 90 + "\n[src:2]"
+        whole = _merged(_run(text, registry))
+        rng = random.Random(11)
+        for _ in range(100):
+            sizes = [rng.randint(1, 40) for _ in range(rng.randint(1, 30))]
+            assert _merged(_run(text, registry, sizes)) == whole
 
 
 class TestReachesTheApiLayerUnchanged:
