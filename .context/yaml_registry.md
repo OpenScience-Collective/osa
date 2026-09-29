@@ -46,6 +46,8 @@ communities:
 | name | string | Yes | Display name |
 | description | string | Yes | Short description |
 | status | string | No | 'available', 'beta', or 'coming_soon' (default: 'available') |
+| default_model | string | No | Model the community runs when a request names none |
+| reasoning_effort | string | No | `none`, `low`, `medium`, `high`, `xhigh` or `max`: how hard every model this community runs reasons, on every provider. Each model clamps it to the levels it accepts (Claude Sonnet never above `high`; Claude Haiku and Qwen3 Next ignore it). Unset means the model's own default. See ADR 0015 |
 | documentation | list | No | Documentation sources |
 | github | object | No | GitHub configuration |
 | citations | object | No | Paper search configuration |

@@ -40,6 +40,15 @@ the version being released and start a new `[Unreleased]` section above it.
   gpt-oss-120b and Qwen3 Next do no caching.
 - **`model_instructions`** in a community's `config.yaml`: extra system-prompt text for particular models, added after the platform's own note for that model.
   GPT-6 Luna and gpt-oss-120b get a note that stops them searching in a loop.
+- **`reasoning_effort`, one key in a community's `config.yaml` that sets how hard every model reasons, on every provider** (issue #545, ADR 0015):
+  `none`, `low`, `medium`, `high`, `xhigh` or `max`, turned into each platform's own request field: the nested `reasoning.effort` for GPT-6 Luna and the flat `reasoning_effort` for gpt-oss-120b on Amazon Bedrock (Qwen3 Next has no control and is sent nothing), `output_config.effort` beside adaptive thinking for Claude Sonnet 5.5 on the Claude Platform, and the unified `reasoning.effort` body field on OpenRouter.
+  Each model keeps its own predetermined levels, and a level it does not accept is clamped, never sent: gpt-oss-120b runs low to high, and Claude Sonnet is never run above high on any platform, whatever a community asks.
+  Claude Haiku 4.5 (token-budget thinking) and Qwen3 Next ignore the key.
+  Unset, a model runs at its own default on every provider: high for GPT-6 Luna and gpt-oss-120b, the Claude Platform's own for Sonnet.
+  A level the community's own `default_model` cannot honor is a warning when the config loads.
+  NWB and NEMAR set `high`.
+  Through the real NWB graph, Luna's median time to first text was 2.5 s at none, 5.2 s at medium and high, 10.6 s at xhigh and 48 s at max, and at xhigh and max it often skipped the documentation search, so the answer had no citations.
+  Bedrock's request fields were measured against the live service; the Anthropic and OpenRouter shapes are tested against the requests the clients build, not yet against those services (no keys on the development machine).
 
 ### Changed
 
