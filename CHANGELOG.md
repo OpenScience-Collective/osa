@@ -49,7 +49,7 @@ the version being released and start a new `[Unreleased]` section above it.
   A model that streams slower than the pace is shown as it arrives, at most one 80 millisecond tick late, and the redraw rate is about 12 per second at most.
   A fenced code block is not typed out: it is shown whole once the reveal reaches it, and code still arriving inside a block is shown as it arrives.
   A reveal never ends inside a `[n]` citation marker, a source is listed only once its marker has been shown, and a reader who is typing in a message, or has scrolled up, is not interrupted by the redraws.
-  A reader who asked their system for reduced motion gets every chunk on arrival, gathered into one redraw per tick; a hidden tab or a page being left shows and saves the rest of the reply at once.
+  A reader who asked their system for reduced motion gets every chunk on arrival, gathered into one redraw per tick; a hidden tab or a page being left shows and saves the rest of the reply at once, and a page that is already hidden is not paced at all.
 - **The OpenRouter chat model is a `ChatLiteLLM` subclass, not a wrapper around one** (`src/core/services/litellm_chat.py`, replacing `CachingLLMWrapper`): `bind_tools` and streaming are native, and tool results and earlier assistant turns are sent as their text instead of a stringified block list.
 - **Claude Sonnet 5.5 replaces Sonnet 5** (issue #522):
   the offered Sonnet is now `claude-sonnet-5-5`, at the same price ($2 / $10 per 1M tokens).
