@@ -72,32 +72,26 @@ _ADAPTIVE_THINKING_MODELS = {"claude-sonnet-5-5"}
 # The "thinking off" setting of the adaptive-thinking models. Sonnet 5.5 does
 # no extended thinking under it, though the short progress notes it writes
 # between tool calls still arrive as `thinking` blocks. The API allows it only
-# at effort "high" or below and with no other field inside `thinking`. OSA sets
-# an effort only for a community's `reasoning_effort` (its `none` sends "low" with
-# this); unset, the API default is "high".
+# at effort "high" or below and with no other field inside `thinking`. OSA always
+# sends an effort with it (the community's level, else "high"; its `none` sends "low").
 _THINKING_OFF: dict[str, Any] = {"type": "between_tools"}
 
 # Smallest thinking budget the API accepts on budget-style (Haiku) models.
 MIN_THINKING_BUDGET_TOKENS = 1024
 
-# The budget `default_thinking` gives a budget-style model when a caller names none: the
-# budget of the default reasoning level (high). A community changes it through its
-# `reasoning_effort` (`THINKING_BUDGET_TOKENS`), not through a setting.
-DEFAULT_THINKING_BUDGET_TOKENS = THINKING_BUDGET_TOKENS["claude-haiku-4-5"][
-    DEFAULT_REASONING_EFFORT
-]
-
 
 def _fit_thinking_budget(budget: int, max_tokens: int) -> int:
-    """Lower a budget OSA chose so at least the API's minimum budget is left for the answer.
+    """Lower a budget OSA chose so it fits under ``max_tokens``, never below the API's minimum.
 
-    Thinking tokens come out of ``max_tokens``, so a budget the API would refuse (it must
-    be below ``max_tokens``) is lowered, not sent: a deployment whose max output is smaller
-    than a level's budget still answers, with less thinking. A ``max_tokens`` too small to
-    leave that room is left to ``_validate_thinking``, which refuses it as it always has.
+    Thinking tokens come out of ``max_tokens``, and the API refuses a budget that is not
+    below it, so a deployment whose max output is smaller than a level's budget gets less
+    thinking instead of a failed request: the budget leaves the API's minimum budget's
+    worth of tokens for the answer where ``max_tokens`` allows it (at least twice that),
+    and is the minimum itself between one and two times that. A ``max_tokens`` that does
+    not exceed the minimum budget leaves no valid budget, and ``_validate_thinking``
+    refuses it as it always has.
     """
-    room = max_tokens - MIN_THINKING_BUDGET_TOKENS
-    return min(budget, room) if room >= MIN_THINKING_BUDGET_TOKENS else budget
+    return max(MIN_THINKING_BUDGET_TOKENS, min(budget, max_tokens - MIN_THINKING_BUDGET_TOKENS))
 
 
 # Prompt-cache lifetimes. A 5-minute entry costs 1.25x the input price to
@@ -109,36 +103,30 @@ CACHE_TTLS = ("5m", "1h")
 DEFAULT_CACHE_TTL = "5m"
 
 
-def default_thinking(model: str | None = None, budget: int | None = None) -> dict[str, Any] | None:
-    """Return the default thinking configuration for a model.
+def default_thinking(model: str | None = None) -> dict[str, Any]:
+    """Return the default thinking configuration for a model: its default reasoning level.
 
     Args:
         model: Model identifier (normalized internally); the default model
             when None.
-        budget: Thinking budget in tokens for budget-style (Haiku) models.
-            Falls back to ``DEFAULT_THINKING_BUDGET_TOKENS`` when None. A
-            budget of 0 or negative disables thinking for any model by
-            returning None, which omits the ``thinking`` key from the
-            request. Note that omission is only "off" for budget-style
-            models: on adaptive-default models (claude-sonnet-5-5) an omitted
-            key means the API's own default, which is adaptive thinking
-            turned on. To actually turn thinking off on those models, pass
-            ``thinking=None`` to :func:`create_anthropic_llm` instead, which
-            sends ``{"type": "between_tools"}`` explicitly.
 
     Returns:
-        A thinking configuration dict for the resolved model, or None when
-        thinking should be disabled.
+        Adaptive thinking for the adaptive-default models (claude-sonnet-5-5),
+        and for budget-style models (claude-haiku-4-5) an ``enabled`` budget: the one
+        ``THINKING_BUDGET_TOKENS`` gives the default level, ``high``. To turn
+        thinking off, pass ``thinking=None`` to :func:`create_anthropic_llm`, which
+        sends ``{"type": "between_tools"}`` on adaptive-default models (an omitted
+        key means adaptive thinking there) and omits the key on budget-style ones.
     """
     resolved_model = normalize_model(model)
-    resolved_budget = DEFAULT_THINKING_BUDGET_TOKENS if budget is None else budget
-    if resolved_budget <= 0:
-        return None
     if resolved_model in _ADAPTIVE_THINKING_MODELS:
         # Adaptive is the only "on" mode on this generation; the model
         # decides how much to think, so the budget value does not apply.
         return {"type": "adaptive"}
-    return {"type": "enabled", "budget_tokens": resolved_budget}
+    budgets = THINKING_BUDGET_TOKENS.get(resolved_model)
+    if budgets is None:
+        raise ValueError(f"{resolved_model} is not a Claude model with extended thinking")
+    return {"type": "enabled", "budget_tokens": budgets[DEFAULT_REASONING_EFFORT]}
 
 
 def _validate_thinking(thinking: dict[str, Any], model: str, max_tokens: int) -> None:
@@ -273,9 +261,10 @@ def create_anthropic_llm(
         max_tokens: Maximum tokens to generate. Defaults to
             ``settings.anthropic_max_output_tokens``.
         thinking: Explicit extended-thinking configuration. Leave unset to
-            get the per-model default from :func:`default_thinking` (on
-            adaptive-default models such as claude-sonnet-5-5, that default is
-            adaptive thinking turned on); pass ``None`` explicitly to
+            get the per-model default from :func:`default_thinking` (adaptive
+            thinking on adaptive-default models such as claude-sonnet-5-5, and
+            the ``high`` budget on claude-haiku-4-5, or the community's level
+            for it); pass ``None`` explicitly to
             turn thinking off, which sends ``{"type": "between_tools"}``
             on adaptive-default models and omits the ``thinking`` key on
             budget-style models (e.g. claude-haiku-4-5), where an omitted
@@ -356,12 +345,14 @@ def create_anthropic_llm(
     effort_level = effective_reasoning_effort(resolved_model, reasoning_effort, "anthropic")
     output_config: dict[str, Any] | None = None
     if (
-        effort_level is not None
+        reasoning_effort is not None
+        and effort_level is not None
         and resolved_model in THINKING_BUDGET_TOKENS
         and isinstance(thinking, _Default)
     ):
-        # A budget model (Haiku) has no effort field: its level, the community's or the
-        # default `high`, is a thinking budget, and `none` is no thinking.
+        # A budget model (Haiku) has no effort field: a community's level is a thinking
+        # budget, and `none` is no thinking. Unset, `default_thinking` already gave the
+        # budget of the default level.
         budget = THINKING_BUDGET_TOKENS[resolved_model].get(effort_level)
         resolved_thinking = None if budget is None else {"type": "enabled", "budget_tokens": budget}
     if (

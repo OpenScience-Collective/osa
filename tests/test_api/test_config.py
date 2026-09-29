@@ -4,10 +4,12 @@ Real Settings construction throughout -- no mocks, since the whole point is
 to verify pydantic's own validation behavior.
 """
 
+import logging
+
 import pytest
 from pydantic import ValidationError
 
-from src.api.config import Settings
+from src.api.config import RETIRED_ENV_VARS, Settings, get_settings
 
 
 class TestWorkspaceIdWithBaseUrl:
@@ -75,3 +77,52 @@ class TestBedrockApiKey:
 
     def test_no_key_is_the_default(self) -> None:
         assert Settings(bedrock_api_key=None).bedrock_api_key is None
+
+
+class TestRetiredEnvironmentVariables:
+    """A retired variable is ignored, and said to be, so an operator who had set it on
+    purpose is not silently moved to a different behavior (issue #548)."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_settings(self):
+        get_settings.cache_clear()
+        yield
+        get_settings.cache_clear()
+
+    @pytest.mark.parametrize("name", sorted(RETIRED_ENV_VARS))
+    def test_a_retired_variable_that_is_set_is_warned_about_by_name_with_its_replacement(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, name: str
+    ) -> None:
+        monkeypatch.setenv(name, "1024")
+        with caplog.at_level(logging.WARNING, logger="src.api.config"):
+            get_settings()
+        messages = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert any(name in m and "reasoning_effort" in m for m in messages), messages
+
+    @pytest.mark.parametrize("name", sorted(RETIRED_ENV_VARS))
+    def test_the_name_is_matched_in_any_case(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, name: str
+    ) -> None:
+        """Settings reads names case-insensitively, so a lowercase export counts."""
+        monkeypatch.delenv(name, raising=False)  # a developer's own shell may export it
+        monkeypatch.setenv(name.lower(), "1024")
+        with caplog.at_level(logging.WARNING, logger="src.api.config"):
+            get_settings()
+        assert any(name in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.parametrize("name", sorted(RETIRED_ENV_VARS))
+    def test_nothing_is_said_when_it_is_not_set(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, name: str
+    ) -> None:
+        for variant in (name, name.lower()):
+            monkeypatch.delenv(variant, raising=False)
+        with caplog.at_level(logging.WARNING, logger="src.api.config"):
+            get_settings()
+        assert not any(name in r.getMessage() for r in caplog.records)
+
+    def test_a_retired_variable_does_not_stop_startup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        for name in RETIRED_ENV_VARS:
+            monkeypatch.setenv(name, "not even a number")
+        assert get_settings() is not None
