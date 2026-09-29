@@ -64,7 +64,7 @@ const CONFIG = {
   offered_models: [
     { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
     { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5' },
-    { id: 'openai.gpt-6-luna', label: 'OpenAI GPT-6 Luna' },
+    { id: 'openai.gpt-6-luna', label: 'OpenAI GPT-6 Luna', platform_only: true },
   ],
   widget: {},
   client_tools: [],
@@ -239,6 +239,47 @@ console.log('\nremoving a saved key and saving an offered model clears the key')
   choose(window, q, 'claude-sonnet-5-5');
   click(window, q('.osa-settings-btn-save'));
   assertEqual(saved(), { apiKey: null, model: 'claude-sonnet-5-5', keyProvider: null }, 'the key is gone');
+}
+
+console.log('\nnext to the reader\'s own Anthropic key, the models only the service can run are unavailable');
+{
+  const { window, q } = await openSettingsDialog();
+  const luna = () => [...q('#osa-settings-model').options].find((o) => o.value === 'openai.gpt-6-luna');
+  const sonnet = () => [...q('#osa-settings-model').options].find((o) => o.value === 'claude-sonnet-5-5');
+  assert(!luna().disabled, 'without a key, the service-only model can be chosen');
+  choose(window, q, 'custom');
+  q('#osa-settings-api-key').value = ANTHROPIC_KEY;
+  q('#osa-settings-api-key').dispatchEvent(new window.Event('input', { bubbles: true }));
+  assert(luna().disabled, 'an Anthropic key disables it');
+  assert(luna().textContent.includes('not with your own Anthropic key'), 'and says why');
+  assert(!sonnet().disabled, 'a Claude model stays available');
+  q('#osa-settings-api-key').value = '';
+  q('#osa-settings-api-key').dispatchEvent(new window.Event('input', { bubbles: true }));
+  assert(!luna().disabled && luna().textContent === 'OpenAI GPT-6 Luna', 'removing the key restores it');
+  q('#osa-settings-api-key').value = OPENROUTER_KEY;
+  q('#osa-settings-api-key').dispatchEvent(new window.Event('input', { bubbles: true }));
+  assert(!luna().disabled, 'an OpenRouter key runs the same model there, so it stays available');
+}
+
+console.log('\nan Anthropic key with a service-only model cannot be saved');
+{
+  const { window, q, saved } = await openSettingsDialog();
+  choose(window, q, 'custom');
+  q('#osa-settings-api-key').value = ANTHROPIC_KEY;
+  choose(window, q, 'openai.gpt-6-luna');
+  click(window, q('.osa-settings-btn-save'));
+  assertEqual(saved(), null, 'nothing is saved');
+  assert(q('.osa-error').textContent.includes('cannot be used with your own Anthropic API key'), 'and the reader is told why');
+}
+
+console.log('\nan OpenRouter key with a service-only model is saved');
+{
+  const { window, q, saved } = await openSettingsDialog();
+  choose(window, q, 'custom');
+  q('#osa-settings-api-key').value = OPENROUTER_KEY;
+  choose(window, q, 'openai.gpt-6-luna');
+  click(window, q('.osa-settings-btn-save'));
+  assertEqual(saved(), { apiKey: OPENROUTER_KEY, model: 'openai.gpt-6-luna', keyProvider: 'openrouter' }, 'the pair is saved');
 }
 
 console.log(`\nTotal: ${passed + failed}   Passed: ${passed}   Failed: ${failed}`);
