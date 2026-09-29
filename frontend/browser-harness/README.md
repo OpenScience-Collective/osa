@@ -377,3 +377,29 @@ and with `prefers-reduced-motion: reduce` emulated by the browser the same burst
 Measured 2026-09-29 in Chrome 154: the first words appear about 100 ms after the first chunk,
 the reply grows through about 24 lengths over about 2 s, and the code block is drawn once, whole.
 With the widget's pacing removed the check fails five checks and exits 1.
+
+## The activity status (#538)
+
+`activity-status-check.mjs` runs what a pending reply says it is doing in headless Chrome,
+against its own local server (the widget, a community config and two `/chat` streams:
+a plain answer, then a reply that searches for about 6 s, reads the results, writes some text, looks up documentation and finishes).
+It samples every animation frame in the page: the loading bubble's label, the status line under the reply, the elapsed time beside either,
+and whether any frame breaks an invariant (a status that makes a message of its own, an assistant message with no text, the loading bubble beside a status line).
+Midway through the search it rates the earlier answer, which redraws the whole conversation while the reply is still an empty placeholder.
+It needs no backend and no network, and runs in the Frontend Tests job.
+
+```bash
+bun frontend/browser-harness/activity-status-check.mjs [screenshot-dir]
+```
+
+It carries its controls: the page must be visible, the conversation fresh,
+the stream's events must arrive in the order sent, "Searching datasets..." must be on screen before any reply text is,
+and the mid-search redraw must really happen.
+Measured 2026-09-29 in Chrome 154, 20 checks, three runs: about 780 frames per run;
+the loading label reads the title, "Thinking...", "Searching datasets..." (within 15 ms of its `tool_call`) and "Analyzing results...";
+"5 s" first shows about 5.1 s into the search; the second tool is a line under the text;
+no frame breaks an invariant, and the once-a-second timer has stopped by the frame the reply settles on.
+Each of these, put into the widget, fails the check: drawing the empty placeholder while loading, a mid-reply status as a new message,
+the loading bubble beside a status line, a timer a redraw does not stop, `tool_call` not read, the time shown from 3 s,
+the reduced-motion rule for the pulse losing to the pulse's own rule, and text that does not end the status.
+The last but one was a real bug the Bun suite could not see; this check found it.
