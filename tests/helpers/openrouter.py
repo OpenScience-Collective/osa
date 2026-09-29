@@ -6,6 +6,7 @@ hop is replaced. Point LiteLLM at it with ``OPENROUTER_API_BASE`` (the ``openrou
 fixture in the tests that use it does).
 """
 
+import gc
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -100,6 +101,15 @@ class FakeOpenRouter:
         self._records: list[tuple[dict[str, Any], dict[str, str]]] = []
         self._replies: list[Any] = []
         outer = self
+        # Automatic garbage collection is held off while this server is up, and run when it
+        # closes. httpcore's connection pool lock is not reentrant, and LiteLLM can leave a
+        # streaming response unclosed, to be finalized by the collector wherever it next runs:
+        # inside a later request, while the pool lock is held, that finalizer takes the same
+        # lock on the same thread and never returns. It showed as a test that hangs forever,
+        # at a different place on different runs, with the main thread in
+        # ConnectionPool.close under ConnectionPool.handle_request.
+        self._gc_was_enabled = gc.isenabled()
+        gc.disable()
 
         class Handler(BaseHTTPRequestHandler):
             # Keep-alive, as the real service does; without it a burst of concurrent
@@ -162,3 +172,6 @@ class FakeOpenRouter:
     def close(self) -> None:
         self._server.shutdown()
         self._server.server_close()
+        gc.collect()  # a safe point: no request is in flight, so no pool lock is held
+        if self._gc_was_enabled:
+            gc.enable()
