@@ -177,6 +177,37 @@ class TestMessageDicts:
             {"role": "tool", "tool_call_id": "call_123", "content": "Found 3 documents."}
         ]
 
+    def test_a_tool_results_documents_stay_on_lines_of_their_own(self) -> None:
+        """Each source is a document that ends with a reminder and the next opens with its
+        [src:N] header; joined with nothing the header ran on from the reminder."""
+        blocks = [
+            {
+                "type": "text",
+                "text": "[src:1] A\nSource: https://a.example\nAlpha.\n\n(End of [src:1])",
+            },
+            {
+                "type": "text",
+                "text": "[src:2] B\nSource: https://b.example\nBeta.\n\n(End of [src:2])",
+            },
+        ]
+        result = to_message_dicts([ToolMessage(content=blocks, tool_call_id="c1")], cache=False)
+
+        text = result[0]["content"]
+        assert "(End of [src:1])\n\n[src:2] B\nSource: https://b.example" in text
+        assert [line for line in text.split("\n") if line.startswith("[src:")] == [
+            "[src:1] A",
+            "[src:2] B",
+        ]
+
+    def test_an_assistant_turns_segments_are_joined_as_written(self) -> None:
+        """Segments of one reply carry their own spaces; a separator would add words."""
+        blocks = [
+            {"type": "text", "text": "One sentence.[src:1]"},
+            {"type": "text", "text": " Another."},
+        ]
+        result = to_message_dicts([AIMessage(content=blocks)], cache=False)
+        assert result[0]["content"] == "One sentence.[src:1] Another."
+
     def test_a_block_list_is_reduced_to_its_text(self) -> None:
         """A turn another model wrote: reasoning and tool-use blocks are not sent back."""
         blocks = [

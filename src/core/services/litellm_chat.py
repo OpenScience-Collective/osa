@@ -53,17 +53,24 @@ _USAGE_DETAILS_KEY = "osa_usage_details"
 _CACHE_MARKER = {"type": "ephemeral"}
 
 
-def _text_of(content: str | list[Any]) -> str:
+def _text_of(content: str | list[Any], separator: str = "") -> str:
     """The text of a message's content: a string as it is, a block list as its text blocks.
 
     OpenAI-style chat takes a string (some providers take nothing else) for a tool
     result or an earlier assistant turn. A block list here comes from the tagged
     rewrite or from a turn another model wrote, whose reasoning and tool-use blocks
     are not part of what a reader was shown.
+
+    Args:
+        content: A message's content.
+        separator: Put between text blocks. A tool result's blocks are separate
+            documents, each ending with its own reminder and the next opening with its
+            own ``[src:N]`` header, so they are separated by a blank line; an assistant
+            turn's blocks are segments of one reply that carry their own whitespace.
     """
     if isinstance(content, str):
         return content
-    return "".join(
+    return separator.join(
         block.get("text", "")
         for block in content
         if isinstance(block, dict) and block.get("type") == "text"
@@ -132,7 +139,7 @@ def to_message_dicts(messages: Sequence[BaseMessage], cache: bool = True) -> lis
     for index, message in enumerate(messages):
         _require_content(message, index)
         if isinstance(message, SystemMessage):
-            text = _text_of(message.content)
+            text = _text_of(message.content, "\n\n")
             content: Any = [{"type": "text", "text": text, "cache_control": _CACHE_MARKER}]
             result.append({"role": "system", "content": content if cache else text})
         elif isinstance(message, AIMessage):
@@ -147,7 +154,7 @@ def to_message_dicts(messages: Sequence[BaseMessage], cache: bool = True) -> lis
                 {
                     "role": "tool",
                     "tool_call_id": message.tool_call_id,
-                    "content": _text_of(message.content),
+                    "content": _text_of(message.content, "\n\n"),
                 }
             )
         else:
