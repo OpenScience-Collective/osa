@@ -25,7 +25,8 @@ live service, decides the shape of this module:
 """
 
 import logging
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from typing import Any
 
@@ -34,10 +35,11 @@ import botocore.session
 from botocore.config import Config as BotocoreConfig
 from botocore.tokens import FrozenAuthToken, TokenProviderChain
 from langchain_aws import ChatBedrockConverse
-from langchain_core.callbacks import CallbackManagerForLLMRun
+from langchain_core.callbacks import AsyncCallbackManagerForLLMRun, CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGenerationChunk, ChatResult
+from langchain_core.runnables.config import run_in_executor
 
 from src.api.config import Settings, get_settings
 from src.core.services.anthropic_models import (
@@ -57,6 +59,17 @@ logger = logging.getLogger(__name__)
 
 #: Seconds allowed for a connection to Bedrock to open.
 CONNECT_TIMEOUT = 10.0
+
+#: Threads that wait on Bedrock's streams. ``langchain-aws`` has no async client, so
+#: an async stream waits for each chunk on a worker thread, and a reasoning model can
+#: think for half a minute before its first one. On the event loop's default executor
+#: (cpu count + 4 threads, at most 32) that is a ceiling of a handful of concurrent
+#: streams on a small host, and it starves every other user of the default executor.
+#: Threads are made on demand, so the bound costs nothing until it is used.
+STREAM_WORKERS = 64
+_STREAM_EXECUTOR = ThreadPoolExecutor(
+    max_workers=STREAM_WORKERS, thread_name_prefix="bedrock-stream"
+)
 
 
 #: Block types that carry a model's reasoning. None is sent back: GPT-6 Luna rejects
@@ -143,9 +156,9 @@ class TaggedCitationChatBedrock(ChatBedrockConverse):
 
     A subclass rather than a wrapper, for the reason ``CachingChatAnthropic``
     is one: ``bind_tools`` and the streaming entry points stay native, so the
-    LangGraph agent and ``astream_events`` see an ordinary chat model. Only
-    ``_generate`` and ``_stream`` are overridden; ``_astream`` runs ``_stream`` on a
-    worker thread, so streaming through the async API is covered too.
+    LangGraph agent and ``astream_events`` see an ordinary chat model. ``_generate``
+    and ``_stream`` are overridden to rewrite tags; ``_astream`` runs ``_stream`` on
+    this module's own worker threads (see ``STREAM_WORKERS``).
 
     Outgoing messages have their ``search_result`` blocks rewritten as tagged text;
     incoming text has its ``[src:N]`` tags cut out and returned as ``citations``
@@ -177,14 +190,46 @@ class TaggedCitationChatBedrock(ChatBedrockConverse):
         prepared, registry = prepare_messages(_without_reasoning(messages))
         streams: dict[int, MarkerStream] = {}
 
-        for chunk in super()._stream(prepared, stop, run_manager, **kwargs):
-            yield _retag_chunk(chunk, registry, streams)
+        # ChatBedrockConverse reports each token to the run manager as it arrives,
+        # tags and all. It is not given the run manager, and the tokens are reported
+        # here instead, after the tags are cut out.
+        for chunk in super()._stream(prepared, stop, None, **kwargs):
+            retagged = _retag_chunk(chunk, registry, streams)
+            if run_manager:
+                run_manager.on_llm_new_token(retagged.message.text, chunk=retagged)
+            yield retagged
 
         # Text held back in case it became a tag, once the reply is over.
         for index, stream in streams.items():
             blocks = pieces_to_blocks(stream.finish(), registry, index)
             if blocks:
-                yield ChatGenerationChunk(message=AIMessageChunk(content=blocks))
+                held = ChatGenerationChunk(message=AIMessageChunk(content=blocks))
+                if run_manager:
+                    run_manager.on_llm_new_token(held.message.text, chunk=held)
+                yield held
+
+    async def _astream(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: AsyncCallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        """Stream on this module's own threads rather than the event loop's default pool.
+
+        The same as the base class's version, which runs ``_stream`` and waits for
+        each chunk in the default executor; only the executor differs (see
+        ``STREAM_WORKERS``).
+        """
+        iterator = self._stream(
+            messages, stop, run_manager.get_sync() if run_manager else None, **kwargs
+        )
+        done = object()
+        while True:
+            item = await run_in_executor(_STREAM_EXECUTOR, next, iterator, done)
+            if item is done:
+                break
+            yield item  # type: ignore[misc]
 
 
 def _retag_chunk(
