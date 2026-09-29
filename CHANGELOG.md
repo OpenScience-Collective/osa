@@ -54,6 +54,9 @@ the version being released and start a new `[Unreleased]` section above it.
   Figures now count as about 4,800 tokens each when the conversation is measured (they were 1,600), which is what Sonnet bills for a full-size image, so long figure-heavy chats are trimmed sooner.
 - **NEMAR answers with Sonnet by default** (issue #522): `default_model` is now `claude-sonnet-5-5`.
   Each request costs about twice what Haiku 4.5 does per input token.
+- **NEMAR answers with GPT-6 Luna by default** (issue #530): `default_model` is now `openai.gpt-6-luna`, as NWB's is, so it costs less than Haiku 4.5 per token instead of about twice as much.
+  A caller with their own Anthropic key who names no model (the CLI), and every request on a deployment with no Bedrock key, run Claude Haiku 4.5, not Sonnet.
+  Luna cannot take image blocks, so the model no longer sees `nemar_render_overview` images or browser-run figures; it says so, and the reader still sees the figure.
 
 ### Fixed
 
