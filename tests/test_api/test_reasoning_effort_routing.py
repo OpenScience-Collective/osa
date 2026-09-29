@@ -17,13 +17,15 @@ from src.api.security import ByokCredential
 from src.assistants import discover_assistants, registry
 from src.core.services.anthropic_models import (
     BEDROCK_MODELS,
-    REASONING_DEFAULTS,
+    DEFAULT_REASONING_EFFORT,
+    THINKING_BUDGET_TOKENS,
     effective_reasoning_effort,
 )
 
 SONNET = "claude-sonnet-5-5"
 LUNA = "openai.gpt-6-luna"
 GPT_OSS = "openai.gpt-oss-120b"
+HAIKU = "claude-haiku-4-5"
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -165,7 +167,7 @@ class TestBedrockPath:
 
     def test_unset_is_the_models_own_default(self, monkeypatch, hed):
         _set_level(monkeypatch, hed, None)
-        assert _bedrock_fields(hed, LUNA) == {"reasoning": {"effort": REASONING_DEFAULTS[LUNA]}}
+        assert _bedrock_fields(hed, LUNA) == {"reasoning": {"effort": DEFAULT_REASONING_EFFORT}}
 
 
 class TestAnthropicPath:
@@ -179,9 +181,33 @@ class TestAnthropicPath:
         _set_level(monkeypatch, hed, asked)
         assert _anthropic_payload(SONNET)["output_config"] == {"effort": "high"}
 
-    def test_unset_sends_nothing_so_the_api_default_applies(self, monkeypatch, hed):
+    def test_unset_is_high_sent_explicitly(self, monkeypatch, hed):
         _set_level(monkeypatch, hed, None)
-        assert "output_config" not in _anthropic_payload(SONNET)
+        assert _anthropic_payload(SONNET)["output_config"] == {"effort": "high"}
+
+    @pytest.mark.parametrize(
+        ("level", "budget"), [("low", 1024), ("medium", 2048), ("high", 4096), ("max", 4096)]
+    )
+    def test_haiku_gets_the_communitys_level_as_a_thinking_budget(
+        self, monkeypatch, hed, level, budget
+    ):
+        _set_level(monkeypatch, hed, level)
+        payload = _anthropic_payload(HAIKU)
+        assert payload["thinking"] == {"type": "enabled", "budget_tokens": budget}
+        assert "output_config" not in payload
+
+    def test_haiku_with_no_thinking_when_the_level_is_none(self, monkeypatch, hed):
+        _set_level(monkeypatch, hed, "none")
+        assert "thinking" not in _anthropic_payload(HAIKU)
+
+    def test_haiku_unset_is_high(self, monkeypatch, hed):
+        """Whatever the process environment says: the retired budget setting is not read."""
+        monkeypatch.setenv("ANTHROPIC_THINKING_BUDGET_TOKENS", "1500")
+        _set_level(monkeypatch, hed, None)
+        assert _anthropic_payload(HAIKU)["thinking"] == {
+            "type": "enabled",
+            "budget_tokens": THINKING_BUDGET_TOKENS[HAIKU][DEFAULT_REASONING_EFFORT],
+        }
 
 
 class TestOpenRouterPath:
@@ -196,4 +222,4 @@ class TestOpenRouterPath:
 
     def test_unset_is_the_models_own_default(self, monkeypatch, hed):
         _set_level(monkeypatch, hed, None)
-        assert _openrouter_kwargs(LUNA)["reasoning"] == {"effort": REASONING_DEFAULTS[LUNA]}
+        assert _openrouter_kwargs(LUNA)["reasoning"] == {"effort": DEFAULT_REASONING_EFFORT}

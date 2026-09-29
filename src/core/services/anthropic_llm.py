@@ -46,9 +46,11 @@ from src.core.services.anthropic_models import (
     BEDROCK_MODEL_PROVIDER,
     BEDROCK_MODELS,  # noqa: F401
     DEFAULT_MODEL,  # noqa: F401
+    DEFAULT_REASONING_EFFORT,
     MODEL_ALIASES,  # noqa: F401
     OFFERED_MODELS,  # noqa: F401
     SAMPLING_MODELS,
+    THINKING_BUDGET_TOKENS,
     effective_reasoning_effort,
     is_bedrock_model,
     normalize_model,
@@ -78,10 +80,25 @@ _THINKING_OFF: dict[str, Any] = {"type": "between_tools"}
 # Smallest thinking budget the API accepts on budget-style (Haiku) models.
 MIN_THINKING_BUDGET_TOKENS = 1024
 
-# Fallback default budget when neither a caller nor settings supplies one.
-# Mirrors Settings.anthropic_thinking_budget_tokens's own default so the two
-# stay in sync without importing Settings just for a literal.
-DEFAULT_THINKING_BUDGET_TOKENS = 2048
+# The budget `default_thinking` gives a budget-style model when a caller names none: the
+# budget of the default reasoning level (high). A community changes it through its
+# `reasoning_effort` (`THINKING_BUDGET_TOKENS`), not through a setting.
+DEFAULT_THINKING_BUDGET_TOKENS = THINKING_BUDGET_TOKENS["claude-haiku-4-5"][
+    DEFAULT_REASONING_EFFORT
+]
+
+
+def _fit_thinking_budget(budget: int, max_tokens: int) -> int:
+    """Lower a budget OSA chose so at least the API's minimum budget is left for the answer.
+
+    Thinking tokens come out of ``max_tokens``, so a budget the API would refuse (it must
+    be below ``max_tokens``) is lowered, not sent: a deployment whose max output is smaller
+    than a level's budget still answers, with less thinking. A ``max_tokens`` too small to
+    leave that room is left to ``_validate_thinking``, which refuses it as it always has.
+    """
+    room = max_tokens - MIN_THINKING_BUDGET_TOKENS
+    return min(budget, room) if room >= MIN_THINKING_BUDGET_TOKENS else budget
+
 
 # Prompt-cache lifetimes. A 5-minute entry costs 1.25x the input price to
 # write, a 1-hour entry 2x; both read back at 0.1x. Back-to-back requests
@@ -272,10 +289,12 @@ def create_anthropic_llm(
         timeout: Per-request timeout in seconds.
         settings: Settings instance to read server-mode credentials and
             defaults from. Defaults to ``get_settings()``.
-        reasoning_effort: The community's level from the neutral scale, or None to
-            change nothing. Only models with levels are affected (claude-sonnet-5-5;
-            claude-haiku-4-5 thinks with a budget and ignores it). The model is sent a
-            level it accepts, never above ``high``: ``low``, ``medium`` and ``high``
+        reasoning_effort: The community's level from the neutral scale, or None for
+            ``DEFAULT_REASONING_EFFORT`` (high). Only models with levels are affected.
+            claude-haiku-4-5 has no effort field and thinks with a token budget: the
+            level sets it (``THINKING_BUDGET_TOKENS``; ``none`` is no thinking; xhigh and
+            max are ``high``).
+            claude-sonnet-5-5 is sent a level it accepts, never above ``high``: ``low``, ``medium`` and ``high``
             set ``output_config.effort`` to that level, and ``none`` (no level is
             lower than ``low``) sets it to ``low`` and turns up-front thinking off
             (``{"type": "between_tools"}``). An explicit ``thinking`` argument still
@@ -314,9 +333,7 @@ def create_anthropic_llm(
         )
 
     if isinstance(thinking, _Default):
-        resolved_thinking = default_thinking(
-            resolved_model, resolved_settings.anthropic_thinking_budget_tokens
-        )
+        resolved_thinking = default_thinking(resolved_model)
     elif thinking is None:
         # An omitted `thinking` key is not "off" on adaptive-default models:
         # the API's own default there is adaptive thinking turned on. Send
@@ -329,14 +346,36 @@ def create_anthropic_llm(
     else:
         resolved_thinking = thinking
 
-    # The community's reasoning level (issue #545), for the models that have levels. It is
-    # sent in the typed `output_config` field, not the adapter's `reasoning_effort`, which
-    # can force adaptive thinking on with display settings. Thinking stays what the caller
-    # or the default made it (adaptive, which is also what an omitted key means on Sonnet),
-    # except for `none`: there is no level below `low`, so it is no up-front thinking
-    # (`between_tools`) at the lowest effort, unless the caller chose the thinking.
+    # The reasoning level (issues #545 and #548), for the models that have levels. Sonnet
+    # takes it in the typed `output_config` field, not the adapter's `reasoning_effort`,
+    # which can force adaptive thinking on with display settings. Its thinking stays what
+    # the caller or the default made it (adaptive, which is also what an omitted key means
+    # there), except for `none`: there is no level below `low`, so it is no up-front
+    # thinking (`between_tools`) at the lowest effort, unless the caller chose the
+    # thinking. Haiku has no effort field, so its level is the thinking budget (below).
     effort_level = effective_reasoning_effort(resolved_model, reasoning_effort, "anthropic")
     output_config: dict[str, Any] | None = None
+    if (
+        effort_level is not None
+        and resolved_model in THINKING_BUDGET_TOKENS
+        and isinstance(thinking, _Default)
+    ):
+        # A budget model (Haiku) has no effort field: its level, the community's or the
+        # default `high`, is a thinking budget, and `none` is no thinking.
+        budget = THINKING_BUDGET_TOKENS[resolved_model].get(effort_level)
+        resolved_thinking = None if budget is None else {"type": "enabled", "budget_tokens": budget}
+    if (
+        isinstance(thinking, _Default)
+        and resolved_thinking is not None
+        and resolved_thinking.get("type") == "enabled"
+    ):
+        # The budget OSA chose must fit under this request's max_tokens.
+        resolved_thinking = {
+            **resolved_thinking,
+            "budget_tokens": _fit_thinking_budget(
+                resolved_thinking["budget_tokens"], resolved_max_tokens
+            ),
+        }
     if effort_level is not None and resolved_model in _ADAPTIVE_THINKING_MODELS:
         if effort_level == "none":
             output_config = {"effort": "low"}

@@ -135,8 +135,8 @@ def create_openrouter_llm(
         enable_caching: Enable prompt caching. If None (default), it is enabled. Only
             Anthropic's models are sent the ``cache_control`` markers; other models
             get plain messages (see ``litellm_chat.takes_cache_markers``).
-        reasoning_effort: The community's level from the neutral scale, or None for the
-            model's own default. Sent as OpenRouter's ``reasoning: {"effort": level}``
+        reasoning_effort: The community's level from the neutral scale, or None for
+            ``DEFAULT_REASONING_EFFORT`` (high). Sent as OpenRouter's ``reasoning: {"effort": level}``
             body field, only for an offered model that has levels, at a level it
             accepts on OpenRouter (Claude Sonnet is never above ``high``, and has no
             ``none`` there, where its reasoning is mandatory); a slug OSA knows nothing

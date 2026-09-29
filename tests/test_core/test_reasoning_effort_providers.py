@@ -25,14 +25,20 @@ from langchain_core.messages import HumanMessage
 
 from src.api.config import Settings
 from src.core.services import anthropic_models
-from src.core.services.anthropic_llm import _ADAPTIVE_THINKING_MODELS, create_anthropic_llm
+from src.core.services.anthropic_llm import (
+    _ADAPTIVE_THINKING_MODELS,
+    DEFAULT_THINKING_BUDGET_TOKENS,
+    MIN_THINKING_BUDGET_TOKENS,
+    create_anthropic_llm,
+)
 from src.core.services.anthropic_models import (
     BEDROCK_MODELS,
+    DEFAULT_REASONING_EFFORT,
     MODEL_ALIASES,
     OFFERED_MODELS,
-    REASONING_DEFAULTS,
     REASONING_LEVELS,
     REASONING_SCALE,
+    THINKING_BUDGET_TOKENS,
     effective_reasoning_effort,
 )
 from src.core.services.bedrock_llm import _bedrock_client, create_bedrock_llm
@@ -52,6 +58,14 @@ QWEN = "qwen.qwen3-next-80b-a3b"
 
 
 # --------------------------------------------------------------------------- Bedrock
+
+
+@pytest.fixture(autouse=True)
+def _no_deployment_token_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`Settings(_env_file=None)` still reads the process environment: a developer's
+    exported ANTHROPIC_THINKING_BUDGET_TOKENS must not decide what these tests see."""
+    for name in ("ANTHROPIC_THINKING_BUDGET_TOKENS", "ANTHROPIC_MAX_OUTPUT_TOKENS"):
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -91,15 +105,15 @@ class TestBedrockWire:
 
     @pytest.mark.parametrize("level", [None, *REASONING_SCALE])
     def test_qwen_is_never_sent_anything(self, level: str | None) -> None:
-        """Measured: a flat `high` or `xhigh` hangs Qwen3 Next until the read timeout."""
+        """Measured: a flat `high` hangs Qwen3 Next until the read timeout."""
         body = _bedrock_body(QWEN, reasoning_effort=level)
         assert "additionalModelRequestFields" not in body
 
     @pytest.mark.parametrize("model", sorted(BEDROCK_MODELS))
-    def test_a_community_that_sets_nothing_gets_the_models_own_default(self, model: str) -> None:
+    def test_a_community_that_sets_nothing_gets_the_default_level(self, model: str) -> None:
         body = _bedrock_body(model)
         spec = BEDROCK_MODELS[model]
-        expected = spec.reasoning_request_fields(REASONING_DEFAULTS.get(model))
+        expected = spec.reasoning_request_fields(DEFAULT_REASONING_EFFORT)
         assert body.get("additionalModelRequestFields", {}) == expected
 
     def test_the_defaults_are_high_for_luna_and_gpt_oss(self) -> None:
@@ -126,8 +140,12 @@ class TestBedrockWire:
 # ------------------------------------------------------------------------- Anthropic
 
 
-def _anthropic_payload(model: str, **kwargs: Any) -> dict[str, Any]:
-    settings = Settings(_env_file=None, anthropic_api_key="sk-ant-" + "x" * 40)  # type: ignore[call-arg]
+def _anthropic_payload(
+    model: str, settings_overrides: dict[str, Any] | None = None, **kwargs: Any
+) -> dict[str, Any]:
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None, anthropic_api_key="sk-ant-" + "x" * 40, **(settings_overrides or {})
+    )
     llm = create_anthropic_llm(model, api_key="sk-ant-" + "x" * 40, settings=settings, **kwargs)
     return llm._get_request_payload([HumanMessage(content="hi")])  # type: ignore[attr-defined]
 
@@ -152,18 +170,20 @@ class TestAnthropicPayload:
         assert payload["thinking"] == {"type": "between_tools"}
         assert payload["output_config"] == {"effort": "low"}
 
-    def test_a_community_that_sets_nothing_changes_nothing(self) -> None:
+    def test_a_community_that_sets_nothing_gets_high_sent_explicitly(self) -> None:
+        """The API's own default is high too, so nothing changes on the Claude Platform;
+        it is sent so the level is OSA's, not the API's, to change."""
         payload = _anthropic_payload(SONNET)
-        assert "output_config" not in payload
+        assert (
+            payload["output_config"] == {"effort": DEFAULT_REASONING_EFFORT} == {"effort": "high"}
+        )
         assert payload["thinking"] == {"type": "adaptive"}
 
     @pytest.mark.parametrize("level", [None, *REASONING_SCALE])
-    def test_haiku_is_never_sent_an_effort(self, level: str | None) -> None:
+    def test_haiku_is_never_sent_an_effort_field(self, level: str | None) -> None:
         """Haiku 4.5 thinks with a token budget; the effort field is not on its list."""
         payload = _anthropic_payload(HAIKU, reasoning_effort=level)
         assert "output_config" not in payload
-        assert payload["thinking"]["type"] == "enabled"
-        assert payload["thinking"]["budget_tokens"] == 2048
 
     def test_an_explicit_thinking_setting_wins_over_the_one_a_level_implies(self) -> None:
         payload = _anthropic_payload(SONNET, reasoning_effort="high", thinking=None)
@@ -189,6 +209,64 @@ class TestAnthropicPayload:
         monkeypatch.setitem(REASONING_LEVELS, SONNET, (*REASONING_LEVELS[SONNET], "xhigh", "max"))
         with pytest.raises(ValueError, match="between_tools"):
             _anthropic_payload(SONNET, reasoning_effort="max", thinking=None)
+
+
+class TestHaikuThinkingBudget:
+    """Haiku has no effort levels, so a level is a thinking budget (issue #548)."""
+
+    def test_the_table_is_written_out(self) -> None:
+        assert THINKING_BUDGET_TOKENS[HAIKU] == {"low": 1024, "medium": 2048, "high": 4096}
+
+    def test_every_level_but_none_has_a_budget_the_api_accepts_in_increasing_order(self) -> None:
+        budgets = THINKING_BUDGET_TOKENS[HAIKU]
+        assert set(budgets) == set(REASONING_LEVELS[HAIKU]) - {"none"}
+        ordered = [budgets[level] for level in REASONING_LEVELS[HAIKU] if level != "none"]
+        assert ordered == sorted(set(ordered))
+        assert min(ordered) >= MIN_THINKING_BUDGET_TOKENS
+
+    def test_the_default_level_budget_is_the_fallback_budget(self) -> None:
+        assert (
+            THINKING_BUDGET_TOKENS[HAIKU][DEFAULT_REASONING_EFFORT]
+            == DEFAULT_THINKING_BUDGET_TOKENS
+        )
+
+    @pytest.mark.parametrize(
+        ("level", "budget"),
+        [("low", 1024), ("medium", 2048), ("high", 4096), ("xhigh", 4096), ("max", 4096)],
+    )
+    def test_a_communitys_level_is_the_budget_capped_at_high(self, level: str, budget: int) -> None:
+        payload = _anthropic_payload(HAIKU, reasoning_effort=level)
+        assert payload["thinking"] == {"type": "enabled", "budget_tokens": budget}
+
+    def test_none_is_no_thinking(self) -> None:
+        payload = _anthropic_payload(HAIKU, reasoning_effort="none")
+        assert "thinking" not in payload
+
+    def test_unset_is_high(self) -> None:
+        payload = _anthropic_payload(HAIKU)
+        assert payload["thinking"] == {"type": "enabled", "budget_tokens": 4096}
+
+    def test_an_explicit_thinking_setting_wins(self) -> None:
+        custom = {"type": "enabled", "budget_tokens": 1500}
+        payload = _anthropic_payload(HAIKU, reasoning_effort="high", thinking=custom)
+        assert payload["thinking"] == custom
+        assert "thinking" not in _anthropic_payload(HAIKU, reasoning_effort="high", thinking=None)
+
+    @pytest.mark.parametrize("level", [None, "high"])
+    def test_a_budget_that_would_not_fit_max_tokens_is_lowered_not_refused(
+        self, level: str | None
+    ) -> None:
+        """A deployment whose max output is below a level's budget still answers."""
+        payload = _anthropic_payload(HAIKU, reasoning_effort=level, max_tokens=3000)
+        assert payload["thinking"]["budget_tokens"] == 3000 - MIN_THINKING_BUDGET_TOKENS
+
+    def test_a_max_tokens_with_no_room_for_any_budget_is_still_refused(self) -> None:
+        with pytest.raises(ValueError, match="below max_tokens"):
+            _anthropic_payload(HAIKU, reasoning_effort="high", max_tokens=1500)
+
+    def test_a_budget_that_fits_is_not_lowered(self) -> None:
+        payload = _anthropic_payload(HAIKU, reasoning_effort="high", max_tokens=8000)
+        assert payload["thinking"]["budget_tokens"] == 4096
 
 
 # ------------------------------------------------------------------------ OpenRouter
@@ -240,14 +318,24 @@ class TestOpenRouterBody:
             )
             assert body["reasoning"] == {"effort": sent}, asked
 
-    @pytest.mark.parametrize("model", [HAIKU, QWEN])
     @pytest.mark.parametrize("level", REASONING_SCALE)
     def test_a_model_with_no_levels_is_sent_no_reasoning_field(
-        self, openrouter: FakeOpenRouter, model: str, level: str
+        self, openrouter: FakeOpenRouter, level: str
     ) -> None:
-        body = _openrouter_body(openrouter, OPENROUTER_MODEL_IDS[model], reasoning_effort=level)
+        body = _openrouter_body(openrouter, OPENROUTER_MODEL_IDS[QWEN], reasoning_effort=level)
         assert "reasoning" not in body
         assert "reasoning_effort" not in body
+
+    @pytest.mark.parametrize(
+        ("asked", "sent"),
+        [("none", "none"), ("low", "low"), ("high", "high"), ("xhigh", "high"), ("max", "high")],
+    )
+    def test_haiku_is_held_to_its_levels_and_may_be_turned_off(
+        self, openrouter: FakeOpenRouter, asked: str, sent: str
+    ) -> None:
+        """Its reasoning is not mandatory on OpenRouter, so `none` is a level there."""
+        body = _openrouter_body(openrouter, OPENROUTER_MODEL_IDS[HAIKU], reasoning_effort=asked)
+        assert body["reasoning"] == {"effort": sent}
 
     def test_a_slug_osa_knows_nothing_about_is_sent_nothing(
         self, openrouter: FakeOpenRouter
@@ -256,15 +344,17 @@ class TestOpenRouterBody:
         body = _openrouter_body(openrouter, "some-lab/unknown-model", reasoning_effort="high")
         assert "reasoning" not in body
 
-    def test_a_community_that_sets_nothing_gets_the_models_own_default(
-        self, openrouter: FakeOpenRouter
+    @pytest.mark.parametrize("model", [SONNET, HAIKU, LUNA, GPT_OSS])
+    def test_a_community_that_sets_nothing_gets_high(
+        self, openrouter: FakeOpenRouter, model: str
     ) -> None:
-        """The same default a request gets on Bedrock, so a model behaves the same
-        whichever key paid for it (OpenRouter's own default for Luna is `medium`)."""
-        luna = _openrouter_body(openrouter, OPENROUTER_MODEL_IDS[LUNA])
-        assert luna["reasoning"] == {"effort": "high"}
-        sonnet = _openrouter_body(openrouter, OPENROUTER_MODEL_IDS[SONNET])
-        assert "reasoning" not in sonnet, "Sonnet has no default: its own applies, as before"
+        """The same default a request gets on every other provider, so a model behaves the
+        same whichever key paid for it (OpenRouter's own default for Luna is `medium`)."""
+        body = _openrouter_body(openrouter, OPENROUTER_MODEL_IDS[model])
+        assert body["reasoning"] == {"effort": "high"}
+
+    def test_qwen_is_sent_nothing_by_default_either(self, openrouter: FakeOpenRouter) -> None:
+        assert "reasoning" not in _openrouter_body(openrouter, OPENROUTER_MODEL_IDS[QWEN])
 
     def test_provider_routing_is_still_sent_beside_it(self, openrouter: FakeOpenRouter) -> None:
         body = _openrouter_body(openrouter, OPENROUTER_MODEL_IDS[LUNA], reasoning_effort="low")
@@ -335,11 +425,12 @@ class TestEveryModelWithLevelsCanBeSentThem:
     @pytest.mark.parametrize("model", sorted(REASONING_LEVELS))
     def test_a_model_with_levels_has_a_path_that_sends_them(self, model: str) -> None:
         """Bedrock models name a request field; Claude models must be in the set the
-        Anthropic factory sends `output_config` for, or their level is silently dropped."""
+        Anthropic factory sends `output_config` for, or have a thinking budget per level,
+        or their level is silently dropped."""
         if model in BEDROCK_MODELS:
             assert BEDROCK_MODELS[model].reasoning_field is not None
         else:
-            assert model in _ADAPTIVE_THINKING_MODELS
+            assert model in _ADAPTIVE_THINKING_MODELS or model in THINKING_BUDGET_TOKENS
 
 
 class TestTheSameRuleOnEveryPath:

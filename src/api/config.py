@@ -105,11 +105,6 @@ class Settings(BaseSettings):
         description="Default max_tokens for Bedrock model requests. Reasoning counts toward "
         "it, and GPT-6 Luna at high effort can spend thousands of tokens thinking",
     )
-    anthropic_thinking_budget_tokens: int = Field(
-        default=2048,
-        description="Default extended-thinking token budget for budget-style Anthropic "
-        "models (e.g. claude-haiku-4-5)",
-    )
     anthropic_max_output_tokens: int = Field(
         default=8000,
         description="Default max_tokens for Anthropic Claude Platform requests",

@@ -30,6 +30,7 @@ from src.core.services.anthropic_llm import (
     default_thinking,
     normalize_model,
 )
+from src.core.services.anthropic_models import THINKING_BUDGET_TOKENS
 
 
 def _settings(**overrides: object) -> Settings:
@@ -43,7 +44,6 @@ def _settings(**overrides: object) -> Settings:
         "anthropic_api_key": "test-server-key",
         "anthropic_base_url": "https://aws-anthropic.example.test",
         "anthropic_workspace_id": "wrkspc_test123",
-        "anthropic_thinking_budget_tokens": 2048,
         "anthropic_max_output_tokens": 8000,
         "anthropic_cache_ttl": "5m",
     }
@@ -90,17 +90,12 @@ def test_chat_anthropic_still_calls_get_request_payload(method: str) -> None:
     assert "_get_request_payload" in inspect.getsource(getattr(ChatAnthropic, method))
 
 
-def test_default_thinking_budget_matches_settings_default() -> None:
-    """Lock the module constant and the Settings field default together.
-
-    ``DEFAULT_THINKING_BUDGET_TOKENS`` exists so this module does not have to
-    import ``Settings`` for a literal; if the two ever drift, a caller who
-    never touches Settings (e.g. constructs a plain Settings() with no env
-    vars) would silently get a different thinking budget than one that goes
-    through ``create_anthropic_llm``'s settings-based default.
-    """
-    settings_default = Settings.model_fields["anthropic_thinking_budget_tokens"].default
-    assert settings_default == DEFAULT_THINKING_BUDGET_TOKENS
+def test_the_default_thinking_budget_is_the_default_levels() -> None:
+    """`default_thinking`'s fallback budget is Haiku's budget at the default level (high),
+    so a caller who names no budget and a community that sets no level agree."""
+    assert THINKING_BUDGET_TOKENS["claude-haiku-4-5"]["high"] == DEFAULT_THINKING_BUDGET_TOKENS
+    assert DEFAULT_THINKING_BUDGET_TOKENS == 4096
+    assert default_thinking("claude-haiku-4-5") == {"type": "enabled", "budget_tokens": 4096}
 
 
 class TestNormalizeModel:
@@ -363,20 +358,18 @@ class TestCreateAnthropicLLMBehavior:
         settings = _settings()
         haiku = create_anthropic_llm(model="claude-haiku-4-5", settings=settings)
         sonnet = create_anthropic_llm(model="claude-sonnet-5-5", settings=settings)
-        assert haiku.thinking == {"type": "enabled", "budget_tokens": 2048}
+        assert haiku.thinking == {"type": "enabled", "budget_tokens": 4096}
         assert sonnet.thinking == {"type": "adaptive"}
 
-    def test_thinking_budget_from_settings_is_used(self) -> None:
-        """A distinct (non-default-literal) value proves settings are plumbed through.
-
-        The default budget in Settings and in this module's own
-        DEFAULT_THINKING_BUDGET_TOKENS are both 2048, so a test using that
-        literal would still pass if the settings value were silently
-        ignored and the module fell back to its own constant instead.
-        """
-        settings = _settings(anthropic_thinking_budget_tokens=4096)
-        llm = create_anthropic_llm(model="claude-haiku-4-5", settings=settings)
-        assert llm.thinking["budget_tokens"] == 4096
+    def test_the_retired_budget_setting_is_not_a_source(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ANTHROPIC_THINKING_BUDGET_TOKENS was the deployment's budget before reasoning
+        levels; a server that still exports it (the example file shipped 2048) must not
+        keep Haiku off the default level."""
+        monkeypatch.setenv("ANTHROPIC_THINKING_BUDGET_TOKENS", "1500")
+        llm = create_anthropic_llm(model="claude-haiku-4-5", settings=_settings())
+        assert llm.thinking == {"type": "enabled", "budget_tokens": 4096}
 
     def test_default_thinking_budget_conflicts_with_max_tokens(self) -> None:
         """Exercise the budget-vs-max_tokens conflict through the public entry point."""
