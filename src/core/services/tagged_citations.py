@@ -34,7 +34,8 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, TypeGuard
 
-from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, ToolMessage
+from langchain_core.outputs import ChatGenerationChunk
 
 from src.tools.citations import truncate
 
@@ -451,6 +452,53 @@ def pieces_to_blocks(
                 }
             )
     return blocks
+
+
+class ChunkRetagger:
+    """Rewrites the text of a chat model's streamed chunks, one chunk at a time.
+
+    A chunk's text is replaced by tag-free text and citation blocks (see
+    ``pieces_to_blocks``); every other block (reasoning, tool use) and every other
+    field of the chunk (tool-call chunks, usage) passes through as it came. Text
+    that might be the start of a tag is held back until the next chunk shows
+    whether it is one, so call ``finish`` once the reply is over.
+
+    One instance serves one model call: it keeps a ``MarkerStream`` per text block.
+    """
+
+    def __init__(self, registry: SourceRegistry) -> None:
+        self._registry = registry
+        self._streams: dict[int, MarkerStream] = {}
+
+    def feed(self, chunk: ChatGenerationChunk) -> ChatGenerationChunk:
+        """Return ``chunk`` with its text rewritten, or as it came if it has none."""
+        content = chunk.message.content
+        if isinstance(content, str):
+            content = [{"type": "text", "text": content, "index": 0}] if content else []
+        blocks: list[Any] = []
+        changed = False
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                index = block.get("index") or 0
+                stream = self._streams.setdefault(index, MarkerStream(self._registry))
+                pieces = stream.feed(block.get("text", ""))
+                blocks.extend(pieces_to_blocks(pieces, self._registry, index))
+                changed = True
+            else:
+                blocks.append(block)
+        if not changed:
+            return chunk
+        message = chunk.message.model_copy(update={"content": blocks})
+        return chunk.model_copy(update={"message": message})
+
+    def finish(self) -> list[ChatGenerationChunk]:
+        """The text held back in case it became a tag, once the reply is over."""
+        chunks: list[ChatGenerationChunk] = []
+        for index, stream in self._streams.items():
+            blocks = pieces_to_blocks(stream.finish(), self._registry, index)
+            if blocks:
+                chunks.append(ChatGenerationChunk(message=AIMessageChunk(content=blocks)))
+        return chunks
 
 
 def pieces_to_whole_blocks(

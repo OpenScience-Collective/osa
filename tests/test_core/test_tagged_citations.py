@@ -6,6 +6,7 @@ import time
 
 import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
+from langchain_core.outputs import ChatGenerationChunk
 
 from src.agents.content import (
     CitationAssembler,
@@ -18,6 +19,7 @@ from src.core.services.tagged_citations import (
     CITATION_INSTRUCTION,
     MARKER_PATTERN,
     SEGMENT_INDEX_OFFSET,
+    ChunkRetagger,
     CitePiece,
     MarkerStream,
     SourceRegistry,
@@ -519,3 +521,70 @@ class TestBlocksDoNotCollideWithTheProviders:
         registry = _registry()
         blocks = pieces_to_blocks(_run("A.[src:1] B.[src:2] C.", registry), registry, index_base=0)
         assert all(b["index"] >= SEGMENT_INDEX_OFFSET for b in blocks)
+
+
+def _generation_chunk(content, **fields) -> ChatGenerationChunk:
+    return ChatGenerationChunk(message=AIMessageChunk(content=content, **fields))
+
+
+def _stream_through(registry: SourceRegistry, chunks: list[ChatGenerationChunk]) -> AIMessageChunk:
+    """Run chunks through a ChunkRetagger the way a chat model's _stream does; merge them."""
+    retagger = ChunkRetagger(registry)
+    out = [retagger.feed(chunk) for chunk in chunks] + retagger.finish()
+    merged = out[0].message
+    for chunk in out[1:]:
+        merged = merged + chunk.message
+    return merged
+
+
+class TestChunkRetagger:
+    """The streaming half of the convention, independent of any provider."""
+
+    def test_plain_string_chunks_become_text_and_citation_blocks(self) -> None:
+        registry = _registry()
+        merged = _stream_through(
+            registry,
+            [
+                _generation_chunk("HED tags are built from a schema.[sr"),
+                _generation_chunk("c:1] Done."),
+            ],
+        )
+
+        text = "".join(b["text"] for b in merged.content if b.get("type") == "text")
+        assert text == "HED tags are built from a schema. Done."
+        cited = [b for b in merged.content if b.get("citations")]
+        assert [c["citations"][0]["source"] for c in cited] == ["https://hedtags.org/schema"]
+
+    def test_the_tag_never_reaches_the_reader_however_the_text_is_split(self) -> None:
+        registry = _registry()
+        answer = "The schema is versioned.[src:1] The Sensory-event tag marks a stimulus.[src:2]"
+        for size in (1, 2, 3, 5, 8):
+            chunks = [_generation_chunk(answer[i : i + size]) for i in range(0, len(answer), size)]
+            merged = _stream_through(registry, chunks)
+            text = "".join(b["text"] for b in merged.content if b.get("type") == "text")
+            assert "[src" not in text
+            assert text == "The schema is versioned. The Sensory-event tag marks a stimulus."
+            sources = [c["source"] for b in merged.content for c in b.get("citations", [])]
+            assert sources == ["https://hedtags.org/schema", "https://hedtags.org/sensory"]
+
+    def test_text_that_only_looks_like_a_tag_is_released_when_the_reply_ends(self) -> None:
+        registry = _registry()
+        merged = _stream_through(registry, [_generation_chunk("Ends with a bracket [sr")])
+        text = "".join(b["text"] for b in merged.content if b.get("type") == "text")
+        assert text == "Ends with a bracket [sr"
+
+    def test_tool_call_chunks_usage_and_other_blocks_pass_through(self) -> None:
+        registry = _registry()
+        call = {"name": "search", "args": '{"q": "x"}', "id": "call-1", "index": 0}
+        usage = {"input_tokens": 5, "output_tokens": 2, "total_tokens": 7}
+        reasoning = {"type": "reasoning_content", "reasoning_content": {"text": "hm"}, "index": 3}
+        chunks = [
+            _generation_chunk([reasoning]),
+            _generation_chunk("", tool_call_chunks=[call]),
+            _generation_chunk("", usage_metadata=usage),
+        ]
+        merged = _stream_through(registry, chunks)
+
+        assert reasoning in merged.content
+        assert merged.tool_calls[0]["name"] == "search"
+        assert merged.usage_metadata["total_tokens"] == 7
