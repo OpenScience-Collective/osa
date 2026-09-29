@@ -35,7 +35,7 @@ from botocore.tokens import FrozenAuthToken, TokenProviderChain
 from langchain_aws import ChatBedrockConverse
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessageChunk, BaseMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGenerationChunk, ChatResult
 
 from src.api.config import Settings, get_settings
@@ -56,6 +56,37 @@ logger = logging.getLogger(__name__)
 
 #: Seconds allowed for a connection to Bedrock to open.
 CONNECT_TIMEOUT = 10.0
+
+
+#: Block types that carry a model's reasoning. None is sent back: GPT-6 Luna rejects
+#: ``reasoningContent.reasoningText.text`` in an assistant message with a 400, and
+#: gpt-oss-120b and Qwen3 Next reject its ``signature`` (all tested against the live
+#: service). Every turn of a tool loop replays the history, so keeping the reasoning
+#: would fail the second model call of any conversation that used a tool. Claude's
+#: ``thinking`` blocks are dropped too; a reply that switched models mid-chat may
+#: carry them.
+_REASONING_BLOCK_TYPES = frozenset(
+    {"reasoning_content", "reasoning", "thinking", "redacted_thinking"}
+)
+
+
+def _without_reasoning(messages: list[BaseMessage]) -> list[BaseMessage]:
+    """Drop reasoning blocks from the assistant turns of a conversation.
+
+    The caller's messages are not changed; a turn with no reasoning is passed on as is.
+    """
+    cleaned: list[BaseMessage] = []
+    for message in messages:
+        if isinstance(message, AIMessage) and isinstance(message.content, list):
+            kept = [
+                block
+                for block in message.content
+                if not (isinstance(block, dict) and block.get("type") in _REASONING_BLOCK_TYPES)
+            ]
+            if len(kept) != len(message.content):
+                message = message.model_copy(update={"content": kept})
+        cleaned.append(message)
+    return cleaned
 
 
 class _StaticBearerToken:
@@ -116,7 +147,7 @@ class TaggedCitationChatBedrock(ChatBedrockConverse):
         **kwargs: Any,
     ) -> ChatResult:
         """Generate a complete reply, with its tags turned into citations."""
-        prepared, registry = prepare_messages(messages)
+        prepared, registry = prepare_messages(_without_reasoning(messages))
         result = super()._generate(prepared, stop, run_manager, **kwargs)
         for generation in result.generations:
             generation.message.content = rewrite_content(generation.message.content, registry)
@@ -130,7 +161,7 @@ class TaggedCitationChatBedrock(ChatBedrockConverse):
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
         """Stream a reply, releasing text as soon as it cannot be part of a tag."""
-        prepared, registry = prepare_messages(messages)
+        prepared, registry = prepare_messages(_without_reasoning(messages))
         streams: dict[int, MarkerStream] = {}
 
         for chunk in super()._stream(prepared, stop, run_manager, **kwargs):

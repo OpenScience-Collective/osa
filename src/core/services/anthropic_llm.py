@@ -32,6 +32,7 @@ from typing import Any
 
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage
 from pydantic import ConfigDict, field_validator
 
 from src.api.config import Settings, get_settings
@@ -42,6 +43,7 @@ from src.core.services.anthropic_endpoints import FIRST_PARTY_BASE_URL
 # MODEL_ALIASES and OFFERED_MODELS are re-exported here because server-side
 # callers have imported them from this module all along.
 from src.core.services.anthropic_models import (
+    BEDROCK_MODEL_PROVIDER,
     BEDROCK_MODELS,  # noqa: F401
     DEFAULT_MODEL,  # noqa: F401
     MODEL_ALIASES,  # noqa: F401
@@ -176,6 +178,36 @@ def _validate_thinking(thinking: dict[str, Any], model: str, max_tokens: int) ->
             f"budget_tokens ({budget}) must be below max_tokens ({max_tokens}); "
             "thinking tokens are drawn from the same budget as the response"
         )
+
+
+def strip_bedrock_turns(messages: list[BaseMessage]) -> list[BaseMessage]:
+    """Make the assistant turns a Bedrock model wrote acceptable to Claude.
+
+    A chat can switch models between requests, and the history holds whatever the
+    earlier model produced. Sent to Anthropic as it is, a Bedrock turn's
+    ``reasoning_content`` block is an unknown block type (a 400), and its
+    ``citations`` are indexed against tagged sources rather than Anthropic's own
+    search results. Only the text and the tool calls are kept; the citations'
+    markers were already turned into ``[n]`` in the visible answer.
+
+    The caller's messages are not changed.
+    """
+    cleaned: list[BaseMessage] = []
+    for message in messages:
+        if (
+            isinstance(message, AIMessage)
+            and isinstance(message.content, list)
+            and message.response_metadata.get("model_provider") == BEDROCK_MODEL_PROVIDER
+        ):
+            kept: list[Any] = []
+            for block in message.content:
+                if not isinstance(block, dict) or block.get("type") == "tool_use":
+                    kept.append(block)
+                elif block.get("type") == "text":
+                    kept.append({k: v for k, v in block.items() if k != "citations"})
+            message = message.model_copy(update={"content": kept})
+        cleaned.append(message)
+    return cleaned
 
 
 class _Default:
@@ -454,6 +486,7 @@ class CachingChatAnthropic(ChatAnthropic):
         """
         cache_marker = self._cache_control_marker()
         kwargs.setdefault("cache_control", cache_marker)
+        input_ = strip_bedrock_turns(self._convert_input(input_).to_messages())
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
 
         if not self._conversation_cache_control_landed(payload):
