@@ -3016,10 +3016,31 @@ class TestModelInstructions:
         config = self._config(**{"openai.gpt-6-luna": "x" * MODEL_INSTRUCTIONS_MAX_LENGTH})
         assert len(config.model_instructions["openai.gpt-6-luna"]) == MODEL_INSTRUCTIONS_MAX_LENGTH
 
-    def test_a_bedrock_model_is_a_valid_default_model(self) -> None:
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", UserWarning)
+    def test_a_bedrock_model_is_a_valid_default_model_that_warns_of_its_fallback(self) -> None:
+        with pytest.warns(UserWarning, match="served from Amazon Bedrock") as caught:
             config = CommunityConfig(
                 id="d", name="D", description="x", default_model="openai.gpt-6-luna"
             )
         assert config.default_model == "openai.gpt-6-luna"
+        assert "Claude default" in str(caught[0].message)
+
+    def test_a_claude_default_does_not_warn(self) -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            CommunityConfig(id="d", name="D", description="x", default_model="claude-haiku-4-5")
+
+    @pytest.mark.parametrize(
+        "model",
+        ["openai.gpt-oss-120b-1:0", "openai/gpt-oss-120b:free", "qwen/qwen3-next-80b-a3b:nitro"],
+    )
+    def test_a_model_id_may_end_in_a_variant(self, model: str) -> None:
+        """Bedrock's invoke id for gpt-oss-120b is an alias of an offered model."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            config = CommunityConfig(id="d", name="D", description="x", default_model=model)
+        assert config.default_model == model
+
+    @pytest.mark.parametrize("model", ["a:b:c", "model:", ":free", "bad model", "a/b/c:d"])
+    def test_other_shapes_are_still_rejected(self, model: str) -> None:
+        with pytest.raises(ValidationError, match="Invalid model name"):
+            CommunityConfig(id="d", name="D", description="x", default_model=model)
