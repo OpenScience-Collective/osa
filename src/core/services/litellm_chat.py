@@ -45,7 +45,7 @@ from src.core.services.tagged_citations import (
 
 logger = logging.getLogger(__name__)
 
-#: Where the raw usage details ride from the LiteLLM stream to ``usage_metadata``:
+#: Where the usage details ride from the LiteLLM stream to ``usage_metadata``:
 #: ``provider_specific_fields`` is the one field LiteLLM copies from a raw chunk onto
 #: the message chunk it builds.
 _USAGE_DETAILS_KEY = "osa_usage_details"
@@ -235,16 +235,120 @@ def usage_details(usage: Any) -> dict[str, dict[str, int]]:
     return details
 
 
-def _carry_usage_details(raw: Any) -> Any:
-    """Copy a raw stream chunk's usage details into a field LiteLLM passes through."""
+class _ProviderUsage:
+    """The usage the provider itself reported, read from beneath LiteLLM's stream wrapper.
+
+    LiteLLM's wrapper builds its own final usage chunk and emits it as soon as it sees
+    the finish, before it has read the rest of the provider's stream: OpenRouter
+    documents its usage as a chunk that repeats the ``finish_reason`` after the real
+    one. What the wrapper reports is then a local token estimate, with no cache or
+    reasoning counts (``prompt_tokens_details: None``). The provider's own chunk does
+    pass through the handler under the wrapper (``completion_stream``), so a tap there
+    sees it, though only after the wrapper's has gone by; the wrapper's usage is held
+    back and the real one is sent when the stream ends.
+
+    Attributes:
+        usage: The provider's usage, once seen.
+        estimate: The wrapper's own usage, kept for a provider that reports none.
+    """
+
+    def __init__(self) -> None:
+        self.usage: dict[str, Any] | None = None
+        self.estimate: dict[str, Any] | None = None
+
+    def note(self, item: Any) -> None:
+        usage = _field(item, "usage")
+        if usage is None:
+            return
+        as_dict = usage if isinstance(usage, dict) else usage.model_dump()
+        if as_dict.get("prompt_tokens") or as_dict.get("completion_tokens"):
+            self.usage = as_dict
+
+    @property
+    def final(self) -> dict[str, Any] | None:
+        """The usage to report: the provider's, else the wrapper's estimate."""
+        return self.usage or self.estimate
+
+
+class _TappedStream:
+    """A stream that lets ``_ProviderUsage`` see every item on its way through.
+
+    LiteLLM's handlers set up their iteration state in ``__iter__`` / ``__aiter__``
+    (an async one fails in ``__anext__`` if it was never asked), so those are passed
+    on to the stream inside and its answer is what ``__next__`` / ``__anext__`` use.
+    """
+
+    def __init__(self, inner: Any, tap: _ProviderUsage) -> None:
+        self._inner = inner
+        self._iter: Any = None
+        self._aiter: Any = None
+        self._tap = tap
+
+    def __iter__(self) -> "_TappedStream":
+        self._iter = iter(self._inner)
+        return self
+
+    def __next__(self) -> Any:
+        if self._iter is None:
+            self._iter = iter(self._inner)
+        item = next(self._iter)
+        self._tap.note(item)
+        return item
+
+    def __aiter__(self) -> "_TappedStream":
+        self._aiter = self._inner.__aiter__()
+        return self
+
+    async def __anext__(self) -> Any:
+        if self._aiter is None:
+            self._aiter = self._inner.__aiter__()
+        item = await self._aiter.__anext__()
+        self._tap.note(item)
+        return item
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+def _tap_provider_usage(response: Any) -> _ProviderUsage:
+    """Start watching a LiteLLM stream for the provider's own usage."""
+    tap = _ProviderUsage()
+    inner = getattr(response, "completion_stream", None)
+    if inner is None:
+        # LiteLLM changed its wrapper: fall back to what it reports. The live tests
+        # (tests/test_integration/test_openrouter_citations.py) show it.
+        logger.warning("LiteLLM's stream has no completion_stream; usage details unavailable")
+        return tap
+    response.completion_stream = _TappedStream(inner, tap)
+    return tap
+
+
+def _carry_usage_details(raw: Any, tap: _ProviderUsage) -> Any:
+    """Prepare one outgoing stream chunk: the wrapper's own usage is held back (see
+    ``_ProviderUsage``), and a chunk that carries usage carries its cache and reasoning
+    counts in a field LiteLLM passes through."""
     data = raw if isinstance(raw, dict) else raw.model_dump()
-    details = usage_details(data.get("usage"))
-    if details:
-        data["provider_specific_fields"] = {
-            **(data.get("provider_specific_fields") or {}),
-            _USAGE_DETAILS_KEY: details,
-        }
+    usage = data.get("usage")
+    if usage:
+        tap.estimate = usage
+        data["usage"] = None
     return data
+
+
+def _usage_chunk(usage: dict[str, Any]) -> dict[str, Any]:
+    """The final chunk of a stream: usage alone, with its cache and reasoning counts.
+
+    It needs one (empty) choice: ``ChatLiteLLM`` skips a chunk with no choices, and its
+    usage with it.
+    """
+    chunk: dict[str, Any] = {
+        "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}}],
+        "usage": usage,
+    }
+    details = usage_details(usage)
+    if details:
+        chunk["provider_specific_fields"] = {_USAGE_DETAILS_KEY: details}
+    return chunk
 
 
 def _apply_usage_details(message: AIMessage | AIMessageChunk, details: dict[str, Any]) -> None:
@@ -313,7 +417,15 @@ class TaggedCitationChatLiteLLM(ChatLiteLLM):
         response = super().completion_with_retry(run_manager=run_manager, **kwargs)
         if not kwargs.get("stream"):
             return response
-        return (_carry_usage_details(raw) for raw in response)
+        tap = _tap_provider_usage(response)
+
+        def carried() -> Iterator[Any]:
+            for raw in response:
+                yield _carry_usage_details(raw, tap)
+            if tap.final is not None:
+                yield _usage_chunk(tap.final)
+
+        return carried()
 
     async def acompletion_with_retry(
         self, run_manager: AsyncCallbackManagerForLLMRun | None = None, **kwargs: Any
@@ -321,10 +433,13 @@ class TaggedCitationChatLiteLLM(ChatLiteLLM):
         response = await super().acompletion_with_retry(run_manager=run_manager, **kwargs)
         if not kwargs.get("stream"):
             return response
+        tap = _tap_provider_usage(response)
 
         async def carried() -> AsyncIterator[Any]:
             async for raw in response:
-                yield _carry_usage_details(raw)
+                yield _carry_usage_details(raw, tap)
+            if tap.final is not None:
+                yield _usage_chunk(tap.final)
 
         return carried()
 

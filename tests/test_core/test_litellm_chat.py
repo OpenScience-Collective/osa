@@ -29,9 +29,11 @@ from src.core.services.litellm_llm import create_openrouter_llm
 from src.core.services.tagged_citations import CITATION_INSTRUCTION
 from src.tools.citations import build_search_result
 from tests.helpers.openrouter import (
+    USAGE_SHAPES,
     FakeOpenRouter,
     sse_chunk,
     stream_of,
+    stream_with_usage_shape,
     tool_call_stream,
     whole_reply,
 )
@@ -583,15 +585,50 @@ class TestUsageMetadata:
         assert usage["input_token_details"] == {"cache_read": 40, "cache_creation": 20}
         assert usage["output_token_details"] == {"reasoning": 12}
 
-    def test_a_streamed_reply(self, openrouter: FakeOpenRouter) -> None:
-        openrouter.reply(stream_of("Hello", usage=self.USAGE))
+    @pytest.mark.parametrize("shape", USAGE_SHAPES)
+    def test_a_streamed_reply(self, openrouter: FakeOpenRouter, shape: str) -> None:
+        """Wherever the provider puts its usage, that usage is what the reply reports.
+
+        LiteLLM's own stream wrapper keeps it only when it is on the finish chunk;
+        for the shape OpenRouter documents it substitutes a local estimate.
+        """
+        openrouter.reply(stream_with_usage_shape(shape, "Hello", usage=self.USAGE))
 
         self._check(_llm().invoke([HumanMessage(content="hi")]))
 
-    async def test_an_async_streamed_reply(self, openrouter: FakeOpenRouter) -> None:
-        openrouter.reply(stream_of("Hello", usage=self.USAGE))
+    @pytest.mark.parametrize("shape", USAGE_SHAPES)
+    async def test_an_async_streamed_reply(self, openrouter: FakeOpenRouter, shape: str) -> None:
+        openrouter.reply(stream_with_usage_shape(shape, "Hello", usage=self.USAGE))
 
         self._check(await _llm().ainvoke([HumanMessage(content="hi")]))
+
+    def test_a_provider_that_reports_no_usage_keeps_litellms_estimate(
+        self, openrouter: FakeOpenRouter
+    ) -> None:
+        openrouter.reply(stream_of("Hello"))
+
+        usage = _llm().invoke([HumanMessage(content="hi")]).usage_metadata
+
+        assert usage["input_tokens"] > 0 and usage["output_tokens"] > 0
+        assert not usage.get("input_token_details")
+
+    def test_usage_is_counted_once_across_a_tool_loop(self, openrouter: FakeOpenRouter) -> None:
+        """Each model call reports its own usage exactly once, so summing a request's
+        messages (as the metrics do) neither drops a call nor doubles one."""
+        from src.metrics.db import extract_token_usage
+
+        openrouter.reply(
+            stream_with_usage_shape("documented", "First.", usage=self.USAGE),
+            stream_with_usage_shape("documented", "Second.", usage=self.USAGE),
+        )
+        llm = _llm()
+        first = llm.invoke([HumanMessage(content="one")])
+        second = llm.invoke([HumanMessage(content="two")])
+
+        usage = extract_token_usage({"messages": [first, second]})
+
+        assert (usage.input_tokens, usage.output_tokens) == (200, 60)
+        assert (usage.cache_read_tokens, usage.cache_creation_tokens) == (80, 40)
 
     def test_a_complete_reply(self, openrouter: FakeOpenRouter) -> None:
         openrouter.reply(whole_reply("Hello", usage=self.USAGE))

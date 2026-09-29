@@ -33,6 +33,33 @@ def stream_of(*texts: str, usage: dict | None = None) -> list[dict]:
     return events
 
 
+def stream_with_usage_shape(shape: str, *texts: str, usage: dict) -> list[dict]:
+    """A streamed reply whose usage arrives in the given shape.
+
+    ``documented``: the shape OpenRouter documents, a second chunk that repeats the
+    ``finish_reason`` with a content-free delta and the usage. ``on_finish``: usage on
+    the only finish chunk. ``trailing``: a further chunk after the finish, with no
+    ``finish_reason``. LiteLLM's stream wrapper keeps the provider's usage only for
+    ``on_finish``.
+    """
+    events = [sse_chunk({"role": "assistant", "content": ""})]
+    events += [sse_chunk({"content": text}) for text in texts]
+    if shape == "on_finish":
+        events.append(sse_chunk({}, "stop", usage=usage))
+    elif shape == "documented":
+        events.append(sse_chunk({"role": "assistant", "content": ""}, "stop"))
+        events.append(sse_chunk({"role": "assistant", "content": ""}, "stop", usage=usage))
+    elif shape == "trailing":
+        events.append(sse_chunk({}, "stop"))
+        events.append(sse_chunk({"content": ""}, None, usage=usage))
+    else:
+        raise ValueError(shape)
+    return events
+
+
+USAGE_SHAPES = ["documented", "on_finish", "trailing"]
+
+
 def tool_call_stream(name: str, arguments: str) -> list[dict]:
     call = {"index": 0, "id": "call_1", "type": "function", "function": {"name": name}}
     return [
