@@ -43,10 +43,12 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Changed
 
-- **The widget reveals a streamed reply at a reading pace** (issue #531): the text a reply has delivered is shown at a floor of about 300 characters per second, and faster when a backlog builds (each tick shows the backlog divided by 1.5 seconds, so a burst decays over a few seconds), instead of the moment each chunk arrives.
-  GPT-6 Luna at maximum effort reasons silently for most of a turn and then emits over 1,000 characters per second, so its answer used to appear all at once (a 1,500 character reply arrived in about a second, after about 25 seconds of nothing).
-  Now it grows over about 3 seconds (a 6,000 character reply over about 5), and a reply that finishes waits for the reveal for at most 4 seconds before the canonical text replaces it.
-  A model that streams slower than the pace is shown as it arrives, at most one 80 millisecond tick late, and the redraw rate is about 12 per second at most.
+- **The widget spreads a streamed reply's burst over half a second, at most** (issues #531 and #538): text a reply has delivered is drawn as soon as it arrives when nothing is pending (a first line or so at once, the rest within a tick), and every character is drawn no more than about half a second after it arrived, instead of the moment each chunk arrives.
+  GPT-6 Luna at maximum effort reasons silently for most of a turn and then emits its answer in about a second, so it used to appear all at once.
+  Each chunk carries its own half-second deadline, so a burst faster than a line per tick is spread over at most half a second, including one that lands late in an earlier burst's reveal, and a reply that finishes waits for the reveal for at most 0.7 seconds before the canonical text replaces it.
+  A model that streams slower than that is drawn as it arrives, at most one 80 millisecond tick late.
+  The wait before the first word is the model's own: OSA's model layer adds nothing over raw Bedrock (measured in issue #538), and lowering Luna's reasoning effort is what shortens it.
+  The redraw rate is about 12 per second at most.
   A fenced code block is not typed out: it is shown whole once the reveal reaches it, and code still arriving inside a block is shown as it arrives.
   A reveal never ends inside a `[n]` citation marker, a source is listed only once its marker has been shown, and a reader who is typing in a message, or has scrolled up, is not interrupted by the redraws.
   A reader who asked their system for reduced motion gets every chunk on arrival, gathered into one redraw per tick; a hidden tab or a page being left shows and saves the rest of the reply at once, and a page that is already hidden is not paced at all.
