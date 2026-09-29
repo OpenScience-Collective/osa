@@ -3031,7 +3031,13 @@ class TestModelInstructions:
 
     @pytest.mark.parametrize(
         "model",
-        ["openai.gpt-oss-120b-1:0", "openai/gpt-oss-120b:free", "qwen/qwen3-next-80b-a3b:nitro"],
+        [
+            "openai.gpt-oss-120b-1:0",
+            "openai/gpt-oss-120b:free",
+            "qwen/qwen3-next-80b-a3b:nitro",
+            "openai/gpt-5.2:nitro:exacto",
+            "poolside/laguna-s-2.1:free:nitro",
+        ],
     )
     def test_a_model_id_may_end_in_a_variant(self, model: str) -> None:
         """Bedrock's invoke id for gpt-oss-120b is an alias of an offered model."""
@@ -3040,7 +3046,7 @@ class TestModelInstructions:
             config = CommunityConfig(id="d", name="D", description="x", default_model=model)
         assert config.default_model == model
 
-    @pytest.mark.parametrize("model", ["a:b:c", "model:", ":free", "bad model", "a/b/c:d"])
+    @pytest.mark.parametrize("model", ["model:", ":free", "a::b", "bad model", "a/b/c:d"])
     def test_other_shapes_are_still_rejected(self, model: str) -> None:
         with pytest.raises(ValidationError, match="Invalid model name"):
             CommunityConfig(id="d", name="D", description="x", default_model=model)

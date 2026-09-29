@@ -59,6 +59,14 @@ def test_the_widget_refuses_every_invalid_id(model_id: str) -> None:
     assert not _widget_accepts(model_id)
 
 
+def test_the_check_uses_the_pattern_and_the_limit_it_declares() -> None:
+    """A widget that declares the constants and stops using them would pass every test above."""
+    body = re.search(r"function isValidModelId\(model\) \{(.*?)\n  \}", WIDGET, re.S)
+    assert body, "the widget defines isValidModelId"
+    assert "MODEL_ID_MAX_LENGTH" in body.group(1)
+    assert "MODEL_ID_PATTERN.test(" in body.group(1)
+
+
 def test_the_saved_model_and_the_custom_field_use_the_one_check() -> None:
     """Both places a model name enters the widget go through isValidModelId."""
     assert WIDGET.count("isValidModelId(") >= 3, "the definition and its two call sites"

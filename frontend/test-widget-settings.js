@@ -7,7 +7,9 @@
  * API key are hidden until Custom is chosen and hidden again when it is not; a key that is
  * already saved stays in view whatever model is chosen, so it can be seen and removed; a
  * custom model cannot be saved without a key or without a model name; a key the dialog is
- * not showing is not saved; and a saved setting comes back into the dialog as it was.
+ * not showing is not saved; a saved setting comes back into the dialog as it was; and a
+ * custom model name is held to the server's list of valid and invalid ids
+ * (tests/fixtures/model_ids.json), variant suffixes such as ":nitro" included.
  *
  * What stands in: `fetch` (an HTTP fixture for the community config, whose `offered_models`
  * fill the menu). Storage is the window's own localStorage, read back to see what was saved.

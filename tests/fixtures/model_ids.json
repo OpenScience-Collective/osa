@@ -1,5 +1,5 @@
 {
-  "_comment": "Model ids the community config validator (src/core/config/community.py, _MODEL_ID_PATTERN) and the widget's isValidModelId (frontend/osa-chat-widget.js) must classify the same way. Read by tests/test_core/test_model_id_corpus.py and frontend/test-widget-settings.js. Whitespace at the edges is left out: both sides trim before validating.",
+  "_comment": "Model ids the community config validator (src/core/config/community.py, _MODEL_ID_PATTERN) and the widget's isValidModelId (frontend/osa-chat-widget.js) must classify the same way. Read by tests/test_core/test_model_id_corpus.py and frontend/test-widget-settings.js. Whitespace at the edges is left out: both sides trim before validating. A slug may carry any number of variants, as OpenRouter lets them be stacked.",
   "valid": [
     "claude-haiku-4-5",
     "claude-sonnet-5-5",
@@ -16,6 +16,10 @@
     "anthropic/claude-haiku-4.5:floor",
     "qwen/qwen3-next-80b-a3b-instruct:free",
     "meta-llama/llama-3.3-70b-instruct:free",
+    "openai/gpt-5.2:nitro:exacto",
+    "poolside/laguna-s-2.1:free:nitro",
+    "openai/gpt-oss-120b:nitro:floor:exacto",
+    "Qwen/Qwen3_Next:free",
     "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
   ],
   "invalid": [
@@ -28,13 +32,14 @@
     ":nitro",
     "openai/:nitro",
     "openai/gpt-5:ni tro",
-    "openai/gpt-5:nitro:free",
     "openai/gpt-5;rm",
     "openai/gpt-5?x=1",
     "openai/gpt-5#x",
     "openai\\gpt-5",
     "\u00e9/model",
     "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-    "openai/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    "openai/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "openai/gpt-5:nitro::free",
+    "openai/gpt-5:nitro:"
   ]
 }
