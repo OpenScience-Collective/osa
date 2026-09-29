@@ -6977,14 +6977,15 @@
   // it, and a reasoning model can think for tens of seconds and then emit its whole
   // answer in under a second: the reader sees nothing, then everything at once. So a
   // burst is spread over a short window, and no more: the reveal adds a bounded delay
-  // and never makes the reader wait on it. The first text is drawn the moment it
-  // arrives, and every later character is drawn no later than REVEAL_LAG_MS after it
-  // arrived (plus a tick): each tick shows the backlog divided by the time left before
-  // the oldest undrawn character's deadline, so a burst is worked off by that deadline
-  // and a reply's whole delay is bounded by it. A backlog that small is shown at once
-  // (REVEAL_MIN_CPS a second), so a model that streams slowly is drawn as it arrives,
-  // at most one tick late. Fenced code is the exception: a code block is shown whole
-  // as soon as the reveal reaches it, never typed out.
+  // and never makes the reader wait on it. Text that arrives when nothing is pending is
+  // drawn at once (its first line or so; the rest follows within a tick), and every
+  // character is drawn no later than REVEAL_LAG_MS after it arrived: each chunk carries
+  // its own deadline, and each tick shows what those deadlines call for, so a burst is
+  // worked off by its deadline and one that lands late in an earlier burst's reveal is
+  // spread as well. A backlog under about a line (REVEAL_MIN_CPS a second) is drawn at
+  // once, so a model that streams slowly is drawn as it arrives, at most one tick late.
+  // Fenced code is the exception: a code block is shown whole as soon as the reveal
+  // reaches it, never typed out.
   const REVEAL_LAG_MS = 500;        // no character is drawn later than this after it arrived
   const REVEAL_MIN_CPS = 1000;      // a backlog this small (per second) is drawn at once
   const REVEAL_TICK_MS = 80;        // how often the message is redrawn
@@ -7051,6 +7052,12 @@
     return end;
   }
 
+  // A clock that never goes backward, so a change of the system time cannot make a
+  // chunk look younger than it is.
+  const revealNow = () => (typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now());
+
   // The reveal of one stream's text. `getText` reads everything the stream has
   // delivered so far and `show` is handed the part to display. `kick` says there is
   // more to show (it draws the first text at once, and schedules the rest), `drain`
@@ -7066,7 +7073,7 @@
   // catches it, stops, releases anyone waiting, and hands it back through `check`,
   // which the stream loop calls where the redraw used to run inline.
   function createReveal({
-    getText, show, paced = true, now = Date.now, later = setTimeout, unlater = clearTimeout,
+    getText, show, paced = true, now = revealNow, later = setTimeout, unlater = clearTimeout,
   }) {
     let shown = 0;
     let last = 0;
@@ -7098,18 +7105,31 @@
       return true;
     };
 
-    function step() {
+    // `forcedElapsed` is set for a draw made the moment text arrives on an idle reveal,
+    // which is one tick's worth of pace and not the (unbounded) time since the last one.
+    function step(forcedElapsed) {
       timer = null;
       const text = getText();
       const at = now();
-      const elapsed = Math.max(0, at - last);
+      const elapsed = forcedElapsed !== undefined ? forcedElapsed : Math.max(0, at - last);
       last = at;
       if (isPaced()) {
         while (arrivals.length && arrivals[0][0] <= shown) arrivals.shift();
-        const oldest = arrivals.length ? arrivals[0][1] : at;
-        const remaining = Math.max(REVEAL_LAG_MS - (at - oldest), REVEAL_TICK_MS);
-        const pace = Math.max(REVEAL_MIN_CPS, ((text.length - shown) * 1000) / remaining);
-        shown = nextRevealEnd(text, Math.min(shown, text.length), (pace * elapsed) / 1000);
+        // Each chunk's own deadline sets a pace; a chunk within a tick of its deadline
+        // must be drawn now, whatever the pace, so the bound does not rest on the
+        // timer firing exactly on time.
+        let pace = REVEAL_MIN_CPS;
+        let due = shown;
+        for (const [upTo, arrivedAt] of arrivals) {
+          const remaining = REVEAL_LAG_MS - Math.max(0, at - arrivedAt);
+          if (remaining <= REVEAL_TICK_MS) {
+            due = Math.max(due, upTo);
+          } else {
+            pace = Math.max(pace, ((upTo - shown) * 1000) / remaining);
+          }
+        }
+        const budget = Math.max((pace * elapsed) / 1000, due - shown);
+        shown = nextRevealEnd(text, Math.min(shown, text.length), budget);
       } else {
         shown = text.length;
         arrivals = [];
@@ -7140,18 +7160,23 @@
           known = length;
         }
         if (timer !== null || caughtUp()) return;
-        if (shown === 0) {
-          // The first text is drawn now, not a tick from now.
-          last = now() - REVEAL_TICK_MS;
-          step();
+        const idle = now() - last;
+        if (shown === 0 || idle >= REVEAL_TICK_MS) {
+          // Nothing is pending: draw what has arrived now, not a tick from now.
+          step(REVEAL_TICK_MS);
           return;
         }
-        last = now();
-        timer = later(step, REVEAL_TICK_MS);
+        timer = later(step, REVEAL_TICK_MS - idle);
       },
       flush,
       drain() {
         if (failure !== null || caughtUp()) return Promise.resolve();
+        // An unpaced reveal has nothing to wait for (and on a hidden page its timers
+        // are throttled to about one a second): show it all now.
+        if (!isPaced()) {
+          flush();
+          return Promise.resolve();
+        }
         return new Promise((resolve) => {
           const guard = later(flush, REVEAL_DRAIN_MAX_MS);
           waiting.push(() => {
