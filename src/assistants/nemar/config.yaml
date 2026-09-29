@@ -1,11 +1,16 @@
 # NEMAR Assistant Configuration
 # Helps researchers discover and explore BIDS-formatted EEG/MEG/iEEG datasets
+# default_model is GPT-6 Luna (maximum reasoning effort), served from Amazon Bedrock on the
+# platform's key (issue #530). A caller with their own Anthropic key who names no model (the CLI)
+# runs Claude Haiku 4.5 instead, and so does every request on a deployment with no Bedrock key.
+# Luna cannot take image blocks, so the model does not see nemar_render_overview or browser-run
+# figures; the prompt below has it say so, and the reader still sees the figure.
 
 id: nemar
 name: NEMAR (NeuroElectroMagnetic Archive)
 description: BIDS-formatted EEG, MEG, and iEEG datasets, deposited to NEMAR or imported from OpenNeuro
 status: available
-default_model: claude-sonnet-5-5
+default_model: openai.gpt-6-luna
 
 # External links for dashboard and discovery
 links:
