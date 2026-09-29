@@ -57,7 +57,7 @@ Serve the three models from Bedrock through the Converse API, one transport for 
   A caller who names the model still gets the 403 or 400, and `osa validate` warns about such a default.
 - **Tagged citations.** Tool results are rewritten as `[src:N] Title` text on the way to the model, the system prompt asks it to write the tag after each claim it draws from a source, and the tags are cut from the reply and returned as the citations the Anthropic path produces (`src/core/services/tagged_citations.py`).
   The layer sits at the model boundary, so `CitationAssembler`, the SSE events and the marker placement are unchanged.
-  It is written to be model-agnostic; applying it to the OpenRouter path is #526.
+  It is model-agnostic, and the OpenRouter path uses it too (#526): every OpenRouter model, Claude slugs included, gets tagged citations in place of the earlier prompt-only markdown-link rule.
   Because the tags are text in the same channel as the documents, retrieved text is defanged before the model reads it (`[src:N]` becomes `(src:N)`, titles and sources are put on one line), so a document cannot forge a source header and be cited under another source's tag; native blocks cannot be forged that way because their boundaries are structural.
 - **Streams wait on a thread pool of their own.** `langchain-aws` has no async client, so an async stream waits for each chunk on a worker thread, and a reasoning model may think for half a minute before its first.
   On the event loop's default executor (cpu count + 4 threads, at most 32) that capped concurrent streams at a handful on a small host and starved everything else that uses the executor; `bedrock_llm.py` waits on 64 threads of its own instead.

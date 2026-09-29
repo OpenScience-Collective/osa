@@ -31,6 +31,10 @@ the version being released and start a new `[Unreleased]` section above it.
   A tag that names no source is dropped, and the quoted passage is the closest one in the source, not a span the provider vouches for.
   Models follow the convention less reliably than Claude's native citations.
   Retrieved text cannot write a tag: `[src:N]` in a document is shown to the model as `(src:N)`, so a forum post cannot pass itself off as another source.
+- **Numbered citations on the OpenRouter path** (issue #526): a request funded by an OpenRouter key now gets the same numbered `[n]` markers and source list as Claude, through the same tagged-source layer, instead of the prompt-only "end the sentence with a markdown link" rule.
+  It applies to every OpenRouter model, Claude slugs included.
+  Cache reads and writes and reasoning tokens in OpenRouter's usage are now recorded, so cached requests are priced at the cache rate.
+  Not yet verified against the live service (no OpenRouter key on the development machine); `tests/test_integration/test_openrouter_citations.py` is written for it.
 - **Prompt caching for GPT-6 Luna** needs no request changes (the service caches a repeated prompt prefix on its own); its cache reads and writes are recorded and priced like Claude's.
   gpt-oss-120b and Qwen3 Next do no caching.
 - **`model_instructions`** in a community's `config.yaml`: extra system-prompt text for particular models, added after the platform's own note for that model.
@@ -38,6 +42,7 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Changed
 
+- **The OpenRouter chat model is a `ChatLiteLLM` subclass, not a wrapper around one** (`src/core/services/litellm_chat.py`, replacing `CachingLLMWrapper`): `bind_tools` and streaming are native, and tool results and earlier assistant turns are sent as their text instead of a stringified block list.
 - **Claude Sonnet 5.5 replaces Sonnet 5** (issue #522):
   the offered Sonnet is now `claude-sonnet-5-5`, at the same price ($2 / $10 per 1M tokens).
   `claude-sonnet-5` and the older Sonnet ids still resolve, to the new model, so saved widget settings and community configs keep working.
@@ -48,6 +53,13 @@ the version being released and start a new `[Unreleased]` section above it.
   Figures now count as about 4,800 tokens each when the conversation is measured (they were 1,600), which is what Sonnet bills for a full-size image, so long figure-heavy chats are trimmed sooner.
 - **NEMAR answers with Sonnet by default** (issue #522): `default_model` is now `claude-sonnet-5-5`.
   Each request costs about twice what Haiku 4.5 does per input token.
+
+### Fixed
+
+- **Concurrent OpenRouter requests could go out under each other's API key** (issue #526).
+  LiteLLM keeps credentials on a module every request in the process shares, and did not send them with the call, so requests running at the same time under different keys (a caller's own key next to the platform's) used whichever key was written last: 20 of 40 interleaved requests used the other key when measured.
+  The key now travels with each call.
+  Anyone who ran a public OpenRouter path with more than one key in use at once should treat this as a key-mixing incident for that period.
 
 ## [0.8.15] - 2026-09-25
 
