@@ -43,10 +43,11 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Changed
 
-- **The widget spreads a streamed reply's burst over half a second, at most** (issues #531 and #538): the text a reply has delivered is drawn the moment the first chunk arrives, and every later character is drawn no more than about half a second after it arrived, instead of the moment each chunk arrives.
-  GPT-6 Luna at maximum effort reasons silently for most of a turn and then emits its answer in under a second (on NEMAR: 15.8 seconds of nothing, then 400 characters in 0.8 seconds), so the answer used to appear all at once.
-  A burst is now drawn over about half a second, in about seven steps; a model that streams slowly is drawn as it arrives, at most one 80 millisecond tick late; and a reply that finishes waits for the reveal for at most 0.7 seconds before the canonical text replaces it.
-  The wait before the first word is the model's own: OSA's model layer adds nothing over raw Bedrock (first text in 5.2 seconds through OSA against 5.9 raw at maximum effort, 2.5 against 2.4 at medium).
+- **The widget spreads a streamed reply's burst over half a second, at most** (issues #531 and #538): text a reply has delivered is drawn as soon as it arrives when nothing is pending (a first line or so at once, the rest within a tick), and every character is drawn no more than about half a second after it arrived, instead of the moment each chunk arrives.
+  GPT-6 Luna at maximum effort reasons silently for most of a turn and then emits its answer in about a second, so it used to appear all at once.
+  Each chunk carries its own half-second deadline, so a burst faster than a line per tick is spread over at most half a second, including one that lands late in an earlier burst's reveal, and a reply that finishes waits for the reveal for at most 0.7 seconds before the canonical text replaces it.
+  A model that streams slower than that is drawn as it arrives, at most one 80 millisecond tick late.
+  The wait before the first word is the model's own: OSA's model layer adds nothing over raw Bedrock (measured in issue #538), and lowering Luna's reasoning effort is what shortens it.
   The redraw rate is about 12 per second at most.
   A fenced code block is not typed out: it is shown whole once the reveal reaches it, and code still arriving inside a block is shown as it arrives.
   A reveal never ends inside a `[n]` citation marker, a source is listed only once its marker has been shown, and a reader who is typing in a message, or has scrolled up, is not interrupted by the redraws.
