@@ -96,6 +96,11 @@ class Settings(BaseSettings):
         description="BEDROCK_REGION: AWS region the Bedrock models are called in (Ohio, "
         "the same region as the Claude Platform on AWS endpoint)",
     )
+    bedrock_max_output_tokens: int = Field(
+        default=16000,
+        description="Default max_tokens for Bedrock model requests. Reasoning counts toward "
+        "it, and GPT-6 Luna at maximum effort can spend thousands of tokens thinking",
+    )
     anthropic_thinking_budget_tokens: int = Field(
         default=2048,
         description="Default extended-thinking token budget for budget-style Anthropic "
