@@ -63,17 +63,33 @@ OPENROUTER_MODEL_IDS: dict[str, str] = {
 }
 
 
+# OpenRouter's routing variants ("Model variants" in its documentation): a suffix accepted
+# on any model that only changes how the request is routed (fastest providers, cheapest,
+# best at tool calls, and the deprecated ":online" web search), so the same model runs;
+# ":nitro" and ":floor" can also change the price tier. They can be stacked
+# ("openai/gpt-5.2:nitro:exacto"). The others (":free", ":batch", ":thinking",
+# ":extended") are catalog entries of their own, at most one to a slug, and are not
+# looked through: stripping ":free" would resolve to the paid entry.
+OPENROUTER_ROUTING_VARIANTS = ("nitro", "floor", "exacto", "online")
+
+
 def openrouter_model_id(slug: str | None) -> str | None:
     """The offered model id an OpenRouter slug stands for, or None when OSA does not know it.
 
-    Exactly the reverse of ``OPENROUTER_MODEL_IDS``. The ``anthropic/claude-*`` aliases
-    ``normalize_model`` resolves are deliberately not followed: they name older models
-    (Claude Sonnet 4.5, say) that OpenRouter runs as themselves, so the offered model's
-    reasoning levels say nothing about them. A slug that is not an offered model's is a
-    caller's own choice, about which nothing is assumed, including whether it reasons.
+    The reverse of ``OPENROUTER_MODEL_IDS``, looking through routing variants, in any
+    order (``openai/gpt-oss-120b:nitro`` is ``openai.gpt-oss-120b``, run through faster
+    providers). A catalog variant left over (``:free``) makes it a different entry, so
+    None. The ``anthropic/claude-*`` aliases ``normalize_model`` resolves are
+    deliberately not followed, with or without a variant: they name older models (Claude
+    Sonnet 4.5, say) that OpenRouter runs as themselves, so the offered model's reasoning
+    levels say nothing about them. A slug that is not an offered model's is a caller's own
+    choice, about which nothing is assumed, including whether it reasons.
     """
     if not slug:
         return None
+    base, *variants = slug.split(":")
+    kept = [v for v in variants if v not in OPENROUTER_ROUTING_VARIANTS]
+    slug = ":".join([base, *kept])
     for model_id, known_slug in OPENROUTER_MODEL_IDS.items():
         if known_slug == slug:
             return model_id
@@ -139,7 +155,8 @@ def create_openrouter_llm(
             ``DEFAULT_REASONING_EFFORT`` (high). Sent as OpenRouter's ``reasoning: {"effort": level}``
             body field, only for an offered model that has levels, at a level it
             accepts on OpenRouter (Claude Sonnet is never above ``high``, and has no
-            ``none`` there, where its reasoning is mandatory). Claude Haiku thinks with
+            ``none`` there, where its reasoning is mandatory), including a routing
+            variant of one (``:nitro``). Claude Haiku thinks with
             a budget, so it is sent ``reasoning: {"max_tokens": <the level's budget>}``
             (and no temperature) or, for ``none``, no reasoning field; a slug OSA knows nothing
             about, including the older Claude slugs that ``normalize_model`` aliases, is
@@ -161,8 +178,10 @@ def create_openrouter_llm(
     }
 
     # Auto-select Anthropic provider for Anthropic models (better performance)
-    # Override any default provider if this is an Anthropic model
-    if model.startswith("anthropic/"):
+    # Override any default provider if this is an Anthropic model. Not when the slug
+    # carries a variant (":floor", ":nitro"): the caller chose how it is routed, and
+    # pinning a provider first would override that.
+    if model.startswith("anthropic/") and ":" not in model:
         effective_provider = "Anthropic"
         logger.debug("Auto-selected Anthropic provider for model %s (better performance)", model)
     else:

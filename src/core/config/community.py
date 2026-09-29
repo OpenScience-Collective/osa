@@ -90,10 +90,11 @@ class SSRFViolationError(ValueError):
 # creator/model-name form (e.g. "anthropic/claude-3.5-sonnet") and a bare
 # first-party id with no provider prefix (e.g. "claude-haiku-4-5", one of
 # src.core.services.anthropic_llm.OFFERED_MODELS) -- the Claude Platform on
-# AWS path has no separate "creator" segment. An optional ":variant" ends either
-# form: Bedrock's own invoke id for gpt-oss-120b, "openai.gpt-oss-120b-1:0", is an
-# alias of an offered model, and OpenRouter slugs carry ":free" and the like.
-_MODEL_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]+(/[a-zA-Z0-9._-]+)?(:[a-zA-Z0-9._-]+)?$")
+# AWS path has no separate "creator" segment. Any number of ":variant" suffixes may
+# end either form: Bedrock's own invoke id for gpt-oss-120b, "openai.gpt-oss-120b-1:0",
+# is an alias of an offered model, and OpenRouter slugs carry ":free", ":nitro" and the
+# like, which it lets be stacked ("openai/gpt-5.2:nitro:exacto").
+_MODEL_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]+(/[a-zA-Z0-9._-]+)?(:[a-zA-Z0-9._-]+)*$")
 _MODEL_ID_MAX_LENGTH = 100
 
 

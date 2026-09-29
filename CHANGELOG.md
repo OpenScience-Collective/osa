@@ -108,6 +108,11 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Fixed
 
+- **The widget's Settings dialog refused an OpenRouter slug with a variant suffix, such as `openai/gpt-oss-120b:nitro`** (issue #552).
+  Its model-name check had no room for `:variant`, while the server's own check for a community's ids has, so a caller with their own OpenRouter key could not save `:nitro`, `:floor` or `:free` slugs, and a saved one was dropped on load.
+  The widget now applies the server's pattern and its 100-character limit, both allow any number of variants (OpenRouter lets them be stacked, as in `:nitro:exacto`), and both are held to one shared list of valid and invalid ids.
+  A routing variant (`:nitro`, `:floor`, `:exacto` and the deprecated `:online`, which OpenRouter accepts on any model and which change how the request is routed, `:nitro` and `:floor` possibly its price tier) is looked through when a slug is mapped to an offered model, so `openai/gpt-oss-120b:nitro` runs at the same reasoning level as `openai/gpt-oss-120b` instead of at OpenRouter's own default; `:free` and the other catalog variants are models of their own and are left alone.
+  An `anthropic/` slug that carries a variant is no longer pinned to the Anthropic provider, so the routing the caller chose is not overridden.
 - **A warning for every streamed tool-call chunk filled the production log** (issue #540).
   Anthropic streams a tool call's arguments as `input_json_delta` blocks, and the content classifier only knew `tool_use`, so each chunk of each tool call logged "unrecognized content block type".
   Production had 26,389 of them in four days.

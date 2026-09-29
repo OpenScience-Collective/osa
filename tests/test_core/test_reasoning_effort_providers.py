@@ -44,6 +44,7 @@ from src.core.services.anthropic_models import (
 from src.core.services.bedrock_llm import _bedrock_client, create_bedrock_llm
 from src.core.services.litellm_llm import (
     OPENROUTER_MODEL_IDS,
+    OPENROUTER_ROUTING_VARIANTS,
     create_openrouter_llm,
     openrouter_model_id,
 )
@@ -491,6 +492,103 @@ class TestOpenRouterSlugs:
         with caplog.at_level(logging.DEBUG, logger="src.core.services.litellm_llm"):
             _openrouter_body(openrouter, "some-lab/unknown-model")
         assert not any("reasoning_effort" in r.getMessage() for r in caplog.records)
+
+    def test_the_routing_variants_are_the_ones_openrouter_documents(self) -> None:
+        """Written out, not derived: OpenRouter's "Model variants" page lists :nitro (fastest
+        providers), :floor (cheapest), :exacto (best at tool calls) and the deprecated
+        :online (web search) as routing variants, accepted on any model."""
+        assert OPENROUTER_ROUTING_VARIANTS == ("nitro", "floor", "exacto", "online")
+
+    @pytest.mark.parametrize("variant", OPENROUTER_ROUTING_VARIANTS)
+    @pytest.mark.parametrize(("model", "slug"), sorted(OPENROUTER_MODEL_IDS.items()))
+    def test_a_routing_variant_of_an_offered_slug_is_that_offered_model(
+        self, model: str, slug: str, variant: str
+    ) -> None:
+        """`:nitro`, `:floor` and `:exacto` only change which providers serve the request."""
+        assert openrouter_model_id(f"{slug}:{variant}") == model
+
+    @pytest.mark.parametrize("variant", ["free", "batch", "thinking", "extended", "x"])
+    def test_any_other_variant_is_a_different_catalog_entry_and_is_not_looked_through(
+        self, variant: str
+    ) -> None:
+        assert openrouter_model_id(f"{OPENROUTER_MODEL_IDS[LUNA]}:{variant}") is None
+
+    @pytest.mark.parametrize(
+        ("suffix", "looked_through"),
+        [
+            (":nitro:exacto", True),
+            (":exacto:nitro", True),
+            (":nitro:floor:exacto", True),
+            (":free:nitro", False),
+            (":nitro:free", False),
+            (":nitro:free:exacto", False),
+        ],
+    )
+    def test_stacked_variants_are_looked_through_in_any_order_unless_a_catalog_one_remains(
+        self, suffix: str, looked_through: bool
+    ) -> None:
+        """OpenRouter lets suffixes be stacked: any number of routing variants, at most one
+        catalog variant. `:free` stripped would resolve to the paid entry, so it stays."""
+        slug = OPENROUTER_MODEL_IDS[GPT_OSS] + suffix
+        assert openrouter_model_id(slug) == (GPT_OSS if looked_through else None)
+
+    def test_a_stacked_variant_slug_runs_at_the_plain_slugs_level(
+        self, openrouter: FakeOpenRouter
+    ) -> None:
+        body = _openrouter_body(openrouter, OPENROUTER_MODEL_IDS[GPT_OSS] + ":nitro:exacto")
+        assert body["model"] == OPENROUTER_MODEL_IDS[GPT_OSS] + ":nitro:exacto"
+        assert body["reasoning"] == {"effort": "high"}
+
+    def test_a_variant_of_an_alias_slug_is_not_the_offered_model_either(self) -> None:
+        """`anthropic/claude-sonnet-4.5` is an alias of the offered Sonnet on the Claude path
+        but a different, older model on OpenRouter, with or without a variant."""
+        assert openrouter_model_id("anthropic/claude-sonnet-4.5:nitro") is None
+
+    def test_a_variant_of_an_unknown_slug_is_still_unknown(self) -> None:
+        assert openrouter_model_id("some-lab/unknown-model:nitro") is None
+
+    @pytest.mark.parametrize("variant", OPENROUTER_ROUTING_VARIANTS)
+    @pytest.mark.parametrize("model", [SONNET, LUNA, GPT_OSS])
+    def test_a_routing_variant_runs_at_the_same_level_as_the_plain_slug(
+        self, openrouter: FakeOpenRouter, model: str, variant: str
+    ) -> None:
+        """The model id keeps its suffix on the wire, and the level is the plain slug's."""
+        slug = OPENROUTER_MODEL_IDS[model]
+        plain = _openrouter_body(openrouter, slug, reasoning_effort="medium")
+        varied = _openrouter_body(openrouter, f"{slug}:{variant}", reasoning_effort="medium")
+        assert varied["model"] == f"{slug}:{variant}"
+        assert varied["reasoning"] == plain["reasoning"] == {"effort": "medium"}
+
+    @pytest.mark.parametrize("variant", OPENROUTER_ROUTING_VARIANTS)
+    def test_haiku_through_a_routing_variant_gets_its_budget_and_no_temperature(
+        self, openrouter: FakeOpenRouter, variant: str
+    ) -> None:
+        body = _openrouter_body(
+            openrouter, f"{OPENROUTER_MODEL_IDS[HAIKU]}:{variant}", reasoning_effort="low"
+        )
+        assert body["reasoning"] == {"max_tokens": 1024}
+        assert "temperature" not in body
+
+    @pytest.mark.parametrize("variant", OPENROUTER_ROUTING_VARIANTS)
+    def test_an_anthropic_slug_with_a_variant_is_not_pinned_to_a_provider(
+        self, openrouter: FakeOpenRouter, variant: str
+    ) -> None:
+        """The caller chose how it is routed (:floor for the cheapest, say): forcing
+        provider.order = [Anthropic] first would override that."""
+        body = _openrouter_body(
+            openrouter, f"{OPENROUTER_MODEL_IDS[HAIKU]}:{variant}", provider=None
+        )
+        assert "provider" not in body
+
+    def test_a_plain_anthropic_slug_is_still_pinned_to_the_anthropic_provider(
+        self, openrouter: FakeOpenRouter
+    ) -> None:
+        body = _openrouter_body(openrouter, OPENROUTER_MODEL_IDS[HAIKU], provider=None)
+        assert body["provider"] == {"order": ["Anthropic"]}
+
+    def test_a_free_variant_is_sent_no_reasoning_field(self, openrouter: FakeOpenRouter) -> None:
+        body = _openrouter_body(openrouter, f"{OPENROUTER_MODEL_IDS[GPT_OSS]}:free")
+        assert "reasoning" not in body
 
 
 # ---------------------------------------------------------------- one rule, three paths

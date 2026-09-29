@@ -157,12 +157,15 @@
     return model ? model.label : modelId;
   }
 
-  // A valid model id is either a bare first-party id (e.g. "claude-haiku-4-5")
-  // or an OpenRouter-style "provider/model" id (e.g. "openai/gpt-5"), which
-  // the custom-model field still accepts for BYOK callers.
+  // A valid model id is a bare first-party id ("claude-haiku-4-5") or an OpenRouter-style
+  // "provider/model" id ("openai/gpt-5"), either with ":variant" suffixes
+  // ("openai/gpt-oss-120b:nitro:exacto"). Mirrors _MODEL_ID_PATTERN in
+  // src/core/config/community.py; tests/fixtures/model_ids.json keeps the two in step.
+  const MODEL_ID_PATTERN = /^[a-zA-Z0-9_.-]+(\/[a-zA-Z0-9._-]+)?(:[a-zA-Z0-9._-]+)*$/;
+  const MODEL_ID_MAX_LENGTH = 100;
   function isValidModelId(model) {
-    if (typeof model !== 'string' || !model) return false;
-    return /^[a-zA-Z0-9._-]+$/.test(model) || /^[a-zA-Z0-9_-]+\/[a-zA-Z0-9._-]+$/.test(model);
+    if (typeof model !== 'string' || !model || model.length > MODEL_ID_MAX_LENGTH) return false;
+    return MODEL_ID_PATTERN.test(model);
   }
 
   // BYOK key formats, matching the server-side redaction patterns in
@@ -6007,7 +6010,7 @@
         return;
       }
       if (!isValidModelId(model)) {
-        showError(container, 'Invalid model format. Expected a Claude model id or provider/model-name');
+        showError(container, 'Invalid model format. Expected a Claude model id or provider/model-name, optionally with a :variant such as :nitro');
         return;
       }
       if (!apiKey) {
