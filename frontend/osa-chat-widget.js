@@ -7669,13 +7669,14 @@
           if (!event) continue;
 
           if (event.event === 'content' && event.content) {
-            // The loading dots give way to the first word the reveal shows.
-            receivedFirstContent = true;
             // Text again: whatever the reply was doing is over. The reveal's next
             // redraw takes the status away with the text, so nothing flickers first.
             // Only whitespace is not text (the reveal does not draw it either), and a
-            // model often sends some before its next call: the status stays.
+            // model often sends some before its next call: the status stays, and so
+            // does the loading bubble's "Thinking...".
             if (hasVisibleText(event.content)) {
+              // The loading dots give way to the first word the reveal shows.
+              receivedFirstContent = true;
               clearActivity();
               labelFromCalls = false;
               beginWait();

@@ -1336,6 +1336,16 @@ console.log('\nwhitespace before any text leaves the loading bubble up, and neve
       loading: ['Thinking...', 'Looking up documentation...'],
       reply: ANSWER,
     },
+    'whitespace, then thinking: the bubble still says so': {
+      steps: [
+        { event: 'content', content: WHITESPACE },
+        { event: 'thinking' },
+        { event: 'content', content: ANSWER },
+        { event: 'done', content: WHITESPACE + ANSWER, citations: [] },
+      ],
+      loading: ['Thinking...'],
+      reply: ANSWER,
+    },
     'whitespace, then done with an empty canonical text': {
       steps: [
         { event: 'content', content: WHITESPACE },
