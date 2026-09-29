@@ -77,6 +77,8 @@ from src.core.config.runtime_lock import (
 )
 from src.core.limits import MAX_BROWSER_RUNS_PER_REPLY
 from src.core.services.anthropic_llm import OFFERED_MODELS, create_anthropic_llm, normalize_model
+from src.core.services.anthropic_models import BEDROCK_MODELS, is_bedrock_model
+from src.core.services.bedrock_llm import create_bedrock_llm
 from src.core.services.litellm_llm import DEFAULT_MODEL as OPENROUTER_DEFAULT_MODEL
 from src.core.services.litellm_llm import DEFAULT_PROVIDER as OPENROUTER_DEFAULT_PROVIDER
 from src.core.services.litellm_llm import create_openrouter_llm, to_openrouter_model
@@ -115,15 +117,16 @@ RUNTIME_WHEEL_CACHE_CONTROL = "public, max-age=31536000, immutable"
 # Models (shared across all community routers)
 # ---------------------------------------------------------------------------
 
-# Built from OFFERED_MODELS rather than spelled out, so a third offered model
+# Built from OFFERED_MODELS rather than spelled out, so another offered model
 # cannot leave this description (which is what /docs and the API reference
-# show) naming two. See _select_model for the rule it describes: on the Claude
-# Platform any offered model is allowed from any caller, because the platform
-# runs only these two and neither can be used to run up an unbounded bill.
+# show) out of date. See _select_model for the rule it describes: any offered
+# model is allowed from any caller that is authorized to use the platform's
+# keys, because the offered models are all priced under the cost block
+# threshold and cannot run up an unbounded bill.
 MODEL_OVERRIDE_DESCRIPTION = (
     "Optional model override: "
-    + " or ".join(f"'{model}'" for model in sorted(OFFERED_MODELS))
-    + ", or a legacy alias of either. Any other id requires your own OpenRouter "
+    + ", ".join(f"'{model}'" for model in sorted(OFFERED_MODELS))
+    + ", or a legacy alias of one. Any other id requires your own OpenRouter "
     "key via the X-OpenRouter-Key header."
 )
 
@@ -989,17 +992,20 @@ class ProviderChoice:
     """Resolved LLM provider, API key, and key source for a request.
 
     Attributes:
-        provider: Which LLM backend to build ("anthropic" or "openrouter").
+        provider: Which LLM backend to build: "anthropic" (Claude, on the
+            Claude Platform on AWS), "bedrock" (GPT-6 Luna, Qwen3 Next and
+            gpt-oss-120b, on Amazon Bedrock), or "openrouter".
         api_key: The key to use, or None to let the provider layer read its
             own server-mode credentials from Settings (only possible for
-            "anthropic": create_anthropic_llm's server mode reads
+            "anthropic" and "bedrock": create_anthropic_llm's server mode reads
             ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL / ANTHROPIC_WORKSPACE_ID
             itself, which is required to hit the Claude Platform on AWS
-            endpoint rather than the first-party api.anthropic.com).
+            endpoint rather than the first-party api.anthropic.com, and
+            create_bedrock_llm reads AWS_BEARER_TOKEN_BEDROCK).
         key_source: "byok", "community", or "platform".
     """
 
-    provider: Literal["anthropic", "openrouter"]
+    provider: Literal["anthropic", "openrouter", "bedrock"]
     api_key: str | None
     key_source: Literal["byok", "community", "platform"]
 
@@ -1014,9 +1020,9 @@ class ProviderChoice:
         create_anthropic_llm / create_openrouter_llm both treat a falsy key
         as "use server credentials instead")."""
         if self.api_key is None:
-            if self.key_source != "platform" or self.provider != "anthropic":
+            if self.key_source != "platform" or self.provider not in ("anthropic", "bedrock"):
                 raise ValueError(
-                    "api_key=None is only valid for provider='anthropic' with "
+                    "api_key=None is only valid for provider='anthropic' or 'bedrock' with "
                     f"key_source='platform' (server mode); got provider="
                     f"{self.provider!r}, key_source={self.key_source!r}"
                 )
@@ -1029,6 +1035,22 @@ class ProviderChoice:
         blocks: search_result citations and image blocks alike. The one place that
         answers it, so citations, MCP images and browser figures cannot disagree."""
         return self.provider == "anthropic"
+
+    @property
+    def tags_citations(self) -> bool:
+        """Whether citations come from tagged sources instead of native blocks.
+
+        The Bedrock models reject search_result blocks, so the model layer
+        (src.core.services.tagged_citations) turns them into tagged text and
+        the model's tags back into citations. Tools still return search_result
+        blocks, exactly as on the Anthropic path.
+        """
+        return self.provider == "bedrock"
+
+    @property
+    def cites_sources(self) -> bool:
+        """Whether tools return citable search_result blocks: natively or by tags."""
+        return self.takes_native_blocks or self.tags_citations
 
 
 def _platform_choice(settings: Settings) -> ProviderChoice:
@@ -1231,12 +1253,14 @@ def _select_model(
     """Select the model (and, on OpenRouter, its provider-routing hint).
 
     **Anthropic:** the requested model, or else the community/platform
-    default, is normalized against the offered Claude models (see
+    default, is normalized against the offered models (see
     ``normalize_model``). An id that is not offered is rejected with 400
-    regardless of key source, since the Claude Platform on AWS only ever
-    runs the two offered models -- there is no cost-abuse risk in letting
-    any request pick either one. ``default_model_provider`` is ignored
-    here: it is OpenRouter-only routing.
+    regardless of key source, since the platform only ever runs the offered
+    models -- there is no cost-abuse risk in letting any request pick one,
+    because each is priced under the cost block threshold. The offered models
+    include the Bedrock-served ones; ``_route_request`` moves a request that
+    picked one of those onto the Bedrock provider. ``default_model_provider``
+    is ignored here: it is OpenRouter-only routing.
 
     **OpenRouter** (reached via BYOK, or a community's own funded
     OpenRouter key -- see ``_resolve_provider``): unchanged from before
@@ -1332,6 +1356,82 @@ def _select_model(
 
     # Use community or platform default
     return (default_model, default_provider)
+
+
+def _bedrock_choice(choice: ProviderChoice, model: str, settings: Settings) -> ProviderChoice:
+    """Move a request that picked a Bedrock model onto the Bedrock provider.
+
+    Bedrock models are paid for by the platform's Bedrock key, whoever else holds a
+    key, so the request's authorization decides whether it may spend that. A caller's
+    own Anthropic key (BYOK) is accepted without an origin check, because it pays for
+    itself; letting it select a model the platform pays for would hand any caller
+    with a plausible-looking key the platform's Bedrock budget.
+
+    Args:
+        choice: The provider ``_resolve_provider`` picked (Anthropic).
+        model: The normalized Bedrock model id the request selected.
+        settings: Server settings, for the Bedrock key.
+
+    Returns:
+        A platform-funded Bedrock ProviderChoice.
+
+    Raises:
+        HTTPException(403): If the caller brought their own Anthropic key.
+        HTTPException(400): If this deployment has no Bedrock key configured.
+    """
+    if choice.key_source == "byok":
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Model '{model}' is provided by this service and cannot be used with your "
+                "own Anthropic API key. Remove your key to use it, or choose a Claude model."
+            ),
+        )
+    if not settings.bedrock_api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model '{model}' is not available on this server.",
+        )
+    return ProviderChoice(provider="bedrock", api_key=None, key_source="platform")
+
+
+@dataclass(frozen=True)
+class RequestRoute:
+    """Where one request goes: its provider, and the model it runs."""
+
+    choice: ProviderChoice
+    model: str
+    provider_hint: str | None
+
+
+def _route_request(
+    community_info: AssistantInfo,
+    community_id: str,
+    byok: ByokCredential | None,
+    origin: str | None,
+    requested_model: str | None,
+) -> RequestRoute:
+    """Decide the provider and model for a request, with authorization checks.
+
+    The provider is first chosen by whose key pays (``_resolve_provider``), the
+    model by what was asked for (``_select_model``), and then the two are
+    reconciled: a Bedrock model needs the Bedrock provider whichever key the
+    request carried.
+
+    Raises:
+        HTTPException: As ``_resolve_provider``, ``_select_model`` and
+            ``_bedrock_choice`` do.
+    """
+    choice = _resolve_provider(community_id, byok, origin)
+    model, provider_hint = _select_model(
+        community_info,
+        requested_model,
+        provider=choice.provider,
+        has_byok=choice.key_source == "byok",
+    )
+    if choice.provider == "anthropic" and is_bedrock_model(model):
+        choice = _bedrock_choice(choice, model, get_settings())
+    return RequestRoute(choice=choice, model=model, provider_hint=provider_hint)
 
 
 def _check_model_cost(model: str, key_source: Literal["byok", "community", "platform"]) -> None:
@@ -1513,8 +1613,11 @@ def create_community_assistant(
 
     settings = get_settings()
 
-    # Select provider and API key with authorization checks
-    provider_choice = _resolve_provider(community_id, byok, origin)
+    # Select provider, API key and model with authorization checks (including the
+    # BYOK requirement for OpenRouter custom models)
+    route = _route_request(community_info, community_id, byok, origin, requested_model)
+    provider_choice = route.choice
+    selected_model, selected_provider = route.model, route.provider_hint
     logger.debug(
         "Using %s API key for provider %s",
         provider_choice.key_source,
@@ -1525,14 +1628,6 @@ def create_community_assistant(
             "key_source": provider_choice.key_source,
             "provider": provider_choice.provider,
         },
-    )
-
-    # Select model (provider-aware; checks BYOK requirement for OpenRouter custom models)
-    selected_model, selected_provider = _select_model(
-        community_info,
-        requested_model,
-        provider=provider_choice.provider,
-        has_byok=provider_choice.key_source == "byok",
     )
 
     # Block expensive models on platform/community keys
@@ -1554,6 +1649,11 @@ def create_community_assistant(
             api_key=provider_choice.api_key,
             temperature=settings.llm_temperature,
         )
+    elif provider_choice.provider == "bedrock":
+        # Automatic prompt caching (Luna) needs nothing from this layer: the
+        # provider reports cache reads and writes, and a stable prompt prefix,
+        # which the agent already keeps, is what earns the reads.
+        model = create_bedrock_llm(model=selected_model, temperature=settings.llm_temperature)
     else:
         # Determine user_id for prompt caching optimization
         cache_user_id = _get_cache_user_id(community_id, byok.key if byok else None, user_id)
@@ -1579,11 +1679,14 @@ def create_community_assistant(
         model=model,
         preload_docs=preload_docs,
         page_context=agent_page_context,
-        # Native search_result citations are Anthropic-only, and every
-        # search result in a request must share one citations.enabled
-        # setting; the provider choice is already fixed per request, so
-        # this satisfies that constraint for free.
-        citations=provider_choice.takes_native_blocks,
+        # Tools return citable search_result blocks on the Anthropic path (native
+        # citations) and the Bedrock path (turned into tagged citations by the model
+        # layer). Every search result in a request must share one citations.enabled
+        # setting; the provider choice is already fixed per request, so this
+        # satisfies that constraint for free.
+        citations=provider_choice.cites_sources,
+        tagged_citations=provider_choice.tags_citations,
+        model_id=selected_model,
         # The same gate, for the image block an MCP tool result (nemar_render_overview)
         # can carry. See src.tools.mcp_client._content_of.
         allow_mcp_images=provider_choice.takes_native_blocks,
@@ -2190,7 +2293,12 @@ def create_community_router(community_id: str) -> APIRouter:
         # runs before the call is claimed, because anything raised after the claim
         # would leave the session unanswerable (see the note on the re-park below).
         try:
-            allow_images = _resolve_provider(community_id, byok, origin).takes_native_blocks
+            route_info = registry.get(community_id)
+            if route_info is None:
+                raise HTTPException(status_code=404, detail="Unknown community.")
+            allow_images = _route_request(
+                route_info, community_id, byok, origin, body.model
+            ).choice.takes_native_blocks
         except HTTPException as err:
             logger.debug(
                 "No provider for /chat/resume images (%s: %s); sending placeholders",
@@ -2359,6 +2467,9 @@ def create_community_router(community_id: str) -> APIRouter:
             offered_models=[
                 OfferedModelResponse(id=model_id, label=label)
                 for model_id, label in OFFERED_MODELS.items()
+                # A model the server cannot run would fail on first use, so it is
+                # not offered: the Bedrock ones need the deployment's Bedrock key.
+                if model_id not in BEDROCK_MODELS or get_settings().bedrock_api_key
             ],
             widget=WidgetConfigResponse(**widget_cfg.resolve(info.name, logo_url=conv_logo)),
             status=health_status,
