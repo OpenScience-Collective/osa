@@ -24,6 +24,12 @@ from typing import Any, Literal
 # Default offered model.
 DEFAULT_MODEL = "claude-haiku-4-5"
 
+# What langchain-aws writes to ``response_metadata["model_provider"]`` on a message
+# a Bedrock model produced. A conversation can switch models between requests, and
+# a model has to be able to tell which turns in the history were written by another
+# provider (see ``strip_bedrock_turns`` in anthropic_llm.py).
+BEDROCK_MODEL_PROVIDER = "bedrock_converse"
+
 # Instruction added to the system prompt of models that go back to the search
 # tools over and over. GPT-6 Luna at maximum effort and gpt-oss-120b, given
 # the same retrieval tools as Claude, kept searching with reworded queries

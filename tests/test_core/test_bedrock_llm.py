@@ -383,3 +383,52 @@ class TestStreaming:
         assert "[src" not in text
         cited = [c["source"] for b in merged.content for c in b.get("citations", [])]
         assert cited == ["https://hedtags.org/sensory"]
+
+
+class TestReplayingHistory:
+    """A tool loop and a model switch both send earlier turns back to the model."""
+
+    def _history(self) -> list:
+        """A turn a Bedrock model wrote: reasoning, then a tool call."""
+        earlier_turn = AIMessage(
+            content=[
+                {"type": "reasoning_content", "reasoning_content": {"text": "I should search."}},
+                {"type": "thinking", "thinking": "", "signature": "from-a-claude-turn"},
+                {"type": "text", "text": "Let me look that up."},
+            ],
+            tool_calls=[{"name": "search_docs", "args": {"q": "s"}, "id": "c1"}],
+        )
+        return [
+            HumanMessage(content="What does Sensory-event mark?"),
+            earlier_turn,
+            ToolMessage(content="It marks a stimulus.", tool_call_id="c1", name="search_docs"),
+        ]
+
+    def test_reasoning_is_not_sent_back_on_a_complete_reply(self) -> None:
+        """Luna answers 400 to reasoning text in an assistant turn, so a second call fails."""
+        llm = create_bedrock_llm("openai.gpt-6-luna", settings=_settings())
+        llm.streaming = False
+        wire = _Wire(llm, _converse_reply("OK"), "application/json")
+
+        llm.bind_tools([_search_tool()]).invoke(self._history())
+
+        sent = json.dumps(wire.body["messages"])
+        assert "reasoningContent" not in sent
+        assert "Let me look that up." in sent
+
+    def test_reasoning_is_not_sent_back_on_a_streamed_reply(self) -> None:
+        llm = create_bedrock_llm("openai.gpt-oss-120b", settings=_settings())
+        wire = _Wire(llm, _stream_reply(["OK"]), "application/vnd.amazon.eventstream")
+
+        list(llm.bind_tools([_search_tool()]).stream(self._history()))
+
+        assert "reasoningContent" not in json.dumps(wire.body["messages"])
+
+    def test_the_callers_history_is_left_alone(self) -> None:
+        history = self._history()
+        llm = create_bedrock_llm("openai.gpt-oss-120b", settings=_settings())
+        _Wire(llm, _stream_reply(["OK"]), "application/vnd.amazon.eventstream")
+
+        list(llm.bind_tools([_search_tool()]).stream(history))
+
+        assert [b["type"] for b in history[1].content] == ["reasoning_content", "thinking", "text"]
