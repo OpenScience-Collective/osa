@@ -389,12 +389,12 @@ class TaggedCitationChatLiteLLM(ChatLiteLLM):
             _take_usage_details(chunk)
             retagged = retagger.feed(chunk)
             if run_manager:
-                run_manager.on_llm_new_token(retagged.message.content, chunk=retagged)
+                run_manager.on_llm_new_token(retagged.message.text, chunk=retagged)
             yield retagged
 
         for held in retagger.finish():
             if run_manager:
-                run_manager.on_llm_new_token(held.message.content, chunk=held)
+                run_manager.on_llm_new_token(held.message.text, chunk=held)
             yield held
 
     async def _astream(
@@ -412,10 +412,10 @@ class TaggedCitationChatLiteLLM(ChatLiteLLM):
             _take_usage_details(chunk)
             retagged = retagger.feed(chunk)
             if run_manager:
-                await run_manager.on_llm_new_token(retagged.message.content, chunk=retagged)
+                await run_manager.on_llm_new_token(retagged.message.text, chunk=retagged)
             yield retagged
 
         for held in retagger.finish():
             if run_manager:
-                await run_manager.on_llm_new_token(held.message.content, chunk=held)
+                await run_manager.on_llm_new_token(held.message.text, chunk=held)
             yield held

@@ -517,6 +517,25 @@ class TestBlocksDoNotCollideWithTheProviders:
         sources = [c["source"] for b in merged.content for c in b.get("citations", [])]
         assert sources == ["https://hedtags.org/sensory", "https://hedtags.org/schema"]
 
+    def test_a_retagged_stream_keeps_a_tool_call_after_cited_text_apart(self) -> None:
+        """The same collision through ChunkRetagger, which is what both chat models use."""
+        registry = _registry()
+        tool_use = {"type": "tool_use", "id": "t1", "name": "search", "input": {}, "index": 1}
+        merged = _stream_through(
+            registry,
+            [
+                _generation_chunk(
+                    [{"type": "text", "text": "One.[src:2] Two.[src:1]", "index": 0}]
+                ),
+                _generation_chunk([tool_use]),
+            ],
+        )
+
+        assert [b for b in merged.content if b.get("type") == "tool_use"] == [tool_use]
+        assert all(
+            not {"id", "name", "input"} & set(b) for b in merged.content if b.get("type") == "text"
+        )
+
     def test_provider_indexes_never_equal_ours(self) -> None:
         registry = _registry()
         blocks = pieces_to_blocks(_run("A.[src:1] B.[src:2] C.", registry), registry, index_base=0)
