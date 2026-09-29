@@ -3,7 +3,7 @@
 import logging
 from functools import lru_cache
 
-from pydantic import Field, model_validator
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from src.version import __version__
@@ -84,6 +84,17 @@ class Settings(BaseSettings):
         "(format 'wrkspc_...') sent as the anthropic-workspace-id header on "
         "server-mode requests. AWS Marketplace is only the billing channel; "
         "the workspace itself is an Anthropic-operated resource.",
+    )
+    bedrock_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("bedrock_api_key", "aws_bearer_token_bedrock"),
+        description="AWS_BEARER_TOKEN_BEDROCK: Amazon Bedrock API key that pays for the "
+        "non-Anthropic models (GPT-6 Luna, Qwen3 Next, gpt-oss-120b) on the platform",
+    )
+    bedrock_region: str = Field(
+        default="us-east-2",
+        description="BEDROCK_REGION: AWS region the Bedrock models are called in (Ohio, "
+        "the same region as the Claude Platform on AWS endpoint)",
     )
     anthropic_thinking_budget_tokens: int = Field(
         default=2048,
