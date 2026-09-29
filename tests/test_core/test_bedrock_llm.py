@@ -19,11 +19,24 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 
 from src.api.config import Settings
 from src.core.services.anthropic_models import BEDROCK_MODELS
-from src.core.services.bedrock_llm import TaggedCitationChatBedrock, create_bedrock_llm
+from src.core.services.bedrock_llm import (
+    TaggedCitationChatBedrock,
+    _bedrock_client,
+    create_bedrock_llm,
+)
 from src.core.services.tagged_citations import CITATION_INSTRUCTION
 from src.tools.citations import build_search_result
 
 FAKE_KEY = "test-bedrock-key"
+
+
+@pytest.fixture(autouse=True)
+def _fresh_clients():
+    """Clients are cached per (service, Region, key); a test hooks the one it gets, so
+    each test starts from clients nobody has hooked."""
+    _bedrock_client.cache_clear()
+    yield
+    _bedrock_client.cache_clear()
 
 
 def _settings(**overrides: object) -> Settings:
@@ -249,6 +262,31 @@ class TestCreateBedrockLlm:
         import os
 
         assert "AWS_BEARER_TOKEN_BEDROCK" not in os.environ
+
+
+class TestClientsAreReused:
+    def test_the_same_key_and_region_share_one_client(self) -> None:
+        first = create_bedrock_llm("openai.gpt-6-luna", settings=_settings())
+        second = create_bedrock_llm("openai.gpt-6-luna", settings=_settings())
+
+        assert first.client is second.client
+        assert first is not second, "each request still gets a model of its own"
+
+    def test_models_in_one_region_share_the_client(self) -> None:
+        luna = create_bedrock_llm("openai.gpt-6-luna", settings=_settings())
+        oss = create_bedrock_llm("openai.gpt-oss-120b", settings=_settings())
+        assert luna.client is oss.client
+
+    def test_another_region_or_key_gets_its_own_client(self) -> None:
+        base = create_bedrock_llm("openai.gpt-6-luna", settings=_settings())
+        other_region = create_bedrock_llm(
+            "openai.gpt-6-luna", settings=_settings(bedrock_region="us-west-2")
+        )
+        other_key = create_bedrock_llm(
+            "openai.gpt-6-luna", settings=_settings(bedrock_api_key="another-key")
+        )
+        assert other_region.client is not base.client
+        assert other_key.client is not base.client
 
 
 class TestTheRequestOnTheWire:
