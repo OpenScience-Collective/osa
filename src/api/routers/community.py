@@ -1247,7 +1247,7 @@ def _to_openrouter_model_via_canonical(model: str) -> str | None:
 def _select_model(
     community_info: AssistantInfo,
     requested_model: str | None,
-    provider: Literal["anthropic", "openrouter"],
+    provider: Literal["anthropic", "openrouter", "bedrock"],
     has_byok: bool,
 ) -> tuple[str, str | None]:
     """Select the model (and, on OpenRouter, its provider-routing hint).
@@ -1292,7 +1292,7 @@ def _select_model(
         default_model = community_info.community_config.default_model
         default_provider = community_info.community_config.default_model_provider
 
-    if provider == "anthropic":
+    if provider in ("anthropic", "bedrock"):
         try:
             resolved_model = normalize_model(requested_model or default_model)
         except ValueError as e:

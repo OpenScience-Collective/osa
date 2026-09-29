@@ -32,7 +32,7 @@ import logging
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeGuard
 
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 
@@ -176,7 +176,7 @@ def best_passage(claim: str, texts: Iterable[str], limit: int = CITED_TEXT_LIMIT
     return truncate(best, limit)
 
 
-def _is_search_result(block: Any) -> bool:
+def _is_search_result(block: Any) -> TypeGuard[dict[str, Any]]:
     return isinstance(block, dict) and block.get("type") == "search_result"
 
 
@@ -227,7 +227,7 @@ def _restore_tags(block: dict[str, Any], registry: SourceRegistry) -> dict[str, 
     return rebuilt
 
 
-def _is_cited_text_block(block: Any) -> bool:
+def _is_cited_text_block(block: Any) -> TypeGuard[dict[str, Any]]:
     return isinstance(block, dict) and block.get("type") == "text" and bool(block.get("citations"))
 
 
@@ -240,7 +240,7 @@ def _tag_tool_message(message: ToolMessage, registry: SourceRegistry) -> ToolMes
     rewritten: list[Any] = []
     for block in message.content:
         entry = registry.by_source(block.get("source", "")) if _is_search_result(block) else None
-        if entry is None:
+        if entry is None or not _is_search_result(block):
             rewritten.append(block)
         else:
             rewritten.append(
