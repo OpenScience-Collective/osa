@@ -1828,6 +1828,7 @@
       color: var(--osa-text-light);
     }
 
+    /* Held still under prefers-reduced-motion, in the widget's one reduced-motion block. */
     .osa-activity-pulse {
       flex: none;
       width: 6px;
@@ -1837,7 +1838,6 @@
       animation: osa-pulse 1.4s infinite ease-in-out;
     }
 
-    /* Held still under prefers-reduced-motion, in the widget's one reduced-motion block. */
     @keyframes osa-pulse {
       0%, 100% { opacity: 0.25; }
       50% { opacity: 1; }
