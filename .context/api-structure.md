@@ -400,7 +400,11 @@ The section above predates the move to the Claude Platform on AWS (ADR 0004) and
 3. If that model is one of the Bedrock-served ones (`BEDROCK_MODELS`), `_bedrock_choice` moves the
    request onto the Bedrock provider on the **platform's** Bedrock key: a BYOK Anthropic caller is
    refused (403), and a deployment with no Bedrock key answers 400 and does not list the models in
-   `offered_models`.
+   `offered_models` (which also needs the platform's Anthropic key, since routing starts from the
+   Anthropic provider). A community's Anthropic key (`anthropic_api_key_env_var`) does not pay for
+   Bedrock either: the platform does. When the model came from a community's `default_model`
+   rather than the request, and the caller cannot have it, the request runs the deployment's Claude
+   default instead (`_claude_fallback`) and logs an error; naming the model gets the 403 or 400.
 4. `create_bedrock_llm` (`src/core/services/bedrock_llm.py`) builds the chat model. Tools return
    `search_result` blocks as on the Anthropic path; the model layer turns them into `[src:N]` tags
    and the model's tags back into citations (`src/core/services/tagged_citations.py`).
