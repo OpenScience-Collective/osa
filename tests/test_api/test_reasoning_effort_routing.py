@@ -15,7 +15,11 @@ from src.api.config import get_settings
 from src.api.routers.community import create_community_assistant
 from src.api.security import ByokCredential
 from src.assistants import discover_assistants, registry
-from src.core.services.anthropic_models import REASONING_DEFAULTS
+from src.core.services.anthropic_models import (
+    BEDROCK_MODELS,
+    REASONING_DEFAULTS,
+    effective_reasoning_effort,
+)
 
 SONNET = "claude-sonnet-5-5"
 LUNA = "openai.gpt-6-luna"
@@ -83,6 +87,60 @@ def _openrouter_kwargs(model: str) -> dict:
     )
     assert type(awm.assistant.model).__name__ == "TaggedCitationChatLiteLLM"
     return awm.assistant.model.model_kwargs
+
+
+@pytest.mark.usefixtures("platform")
+class TestTheShippedCommunities:
+    """The real YAML, loaded and validated as shipped, not a config set by the test."""
+
+    @pytest.fixture
+    def platform(self, monkeypatch):
+        settings = get_settings()
+        monkeypatch.setattr(settings, "anthropic_api_key", "platform-anthropic-key")
+        monkeypatch.setattr(settings, "openrouter_api_key", None)
+        monkeypatch.setattr(settings, "bedrock_api_key", "bedrock-key")
+
+    def _with_platform_keys_only(self, monkeypatch, info) -> None:
+        monkeypatch.setattr(info.community_config, "anthropic_api_key_env_var", None)
+        monkeypatch.setattr(info.community_config, "openrouter_api_key_env_var", None)
+
+    @pytest.mark.parametrize("community_id", ["nwb", "nemar"])
+    def test_a_luna_community_runs_luna_at_the_level_its_yaml_sets(self, monkeypatch, community_id):
+        info = registry.get(community_id)
+        assert info is not None
+        assert info.community_config.default_model == LUNA
+        assert info.community_config.reasoning_effort == "high"
+        self._with_platform_keys_only(monkeypatch, info)
+        awm = create_community_assistant(community_id, origin=_origin(info), preload_docs=False)
+        assert awm.model == LUNA
+        assert awm.assistant.model.additional_model_request_fields == {
+            "reasoning": {"effort": "high"}
+        }
+
+    def test_every_community_that_sets_a_level_hands_it_to_the_model_it_runs(self, monkeypatch):
+        """Dynamic: whatever communities set a level, on whatever default model they run."""
+        with_a_level = [
+            info
+            for info in registry.list_all()
+            if info.community_config and info.community_config.reasoning_effort
+        ]
+        assert with_a_level, "no community sets reasoning_effort: nothing to check"
+        for info in with_a_level:
+            self._with_platform_keys_only(monkeypatch, info)
+            config = info.community_config
+            awm = create_community_assistant(info.id, origin=_origin(info), preload_docs=False)
+            expected = effective_reasoning_effort(awm.model, config.reasoning_effort, "bedrock")
+            fields = getattr(awm.assistant.model, "additional_model_request_fields", None) or {}
+            if awm.model in BEDROCK_MODELS:
+                assert fields == BEDROCK_MODELS[awm.model].reasoning_request_fields(expected), (
+                    info.id
+                )
+            else:
+                payload = awm.assistant.model._get_request_payload([HumanMessage(content="hi")])
+                asked = effective_reasoning_effort(awm.model, config.reasoning_effort, "anthropic")
+                sent = (payload.get("output_config") or {}).get("effort")
+                # `none` has no level of its own on Claude: it is sent as the lowest, low.
+                assert sent == {"none": "low"}.get(asked, asked), info.id
 
 
 class TestBedrockPath:
