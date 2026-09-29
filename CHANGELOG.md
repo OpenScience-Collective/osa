@@ -50,6 +50,15 @@ the version being released and start a new `[Unreleased]` section above it.
   A fenced code block is not typed out: it is shown whole once the reveal reaches it, and code still arriving inside a block is shown as it arrives.
   A reveal never ends inside a `[n]` citation marker, a source is listed only once its marker has been shown, and a reader who is typing in a message, or has scrolled up, is not interrupted by the redraws.
   A reader who asked their system for reduced motion gets every chunk on arrival, gathered into one redraw per tick; a hidden tab or a page being left shows and saves the rest of the reply at once, and a page that is already hidden is not paced at all.
+- **The widget says what a pending reply is doing** (issue #538), where it used to say only "Thinking..." or the community's title.
+  While a tool runs the label names it from the tool's name ("Searching datasets...", "Looking up documentation...", "Listing recordings..."), never from its arguments.
+  While the model writes a call to run code it reads "Writing code...", and once a tool has answered, or a browser run has finished, "Analyzing results..." until the model's next text.
+  "Thinking..." stays for a wait with no tool in it, and a server that sends none of the new events gets the labels it always did.
+  After 5 seconds the label is followed by how long the wait has lasted ("Searching datasets... 12 s"), updated once a second without redrawing the conversation, and not announced to a screen reader each second.
+  Before any reply text is on screen this is the loading bubble's label; once the reply has text, a later activity is a status line under that text in the same message, so it never makes a second or empty bubble.
+  None of it is saved with the conversation.
+- **A new `tool_call` SSE event** on `/chat`, `/chat/resume` and `/ask` (issue #538): `{"event": "tool_call", "name": "..."}`, sent once per call when the model starts writing it, which for a long code call is many seconds before `tool_start` (or `tool_request`, for a browser call).
+  It carries the tool's name only; no existing event, answer, citation or token count changes, and a widget that does not know it only logs a console warning.
 - **The OpenRouter chat model is a `ChatLiteLLM` subclass, not a wrapper around one** (`src/core/services/litellm_chat.py`, replacing `CachingLLMWrapper`): `bind_tools` and streaming are native, and tool results and earlier assistant turns are sent as their text instead of a stringified block list.
 - **Claude Sonnet 5.5 replaces Sonnet 5** (issue #522):
   the offered Sonnet is now `claude-sonnet-5-5`, at the same price ($2 / $10 per 1M tokens).
