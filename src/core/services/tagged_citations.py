@@ -4,8 +4,9 @@ Claude attaches an inline citation to a claim when the claim came from a
 ``search_result`` block (see ``src/tools/citations.py``); the API layer turns
 those into the numbered ``[n]`` markers and source list the widget shows. The
 models served from Amazon Bedrock reject that block outright ("This model
-doesn't support the searchResult field"), so this module gives them the same
-result by convention, at the model boundary:
+doesn't support the searchResult field"), and OpenRouter's OpenAI-style chat API
+has no such block at all, so this module gives them the same result by
+convention, at the model boundary:
 
 1. **Out.** Before a request, each ``search_result`` block in a tool result is
    rewritten as plain text that opens with a tag, ``[src:3] Title``. Tags are

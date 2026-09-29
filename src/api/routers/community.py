@@ -1055,12 +1055,12 @@ class ProviderChoice:
     def tags_citations(self) -> bool:
         """Whether citations come from tagged sources instead of native blocks.
 
-        The Bedrock models reject search_result blocks, so the model layer
-        (src.core.services.tagged_citations) turns them into tagged text and
-        the model's tags back into citations. Tools still return search_result
-        blocks, exactly as on the Anthropic path.
+        The Bedrock models reject search_result blocks and OpenRouter's chat API
+        has no such block, so the model layer (src.core.services.tagged_citations)
+        turns them into tagged text and the model's tags back into citations. Tools
+        still return search_result blocks, exactly as on the Anthropic path.
         """
-        return self.provider == "bedrock"
+        return self.provider in ("bedrock", "openrouter")
 
     @property
     def cites_sources(self) -> bool:
@@ -1740,11 +1740,11 @@ def create_community_assistant(
         model=model,
         preload_docs=preload_docs,
         page_context=agent_page_context,
-        # Tools return citable search_result blocks on the Anthropic path (native
-        # citations) and the Bedrock path (turned into tagged citations by the model
-        # layer). Every search result in a request must share one citations.enabled
-        # setting; the provider choice is already fixed per request, so this
-        # satisfies that constraint for free.
+        # Tools return citable search_result blocks on every path: native citations
+        # on Anthropic, tagged citations (turned into the same thing by the model
+        # layer) on Bedrock and OpenRouter. Every search result in a request must
+        # share one citations.enabled setting; the provider choice is already fixed
+        # per request, so this satisfies that constraint for free.
         citations=provider_choice.cites_sources,
         tagged_citations=provider_choice.tags_citations,
         model_id=selected_model,

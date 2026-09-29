@@ -76,13 +76,21 @@ class TestProviderChoiceForBedrock:
         # Images are a separate question: nothing shows Bedrock models take them.
         assert bedrock.takes_native_blocks is False
 
-    def test_anthropic_cites_natively_and_openrouter_not_at_all(self):
+    def test_anthropic_cites_natively_and_the_others_by_tags(self):
         anthropic = ProviderChoice(provider="anthropic", api_key=None, key_source="platform")
         assert (anthropic.takes_native_blocks, anthropic.tags_citations) == (True, False)
         assert anthropic.cites_sources is True
         openrouter = ProviderChoice(provider="openrouter", api_key="k", key_source="byok")
-        assert (openrouter.takes_native_blocks, openrouter.tags_citations) == (False, False)
-        assert openrouter.cites_sources is False
+        assert (openrouter.takes_native_blocks, openrouter.tags_citations) == (False, True)
+        assert openrouter.cites_sources is True
+
+    @pytest.mark.parametrize("provider", ["anthropic", "bedrock", "openrouter"])
+    def test_every_provider_cites_its_sources(self, provider):
+        """No provider path is left on the markdown-link fallback prompt."""
+        api_key = None if provider != "openrouter" else "k"
+        key_source = "platform" if provider != "openrouter" else "byok"
+        choice = ProviderChoice(provider=provider, api_key=api_key, key_source=key_source)
+        assert choice.cites_sources is True
 
 
 class TestRouteRequest:
