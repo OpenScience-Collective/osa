@@ -3,7 +3,7 @@
 import logging
 from functools import lru_cache
 
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from src.version import __version__
@@ -19,6 +19,9 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+        # A rejected key must not be echoed back in the validation error, which ends up
+        # in startup logs and tracebacks.
+        hide_input_in_errors=True,
     )
 
     # API Settings
@@ -91,6 +94,7 @@ class Settings(BaseSettings):
         description="AWS_BEARER_TOKEN_BEDROCK: Amazon Bedrock API key that pays for the "
         "non-Anthropic models (GPT-6 Luna, Qwen3 Next, gpt-oss-120b) on the platform",
     )
+
     bedrock_region: str = Field(
         default="us-east-2",
         description="BEDROCK_REGION: AWS region the Bedrock models are called in (Ohio, "
@@ -188,6 +192,26 @@ class Settings(BaseSettings):
     # Master switch only; per-community schedules are defined in each community's config.yaml
     # Empty databases are automatically seeded on startup when sync is enabled
     sync_enabled: bool = Field(default=True, description="Enable automated knowledge sync")
+
+    @field_validator("bedrock_api_key", mode="before")
+    @classmethod
+    def _clean_bedrock_api_key(cls, value: object) -> object:
+        """Trim the key, treat a blank one as unset, and refuse one with whitespace inside.
+
+        A trailing newline or carriage return (an env file with CRLF line endings, a
+        secret pasted with its line break) makes the HTTP client refuse the
+        Authorization header, and the client's error names the header value, key
+        included. A key with whitespace inside is not a key. The error says which
+        variable is wrong and never shows the value.
+        """
+        if not isinstance(value, str):
+            return value
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if any(char.isspace() or ord(char) < 32 for char in cleaned):
+            raise ValueError("AWS_BEARER_TOKEN_BEDROCK contains whitespace or control characters")
+        return cleaned
 
     @model_validator(mode="after")
     def validate_workspace_id_with_base_url(self) -> "Settings":

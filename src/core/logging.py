@@ -1,7 +1,7 @@
 """Secure logging configuration with API key redaction.
 
 Provides a custom log formatter that automatically redacts API keys
-(OpenRouter, Anthropic, OpenAI) from log messages to prevent credential
+(OpenRouter, Anthropic, OpenAI, Amazon Bedrock) from log messages to prevent credential
 exposure in centralized logging systems.
 
 Supports both text and JSON-structured logging formats.
@@ -19,7 +19,7 @@ class SecureFormatter(logging.Formatter):
     """Custom log formatter that redacts API keys from log messages.
 
     Automatically detects and redacts API keys from OpenRouter, Anthropic,
-    and OpenAI to prevent accidental credential exposure.
+    OpenAI and Amazon Bedrock to prevent accidental credential exposure.
     """
 
     # Patterns for API keys from various providers.
@@ -28,7 +28,13 @@ class SecureFormatter(logging.Formatter):
         r"sk-or-v1-[0-9a-f]{64}"  # OpenRouter: sk-or-v1-[64 hex chars]
         r"|sk-ant-[a-zA-Z0-9_-]{80,}"  # Anthropic: sk-ant-...
         r"|sk-proj-[a-zA-Z0-9_-]{40,}"  # OpenAI project keys: sk-proj-...
-        r"|sk-[a-zA-Z0-9]{48,}",  # Generic OpenAI keys: sk-...
+        r"|sk-[a-zA-Z0-9]{48,}"  # Generic OpenAI keys: sk-...
+        r"|ABSK[a-zA-Z0-9+/=_-]{20,}"  # Amazon Bedrock long-term API keys: ABSK...
+        r"|bedrock-api-key-[a-zA-Z0-9+/=_%.-]{20,}"  # Amazon Bedrock short-term keys
+        # Any bearer credential in an Authorization header dump. botocore logs the
+        # whole request, header included, at DEBUG; this covers a key whose format
+        # is not listed above.
+        r"|(?<=Bearer )[a-zA-Z0-9+/=_.~%-]{20,}",
         re.IGNORECASE,
     )
 
@@ -202,3 +208,8 @@ def configure_secure_logging(
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
     root_logger.addHandler(console_handler)
+
+    # botocore logs each request it sends, Authorization header included, at DEBUG.
+    # The formatter above redacts what this process prints, but a record that reaches
+    # any other handler (a tracing or error-reporting integration) is not redacted.
+    logging.getLogger("botocore").setLevel(max(level, logging.WARNING))
