@@ -38,7 +38,12 @@ logger = logging.getLogger(__name__)
 # `redacted_thinking` is Anthropic's encrypted-reasoning variant (returned
 # when a thinking block is flagged, e.g. by safety systems); it carries no
 # usable text either way, so it is classified the same as `thinking`.
-_THINKING_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking"})
+# `reasoning_content` is what langchain-aws returns for the reasoning of the
+# Bedrock models (GPT-6 Luna, gpt-oss-120b), and `reasoning` is the OpenAI-style
+# name for the same thing.
+_THINKING_BLOCK_TYPES = frozenset(
+    {"thinking", "redacted_thinking", "reasoning_content", "reasoning"}
+)
 
 # Non-text block types with their own dedicated handling elsewhere (tool-call
 # metadata streamed via separate events), so silently contributing nothing
