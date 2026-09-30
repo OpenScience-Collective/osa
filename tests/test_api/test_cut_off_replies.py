@@ -28,7 +28,7 @@ from unittest.mock import patch
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
 from src.agents.base import DEFAULT_MAX_CONVERSATION_TOKENS, count_conversation_tokens
 from src.api.routers.community import (
@@ -617,6 +617,40 @@ class TestChatWithoutStreaming:
 
         assert body["warnings"] == []
         assert body["message"]["content"] == ANSWER
+
+    def test_the_cost_row_counts_only_this_requests_runs(
+        self, provider: Provider, client: TestClient, monkeypatch
+    ) -> None:
+        """A session that had a browser turn keeps the model's own messages, each with the
+        usage it reported (``replace_history`` adopts the graph's state whole). A later
+        request that is not streamed passes the whole history to the model, and the
+        messages that come back include it: summing every message's usage billed those
+        earlier runs again."""
+        session = ChatSession("sess-plain-chat", COMMUNITY)
+        session.add_user_message("Plot the alpha power.")
+        session.replace_history(
+            [
+                *session.messages,
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"name": "t", "args": {}, "id": "toolu_01earlier", "type": "tool_call"}
+                    ],
+                    usage_metadata=USAGE,
+                ),
+                ToolMessage(content="peak 10.2 Hz", tool_call_id="toolu_01earlier"),
+                AIMessage(content="The peak is at 10.2 Hz.", usage_metadata=USAGE),
+            ]
+        )
+        _get_session_store(COMMUNITY)[session.session_id] = session
+        _serve(monkeypatch, provider, [scripted_reply(provider, ANSWER)])
+
+        assert _post_chat(client).status_code == 200
+
+        (row,) = _rows()
+        assert row["input_tokens"] == USAGE["input_tokens"]
+        assert row["output_tokens"] == USAGE["output_tokens"]
+        assert row["total_tokens"] == USAGE["total_tokens"]
 
     def test_an_empty_reply_that_finished_is_a_502_and_not_stored_as_a_turn(
         self, provider: Provider, client: TestClient, monkeypatch

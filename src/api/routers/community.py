@@ -56,7 +56,13 @@ from src.api.tool_results import (
     build_unanswered_tool_message,
     scrub_stored_images,
 )
-from src.api.turn_outcome import ModelRuns, error_event, reply_problem, warning_event
+from src.api.turn_outcome import (
+    ModelRuns,
+    current_turn,
+    error_event,
+    reply_problem,
+    warning_event,
+)
 from src.assistants import registry
 from src.assistants.community import CommunityAssistant
 from src.assistants.community import PageContext as AgentPageContext
@@ -2197,7 +2203,9 @@ def _extract_agent_result(result: dict) -> AgentResult:
         for tc in result.get("tool_calls", [])
     ]
 
-    usage = extract_token_usage(result)
+    # This request's messages only. The state holds the session's history too, whose model
+    # messages carry the usage they reported when they ran (a browser turn keeps them).
+    usage = extract_token_usage({"messages": current_turn(result.get("messages", []))})
     return AgentResult(
         response_content=response_content,
         tool_calls_info=tool_calls_info,

@@ -87,6 +87,24 @@ EMPTY_MESSAGE = (
 )
 
 
+def current_turn(messages: Iterable[BaseMessage]) -> list[BaseMessage]:
+    """The messages a request produced, from a finished graph state that also holds the
+    session's history: everything after the last human message.
+
+    A request that is not streamed hands the model the session's whole history, and the
+    state that comes back holds it too. The model's own messages in that history carry the
+    usage they reported then (a browser turn keeps them), so anything summed or counted
+    over the state must be limited to this turn, or earlier runs are counted again.
+    """
+    turn: list[BaseMessage] = []
+    for message in messages:
+        if isinstance(message, HumanMessage):
+            turn = []
+        else:
+            turn.append(message)
+    return turn
+
+
 def _reports_usage(message: Any) -> bool:
     """Whether a finished model run says how many tokens it used."""
     usage = getattr(message, "usage_metadata", None)
@@ -137,14 +155,8 @@ class ModelRuns:
         """The runs of the last turn in a finished graph state, for a request that was
         not streamed: the assistant messages after the last human one (earlier ones are
         history, and were not this request's runs)."""
-        turn: list[BaseMessage] = []
-        for message in messages:
-            if isinstance(message, HumanMessage):
-                turn = []
-            else:
-                turn.append(message)
         runs = cls()
-        for message in turn:
+        for message in current_turn(messages):
             if isinstance(message, AIMessage):
                 runs.note(message)
         return runs

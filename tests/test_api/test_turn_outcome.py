@@ -16,6 +16,7 @@ from src.api.turn_outcome import (
     MALFORMED_MESSAGE,
     NO_ANSWER_MESSAGE,
     ModelRuns,
+    current_turn,
     reply_problem,
     warning_event,
 )
@@ -69,6 +70,22 @@ def test_only_the_last_turn_of_a_history_is_this_requests() -> None:
     assert earlier.runs == 0 and earlier.truncated_by is None
     assert this_turn.runs == 1 and this_turn.truncated_by is None
     assert cut_this_turn.truncated_by == "max_tokens"
+
+
+def test_the_current_turn_is_what_follows_the_last_human_message() -> None:
+    earlier = AIMessage(content="old")
+    tool = ToolMessage(content="result", tool_call_id="1")
+    new = AIMessage(content="new")
+
+    assert current_turn([HumanMessage(content="q1"), earlier]) == [earlier]
+    assert current_turn([HumanMessage(content="q1"), earlier, HumanMessage(content="q2")]) == []
+    assert current_turn(
+        [HumanMessage(content="q1"), earlier, HumanMessage(content="q2"), new, tool]
+    ) == [
+        new,
+        tool,
+    ]
+    assert current_turn([]) == []
 
 
 def test_tool_messages_are_not_runs() -> None:
