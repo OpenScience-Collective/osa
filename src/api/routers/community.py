@@ -2779,7 +2779,8 @@ def create_community_router(community_id: str) -> APIRouter:
                 initial_messages=live_messages,
                 endpoint=f"/{community_id}/chat/resume",
                 carried_citations=pending.carried_citations,
-                browser_runs_answered=pending.runs_before + 1,
+                browser_runs_answered=pending.runs_after_answer,
+                code_runs_answered=pending.code_runs_after_answer,
             ),
             media_type="text/event-stream",
             headers={
@@ -3868,6 +3869,7 @@ def _finish_with_tool_request(
     content: str = "",
     citations: Sequence[CitationMark] = (),
     runs_before: int = 0,
+    code_runs_before: int = 0,
 ) -> Iterator[str]:
     """End run 1 on a browser call: adopt the history, park the call, ask the client to run it.
 
@@ -3893,7 +3895,10 @@ def _finish_with_tool_request(
     # `content` is this run's text with its markers normalized, which the reader would
     # otherwise only ever have in its raw streamed form.
     pending = PendingClientCall.from_state(
-        pending_payload, carried_citations=citations, runs_before=runs_before
+        pending_payload,
+        carried_citations=citations,
+        runs_before=runs_before,
+        code_runs_before=code_runs_before,
     )
     session.replace_history(final_state.get("messages", []) if final_state else [])
     session.set_pending_call(pending)
@@ -3914,6 +3919,7 @@ async def _stream_chat_response(
     endpoint: str | None = None,
     carried_citations: Sequence[CitationMark] = (),
     browser_runs_answered: int = 0,
+    code_runs_answered: int = 0,
 ) -> AsyncGenerator[str, None]:
     """Stream assistant response as JSON-encoded Server-Sent Events.
 
@@ -3953,6 +3959,9 @@ async def _stream_chat_response(
 
     `browser_runs_answered` is how many browser results this reply has already sent
     back; the run may request at most `MAX_BROWSER_RUNS_PER_REPLY` in total.
+    `code_runs_answered` is how many of those were runs of code the widget keeps on the
+    reply (`PendingClientCall.runs_code`): a reply with one is shown even when it ends
+    with no text, so it is what decides whether an empty ending is an error.
     """
     start_time = time.monotonic()
     tools_called: list[str] = []
@@ -4172,6 +4181,7 @@ async def _stream_chat_response(
                 content=normalize_citation_markers(full_response, citation_assembler.marks),
                 citations=citation_assembler.marks,
                 runs_before=browser_runs_answered,
+                code_runs_before=code_runs_answered,
             ):
                 yield sse_line
             model_runs.warn_about_usage(
@@ -4199,8 +4209,9 @@ async def _stream_chat_response(
 
         # A reply the model stopped at a limit raised nothing, and neither did one that
         # came back empty for any other stop reason; say so (see turn_outcome). With no
-        # text to show, and no code run earlier in the reply (the widget keeps a reply that
-        # ran code), it is an error and no `done` follows: a `done` with empty content is
+        # text to show, and no code the widget keeps run earlier in the reply (it keeps a
+        # reply that ran code, not one that only read output back), it is an error and no
+        # `done` follows: a `done` with empty content is
         # dropped by the widget, and the reader would see neither an answer nor a reason.
         # Nothing is stored for it. (A parked browser call returned above, so what is left
         # here is a reply that has ended.)
@@ -4213,7 +4224,7 @@ async def _stream_chat_response(
         problem = reply_problem(
             model_runs,
             reply_text=final_response,
-            code_ran=browser_runs_answered > 0,
+            code_ran=code_runs_answered > 0,
             community_id=community_id,
             model=awm.model if awm else None,
             endpoint=metrics_endpoint,

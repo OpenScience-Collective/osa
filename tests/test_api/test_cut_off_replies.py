@@ -21,13 +21,14 @@ each provider's real client stack instead, with only the network under it staged
 
 from __future__ import annotations
 
+import json
 import logging
 from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from langchain_core.messages import AIMessageChunk
+from langchain_core.messages import AIMessage, AIMessageChunk
 
 from src.api.routers.community import (
     AssistantWithMetrics,
@@ -37,6 +38,7 @@ from src.api.routers.community import (
     _stream_chat_response,
     create_community_router,
 )
+from src.api.tool_results import PendingClientCall
 from src.api.turn_outcome import (
     CONTEXT_FULL_CUT_OFF_MESSAGE,
     CONTEXT_FULL_NO_ANSWER_MESSAGE,
@@ -47,6 +49,7 @@ from src.api.turn_outcome import (
     NO_ANSWER_MESSAGE,
 )
 from src.assistants.community import CommunityAssistant
+from src.core.config.community import FULL_OUTPUT_TOOL_NAME
 from src.core.services.anthropic_models import BEDROCK_MODELS, DEFAULT_MODEL
 from src.core.services.litellm_llm import DEFAULT_MODEL as OPENROUTER_MODEL
 from src.core.services.model_outcome import (
@@ -95,6 +98,7 @@ async def _chat(
     script: list[list[AIMessageChunk]],
     *,
     browser_runs_answered: int = 0,
+    code_runs_answered: int = 0,
 ) -> tuple[list[dict], ChatSession]:
     session = ChatSession("sess-cutoff", COMMUNITY)
     session.add_user_message(QUESTION)
@@ -111,6 +115,7 @@ async def _chat(
                 None,
                 http_request=real_request("req-cutoff"),
                 browser_runs_answered=browser_runs_answered,
+                code_runs_answered=code_runs_answered,
             )
         )
     return events, session
@@ -246,12 +251,30 @@ class TestStreamedChat:
         """The widget keeps a reply that ran code even with no text, so a later run that
         is cut off before it writes anything is a warning on that reply, not an error."""
         events, _ = await _chat(
-            provider, [scripted_reply(provider, "", cut_off=True)], browser_runs_answered=1
+            provider,
+            [scripted_reply(provider, "", cut_off=True)],
+            browser_runs_answered=1,
+            code_runs_answered=1,
         )
 
         assert "error" not in _names(events)
         assert [e["message"] for e in events if e["event"] == "warning"] == [CUT_OFF_MESSAGE]
         assert _names(events)[-1] == "done"
+
+    async def test_a_browser_run_that_is_not_code_does_not_make_it_one(
+        self, provider: Provider
+    ) -> None:
+        """A run that only read output back leaves nothing on the reply the widget keeps
+        (see ``TestOnlyCodeTheWidgetKeepsCounts`` for the same through the endpoint)."""
+        events, _ = await _chat(
+            provider,
+            [scripted_reply(provider, "", cut_off=True)],
+            browser_runs_answered=1,
+            code_runs_answered=0,
+        )
+
+        assert _names(events)[-1] == "error" and "done" not in _names(events)
+        assert events[-1]["message"] == NO_ANSWER_MESSAGE
 
 
 # ---------------------------------------------------------------------------
@@ -623,6 +646,102 @@ class TestChatWithoutStreaming:
         body = _post_chat(client).json()
 
         assert body["warnings"] == [CONTEXT_FULL_CUT_OFF_MESSAGE]
+
+
+# ---------------------------------------------------------------------------
+# A reply that resumed after a browser run (release review, follow-up 2)
+# ---------------------------------------------------------------------------
+
+CALL_ID = "toolu_01resumecutoff"
+
+
+def _park(tool: str, *, runs_before: int = 0, code_runs_before: int = 0) -> str:
+    """A session mid-reply: the assistant asked the browser for ``tool`` and waits."""
+    session = ChatSession("sess-resume", COMMUNITY)
+    session.add_user_message(QUESTION)
+    session.messages.append(
+        AIMessage(
+            content="",
+            tool_calls=[{"name": tool, "args": {}, "id": CALL_ID, "type": "tool_call"}],
+        )
+    )
+    session.set_pending_call(
+        PendingClientCall.from_state(
+            {"call_id": CALL_ID, "tool": tool, "args": {}, "requires_permission": False},
+            runs_before=runs_before,
+            code_runs_before=code_runs_before,
+        )
+    )
+    _get_session_store(COMMUNITY)[session.session_id] = session
+    return session.session_id
+
+
+def _resume(client: TestClient, session_id: str) -> list[dict]:
+    response = client.post(
+        f"/{COMMUNITY}/chat/resume",
+        headers={"Origin": ORIGIN},
+        json={
+            "session_id": session_id,
+            "result": {"call_id": CALL_ID, "status": "ok", "summary": "done"},
+            "client_tools": [],
+        },
+    )
+    assert response.status_code == 200, response.text
+    return [
+        json.loads(line[len("data: ") :])
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+
+
+@provider_param
+class TestOnlyCodeTheWidgetKeepsCounts:
+    """The widget keeps a reply that ran code even with no text, and records a run only
+    when the tool was not the full-output tool (``FULL_OUTPUT_TOOL_NAME``). So a reply
+    whose only browser run read output back has nothing on screen but what the model
+    writes: a run 2 that hits the limit with no text would leave a banner and no answer."""
+
+    def test_a_run_that_only_read_output_back_is_not_an_answer(
+        self, provider: Provider, client: TestClient, monkeypatch
+    ) -> None:
+        _serve(monkeypatch, provider, [scripted_reply(provider, "", cut_off=True)])
+
+        events = _resume(client, _park(FULL_OUTPUT_TOOL_NAME))
+
+        assert _names(events)[-1] == "error" and "done" not in _names(events)
+        assert events[-1]["message"] == NO_ANSWER_MESSAGE
+        # The stream writes its own row last (the middleware's is written when the
+        # response starts, before the reply exists).
+        assert _rows()[-1]["status_code"] == 502
+
+    def test_a_run_of_code_the_widget_kept_is_one(
+        self, provider: Provider, client: TestClient, monkeypatch
+    ) -> None:
+        _serve(monkeypatch, provider, [scripted_reply(provider, "", cut_off=True)])
+
+        events = _resume(client, _park("execute_code"))
+
+        assert "error" not in _names(events) and _names(events)[-1] == "done"
+        assert [e["message"] for e in events if e["event"] == "warning"] == [CUT_OFF_MESSAGE]
+
+    def test_code_run_earlier_in_the_reply_still_counts(
+        self, provider: Provider, client: TestClient, monkeypatch
+    ) -> None:
+        """Run 1 ran code, run 2 read its output back, run 3 is cut off with no text."""
+        _serve(monkeypatch, provider, [scripted_reply(provider, "", cut_off=True)])
+
+        events = _resume(client, _park(FULL_OUTPUT_TOOL_NAME, runs_before=1, code_runs_before=1))
+
+        assert "error" not in _names(events) and _names(events)[-1] == "done"
+
+    def test_reading_output_back_twice_is_still_not_code(
+        self, provider: Provider, client: TestClient, monkeypatch
+    ) -> None:
+        _serve(monkeypatch, provider, [scripted_reply(provider, "", cut_off=True)])
+
+        events = _resume(client, _park(FULL_OUTPUT_TOOL_NAME, runs_before=1, code_runs_before=0))
+
+        assert _names(events)[-1] == "error"
 
 
 # ---------------------------------------------------------------------------

@@ -863,10 +863,13 @@ class TestAReplyHasABudgetOfBrowserRuns:
                     None,
                     declared_client_tools={"execute_code"},
                     browser_runs_answered=3,
+                    code_runs_answered=2,
                 )
             )
 
         assert session.pending_call.runs_before == 3
+        # Of those, the ones the widget keeps: what run 3 decides an empty ending by.
+        assert session.pending_call.code_runs_before == 2
         # And the budget the assistant was built with is what is left of the cap.
         from src.core.limits import MAX_BROWSER_RUNS_PER_REPLY
 
