@@ -3197,6 +3197,12 @@ class TestModelInstructions:
         with pytest.raises(ValidationError, match="empty"):
             self._config(**{"openai.gpt-6-luna": "   "})
 
+    @pytest.mark.parametrize("key", ["", "   ", "\t"])
+    def test_a_blank_key_is_an_error_not_the_default_model(self, key: str) -> None:
+        """normalize_model reads "" as the default (Haiku): it would be filed there silently."""
+        with pytest.raises(ValidationError, match="empty; name an offered model"):
+            self._config(**{key: "Be brief."})
+
     def test_text_beyond_the_limit_is_an_error(self) -> None:
         with pytest.raises(ValidationError, match="too long"):
             self._config(**{"openai.gpt-6-luna": "x" * (MODEL_INSTRUCTIONS_MAX_LENGTH + 1)})

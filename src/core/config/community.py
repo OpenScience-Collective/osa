@@ -2336,6 +2336,11 @@ class CommunityConfig(BaseModel):
         """
         resolved: dict[str, str] = {}
         for key, text in v.items():
+            if not key or not key.strip():
+                # normalize_model reads an empty id as "the default model", so the text
+                # would be filed under Haiku with no word: a blank key is a mistake, not
+                # a way of naming the default.
+                raise ValueError(f"model_instructions key {key!r} is empty; name an offered model")
             try:
                 model_id = normalize_model(key)
             except ValueError as e:
