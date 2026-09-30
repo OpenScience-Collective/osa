@@ -52,7 +52,7 @@ widget:
 # GPT-6 Luna, served from Amazon Bedrock on the platform's key (issue #559). A caller with their
 # own Anthropic key who names no model (the CLI) runs Claude Haiku 4.5 instead, and so does
 # every request on a deployment with no Bedrock key.
-# See src.core.services.anthropic_llm.OFFERED_MODELS for the ids.
+# See src.core.services.anthropic_models.OFFERED_MODELS for the ids.
 default_model: "openai.gpt-6-luna"
 # The level every model this community runs is asked to reason at, on every provider
 # (issue #545, ADR 0015). Luna at max took 15 to 50 s to a first word, so this community runs high.
