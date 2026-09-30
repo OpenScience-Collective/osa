@@ -362,6 +362,28 @@ class WidgetConfigResponse(BaseModel):
     launcher_label: str | None = Field(
         default=None, description="Tooltip text beside the collapsed launcher"
     )
+    launcher_position: Literal["bottom-left"] | None = Field(
+        default=None,
+        description="'bottom-left' when set, omitted for the 'bottom-right' default",
+    )
+    launcher_size: int | None = Field(
+        default=None, description="Launcher diameter in px while the panel is closed"
+    )
+    launcher_open_size: int | None = Field(
+        default=None, description="Launcher diameter in px while the panel is open"
+    )
+    launcher_offset_x: int | None = Field(
+        default=None, description="Launcher distance in px from its side edge of the window"
+    )
+    launcher_offset_y: int | None = Field(
+        default=None, description="Launcher distance in px from the bottom edge of the window"
+    )
+    launcher_mobile_offset_x: int | None = Field(
+        default=None, description="launcher_offset_x at 600px wide and narrower"
+    )
+    launcher_mobile_offset_y: int | None = Field(
+        default=None, description="launcher_offset_y at 600px wide and narrower"
+    )
     # Only "auto" is ever sent: resolve() omits the "light" default, and "dark" is a
     # host page's choice (setColorScheme), never a community's.
     color_scheme: Literal["auto"] | None = Field(
