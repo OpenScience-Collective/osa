@@ -714,15 +714,24 @@ class TestCommunityConfigOfferedModels:
         assert returned  # the Claude models remain
 
     def test_every_offered_model_id_is_accepted_by_normalize_model(
-        self, client: TestClient
+        self, client: TestClient, monkeypatch
     ) -> None:
-        from src.core.services.anthropic_llm import normalize_model
+        """With the keys set: without them the menu leaves the Bedrock ids out, and they
+        would be skipped here without a word."""
+        from src.api.config import get_settings
+        from src.core.services.anthropic_llm import BEDROCK_MODELS, OFFERED_MODELS, normalize_model
+
+        monkeypatch.setattr(get_settings(), "bedrock_api_key", "a-bedrock-key")
+        monkeypatch.setattr(get_settings(), "anthropic_api_key", "a-platform-key")
 
         response = client.get("/hed/")
         data = response.json()
 
-        for entry in data["offered_models"]:
-            assert normalize_model(entry["id"]) == entry["id"]
+        ids = [entry["id"] for entry in data["offered_models"]]
+        assert set(ids) == set(OFFERED_MODELS)
+        assert set(BEDROCK_MODELS) <= set(ids), "the Bedrock ids were not checked"
+        for model_id in ids:
+            assert normalize_model(model_id) == model_id
 
     def test_default_model_is_one_of_the_offered_models(
         self, client: TestClient, monkeypatch
