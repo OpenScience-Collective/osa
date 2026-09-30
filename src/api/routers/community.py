@@ -1574,17 +1574,19 @@ def _effective_default(info: AssistantInfo, settings: Settings) -> tuple[str | N
     """The default model this deployment actually runs for a community, and its hint.
 
     What the community configures, unless that is a Bedrock model nothing on this
-    deployment can run, in which case ``_claude_fallback`` (with the platform's routing
-    hint, the community's being for the model it named). What the widget shows as the
-    community default has to be what a request runs, and the model menu already leaves
-    out the models the server cannot run.
+    deployment can run, in which case ``_claude_fallback`` with no routing hint: the
+    community's hint is for the model it named, the platform's is an OpenRouter upstream
+    host that means nothing next to a Claude model, and a request for a bare Claude id
+    carries none (see ``_select_model``). What the widget shows as the community default
+    has to be what a request runs, and the model menu already leaves out the models the
+    server cannot run.
     """
     default_model, default_provider = _configured_default(info, settings)
     if is_bedrock_model(default_model) and _bedrock_default_outcome(settings) in (
         "claude_fallback",
         "unavailable",
     ):
-        return _claude_fallback(settings), settings.default_model_provider
+        return _claude_fallback(settings), None
     return default_model, default_provider
 
 

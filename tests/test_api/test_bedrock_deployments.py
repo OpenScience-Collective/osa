@@ -113,7 +113,9 @@ class TestTheWidgetDefaultIsWhatTheServerRuns:
             data = _config(info.id)
             assert data["default_model"] == expected, info.id
             assert data["default_model"] in _offered_ids(data), info.id
-            assert data["default_model_provider"] == settings.default_model_provider, info.id
+            # OpenRouter's upstream-host hint is for the model the platform default names,
+            # not for a Claude model: a bare Claude id has none (`_select_model`).
+            assert data["default_model_provider"] is None, info.id
 
     @pytest.mark.parametrize("deployment", ["openrouter_only", "bedrock_and_openrouter"])
     def test_on_openrouter_the_community_default_really_runs_and_is_reported(
