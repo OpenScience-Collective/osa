@@ -8,6 +8,9 @@ Date: 2026-09-19 (decision made 2026, epic #360 / PR #395 and phases
 Accepted.
 Amended by [0014](0014-bedrock-models-alongside-claude.md): three non-Anthropic models are now also offered, served from Amazon Bedrock.
 The decision below is unchanged for Claude.
+Claude Sonnet 5.5 (`claude-sonnet-5-5`, issue #522) has since replaced Sonnet 5 as the offered Sonnet, at the same price.
+`claude-sonnet-5` and the older Sonnet ids still resolve, to the new model, so saved settings and community configs keep working.
+The body below is as decided then, apart from a note where it names Sonnet 5.
 
 ## Context
 
@@ -31,13 +34,12 @@ Migrate platform-funded routing to the Claude Platform on AWS in four
 reviewed phases, merged into an epic branch and landed on `develop` as one
 regular (non-squash) merge so the phase history survives:
 
-1. **Phase 1 - provider layer** (PR #365): `src/core/services/anthropic_llm.py`
-   adds the offered-model registry (`claude-haiku-4-5` default,
-   `claude-sonnet-5`), per-model thinking policy, two credential modes
-   (server key pinned to the AWS endpoint + workspace header, vs. BYOK
-   pinned to `api.anthropic.com`), and prompt caching via a `ChatAnthropic`
-   subclass. Routing itself is untouched - OpenRouter keeps serving traffic
-   until Phase 2.
+1. **Phase 1 - provider layer** (PR #365): `src/core/services/anthropic_llm.py` adds the offered-model registry
+   (`claude-haiku-4-5` as the default, and `claude-sonnet-5`, since replaced by `claude-sonnet-5-5`; see Status),
+   a per-model thinking policy,
+   two credential modes (a server key pinned to the AWS endpoint and workspace header, or the caller's own key (bring your own key, BYOK) pinned to `api.anthropic.com`),
+   and prompt caching via a `ChatAnthropic` subclass.
+   Routing itself is untouched; OpenRouter keeps serving traffic until Phase 2.
 2. **Phase 2 - routing and model policy** (PR #368): flips `_resolve_provider`
    /`_select_model` to prefer Anthropic; BYOK still wins, then a community
    key, then the platform key. Bare first-party model ids are mapped to
