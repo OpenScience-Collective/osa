@@ -12,7 +12,7 @@ import pytest
 from langchain_core.messages import HumanMessage
 
 from src.api.config import get_settings
-from src.api.routers.community import create_community_assistant
+from src.api.routers.community import _route_request, create_community_assistant
 from src.api.security import ByokCredential
 from src.assistants import discover_assistants, registry
 from src.core.services.anthropic_models import (
@@ -20,7 +20,10 @@ from src.core.services.anthropic_models import (
     DEFAULT_REASONING_EFFORT,
     THINKING_BUDGET_TOKENS,
     effective_reasoning_effort,
+    is_bedrock_model,
+    normalize_model,
 )
+from tests.helpers.deployment import without_mcp_servers
 
 SONNET = "claude-sonnet-5-5"
 LUNA = "openai.gpt-6-luna"
@@ -54,16 +57,8 @@ def hed(monkeypatch):
     assert info is not None
     monkeypatch.setattr(info.community_config, "anthropic_api_key_env_var", None)
     monkeypatch.setattr(info.community_config, "openrouter_api_key_env_var", None)
-    _without_mcp_servers(monkeypatch, info)
+    without_mcp_servers(monkeypatch, info)
     return info
-
-
-def _without_mcp_servers(monkeypatch, info) -> None:
-    """Building an assistant discovers its MCP servers' tools over the network (NEMAR's is
-    mcp.nemar.org, waited on for up to 25 s). Which tools a community has is not what these
-    tests are about, and an offline suite must not depend on a live service."""
-    if info.community_config.extensions:
-        monkeypatch.setattr(info.community_config.extensions, "mcp_servers", [])
 
 
 def _set_level(monkeypatch, info, level: str | None) -> None:
@@ -118,20 +113,27 @@ class TestTheShippedCommunities:
     def _with_platform_keys_only(self, monkeypatch, info) -> None:
         monkeypatch.setattr(info.community_config, "anthropic_api_key_env_var", None)
         monkeypatch.setattr(info.community_config, "openrouter_api_key_env_var", None)
-        _without_mcp_servers(monkeypatch, info)
+        without_mcp_servers(monkeypatch, info)
 
-    @pytest.mark.parametrize("community_id", ["nwb", "hed", "eeglab", "bids"])
-    def test_a_luna_community_runs_luna_at_the_level_its_yaml_sets(self, monkeypatch, community_id):
-        info = registry.get(community_id)
-        assert info is not None
-        assert info.community_config.default_model == LUNA
-        assert info.community_config.reasoning_effort == "high"
-        self._with_platform_keys_only(monkeypatch, info)
-        awm = create_community_assistant(community_id, origin=_origin(info), preload_docs=False)
-        assert awm.model == LUNA
-        assert awm.assistant.model.additional_model_request_fields == {
-            "reasoning": {"effort": "high"}
-        }
+    def test_a_luna_community_runs_luna_at_the_level_its_yaml_sets(self, monkeypatch):
+        """Every community whose default is GPT-6 Luna, found in the registry."""
+        luna_communities = [
+            info
+            for info in registry.list_all()
+            if info.community_config
+            and info.community_config.default_model
+            and normalize_model(info.community_config.default_model) == LUNA
+        ]
+        assert luna_communities, "no shipped community defaults to GPT-6 Luna"
+        for info in luna_communities:
+            # The anchor: the shipped level, and the request field it becomes.
+            assert info.community_config.reasoning_effort == "high", info.id
+            self._with_platform_keys_only(monkeypatch, info)
+            awm = create_community_assistant(info.id, origin=_origin(info), preload_docs=False)
+            assert awm.model == LUNA, info.id
+            assert awm.assistant.model.additional_model_request_fields == {
+                "reasoning": {"effort": "high"}
+            }, info.id
 
     def test_every_community_that_sets_a_level_hands_it_to_the_model_it_runs(self, monkeypatch):
         """Dynamic: whatever communities set a level, on whatever default model they run."""
@@ -145,18 +147,89 @@ class TestTheShippedCommunities:
             self._with_platform_keys_only(monkeypatch, info)
             config = info.community_config
             awm = create_community_assistant(info.id, origin=_origin(info), preload_docs=False)
-            expected = effective_reasoning_effort(awm.model, config.reasoning_effort, "bedrock")
-            fields = getattr(awm.assistant.model, "additional_model_request_fields", None) or {}
             if awm.model in BEDROCK_MODELS:
+                expected = effective_reasoning_effort(awm.model, config.reasoning_effort, "bedrock")
+                fields = awm.assistant.model.additional_model_request_fields or {}
                 assert fields == BEDROCK_MODELS[awm.model].reasoning_request_fields(expected), (
                     info.id
                 )
-            else:
+                continue
+            _assert_claude_level(awm, config.reasoning_effort, info.id)
+
+    def test_a_community_on_haiku_hands_its_level_over_as_a_thinking_budget(self, monkeypatch):
+        """Haiku has no effort field: the same key becomes a thinking budget."""
+        on_haiku = [
+            info
+            for info in registry.list_all()
+            if info.community_config
+            and (info.community_config.default_model or get_settings().default_model) == HAIKU
+        ]
+        assert on_haiku, "no shipped community defaults to Claude Haiku"
+        for level, budget in (("low", 1024), ("medium", 2048)):
+            for info in on_haiku:
+                self._with_platform_keys_only(monkeypatch, info)
+                monkeypatch.setattr(info.community_config, "reasoning_effort", level)
+                awm = create_community_assistant(info.id, origin=_origin(info), preload_docs=False)
                 payload = awm.assistant.model._get_request_payload([HumanMessage(content="hi")])
-                asked = effective_reasoning_effort(awm.model, config.reasoning_effort, "anthropic")
-                sent = (payload.get("output_config") or {}).get("effort")
-                # `none` has no level of its own on Claude: it is sent as the lowest, low.
-                assert sent == {"none": "low"}.get(asked, asked), info.id
+                assert awm.model == HAIKU, info.id
+                assert payload["thinking"] == {"type": "enabled", "budget_tokens": budget}, info.id
+                assert "output_config" not in payload, info.id
+                _assert_claude_level(awm, level, info.id)
+
+    def test_nemar_is_pinned_to_sonnet_on_the_claude_platform_at_high(self, monkeypatch):
+        """NEMAR's tools return figures, which only a Claude model can see (#522, #530)."""
+        info = registry.get("nemar")
+        assert info is not None
+        self._with_platform_keys_only(monkeypatch, info)
+
+        route = _route_request(info, "nemar", None, _origin(info), None)
+
+        assert route.choice.provider == "anthropic"
+        assert route.model == SONNET
+        assert route.choice.takes_native_blocks
+        awm = create_community_assistant("nemar", origin=_origin(info), preload_docs=False)
+        assert awm.model == SONNET
+        payload = awm.assistant.model._get_request_payload([HumanMessage(content="hi")])
+        assert payload["output_config"] == {"effort": "high"}
+
+    def test_a_community_with_client_tools_or_mcp_servers_does_not_default_to_a_bedrock_model(
+        self,
+    ):
+        """Dynamic. Their tools return image blocks, and no Bedrock model takes images."""
+        with_tools = [
+            info
+            for info in registry.list_all()
+            if info.community_config
+            and info.community_config.extensions
+            and (
+                info.community_config.extensions.client_tools
+                or info.community_config.extensions.mcp_servers
+            )
+        ]
+        assert with_tools, "no shipped community has client tools or MCP servers"
+        for info in with_tools:
+            assert not is_bedrock_model(info.community_config.default_model), info.id
+
+
+def _assert_claude_level(awm, requested: str | None, community_id: str) -> None:
+    """A Claude model is handed the level as its provider names it.
+
+    Sonnet has an effort field (`output_config.effort`; `none` is sent as `low`, the
+    lowest level there is). Haiku has none, so its level is a thinking budget, and `none`
+    is no thinking at all.
+    """
+    payload = awm.assistant.model._get_request_payload([HumanMessage(content="hi")])
+    asked = effective_reasoning_effort(awm.model, requested, "anthropic")
+    budgets = THINKING_BUDGET_TOKENS.get(normalize_model(awm.model))
+    if budgets is None:
+        sent = (payload.get("output_config") or {}).get("effort")
+        assert sent == {"none": "low"}.get(asked, asked), community_id
+    elif asked in budgets:
+        assert payload["thinking"] == {"type": "enabled", "budget_tokens": budgets[asked]}, (
+            community_id
+        )
+    else:
+        assert "thinking" not in payload, community_id
 
 
 class TestBedrockPath:

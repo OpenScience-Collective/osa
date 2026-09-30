@@ -42,3 +42,11 @@ def set_platform_keys(
         if info.community_config:
             monkeypatch.setattr(info.community_config, "anthropic_api_key_env_var", None)
             monkeypatch.setattr(info.community_config, "openrouter_api_key_env_var", None)
+
+
+def without_mcp_servers(monkeypatch, info) -> None:
+    """Building an assistant discovers its MCP servers' tools over the network (NEMAR's is
+    mcp.nemar.org, waited on for up to 25 s). Which tools a community has is not what a
+    routing test is about, and an offline suite must not depend on a live service."""
+    if info.community_config.extensions:
+        monkeypatch.setattr(info.community_config.extensions, "mcp_servers", [])
