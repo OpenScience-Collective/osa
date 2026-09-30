@@ -229,6 +229,8 @@ button, and the panel opens above it, exactly as it always has.
 A community that never sets `launcher` renders exactly as it did before this field
 existed, markup and computed styles included; that equivalence is asserted in
 `frontend/test-widget-capsule.js`.
+Everything on this page that says bottom right, left or right of the launcher, or a fixed distance from the window's edges, describes the defaults:
+"Position, size and offsets" below says how `launcher_position`, `launcher_size` and the offsets change them, and everything is mirrored when the launcher is on the left.
 
 | Field | Type | Default | What it changes |
 |---|---|---|---|
@@ -253,13 +255,14 @@ either way.
 
 Where the launcher sits and how big it is are set in the same `widget:` block (issue #553).
 All of it is optional, and a community that sets none renders exactly as it did before these fields existed.
-Every number elsewhere in this document (58px, 46px, 20px) is the default the fields below change.
+The launcher's sizes, distances and side described elsewhere in this document (58px closed and 46px open for the capsule, 56px for the bubble, 20px from the window's edges, bottom right, the capsule's panel to its left) are the defaults, and the fields below change them.
+The 600px breakpoint does not change.
 
 | Field | Values | Default | What it changes |
 |---|---|---|---|
-| `launcher_position` | `"bottom-right"` or `"bottom-left"` | `"bottom-right"` | Which bottom corner of the window the launcher, its label and the chat panel are in. The panel still opens upward from the launcher, so there is no top position. |
+| `launcher_position` | `"bottom-right"` or `"bottom-left"` | `"bottom-right"` | Which bottom corner of the window the launcher, its label and the chat panel are in. The panel stays anchored to the bottom edge and grows upward, so there is no top position. |
 | `launcher_size` | whole pixels, 44 to 96 | 56 for a bubble, 58 for a capsule | The launcher's diameter while the panel is closed. |
-| `launcher_open_size` | whole pixels, 44 up to `launcher_size` | 80% of `launcher_size` when that is set; with neither set, a capsule's 46 and a bubble's 56 (no change) | The diameter while the panel is open. The launcher shrinks to it when the panel opens and grows back when it closes, with the animation the capsule has always had, and for a bubble too. Equal sizes mean no change. |
+| `launcher_open_size` | whole pixels, 44 up to the closed size (`launcher_size`, or 56 for a bubble and 58 for a capsule when that is unset) | 80% of `launcher_size`, rounded and never below 44, when that is set; with neither set, a capsule's 46 and a bubble's 56 (no change) | The diameter while the panel is open. The launcher shrinks to it when the panel opens and grows back when it closes, with the animation the capsule has always had, and for a bubble too. Equal sizes mean no change. Setting `launcher_size` alone makes a bubble shrink, even to its own 56px (it opens at 45); to make a bubble larger without shrinking it, set both sizes to the same number. |
 | `launcher_offset_x` | whole pixels, 0 to 200 | 20 | How far the launcher is from the side edge of the window, the side `launcher_position` names. |
 | `launcher_offset_y` | whole pixels, 0 to 200 | 20 | How far the launcher is from the bottom edge. Raise it to clear something fixed at the bottom of the page, such as a documentation site's version menu or social buttons. |
 | `launcher_mobile_offset_x`, `launcher_mobile_offset_y` | whole pixels, 0 to 200 | the two offsets above | The offsets at 600px wide and narrower, the width at which the capsule turns into a row. Each falls back to its own desktop offset, so setting only `launcher_mobile_offset_y` lifts the launcher on a phone and changes nothing else. |
@@ -267,9 +270,9 @@ Every number elsewhere in this document (58px, 46px, 20px) is the default the fi
 ```yaml
 widget:
   launcher_position: bottom-left
-  launcher_size: 72          # opens at 58, 80% of it
-  launcher_offset_y: 96      # clear of a version menu at the bottom right
-  launcher_mobile_offset_y: 72   # and clear of a phone's own controls
+  launcher_size: 72              # opens at 58 (80% of 72, rounded)
+  launcher_offset_y: 96          # clear of a footer bar along the bottom of the page
+  launcher_mobile_offset_y: 72   # and, on a phone, of its own controls
 ```
 
 An offset is a distance from an edge, and the panel and the label move with the launcher, keeping the same gaps around it.
@@ -277,17 +280,25 @@ The position applies at every width; the mobile offsets are the only thing that 
 The sizes are the drawn diameters: a launcher's box is always its open size, and closed it is drawn larger with CSS `scale` and `translate`, so nothing reflows while it changes and its corner at the anchor holds still through the whole animation, at either side.
 The floor of 44px is the size in WCAG 2.2's enhanced target-size criterion (2.5.5); a smaller launcher is refused when the community is loaded.
 Under `prefers-reduced-motion` the launcher goes between its two sizes at once.
+The panel keeps inside the window however far the launcher is moved in: its minimum width and height give way to the room the offsets leave, so on a 320px-wide phone a launcher 30px in still has a panel that fits, a little narrower than usual.
 
-`WidgetConfig` refuses a value outside these ranges, and an open size larger than the closed one, when the community loads, with a message naming the field.
-The widget checks again for a page's `setConfig` (see "Embedder `setConfig` keys" below): a value outside a range is ignored with a `console.warn` naming the field, and the launcher keeps its default for it.
-The limits are in `src/core/config/community.py` and again in `LAUNCHER_LIMITS` in the widget, and `tests/test_frontend/test_widget_drift.py` fails if they differ.
-`frontend/browser-harness/launcher-geometry-check.mjs` checks the result in Chrome, on every animation frame.
+The numbers must be whole numbers.
+`WidgetConfig` refuses a value outside these ranges, an open size larger than the closed one, and a float, a quoted number or a boolean, when the community loads, with a message naming the field.
+A bare `yes`, `no`, `on` or `off` in YAML is a boolean, so it is refused rather than turned into a 1px or 0px offset.
+A leading zero is not: YAML reads `020` as the octal 16, so write `20`.
+
+The widget makes the same checks on a page's `setConfig` (see "Embedder `setConfig` keys" below).
+A value outside a range is ignored with a `console.warn` naming the field, and the community's own value, if it has one, still applies.
+`undefined` is not a value, and is not warned about.
+`null` is a value: it puts the setting back to its default over the community's.
+The limits are in `src/core/config/community.py` and again in `LAUNCHER_LIMITS` in the widget, and `tests/test_frontend/test_widget_drift.py` fails if they differ, or if the stylesheet's own fallbacks (the defaults) do.
+`frontend/test-widget-launcher-geometry.js` tests the behavior in a DOM, and `frontend/browser-harness/launcher-geometry-check.mjs` checks the result in Chrome, on every animation frame.
 
 ### The three icons
 
 Bottom to top: chat, notebook, HPC.
 With the panel open, every circle is 46px, about 15% larger than the panel's 40px Send button.
-At rest the chat circle is 25% larger, 58px with a 26px icon.
+At rest the chat circle is about a quarter larger, 58px with a 26px icon.
 It is drawn larger rather than laid out larger, with CSS `scale` and `translate`, so its box stays 46px.
 Nothing else in the capsule depends on whether the panel is open: not the indicator, not the pill, and not the panel's place beside it.
 Its bottom-right corner stays 20px from the window's edges while it resizes, and while it is hovered at rest, when it grows 5% as every launcher does.
@@ -406,7 +417,8 @@ close button, closes the panel.
   The widget also logs to the console a theme the notebook could not apply, and any
   message from the notebook it does not recognize.
 - **Resizing.** The capsule's panel resizes up to 1400px wide, stopping 120px short of
-  the window's left edge, and to the window's full height less 40px; it can always
+  the window's far side (the left edge, or the right edge when the launcher is on the
+  left), and to the window's full height less 40px; it can always
   reach a bubble's 600 by 800, even on a window too small for those margins.
 
 **A host page with a Content Security Policy (CSP)** must allow the notebook host in
@@ -624,10 +636,11 @@ own project on the shared `notebook.osc.earth` plane. An accepted value is
 normalized to end in a trailing slash; anything else is ignored with a
 `console.warn`, keeping whatever was set before.
 
-The "What happens with a malformed value" section right below covers only the color
-fields; it does not describe `notebookUrl` (see above) or `launcher` (any value other
-than exactly `"capsule"` behaves as `bubble`, silently, since `setConfig` does not
-validate it the way it validates `notebookUrl`).
+The "What happens with a malformed value" section right below covers the color
+fields and the launcher's position, sizes and offsets; it does not describe
+`notebookUrl` (see above) or `launcher` (any value other than exactly `"capsule"`
+behaves as `bubble`, silently, since `setConfig` does not validate it the way it
+validates `notebookUrl`).
 
 ### What happens with a malformed value
 
@@ -640,11 +653,9 @@ applied silently: the widget logs a `console.warn` naming the field and the
 rejected value, and falls back to that field's own default, exactly as if
 the field had been left unset.
 
-The launcher's position, sizes and offsets (see "Position, size and offsets")
-follow the same rule, with a range or a set of names in place of a color
-pattern: `WidgetConfig` refuses a value outside it at load time, and the widget
-checks again for `setConfig`, ignoring a bad value with a `console.warn` that
-names the field, the value and what was expected.
+The launcher's position, sizes and offsets (see "Position, size and offsets") follow the same rule, with a range or a set of names in place of a color pattern.
+`WidgetConfig` refuses a value outside it at load time.
+The widget checks again for `setConfig`, and ignores a bad value with a `console.warn` that names the field, the value and what was expected.
+Where the community sets the field too, its value still applies; the bare default is only what an unset field has.
 An open size larger than the closed size is brought down to it, with a warning.
-A `setConfig` made after `init()` for any of these fields moves or resizes the
-launcher at once; clearing one with `null` puts it back to its default.
+A `setConfig` made after `init()` for any of these fields moves or resizes the launcher at once, and clearing one with `null` puts it back to its default.

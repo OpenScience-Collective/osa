@@ -16,12 +16,13 @@ the version being released and start a new `[Unreleased]` section above it.
 ### Added
 
 - **Launcher position, size and offsets** (issue #553, from the BIDS site's feedback that the launcher is too small and covers the page's own buttons):
-  `widget.launcher_position` (`bottom-right` or `bottom-left`), `launcher_size` and `launcher_open_size` (44 to 96 px), `launcher_offset_x` and `launcher_offset_y` (0 to 200 px from the side and bottom edges), and `launcher_mobile_offset_x` and `launcher_mobile_offset_y` for 600px wide and narrower.
-  The launcher, its label and the panel follow the position and offsets, including the capsule in its column and its row; the panel's resize handle moves to the far top corner.
-  The launcher shrinks from its closed size to its open size with the capsule's animation and its corner held still, for the bubble as well as the capsule; with only `launcher_size` set, the open size is 80% of it.
-  The floor is 44px, WCAG 2.2's enhanced target size, and the server refuses a value outside a range, or an open size above the closed one, when it loads a community.
-  A community that sets none of these renders exactly as before; NEMAR now names its own sizes, 58 and 46, which are what it already was.
-  A page's `setConfig` takes the same settings in camelCase and outranks the community.
+  `widget.launcher_position` (`bottom-right` or `bottom-left`), `launcher_size` and `launcher_open_size` (44 to 96px), `launcher_offset_x` and `launcher_offset_y` (0 to 200px from the side and bottom edges), and `launcher_mobile_offset_x` and `launcher_mobile_offset_y` for 600px wide and narrower.
+  The launcher, its label and the panel follow the position and offsets, including the capsule in its column and its row, whose circles are reordered so Tab follows what is seen; the panel's resize handle moves to the far top corner, and the panel's minimum width and height give way to the room the offsets leave, so it stays inside a small window.
+  The launcher shrinks from its closed size to its open size with the capsule's animation and its corner held still, for the bubble as well as the capsule; with only `launcher_size` set, the open size is about 80% of it (rounded, never below 44px).
+  The floor is 44px, WCAG 2.2's enhanced target size.
+  The server refuses a value outside a range, a float, a quoted number or a boolean (a bare `yes` or `off` in YAML), and an open size above the closed one, when it loads a community.
+  A community that sets none of these renders exactly as before; NEMAR now spells out its own position, sizes and offsets (bottom-right, 58 and 46, 20 and 20), which are what they already were.
+  A page's `setConfig` takes the same settings in camelCase and outranks the community; a wrong value from a page is refused with a warning, so the community's own value still applies.
   Tested by `frontend/test-widget-launcher-geometry.js` and, in Chrome on every animation frame, `frontend/browser-harness/launcher-geometry-check.mjs`.
 - **GPT-6 Luna, Qwen3 Next 80B A3B and gpt-oss-120b** (issue #523):
   three non-Anthropic models served from Amazon Bedrock, each priced at or below Claude Haiku 4.5
