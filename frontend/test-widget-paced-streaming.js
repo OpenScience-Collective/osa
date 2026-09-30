@@ -1414,6 +1414,51 @@ console.log('\na cut-off reply with no text and no run record is kept, and says 
   assert(!INCOMPLETE.test(lastReplyText(container)), 'and, having no text at all, does not call nothing incomplete');
 }
 
+console.log('\nthe non-streamed fallback shows the warnings the response carries, as a stream does');
+{
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    const { window, api } = loadWidget({
+      chat: () => json({
+        message: { content: 'A short answer.' },
+        session_id: 's',
+        request_id: 'req-1',
+        warnings: [CUT_OFF_MESSAGE, { message: LONG_MESSAGE, code: 'long_conversation' }],
+      }),
+    });
+    const container = window.document.querySelector('.osa-chat-widget');
+    send(window, container, 'A question');
+    await waitFor(() => settled(container), 'the send settles');
+    const banner = container.querySelector('.osa-warning');
+    assertEqual(banner.style.display, 'block', 'the banner is up');
+    assert(banner.textContent.includes(CUT_OFF_MESSAGE) && banner.textContent.includes(LONG_MESSAGE), 'with both warnings on it');
+    const reply = api.getMessages().at(-1);
+    assertEqual([reply.content, reply.cutOff === true], ['A short answer.', true], 'and the reply is marked cut off');
+    assert(INCOMPLETE.test(lastReplyText(container)), 'where the page shows it');
+    assert((window.localStorage.getItem('osa-test-paced') || '').includes('"cutOff":true'), 'and the mark is saved');
+  } finally {
+    console.warn = warn;
+  }
+}
+{
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    for (const [label, warnings] of [['none', undefined], ['not a list', 'cut off'], ['nothing usable in it', [null, 7, '', {}, { code: 'cut_off' }]]]) {
+      const { window, api } = loadWidget({ chat: () => json({ message: { content: 'Fine.' }, session_id: 's', warnings }) });
+      const container = window.document.querySelector('.osa-chat-widget');
+      send(window, container, 'A question');
+      await waitFor(() => settled(container), 'the send settles');
+      assertEqual([container.querySelector('.osa-warning').style.display, api.getMessages().at(-1).cutOff === true], ['none', false],
+        `${label}: no banner, no mark`);
+      assertEqual(lastReplyText(container), 'Fine.', `${label}: the answer is on the page`);
+    }
+  } finally {
+    console.warn = warn;
+  }
+}
+
 console.log('\n' + '='.repeat(60));
 console.log(`Total: ${passed + failed} checks, passed: ${passed}, failed: ${failed}`);
 process.exit(failed === 0 ? 0 : 1);

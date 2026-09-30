@@ -7818,6 +7818,28 @@
     return typeof warning.message === 'string' && warning.message.includes(CUT_OFF_PHRASE);
   }
 
+  // One warning about a reply, from wherever it came: the banner, and the reply's own
+  // mark when it says the reply was cut off. The stream's `warning` events and a
+  // non-streamed response's `warnings` both come through here, so the two cannot
+  // differ in what they show.
+  function noticeWarning(container, reply, warning) {
+    const message = warning.message || 'Warning';
+    console.warn('[OSA] Warning:', message);
+    showWarning(container, message);
+    if (reply && isCutOffWarning(warning)) reply.cutOff = true;
+  }
+
+  // The warnings of a non-streamed response, as the objects noticeWarning reads. An
+  // entry is a string (what the first server to send them sent) or an object with a
+  // `message` and, when the server sends one, a `code`; anything else, or an entry with
+  // nothing to say, is not a warning to show. A response without the field has none.
+  function warningsOf(data) {
+    if (!data || !Array.isArray(data.warnings)) return [];
+    return data.warnings
+      .map((entry) => (typeof entry === 'string' ? { message: entry } : entry))
+      .filter((entry) => entry && typeof entry === 'object' && typeof entry.message === 'string' && entry.message.trim());
+  }
+
   // What a cut-off reply says about itself under its text: the bracketed italic note
   // the other replies that stopped short carry (see the stream handler), in the
   // emphasis this renderer reads (*...*; it shows _..._ as typed). It is drawn from the
@@ -8335,12 +8357,9 @@
               sessionId = event.session_id;
             }
           } else if (event.event === 'warning') {
-            // Display warning banner (e.g., conversation getting long)
-            const warningMsg = event.message || 'Warning';
-            console.warn('[OSA] Warning:', warningMsg);
-            showWarning(container, warningMsg);
-            // The banner goes in seconds; a reply that stopped short is marked itself.
-            if (isCutOffWarning(event) && messages[messageIndex]) messages[messageIndex].cutOff = true;
+            // The banner (e.g., conversation getting long), and, for a reply that
+            // stopped short, the reply's own mark: the banner goes in seconds.
+            noticeWarning(container, messages[messageIndex], event);
           } else if (event.event === 'done') {
             // Finalize message and capture session ID
             receivedDoneEvent = true;
@@ -8658,6 +8677,10 @@
         }
         if (data && Array.isArray(data.citations)) {
           assistantMsg.citations = data.citations;
+        }
+        // The warnings the response carries, as a stream's warning events are shown.
+        for (const warning of warningsOf(data)) {
+          noticeWarning(container, assistantMsg, warning);
         }
         messages.push(assistantMsg);
         try {
