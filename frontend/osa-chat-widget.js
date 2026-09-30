@@ -8146,8 +8146,13 @@
       },
     });
     // A reply that becomes hidden (a tab put away, a page being left) is not being read:
-    // show the rest now, so it is on the page, and saved, when the reader comes back.
-    // (One that is already hidden is not paced at all: see `paced` above.)
+    // show the rest now, so it is on the page when the reader comes back. Nothing is saved
+    // here. A reply whose done event has already arrived is held only by the wait for the
+    // reveal to catch up (settleReveal); showing the rest releases that wait, so the done
+    // handler saves it at once instead of after the drain's timer, which a page being left
+    // may not live to run. A reply still streaming is saved when its done arrives, and is
+    // lost with the page if the page goes first. (One that is already hidden is not paced
+    // at all: see `paced` above.)
     const onLeave = (event) => {
       if (event.type === 'visibilitychange' && !document.hidden) return;
       reveal.flush();

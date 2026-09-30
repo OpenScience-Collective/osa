@@ -1147,6 +1147,33 @@ console.log('\nleaving the page, or hiding the tab, shows and saves the whole re
   await stream;
 }
 
+console.log('\nleaving the page shows a reply that is still streaming, but does not save it: only done does');
+{
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const started = api.getMessages().length;
+  const text = 'A long reply that is still arriving when the page is left in the middle of it. '.repeat(20);
+  const encoder = new TextEncoder();
+  let control;
+  const response = new Response(new ReadableStream({
+    start(controller) {
+      control = controller;
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ event: 'content', content: text })}\n\n`));
+    },
+  }), { headers: { 'content-type': 'text/event-stream' } });
+  const stream = api.handleStreamingResponse(response, container);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert(api.getMessages()[started].content.length < text.length, 'the reveal is still in progress');
+  window.dispatchEvent(new window.Event('pagehide'));
+  assertEqual(api.getMessages()[started].content, text, 'the whole of what has arrived is on the page');
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert(!(window.localStorage.getItem('osa-test-paced') || '').includes(text.slice(-40)), 'and none of it is in the saved history yet: no done has arrived');
+  control.enqueue(encoder.encode(`data: ${JSON.stringify({ event: 'done', content: text })}\n\n`));
+  control.close();
+  await stream;
+  assert((window.localStorage.getItem('osa-test-paced') || '').includes(text.slice(-40)), 'the done event is what saves it');
+}
+
 console.log('\n' + '='.repeat(60));
 console.log(`Total: ${passed + failed} checks, passed: ${passed}, failed: ${failed}`);
 process.exit(failed === 0 ? 0 : 1);
