@@ -16,7 +16,7 @@ from collections.abc import AsyncGenerator, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, NamedTuple
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -3630,6 +3630,19 @@ _SERVER_KEY_MESSAGE = (
 )
 
 
+class _StreamFailure(NamedTuple):
+    """A failure that ended a stream, as the stream reports it.
+
+    Attributes:
+        event: The ``error`` event to send.
+        detail: What failed (the exception class and the provider's code or status, none of
+            the provider's message), for the request's metrics row to say why it is an error.
+    """
+
+    event: dict[str, Any]
+    detail: str
+
+
 def _stream_failure_event(
     error: Exception,
     *,
@@ -3640,7 +3653,7 @@ def _stream_failure_event(
     wording: _FailureWording,
     key_source: Literal["byok", "community", "platform"] | None,
     session_id: str | None = None,
-) -> dict[str, Any]:
+) -> _StreamFailure:
     """Log a failure that ended a stream and build the ``error`` event the reader gets.
 
     A throttle, a read timeout and a request the provider refuses as invalid used to be one
@@ -3667,7 +3680,8 @@ def _stream_failure_event(
     Returns:
         The event to send: ``message``, an ``error_id`` (the key of the log line) and the
         ``request_id`` (the key of the metrics row), which are for a report and not part of
-        what the reader is shown, and ``retryable`` when known.
+        what the reader is shown, and ``retryable`` when known. And the failure's detail,
+        for that row's ``error_message``.
     """
     failure = classify_model_error(error)
     error_id = str(uuid.uuid4())
@@ -3721,7 +3735,7 @@ def _stream_failure_event(
     }
     if failure.retryable is not None:
         event["retryable"] = failure.retryable
-    return event
+    return _StreamFailure(event, failure.detail)
 
 
 async def _stream_ask_response(
@@ -3957,7 +3971,7 @@ async def _stream_ask_response(
             # A provider failure that langchain-aws raised as a ValueError (a service
             # exception event it could not make a ClientError, a permissions error about
             # system tools) is the provider's, not the reader's.
-            sse_event = _stream_failure_event(
+            failure = _stream_failure_event(
                 e,
                 community_id=community_id,
                 model=awm.model if awm else None,
@@ -3966,15 +3980,18 @@ async def _stream_ask_response(
                 wording=_ASK_WORDING,
                 key_source=awm.key_source if awm else None,
             )
+            sse_event = failure.event
+            error_message = failure.detail
             status_code = 500
         else:
-            # Input validation errors - user's fault
+            # Input validation errors - user's fault, so not an error of the agent's
             logger.warning("Invalid input in streaming for community %s: %s", community_id, e)
             sse_event = {
                 "event": "error",
                 "message": f"Invalid request: {str(e)}",
                 "retryable": False,
             }
+            error_message = None
             status_code = 400
         yield f"data: {json.dumps(sse_event)}\n\n"
         _log_streaming_metrics(
@@ -3989,9 +4006,10 @@ async def _stream_ask_response(
             output_tokens=total_output_tokens,
             cache_read_tokens=total_cache_read_tokens,
             cache_creation_tokens=total_cache_creation_tokens,
+            error_message=error_message,
         )
     except Exception as e:
-        sse_event = _stream_failure_event(
+        failure = _stream_failure_event(
             e,
             community_id=community_id,
             model=awm.model if awm else None,
@@ -4000,7 +4018,7 @@ async def _stream_ask_response(
             wording=_ASK_WORDING,
             key_source=awm.key_source if awm else None,
         )
-        yield f"data: {json.dumps(sse_event)}\n\n"
+        yield f"data: {json.dumps(failure.event)}\n\n"
         _log_streaming_metrics(
             http_request=http_request,
             community_id=community_id,
@@ -4013,6 +4031,7 @@ async def _stream_ask_response(
             output_tokens=total_output_tokens,
             cache_read_tokens=total_cache_read_tokens,
             cache_creation_tokens=total_cache_creation_tokens,
+            error_message=failure.detail,
         )
 
 
@@ -4503,7 +4522,7 @@ async def _stream_chat_response(
             # A provider failure that langchain-aws raised as a ValueError (a service
             # exception event it could not make a ClientError, a permissions error about
             # system tools) is the provider's, not a session limit the reader hit.
-            sse_event = _stream_failure_event(
+            failure = _stream_failure_event(
                 e,
                 community_id=community_id,
                 model=awm.model if awm else None,
@@ -4513,11 +4532,14 @@ async def _stream_chat_response(
                 key_source=awm.key_source if awm else None,
                 session_id=session.session_id,
             )
+            sse_event = failure.event
+            error_message = failure.detail
             status_code = 500
         else:
-            # Session limit errors
+            # Session limit errors: the reader's, so not an error of the agent's
             logger.error("Session limit error: %s", e)
             sse_event = {"event": "error", "message": str(e)}
+            error_message = None
             status_code = 400
         yield f"data: {json.dumps(sse_event)}\n\n"
         _log_streaming_metrics(
@@ -4532,9 +4554,10 @@ async def _stream_chat_response(
             output_tokens=total_output_tokens,
             cache_read_tokens=total_cache_read_tokens,
             cache_creation_tokens=total_cache_creation_tokens,
+            error_message=error_message,
         )
     except Exception as e:
-        sse_event = _stream_failure_event(
+        failure = _stream_failure_event(
             e,
             community_id=community_id,
             model=awm.model if awm else None,
@@ -4544,7 +4567,7 @@ async def _stream_chat_response(
             key_source=awm.key_source if awm else None,
             session_id=session.session_id,
         )
-        yield f"data: {json.dumps(sse_event)}\n\n"
+        yield f"data: {json.dumps(failure.event)}\n\n"
         _log_streaming_metrics(
             http_request=http_request,
             community_id=community_id,
@@ -4557,6 +4580,7 @@ async def _stream_chat_response(
             output_tokens=total_output_tokens,
             cache_read_tokens=total_cache_read_tokens,
             cache_creation_tokens=total_cache_creation_tokens,
+            error_message=failure.detail,
         )
     finally:
         # Released however this generator ends: normal return, error, or the client

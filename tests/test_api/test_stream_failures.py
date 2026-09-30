@@ -389,6 +389,64 @@ class TestAKeyTheProviderRefused:
         assert "Start a new conversation" in chat[-1]["message"]
 
 
+class TestTheMetricsRowSaysWhy:
+    """``agent_errors`` counts the rows that carry an ``error_message``, and the error
+    event's ``request_id`` points at its row: a failed stream's row used to say neither
+    what failed nor that it was the agent's (only the 502 of an empty reply did)."""
+
+    @staticmethod
+    def _agent_errors() -> int:
+        from src.metrics.queries import get_quality_metrics
+
+        with metrics_connection() as conn:
+            buckets = get_quality_metrics(COMMUNITY, conn)["buckets"]
+        return sum(bucket["agent_errors"] for bucket in buckets)
+
+    @paths
+    async def test_a_provider_failure_is_named_and_counted(self, path: str) -> None:
+        llm = _bedrock_llm()
+        Wire(llm, **refusal("ThrottlingException", "Too many requests, please wait"))
+
+        events = await _run(path, llm, BEDROCK_MODEL)
+
+        (row,) = _rows()
+        assert row["request_id"] == events[-1]["request_id"]
+        assert row["status_code"] == 500
+        assert "ThrottlingException" in row["error_message"]
+        assert "Too many requests" not in row["error_message"], (
+            "the provider's words stay in the log"
+        )
+        assert self._agent_errors() == 1
+
+    @paths
+    async def test_an_unexpected_failure_is_named_and_counted(self, path: str) -> None:
+        events = await _run(path, _failing(RuntimeError("a bug of ours")), "some-model")
+
+        (row,) = _rows()
+        assert row["request_id"] == events[-1]["request_id"]
+        assert "RuntimeError" in row["error_message"]
+        assert "a bug of ours" not in row["error_message"]
+        assert self._agent_errors() == 1
+
+    async def test_the_provider_error_in_a_value_error_is_named_too(self) -> None:
+        """``langchain-aws`` raises a service error as a ValueError; that row says why too."""
+        with pytest.raises(ValueError, match="Received AWS exception") as raised:
+            _parse_stream_event({"throttlingException": {"message": "Too many requests"}})
+
+        await _run("chat", _failing(raised.value), BEDROCK_MODEL)
+
+        (row,) = _rows()
+        assert row["status_code"] == 500 and "throttlingException" in row["error_message"]
+
+    @paths
+    async def test_a_request_that_was_just_invalid_is_not_an_agent_error(self, path: str) -> None:
+        await _run(path, _failing(ValueError("Message too long (20000 chars)")), "m")
+
+        (row,) = _rows()
+        assert row["status_code"] == 400 and row["error_message"] is None
+        assert self._agent_errors() == 0
+
+
 class TestOpenRouter:
     @paths
     async def test_a_bad_request_is_not(
