@@ -3504,10 +3504,11 @@ def _stream_failure_event(
 
     A throttle, a read timeout and a request the provider refuses as invalid used to be one
     log line and one message. Now the log says which it was (the exception class, the
-    provider's code or status, and whether a retry can succeed) at WARNING for a failure
-    that can clear by itself and ERROR, with the traceback, for one that cannot or is not
-    recognized. The reader is told to try again only when that is honest: a failure no
-    retry can fix says so.
+    provider's code or status, and whether a retry can succeed) at WARNING for a model
+    failure that can clear by itself and ERROR, with the traceback, for everything else:
+    one that cannot clear, and any exception that is not a recognized model-provider
+    error (a tool of ours failing is one, and its traceback is the only clue). The reader
+    is told to try again only when that is honest: a failure no retry can fix says so.
 
     Args:
         error: What the stream raised.
@@ -3528,8 +3529,9 @@ def _stream_failure_event(
         summary = "Model call failed while streaming"
     else:
         summary = "Unexpected streaming error"
+    clears_by_itself = failure.from_provider and bool(failure.retryable)
     logger.log(
-        logging.WARNING if failure.retryable else logging.ERROR,
+        logging.WARNING if clears_by_itself else logging.ERROR,
         "%s (ID: %s) for %s (community=%s, model=%s, request_id=%s, session=%s): "
         "%s [retryable=%s]: %s",
         summary,
@@ -3542,7 +3544,7 @@ def _stream_failure_event(
         failure.detail,
         failure.retryable_label,
         error,
-        exc_info=not failure.retryable,
+        exc_info=not clears_by_itself,
         extra={
             "error_id": error_id,
             "community_id": community_id,
