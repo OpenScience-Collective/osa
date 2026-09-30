@@ -413,7 +413,8 @@ class TestChatWithoutStreaming:
         self, provider: Provider, client: TestClient, monkeypatch
     ) -> None:
         """Finding 4: the streamed path never stored an empty assistant message; this
-        one did, and a provider rejects an empty assistant turn on every later request."""
+        one did, and the next request replayed it (as "." to Bedrock, as an empty string
+        to OpenRouter)."""
         _serve(monkeypatch, provider, [scripted_reply(provider, "")])
 
         response = _post_chat(client)

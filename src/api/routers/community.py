@@ -2376,8 +2376,9 @@ def create_community_router(community_id: str) -> APIRouter:
             )
 
             # Add assistant message with constraint validation. An empty reply is not a
-            # turn: the streamed path never stored one, and a provider rejects an empty
-            # assistant message on every later request of the session.
+            # turn: the streamed path never stored one. Stored, it would reach the next
+            # request as a "." on Bedrock, an empty string through OpenRouter (which an
+            # upstream provider may refuse), and nothing on Anthropic.
             if ar.response_content:
                 try:
                     session.add_assistant_message(ar.response_content)
