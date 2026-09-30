@@ -2058,10 +2058,12 @@
       height: 6px;
       border-radius: 50%;
       background: var(--osa-text-light);
-      animation: osa-pulse 1.4s infinite ease-in-out;
+      animation: osa-activity-pulse 1.4s infinite ease-in-out;
     }
 
-    @keyframes osa-pulse {
+    /* Not osa-pulse: keyframes of one name replace each other, and that one is the header
+       status dot's. */
+    @keyframes osa-activity-pulse {
       0%, 100% { opacity: 0.25; }
       50% { opacity: 1; }
     }
