@@ -290,10 +290,9 @@ class TestUsageDetails:
 
 @pytest.fixture
 def openrouter(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeOpenRouter]:
-    server = FakeOpenRouter()
-    monkeypatch.setenv("OPENROUTER_API_BASE", server.base_url)
-    yield server
-    server.close()
+    with FakeOpenRouter() as server:
+        monkeypatch.setenv("OPENROUTER_API_BASE", server.base_url)
+        yield server
 
 
 def _llm(model: str = "openai/gpt-6-luna", **kwargs: Any) -> TaggedCitationChatLiteLLM:

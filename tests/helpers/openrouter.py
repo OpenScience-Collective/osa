@@ -108,8 +108,11 @@ class FakeOpenRouter:
         # lock on the same thread and never returns. It showed as a test that hangs forever,
         # at a different place on different runs, with the main thread in
         # ConnectionPool.close under ConnectionPool.handle_request.
+        #
+        # Switched off last, once the server is up: a construction that fails (a port that
+        # will not bind) must not leave the process with collection off and no `close()`
+        # to put it back.
         self._gc_was_enabled = gc.isenabled()
-        gc.disable()
 
         class Handler(BaseHTTPRequestHandler):
             # Keep-alive, as the real service does; without it a burst of concurrent
@@ -147,7 +150,12 @@ class FakeOpenRouter:
 
         self._server = Server(("127.0.0.1", 0), Handler)
         self.base_url = f"http://127.0.0.1:{self._server.server_port}/api/v1"
-        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+        try:
+            threading.Thread(target=self._server.serve_forever, daemon=True).start()
+        except BaseException:
+            self._server.server_close()
+            raise
+        gc.disable()
 
     @property
     def requests(self) -> list[dict[str, Any]]:
@@ -170,8 +178,17 @@ class FakeOpenRouter:
             self._replies.extend(replies)
 
     def close(self) -> None:
-        self._server.shutdown()
-        self._server.server_close()
-        gc.collect()  # a safe point: no request is in flight, so no pool lock is held
-        if self._gc_was_enabled:
-            gc.enable()
+        """Stop serving and put garbage collection back as it was, even if stopping fails."""
+        try:
+            self._server.shutdown()
+            self._server.server_close()
+        finally:
+            gc.collect()  # a safe point: no request is in flight, so no pool lock is held
+            if self._gc_was_enabled:
+                gc.enable()
+
+    def __enter__(self) -> "FakeOpenRouter":
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
