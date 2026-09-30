@@ -535,6 +535,23 @@ console.log('\nthe capsule\'s circles are in the order they are seen in, so Tab 
   window.happyDOM.setViewport({ width: 1024, height: 800 });
   assertEqual(capsuleOrder(capsule), ['hpc', 'notebook', 'chat'], 'and widening it puts it last again');
   assert(capsule.contains(chat) && capsule.firstElementChild.classList.contains('osa-capsule-indicator') && listeners.length === 0, 'the indicator stays first, behind the circles, and nothing was rebuilt');
+
+  // Moving a node takes keyboard focus from it (happy-dom does this as a browser does),
+  // and a resize is not the reader's doing.
+  const notebook = q('.osa-launcher-capsule .osa-notebook-btn');
+  for (const [circle, name] of [[chat, 'the chat circle'], [notebook, 'the notebook circle']]) {
+    circle.focus();
+    assert(window.document.activeElement === circle, `${name} has keyboard focus`);
+    window.happyDOM.setViewport({ width: 390, height: 800 });
+    assert(window.document.activeElement === circle, `${name} keeps it when the window narrows and the circles reorder`);
+    assertEqual(capsuleOrder(capsule), ['chat', 'notebook', 'hpc'], `${name}: and the circles did reorder`);
+    window.happyDOM.setViewport({ width: 1024, height: 800 });
+    assert(window.document.activeElement === circle, `${name} keeps it when the window widens again`);
+  }
+  window.document.activeElement?.blur();
+  window.happyDOM.setViewport({ width: 390, height: 800 });
+  assert(window.document.activeElement === window.document.body, 'with nothing focused, nothing is given focus by a reorder');
+  window.happyDOM.setViewport({ width: 1024, height: 800 });
 }
 
 console.log('\nhovered at rest, the anchored corner holds still on the left and for the bubble');

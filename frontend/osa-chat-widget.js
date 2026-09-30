@@ -6119,7 +6119,13 @@
       : [hpc, notebook, chat];
     const inPlace = [...capsule.children].filter((child) => order.includes(child));
     if (inPlace.every((child, i) => child === order[i])) return;
+    // Moving a node takes keyboard focus from it, and a resize across 600px is not the
+    // reader's doing: whichever circle had focus gets it back.
+    const focused = container.ownerDocument.activeElement;
     for (const child of order) capsule.appendChild(child);
+    if (focused && order.some((child) => child.contains(focused)) && container.ownerDocument.activeElement !== focused) {
+      focused.focus({ preventScroll: true });
+    }
   }
 
   // Put the launcher's geometry on the widget (#553): the custom properties the
