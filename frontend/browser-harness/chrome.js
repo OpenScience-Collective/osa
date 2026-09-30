@@ -46,8 +46,14 @@ export function findChrome() {
   return CANDIDATES.find((path) => existsSync(path)) || null;
 }
 
-/** Launch Chrome and resolve its browser-level DevTools WebSocket URL. */
-export async function launch(chromePath, profileDir) {
+// How long each attempt waits for Chrome to print its DevTools endpoint. A shared runner
+// can take far longer than a laptop to start Chrome (a cold disk, a busy host), and a
+// launch that fails once usually succeeds the second time, so the second attempt, in a
+// fresh profile, waits three times as long.
+const ENDPOINT_WAITS_MS = [30_000, 90_000];
+
+/** One launch: Chrome, and the browser-level DevTools WebSocket URL it reports in `waitMs`. */
+async function launchOnce(chromePath, profileDir, waitMs) {
   const args = [
     '--headless=new',
     '--remote-debugging-port=0',
@@ -76,12 +82,34 @@ export async function launch(chromePath, profileDir) {
       resolve(null);
     })();
   });
-  const wsUrl = await Promise.race([endpoint, Bun.sleep(30_000).then(() => null)]);
+  const wsUrl = await Promise.race([endpoint, Bun.sleep(waitMs).then(() => null)]);
   if (!wsUrl) {
     chrome.kill();
-    throw new Error(`Chrome did not report a DevTools endpoint:\n${seen.slice(-800)}`);
+    // Gone before the next launch starts, but never waited on for long.
+    await Promise.race([chrome.exited, Bun.sleep(5_000)]);
+    throw new Error(`Chrome did not report a DevTools endpoint within ${waitMs / 1000} s:\n${seen.slice(-800)}`);
   }
   return { chrome, wsUrl };
+}
+
+/**
+ * Launch Chrome and resolve its browser-level DevTools WebSocket URL. A Chrome that does
+ * not report one is killed and launched once more, with a longer wait, before the run
+ * fails (see ENDPOINT_WAITS_MS; `waits` is there for a test to shorten them). Only the
+ * launch is retried: what a page does afterwards is the run's own.
+ */
+export async function launch(chromePath, profileDir, waits = ENDPOINT_WAITS_MS) {
+  let failure;
+  for (const [attempt, waitMs] of waits.entries()) {
+    try {
+      // A profile the first attempt may have left half-written, or locked, is not reused.
+      return await launchOnce(chromePath, attempt === 0 ? profileDir : join(profileDir, `retry-${attempt}`), waitMs);
+    } catch (error) {
+      failure = error;
+      if (attempt + 1 < waits.length) console.error(`${error.message.split('\n')[0]}; launching Chrome again`);
+    }
+  }
+  throw failure;
 }
 
 /** A minimal DevTools protocol client over one browser-level WebSocket. */
