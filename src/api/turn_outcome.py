@@ -15,8 +15,9 @@ is finished.
 """
 
 import logging
+import uuid
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
@@ -199,12 +200,15 @@ class ReplyProblem:
         message: What the reader is told.
         reason: The stop reason the provider gave, or None when it gave none.
         summary: What the metrics row says, for an operator reading it.
+        error_id: For an error, the id its log line carries, so a reader's report finds it.
+            None for a warning.
     """
 
     event: Literal["error", "warning"]
     message: str
     reason: str | None
     summary: str
+    error_id: str | None = None
 
 
 def _cut_off(reason: str, *, has_answer: bool) -> tuple[ReplyProblem, str]:
@@ -282,14 +286,17 @@ def reply_problem(
         return None
     else:
         problem, headline = _empty(runs.stop_reason)
+    if problem.event == "error":
+        problem = replace(problem, error_id=str(uuid.uuid4()))
     logger.warning(
-        "%s for %s (community=%s, model=%s, request_id=%s, stop_reason=%s): %s",
+        "%s for %s (community=%s, model=%s, request_id=%s, stop_reason=%s, error_id=%s): %s",
         headline,
         endpoint,
         community_id,
         model,
         request_id,
         problem.reason,
+        problem.error_id,
         "the reader got no answer" if problem.event == "error" else "the answer stops short",
         extra={
             "community_id": community_id,
@@ -297,11 +304,27 @@ def reply_problem(
             "request_id": request_id,
             "endpoint": endpoint,
             "stop_reason": problem.reason,
+            "error_id": problem.error_id,
             "answer_chars": len(reply_text.strip()),
             "reader_told": problem.event,
         },
     )
     return problem
+
+
+def error_event(problem: ReplyProblem, *, request_id: str | None) -> dict[str, Any]:
+    """The ``error`` event for a reply that has nothing to show.
+
+    Carries the ``request_id`` (the key of the request's row in the metrics, where the
+    502 is recorded) and the ``error_id`` (the key of its log line), so a reader's report
+    can be tied to both. ``message`` is what to show; the ids are for a report.
+    """
+    return {
+        "event": "error",
+        "message": problem.message,
+        "error_id": problem.error_id,
+        "request_id": request_id,
+    }
 
 
 def warning_event(

@@ -140,6 +140,7 @@ def _assert_retryable(
     assert events[-1]["message"] == RETRYABLE_TEXT[path]
     assert events[-1]["retryable"] is True
     assert events[-1]["error_id"]
+    assert events[-1]["request_id"] == "req-failure", "the reader's report finds its row"
     assert len(records) == 1, [r.getMessage() for r in records]
     record = records[0]
     assert record.levelno == logging.WARNING
@@ -157,7 +158,11 @@ def _assert_permanent(events: list[dict], records: list[logging.LogRecord], deta
     message = events[-1]["message"]
     assert "trying again will not help" in message
     assert "try again" not in message.lower().replace("trying again", "")
-    assert events[-1]["error_id"] in message
+    # The widget shows the message for a few seconds: short enough to read at a glance,
+    # and the id is a field of its own (and in the log), not part of the text.
+    assert len(message) <= 120, message
+    assert events[-1]["error_id"] and events[-1]["error_id"] not in message
+    assert events[-1]["request_id"] == "req-failure"
     assert events[-1]["retryable"] is False
     assert len(records) == 1, [r.getMessage() for r in records]
     record = records[0]
@@ -165,6 +170,7 @@ def _assert_permanent(events: list[dict], records: list[logging.LogRecord], deta
     text = record.getMessage()
     for expected in (COMMUNITY, BEDROCK_MODEL, "req-failure", detail, "retryable=no"):
         assert expected in text, f"{expected!r} missing from {text!r}"
+    assert events[-1]["error_id"] in text and record.error_id == events[-1]["error_id"]
     assert record.exc_info
     assert record.retryable is False
 

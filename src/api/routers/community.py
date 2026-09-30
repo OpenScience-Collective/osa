@@ -56,7 +56,7 @@ from src.api.tool_results import (
     build_unanswered_tool_message,
     scrub_stored_images,
 )
-from src.api.turn_outcome import ModelRuns, reply_problem, warning_event
+from src.api.turn_outcome import ModelRuns, error_event, reply_problem, warning_event
 from src.assistants import registry
 from src.assistants.community import CommunityAssistant
 from src.assistants.community import PageContext as AgentPageContext
@@ -3480,12 +3480,13 @@ def _log_streaming_metrics(
 
 #: Told to the reader when a model call failed in a way no retry can fix (see
 #: ``classify_model_error``): a request the provider refused, or a credential it does not
-#: accept. It carries the error id, which is what the operator finds the log line by. A
+#: accept. Short, since the widget shows an error for a few seconds; the error id that finds
+#: the log line is a field of the event (and in the log), not part of this text. A
 #: retryable or unrecognized failure keeps the stream's own text, which says nothing the
 #: log does not back up.
 _CANNOT_RETRY_MESSAGE = (
     "The assistant could not process this request, and trying again will not help. "
-    "Start a new conversation, or report it with error ID {error_id}."
+    "Start a new conversation."
 )
 
 #: What each stream tells the reader when a retry can succeed, or when nothing is known.
@@ -3524,7 +3525,9 @@ def _stream_failure_event(
         session_id: The chat session, for the log.
 
     Returns:
-        The event to send: ``message``, an ``error_id``, and ``retryable`` when known.
+        The event to send: ``message``, an ``error_id`` (the key of the log line) and the
+        ``request_id`` (the key of the metrics row), which are for a report and not part of
+        what the reader is shown, and ``retryable`` when known.
     """
     failure = classify_model_error(error)
     error_id = str(uuid.uuid4())
@@ -3561,12 +3564,9 @@ def _stream_failure_event(
     )
     event: dict[str, Any] = {
         "event": "error",
-        "message": (
-            _CANNOT_RETRY_MESSAGE.format(error_id=error_id)
-            if failure.retryable is False
-            else retryable_message
-        ),
+        "message": _CANNOT_RETRY_MESSAGE if failure.retryable is False else retryable_message,
         "error_id": error_id,
+        "request_id": request_id,
     }
     if failure.retryable is not None:
         event["retryable"] = failure.retryable
@@ -3594,7 +3594,7 @@ async def _stream_ask_response(
         data: {"event": "citation", "marker": 1, "source": "...", "title": "...", "cited_text": "..."}
         data: {"event": "warning", "message": "...", "code": "cut_off"}  (optional, before done)
         data: {"event": "done", "request_id": "...", "model": "...", "content": "final answer", "citations": [...]}
-        data: {"event": "error", "message": "error text"}
+        data: {"event": "error", "message": "error text", "error_id": "...", "request_id": "..."}
 
     The `thinking` event is a liveness signal only -- it never carries the
     model's reasoning text (see src/agents/content.py's module docstring);
@@ -3725,7 +3725,7 @@ async def _stream_ask_response(
             request_id=request_id,
         )
         if problem is not None and problem.event == "error":
-            yield f"data: {json.dumps({'event': 'error', 'message': problem.message})}\n\n"
+            yield f"data: {json.dumps(error_event(problem, request_id=request_id))}\n\n"
             _log_streaming_metrics(
                 http_request=http_request,
                 community_id=community_id,
@@ -3935,7 +3935,7 @@ async def _stream_chat_response(
         data: {"event": "citation", "marker": 1, "source": "...", "title": "...", "cited_text": "..."}
         data: {"event": "warning", "message": "...", "code": "cut_off"}  (optional, before done)
         data: {"event": "done", "session_id": "...", "request_id": "...", "model": "...", "content": "final answer", "citations": [...]}
-        data: {"event": "error", "message": "error text"}
+        data: {"event": "error", "message": "error text", "error_id": "...", "request_id": "..."}
 
     The `thinking` event is a liveness signal only -- it never carries the
     model's reasoning text (see src/agents/content.py's module docstring);
@@ -3946,6 +3946,10 @@ async def _stream_chat_response(
     (`cut_off`, `long_conversation`); when a reply was cut off in a long conversation
     the one event says both, with `code` `cut_off` and `codes` listing each. `message`
     is the text to show, and a client that ignores `code` is unaffected.
+
+    An `error` for a failed model call or a reply with nothing in it carries `error_id`
+    (the key of its log line) and `request_id` (the key of the request's row in the
+    metrics) for a report to quote; `message` is all there is to show.
 
     `tool_call` fires once per call when the model starts writing it, before any
     `tool_start`, and for a browser call before its `tool_request` (see
@@ -3980,11 +3984,11 @@ async def _stream_chat_response(
     total_cache_creation_tokens = 0
     model_runs = ModelRuns()
 
-    # The metrics middleware assigns a per-request UUID; expose it only on the
-    # final `done` event (below) so the widget attaches it only to a reply that
-    # completed normally. Error paths yield an `error` event instead and never
-    # reach `done`, so a partially-streamed or fully-errored reply carries no
-    # request_id. This also joins per-response feedback back to request_log.
+    # The metrics middleware assigns a per-request UUID. The widget attaches the one on the
+    # final `done` event to a reply for feedback, which joins it back to request_log, so it
+    # is only on a reply that completed normally. An `error` event carries it too, as a
+    # field to quote in a report (it is the key of the request's row, where a 502 is
+    # recorded); the widget reads request ids from `done` alone, so that attaches nothing.
     request_id = getattr(http_request.state, "request_id", None) if http_request else None
 
     # The label this turn is recorded under. `_stream_chat_response` is shared by run 1
@@ -4239,7 +4243,7 @@ async def _stream_chat_response(
             request_id=request_id,
         )
         if problem is not None and problem.event == "error":
-            yield f"data: {json.dumps({'event': 'error', 'message': problem.message})}\n\n"
+            yield f"data: {json.dumps(error_event(problem, request_id=request_id))}\n\n"
             _log_streaming_metrics(
                 http_request=http_request,
                 community_id=community_id,

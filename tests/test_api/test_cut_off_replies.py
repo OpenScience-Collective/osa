@@ -664,6 +664,57 @@ class TestChatWithoutStreaming:
 
 
 # ---------------------------------------------------------------------------
+# An error a reader can report (release review, follow-up 6)
+# ---------------------------------------------------------------------------
+
+
+@provider_param
+class TestAnErrorEventCanBeTiedToItsRow:
+    """The error for a reply that is empty used to carry a message and nothing else, so a
+    reader's report could not be tied to the 502 row in the metrics: no request id, and
+    no error id for the log line."""
+
+    @pytest.mark.parametrize(
+        "stop", [None, "refusal", CONTEXT_WINDOW_STOP_REASON], ids=["cut_off", "refusal", "context"]
+    )
+    async def test_chat_names_its_request_and_its_log_line(
+        self, provider: Provider, stop: str | None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.WARNING)
+
+        events, _ = await _chat(
+            provider, [scripted_reply(provider, "", cut_off=stop is None, stop=stop)]
+        )
+
+        error = events[-1]
+        assert error["event"] == "error"
+        assert error["request_id"] == "req-cutoff" == _rows()[0]["request_id"]
+        assert error["error_id"]
+        (record,) = [r for r in caplog.records if r.name == "src.api.turn_outcome"]
+        assert record.error_id == error["error_id"]
+        assert error["error_id"] in record.getMessage()
+        assert record.request_id == "req-cutoff"
+
+    async def test_ask_does_too(self, provider: Provider) -> None:
+        events = await _ask(provider, [scripted_reply(provider, "", cut_off=True)])
+
+        assert events[-1]["request_id"] == "req-cutoff" == _rows()[0]["request_id"]
+        assert events[-1]["error_id"]
+
+    async def test_each_error_has_an_id_of_its_own(self, provider: Provider) -> None:
+        first, _ = await _chat(provider, [scripted_reply(provider, "", cut_off=True)])
+        second, _ = await _chat(provider, [scripted_reply(provider, "", cut_off=True)])
+
+        assert first[-1]["error_id"] != second[-1]["error_id"]
+
+    async def test_a_warning_is_not_an_error_and_has_neither(self, provider: Provider) -> None:
+        events, _ = await _chat(provider, [scripted_reply(provider, ANSWER[:30], cut_off=True)])
+
+        (warning,) = _warnings(events)
+        assert "error_id" not in warning and "request_id" not in warning
+
+
+# ---------------------------------------------------------------------------
 # One warning per reply, with a machine-readable kind (release review, follow-up 1)
 # ---------------------------------------------------------------------------
 
