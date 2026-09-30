@@ -342,6 +342,28 @@ the version being released and start a new `[Unreleased]` section above it.
   `frontend/test-data-lane.js` runs that code in Pyodide at 60 to 5000 Hz and checks it keeps 5 Hz, removes the high tone, and equals `np.convolve(..., "same")`.
   The ERP image's time axis is in milliseconds, and the model names a component only when the dataset or its paper says the task evokes it.
 
+## [0.8.13] - 2026-09-22
+
+### Changed
+
+- **The chat widget reaches the worker at `widget.osc.earth/osa`, not at a `workers.dev` hostname** (issue #437, #438):
+  the account-scoped `workers.dev` name is pinned in nemar.org's Content-Security-Policy, so moving the worker to another account would have forced a release of two repositories together.
+  A path-mounted Cloudflare route, `widget.osc.earth/osa/*` (`develop-widget.osc.earth/osa/*` for develop), now delivers requests, and the worker strips the `/osa` prefix once before it matches a route, so the two `workers.dev` hostnames and `wrangler dev` still match unprefixed paths.
+  A `[[routes]]` table turns `workers_dev` off unless it is set, which took the dev hostname down during the rollout, so `workers_dev = true` is now explicit.
+
+### Fixed
+
+- **Hardened the widget release** (issue #437, #443):
+  the deploy's `wrangler` is pinned to 4.136.2 and its steps use Bun instead of npm, so a new `wrangler` release cannot change a deploy with no change here.
+  `test-mounted-hosts.js` fails when the worker's `MOUNTED_HOSTS` and `wrangler.toml`'s route patterns disagree, which is silent in one direction: a host with no route never reaches the worker at all.
+  Workers Logs are on for both environments, so the worker's 404 diagnostic can be read after an outage.
+  `widget-route-health.yml` probes both mounted hosts, the legacy `workers.dev` name and the host gate every 15 minutes, files a labeled issue on failure and closes it on recovery; the status dashboard talks to the backend directly, so it stayed green through a route outage.
+  `release.yml` now runs when a release is published: it listened only for tag pushes, which `tag-release.yml` makes under `GITHUB_TOKEN` and GitHub does not act on, so it had not run since v0.6.2 and release notes lacked the Widget Embedding section that carries the Subresource Integrity hash for a version-pinned embed.
+  The rollback section records that a release's tag and PyPI upload cannot be undone, so the way back is a revert that cuts the next patch, and that `/health` does not show a detached route.
+- **How the Workers Routes permission was resolved is recorded** (issue #439, #440, #441):
+  the API token already held `Workers Routes`, but scoped to a zone that did not include `osc.earth`, and Cloudflare answers `No access to the specified resource` for a missing permission and a missing zone alike.
+  A failed route step leaves the uploaded script live while the job exits 1, and registering a route by hand does not make it pass.
+
 ## [0.8.12] - 2026-09-21
 
 ### Added
@@ -374,6 +396,14 @@ the version being released and start a new `[Unreleased]` section above it.
   returns unfiltered results that look filtered. Partial towards #370, which asks for a
   whole-config rewrite and raises open questions about how much belongs in the prompt at
   all.
+
+## [0.8.11] - 2026-09-19
+
+### Fixed
+
+- **`sync-develop.yml` no longer races itself into duplicate pull requests** (issue #417, #418):
+  `tag-release.yml` runs twice per release, and each completion started a sync, so the second run could open a new branch and pull request after the first had merged and closed its own, leaving one in conflict.
+  The runs now queue under a `concurrency` group, and a fresh `git merge-base --is-ancestor origin/main origin/develop` check ends a run whose sync already happened.
 
 ## [0.8.10] - 2026-09-19
 
@@ -409,3 +439,29 @@ the version being released and start a new `[Unreleased]` section above it.
 
 - Model override documentation now describes Claude Platform terms instead
   of OpenRouter's (#392)
+
+## [0.8.9] - 2026-09-17
+
+### Added
+
+- **NEMAR's dataset tools come from its Model Context Protocol server** (#352):
+  `search_nemar_datasets` and `get_nemar_dataset_details` called `nemar.org/api/dataexplorer/...`, which answers 404 since the old site was retired, so neither worked.
+  They are replaced by the tools `mcp.nemar.org` serves, anonymously and with no credentials: `search_datasets`, `describe_dataset` and four more about what is inside a dataset.
+  Discovery runs in a thread of its own, because the assistant is built inside the running event loop, where `asyncio.run` raises.
+- A Code of Conduct and a Contributing guide.
+- A design note for a browser-run `execute_code` tool, in `.context/browser-execution-tool-design.md` (#351).
+
+### Fixed
+
+- **The NEMAR assistant no longer invents a filter** (#367):
+  its prompt's worked example called `search_datasets` with `modality_filter`, which does not exist, and the server drops an unknown argument without saying so, so a request for MEG datasets returned 92 mostly-EEG results as if filtered (3 with the real `modality`).
+  The prompt now names the six real filters, says that unknown arguments are ignored, and sends questions about participant counts to `subject_count` on the results; two of the widget's suggested questions, written for the old tools, are replaced.
+- **A stalled tool server can no longer freeze the API** (#367):
+  discovery's connect and handshake sat outside its timeout and its result had no bound, on the event loop's thread, so a host that took the connection and stalled froze every community for up to five minutes, failed the health probe and restarted the container.
+  Both are bounded now, and discovered tools are cached for five minutes.
+- **The Docker image builds again** (issue #356, #359):
+  the base image was the end-of-life `python:3.12-slim-bullseye`, whose first `apt-get update` failed, and because the image push needs that build, no image was pushed for `main`, `develop` or a tag.
+  It is `python:3.12-slim-bookworm`.
+- The documentation URL check sends a named User-Agent and retries with GET when HEAD is refused with 403 or 405, since it had reported a working PetSurfer page as broken (#355).
+- NEMAR's dataset-browser documentation entry points at `nemar.org/discover`, where `/dataexplorer` moved (#354).
+- The test that HED's routes are mounted reaches them, where it read `app.routes`, which Starlette 1.x fills with objects that have no `path` (#353).
