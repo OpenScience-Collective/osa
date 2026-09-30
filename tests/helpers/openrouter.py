@@ -26,11 +26,15 @@ def sse_chunk(delta: dict[str, Any], finish: str | None = None, usage: dict | No
     return body
 
 
-def stream_of(*texts: str, usage: dict | None = None) -> list[dict]:
-    """A streamed reply: the given text chunks, then the finish chunk (carrying usage)."""
+def stream_of(*texts: str, usage: dict | None = None, finish: str = "stop") -> list[dict]:
+    """A streamed reply: the given text chunks, then the finish chunk (carrying usage).
+
+    ``finish`` is the ``finish_reason`` the provider ends on (``length`` for a reply it
+    cut off at the output limit).
+    """
     events = [sse_chunk({"role": "assistant", "content": ""})]
     events += [sse_chunk({"content": text}) for text in texts]
-    events.append(sse_chunk({}, "stop", usage=usage))
+    events.append(sse_chunk({}, finish, usage=usage))
     return events
 
 

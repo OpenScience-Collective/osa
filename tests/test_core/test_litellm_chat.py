@@ -27,6 +27,7 @@ from src.core.services.litellm_chat import (
     usage_details,
 )
 from src.core.services.litellm_llm import create_openrouter_llm
+from src.core.services.model_outcome import USAGE_ESTIMATED_KEY, truncation_reason
 from src.core.services.tagged_citations import CITATION_INSTRUCTION
 from src.tools.citations import build_search_result
 from tests.helpers.openrouter import (
@@ -897,6 +898,97 @@ class TestUsageMetadata:
         reply = _llm().invoke([HumanMessage(content="hi")])
 
         assert "osa_usage_details" not in json.dumps(reply.additional_kwargs, default=str)
+
+
+class TestHowTheReplyEnded:
+    """``langchain-litellm`` keeps ``finish_reason`` on a complete reply and drops it
+    from a streamed one; a reply cut off at the output limit has to be told apart from
+    one that finished, so the stream's reason is carried onto ``response_metadata``."""
+
+    @pytest.mark.parametrize(
+        ("finish", "cut_off"),
+        [("length", "length"), ("stop", None), ("tool_calls", None)],
+    )
+    def test_a_streamed_reply_reports_how_it_stopped(
+        self, openrouter: FakeOpenRouter, finish: str, cut_off: str | None
+    ) -> None:
+        openrouter.reply(stream_of("Part of an answ", finish=finish))
+
+        reply = _llm().invoke([HumanMessage(content="hi")])
+
+        assert reply.response_metadata["finish_reason"] == finish
+        assert truncation_reason(reply.response_metadata) == cut_off
+
+    async def test_an_async_streamed_reply(self, openrouter: FakeOpenRouter) -> None:
+        openrouter.reply(stream_of("Part of an answ", finish="length"))
+
+        reply = await _llm().ainvoke([HumanMessage(content="hi")])
+
+        assert truncation_reason(reply.response_metadata) == "length"
+
+    @pytest.mark.parametrize("shape", USAGE_SHAPES)
+    def test_a_reason_the_provider_repeats_is_reported_once(
+        self, openrouter: FakeOpenRouter, shape: str
+    ) -> None:
+        """OpenRouter's documented stream says ``finish_reason`` on two chunks; merging
+        the chunks would write it twice ("stopstop") if both were carried."""
+        openrouter.reply(stream_with_usage_shape(shape, "Hello", usage=TestUsageMetadata.USAGE))
+
+        reply = _llm().invoke([HumanMessage(content="hi")])
+
+        assert reply.response_metadata["finish_reason"] == "stop"
+
+    def test_a_complete_reply(self, openrouter: FakeOpenRouter) -> None:
+        body = whole_reply("Part of an answ")
+        body["choices"][0]["finish_reason"] = "length"
+        openrouter.reply(body)
+        llm = _llm()
+        llm.streaming = False
+
+        reply = llm.invoke([HumanMessage(content="hi")])
+
+        assert truncation_reason(reply.response_metadata) == "length"
+
+    def test_the_carrier_fields_do_not_leak_into_the_message(
+        self, openrouter: FakeOpenRouter
+    ) -> None:
+        openrouter.reply(stream_of("Hello", finish="length"))
+
+        reply = _llm().invoke([HumanMessage(content="hi")])
+
+        assert "osa_finish_reason" not in json.dumps(reply.additional_kwargs, default=str)
+        assert "osa_usage_estimated" not in json.dumps(reply.additional_kwargs, default=str)
+
+
+class TestUsageTheProviderDidNotReport:
+    """LiteLLM substitutes its own token estimate for usage a provider never sent. The
+    estimate has no cache or reasoning counts, so the reply says it is one."""
+
+    def test_a_provider_that_reports_no_usage_is_marked_as_estimated(
+        self, openrouter: FakeOpenRouter
+    ) -> None:
+        openrouter.reply(stream_of("Hello"))
+
+        reply = _llm().invoke([HumanMessage(content="hi")])
+
+        assert reply.response_metadata[USAGE_ESTIMATED_KEY] is True
+
+    async def test_and_an_async_stream(self, openrouter: FakeOpenRouter) -> None:
+        openrouter.reply(stream_of("Hello"))
+
+        reply = await _llm().ainvoke([HumanMessage(content="hi")])
+
+        assert reply.response_metadata[USAGE_ESTIMATED_KEY] is True
+
+    @pytest.mark.parametrize("shape", USAGE_SHAPES)
+    def test_usage_the_provider_did_report_is_not(
+        self, openrouter: FakeOpenRouter, shape: str
+    ) -> None:
+        openrouter.reply(stream_with_usage_shape(shape, "Hello", usage=TestUsageMetadata.USAGE))
+
+        reply = _llm().invoke([HumanMessage(content="hi")])
+
+        assert USAGE_ESTIMATED_KEY not in reply.response_metadata
 
 
 def test_the_module_is_not_imported_until_an_openrouter_model_is_built() -> None:
