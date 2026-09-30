@@ -1150,7 +1150,7 @@ class ProviderChoice:
         return self.takes_native_blocks or self.tags_citations
 
 
-def _platform_choice(settings: Settings, community_id: str) -> ProviderChoice:
+def _platform_choice(settings: Settings, community_id: str, *, log: bool = True) -> ProviderChoice:
     """Fall back to the platform's own key, preferring Anthropic.
 
     Phase 2 flips platform-key routing to the Claude Platform on AWS: when
@@ -1162,6 +1162,8 @@ def _platform_choice(settings: Settings, community_id: str) -> ProviderChoice:
     Args:
         settings: Server settings, for the platform's keys.
         community_id: The community the request is for, named in the error log.
+        log: Whether to log what it finds (the OpenRouter fallback, no key at all). False
+            for a probe of a request that is routed again for real (see ``_route_request``).
 
     Raises:
         HTTPException(500): If neither platform key is configured.
@@ -1176,32 +1178,35 @@ def _platform_choice(settings: Settings, community_id: str) -> ProviderChoice:
         # rejected -- inferring from key presence plus a loud warning is
         # enough for now, and a provider toggle would reintroduce the
         # configuration ambiguity this epic is removing.
-        logger.warning(
-            "ANTHROPIC_API_KEY is not configured; platform-funded requests are "
-            "falling back to OpenRouter and are NOT running on the Claude "
-            "Platform on AWS. Set ANTHROPIC_API_KEY to fix this.",
-            extra={"provider": "openrouter", "key_source": "platform"},
-        )
+        if log:
+            logger.warning(
+                "ANTHROPIC_API_KEY is not configured; platform-funded requests are "
+                "falling back to OpenRouter and are NOT running on the Claude "
+                "Platform on AWS. Set ANTHROPIC_API_KEY to fix this.",
+                extra={"provider": "openrouter", "key_source": "platform"},
+            )
         return ProviderChoice(
             provider="openrouter", api_key=settings.openrouter_api_key, key_source="platform"
         )
     # Every platform-funded request to this community fails from here, and the caller
     # only sees a 500: the log is where an operator learns why. A Bedrock key alone does
     # not help, since a Bedrock model is only ever reached from the Anthropic provider.
-    logger.error(
-        "No platform API key is configured for community %s: ANTHROPIC_API_KEY and "
-        "OPENROUTER_API_KEY are both unset, so platform-funded requests fail with HTTP 500.%s",
-        community_id,
-        " AWS_BEARER_TOKEN_BEDROCK is set but serves nothing without ANTHROPIC_API_KEY."
-        if settings.bedrock_api_key
-        else "",
-        extra={
-            "community_id": community_id,
-            "anthropic_key_configured": False,
-            "openrouter_key_configured": False,
-            "bedrock_key_configured": bool(settings.bedrock_api_key),
-        },
-    )
+    if log:
+        logger.error(
+            "No platform API key is configured for community %s: ANTHROPIC_API_KEY and "
+            "OPENROUTER_API_KEY are both unset, so platform-funded requests fail with "
+            "HTTP 500.%s",
+            community_id,
+            " AWS_BEARER_TOKEN_BEDROCK is set but serves nothing without ANTHROPIC_API_KEY."
+            if settings.bedrock_api_key
+            else "",
+            extra={
+                "community_id": community_id,
+                "anthropic_key_configured": False,
+                "openrouter_key_configured": False,
+                "bedrock_key_configured": bool(settings.bedrock_api_key),
+            },
+        )
     raise HTTPException(
         status_code=500,
         detail="No API key configured for this community. Please contact support.",
@@ -1250,6 +1255,8 @@ def _resolve_provider(
     community_id: str,
     byok: ByokCredential | None,
     origin: str | None,
+    *,
+    log: bool = True,
 ) -> ProviderChoice:
     """Resolve which LLM provider, API key, and key source to use.
 
@@ -1265,6 +1272,9 @@ def _resolve_provider(
         community_id: Community identifier.
         byok: Caller-supplied credential, if any (see ``resolve_byok``).
         origin: Origin header from the HTTP request.
+        log: Whether to log the community key it uses or finds missing, and what
+            ``_platform_choice`` finds. False for a probe of a request that is routed
+            again for real (see ``_route_request``).
 
     Returns:
         The resolved ProviderChoice.
@@ -1304,38 +1314,40 @@ def _resolve_provider(
     if community is not None:
         label = "Anthropic" if community.provider == "anthropic" else "OpenRouter"
         if community.key:
-            logger.info(
-                "Using community-specific %s API key from %s for %s",
-                label,
-                community.env_var,
-                community_id,
-                extra={
-                    "community_id": community_id,
-                    "key_source": "community",
-                    "provider": community.provider,
-                    "env_var": community.env_var,
-                },
-            )
+            if log:
+                logger.info(
+                    "Using community-specific %s API key from %s for %s",
+                    label,
+                    community.env_var,
+                    community_id,
+                    extra={
+                        "community_id": community_id,
+                        "key_source": "community",
+                        "provider": community.provider,
+                        "env_var": community.env_var,
+                    },
+                )
             return ProviderChoice(
                 provider=community.provider, api_key=community.key, key_source="community"
             )
-        logger.error(
-            "Community %s configured to use %s but env var not set, falling back to "
-            "the platform key. This may incur unexpected costs. Set the environment "
-            "variable to fix this.",
-            community_id,
-            community.env_var,
-            extra={
-                "community_id": community_id,
-                "key_source": "platform",
-                "configured_env_var": community.env_var,
-                "env_var_missing": True,
-                "fallback_to_platform": True,
-                "origin": origin,
-            },
-        )
+        if log:
+            logger.error(
+                "Community %s configured to use %s but env var not set, falling back to "
+                "the platform key. This may incur unexpected costs. Set the environment "
+                "variable to fix this.",
+                community_id,
+                community.env_var,
+                extra={
+                    "community_id": community_id,
+                    "key_source": "platform",
+                    "configured_env_var": community.env_var,
+                    "env_var_missing": True,
+                    "fallback_to_platform": True,
+                    "origin": origin,
+                },
+            )
 
-    return _platform_choice(settings, community_id)
+    return _platform_choice(settings, community_id, log=log)
 
 
 def _to_openrouter_model_via_canonical(model: str) -> str | None:
@@ -1366,6 +1378,8 @@ def _select_model(
     requested_model: str | None,
     provider: ProviderName,
     has_byok: bool,
+    *,
+    log: bool = True,
 ) -> tuple[str, str | None]:
     """Select the model (and, on OpenRouter, its provider-routing hint).
 
@@ -1389,6 +1403,8 @@ def _select_model(
         requested_model: User-requested model from the request body.
         provider: The provider resolved by ``_resolve_provider``.
         has_byok: Whether the caller provided their own API key.
+        log: Whether to log a configured default that cannot be served. False for a
+            probe of a request that is routed again for real (see ``_route_request``).
 
     Returns:
         Tuple of (model, provider_routing_hint). The routing hint is always
@@ -1454,15 +1470,16 @@ def _select_model(
         # Falling back to the factory default keeps the request serviceable,
         # but it is a misconfiguration worth seeing in the logs, and naming
         # the community is what makes it actionable.
-        logger.error(
-            "Community %s: default model %r is neither an offered Anthropic "
-            "model nor an OpenRouter slug; falling back to %s for this "
-            "OpenRouter-funded request",
-            community_info.id,
-            default_model,
-            OPENROUTER_DEFAULT_MODEL,
-            extra={"community_id": community_info.id},
-        )
+        if log:
+            logger.error(
+                "Community %s: default model %r is neither an offered Anthropic "
+                "model nor an OpenRouter slug; falling back to %s for this "
+                "OpenRouter-funded request",
+                community_info.id,
+                default_model,
+                OPENROUTER_DEFAULT_MODEL,
+                extra={"community_id": community_info.id},
+            )
         return (OPENROUTER_DEFAULT_MODEL, OPENROUTER_DEFAULT_PROVIDER)
 
     # Use community or platform default
@@ -1795,7 +1812,7 @@ def _route_request(
     origin: str | None,
     requested_model: str | None,
     *,
-    log_fallback: bool = True,
+    log: bool = True,
 ) -> RequestRoute:
     """Decide the provider and model for a request, with authorization checks.
 
@@ -1810,21 +1827,23 @@ def _route_request(
         byok: The caller's own credential, if any.
         origin: The request's Origin header.
         requested_model: The model the caller named, if any.
-        log_fallback: Whether to log a Bedrock default being replaced by Claude. A
-            caller that routes the same request a second time (``/chat/resume``
-            probes the route before the stream makes it for real) passes False so the
-            request logs once.
+        log: Whether to log what routing finds: a community key in use or missing, the
+            platform falling back to OpenRouter or having no key, a default that cannot
+            be served, a Bedrock default replaced by Claude. A caller that routes the same
+            request a second time (``/chat/resume`` probes the route before the stream
+            makes it for real) passes False, so the request logs once.
 
     Raises:
         HTTPException: As ``_resolve_provider``, ``_select_model`` and
             ``_bedrock_choice`` do.
     """
-    choice = _resolve_provider(community_id, byok, origin)
+    choice = _resolve_provider(community_id, byok, origin, log=log)
     model, provider_hint = _select_model(
         community_info,
         requested_model,
         provider=choice.provider,
         has_byok=choice.key_source == "byok",
+        log=log,
     )
     if choice.provider == "anthropic" and is_bedrock_model(model):
         settings = get_settings()
@@ -1839,7 +1858,7 @@ def _route_request(
             # asked for that model, so refusing would take the whole community down for
             # them (the CLI never sends a model). Run a Claude model instead.
             fallback = _claude_fallback(settings)
-            if log_fallback:
+            if log:
                 _log_bedrock_fallback(community_id, model, fallback, choice, settings)
             model = fallback
     # The offered model this is, found once here for everything keyed by offered id.
@@ -2813,7 +2832,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 raise HTTPException(status_code=404, detail="Unknown community.")
             # A probe: the stream routes this request again, and that one logs.
             allow_images = _route_request(
-                route_info, community_id, byok, origin, body.model, log_fallback=False
+                route_info, community_id, byok, origin, body.model, log=False
             ).choice.takes_native_blocks
         except HTTPException as err:
             logger.debug(

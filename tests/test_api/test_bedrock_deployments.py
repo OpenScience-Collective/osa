@@ -79,7 +79,7 @@ class TestTheWidgetDefaultIsWhatTheServerRuns:
         for info in registry.list_all():
             data = _config(info.id)
             try:
-                route = _route_request(info, info.id, None, _origin(info), None, log_fallback=False)
+                route = _route_request(info, info.id, None, _origin(info), None, log=False)
             except HTTPException as err:
                 # No platform key: nothing runs. What is reported is still a model the
                 # menu offers, never a Bedrock model the server has no way to run.
@@ -128,7 +128,7 @@ class TestTheWidgetDefaultIsWhatTheServerRuns:
 
         for info in _bedrock_communities():
             default = normalize_model(info.community_config.default_model)
-            route = _route_request(info, info.id, None, _origin(info), None, log_fallback=False)
+            route = _route_request(info, info.id, None, _origin(info), None, log=False)
             assert route.choice.provider == "openrouter"
             assert route.model == OPENROUTER_MODEL_IDS[default]
             assert _config(info.id)["default_model"] == default
@@ -203,7 +203,7 @@ class TestACommunityThatFundsItself:
         ]
         bedrock_menu = BEDROCK_MODELS.keys() & _offered_ids(data)
         try:
-            route = _route_request(info, info.id, None, _origin(info), None, log_fallback=False)
+            route = _route_request(info, info.id, None, _origin(info), None, log=False)
         except HTTPException as err:
             assert err.status_code == 500
             assert data["default_model"] == _claude_fallback(settings)
@@ -236,7 +236,7 @@ class TestACommunityThatFundsItself:
         info = _bedrock_communities()[0]
         _name_community_keys(monkeypatch, info, anthropic="set", openrouter="unnamed")
 
-        route = _route_request(info, info.id, None, _origin(info), None, log_fallback=False)
+        route = _route_request(info, info.id, None, _origin(info), None, log=False)
 
         assert route.choice.provider == "bedrock"
         assert _config(info.id)["default_model"] == normalize_model(
@@ -279,7 +279,7 @@ class TestACommunityThatFundsItself:
         info = _bedrock_communities()[0]
         _name_community_keys(monkeypatch, info, anthropic="unset", openrouter="set")
 
-        route = _route_request(info, info.id, None, _origin(info), None, log_fallback=False)
+        route = _route_request(info, info.id, None, _origin(info), None, log=False)
 
         assert route.choice.provider == "anthropic" and route.choice.key_source == "platform"
         assert _config(info.id)["default_model"] == _claude_fallback(get_settings())

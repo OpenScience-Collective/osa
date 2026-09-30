@@ -325,12 +325,65 @@ class TestTheFallbackLog:
         caplog.set_level(logging.WARNING)
         info = _luna_default_community()
 
-        quiet = _route_request(info, "hed", None, _origin(_hed()), None, log_fallback=False)
+        quiet = _route_request(info, "hed", None, _origin(_hed()), None, log=False)
         assert _fallback_records(caplog) == []
         loud = _route_request(info, "hed", None, _origin(_hed()), None)
 
         assert (quiet.choice, quiet.model) == (loud.choice, loud.model)
         assert len(_fallback_records(caplog)) == 1
+
+    @pytest.mark.parametrize(
+        "situation",
+        ["openrouter_fallback", "no_platform_key", "community_key_unset", "bad_default"],
+    )
+    def test_a_probe_is_silent_about_everything_routing_finds(self, monkeypatch, caplog, situation):
+        """Not just the Bedrock fallback: the platform falling back to OpenRouter, having no
+        key at all, a community key that is missing, and a default nothing can serve are
+        each logged by routing too, and `/chat/resume` would log each of them twice."""
+        info = _hed()
+        config = info.community_config
+        if situation == "openrouter_fallback":
+            set_platform_keys(monkeypatch, anthropic=None, openrouter="or-key", bedrock=None)
+        elif situation == "no_platform_key":
+            set_platform_keys(monkeypatch, anthropic=None, openrouter=None, bedrock=None)
+        elif situation == "community_key_unset":
+            set_platform_keys(monkeypatch)
+            monkeypatch.setattr(config, "anthropic_api_key_env_var", "OSA_TEST_UNSET_KEY")
+            monkeypatch.delenv("OSA_TEST_UNSET_KEY", raising=False)
+        else:
+            set_platform_keys(monkeypatch, anthropic=None, openrouter="or-key", bedrock=None)
+            monkeypatch.setattr(config, "default_model", "not-an-offered-model")
+            monkeypatch.setattr(config, "default_model_provider", None)
+        caplog.set_level(logging.INFO)
+
+        def route(**kwargs):
+            try:
+                return _route_request(info, "hed", None, _origin(info), None, **kwargs)
+            except HTTPException as err:
+                return err.status_code
+
+        quiet = route(log=False)
+        assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
+        loud = route()
+
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING], "it does log"
+        if situation == "bad_default":
+            assert any("neither an offered Anthropic" in r.getMessage() for r in caplog.records)
+        assert quiet == loud or (quiet.choice, quiet.model) == (loud.choice, loud.model)
+
+    def test_a_community_key_in_use_is_noted_once_and_not_by_a_probe(self, monkeypatch, caplog):
+        set_platform_keys(monkeypatch)
+        info = _hed()
+        monkeypatch.setattr(info.community_config, "anthropic_api_key_env_var", "OSA_TEST_KEY")
+        monkeypatch.setenv("OSA_TEST_KEY", "community-key")
+        caplog.set_level(logging.INFO)
+
+        _route_request(info, "hed", None, _origin(info), None, log=False)
+        assert [r for r in caplog.records if hasattr(r, "env_var")] == []
+        _route_request(info, "hed", None, _origin(info), None)
+
+        (record,) = [r for r in caplog.records if hasattr(r, "env_var")]
+        assert record.env_var == "OSA_TEST_KEY" and record.key_source == "community"
 
     def test_nothing_is_logged_where_the_default_is_served(self, monkeypatch, caplog):
         _platform(monkeypatch)

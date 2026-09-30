@@ -984,6 +984,33 @@ class TestOnlyCodeTheWidgetKeepsCounts:
         assert _names(events)[-1] == "error"
 
 
+class TestTheResumeRoutesOnceAndLogsOnce:
+    """``/chat/resume`` routes the request twice: a probe, to see whether the result may
+    carry images, and the stream, which makes the route for real. Each of them logged what
+    routing found, so an operator read every such warning twice."""
+
+    def test_the_platform_falling_back_to_openrouter_is_warned_about_once(
+        self, client: TestClient, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from tests.helpers.deployment import set_platform_keys
+        from tests.helpers.openrouter import FakeOpenRouter, stream_of
+
+        set_platform_keys(monkeypatch, anthropic=None, openrouter="platform-or-key", bedrock=None)
+        server = FakeOpenRouter()
+        monkeypatch.setenv("OPENROUTER_API_BASE", server.base_url)
+        caplog.set_level(logging.WARNING)
+        try:
+            server.reply(stream_of(ANSWER))
+
+            events = _resume(client, _park("execute_code"))
+        finally:
+            server.close()
+
+        assert _names(events)[-1] == "done" and events[-1]["content"] == ANSWER
+        warnings = [r for r in caplog.records if "falling back to OpenRouter" in r.getMessage()]
+        assert len(warnings) == 1, [r.getMessage() for r in warnings]
+
+
 # ---------------------------------------------------------------------------
 # The same thing through each provider's real client stack
 # ---------------------------------------------------------------------------
