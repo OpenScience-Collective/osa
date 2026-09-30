@@ -1615,7 +1615,7 @@ def _configured_default(info: AssistantInfo, settings: Settings) -> tuple[str, s
     return settings.default_model, settings.default_model_provider
 
 
-def _effective_default(info: AssistantInfo, settings: Settings) -> tuple[str | None, str | None]:
+def _effective_default(info: AssistantInfo, settings: Settings) -> tuple[str, str | None]:
     """The default model this deployment actually runs for a community, and its hint.
 
     What the community configures, unless that is a Bedrock model nothing on this
