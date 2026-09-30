@@ -82,6 +82,7 @@ from src.core.services.anthropic_llm import OFFERED_MODELS, create_anthropic_llm
 from src.core.services.anthropic_models import (
     BEDROCK_MODELS,
     DEFAULT_MODEL,
+    OPENROUTER_MODEL_IDS,
     is_bedrock_model,
     openrouter_model_id,
 )
@@ -1493,6 +1494,116 @@ def _claude_fallback(settings: Settings) -> str:
     return DEFAULT_MODEL if is_bedrock_model(candidate) else candidate
 
 
+BedrockDefaultOutcome = Literal["bedrock", "openrouter", "claude_fallback", "unavailable"]
+
+
+def _bedrock_default_outcome(settings: Settings) -> BedrockDefaultOutcome:
+    """What a platform-funded request that names no model does with a Bedrock default.
+
+    The same decisions ``_platform_choice`` and ``_route_request`` make, read off the
+    deployment's keys: "bedrock" when Bedrock serves it (``_serves_bedrock_models``);
+    "claude_fallback" when the platform has an Anthropic key but the request cannot have
+    Bedrock (no Bedrock key), so it runs ``_claude_fallback``; "openrouter" when there is
+    no Anthropic key, which sends platform requests to OpenRouter, where the model runs
+    under its slug whatever the Bedrock key; "unavailable" when no key can serve the
+    request at all (HTTP 500).
+    """
+    if _serves_bedrock_models(settings):
+        return "bedrock"
+    if settings.anthropic_api_key:
+        return "claude_fallback"
+    if settings.openrouter_api_key:
+        return "openrouter"
+    return "unavailable"
+
+
+def _configured_default(info: AssistantInfo, settings: Settings) -> tuple[str | None, str | None]:
+    """A community's default model and OpenRouter routing hint: its own, else the platform's."""
+    if info.community_config and info.community_config.default_model:
+        return (
+            info.community_config.default_model,
+            info.community_config.default_model_provider,
+        )
+    return settings.default_model, settings.default_model_provider
+
+
+def _effective_default(info: AssistantInfo, settings: Settings) -> tuple[str | None, str | None]:
+    """The default model this deployment actually runs for a community, and its hint.
+
+    What the community configures, unless that is a Bedrock model nothing on this
+    deployment can run, in which case ``_claude_fallback`` (with the platform's routing
+    hint, the community's being for the model it named). What the widget shows as the
+    community default has to be what a request runs, and the model menu already leaves
+    out the models the server cannot run.
+    """
+    default_model, default_provider = _configured_default(info, settings)
+    if is_bedrock_model(default_model) and _bedrock_default_outcome(settings) in (
+        "claude_fallback",
+        "unavailable",
+    ):
+        return _claude_fallback(settings), settings.default_model_provider
+    return default_model, default_provider
+
+
+def log_unserved_bedrock_defaults(settings: Settings | None = None) -> list[str]:
+    """At startup, log each community whose Bedrock default this deployment cannot serve.
+
+    Without the keys, the request runs Claude Haiku at about nine times GPT-6 Luna's
+    price, and the only signal was a log line per request, after the bill had started.
+    One record per community, at ERROR when requests run Claude or fail, and WARNING
+    when they run the model through OpenRouter (which works, and is warned about on
+    every such request too). Every record names the two keys that serve the model
+    from Bedrock: ``AWS_BEARER_TOKEN_BEDROCK`` and ``ANTHROPIC_API_KEY``.
+
+    Args:
+        settings: The deployment's settings. Defaults to ``get_settings()``.
+
+    Returns:
+        The ids of the communities logged.
+    """
+    settings = settings or get_settings()
+    outcome = _bedrock_default_outcome(settings)
+    if outcome == "bedrock":
+        return []
+    needs = "It needs both AWS_BEARER_TOKEN_BEDROCK and ANTHROPIC_API_KEY."
+    logged: list[str] = []
+    for info in registry.list_all():
+        default_model, _ = _configured_default(info, settings)
+        if default_model is None or not is_bedrock_model(default_model):
+            continue
+        model = normalize_model(default_model)
+        if outcome == "claude_fallback":
+            level = logging.ERROR
+            consequence = (
+                f"every platform-funded request runs {_claude_fallback(settings)} instead, "
+                "at several times the price"
+            )
+        elif outcome == "openrouter":
+            level = logging.WARNING
+            consequence = (
+                "ANTHROPIC_API_KEY is unset, so platform-funded requests go to OpenRouter "
+                f"and run it there as {OPENROUTER_MODEL_IDS.get(model, model)}"
+            )
+        else:
+            level = logging.ERROR
+            consequence = (
+                "no platform key is set (ANTHROPIC_API_KEY, OPENROUTER_API_KEY), so every "
+                "platform-funded request fails with HTTP 500"
+            )
+        logger.log(
+            level,
+            "Community %s defaults to %s, which is served from Amazon Bedrock, and this "
+            "deployment cannot serve it: %s. %s",
+            info.id,
+            model,
+            consequence,
+            needs,
+            extra={"community_id": info.id, "model": model, "outcome": outcome},
+        )
+        logged.append(info.id)
+    return logged
+
+
 def _offered_model_id(provider: str, model: str) -> str | None:
     """The ``OFFERED_MODELS`` id a provider's model id stands for, or None if unknown.
 
@@ -2646,12 +2757,7 @@ def create_community_router(community_id: str) -> APIRouter:
         settings = get_settings()
 
         # Determine default model: community-specific or platform default
-        default_model = settings.default_model
-        default_provider = settings.default_model_provider
-
-        if info.community_config and info.community_config.default_model:
-            default_model = info.community_config.default_model
-            default_provider = info.community_config.default_model_provider
+        default_model, default_provider = _configured_default(info, settings)
 
         # Validate required configuration
         if not default_model:
@@ -2687,6 +2793,11 @@ def create_community_router(community_id: str) -> APIRouter:
                     exc_info=True,
                 )
 
+        # What a request runs, which is not what the community configures when it names a
+        # Bedrock model this deployment cannot serve: the widget would call that model
+        # the community default while the server answers with Claude.
+        default_model, default_provider = _effective_default(info, settings)
+
         return CommunityConfigResponse(
             id=info.id,
             name=info.name,
@@ -2702,7 +2813,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 # not offered. The Bedrock ones need the deployment's Bedrock key, and
                 # are routed only from a request that resolves to the Anthropic
                 # provider, which on the platform's key needs its Anthropic key too.
-                if model_id not in BEDROCK_MODELS or _serves_bedrock_models(get_settings())
+                if model_id not in BEDROCK_MODELS or _serves_bedrock_models(settings)
             ],
             widget=WidgetConfigResponse(**widget_cfg.resolve(info.name, logo_url=conv_logo)),
             status=health_status,

@@ -23,6 +23,7 @@ from src.assistants.registry import AssistantInfo
 from src.core.config.community import CommunityConfig
 from src.core.services.anthropic_models import BEDROCK_MODELS, is_bedrock_model
 from src.core.services.litellm_llm import OPENROUTER_MODEL_IDS
+from tests.helpers.deployment import set_platform_keys
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -50,31 +51,9 @@ def _origin(info) -> str:
     pytest.fail("no exact CORS origin")
 
 
-def _deployment(
-    monkeypatch,
-    *,
-    anthropic: str | None = "platform-anthropic-key",
-    openrouter: str | None = None,
-    bedrock: str | None = "bedrock-key",
-) -> None:
-    """The platform's keys as a deployment configures them, on every registered community.
-
-    No community funds itself: each is left to the platform's keys, whatever env vars its
-    config names.
-    """
-    settings = get_settings()
-    monkeypatch.setattr(settings, "anthropic_api_key", anthropic)
-    monkeypatch.setattr(settings, "openrouter_api_key", openrouter)
-    monkeypatch.setattr(settings, "bedrock_api_key", bedrock)
-    for info in registry.list_all():
-        if info.community_config:
-            monkeypatch.setattr(info.community_config, "anthropic_api_key_env_var", None)
-            monkeypatch.setattr(info.community_config, "openrouter_api_key_env_var", None)
-
-
 def _platform(monkeypatch, *, bedrock: str | None = "bedrock-key") -> None:
     """Platform keys as a deployment with Anthropic and (optionally) Bedrock has them."""
-    _deployment(monkeypatch, bedrock=bedrock)
+    set_platform_keys(monkeypatch, bedrock=bedrock)
 
 
 class TestProviderChoiceForBedrock:
@@ -366,7 +345,7 @@ class TestTheFallbackLog:
         self, monkeypatch, caplog
     ):
         """Dynamic: each community whose default is a Bedrock model, as shipped."""
-        _deployment(monkeypatch, bedrock=None)
+        set_platform_keys(monkeypatch, bedrock=None)
         caplog.set_level(logging.WARNING)
         bedrock_communities = [
             info
@@ -395,7 +374,7 @@ class TestNoPlatformKey:
     def test_a_bedrock_key_alone_serves_nothing_and_the_error_log_says_so(
         self, monkeypatch, caplog
     ):
-        _deployment(monkeypatch, anthropic=None, openrouter=None, bedrock="bedrock-key")
+        set_platform_keys(monkeypatch, anthropic=None, openrouter=None, bedrock="bedrock-key")
         caplog.set_level(logging.ERROR)
         info = _hed()
 
@@ -410,7 +389,7 @@ class TestNoPlatformKey:
         assert "AWS_BEARER_TOKEN_BEDROCK" in record.getMessage()
 
     def test_a_keyless_deployment_logs_it_too(self, monkeypatch, caplog):
-        _deployment(monkeypatch, anthropic=None, openrouter=None, bedrock=None)
+        set_platform_keys(monkeypatch, anthropic=None, openrouter=None, bedrock=None)
         caplog.set_level(logging.ERROR)
         info = _hed()
 
@@ -437,7 +416,9 @@ class TestBedrockAndOpenRouterWithoutAnthropic:
     def test_the_default_runs_on_openrouter_and_the_fallback_is_warned_about(
         self, monkeypatch, caplog
     ):
-        _deployment(monkeypatch, anthropic=None, openrouter="platform-or-key", bedrock="b-key")
+        set_platform_keys(
+            monkeypatch, anthropic=None, openrouter="platform-or-key", bedrock="b-key"
+        )
         caplog.set_level(logging.WARNING)
         info = _hed()
 
