@@ -1,20 +1,18 @@
 """Tests for the Bedrock chat models.
 
 Nothing here reaches AWS. Requests are intercepted at botocore's transport hook
-(``before-send``), after the client has serialized, authenticated and addressed
-them, and answered with fixture bytes: the same idea as an ``httpx`` response
-fixture, one layer down. So what is asserted about a request (URL, bearer header,
-body) is what the real client would have sent, and the reply goes through the real
-parser, including the binary event stream used for streaming.
+(``before-send``; see ``tests/helpers/bedrock_wire.py``), after the client has
+serialized, authenticated and addressed them, and answered with fixture bytes: the same
+idea as an ``httpx`` response fixture, one layer down. So what is asserted about a
+request (URL, bearer header, body) is what the real client would have sent, and the
+reply goes through the real parser, including the binary event stream used for
+streaming.
 """
 
 import json
-import struct
-import zlib
 from typing import Any
 
 import pytest
-from botocore.awsrequest import AWSResponse
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from src.api.config import Settings
@@ -26,6 +24,8 @@ from src.core.services.bedrock_llm import (
 )
 from src.core.services.tagged_citations import CITATION_INSTRUCTION
 from src.tools.citations import build_search_result
+from tests.helpers.bedrock_wire import Wire as _Wire
+from tests.helpers.bedrock_wire import frame as _frame
 
 FAKE_KEY = "test-bedrock-key"
 
@@ -50,44 +50,6 @@ def _settings(**overrides: object) -> Settings:
     return Settings(_env_file=None, **values)  # type: ignore[call-arg]
 
 
-class _Raw:
-    """The minimum urllib3-shaped body botocore reads a response from."""
-
-    def __init__(self, body: bytes) -> None:
-        self._body = body
-
-    def stream(self, *_args: Any, **_kwargs: Any):
-        yield self._body
-
-    def read(self, *_args: Any, **_kwargs: Any) -> bytes:
-        return self._body
-
-    def close(self) -> None:
-        """Nothing to release: the body is already in memory."""
-
-
-class _Wire:
-    """Captures what a client sends and answers with a fixed response."""
-
-    def __init__(self, llm: TaggedCitationChatBedrock, body: bytes, content_type: str) -> None:
-        self.requests: list[Any] = []
-        self._body = body
-        self._content_type = content_type
-        llm.client.meta.events.register("before-send.bedrock-runtime.*", self._answer)
-
-    def _answer(self, request: Any, **_kwargs: Any) -> AWSResponse:
-        self.requests.append(request)
-        return AWSResponse(request.url, 200, {"content-type": self._content_type}, _Raw(self._body))
-
-    @property
-    def sent(self) -> Any:
-        return self.requests[-1]
-
-    @property
-    def body(self) -> dict[str, Any]:
-        return json.loads(self.sent.body)
-
-
 def _converse_reply(text: str) -> bytes:
     return json.dumps(
         {
@@ -103,32 +65,6 @@ def _converse_reply(text: str) -> bytes:
             "metrics": {"latencyMs": 1},
         }
     ).encode()
-
-
-def _frame(event_type: str, payload: dict[str, Any]) -> bytes:
-    """One AWS event-stream message: the framing ConverseStream replies in."""
-
-    def header(name: str, value: str) -> bytes:
-        raw_name, raw_value = name.encode(), value.encode()
-        return (
-            struct.pack("B", len(raw_name))
-            + raw_name
-            + b"\x07"
-            + struct.pack(">H", len(raw_value))
-            + raw_value
-        )
-
-    headers = (
-        header(":event-type", event_type)
-        + header(":content-type", "application/json")
-        + header(":message-type", "event")
-    )
-    body = json.dumps(payload).encode()
-    total = 12 + len(headers) + len(body) + 4
-    prelude = struct.pack(">II", total, len(headers))
-    prelude += struct.pack(">I", zlib.crc32(prelude))
-    message = prelude + headers + body
-    return message + struct.pack(">I", zlib.crc32(message))
 
 
 def _stream_reply(text_deltas: list[str], block_index: int = 0) -> bytes:
