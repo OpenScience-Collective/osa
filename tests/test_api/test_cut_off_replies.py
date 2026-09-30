@@ -502,6 +502,18 @@ def _post_chat(client: TestClient, session_id: str = "sess-plain-chat"):
     )
 
 
+class TestTheRoutesDeclareTheirAnswers:
+    @pytest.mark.parametrize("route", ["ask", "chat"])
+    def test_a_reply_with_no_answer_is_a_declared_502(self, client: TestClient, route: str) -> None:
+        """The 502 the two endpoints return is in the OpenAPI schema, not just the code."""
+        schema = client.app.openapi()
+
+        responses = schema["paths"][f"/{COMMUNITY}/{route}"]["post"]["responses"]
+
+        assert "502" in responses
+        assert responses["502"]["description"]
+
+
 @provider_param
 class TestAskWithoutStreaming:
     def test_a_reply_with_no_text_is_a_502_naming_why(

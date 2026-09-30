@@ -2426,6 +2426,7 @@ def create_community_router(community_id: str) -> APIRouter:
             200: {"description": "Successful response"},
             400: {"description": "Invalid request"},
             500: {"description": "Internal server error"},
+            502: {"description": "The model wrote no answer (cut off, declined, or empty)"},
         },
     )
     async def ask(
@@ -2530,6 +2531,7 @@ def create_community_router(community_id: str) -> APIRouter:
             200: {"description": "Successful response"},
             400: {"description": "Invalid request"},
             500: {"description": "Internal server error"},
+            502: {"description": "The model wrote no answer (cut off, declined, or empty)"},
         },
     )
     async def chat(
