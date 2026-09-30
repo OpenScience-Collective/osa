@@ -1106,7 +1106,7 @@ class ProviderChoice:
         return self.takes_native_blocks or self.tags_citations
 
 
-def _platform_choice(settings: Settings) -> ProviderChoice:
+def _platform_choice(settings: Settings, community_id: str) -> ProviderChoice:
     """Fall back to the platform's own key, preferring Anthropic.
 
     Phase 2 flips platform-key routing to the Claude Platform on AWS: when
@@ -1114,6 +1114,10 @@ def _platform_choice(settings: Settings) -> ProviderChoice:
     platform's Anthropic key (server mode, api_key=None so the provider
     layer reads the AWS endpoint/workspace from Settings). OpenRouter is a
     fallback only for deployments that have not configured an Anthropic key.
+
+    Args:
+        settings: Server settings, for the platform's keys.
+        community_id: The community the request is for, named in the error log.
 
     Raises:
         HTTPException(500): If neither platform key is configured.
@@ -1137,6 +1141,23 @@ def _platform_choice(settings: Settings) -> ProviderChoice:
         return ProviderChoice(
             provider="openrouter", api_key=settings.openrouter_api_key, key_source="platform"
         )
+    # Every platform-funded request to this community fails from here, and the caller
+    # only sees a 500: the log is where an operator learns why. A Bedrock key alone does
+    # not help, since a Bedrock model is only ever reached from the Anthropic provider.
+    logger.error(
+        "No platform API key is configured for community %s: ANTHROPIC_API_KEY and "
+        "OPENROUTER_API_KEY are both unset, so platform-funded requests fail with HTTP 500.%s",
+        community_id,
+        " AWS_BEARER_TOKEN_BEDROCK is set but serves nothing without ANTHROPIC_API_KEY."
+        if settings.bedrock_api_key
+        else "",
+        extra={
+            "community_id": community_id,
+            "anthropic_key_configured": False,
+            "openrouter_key_configured": False,
+            "bedrock_key_configured": bool(settings.bedrock_api_key),
+        },
+    )
     raise HTTPException(
         status_code=500,
         detail="No API key configured for this community. Please contact support.",
@@ -1232,7 +1253,7 @@ def _resolve_provider(
                     "origin": origin,
                 },
             )
-            return _platform_choice(settings)
+            return _platform_choice(settings, community_id)
 
         # Anthropic env var not configured for this community; a community
         # can still fund itself through OpenRouter instead.
@@ -1269,9 +1290,9 @@ def _resolve_provider(
                     "origin": origin,
                 },
             )
-            return _platform_choice(settings)
+            return _platform_choice(settings, community_id)
 
-    return _platform_choice(settings)
+    return _platform_choice(settings, community_id)
 
 
 def _to_openrouter_model_via_canonical(model: str) -> str | None:
@@ -1530,12 +1551,49 @@ class RequestRoute:
             )
 
 
+def _log_bedrock_fallback(
+    community_id: str,
+    model: str,
+    fallback: str,
+    choice: ProviderChoice,
+    settings: Settings,
+) -> None:
+    """Say that a community's Bedrock default was replaced by a Claude model, and why.
+
+    ERROR when the deployment itself cannot serve the model (no Bedrock key): every
+    platform-funded request to the community runs the pricier Claude model until it is
+    fixed, which is the misconfiguration worth paging on. WARNING when the cause is the
+    caller's own key and no model named, which is ordinary (every CLI request) and would
+    otherwise bury the ERROR above.
+    """
+    deployment_cannot = not settings.bedrock_api_key
+    logger.log(
+        logging.ERROR if deployment_cannot else logging.WARNING,
+        "Community %s: default model %r cannot serve this request (%s); running %s instead",
+        community_id,
+        model,
+        "this deployment has no AWS_BEARER_TOKEN_BEDROCK"
+        if deployment_cannot
+        else "the caller's own Anthropic key cannot spend the platform's Bedrock key",
+        fallback,
+        extra={
+            "community_id": community_id,
+            "model": model,
+            "fallback": fallback,
+            "key_source": choice.key_source,
+            "cause": "no_bedrock_key" if deployment_cannot else "callers_own_key",
+        },
+    )
+
+
 def _route_request(
     community_info: AssistantInfo,
     community_id: str,
     byok: ByokCredential | None,
     origin: str | None,
     requested_model: str | None,
+    *,
+    log_fallback: bool = True,
 ) -> RequestRoute:
     """Decide the provider and model for a request, with authorization checks.
 
@@ -1543,6 +1601,17 @@ def _route_request(
     model by what was asked for (``_select_model``), and then the two are
     reconciled: a Bedrock model needs the Bedrock provider whichever key the
     request carried.
+
+    Args:
+        community_info: The community the request is for.
+        community_id: Its id.
+        byok: The caller's own credential, if any.
+        origin: The request's Origin header.
+        requested_model: The model the caller named, if any.
+        log_fallback: Whether to log a Bedrock default being replaced by Claude. A
+            caller that routes the same request a second time (``/chat/resume``
+            probes the route before the stream makes it for real) passes False so the
+            request logs once.
 
     Raises:
         HTTPException: As ``_resolve_provider``, ``_select_model`` and
@@ -1568,16 +1637,8 @@ def _route_request(
             # asked for that model, so refusing would take the whole community down for
             # them (the CLI never sends a model). Run a Claude model instead.
             fallback = _claude_fallback(settings)
-            logger.error(
-                "Community %s: default model %r cannot serve this request (%s key, %s); "
-                "running %s instead",
-                community_id,
-                model,
-                choice.key_source,
-                "Bedrock key configured" if settings.bedrock_api_key else "no Bedrock key",
-                fallback,
-                extra={"community_id": community_id, "model": model, "fallback": fallback},
-            )
+            if log_fallback:
+                _log_bedrock_fallback(community_id, model, fallback, choice, settings)
             model = fallback
     # The offered model this is, found once here for everything keyed by offered id.
     return RequestRoute(
@@ -2463,8 +2524,9 @@ def create_community_router(community_id: str) -> APIRouter:
             route_info = registry.get(community_id)
             if route_info is None:
                 raise HTTPException(status_code=404, detail="Unknown community.")
+            # A probe: the stream routes this request again, and that one logs.
             allow_images = _route_request(
-                route_info, community_id, byok, origin, body.model
+                route_info, community_id, byok, origin, body.model, log_fallback=False
             ).choice.takes_native_blocks
         except HTTPException as err:
             logger.debug(
