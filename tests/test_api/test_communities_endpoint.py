@@ -192,6 +192,20 @@ class TestCommunitiesEndpoint:
         # NEMAR names is also what it would get by naming only the closed one.
         assert round(widget.launcher_size * LAUNCHER_OPEN_RATIO) == widget.launcher_open_size
 
+    def test_bids_launcher_is_larger_and_clear_of_the_read_the_docs_bar(self) -> None:
+        """BIDS's launcher is 20% larger than the default bubble and sits above the
+        Read the Docs version bar (#553, bids-standard/bids-specification#2541).
+
+        The specification site is hosted on Read the Docs, which fixes a version bar to
+        the bottom right of every page, its top 89px up at 1280px wide and 93px up at
+        1920px (measured on the live site, 2026-09-29). At the default 20px the launcher
+        covered it, and the footer's last social icon at the foot of the page."""
+        read_the_docs_bar_top = 93
+        widget = registry.get("bids").community_config.widget
+        assert widget.launcher_size == round(DEFAULT_LAUNCHER_SIZE["bubble"] * 1.2)
+        assert widget.launcher_offset_y > read_the_docs_bar_top
+        assert widget.launcher_position == "bottom-right"
+
     def test_only_nemar_has_dataset_questions(self) -> None:
         """NEMAR is the only community with dataset-page questions (#477); the API omits
         the field for every other community, so their widgets keep the general list."""

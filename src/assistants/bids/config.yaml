@@ -42,6 +42,17 @@ widget:
   title: BIDS Assistant
   initial_message: "Hi! I'm the BIDS Assistant. I can help with Brain Imaging Data Structure (BIDS), data organization, validation, and related tools."
   placeholder: Ask about BIDS...
+  # The launcher on bids-specification.readthedocs.io (issue #553, from
+  # bids-standard/bids-specification#2541: too small, and covering the page's own buttons).
+  # 67px is 20% larger than the 56px default (opening at 54, 80% of it). It sits 104px up
+  # because Read the Docs fixes its version bar to the bottom right of every page, from 89
+  # to 93px up depending on the window's width, and the footer's social icons are below
+  # that, so at 20px the launcher covered the bar and, at the foot of the page, the last
+  # icon. 104px clears both, at 1280px, 1920px and phone widths, and leaves an opened
+  # version menu's links and search box uncovered. It stays at the bottom right, where
+  # the left side would cover the navigation's labels.
+  launcher_size: 67
+  launcher_offset_y: 104
   suggested_questions:
     - What is BIDS and why should I use it?
     - How do I organize my EEG data in BIDS?

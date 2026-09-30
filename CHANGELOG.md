@@ -15,6 +15,9 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Added
 
+- **BIDS launcher, 20% larger and clear of the page's own buttons** (issue #553, bids-standard/bids-specification#2541): the BIDS community's launcher is 67px instead of 56px and sits 104px up, above the Read the Docs version bar and the footer's social icons that it covered on bids-specification.readthedocs.io.
+  It reaches the specification site with the next stable release, which is what serves `demo.osc.earth`; the site itself needs no change, because it takes the launcher's size and place from this config.
+  Checked on the live site with the released widget at 1280px and 1920px wide and on a phone: it clears the version bar (by 15px, and 11px at 1920px), the footer icons and the copyright line, and an opened version menu keeps every link and its search box uncovered.
 - **Launcher position, size and offsets** (issue #553, from the BIDS site's feedback that the launcher is too small and covers the page's own buttons):
   `widget.launcher_position` (`bottom-right` or `bottom-left`), `launcher_size` and `launcher_open_size` (44 to 96px), `launcher_offset_x` and `launcher_offset_y` (0 to 200px from the side and bottom edges), and `launcher_mobile_offset_x` and `launcher_mobile_offset_y` for 600px wide and narrower.
   The launcher, its label and the panel follow the position and offsets, including the capsule in its column and its row, whose circles are reordered so Tab follows what is seen; the panel's resize handle moves to the far top corner, and the panel's minimum width and height give way to the room the offsets leave, so it stays inside a small window.
