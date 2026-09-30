@@ -17,13 +17,14 @@ from src.api.main import create_app, lifespan
 from src.api.routers.community import (
     _claude_fallback,
     _route_request,
+    create_community_assistant,
     create_community_router,
     log_unserved_bedrock_defaults,
 )
 from src.assistants import discover_assistants, registry
 from src.core.services.anthropic_models import BEDROCK_MODELS, is_bedrock_model, normalize_model
 from src.core.services.litellm_llm import OPENROUTER_MODEL_IDS
-from tests.helpers.deployment import DEPLOYMENTS, set_platform_keys
+from tests.helpers.deployment import DEPLOYMENTS, set_platform_keys, without_mcp_servers
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -144,6 +145,51 @@ class TestTheWidgetDefaultIsWhatTheServerRuns:
             assert _config(info.id)["default_model"] == normalize_model(
                 info.community_config.default_model
             )
+
+
+class TestAnOpenRouterOnlyPlatform:
+    """A deployment with only OPENROUTER_API_KEY runs every community on its slug.
+
+    No platform Anthropic key sends platform-funded requests to OpenRouter (a fallback
+    `_platform_choice` warns about), and OpenRouter runs each shipped default under the
+    slug OSA maps it to, through the real graph and model construction.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _platform(self, monkeypatch):
+        set_platform_keys(monkeypatch, anthropic=None, openrouter="platform-or-key", bedrock=None)
+        for info in registry.list_all():
+            without_mcp_servers(monkeypatch, info)
+
+    def test_every_community_runs_its_default_under_its_openrouter_slug(self):
+        for info in registry.list_all():
+            default = normalize_model(
+                info.community_config.default_model or get_settings().default_model
+            )
+            awm = create_community_assistant(info.id, origin=_origin(info), preload_docs=False)
+            assert awm.model == OPENROUTER_MODEL_IDS[default], info.id
+            assert awm.key_source == "platform", info.id
+            assert type(awm.assistant.model).__name__ == "TaggedCitationChatLiteLLM", info.id
+
+    @pytest.mark.parametrize(
+        ("community_id", "slug"),
+        [
+            ("hed", "openai/gpt-6-luna"),
+            ("nwb", "openai/gpt-6-luna"),
+            ("nemar", "anthropic/claude-sonnet-5.5"),
+        ],
+    )
+    def test_the_shipped_defaults_resolve_to_these_slugs(self, community_id, slug):
+        info = registry.get(community_id)
+        awm = create_community_assistant(community_id, origin=_origin(info), preload_docs=False)
+        assert awm.model == slug
+
+    def test_the_default_model_notes_reach_the_prompt_on_openrouter(self):
+        """The Bedrock default's anti-search-loop note follows it onto OpenRouter."""
+        info = registry.get("hed")
+        default = normalize_model(info.community_config.default_model)
+        awm = create_community_assistant("hed", origin=_origin(info), preload_docs=False)
+        assert BEDROCK_MODELS[default].prompt_addendum in awm.assistant.get_system_prompt()
 
 
 class TestTheStartupCheck:

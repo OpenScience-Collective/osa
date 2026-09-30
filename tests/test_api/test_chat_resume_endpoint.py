@@ -476,3 +476,102 @@ class TestTheProviderDecidesWhetherImagesGo:
 
         assert not any(b.get("type") == "image" for b in content)
         assert png not in json.dumps(content)
+
+
+class TestABedrockDefaultOnResume:
+    """`/chat/resume` with no model on a community whose default is a Bedrock model.
+
+    Routing is real at both of its call sites (the image probe here, and the stream's own
+    `create_community_assistant`); only the model each provider factory would build is
+    replaced with a scripted one, so nothing calls a provider. The probe and the stream
+    have to agree on the model, and the request has to log its fallback once, not twice.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _fresh_settings(self):
+        from src.api.config import get_settings
+
+        get_settings.cache_clear()
+        yield
+        get_settings.cache_clear()
+
+    def _resume(self, client, monkeypatch, *, bedrock: str | None):
+        import base64
+
+        from langchain_core.messages import ToolMessage
+
+        from src.assistants.registry import registry
+        from tests.helpers.deployment import set_platform_keys
+        from tests.helpers.images import tiny_png
+
+        set_platform_keys(monkeypatch, anthropic="platform-anthropic-key", bedrock=bedrock)
+        config = registry.get(COMMUNITY).community_config
+        monkeypatch.setattr(config, "default_model", "openai.gpt-6-luna")
+
+        scripted = ScriptedChatModel(responses=[AIMessage(content="Here is the plot.")])
+        built: dict[str, list[str]] = {"anthropic": [], "bedrock": []}
+
+        def anthropic_factory(**kwargs):
+            built["anthropic"].append(kwargs["model"])
+            return scripted
+
+        def bedrock_factory(**kwargs):
+            built["bedrock"].append(kwargs["model"])
+            return scripted
+
+        monkeypatch.setattr("src.api.routers.community.create_anthropic_llm", anthropic_factory)
+        monkeypatch.setattr("src.api.routers.community.create_bedrock_llm", bedrock_factory)
+
+        _parked_session()
+        png = base64.b64encode(tiny_png(width=6, height=4)).decode()
+        image = {"mime": "image/png", "data_base64": png, "width": 6, "height": 4}
+        result = {"call_id": CALL_ID, "status": "ok", "summary": "plotted", "images": [image]}
+        response = client.post(
+            f"/{COMMUNITY}/chat/resume",
+            json=_body(result=result),
+            headers={"Origin": ALLOWED_ORIGIN},
+        )
+
+        assert response.status_code == 200
+        answered = next(
+            m
+            for m in scripted.seen_message_lists[0]
+            if isinstance(m, ToolMessage) and m.tool_call_id == CALL_ID
+        )
+        return built, answered.content, png
+
+    @staticmethod
+    def _fallback_records(caplog):
+        return [r for r in caplog.records if hasattr(r, "fallback")]
+
+    def test_without_a_bedrock_key_it_runs_claude_with_the_image_and_logs_once(
+        self, client: TestClient, monkeypatch, caplog
+    ) -> None:
+        import logging
+
+        caplog.set_level(logging.WARNING)
+
+        built, content, png = self._resume(client, monkeypatch, bedrock=None)
+
+        # The probe and the stream agree: Claude runs, so the image goes with it.
+        assert built == {"anthropic": ["claude-haiku-4-5"], "bedrock": []}
+        assert [b["source"]["data"] for b in content if b.get("type") == "image"] == [png]
+        (record,) = self._fallback_records(caplog)
+        assert record.levelno == logging.ERROR
+        assert record.community_id == COMMUNITY
+        assert record.model == "openai.gpt-6-luna"
+        assert record.fallback == "claude-haiku-4-5"
+
+    def test_with_a_bedrock_key_it_runs_the_default_without_the_image_and_logs_nothing(
+        self, client: TestClient, monkeypatch, caplog
+    ) -> None:
+        import logging
+
+        caplog.set_level(logging.WARNING)
+
+        built, content, png = self._resume(client, monkeypatch, bedrock="platform-bedrock-key")
+
+        assert built == {"anthropic": [], "bedrock": ["openai.gpt-6-luna"]}
+        assert not any(b.get("type") == "image" for b in content)
+        assert png not in json.dumps(content)
+        assert self._fallback_records(caplog) == []
