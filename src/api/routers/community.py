@@ -56,6 +56,7 @@ from src.api.tool_results import (
     build_unanswered_tool_message,
     scrub_stored_images,
 )
+from src.api.turn_outcome import ModelRuns, cut_off_reply
 from src.assistants import registry
 from src.assistants.community import CommunityAssistant
 from src.assistants.community import PageContext as AgentPageContext
@@ -277,6 +278,14 @@ class ChatResponse(BaseModel):
             "invisible to callers, detectable only in server logs."
         ),
     )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Things the caller should know about this reply. Today: the answer was cut "
+            "off because the model reached its output limit. The streamed endpoint "
+            "sends the same text as a `warning` event."
+        ),
+    )
 
 
 class AskResponse(BaseModel):
@@ -300,6 +309,14 @@ class AskResponse(BaseModel):
             "The model that actually answered, after resolving requested/default/"
             "alias/cost-guard substitution. Model substitution is otherwise "
             "invisible to callers, detectable only in server logs."
+        ),
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Things the caller should know about this answer. Today: it was cut off "
+            "because the model reached its output limit. The streamed endpoint sends "
+            "the same text as a `warning` event."
         ),
     )
 
@@ -1846,6 +1863,7 @@ class AgentResult:
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
     citations: list[CitationInfo] = field(default_factory=list)
+    model_runs: ModelRuns = field(default_factory=ModelRuns)
 
 
 def _build_answer_with_citations(content: str | list[Any]) -> tuple[str, list[CitationInfo]]:
@@ -1944,6 +1962,7 @@ def _extract_agent_result(result: dict) -> AgentResult:
         cache_read_tokens=usage.cache_read_tokens,
         cache_creation_tokens=usage.cache_creation_tokens,
         citations=citations,
+        model_runs=ModelRuns.from_messages(result.get("messages", [])),
     )
 
 
@@ -1971,6 +1990,43 @@ def _set_metrics_on_request(
         "langfuse_trace_id": awm.langfuse_trace_id,
         "stream": False,
     }
+
+
+def _check_unstreamed_reply(
+    http_request: Request,
+    community_id: str,
+    endpoint: str,
+    awm: AssistantWithMetrics,
+    agent_result: AgentResult,
+) -> list[str]:
+    """Report how a reply that was not streamed ended, before it is returned.
+
+    Logs once that the model stopped at its output limit, when it did (see
+    ``turn_outcome``).
+
+    Returns:
+        The warnings to put on the response: the answer was cut off, but there is one.
+
+    Raises:
+        HTTPException(502): The model stopped at its output limit before it wrote any
+            answer, so a 200 would carry nothing. The metrics row says why.
+    """
+    request_id = getattr(http_request.state, "request_id", None)
+    cut_off = cut_off_reply(
+        agent_result.model_runs,
+        reply_text=agent_result.response_content,
+        code_ran=False,
+        community_id=community_id,
+        model=awm.model,
+        endpoint=endpoint,
+        request_id=request_id,
+    )
+    if cut_off is None:
+        return []
+    if cut_off.event == "error":
+        http_request.state.metrics_agent_data["error_message"] = cut_off.summary
+        raise HTTPException(status_code=502, detail=cut_off.message)
+    return [cut_off.message]
 
 
 # ---------------------------------------------------------------------------
@@ -2191,6 +2247,9 @@ def create_community_router(community_id: str) -> APIRouter:
 
             ar = _extract_agent_result(result)
             _set_metrics_on_request(http_request, awm, ar)
+            warnings = _check_unstreamed_reply(
+                http_request, community_id, f"/{community_id}/ask", awm, ar
+            )
 
             return AskResponse(
                 answer=ar.response_content,
@@ -2198,6 +2257,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 citations=ar.citations,
                 request_id=getattr(http_request.state, "request_id", None),
                 model=awm.model,
+                warnings=warnings,
             )
 
         except HTTPException:
@@ -2307,16 +2367,22 @@ def create_community_router(community_id: str) -> APIRouter:
 
             ar = _extract_agent_result(result)
             _set_metrics_on_request(http_request, awm, ar)
+            warnings = _check_unstreamed_reply(
+                http_request, community_id, f"/{community_id}/chat", awm, ar
+            )
 
-            # Add assistant message with constraint validation
-            try:
-                session.add_assistant_message(ar.response_content)
-            except ValueError as e:
-                logger.error("Session limit exceeded: %s", e)
-                raise HTTPException(
-                    status_code=500,
-                    detail="Session limit exceeded. Please start a new conversation.",
-                ) from e
+            # Add assistant message with constraint validation. An empty reply is not a
+            # turn: the streamed path never stored one, and a provider rejects an empty
+            # assistant message on every later request of the session.
+            if ar.response_content:
+                try:
+                    session.add_assistant_message(ar.response_content)
+                except ValueError as e:
+                    logger.error("Session limit exceeded: %s", e)
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Session limit exceeded. Please start a new conversation.",
+                    ) from e
 
             return ChatResponse(
                 session_id=session.session_id,
@@ -2325,6 +2391,7 @@ def create_community_router(community_id: str) -> APIRouter:
                 citations=ar.citations,
                 request_id=getattr(http_request.state, "request_id", None),
                 model=awm.model,
+                warnings=warnings,
             )
 
         except ValueError as e:
@@ -3093,12 +3160,14 @@ def _log_streaming_metrics(
     output_tokens: int = 0,
     cache_read_tokens: int = 0,
     cache_creation_tokens: int = 0,
+    error_message: str | None = None,
 ) -> None:
     """Log metrics at the end of a streaming response.
 
     Called directly from streaming generators since middleware fires
     before streaming completes. Wrapped in try/except to never disrupt
-    the SSE stream on failure.
+    the SSE stream on failure. ``error_message`` says why a row that is an error
+    (status 400 and up) is one.
     """
     try:
         duration_ms = (time.monotonic() - start_time) * 1000
@@ -3141,6 +3210,7 @@ def _log_streaming_metrics(
             output_tokens=output_tokens if has_tokens else None,
             total_tokens=total_tokens if has_tokens else None,
             estimated_cost=cost,
+            error_message=error_message,
         )
         log_request(entry)
     except Exception:
@@ -3205,6 +3275,7 @@ async def _stream_ask_response(
     total_cache_creation_tokens = 0
     citation_assembler = CitationAssembler()
     announced_tool_calls: set[tuple[Any, ...]] = set()
+    model_runs = ModelRuns()
 
     # Per-request id (set by metrics middleware) so the widget can attach feedback.
     request_id = getattr(http_request.state, "request_id", None) if http_request else None
@@ -3261,6 +3332,7 @@ async def _stream_ask_response(
                 total_output_tokens += out
                 total_cache_read_tokens += cache_read
                 total_cache_creation_tokens += cache_creation
+                model_runs.note(event.get("data", {}).get("output"))
                 citation_assembler.finish_model_run()
 
             elif kind == "on_tool_start":
@@ -3285,6 +3357,39 @@ async def _stream_ask_response(
                 yield f"data: {json.dumps(sse_event)}\n\n"
 
         final_response = normalize_citation_markers(full_response, citation_assembler.marks)
+
+        # A reply the model stopped at its output limit raised nothing; say so (see
+        # turn_outcome). With no text to show it is an error and no `done` follows.
+        ask_endpoint = f"/{community_id}/ask"
+        cut_off = cut_off_reply(
+            model_runs,
+            reply_text=final_response,
+            code_ran=False,
+            community_id=community_id,
+            model=awm.model if awm else None,
+            endpoint=ask_endpoint,
+            request_id=request_id,
+        )
+        if cut_off is not None and cut_off.event == "error":
+            yield f"data: {json.dumps({'event': 'error', 'message': cut_off.message})}\n\n"
+            _log_streaming_metrics(
+                http_request=http_request,
+                community_id=community_id,
+                endpoint=ask_endpoint,
+                awm=awm,
+                tools_called=tools_called,
+                start_time=start_time,
+                status_code=502,
+                input_tokens=total_input_tokens,
+                output_tokens=total_output_tokens,
+                cache_read_tokens=total_cache_read_tokens,
+                cache_creation_tokens=total_cache_creation_tokens,
+                error_message=cut_off.summary,
+            )
+            return
+        if cut_off is not None:
+            yield f"data: {json.dumps({'event': 'warning', 'message': cut_off.message})}\n\n"
+
         sse_event = {
             "event": "done",
             "request_id": request_id,
@@ -3500,6 +3605,7 @@ async def _stream_chat_response(
     total_output_tokens = 0
     total_cache_read_tokens = 0
     total_cache_creation_tokens = 0
+    model_runs = ModelRuns()
 
     # The metrics middleware assigns a per-request UUID; expose it only on the
     # final `done` event (below) so the widget attaches it only to a reply that
@@ -3624,6 +3730,7 @@ async def _stream_chat_response(
                 total_output_tokens += out
                 total_cache_read_tokens += cache_read
                 total_cache_creation_tokens += cache_creation
+                model_runs.note(event.get("data", {}).get("output"))
                 citation_assembler.finish_model_run()
 
             elif kind == "on_tool_start":
@@ -3727,6 +3834,39 @@ async def _stream_chat_response(
             return
 
         final_response = normalize_citation_markers(full_response, citation_assembler.marks)
+
+        # A reply the model stopped at its output limit raised nothing; say so (see
+        # turn_outcome). With no text to show, and no code run earlier in the reply (the
+        # widget keeps a reply that ran code), it is an error and no `done` follows: a
+        # `done` with empty content is dropped by the widget, and the reader would see
+        # neither an answer nor a reason. Nothing is stored for it.
+        cut_off = cut_off_reply(
+            model_runs,
+            reply_text=final_response,
+            code_ran=browser_runs_answered > 0,
+            community_id=community_id,
+            model=awm.model if awm else None,
+            endpoint=metrics_endpoint,
+            request_id=request_id,
+        )
+        if cut_off is not None and cut_off.event == "error":
+            yield f"data: {json.dumps({'event': 'error', 'message': cut_off.message})}\n\n"
+            _log_streaming_metrics(
+                http_request=http_request,
+                community_id=community_id,
+                endpoint=metrics_endpoint,
+                awm=awm,
+                tools_called=tools_called,
+                start_time=start_time,
+                status_code=502,
+                input_tokens=total_input_tokens,
+                output_tokens=total_output_tokens,
+                cache_read_tokens=total_cache_read_tokens,
+                cache_creation_tokens=total_cache_creation_tokens,
+                error_message=cut_off.summary,
+            )
+            return
+
         if final_response:
             try:
                 session.add_assistant_message(final_response)
@@ -3736,6 +3876,9 @@ async def _stream_chat_response(
                 sse_event = {"event": "error", "message": str(e)}
                 yield f"data: {json.dumps(sse_event)}\n\n"
                 return
+
+        if cut_off is not None:
+            yield f"data: {json.dumps({'event': 'warning', 'message': cut_off.message})}\n\n"
 
         # Warn if conversation is approaching the token budget (87.5% of 80K).
         warning_threshold = int(DEFAULT_MAX_CONVERSATION_TOKENS * 0.875)
