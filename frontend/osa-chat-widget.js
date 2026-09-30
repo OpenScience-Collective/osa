@@ -185,12 +185,32 @@
     'openai.gpt-oss-120b'
   ];
 
-  // Models the backend no longer offers but still resolves (MODEL_ALIASES in
-  // src/core/services/anthropic_models.py). A saved setting naming one is moved to
-  // the model that replaced it, so the settings dropdown shows a real choice
-  // instead of "Custom". tests/test_frontend/test_widget_drift.py keeps this in
-  // step with the backend's aliases.
-  const RETIRED_MODEL_IDS = { 'claude-sonnet-5': 'claude-sonnet-5-5' };
+  // Every id the backend accepts for an offered model without offering it itself:
+  // MODEL_ALIASES in src/core/services/anthropic_models.py, which normalize_model
+  // applies to whatever a request names. A saved or typed setting naming one is moved
+  // to the offered model it stands for, so the settings dropdown shows a real choice
+  // instead of "Custom", and the rules for a key and a model (modelKeyProblem) are
+  // applied to the model the server will run. tests/test_frontend/test_widget_drift.py
+  // keeps this equal to the backend's table.
+  const RETIRED_MODEL_IDS = {
+    'anthropic/claude-haiku-4.5': 'claude-haiku-4-5',
+    'anthropic/claude-haiku-4-5': 'claude-haiku-4-5',
+    'claude-haiku-4.5': 'claude-haiku-4-5',
+    'claude-sonnet-5': 'claude-sonnet-5-5',
+    'claude-sonnet-5.5': 'claude-sonnet-5-5',
+    'anthropic/claude-sonnet-5.5': 'claude-sonnet-5-5',
+    'anthropic/claude-sonnet-5': 'claude-sonnet-5-5',
+    'anthropic/claude-sonnet-4.6': 'claude-sonnet-5-5',
+    'anthropic/claude-sonnet-4.5': 'claude-sonnet-5-5',
+    'claude-sonnet-4.5': 'claude-sonnet-5-5',
+    'us.openai.gpt-6-luna': 'openai.gpt-6-luna',
+    'openai.gpt-oss-120b-1:0': 'openai.gpt-oss-120b'
+  };
+
+  // The offered model an id stands for, or the id itself when it is no alias.
+  function canonicalModelId(model) {
+    return Object.prototype.hasOwnProperty.call(RETIRED_MODEL_IDS, model) ? RETIRED_MODEL_IDS[model] : model;
+  }
 
   // Models to show in the settings dropdown: the live offered_models list
   // from the community config endpoint, falling back to DEFAULT_MODELS
@@ -240,6 +260,41 @@
 
   function isValidApiKey(apiKey) {
     return ANTHROPIC_KEY_PATTERN.test(apiKey) || OPENROUTER_KEY_PATTERN.test(apiKey);
+  }
+
+  // Whether a model is the community's own default, aliases resolved: a request naming it
+  // is the same request as one naming nothing.
+  function isCommunityDefaultModel(model) {
+    return !!model && !!communityDefaultModel && canonicalModelId(model) === canonicalModelId(communityDefaultModel);
+  }
+
+  // Why the server would refuse a model sent with a key, in words for the reader, or null
+  // when it accepts the pair. One rule for what Settings saves and what it loads back, the
+  // server's (_select_model, _bedrock_choice and _route_request in
+  // src/api/routers/community.py), for a model the request NAMES:
+  //   - an OpenRouter key runs any valid model id;
+  //   - an Anthropic key runs the offered Claude models, and is refused for the ones only
+  //     the service's own key can run (403) and for any id that is not offered (400);
+  //   - with no key, only an offered model runs, or the community's own default.
+  // A request that names no model is never asked about its default: one the caller's key
+  // cannot run (Luna, on an Anthropic key) is swapped by the server for a Claude model.
+  // The "not offered" verdicts need the community's own offered list: until it has arrived
+  // the menu is only the widget's fallback, and a backend newer than the widget (a pinned
+  // embed) may offer more than that lists, so a model missing from it proves nothing yet.
+  function modelKeyProblem(model, apiKey) {
+    if (!model) return null;
+    const canonical = canonicalModelId(model);
+    const provider = inferKeyProvider(apiKey || '');
+    if (provider === 'openrouter') return null;
+    if (provider === 'anthropic' && (isPlatformOnly(canonical) || PLATFORM_ONLY_MODELS.includes(canonical))) {
+      return `${getModelLabel(canonical)} is provided by this service and cannot be used with your own Anthropic API key. Remove the key, or choose another model.`;
+    }
+    if (!(offeredModels && offeredModels.length)) return null;
+    if (getModelMenuOptions().some(m => m.value === canonical)) return null;
+    if (provider === 'anthropic') {
+      return `${model} is not one of the Claude models this service offers, which is all an Anthropic key can run. Choose an offered model, or use your own OpenRouter key (sk-or-v1-...) for other models.`;
+    }
+    return isCommunityDefaultModel(canonical) ? null : 'A custom model needs your own API key';
   }
 
   // Track which CONFIG keys were explicitly set by the embedder via setConfig,
@@ -4449,15 +4504,24 @@
       }
 
       // Validate model format if present
-      if (parsed.model && typeof parsed.model === 'string') {
-        if (!isValidModelId(parsed.model)) {
-          console.error('[OSA] Saved model has invalid format, ignoring');
-          queuePendingNotice('Your saved model selection is invalid and was ignored.');
+      if (parsed.model && !isValidModelId(parsed.model)) {
+        console.error('[OSA] Saved model has invalid format, ignoring');
+        queuePendingNotice('Your saved model selection is invalid and was ignored.');
+        parsed.model = null;
+      }
+      // An alias moves to the offered model it stands for, and the rules Settings applies
+      // when it saves are applied to what it saved before: an older widget, or a server
+      // that changed since, may have left a pair the server now refuses. Only the rules
+      // the widget's own lists can settle run here; the rest wait for the community's
+      // offered list (see reconcileSavedModel).
+      if (parsed.model) {
+        parsed.model = canonicalModelId(parsed.model);
+        const problem = modelKeyProblem(parsed.model, parsed.apiKey);
+        if (problem) {
+          console.error('[OSA] Saved model cannot be used with the saved key, ignoring:', problem);
+          queuePendingNotice(`Your saved model ${parsed.model} was reset to the community default. ${problem}`);
           parsed.model = null;
         }
-      }
-      if (parsed.model && Object.prototype.hasOwnProperty.call(RETIRED_MODEL_IDS, parsed.model)) {
-        parsed.model = RETIRED_MODEL_IDS[parsed.model];
       }
 
       userSettings = {
@@ -4471,6 +4535,21 @@
       queuePendingNotice('Cannot access browser storage. Settings will not persist.');
       userSettings = { apiKey: null, model: null, keyProvider: null };
     }
+  }
+
+  // The saved model against the rules that need the community's own offered list, run
+  // when that list arrives (loadUserSettings could not: see modelKeyProblem). A pair the
+  // server would refuse on every send is reset to the community default for this session,
+  // with the reason; what is stored is left for the reader to replace in Settings.
+  function reconcileSavedModel() {
+    if (!userSettings.model) return;
+    const problem = modelKeyProblem(userSettings.model, userSettings.apiKey);
+    if (!problem) return;
+    console.error('[OSA] Saved model cannot be used with the saved key, using the community default:', problem);
+    queuePendingNotice(`Your saved model ${userSettings.model} was reset to the community default. ${problem}`);
+    userSettings.model = null;
+    const container = document.querySelector('.osa-chat-widget');
+    if (container && isOpen) flushPendingNotice(container);
   }
 
   // Save user settings to localStorage
@@ -4706,6 +4785,7 @@
           label: m.label,
           platformOnly: m.platform_only === true
         }));
+        reconcileSavedModel();
       } else {
         console.warn(
           '[OSA] Community config response has no offered_models; falling back to DEFAULT_MODELS. ' +
@@ -6351,10 +6431,11 @@
       apiKeyInput.value = userSettings.apiKey || '';
     }
     if (modelSelect) {
-      // Check if current model is in the offered list
-      const isDefaultModel = userSettings.model === null || getModelMenuOptions().some(m => m.value === userSettings.model);
+      // Check if current model is in the offered list (an alias is the model it stands for)
+      const saved = userSettings.model ? canonicalModelId(userSettings.model) : null;
+      const isDefaultModel = saved === null || getModelMenuOptions().some(m => m.value === saved);
       if (isDefaultModel) {
-        modelSelect.value = userSettings.model || 'default';
+        modelSelect.value = saved || 'default';
         if (customModelInput) customModelInput.value = '';
       } else {
         // Custom model
@@ -6428,11 +6509,17 @@
         return;
       }
     } else if (modelSelection !== 'default') {
-      if (apiKey && inferKeyProvider(apiKey) === 'anthropic' && isPlatformOnly(modelSelection)) {
-        showError(container, `${getModelLabel(modelSelection)} is provided by this service and cannot be used with your own Anthropic API key. Remove the key, or choose another model.`);
-        return;
-      }
       model = modelSelection;
+    }
+
+    // The server's own rules for a model and a key (see modelKeyProblem), for a custom
+    // model and an offered one alike. Default names no model, so there is none to refuse:
+    // a community default that the reader's own Anthropic key cannot run (Luna, which only
+    // the service's key can) is swapped for a Claude model by the server, not refused.
+    const problem = modelKeyProblem(model, apiKey);
+    if (problem) {
+      showError(container, problem);
+      return;
     }
 
     // Update settings. keyProvider is always re-derived from the key
@@ -9109,6 +9196,8 @@
       waiting: () => launcherWaiting,
     };
     window.OSAChatWidget.__applyDoneEvent = applyDoneEvent;
+    // The settings in memory, as the next request would read them (a copy).
+    window.OSAChatWidget.__settings = { get: () => ({ ...userSettings }) };
     window.OSAChatWidget.__reveal = {
       fencedRanges,
       nextRevealEnd,
