@@ -1400,14 +1400,8 @@ def _select_model(
         HTTPException(403): On the OpenRouter path, if a custom model is
             requested without BYOK.
     """
-    settings = get_settings()
-
-    # Determine the default model for this community
-    default_model = settings.default_model
-    default_provider = settings.default_model_provider
-    if community_info.community_config and community_info.community_config.default_model:
-        default_model = community_info.community_config.default_model
-        default_provider = community_info.community_config.default_model_provider
+    # The community's default model, else the platform's
+    default_model, default_provider = _configured_default(community_info, get_settings())
 
     if provider in ("anthropic", "bedrock"):
         try:
@@ -1594,7 +1588,7 @@ def _bedrock_default_outcome(
     return "unavailable"
 
 
-def _configured_default(info: AssistantInfo, settings: Settings) -> tuple[str | None, str | None]:
+def _configured_default(info: AssistantInfo, settings: Settings) -> tuple[str, str | None]:
     """A community's default model and OpenRouter routing hint: its own, else the platform's."""
     if info.community_config and info.community_config.default_model:
         return (
