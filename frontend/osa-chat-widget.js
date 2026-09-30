@@ -185,18 +185,47 @@
     'openai.gpt-oss-120b'
   ];
 
-  // Models the backend no longer offers but still resolves (MODEL_ALIASES in
-  // src/core/services/anthropic_models.py). A saved setting naming one is moved to
-  // the model that replaced it, so the settings dropdown shows a real choice
-  // instead of "Custom". tests/test_frontend/test_widget_drift.py keeps this in
-  // step with the backend's aliases.
-  const RETIRED_MODEL_IDS = { 'claude-sonnet-5': 'claude-sonnet-5-5' };
+  // Every id the backend accepts for an offered model without offering it itself:
+  // MODEL_ALIASES in src/core/services/anthropic_models.py, which normalize_model
+  // applies to whatever a request names. A saved or typed setting naming one is moved
+  // to the offered model it stands for, so the settings dropdown shows a real choice
+  // instead of "Custom", and the rules for a key and a model (modelKeyProblem) are
+  // applied to the model the server will run. tests/test_frontend/test_widget_drift.py
+  // keeps this equal to the backend's table.
+  const RETIRED_MODEL_IDS = {
+    'anthropic/claude-haiku-4.5': 'claude-haiku-4-5',
+    'anthropic/claude-haiku-4-5': 'claude-haiku-4-5',
+    'claude-haiku-4.5': 'claude-haiku-4-5',
+    'claude-sonnet-5': 'claude-sonnet-5-5',
+    'claude-sonnet-5.5': 'claude-sonnet-5-5',
+    'anthropic/claude-sonnet-5.5': 'claude-sonnet-5-5',
+    'anthropic/claude-sonnet-5': 'claude-sonnet-5-5',
+    'anthropic/claude-sonnet-4.6': 'claude-sonnet-5-5',
+    'anthropic/claude-sonnet-4.5': 'claude-sonnet-5-5',
+    'claude-sonnet-4.5': 'claude-sonnet-5-5',
+    'us.openai.gpt-6-luna': 'openai.gpt-6-luna',
+    'openai.gpt-oss-120b-1:0': 'openai.gpt-oss-120b'
+  };
+
+  // The offered model an id stands for, or the id itself when it is no alias.
+  function canonicalModelId(model) {
+    return Object.prototype.hasOwnProperty.call(RETIRED_MODEL_IDS, model) ? RETIRED_MODEL_IDS[model] : model;
+  }
 
   // Models to show in the settings dropdown: the live offered_models list
   // from the community config endpoint, falling back to DEFAULT_MODELS
   // until that response arrives.
   function getModelMenuOptions() {
     return (offeredModels && offeredModels.length) ? offeredModels : DEFAULT_MODELS;
+  }
+
+  // The offered models as the Settings menu's options. The community's own default is
+  // the menu's Default entry, so it is left out here.
+  function modelOptionsHtml() {
+    return getModelMenuOptions()
+      .filter(m => !isCommunityDefaultModel(m.value))
+      .map(m => `<option value="${escapeHtml(m.value)}">${escapeHtml(m.label)}</option>`)
+      .join('');
   }
 
   function isPlatformOnly(modelId) {
@@ -240,6 +269,41 @@
 
   function isValidApiKey(apiKey) {
     return ANTHROPIC_KEY_PATTERN.test(apiKey) || OPENROUTER_KEY_PATTERN.test(apiKey);
+  }
+
+  // Whether a model is the community's own default, aliases resolved: a request naming it
+  // is the same request as one naming nothing.
+  function isCommunityDefaultModel(model) {
+    return !!model && !!communityDefaultModel && canonicalModelId(model) === canonicalModelId(communityDefaultModel);
+  }
+
+  // Why the server would refuse a model sent with a key, in words for the reader, or null
+  // when it accepts the pair. One rule for what Settings saves and what it loads back, the
+  // server's (_select_model, _bedrock_choice and _route_request in
+  // src/api/routers/community.py), for a model the request NAMES:
+  //   - an OpenRouter key runs any valid model id;
+  //   - an Anthropic key runs the offered Claude models, and is refused for the ones only
+  //     the service's own key can run (403) and for any id that is not offered (400);
+  //   - with no key, only an offered model runs, or the community's own default.
+  // A request that names no model is never asked about its default: one the caller's key
+  // cannot run (Luna, on an Anthropic key) is swapped by the server for a Claude model.
+  // The "not offered" verdicts need the community's own offered list: until it has arrived
+  // the menu is only the widget's fallback, and a backend newer than the widget (a pinned
+  // embed) may offer more than that lists, so a model missing from it proves nothing yet.
+  function modelKeyProblem(model, apiKey) {
+    if (!model) return null;
+    const canonical = canonicalModelId(model);
+    const provider = inferKeyProvider(apiKey || '');
+    if (provider === 'openrouter') return null;
+    if (provider === 'anthropic' && (isPlatformOnly(canonical) || PLATFORM_ONLY_MODELS.includes(canonical))) {
+      return `${getModelLabel(canonical)} is provided by this service and cannot be used with your own Anthropic API key. Remove the key, or choose another model.`;
+    }
+    if (!(offeredModels && offeredModels.length)) return null;
+    if (getModelMenuOptions().some(m => m.value === canonical)) return null;
+    if (provider === 'anthropic') {
+      return `${model} is not one of the Claude models this service offers, which is all an Anthropic key can run. Choose an offered model, or use your own OpenRouter key (sk-or-v1-...) for other models.`;
+    }
+    return isCommunityDefaultModel(canonical) ? null : 'A custom model needs your own API key';
   }
 
   // Track which CONFIG keys were explicitly set by the embedder via setConfig,
@@ -2058,10 +2122,12 @@
       height: 6px;
       border-radius: 50%;
       background: var(--osa-text-light);
-      animation: osa-pulse 1.4s infinite ease-in-out;
+      animation: osa-activity-pulse 1.4s infinite ease-in-out;
     }
 
-    @keyframes osa-pulse {
+    /* Not osa-pulse: keyframes of one name replace each other, and that one is the header
+       status dot's. */
+    @keyframes osa-activity-pulse {
       0%, 100% { opacity: 0.25; }
       50% { opacity: 1; }
     }
@@ -3848,7 +3914,7 @@
     return 'osa-code-' + (++codeBlockId);
   }
 
-  // Render inline markdown (bold, italic, links, plain URLs, citation markers)
+  // Render inline markdown (code, bold, italic, links, plain URLs, citation markers)
   // citationsByMarker: optional {"1": {source, title, cited_text}, ...} map.
   // When provided, a bare "[1]" (not followed by "(", so it never collides
   // with a real markdown link) whose number is a known marker renders as a
@@ -3856,13 +3922,32 @@
   function renderInlineMarkdown(text, citationsByMarker) {
     if (!text) return '';
 
+    // Code spans are lifted out before anything else is matched, so what is inside
+    // one is never read as markup and an italic, bold or link match that starts
+    // earlier in the run cannot swallow a later span: "Use *.set or `*.fdt` files"
+    // has one span and no emphasis. Each span stays in the run as a placeholder, is
+    // put back as <code> where the run's text is output, and as its own backticks
+    // where the run's text is an address. Code inside bold, italic or a link's
+    // text therefore renders too. The placeholder's brackets are private-use
+    // characters; any already in the text are replaced first, so text cannot
+    // forge a placeholder.
+    const codeSpans = [];
+    const spanOpen = String.fromCharCode(0xE000);
+    const spanClose = String.fromCharCode(0xE001);
+    const placeholder = new RegExp(spanOpen + '(\\d+)' + spanClose, 'g');
+    let remaining = String(text)
+      .split(spanOpen).join(String.fromCharCode(0xFFFD))
+      .split(spanClose).join(String.fromCharCode(0xFFFD))
+      .replace(/`([^`]+)`/g, (match, code) => {
+        codeSpans.push(code);
+        return spanOpen + (codeSpans.length - 1) + spanClose;
+      });
+    const withRawCode = (raw) => raw.replace(placeholder, (match, index) => '`' + codeSpans[index] + '`');
+    const escapeRun = (raw) => escapeHtml(raw).replace(placeholder, (match, index) => '<code>' + escapeHtml(codeSpans[index]) + '</code>');
+
     let result = '';
-    let remaining = text;
 
     while (remaining.length > 0) {
-      // Inline code is matched here (not only in markdownToHtml's paragraph
-      // path) so list items, headings and table cells render it too.
-      const codeMatch = remaining.match(/`([^`]+)`/);
       const boldMatch = remaining.match(/\*\*(.+?)\*\*/);
       const italicMatch = remaining.match(/(?<!\*)\*([^*]+)\*(?!\*)/);
       const linkMatch = remaining.match(/\[([^\]]+)\]\(([^)]+)\)/);
@@ -3882,49 +3967,45 @@
         }
       }
 
-      const codeIndex = codeMatch ? codeMatch.index : -1;
       const boldIndex = boldMatch ? remaining.indexOf(boldMatch[0]) : -1;
       const italicIndex = italicMatch ? remaining.indexOf(italicMatch[0]) : -1;
       const linkIndex = linkMatch ? remaining.indexOf(linkMatch[0]) : -1;
       const urlIndex = urlMatch ? remaining.indexOf(urlMatch[0]) : -1;
       const citationIndex = citationMatch ? citationMatch.index : -1;
 
-      const indices = [codeIndex, boldIndex, italicIndex, linkIndex, urlIndex, citationIndex].filter(i => i !== -1);
+      const indices = [boldIndex, italicIndex, linkIndex, urlIndex, citationIndex].filter(i => i !== -1);
       if (indices.length === 0) {
-        result += escapeHtml(remaining);
+        result += escapeRun(remaining);
         break;
       }
       const minIndex = Math.min(...indices);
 
-      if (minIndex === codeIndex && codeMatch) {
-        // Code content is escaped and never parsed for further markup.
-        if (codeIndex > 0) result += escapeHtml(remaining.substring(0, codeIndex));
-        result += '<code>' + escapeHtml(codeMatch[1]) + '</code>';
-        remaining = remaining.substring(codeIndex + codeMatch[0].length);
-      } else if (minIndex === boldIndex && boldMatch) {
-        if (boldIndex > 0) result += escapeHtml(remaining.substring(0, boldIndex));
-        result += '<strong>' + escapeHtml(boldMatch[1]) + '</strong>';
+      if (minIndex === boldIndex && boldMatch) {
+        if (boldIndex > 0) result += escapeRun(remaining.substring(0, boldIndex));
+        result += '<strong>' + escapeRun(boldMatch[1]) + '</strong>';
         remaining = remaining.substring(boldIndex + boldMatch[0].length);
       } else if (minIndex === italicIndex && italicMatch) {
-        if (italicIndex > 0) result += escapeHtml(remaining.substring(0, italicIndex));
-        result += '<em>' + escapeHtml(italicMatch[1]) + '</em>';
+        if (italicIndex > 0) result += escapeRun(remaining.substring(0, italicIndex));
+        result += '<em>' + escapeRun(italicMatch[1]) + '</em>';
         remaining = remaining.substring(italicIndex + italicMatch[0].length);
       } else if (minIndex === linkIndex && linkMatch) {
-        if (linkIndex > 0) result += escapeHtml(remaining.substring(0, linkIndex));
+        if (linkIndex > 0) result += escapeRun(remaining.substring(0, linkIndex));
         // Validate URL to prevent javascript: XSS
-        if (isSafeUrl(linkMatch[2])) {
-          result += '<a href="' + escapeHtml(linkMatch[2]) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(linkMatch[1]) + '</a>';
+        const linkUrl = withRawCode(linkMatch[2]);
+        if (isSafeUrl(linkUrl)) {
+          result += '<a href="' + escapeHtml(linkUrl) + '" target="_blank" rel="noopener noreferrer">' + escapeRun(linkMatch[1]) + '</a>';
         } else {
-          result += escapeHtml(linkMatch[1]); // Just show text, no link
+          result += escapeRun(linkMatch[1]); // Just show text, no link
         }
         remaining = remaining.substring(linkIndex + linkMatch[0].length);
       } else if (minIndex === urlIndex && urlMatch) {
-        if (urlIndex > 0) result += escapeHtml(remaining.substring(0, urlIndex));
+        if (urlIndex > 0) result += escapeRun(remaining.substring(0, urlIndex));
         // Plain URLs are already validated by regex to start with https?://
-        result += '<a href="' + escapeHtml(urlMatch[0]) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(urlMatch[0]) + '</a>';
+        const plainUrl = withRawCode(urlMatch[0]);
+        result += '<a href="' + escapeHtml(plainUrl) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(plainUrl) + '</a>';
         remaining = remaining.substring(urlIndex + urlMatch[0].length);
       } else if (minIndex === citationIndex && citationMatch) {
-        if (citationIndex > 0) result += escapeHtml(remaining.substring(0, citationIndex));
+        if (citationIndex > 0) result += escapeRun(remaining.substring(0, citationIndex));
         const citation = citationsByMarker[citationMatch[1]];
         const label = escapeHtml(citationMatch[1]);
         if (isSafeUrl(citation.source)) {
@@ -4432,15 +4513,24 @@
       }
 
       // Validate model format if present
-      if (parsed.model && typeof parsed.model === 'string') {
-        if (!isValidModelId(parsed.model)) {
-          console.error('[OSA] Saved model has invalid format, ignoring');
-          queuePendingNotice('Your saved model selection is invalid and was ignored.');
+      if (parsed.model && !isValidModelId(parsed.model)) {
+        console.error('[OSA] Saved model has invalid format, ignoring');
+        queuePendingNotice('Your saved model selection is invalid and was ignored.');
+        parsed.model = null;
+      }
+      // An alias moves to the offered model it stands for, and the rules Settings applies
+      // when it saves are applied to what it saved before: an older widget, or a server
+      // that changed since, may have left a pair the server now refuses. Only the rules
+      // the widget's own lists can settle run here; the rest wait for the community's
+      // offered list (see reconcileSavedModel).
+      if (parsed.model) {
+        parsed.model = canonicalModelId(parsed.model);
+        const problem = modelKeyProblem(parsed.model, parsed.apiKey);
+        if (problem) {
+          console.error('[OSA] Saved model cannot be used with the saved key, ignoring:', problem);
+          queuePendingNotice(`Your saved model ${parsed.model} was reset to the community default. ${problem}`);
           parsed.model = null;
         }
-      }
-      if (parsed.model && Object.prototype.hasOwnProperty.call(RETIRED_MODEL_IDS, parsed.model)) {
-        parsed.model = RETIRED_MODEL_IDS[parsed.model];
       }
 
       userSettings = {
@@ -4454,6 +4544,21 @@
       queuePendingNotice('Cannot access browser storage. Settings will not persist.');
       userSettings = { apiKey: null, model: null, keyProvider: null };
     }
+  }
+
+  // The saved model against the rules that need the community's own offered list, run
+  // when that list arrives (loadUserSettings could not: see modelKeyProblem). A pair the
+  // server would refuse on every send is reset to the community default for this session,
+  // with the reason; what is stored is left for the reader to replace in Settings.
+  function reconcileSavedModel() {
+    if (!userSettings.model) return;
+    const problem = modelKeyProblem(userSettings.model, userSettings.apiKey);
+    if (!problem) return;
+    console.error('[OSA] Saved model cannot be used with the saved key, using the community default:', problem);
+    queuePendingNotice(`Your saved model ${userSettings.model} was reset to the community default. ${problem}`);
+    userSettings.model = null;
+    const container = document.querySelector('.osa-chat-widget');
+    if (container && isOpen) flushPendingNotice(container);
   }
 
   // Save user settings to localStorage
@@ -4689,6 +4794,7 @@
           label: m.label,
           platformOnly: m.platform_only === true
         }));
+        reconcileSavedModel();
       } else {
         console.warn(
           '[OSA] Community config response has no offered_models; falling back to DEFAULT_MODELS. ' +
@@ -6013,7 +6119,13 @@
       : [hpc, notebook, chat];
     const inPlace = [...capsule.children].filter((child) => order.includes(child));
     if (inPlace.every((child, i) => child === order[i])) return;
+    // Moving a node takes keyboard focus from it, and a resize across 600px is not the
+    // reader's doing: whichever circle had focus gets it back.
+    const focused = container.ownerDocument.activeElement;
     for (const child of order) capsule.appendChild(child);
+    if (focused && order.some((child) => child.contains(focused)) && container.ownerDocument.activeElement !== focused) {
+      focused.focus({ preventScroll: true });
+    }
   }
 
   // Put the launcher's geometry on the widget (#553): the custom properties the
@@ -6231,7 +6343,9 @@
   // The model choice comes first in Settings. A custom model, and the reader's own API key
   // that pays for it, belong to "Custom", so those two fields appear only when Custom is
   // chosen. A key that is already filled in stays in view so the reader can see and
-  // remove it, whatever model is selected.
+  // remove it, whatever model is selected, and so does a key field that has keyboard
+  // focus: emptying it must not hide it, which would drop focus to the page. It is put
+  // away once focus leaves it (see watchApiKeyFocus).
   function syncCustomFields(container) {
     const modelSelect = container.querySelector('#osa-settings-model');
     const customModelField = container.querySelector('#osa-settings-custom-model-field');
@@ -6239,9 +6353,31 @@
     const apiKeyInput = container.querySelector('#osa-settings-api-key');
     const isCustom = !!modelSelect && modelSelect.value === 'custom';
     const hasKey = !!apiKeyInput && apiKeyInput.value.trim() !== '';
+    const hasFocus = !!apiKeyInput && apiKeyInput.ownerDocument.activeElement === apiKeyInput;
     if (customModelField) customModelField.style.display = isCustom ? 'block' : 'none';
-    if (apiKeyField) apiKeyField.style.display = (isCustom || hasKey) ? 'block' : 'none';
+    if (apiKeyField) apiKeyField.style.display = (isCustom || hasKey || hasFocus) ? 'block' : 'none';
     syncPlatformOnlyOptions(container);
+  }
+
+  // Puts an emptied key field away when focus leaves it. Not while a pointer press is
+  // in progress in the widget: the dialog is centred, so hiding a field moves the Save
+  // button, and a click that began on it would end somewhere else and be lost. Safari
+  // and Firefox on a Mac do not focus a button a press lands on, so the press itself is
+  // what is watched, not where focus went. The field settles after that click instead.
+  function watchApiKeyFocus(container) {
+    const apiKeyInput = container.querySelector('#osa-settings-api-key');
+    if (!apiKeyInput) return;
+    let pressed = false;
+    container.addEventListener('pointerdown', () => { pressed = true; }, true);
+    container.addEventListener('pointerup', () => { pressed = false; }, true);
+    container.addEventListener('pointercancel', () => { pressed = false; }, true);
+    apiKeyInput.addEventListener('blur', () => {
+      if (!pressed) {
+        syncCustomFields(container);
+        return;
+      }
+      container.addEventListener('click', () => syncCustomFields(container), { once: true });
+    });
   }
 
   // With the reader's own Anthropic key in the field, the models only the service's key
@@ -6280,11 +6416,7 @@
     // config that loads after the widget's initial render is still
     // reflected the next time settings are opened.
     if (modelSelect) {
-      const options = getModelMenuOptions()
-        .filter(m => m.value !== communityDefaultModel)
-        .map(m => `<option value="${escapeHtml(m.value)}">${escapeHtml(m.label)}</option>`)
-        .join('');
-      modelSelect.innerHTML = `<option value="default">Default (Community Setting)</option>${options}<option value="custom">Custom</option>`;
+      modelSelect.innerHTML = `<option value="default">Default (Community Setting)</option>${modelOptionsHtml()}<option value="custom">Custom</option>`;
     }
 
     // Update default option label with community default model
@@ -6310,10 +6442,15 @@
       apiKeyInput.value = userSettings.apiKey || '';
     }
     if (modelSelect) {
-      // Check if current model is in the offered list
-      const isDefaultModel = userSettings.model === null || getModelMenuOptions().some(m => m.value === userSettings.model);
-      if (isDefaultModel) {
-        modelSelect.value = userSettings.model || 'default';
+      // The community's own default is the menu's Default entry, not one of its offered
+      // models (see modelOptionsHtml), so a saved model that is the default, or an alias of
+      // it, selects Default rather than an option that is not there.
+      const saved = userSettings.model ? canonicalModelId(userSettings.model) : null;
+      if (!saved || isCommunityDefaultModel(saved)) {
+        modelSelect.value = 'default';
+        if (customModelInput) customModelInput.value = '';
+      } else if (getModelMenuOptions().some(m => m.value === saved)) {
+        modelSelect.value = saved;
         if (customModelInput) customModelInput.value = '';
       } else {
         // Custom model
@@ -6387,11 +6524,17 @@
         return;
       }
     } else if (modelSelection !== 'default') {
-      if (apiKey && inferKeyProvider(apiKey) === 'anthropic' && isPlatformOnly(modelSelection)) {
-        showError(container, `${getModelLabel(modelSelection)} is provided by this service and cannot be used with your own Anthropic API key. Remove the key, or choose another model.`);
-        return;
-      }
       model = modelSelection;
+    }
+
+    // The server's own rules for a model and a key (see modelKeyProblem), for a custom
+    // model and an offered one alike. Default names no model, so there is none to refuse:
+    // a community default that the reader's own Anthropic key cannot run (Luna, which only
+    // the service's key can) is swapped for a Claude model by the server, not refused.
+    const problem = modelKeyProblem(model, apiKey);
+    if (problem) {
+      showError(container, problem);
+      return;
     }
 
     // Update settings. keyProvider is always re-derived from the key
@@ -6835,7 +6978,7 @@
               </label>
               <select id="osa-settings-model" class="osa-settings-select">
                 <option value="default">Default (Community Setting)</option>
-                ${getModelMenuOptions().filter(m => m.value !== communityDefaultModel).map(m => `<option value="${escapeHtml(m.value)}">${escapeHtml(m.label)}</option>`).join('')}
+                ${modelOptionsHtml()}
                 <option value="custom">Custom</option>
               </select>
               <span class="osa-settings-hint" id="osa-settings-model-hint">
@@ -8003,8 +8146,13 @@
       },
     });
     // A reply that becomes hidden (a tab put away, a page being left) is not being read:
-    // show the rest now, so it is on the page, and saved, when the reader comes back.
-    // (One that is already hidden is not paced at all: see `paced` above.)
+    // show the rest now, so it is on the page when the reader comes back. Nothing is saved
+    // here. A reply whose done event has already arrived is held only by the wait for the
+    // reveal to catch up (settleReveal); showing the rest releases that wait, so the done
+    // handler saves it at once instead of after the drain's timer, which a page being left
+    // may not live to run. A reply still streaming is saved when its done arrives, and is
+    // lost with the page if the page goes first. (One that is already hidden is not paced
+    // at all: see `paced` above.)
     const onLeave = (event) => {
       if (event.type === 'visibilitychange' && !document.hidden) return;
       reveal.flush();
@@ -8140,8 +8288,16 @@
               sessionId = event.session_id;
             }
             // Let the reveal finish what the reader is still reading before the
-            // backend's canonical text (below) replaces it.
-            await settleReveal();
+            // backend's canonical text (below) replaces it. A redraw that failed
+            // on the way (a page that was torn down, say) is the page's failure,
+            // not the reply's: the reply is complete, so its text and request id
+            // are applied and saved first, and the failure is raised after them.
+            let pageFailure = null;
+            try {
+              await settleReveal();
+            } catch (revealError) {
+              pageFailure = revealError;
+            }
             // The backend's done.content is canonical and replaces any raw
             // citation boundaries accumulated while streaming.
             const finalContent = applyDoneEvent(
@@ -8154,7 +8310,11 @@
               compose(accumulatedContent),
             );
             accumulatedContent = finalContent;
-            renderMessages(container, { follow: false });
+            try {
+              renderMessages(container, { follow: false });
+            } catch (renderError) {
+              pageFailure = pageFailure || renderError;
+            }
             try {
               saveHistory();
             } catch (saveError) {
@@ -8162,6 +8322,7 @@
               showError(container, 'Warning: Unable to save conversation');
             }
             updateStatusDisplay(true);
+            if (pageFailure) throw pageFailure;
             return null; // Successfully completed
           } else if (event.event === 'tool_request') {
             // The run ended on a call for this browser to answer. No `done`
@@ -8245,6 +8406,11 @@
       console.error('[OSA] Streaming error:', error);
       reveal.stop();
       clearActivity();
+
+      // The reply's done event was applied and saved (see there), and only the page's
+      // own redraw failed after it: the text is complete, so it gets no note saying
+      // the stream was cut.
+      if (receivedDoneEvent) throw error;
 
       // Keep partial content if we have any, including what earlier runs of
       // this reply wrote and any code they ran.
@@ -8909,6 +9075,7 @@
     // Show/hide the custom model and API key fields based on selection
     modelSelect?.addEventListener('change', () => syncCustomFields(container));
     container.querySelector('#osa-settings-api-key')?.addEventListener('input', () => syncCustomFields(container));
+    watchApiKeyFocus(container);
 
     // Check backend status
     checkBackendStatus();
@@ -9067,6 +9234,8 @@
       waiting: () => launcherWaiting,
     };
     window.OSAChatWidget.__applyDoneEvent = applyDoneEvent;
+    // The settings in memory, as the next request would read them (a copy).
+    window.OSAChatWidget.__settings = { get: () => ({ ...userSettings }) };
     window.OSAChatWidget.__reveal = {
       fencedRanges,
       nextRevealEnd,

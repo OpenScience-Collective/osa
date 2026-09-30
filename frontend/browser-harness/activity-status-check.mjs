@@ -626,11 +626,26 @@ function checkMainRun(run) {
   const analyzingFrames = frames.filter((f) => f.loading === 'Analyzing results...');
   const loadingLabels = sequence(frames.filter((f) => !firstText || f.at < firstText.at), 'loading');
   const lineLabels = sequence(frames, 'line');
+  // How late the slowest frame came, beyond an ordinary 17 ms one: nothing on a quiet
+  // machine, and what a busy runner adds to a time that is held to a bound below.
+  const worstGap = frames.slice(1).reduce((worst, f, i) => Math.max(worst, f.at - frames[i].at), 0);
+  const stall = Math.min(2000, Math.max(0, Math.round(worstGap - 17)));
   // Measured from the send, when the reader's wait began.
   const elapsedSeen = frames.filter((f) => f.loadingElapsed).map((f) => [f.at, f.loadingElapsed]);
   const earliestElapsed = elapsedSeen.length ? Math.min(...elapsedSeen.map(([t]) => t)) : null;
   const searchElapsed = [...new Set(searchFrames.map((f) => f.loadingElapsed).filter(Boolean))];
   const analyzingElapsed = [...new Set(analyzingFrames.map((f) => f.loadingElapsed).filter(Boolean))];
+  // The same, as whole seconds. Which seconds depends on how long the stream's own sleeps
+  // really took, so they are held to the clock and to each other, not to fixed digits.
+  const wholeSeconds = (shown) => shown.map((text) => Number.parseInt(text, 10));
+  const searchSeconds = wholeSeconds(searchElapsed);
+  const analyzingSeconds = wholeSeconds(analyzingElapsed);
+  // A wait that is shown is the time since the send, to the second: never ahead of it, and
+  // no more than the tick that redraws it (a second) and this run's slowest frame behind.
+  const untrue = frames.filter((f) => f.loadingElapsed && !(
+    Number.parseInt(f.loadingElapsed, 10) <= f.at / 1000 + 0.1
+    && f.at / 1000 - Number.parseInt(f.loadingElapsed, 10) < 2 + stall / 1000
+  ));
   const lineElapsed = frames.filter((f) => f.lineElapsed).length;
   console.log(JSON.stringify({
     frames: frames.length,
@@ -667,16 +682,20 @@ function checkMainRun(run) {
   const order = ['Thinking...', 'Searching datasets...', 'Analyzing results...'];
   report(JSON.stringify(loadingLabels.filter((l) => l !== TITLE)) === JSON.stringify(order) && [TITLE, 'Thinking...'].includes(loadingLabels[0]),
     `before any text the loading label read ${JSON.stringify(loadingLabels)}`);
-  report(searchFrom - arrived('tool_call') < 250,
-    `the search was named within a moment of its tool_call (${Math.round(searchFrom - arrived('tool_call'))} ms)`);
+  report(searchFrom - arrived('tool_call') < 250 + stall,
+    `the search was named within a moment of its tool_call (${Math.round(searchFrom - arrived('tool_call'))} ms, under ${250 + stall})`);
   report(JSON.stringify(lineLabels) === JSON.stringify(['Looking up documentation...', 'Analyzing results...']),
     `once the reply had text, the second tool was a line under it: ${JSON.stringify(lineLabels)}`);
 
   // The elapsed time: the reader's whole wait, from the send
-  report(searchElapsed.some((e) => /^[56] s$/.test(e)), `the wait showed its length during the search (${JSON.stringify(searchElapsed)})`);
+  report(searchSeconds.length > 0 && Math.max(...searchSeconds) >= 5,
+    `the wait showed its length during the search, once it passed five seconds (${JSON.stringify(searchElapsed)})`);
   report(earliestElapsed !== null && earliestElapsed >= 4900, `and not before five seconds after the send (first at ${earliestElapsed && Math.round(earliestElapsed)} ms)`);
-  report(analyzingElapsed.some((e) => /^[78] s$/.test(e)),
-    `the new label "Analyzing results..." went on counting the same wait (${JSON.stringify(analyzingElapsed)})`);
+  report(untrue.length === 0,
+    `and every time shown was the real time since the send, to the second (${untrue.length} of ${elapsedSeen.length} frames were not)`,
+    untrue.slice(0, 3).map((f) => [Math.round(f.at), f.loadingElapsed]));
+  report(analyzingSeconds.length > 0 && searchSeconds.length > 0 && Math.min(...analyzingSeconds) >= Math.max(...searchSeconds),
+    `the new label "Analyzing results..." went on counting the same wait, never back to a smaller number (${JSON.stringify(analyzingElapsed)} after ${JSON.stringify(searchElapsed)})`);
   report(lineElapsed === 0,
     `the reply's text began a new wait, and the mid-reply waits were short, so their lines showed no time (${lineElapsed} frames did)`);
 

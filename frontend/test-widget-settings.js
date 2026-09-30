@@ -74,18 +74,19 @@ const CONFIG = {
 };
 
 // A fetch fixture for one page load, remembering whether the community config was served.
-function makeConfigFetch() {
+function makeConfigFetch(config = CONFIG) {
   const state = { served: false };
   const fetch = async (url) => {
     if (String(url).endsWith('/health')) return new Response(JSON.stringify({ status: 'healthy' }));
     state.served = true;
-    return new Response(JSON.stringify(CONFIG), { status: 200, headers: { 'content-type': 'application/json' } });
+    return new Response(JSON.stringify(config), { status: 200, headers: { 'content-type': 'application/json' } });
   };
   return { fetch, state };
 }
 
-// A fresh page load; `saved` seeds the reader's saved settings.
-function loadWidget({ saved = null } = {}) {
+// A fresh page load; `saved` seeds the reader's saved settings, `config` is what the
+// community config endpoint answers.
+function loadWidget({ saved = null, config = CONFIG } = {}) {
   const window = new Window({
     url: 'http://localhost/page',
     settings: { disableJavaScriptFileLoading: true, disableCSSFileLoading: true },
@@ -96,7 +97,7 @@ function loadWidget({ saved = null } = {}) {
   script.setAttribute('src', 'http://localhost/static/osa-chat-widget.js');
   script.setAttribute('data-no-auto-init', '');
   Object.defineProperty(window.document, 'currentScript', { value: script, configurable: true });
-  const { fetch, state } = makeConfigFetch();
+  const { fetch, state } = makeConfigFetch(config);
   window.fetch = fetch;
   // eslint-disable-next-line no-new-func
   const run = new Function(
@@ -122,7 +123,13 @@ async function openSettingsDialog(options) {
   q('.osa-chat-button').dispatchEvent(new window.Event('click', { bubbles: true }));
   q('.osa-settings-btn-open').dispatchEvent(new window.Event('click', { bubbles: true }));
   await waitUntil(() => q('.osa-settings-overlay').classList.contains('open'), 'the Settings dialog opens');
-  return { window, q, saved: () => JSON.parse(window.localStorage.getItem(SETTINGS_KEY) || 'null') };
+  return {
+    window,
+    q,
+    saved: () => JSON.parse(window.localStorage.getItem(SETTINGS_KEY) || 'null'),
+    // The settings the next request would read, in memory.
+    inMemory: () => window.OSAChatWidget.__settings.get(),
+  };
 }
 
 const shown = (q, selector) => q(selector).style.display !== 'none';
@@ -165,6 +172,44 @@ console.log('\na key the reader already saved stays in view, so it can be seen a
   assert(shown(q, '#osa-settings-api-key-field'), 'the saved key is shown with the default model');
   assertEqual(q('#osa-settings-api-key').value, ANTHROPIC_KEY, 'and filled in');
   assert(!shown(q, '#osa-settings-custom-model-field'), 'the model name stays hidden');
+}
+
+console.log('\nthe key field stays in view while it has focus, and is put away once focus leaves it');
+{
+  // In a browser, hiding the focused field drops focus to the page, so a reader who
+  // empties the field with the keyboard would have to tab in from the top again.
+  const { window, q } = await openSettingsDialog({ saved: { apiKey: ANTHROPIC_KEY, model: null } });
+  const input = q('#osa-settings-api-key');
+  input.focus();
+  assert(window.document.activeElement === input, 'the key field has focus');
+  input.value = ANTHROPIC_KEY.slice(0, -1);
+  input.dispatchEvent(new window.Event('input', { bubbles: true }));
+  input.value = '';
+  input.dispatchEvent(new window.Event('input', { bubbles: true }));
+  assert(shown(q, '#osa-settings-api-key-field'), 'emptied while focused with an offered model, it stays in view');
+  assert(window.document.activeElement === input, 'and keeps focus');
+  input.blur();
+  assert(!shown(q, '#osa-settings-api-key-field'), 'once focus leaves it, it is put away');
+}
+
+console.log('\nthe emptied key field waits out a click that began on Save, so the click lands');
+{
+  // The dialog is centred: hiding the field mid-press would move Save out from under
+  // the pointer. The press, not where focus went, is what is watched: Safari and
+  // Firefox on a Mac do not focus the button.
+  const { window, q, saved } = await openSettingsDialog({ saved: { apiKey: ANTHROPIC_KEY, model: null } });
+  const input = q('#osa-settings-api-key');
+  input.focus();
+  input.value = '';
+  input.dispatchEvent(new window.Event('input', { bubbles: true }));
+  const save = q('.osa-settings-btn-save');
+  save.dispatchEvent(new window.Event('pointerdown', { bubbles: true }));
+  input.blur();
+  assert(shown(q, '#osa-settings-api-key-field'), 'blurred by a press, the field has not moved anything yet');
+  save.dispatchEvent(new window.Event('pointerup', { bubbles: true }));
+  click(window, save);
+  assertEqual(saved(), { apiKey: null, model: null, keyProvider: null }, 'the click on Save saved the removal of the key');
+  assert(!shown(q, '#osa-settings-api-key-field'), 'and the field is put away after the click');
 }
 
 console.log('\na saved custom model comes back as Custom, with its key');
@@ -282,6 +327,148 @@ console.log('\nan OpenRouter key with a service-only model is saved');
   choose(window, q, 'openai.gpt-6-luna');
   click(window, q('.osa-settings-btn-save'));
   assertEqual(saved(), { apiKey: OPENROUTER_KEY, model: 'openai.gpt-6-luna', keyProvider: 'openrouter' }, 'the pair is saved');
+}
+
+// The server's rules for a model sent with the reader's own key (_select_model and
+// _bedrock_choice in src/api/routers/community.py), as Settings holds itself to them: an
+// OpenRouter key runs any valid id; an Anthropic key runs the offered Claude models (and
+// their aliases) only, never the ones the service's own key alone can run; with no key,
+// only an offered model. The same rules apply to a model typed under Custom and to one
+// picked from the menu, and to what was saved before.
+const SERVICE_ONLY = 'cannot be used with your own Anthropic API key';
+const NEMAR_LIKE = { ...CONFIG, default_model: 'claude-sonnet-5-5' };
+const LUNA_DEFAULT = { ...CONFIG, default_model: 'openai.gpt-6-luna' };
+const reset = 'was reset to the community default';
+
+console.log('\na custom model an Anthropic key cannot run is refused, as the server refuses it');
+for (const [modelId, reason] of [
+  ['openai.gpt-oss-120b', SERVICE_ONLY],
+  ['qwen.qwen3-next-80b-a3b', SERVICE_ONLY],
+  ['openai.gpt-6-luna', SERVICE_ONLY],
+  ['us.openai.gpt-6-luna', SERVICE_ONLY],
+  ['openai.gpt-oss-120b-1:0', SERVICE_ONLY],
+  ['openai/gpt-5', 'OpenRouter key'],
+  ['anthropic/claude-opus-4', 'OpenRouter key'],
+  ['claude-haiku.4.5', 'OpenRouter key'],
+]) {
+  const { window, q, saved } = await openSettingsDialog();
+  choose(window, q, 'custom');
+  q('#osa-settings-custom-model').value = modelId;
+  q('#osa-settings-api-key').value = ANTHROPIC_KEY;
+  click(window, q('.osa-settings-btn-save'));
+  assertEqual(saved(), null, `${modelId} with an Anthropic key is not saved`);
+  assert(q('.osa-error').textContent.includes(reason), `and the reader is told why (${modelId})`);
+}
+
+console.log('\na custom model an Anthropic key can run is saved as typed, an alias included');
+for (const typed of [
+  'claude-haiku-4-5',
+  'claude-haiku-4.5',
+  'anthropic/claude-haiku-4.5',
+  'claude-sonnet-4.5',
+  'claude-sonnet-5.5',
+  'anthropic/claude-sonnet-4.6',
+]) {
+  const { window, q, saved } = await openSettingsDialog();
+  choose(window, q, 'custom');
+  q('#osa-settings-custom-model').value = typed;
+  q('#osa-settings-api-key').value = ANTHROPIC_KEY;
+  click(window, q('.osa-settings-btn-save'));
+  assertEqual(saved(), { apiKey: ANTHROPIC_KEY, model: typed, keyProvider: 'anthropic' }, `${typed} is saved`);
+}
+{
+  const { window, q } = await openSettingsDialog();
+  choose(window, q, 'custom');
+  q('#osa-settings-custom-model').value = 'claude-sonnet-4.5';
+  q('#osa-settings-api-key').value = ANTHROPIC_KEY;
+  click(window, q('.osa-settings-btn-save'));
+  click(window, q('.osa-settings-btn-open'));
+  assertEqual(q('#osa-settings-model').value, 'claude-sonnet-5-5', 'an alias typed under Custom shows as the menu entry when Settings opens again');
+}
+
+console.log('\nan OpenRouter key runs what the server passes on to OpenRouter, service-only ids included');
+for (const modelId of ['openai.gpt-oss-120b', 'us.openai.gpt-6-luna', 'openai/gpt-5']) {
+  const { window, q, saved } = await openSettingsDialog();
+  choose(window, q, 'custom');
+  q('#osa-settings-custom-model').value = modelId;
+  q('#osa-settings-api-key').value = OPENROUTER_KEY;
+  click(window, q('.osa-settings-btn-save'));
+  assertEqual(saved()?.keyProvider, 'openrouter', `${modelId} with an OpenRouter key is saved`);
+}
+
+console.log('\nwith Default chosen, no model is named, so the key is saved: the server swaps a default it cannot run for Claude');
+{
+  // Luna is what HED, EEGLAB, BIDS and NWB default to, and the service's own key alone runs
+  // it. _route_request does not refuse a request that names no model, and so has no model
+  // to refuse: it runs a Claude model in its place. Only a model the request names is refused.
+  const seed = { apiKey: ANTHROPIC_KEY, model: null };
+  const { window, q, saved } = await openSettingsDialog({ config: LUNA_DEFAULT, saved: seed });
+  assertEqual(q('#osa-settings-model').value, 'default', 'Default is chosen');
+  click(window, q('.osa-settings-btn-save'));
+  assertEqual(saved(), { apiKey: ANTHROPIC_KEY, model: null, keyProvider: 'anthropic' }, 'an Anthropic key with a service-only default is saved');
+  click(window, q('.osa-settings-btn-open'));
+  choose(window, q, 'custom');
+  q('#osa-settings-custom-model').value = 'openai.gpt-6-luna';
+  click(window, q('.osa-settings-btn-save'));
+  assert(q('.osa-error').textContent.includes(SERVICE_ONLY), 'but naming that model with the key is refused, as the server refuses it');
+  assertEqual(saved()?.model, null, 'and what was saved is left as it was');
+}
+
+console.log('\na saved alias comes back as the model it stands for, not as Custom');
+for (const alias of ['claude-sonnet-4.5', 'claude-sonnet-5.5', 'anthropic/claude-sonnet-4.6', 'anthropic/claude-sonnet-5']) {
+  const { q, inMemory } = await openSettingsDialog({ saved: { apiKey: ANTHROPIC_KEY, model: alias } });
+  assertEqual(q('#osa-settings-model').value, 'claude-sonnet-5-5', `${alias}: the menu is on Claude Sonnet 5.5`);
+  assertEqual(inMemory().model, 'claude-sonnet-5-5', `${alias}: and the next request names that model`);
+  assertEqual(q('.osa-error').textContent, '', `${alias}: and nothing says it was reset`);
+}
+
+console.log('\na saved pair the server refuses is reset to the default, with the reason');
+for (const [label, saved] of [
+  ['a service-only model with an Anthropic key', { apiKey: ANTHROPIC_KEY, model: 'openai.gpt-oss-120b' }],
+  ['an alias of one, in the community\'s own list', { apiKey: ANTHROPIC_KEY, model: 'us.openai.gpt-6-luna' }],
+  ['a model that is not offered, with an Anthropic key', { apiKey: ANTHROPIC_KEY, model: 'openai/gpt-5' }],
+  ['a model that is not offered, with no key', { apiKey: null, model: 'openai/gpt-5' }],
+]) {
+  const { q, inMemory } = await openSettingsDialog({ saved });
+  assertEqual(q('#osa-settings-model').value, 'default', `${label}: the menu is on Default`);
+  assertEqual(inMemory().model, null, `${label}: no model is sent`);
+  assert(q('.osa-error').textContent.includes(reset), `${label}: the reader is told why`);
+}
+
+console.log('\na saved pair the server accepts is left alone');
+for (const [label, saved, menu] of [
+  ['a custom model with an OpenRouter key', { apiKey: OPENROUTER_KEY, model: 'openai.gpt-oss-120b' }, 'custom'],
+  ['a service-only model with an OpenRouter key', { apiKey: OPENROUTER_KEY, model: 'openai.gpt-6-luna' }, 'openai.gpt-6-luna'],
+  ['an offered model with an Anthropic key', { apiKey: ANTHROPIC_KEY, model: 'claude-sonnet-5-5' }, 'claude-sonnet-5-5'],
+  ['an offered service-only model with no key', { apiKey: null, model: 'openai.gpt-6-luna' }, 'openai.gpt-6-luna'],
+]) {
+  const { q, inMemory } = await openSettingsDialog({ saved });
+  assertEqual(q('#osa-settings-model').value, menu, `${label}: the menu is on ${menu}`);
+  assertEqual(inMemory().model, saved.model, `${label}: the model is kept`);
+  assert(!q('.osa-error').textContent.includes(reset), `${label}: nothing says it was reset`);
+}
+{
+  // The default may itself be a slug the menu does not offer; a request naming it is the
+  // default's own, so it needs no key.
+  const slug = 'openai/gpt-oss-120b:nitro';
+  const { q, inMemory } = await openSettingsDialog({ config: { ...CONFIG, default_model: slug }, saved: { apiKey: null, model: slug } });
+  assertEqual(inMemory().model, slug, 'a saved model that is the community\'s own non-offered default is kept without a key');
+  assertEqual(q('#osa-settings-model').value, 'default', 'and the menu is on Default');
+}
+
+console.log('\na saved model that is the community default selects Default, not a blank menu');
+for (const [label, config, model, defaultModel] of [
+  ['the default itself', CONFIG, 'claude-haiku-4-5', 'claude-haiku-4-5'],
+  ['a retired id the default replaced (NEMAR)', NEMAR_LIKE, 'claude-sonnet-5', 'claude-sonnet-5-5'],
+  ['an alias of the default', CONFIG, 'claude-haiku-4.5', 'claude-haiku-4-5'],
+  ['the default, itself given as an alias', { ...CONFIG, default_model: 'claude-sonnet-5' }, 'claude-sonnet-5-5', 'claude-sonnet-5-5'],
+]) {
+  const { window, q, saved } = await openSettingsDialog({ config, saved: { apiKey: null, model } });
+  assertEqual(q('#osa-settings-model').value, 'default', `${label}: the menu is on Default`);
+  const options = [...q('#osa-settings-model').options].map((o) => o.value);
+  assert(!options.includes(defaultModel), `${label}: the default is the Default entry, not a second option (${options.join(', ')})`);
+  click(window, q('.osa-settings-btn-save'));
+  assertEqual(saved(), { apiKey: null, model: null, keyProvider: null }, `${label}: saving from there keeps the default`);
 }
 
 // The ids the server's community config validator accepts and refuses (issue #552): one

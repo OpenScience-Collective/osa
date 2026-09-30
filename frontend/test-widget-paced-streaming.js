@@ -933,6 +933,34 @@ console.log('\na redraw that throws mid-reply fails the reply at once, not never
   assert(/^rejected/.test(outcome), `the stream ends in an error the caller can handle (${outcome})`);
 }
 
+console.log('\na redraw that throws before done leaves the finished reply whole, and not called interrupted');
+{
+  // The reply completed: its canonical text and request id are what the server sent,
+  // whatever became of the page's own redraw on the way.
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const messagesEl = container.querySelector('.osa-chat-messages');
+  const started = api.getMessages().length;
+  const CANONICAL = `${REPLY} [1]`;
+  const stream = api.handleStreamingResponse(sse([
+    { event: 'content', content: REPLY },
+    { event: 'done', content: CANONICAL, request_id: 'req-42', citations: [{ marker: 1, source: 'https://a.example', title: 'A', cited_text: '' }] },
+  ], { gapMs: 50 }), container);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  messagesEl.className = 'not-the-messages'; // the redraw's own lookup now finds nothing
+  const outcome = await Promise.race([
+    stream.then(() => 'resolved', (err) => `rejected: ${err.message.slice(0, 40)}`),
+    new Promise((resolve) => setTimeout(() => resolve('still pending'), 6000)),
+  ]);
+  assert(/^rejected/.test(outcome), `the page's failure is still raised to the caller (${outcome})`);
+  const message = api.getMessages()[started];
+  assertEqual(message && message.content, CANONICAL, 'the message holds the canonical text, in full');
+  assertEqual(message && message.requestId, 'req-42', 'and the request id, which feedback is posted against');
+  assertEqual(message && message.citations.length, 1, 'and the citations');
+  assert(!/interrupted|incomplete/i.test(message ? message.content : ''), 'no note says the stream was cut');
+  assert((window.localStorage.getItem('osa-test-paced') || '').includes(CANONICAL.slice(-40)), 'and the whole reply is saved');
+}
+
 console.log('\nno timer is left running after any way a stream can end');
 {
   const endings = {
@@ -1117,6 +1145,33 @@ console.log('\nleaving the page, or hiding the tab, shows and saves the whole re
   const savedAt = window.localStorage.getItem('osa-test-paced') || '';
   assert(savedAt.includes(text.slice(-40)), 'and it is already in the saved history, not saved later');
   await stream;
+}
+
+console.log('\nleaving the page shows a reply that is still streaming, but does not save it: only done does');
+{
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const started = api.getMessages().length;
+  const text = 'A long reply that is still arriving when the page is left in the middle of it. '.repeat(20);
+  const encoder = new TextEncoder();
+  let control;
+  const response = new Response(new ReadableStream({
+    start(controller) {
+      control = controller;
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ event: 'content', content: text })}\n\n`));
+    },
+  }), { headers: { 'content-type': 'text/event-stream' } });
+  const stream = api.handleStreamingResponse(response, container);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert(api.getMessages()[started].content.length < text.length, 'the reveal is still in progress');
+  window.dispatchEvent(new window.Event('pagehide'));
+  assertEqual(api.getMessages()[started].content, text, 'the whole of what has arrived is on the page');
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert(!(window.localStorage.getItem('osa-test-paced') || '').includes(text.slice(-40)), 'and none of it is in the saved history yet: no done has arrived');
+  control.enqueue(encoder.encode(`data: ${JSON.stringify({ event: 'done', content: text })}\n\n`));
+  control.close();
+  await stream;
+  assert((window.localStorage.getItem('osa-test-paced') || '').includes(text.slice(-40)), 'the done event is what saves it');
 }
 
 console.log('\n' + '='.repeat(60));

@@ -116,6 +116,75 @@ assert(
   'a bracketed number inside inline code is not linked as a citation'
 );
 
+console.log('\nCode spans are found before emphasis (globs are common in EEGLAB and BIDS answers)\n');
+
+// An italic match that starts before a code span must not swallow it: the lone "*" in
+// "*.set" has no partner outside the span, so it is text.
+assert(
+  markdownToHtml('Use *.set or `*.fdt` files') === '<p>Use *.set or <code>*.fdt</code> files</p>',
+  'a lone asterisk before a code span holding a glob is text, and the span stays code'
+);
+assert(
+  markdownToHtml('Match `**/*.json` and `**/*.tsv` files') ===
+    '<p>Match <code>**/*.json</code> and <code>**/*.tsv</code> files</p>',
+  'two code spans holding globstar patterns stay code'
+);
+assert(
+  markdownToHtml('* Read *.set or `*.fdt` here') === '<ul><li>Read *.set or <code>*.fdt</code> here</li></ul>',
+  'the same in a bullet list item'
+);
+assert(
+  markdownToHtml('## Reading *.set and `*.fdt`') === '<h2>Reading *.set and <code>*.fdt</code></h2>',
+  'the same in a heading'
+);
+assert(
+  markdownToHtml('| Pattern | Use |\n|---|---|\n| *.set | `*.fdt` |').includes('<td>*.set</td><td><code>*.fdt</code></td>'),
+  'the same across table cells'
+);
+assert(
+  markdownToHtml('**Note:** `**/*.json` and *emphasis* stay apart') ===
+    '<p><strong>Note:</strong> <code>**/*.json</code> and <em>emphasis</em> stay apart</p>',
+  'bold and italic beside code still render'
+);
+assert(
+  markdownToHtml('**bold**`code` and `code`**bold**') ===
+    '<p><strong>bold</strong><code>code</code> and <code>code</code><strong>bold</strong></p>',
+  'bold directly against code on either side renders both'
+);
+assert(
+  markdownToHtml('*emphasis* then `a*b` then *more*') === '<p><em>emphasis</em> then <code>a*b</code> then <em>more</em></p>',
+  'an asterisk inside code does not pair with one outside it'
+);
+assert(
+  markdownToHtml('**use `*.set` files**') === '<p><strong>use <code>*.set</code> files</strong></p>',
+  'code inside bold renders as code'
+);
+assert(
+  markdownToHtml('[`pop_loadset`](https://sccn.ucsd.edu/eeglab/) and `x`') ===
+    '<p><a href="https://sccn.ucsd.edu/eeglab/" target="_blank" rel="noopener noreferrer"><code>pop_loadset</code></a> and <code>x</code></p>',
+  'code inside a link text renders as code and the link survives'
+);
+assert(
+  markdownToHtml('See https://example.com/a and `b`') ===
+    '<p>See <a href="https://example.com/a" target="_blank" rel="noopener noreferrer">https://example.com/a</a> and <code>b</code></p>',
+  'a plain URL beside a code span still links'
+);
+assert(
+  markdownToHtml('an unmatched ` backtick and *italic*') === '<p>an unmatched ` backtick and <em>italic</em></p>',
+  'an unmatched backtick stays text and does not stop other markup'
+);
+{
+  // The placeholder a code span leaves in the run is built from private-use characters;
+  // text that carries them itself must not be able to name a span.
+  const open = String.fromCharCode(0xe000);
+  const close = String.fromCharCode(0xe001);
+  const forged = markdownToHtml(`forged ${open}0${close} then \`real\``);
+  assert(
+    (forged.match(/<code>/g) || []).length === 1 && forged.includes('<code>real</code>') && !forged.includes(open),
+    'private-use characters in the text cannot forge a code span'
+  );
+}
+
 console.log('\nParagraphs keep their behavior\n');
 
 assert(

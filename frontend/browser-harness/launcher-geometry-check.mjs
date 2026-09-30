@@ -8,7 +8,8 @@
  * passes to setConfig, then the launcher's chat circle is sampled on every animation
  * frame across a click: its width must go from the closed size to the open one and
  * back, and, when the sizes differ, through at least three frames in between on the
- * way open (an animation, not a snap). Its corner at the anchor (bottom-right, or
+ * way open (an animation, not a snap; fewer where the runner's frames are so far apart
+ * that an animation of 280 ms cannot be on three of them, but never none). Its corner at the anchor (bottom-right, or
  * bottom-left on the left) must stay within 0.6px of the configured distance from the
  * window's edges in every frame, so the button never drifts while it resizes.
  * Then, with a real pointer, hovering the resting circle must grow it 5% with that
@@ -40,7 +41,11 @@ import { join } from 'node:path';
 
 const WIDGET = new URL('../osa-chat-widget.js', import.meta.url);
 const TOLERANCE = 0.6;
-const MIN_FRAMES = 20;
+// 700 ms sampled on every frame: about 42 of them at 60 a second, and this many even at
+// 12 a second, which is slower than any runner that can run the check at all.
+const MIN_FRAMES = 8;
+// How long the chat circle's size animates (the stylesheet's `scale 280ms`).
+const ANIMATION_MS = 280;
 
 const watchdog = setTimeout(() => {
   console.error('\nFAIL: the check did not finish within four minutes');
@@ -59,6 +64,16 @@ function report(ok, label, detail) {
   }
 }
 const near = (a, b, tolerance = TOLERANCE) => Math.abs(a - b) <= tolerance;
+
+// How many frames an animation of ANIMATION_MS is to be seen on, given how far apart this
+// run's frames came (their median gap): three at a healthy frame rate, as before, and
+// fewer on a slow runner, where fewer frames fit in it. One is always asked for, since a
+// snap is seen on none.
+function framesInBetweenExpected(samples) {
+  const gaps = samples.slice(1).map((sample, i) => sample.t - samples[i].t).sort((a, b) => a - b);
+  const typical = gaps.length ? Math.max(gaps[Math.floor(gaps.length / 2)], 1) : 17;
+  return Math.max(1, Math.min(3, Math.floor(ANIMATION_MS / typical) - 1));
+}
 
 const PAGE = `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -233,7 +248,8 @@ async function runScenario(base, cdp, scenario) {
     report(near(samples[0].w, closed) && near(samples.at(-1).w, open), `${label}, open: the chat circle goes from ${closed}px to ${open}px`, [samples[0], samples.at(-1)]);
     if (closed !== open) {
       const between = samples.filter((sample) => sample.w > Math.min(closed, open) + TOLERANCE && sample.w < Math.max(closed, open) - TOLERANCE);
-      report(between.length >= 3, `${label}, open: through ${between.length} frames in between, not a snap`, samples.slice(0, 6));
+      const expected = framesInBetweenExpected(samples);
+      report(between.length >= expected, `${label}, open: through ${between.length} frames in between (at least ${expected} at this run's frame rate), not a snap`, samples.slice(0, 6));
     }
     const drifted = samples.filter((sample) => !near(sample.edge, x) || !near(sample.bottom, y));
     report(drifted.length === 0, `${label}, open: its ${anchor} corner stays ${x}px from the side and ${y}px from the bottom in every one of ${samples.length} frames`, drifted.slice(0, 4));

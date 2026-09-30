@@ -1562,6 +1562,30 @@ console.log('\nthe status line takes the theme\'s muted text color, light and da
   assert(stills.length === 1 && /none/.test(stills[0]), `the pulse is still under prefers-reduced-motion: reduce (${JSON.stringify(stills)})`);
 }
 
+console.log('\nthe stylesheet defines each keyframe animation once, and every animation it starts has keyframes');
+{
+  // Two @keyframes of one name are one animation, the later replacing the earlier: the
+  // status line's pulse once replaced the header status dot's.
+  const { window } = loadWidget();
+  const css = [...window.document.querySelectorAll('style')]
+    .map((sheet) => sheet.textContent)
+    .join('\n')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+  const defined = [...css.matchAll(/@keyframes\s+([\w-]+)/g)].map((match) => match[1]);
+  const repeated = defined.filter((name, index) => defined.indexOf(name) !== index);
+  assert(defined.length > 0, `the widget's stylesheet was found (${defined.length} keyframes)`);
+  assertEqual(repeated, [], 'no keyframes name is defined twice');
+  const started = [...css.matchAll(/(?<![\w-])animation:\s*([A-Za-z][\w-]*)/g)]
+    .map((match) => match[1])
+    .filter((name) => name !== 'none');
+  assert(started.length > 0, `animations are started by name (${[...new Set(started)].join(', ')})`);
+  assertEqual(started.filter((name) => !defined.includes(name)), [], 'each animation started has keyframes of that name');
+  assert(
+    started.includes('osa-pulse') && started.includes('osa-activity-pulse'),
+    'the header status dot and the status line each start an animation of their own'
+  );
+}
+
 console.log('\nreduced motion: the reveal is not paced, and the labels are the same');
 {
   const loaded = loadWidget({ matchMedia: (query) => ({ matches: /prefers-reduced-motion/.test(query), media: query }) });

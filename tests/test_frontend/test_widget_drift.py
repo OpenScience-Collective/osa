@@ -153,6 +153,14 @@ class TestRetiredModelIdsMatchBackendAliases:
         for retired, replacement in _extract_retired_model_ids(_widget_source()).items():
             assert MODEL_ALIASES[retired] == replacement
 
+    def test_the_widget_knows_every_alias_the_backend_does(self) -> None:
+        """An alias the widget lacks shows as "Custom" and cannot be saved without a key.
+
+        The server accepts every alias in ``MODEL_ALIASES``, with the reader's own
+        Anthropic key too, so the widget's table is that table, not a subset of it.
+        """
+        assert _extract_retired_model_ids(_widget_source()) == MODEL_ALIASES
+
     def test_every_replacement_is_offered(self) -> None:
         for replacement in _extract_retired_model_ids(_widget_source()).values():
             assert replacement in OFFERED_MODELS
