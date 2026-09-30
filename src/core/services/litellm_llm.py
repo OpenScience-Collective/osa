@@ -34,7 +34,23 @@ from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 
-from src.core.services.anthropic_models import THINKING_BUDGET_TOKENS, effective_reasoning_effort
+from src.core.services.anthropic_models import (
+    OPENROUTER_MODEL_IDS,
+    OPENROUTER_ROUTING_VARIANTS,
+    THINKING_BUDGET_TOKENS,
+    effective_reasoning_effort,
+    openrouter_model_id,
+)
+
+__all__ = [
+    "DEFAULT_MODEL",
+    "DEFAULT_PROVIDER",
+    "OPENROUTER_MODEL_IDS",
+    "OPENROUTER_ROUTING_VARIANTS",
+    "create_openrouter_llm",
+    "openrouter_model_id",
+    "to_openrouter_model",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -44,56 +60,6 @@ logger = logging.getLogger(__name__)
 # OpenRouter key resolves it through OPENROUTER_MODEL_IDS below.
 DEFAULT_MODEL = "openai/gpt-oss-120b"
 DEFAULT_PROVIDER = "Cerebras"
-
-# OpenRouter slugs for the models OSA offers. OpenRouter serves the same
-# Claude models under creator/model-name slugs, so a request funded by an
-# OpenRouter key (BYOK, or a community's own funded key) still runs the
-# community's chosen model rather than switching to a different model family
-# just because of which key paid for it. Bare first-party ids such as
-# "claude-haiku-4-5" are not valid OpenRouter slugs, hence the mapping.
-# tests/test_core/test_litellm_llm.py asserts these keys stay in step with
-# anthropic_llm.OFFERED_MODELS so adding a model cannot silently skip this.
-OPENROUTER_MODEL_IDS: dict[str, str] = {
-    "claude-haiku-4-5": "anthropic/claude-haiku-4.5",
-    "claude-sonnet-5-5": "anthropic/claude-sonnet-5.5",
-    # The Bedrock-served models, for a caller who brings an OpenRouter key.
-    "openai.gpt-6-luna": "openai/gpt-6-luna",
-    "openai.gpt-oss-120b": "openai/gpt-oss-120b",
-    "qwen.qwen3-next-80b-a3b": "qwen/qwen3-next-80b-a3b-instruct",
-}
-
-
-# OpenRouter's routing variants ("Model variants" in its documentation): a suffix accepted
-# on any model that only changes how the request is routed (fastest providers, cheapest,
-# best at tool calls, and the deprecated ":online" web search), so the same model runs;
-# ":nitro" and ":floor" can also change the price tier. They can be stacked
-# ("openai/gpt-5.2:nitro:exacto"). The others (":free", ":batch", ":thinking",
-# ":extended") are catalog entries of their own, at most one to a slug, and are not
-# looked through: stripping ":free" would resolve to the paid entry.
-OPENROUTER_ROUTING_VARIANTS = ("nitro", "floor", "exacto", "online")
-
-
-def openrouter_model_id(slug: str | None) -> str | None:
-    """The offered model id an OpenRouter slug stands for, or None when OSA does not know it.
-
-    The reverse of ``OPENROUTER_MODEL_IDS``, looking through routing variants, in any
-    order (``openai/gpt-oss-120b:nitro`` is ``openai.gpt-oss-120b``, run through faster
-    providers). A catalog variant left over (``:free``) makes it a different entry, so
-    None. The ``anthropic/claude-*`` aliases ``normalize_model`` resolves are
-    deliberately not followed, with or without a variant: they name older models (Claude
-    Sonnet 4.5, say) that OpenRouter runs as themselves, so the offered model's reasoning
-    levels say nothing about them. A slug that is not an offered model's is a caller's own
-    choice, about which nothing is assumed, including whether it reasons.
-    """
-    if not slug:
-        return None
-    base, *variants = slug.split(":")
-    kept = [v for v in variants if v not in OPENROUTER_ROUTING_VARIANTS]
-    slug = ":".join([base, *kept])
-    for model_id, known_slug in OPENROUTER_MODEL_IDS.items():
-        if known_slug == slug:
-            return model_id
-    return None
 
 
 def to_openrouter_model(model: str | None) -> str | None:
@@ -130,7 +96,9 @@ def create_openrouter_llm(
 
     Uses LiteLLM for native support of Anthropic's prompt caching feature.
     When caching is enabled, the system prompt and the last message carry
-    cache_control markers for 90% cost reduction on cache hits. Tool results
+    cache_control markers for 90% cost reduction on cache hits, for Anthropic's
+    models only (``litellm_chat.takes_cache_markers``); other models get plain
+    messages. Tool results
     that carry ``search_result`` blocks are shown to the model as tagged text
     and the tags it writes come back as citations (see
     ``src.core.services.tagged_citations``).
@@ -250,40 +218,3 @@ def create_openrouter_llm(
         # Requested by default; the model only sends markers to models that take them.
         prompt_caching=True if enable_caching is None else enable_caching,
     )
-
-
-# Reference list of known Anthropic Claude models supporting prompt caching
-# This is informational only - the is_cacheable_model() function uses a permissive
-# heuristic (any "anthropic/claude-*" model) rather than this restrictive list.
-# Caching is enabled by default for all models; OpenRouter/LiteLLM handle
-# unsupported models gracefully by ignoring cache_control parameters.
-CACHEABLE_MODELS = {
-    "claude-opus-4.6": "anthropic/claude-opus-4.6",
-    "claude-sonnet-4.6": "anthropic/claude-sonnet-4.6",
-    "claude-opus-4.5": "anthropic/claude-opus-4.5",
-    "claude-sonnet-4.5": "anthropic/claude-sonnet-4.5",
-    "claude-haiku-4.5": "anthropic/claude-haiku-4.5",
-}
-
-
-def is_cacheable_model(model: str) -> bool:
-    """Check if a model identifier suggests Anthropic prompt caching support.
-
-    Uses a heuristic check: returns True for model identifiers in the known
-    cacheable models list, or any identifier starting with "anthropic/claude-".
-
-    Note: This is optimistic and may return True for models that don't actually
-    support caching. The LiteLLM/OpenRouter layer handles unsupported models
-    gracefully by ignoring cache_control parameters.
-
-    Args:
-        model: Model identifier (e.g., "anthropic/claude-haiku-4.5")
-
-    Returns:
-        True if the model likely supports cache_control based on its identifier
-    """
-    # Check exact match in aliases
-    if model in CACHEABLE_MODELS:
-        return True
-    # Check if it's an Anthropic Claude model (permissive heuristic)
-    return model.startswith("anthropic/claude-")

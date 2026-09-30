@@ -245,9 +245,9 @@ def create_bedrock_llm(
             the others.
         max_tokens: Most tokens to generate, reasoning included. Defaults to
             ``settings.bedrock_max_output_tokens``.
-        timeout: Seconds to wait for Bedrock to answer. Reasoning at maximum
-            effort can think for a while before the first token, so this is longer
-            than the Claude path's.
+        timeout: Seconds to wait for Bedrock to answer. Reasoning at high
+            effort or above can think for a while before the first token, so this is
+            longer than the Claude path's.
         settings: Where the Bedrock API key and Region come from. Defaults to
             ``get_settings()``.
         reasoning_effort: The community's level from the neutral scale, or None for the

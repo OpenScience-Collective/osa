@@ -51,6 +51,11 @@ from src.core.config.community import (
     WidgetConfig,
 )
 from src.core.config.notebook_lock import NOTEBOOK_SITE_PYODIDE_VERSION
+from src.core.services.anthropic_models import (
+    OPENROUTER_MODEL_IDS,
+    OPENROUTER_ROUTING_VARIANTS,
+    normalize_model,
+)
 
 
 class TestDocSource:
@@ -2065,7 +2070,7 @@ class TestModelNameValidation:
         Anthropic model or alias, so it silently falls back on the
         OpenRouter path (see validate_default_model_resolvable). The config
         still parses -- this is a warning, not an error."""
-        with pytest.warns(UserWarning, match="not an offered Anthropic model"):
+        with pytest.warns(UserWarning, match="not an offered model"):
             config = CommunityConfig(
                 id="test",
                 name="Test",
@@ -3166,6 +3171,60 @@ class TestCommunityConfigCapsule:
         assert config.notebook is None
 
 
+def _slug_only_models() -> list[str]:
+    """Offered models' OpenRouter slugs that `normalize_model` does not resolve as aliases."""
+    slugs = []
+    for slug in OPENROUTER_MODEL_IDS.values():
+        try:
+            normalize_model(slug)
+        except ValueError:
+            slugs.append(slug)
+    return slugs
+
+
+class TestDefaultModelThatIsAnOpenRouterSlug:
+    """An offered model's slug loads, but only the OpenRouter path can run it."""
+
+    def test_there_are_slugs_to_check(self) -> None:
+        assert _slug_only_models(), "every offered model's slug is an alias: nothing to warn about"
+
+    @pytest.mark.parametrize("slug", _slug_only_models())
+    def test_an_offered_models_slug_warns_and_names_the_id_to_use(self, slug: str) -> None:
+        offered = next(m for m, s in OPENROUTER_MODEL_IDS.items() if s == slug)
+        with pytest.warns(UserWarning, match="OpenRouter slug of the offered model") as caught:
+            config = CommunityConfig(id="d", name="D", description="x", default_model=slug)
+        assert config.default_model == slug  # still loads: a warning, not an error
+        assert f"default_model: {offered}" in str(caught[0].message)
+
+    @pytest.mark.parametrize("variant", OPENROUTER_ROUTING_VARIANTS)
+    def test_a_routing_variant_of_such_a_slug_warns_too(self, variant: str) -> None:
+        slug = _slug_only_models()[0]
+        with pytest.warns(UserWarning, match="OpenRouter slug of the offered model"):
+            CommunityConfig(id="d", name="D", description="x", default_model=f"{slug}:{variant}")
+
+    def test_a_catalog_variant_is_a_different_model_and_does_not_warn(self) -> None:
+        slug = _slug_only_models()[0]
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            CommunityConfig(id="d", name="D", description="x", default_model=f"{slug}:free")
+
+    def test_a_slug_that_is_also_an_alias_does_not_warn(self) -> None:
+        """`anthropic/claude-haiku-4.5` resolves on every path."""
+        aliased = [s for s in OPENROUTER_MODEL_IDS.values() if s not in _slug_only_models()]
+        assert aliased
+        for slug in aliased:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", UserWarning)
+                CommunityConfig(id="d", name="D", description="x", default_model=slug)
+
+    def test_any_other_slug_is_left_alone(self) -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            CommunityConfig(
+                id="d", name="D", description="x", default_model="some-lab/their-own-model"
+            )
+
+
 class TestModelInstructions:
     """``model_instructions``: extra system-prompt text for particular models."""
 
@@ -3197,6 +3256,12 @@ class TestModelInstructions:
         with pytest.raises(ValidationError, match="empty"):
             self._config(**{"openai.gpt-6-luna": "   "})
 
+    @pytest.mark.parametrize("key", ["", "   ", "\t"])
+    def test_a_blank_key_is_an_error_not_the_default_model(self, key: str) -> None:
+        """normalize_model reads "" as the default (Haiku): it would be filed there silently."""
+        with pytest.raises(ValidationError, match="empty; name an offered model"):
+            self._config(**{key: "Be brief."})
+
     def test_text_beyond_the_limit_is_an_error(self) -> None:
         with pytest.raises(ValidationError, match="too long"):
             self._config(**{"openai.gpt-6-luna": "x" * (MODEL_INSTRUCTIONS_MAX_LENGTH + 1)})
@@ -3212,6 +3277,21 @@ class TestModelInstructions:
             )
         assert config.default_model == "openai.gpt-6-luna"
         assert "Claude default" in str(caught[0].message)
+
+    def test_the_bedrock_warning_names_the_keys_and_each_outcome(self) -> None:
+        """What it says happens is what routing does: see test_bedrock_routing.py."""
+        with pytest.warns(UserWarning, match="served from Amazon Bedrock") as caught:
+            CommunityConfig(id="d", name="D", description="x", default_model="openai.gpt-6-luna")
+        text = str(caught[0].message)
+        for needle in (
+            "AWS_BEARER_TOKEN_BEDROCK",
+            "ANTHROPIC_API_KEY",
+            "OPENROUTER_API_KEY",
+            "Claude default",
+            "HTTP 500",
+            "OpenRouter slug",
+        ):
+            assert needle in text, needle
 
     def test_a_claude_default_does_not_warn(self) -> None:
         with warnings.catch_warnings():

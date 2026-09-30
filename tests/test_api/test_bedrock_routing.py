@@ -5,6 +5,8 @@ the cached Settings instance is overridden directly where a test needs the Bedro
 key present or absent, because pydantic-settings also reads a developer's .env.
 """
 
+import logging
+
 import pytest
 from fastapi import HTTPException
 
@@ -19,8 +21,9 @@ from src.api.security import ByokCredential
 from src.assistants import discover_assistants, registry
 from src.assistants.registry import AssistantInfo
 from src.core.config.community import CommunityConfig
-from src.core.services.anthropic_models import BEDROCK_MODELS
+from src.core.services.anthropic_models import BEDROCK_MODELS, is_bedrock_model
 from src.core.services.litellm_llm import OPENROUTER_MODEL_IDS
+from tests.helpers.deployment import set_platform_keys
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -50,13 +53,7 @@ def _origin(info) -> str:
 
 def _platform(monkeypatch, *, bedrock: str | None = "bedrock-key") -> None:
     """Platform keys as a deployment with Anthropic and (optionally) Bedrock has them."""
-    settings = get_settings()
-    monkeypatch.setattr(settings, "anthropic_api_key", "platform-anthropic-key")
-    monkeypatch.setattr(settings, "openrouter_api_key", None)
-    monkeypatch.setattr(settings, "bedrock_api_key", bedrock)
-    info = _hed()
-    monkeypatch.setattr(info.community_config, "anthropic_api_key_env_var", None)
-    monkeypatch.setattr(info.community_config, "openrouter_api_key_env_var", None)
+    set_platform_keys(monkeypatch, bedrock=bedrock)
 
 
 class TestProviderChoiceForBedrock:
@@ -68,6 +65,15 @@ class TestProviderChoiceForBedrock:
     def test_a_keyless_bedrock_choice_must_be_platform_funded(self, key_source):
         with pytest.raises(ValueError, match="api_key=None is only valid"):
             ProviderChoice(provider="bedrock", api_key=None, key_source=key_source)
+
+    @pytest.mark.parametrize(
+        ("api_key", "key_source"),
+        [("sk-user", "byok"), ("sk-user", "community"), ("sk-user", "platform")],
+    )
+    def test_a_bedrock_choice_cannot_carry_a_key_or_another_funder(self, api_key, key_source):
+        """A `byok` Bedrock choice would spend the platform's token with cost checks off."""
+        with pytest.raises(ValueError, match="always platform-funded"):
+            ProviderChoice(provider="bedrock", api_key=api_key, key_source=key_source)
 
     def test_citations_come_from_tags_not_native_blocks(self):
         bedrock = ProviderChoice(provider="bedrock", api_key=None, key_source="platform")
@@ -261,6 +267,170 @@ class TestABedrockDefaultThatCannotBeServed:
         route = _route_request(_luna_default_community(), "hed", None, _origin(_hed()), None)
 
         assert (route.choice.provider, route.model) == ("bedrock", "openai.gpt-6-luna")
+
+
+def _fallback_records(caplog) -> list[logging.LogRecord]:
+    """The records that say a Bedrock default was replaced (they carry a `fallback`)."""
+    return [r for r in caplog.records if hasattr(r, "fallback")]
+
+
+class TestTheFallbackLog:
+    """ERROR when the deployment cannot serve the model, WARNING for a caller's own key."""
+
+    def test_a_deployment_without_the_key_logs_an_error(self, monkeypatch, caplog):
+        _platform(monkeypatch, bedrock=None)
+        caplog.set_level(logging.WARNING)
+
+        _route_request(_luna_default_community(), "hed", None, _origin(_hed()), None)
+
+        (record,) = _fallback_records(caplog)
+        assert record.levelno == logging.ERROR
+        assert record.community_id == "hed"
+        assert record.model == "openai.gpt-6-luna"
+        assert record.fallback == "claude-haiku-4-5"
+        assert (record.key_source, record.cause) == ("platform", "no_bedrock_key")
+        assert "AWS_BEARER_TOKEN_BEDROCK" in record.getMessage()
+
+    def test_a_callers_own_key_with_no_model_logs_a_warning(self, monkeypatch, caplog):
+        """Every CLI request is this: expected, so it must not read as a misconfiguration."""
+        _platform(monkeypatch)
+        caplog.set_level(logging.WARNING)
+        byok = ByokCredential(key="user-anthropic-key", provider="anthropic")
+
+        _route_request(_luna_default_community(), "hed", byok, None, None)
+
+        (record,) = _fallback_records(caplog)
+        assert record.levelno == logging.WARNING
+        assert record.community_id == "hed"
+        assert record.model == "openai.gpt-6-luna"
+        assert record.fallback == "claude-haiku-4-5"
+        assert (record.key_source, record.cause) == ("byok", "callers_own_key")
+
+    def test_a_callers_own_key_on_a_deployment_without_the_key_is_still_an_error(
+        self, monkeypatch, caplog
+    ):
+        """The deployment cannot serve the model either way, which is what needs fixing."""
+        _platform(monkeypatch, bedrock=None)
+        caplog.set_level(logging.WARNING)
+        byok = ByokCredential(key="user-anthropic-key", provider="anthropic")
+
+        _route_request(_luna_default_community(), "hed", byok, None, None)
+
+        (record,) = _fallback_records(caplog)
+        assert (record.levelno, record.cause) == (logging.ERROR, "no_bedrock_key")
+
+    def test_a_probe_routes_the_same_and_logs_nothing(self, monkeypatch, caplog):
+        """`/chat/resume` routes twice per request; only the real one logs."""
+        _platform(monkeypatch, bedrock=None)
+        caplog.set_level(logging.WARNING)
+        info = _luna_default_community()
+
+        quiet = _route_request(info, "hed", None, _origin(_hed()), None, log_fallback=False)
+        assert _fallback_records(caplog) == []
+        loud = _route_request(info, "hed", None, _origin(_hed()), None)
+
+        assert (quiet.choice, quiet.model) == (loud.choice, loud.model)
+        assert len(_fallback_records(caplog)) == 1
+
+    def test_nothing_is_logged_where_the_default_is_served(self, monkeypatch, caplog):
+        _platform(monkeypatch)
+        caplog.set_level(logging.WARNING)
+
+        route = _route_request(_luna_default_community(), "hed", None, _origin(_hed()), None)
+
+        assert route.choice.provider == "bedrock"
+        assert _fallback_records(caplog) == []
+
+    def test_every_shipped_bedrock_default_fails_loudly_on_a_deployment_without_the_key(
+        self, monkeypatch, caplog
+    ):
+        """Dynamic: each community whose default is a Bedrock model, as shipped."""
+        set_platform_keys(monkeypatch, bedrock=None)
+        caplog.set_level(logging.WARNING)
+        bedrock_communities = [
+            info
+            for info in registry.list_all()
+            if info.community_config and is_bedrock_model(info.community_config.default_model)
+        ]
+        assert bedrock_communities, "no shipped community defaults to a Bedrock model"
+
+        for info in bedrock_communities:
+            caplog.clear()
+            route = _route_request(info, info.id, None, _origin(info), None)
+
+            assert route.choice.provider == "anthropic", info.id
+            assert route.model not in BEDROCK_MODELS, info.id
+            (record,) = _fallback_records(caplog)
+            assert record.levelno == logging.ERROR, info.id
+            assert record.community_id == info.id
+            assert info.id in record.getMessage()
+            assert record.model == info.community_config.default_model
+            assert record.fallback == route.model
+
+
+class TestNoPlatformKey:
+    """A request no key can serve fails with a 500, and the log says why."""
+
+    def test_a_bedrock_key_alone_serves_nothing_and_the_error_log_says_so(
+        self, monkeypatch, caplog
+    ):
+        set_platform_keys(monkeypatch, anthropic=None, openrouter=None, bedrock="bedrock-key")
+        caplog.set_level(logging.ERROR)
+        info = _hed()
+
+        with pytest.raises(HTTPException) as caught:
+            _route_request(info, "hed", None, _origin(info), None)
+
+        assert caught.value.status_code == 500
+        (record,) = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert record.community_id == "hed"
+        assert record.bedrock_key_configured is True
+        assert "ANTHROPIC_API_KEY" in record.getMessage()
+        assert "AWS_BEARER_TOKEN_BEDROCK" in record.getMessage()
+
+    def test_a_keyless_deployment_logs_it_too(self, monkeypatch, caplog):
+        set_platform_keys(monkeypatch, anthropic=None, openrouter=None, bedrock=None)
+        caplog.set_level(logging.ERROR)
+        info = _hed()
+
+        with pytest.raises(HTTPException) as caught:
+            _route_request(info, "hed", None, _origin(info), None)
+
+        assert caught.value.status_code == 500
+        (record,) = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert record.community_id == "hed"
+        assert record.bedrock_key_configured is False
+        assert "AWS_BEARER_TOKEN_BEDROCK" not in record.getMessage()
+
+
+class TestBedrockAndOpenRouterWithoutAnthropic:
+    """No platform Anthropic key sends platform requests to OpenRouter, Bedrock key or not.
+
+    That is the long-standing fallback for a deployment that has not configured an
+    Anthropic key (`_platform_choice` warns on every such request), and it is why
+    `_serves_bedrock_models` needs both keys: Bedrock models are reached only from the
+    Anthropic provider. A community whose default is a Bedrock model runs it on OpenRouter
+    under its slug there, which OpenRouter prices no higher than Bedrock does.
+    """
+
+    def test_the_default_runs_on_openrouter_and_the_fallback_is_warned_about(
+        self, monkeypatch, caplog
+    ):
+        set_platform_keys(
+            monkeypatch, anthropic=None, openrouter="platform-or-key", bedrock="b-key"
+        )
+        caplog.set_level(logging.WARNING)
+        info = _hed()
+
+        route = _route_request(info, "hed", None, _origin(info), None)
+
+        default = info.community_config.default_model
+        assert route.choice.provider == "openrouter"
+        assert route.choice.key_source == "platform"
+        assert route.model == OPENROUTER_MODEL_IDS[default]
+        assert route.offered_model_id == default
+        (record,) = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert "ANTHROPIC_API_KEY is not configured" in record.getMessage()
 
 
 class TestBedrockChoice:

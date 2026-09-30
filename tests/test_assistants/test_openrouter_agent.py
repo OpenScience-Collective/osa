@@ -41,10 +41,9 @@ def lookup_hed_reference(query: str) -> list[dict]:  # noqa: ARG001 (the tool sc
 
 @pytest.fixture
 def openrouter(monkeypatch: pytest.MonkeyPatch):
-    server = FakeOpenRouter()
-    monkeypatch.setenv("OPENROUTER_API_BASE", server.base_url)
-    yield server
-    server.close()
+    with FakeOpenRouter() as server:
+        monkeypatch.setenv("OPENROUTER_API_BASE", server.base_url)
+        yield server
 
 
 def _assistant(model: str):

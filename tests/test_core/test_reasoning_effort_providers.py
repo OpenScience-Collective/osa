@@ -319,10 +319,9 @@ class TestHaikuThinkingBudget:
 
 @pytest.fixture
 def openrouter(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeOpenRouter]:
-    server = FakeOpenRouter()
-    monkeypatch.setenv("OPENROUTER_API_BASE", server.base_url)
-    yield server
-    server.close()
+    with FakeOpenRouter() as server:
+        monkeypatch.setenv("OPENROUTER_API_BASE", server.base_url)
+        yield server
 
 
 def _openrouter_body(openrouter: FakeOpenRouter, model: str, **kwargs: Any) -> dict[str, Any]:

@@ -380,26 +380,39 @@ class TestMarkerStream:
 class TestLongWhitespaceRuns:
     """A model stuck emitting whitespace must not stall the server that reads it."""
 
-    def test_a_long_run_is_read_in_linear_time(self) -> None:
+    @staticmethod
+    def _seconds_to_read(spaces: int) -> tuple[float, float]:
+        """Best of three readings of a whitespace run, streamed and whole."""
         registry = _registry()
         # A run that no tag ends: the search fails from every position inside it.
-        text = "Answer." + " " * 50_000 + "and more."
+        text = "Answer." + " " * spaces + "and more."
+        streamed = whole = float("inf")
+        for _ in range(3):
+            started = time.perf_counter()
+            stream = MarkerStream(registry)
+            for i in range(0, len(text), 16):
+                stream.feed(text[i : i + 16])
+            stream.finish()
+            streamed = min(streamed, time.perf_counter() - started)
 
-        started = time.perf_counter()
-        stream = MarkerStream(registry)
-        for i in range(0, len(text), 16):
-            stream.feed(text[i : i + 16])
-        stream.finish()
-        streamed = time.perf_counter() - started
+            started = time.perf_counter()
+            rewrite_content(text, registry)
+            whole = min(whole, time.perf_counter() - started)
+        return streamed, whole
 
-        started = time.perf_counter()
-        rewrite_content(text, registry)
-        whole = time.perf_counter() - started
+    def test_reading_time_grows_with_the_length_of_the_run_not_with_its_square(self) -> None:
+        """Scaling, not a wall-clock budget: a slow machine passes, a quadratic read does not.
 
-        # Quadratic reading took over two seconds at this length, and the event loop
-        # is stuck for all of it.
-        assert streamed < 1.0
-        assert whole < 1.0
+        Quadratic reading once took over two seconds at 50,000 characters, with the event
+        loop stuck for all of it. Four times the text costs about four times as much when
+        the reading is linear and about sixteen times as much when it is quadratic, so
+        the line is drawn between them.
+        """
+        small_streamed, small_whole = self._seconds_to_read(40_000)
+        large_streamed, large_whole = self._seconds_to_read(160_000)
+
+        assert large_streamed < 8 * small_streamed
+        assert large_whole < 8 * small_whole
 
     def test_a_tag_takes_the_whitespace_before_it_up_to_a_limit(self) -> None:
         registry = _registry()
