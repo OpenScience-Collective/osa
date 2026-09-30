@@ -15,14 +15,24 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ### Added
 
+- **A new community, NWB** (issue #514, pull requests #517, #520 and #521): an assistant for Neurodata Without Borders (NWB), the data standard for neurophysiology, and the software around it (PyNWB, the Hierarchical Data Modeling Framework (HDMF), NeuroConv and NWB Inspector), to replace the separately maintained assistant embedded in the PyNWB documentation.
+  It answers from 119 documentation pages: 105 from the index that assistant uses (magland/nwb-doc-index), and 14 more that the index lacks (NWB Inspector from the command line and as a library, MatNWB, the Distributed Archives for Neurophysiology Data Integration (DANDI) workflow for creating, validating and uploading a Dandiset, an overview of NWB and of writing and publishing extensions, and the schema's release notes).
+  The PyNWB "NWB File Basics" and NeuroConv "Data Interfaces" pages are preloaded and the rest are fetched when a question needs them.
+  The community sets its widget title, greeting and suggested questions, page context, and a budget of $5 a day and $50 a month.
+  The cross-origin resource sharing (CORS) origins are `pynwb.readthedocs.io`, `nwb.org` and `www.nwb.org`, and the documentation sites of HDMF, NeuroConv, NWB Inspector, the NWB overview and MatNWB on `readthedocs.io`, so the widget can be embedded on each.
+  The Cloudflare worker's allowed origins, which a workflow keeps in step with the community configs, carry the same list.
+  Read the Docs preview builds (`*.readthedocs.build`) are left out on purpose, since a wildcard would let any project hosted there use the community's platform key.
+  GitHub, docstring, Discourse and citation sync are not enabled yet.
+  Its default model is GPT-6 Luna (see below).
 - **BIDS launcher, 20% larger and clear of the page's own buttons** (issue #553, bids-standard/bids-specification#2541): the BIDS community's launcher is 67px instead of 56px and sits 104px up, above the Read the Docs version bar and the footer's social icons that it covered on bids-specification.readthedocs.io.
   It reaches the specification site with the next stable release, which is what serves `demo.osc.earth`; the site itself needs no change, because it takes the launcher's size and place from this config.
-  Checked on the live site with the released widget at 1280px and 1920px wide and on a phone: it clears the version bar (by 15px, and 11px at 1920px), the footer icons and the copyright line, and an opened version menu keeps every link and its search box uncovered.
+  The values were applied by hand to the live page, since the settings that carry them ship in this release, and measured there at 1280px and 1920px wide and on a phone:
+  the launcher clears the version bar (by 15px, and 11px at 1920px), the footer icons and the copyright line, and an opened version menu keeps every link and its search box uncovered.
 - **Launcher position, size and offsets** (issue #553, from the BIDS site's feedback that the launcher is too small and covers the page's own buttons):
   `widget.launcher_position` (`bottom-right` or `bottom-left`), `launcher_size` and `launcher_open_size` (44 to 96px), `launcher_offset_x` and `launcher_offset_y` (0 to 200px from the side and bottom edges), and `launcher_mobile_offset_x` and `launcher_mobile_offset_y` for 600px wide and narrower.
   The launcher, its label and the panel follow the position and offsets, including the capsule in its column and its row, whose circles are reordered so Tab follows what is seen; the panel's resize handle moves to the far top corner, and the panel's minimum width and height give way to the room the offsets leave, so it stays inside a small window.
   The launcher shrinks from its closed size to its open size with the capsule's animation and its corner held still, for the bubble as well as the capsule; with only `launcher_size` set, the open size is about 80% of it (rounded, never below 44px).
-  The floor is 44px, WCAG 2.2's enhanced target size.
+  The floor is 44px, the enhanced target size of the Web Content Accessibility Guidelines (WCAG) 2.2.
   The server refuses a value outside a range, a float, a quoted number or a boolean (a bare `yes` or `off` in YAML), and an open size above the closed one, when it loads a community.
   A community that sets none of these renders exactly as before; NEMAR now spells out its own position, sizes and offsets (bottom-right, 58 and 46, 20 and 20), which are what they already were.
   A page's `setConfig` takes the same settings in camelCase and outranks the community; a wrong value from a page is refused with a warning, so the community's own value still applies.
@@ -31,8 +41,10 @@ the version being released and start a new `[Unreleased]` section above it.
   three non-Anthropic models served from Amazon Bedrock, each priced at or below Claude Haiku 4.5
   ($0.11 / $0.55, $0.14 / $1.20 and $0.15 / $0.60 per 1M input / output tokens; Haiku is $1 / $5).
   They appear in the widget's model menu and can be a community's `default_model`.
-  GPT-6 Luna runs at high reasoning effort.
-  A deployment turns them on with `AWS_BEARER_TOKEN_BEDROCK`; without it they are not listed and a request naming one gets a 400.
+  GPT-6 Luna runs at high reasoning effort, never at maximum (issue #543): at maximum, a tool-using turn took 15 to 50 seconds before its first word, all of it the model's own silent reasoning.
+  On real community questions at high, NWB answered in 7 to 9 seconds against about 27 at maximum, with one or two searches, cited sources and no tag leaks.
+  The accepted levels, measured on Bedrock, are none, low, medium, high, xhigh and max (`minimal` is rejected).
+  A deployment turns them on with `AWS_BEARER_TOKEN_BEDROCK`, and needs the platform's `ANTHROPIC_API_KEY` as well, since a request reaches Bedrock only from the platform's Claude path; without the Bedrock key they are not listed and a request naming one gets a 400.
   Requests run in Ohio (`us-east-2`, `BEDROCK_REGION`), except Qwen3 Next, whose Ohio endpoint does not answer, so it runs in N. Virginia.
   A caller's own Anthropic key cannot select them, because the platform pays for Bedrock; an OpenRouter key runs the same model there.
   When a community's `default_model` is one of them and a request cannot have it (the caller's own key with no model named, or no Bedrock key on the deployment), the request runs the deployment's Claude default and an error naming the community is logged; `osa validate` warns about such a default.
@@ -47,7 +59,8 @@ the version being released and start a new `[Unreleased]` section above it.
   It applies to every OpenRouter model, Claude slugs included.
   Cache reads and writes and reasoning tokens in OpenRouter's usage are now recorded, so cached requests are priced at the cache rate; the token counts are the provider's own, where LiteLLM alone reported a local estimate for the usage chunk OpenRouter documents.
   Only Anthropic's models are sent cache markers.
-  Not yet verified against the live service (no OpenRouter key on the development machine); `tests/test_integration/test_openrouter_citations.py` is written for it and should be run before relying on the cost figures.
+  The one live check recorded is the maintainer's of 2026-09-29, in which GPT-6 Luna and Qwen3 Next were each answered through OpenRouter (ADR 0015); whether the numbered markers and the cached-request cost figures came out right against the service is not recorded.
+  `tests/test_integration/test_openrouter_citations.py` is written for it and should be run before relying on the cost figures.
 - **Prompt caching for GPT-6 Luna** needs no request changes (the service caches a repeated prompt prefix on its own); its cache reads and writes are recorded and priced like Claude's.
   gpt-oss-120b and Qwen3 Next do no caching.
 - **`model_instructions`** in a community's `config.yaml`: extra system-prompt text for particular models, added after the platform's own note for that model.
@@ -61,7 +74,13 @@ the version being released and start a new `[Unreleased]` section above it.
   A level the community's own `default_model` cannot honor is a warning when the config loads.
   NWB, HED, EEGLAB, BIDS and NEMAR set `high`.
   Through the real NWB graph, Luna's median time to first text was 2.5 s at none, 5.2 s at medium and high, 10.6 s at xhigh and 48 s at max, and at xhigh and max it skipped the documentation search in the median of three runs on one question, so the answer had no citations.
-  Bedrock's request fields were measured against the live service; the Anthropic and OpenRouter shapes are tested against the requests the clients build, not yet against those services (no keys on the development machine).
+  Bedrock's request fields were measured against the live service.
+  The maintainer then ran live requests on 2026-09-29 (ADR 0015): one through the Claude Platform (the model was not recorded, and the effort field applies to Sonnet only) and, through OpenRouter, GPT-6 Luna, which was sent `reasoning.effort`, and Qwen3 Next, which is sent no reasoning field and so confirms routing only.
+  All were answered; whether the level changed anything (reasoning tokens, latency) was not measured, and a 200 can be a no-op, as gpt-oss-120b on Bedrock showed.
+  Claude Haiku, gpt-oss-120b and Claude Sonnet through OpenRouter have not been run against the service; those shapes are tested against the requests the clients build.
+- **LangFuse trace metadata and feedback scores** (issue #515): a `/chat` or streaming chat turn is tagged with its community, carries the `X-User-ID` header as the trace's user and the conversation's session id, so a community's traces can be filtered and a conversation's turns grouped.
+  `POST /feedback` now attaches the rating to the rated request's trace as a `user_feedback` score (`up` or `down`, with the comment).
+  Like the feedback row it writes, it is best-effort: it is skipped when LangFuse is not configured or the request was not traced, and a LangFuse error is logged without failing the request.
 
 ### Changed
 
@@ -74,9 +93,6 @@ the version being released and start a new `[Unreleased]` section above it.
   `ANTHROPIC_THINKING_BUDGET_TOKENS` is removed and the level sets the budget now; a server that still exports it logs a warning at startup naming `reasoning_effort` as the replacement.
 - **A caller's own OpenRouter key now runs GPT-6 Luna and gpt-oss-120b at high reasoning effort** (issue #545): OpenRouter's own default for both is medium, and OSA sends its default (high) on every provider so a model behaves the same whichever key paid for it.
   More reasoning means a longer wait before the first word; a community can set `reasoning_effort` to change it.
-- **GPT-6 Luna runs at high reasoning effort, not maximum** (issue #543): at maximum, a tool-using turn took 15 to 50 seconds before its first word, all of it the model's own silent reasoning.
-  On real community questions at high, NWB answered in 7 to 9 seconds against about 27 at maximum, with one or two searches, cited sources and no tag leaks.
-  The accepted levels, measured on Bedrock, are none, low, medium, high, xhigh and max (`minimal` is rejected).
 - **The widget spreads a streamed reply's burst over half a second, at most** (issues #531 and #538): text a reply has delivered is drawn as soon as it arrives when nothing is pending (a first line or so at once, the rest within a tick), and every character is drawn no more than about half a second after it arrived, instead of the moment each chunk arrives.
   GPT-6 Luna reasons silently for most of a turn and then emits its answer in about a second, so it used to appear all at once.
   Each chunk carries its own half-second deadline, so a burst faster than a line per tick is spread over at most half a second, including one that lands late in an earlier burst's reveal, and a reply that finishes waits for the reveal for at most 0.7 seconds before the canonical text replaces it.
@@ -100,7 +116,7 @@ the version being released and start a new `[Unreleased]` section above it.
   Text that is only whitespace (a reasoning model's `"\n\n"` before a tool call) is not text: the loading bubble and any status stay, and a reply that ends as only whitespace is dropped, as an empty one is.
   A screen reader hears each new label once, from one polite status region made with the widget and kept outside the conversation, so redraws do not repeat it; the visible label is hidden from it, the title placeholder and the seconds are never announced, and the region is emptied when the status ends.
   None of it is saved with the conversation.
-- **A new `tool_call` SSE event** on `/chat`, `/chat/resume` and `/ask` (issue #538): `{"event": "tool_call", "name": "..."}`, sent once per call when the model starts writing it, which for a long code call is many seconds before `tool_start` (or `tool_request`, for a browser call).
+- **A new `tool_call` event in the server-sent events (SSE) stream** of `/chat`, `/chat/resume` and `/ask` (issue #538): `{"event": "tool_call", "name": "..."}`, sent once per call when the model starts writing it, which for a long code call is many seconds before `tool_start` (or `tool_request`, for a browser call).
   It is read from the model's streamed tool-call chunks in the shapes the Anthropic, Bedrock and OpenAI-style adapters yield, and is tested against Claude's own streamed events.
   It carries the tool's name only; no existing event, answer, citation or token count changes, and a widget that does not know it only logs a console warning.
 - **The OpenRouter chat model is a `ChatLiteLLM` subclass, not a wrapper around one** (`src/core/services/litellm_chat.py`, replacing `CachingLLMWrapper`): `bind_tools` and streaming are native, and tool results and earlier assistant turns are sent as their text instead of a stringified block list.
@@ -111,14 +127,19 @@ the version being released and start a new `[Unreleased]` section above it.
   A widget setting that still names `claude-sonnet-5` is moved to the new model instead of showing as a custom one.
 - **The widget's Settings dialog asks for the model first** (issue #522): the API key and the model name appear only when Custom is chosen, since they exist for a model the community does not offer, paid for by the reader's own Anthropic or OpenRouter key.
   A key that is already saved stays in view so it can be removed, and a custom model can no longer be saved without a key.
-  Figures now count as about 4,800 tokens each when the conversation is measured (they were 1,600), which is what Sonnet bills for a full-size image, so long figure-heavy chats are trimmed sooner.
+- **Figures count as about 4,800 tokens each when a conversation is measured** (issue #522, `src/agents/base.py`): they were 1,600.
+  4,800 is about what Sonnet bills for a full-size image, so a long, figure-heavy chat is trimmed sooner.
 - **NEMAR answers with Sonnet by default** (issue #522): `default_model` is now `claude-sonnet-5-5`.
-  Each request costs about twice what Haiku 4.5 does per input token.
+  Sonnet costs twice what Haiku 4.5 does, per input token ($2 against $1 per 1M) and per output token ($10 against $5), and NEMAR asks it to think at high reasoning effort, which is billed as output, so a request costs about twice as much or more.
+  NEMAR's budget ($5 a day, $50 a month) was sized for Haiku and is unchanged.
 - **HED, EEGLAB and BIDS answer with GPT-6 Luna by default** (issue #559): `default_model` is now `openai.gpt-6-luna`, as NWB's is, with `reasoning_effort: high`; it was `claude-haiku-4-5`.
   Luna is priced at or below Haiku 4.5 ($0.11 / $0.55 against $1 / $5 per 1M input / output tokens).
-  A caller with their own Anthropic key who names no model (the CLI), and every request on a deployment with no Bedrock key, run Claude Haiku 4.5 as before.
+  A caller with their own Anthropic key who names no model (the command-line interface, CLI), and every request on a deployment with no Bedrock key, run Claude Haiku 4.5 as before.
   None of the three has a tool that returns an image, so Luna's lack of image blocks loses nothing.
   NEMAR stays on Sonnet rather than moving to Luna as issue #530 proposed; Luna cannot take the images that `nemar_render_overview` and browser-run figures produce.
+- **The logs keep the Bedrock key, and a caller's key, out** (pull requests #527 and #528): the log formatter now redacts Amazon Bedrock keys (`ABSK...` and `bedrock-api-key-...`) and any bearer credential in an `Authorization` header dump, and the botocore and LiteLLM loggers are held at WARNING even when the log level is DEBUG, because each prints its requests with their credentials.
+  The formatter covers what this process prints, not a record that reaches another handler, which is why the two loggers are held back as well.
+  `AWS_BEARER_TOKEN_BEDROCK` is trimmed, a blank value counts as unset, and one with whitespace inside is refused with an error that names the variable and never shows its value.
 
 ### Fixed
 
@@ -135,6 +156,13 @@ the version being released and start a new `[Unreleased]` section above it.
   LiteLLM keeps credentials on a module every request in the process shares, and did not send them with the call, so requests running at the same time under different keys (a caller's own key next to the platform's) used whichever key was written last: 20 of 40 interleaved requests used the other key when measured.
   The key now travels with each call.
   Anyone who ran a public OpenRouter path with more than one key in use at once should treat this as a key-mixing incident for that period.
+- **LangFuse split every LLM and tool call into a trace of its own** (issue #515).
+  A request's trace id was the community and 12 hex characters, and LangFuse accepts only 32 lowercase hex characters, so it refused each id and the request's calls were recorded one by one, and `request_log.langfuse_trace_id` matched no trace.
+  The id is now 32 hex characters, so a request is one trace, and its id is the one in the request log.
+- **Inline code showed its backticks in the widget's lists, headings and tables** (pull request #519): only a plain paragraph turned `` `code` `` into code.
+  Every place that renders inline text now does, with the code's own text escaped and not read as bold, italics or a `[1]` citation marker.
+  An indented list item, as models write a nested list, stays in its list instead of becoming a paragraph that starts with a literal `*`; nesting is flattened.
+  Tested by `frontend/test-markdown.js`, which runs the widget's own renderer.
 
 ## [0.8.15] - 2026-09-25
 

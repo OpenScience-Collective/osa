@@ -541,9 +541,13 @@ Three consequences of that epic for this design:
 - Prompt caching at both the 5-minute and 1-hour time to live IS available on Claude Platform on AWS, so
   there is no availability constraint on any of the above.
 - The offered models narrow to `claude-haiku-4-5` (default; thinking budget set by the community's `reasoning_effort`, 4096 tokens at the default `high`) and
-  `claude-sonnet-5-5`. Haiku does not support mid-conversation system messages, which are an Opus 5, Opus 4.8,
-  Fable, Mythos and Sonnet 5.5 feature. Operator instructions therefore stay in the top-level system block, and
-  changing one resets the cache. Do not design an operator channel that assumes every offered model has one.
+  `claude-sonnet-5-5`.
+  Haiku does not support mid-conversation system messages.
+  Anthropic's documentation lists them for Opus 5, Opus 4.8, Fable, Mythos and Sonnet 5.5, and not for Haiku 4.5 or Sonnet 5
+  (its mid-conversation system messages page and its Sonnet 5.5 feature list, read 2026-09-30).
+  That documentation does not say whether the Claude Platform on AWS carries the feature, so treat it as unverified there.
+  Operator instructions therefore stay in the top-level system block, and changing one resets the cache.
+  Do not design an operator channel that assumes every offered model has one.
 - Cache diagnostics is a first-party API beta and is NOT on Claude Platform on AWS. Verification runs through
   `usage.cache_read_input_tokens` and the `usage.cache_creation` breakdown, which splits by time to live
   (`ephemeral_5m_input_tokens` and `ephemeral_1h_input_tokens`) and is the right instrument for the TTL
