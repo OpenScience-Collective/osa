@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -58,7 +58,9 @@ from src.api.tool_results import (
 )
 from src.api.turn_outcome import (
     ModelRuns,
+    ReplyProblem,
     current_turn,
+    error_body,
     error_event,
     reply_problem,
     warning_event,
@@ -296,6 +298,20 @@ class ChatResponse(BaseModel):
             "its context window. The streamed endpoint sends the same text as a "
             "`warning` event."
         ),
+    )
+
+
+class UnansweredReplyResponse(BaseModel):
+    """Body of the 502 a request that is not streamed gets when the model wrote no answer.
+
+    The same ids the streamed ``error`` event carries, so a client that retries can tie its
+    attempts to the log and to the request's row in the metrics.
+    """
+
+    detail: str = Field(..., description="Why there is no answer, as a reader should be told")
+    error_id: str = Field(..., description="The id the error's log line carries")
+    request_id: str | None = Field(
+        default=None, description="Key of the request's row in the metrics"
     )
 
 
@@ -2246,6 +2262,21 @@ def _set_metrics_on_request(
     }
 
 
+class UnansweredReply(Exception):
+    """A request that is not streamed ended with no answer: the 502 to send instead.
+
+    Not an ``HTTPException``, since FastAPI's handler for that puts only ``detail`` in the
+    body and this 502 also carries the ids a client can quote (see ``error_body``). The
+    endpoint returns ``response``.
+    """
+
+    def __init__(self, problem: ReplyProblem, request_id: str | None) -> None:
+        super().__init__(problem.message)
+        self.response = JSONResponse(
+            status_code=502, content=error_body(problem, request_id=request_id)
+        )
+
+
 def _check_unstreamed_reply(
     http_request: Request,
     community_id: str,
@@ -2262,8 +2293,10 @@ def _check_unstreamed_reply(
         The warnings to put on the response: the answer was cut off, but there is one.
 
     Raises:
-        HTTPException(502): The model wrote no answer (it stopped at a limit, declined, or
-            ended with nothing), so a 200 would carry nothing. The metrics row says why.
+        UnansweredReply: The model wrote no answer (it stopped at a limit, declined, or
+            ended with nothing), so a 200 would carry nothing. Its ``response`` is the 502,
+            whose body names the error id of the log line and the request id of the
+            metrics row, which says why.
     """
     request_id = getattr(http_request.state, "request_id", None)
     agent_result.model_runs.warn_about_usage(
@@ -2282,7 +2315,7 @@ def _check_unstreamed_reply(
         return []
     if problem.event == "error":
         http_request.state.metrics_agent_data["error_message"] = problem.summary
-        raise HTTPException(status_code=502, detail=problem.message)
+        raise UnansweredReply(problem, request_id)
     return [problem.message]
 
 
@@ -2434,7 +2467,10 @@ def create_community_router(community_id: str) -> APIRouter:
             200: {"description": "Successful response"},
             400: {"description": "Invalid request"},
             500: {"description": "Internal server error"},
-            502: {"description": "The model wrote no answer (cut off, declined, or empty)"},
+            502: {
+                "model": UnansweredReplyResponse,
+                "description": "The model wrote no answer (cut off, declined, or empty)",
+            },
         },
     )
     async def ask(
@@ -2448,7 +2484,7 @@ def create_community_router(community_id: str) -> APIRouter:
             str | None, Header(alias=openrouter_key_header.model.name)
         ] = None,
         x_user_id: Annotated[str | None, Header(alias="X-User-ID")] = None,
-    ) -> AskResponse | StreamingResponse:
+    ) -> AskResponse | StreamingResponse | JSONResponse:
         """Ask a single question to the community assistant.
 
         This endpoint is for one-off questions without conversation history.
@@ -2518,6 +2554,8 @@ def create_community_router(community_id: str) -> APIRouter:
                 warnings=warnings,
             )
 
+        except UnansweredReply as unanswered:
+            return unanswered.response
         except HTTPException:
             raise
         except Exception as e:
@@ -2539,7 +2577,10 @@ def create_community_router(community_id: str) -> APIRouter:
             200: {"description": "Successful response"},
             400: {"description": "Invalid request"},
             500: {"description": "Internal server error"},
-            502: {"description": "The model wrote no answer (cut off, declined, or empty)"},
+            502: {
+                "model": UnansweredReplyResponse,
+                "description": "The model wrote no answer (cut off, declined, or empty)",
+            },
         },
     )
     async def chat(
@@ -2553,7 +2594,7 @@ def create_community_router(community_id: str) -> APIRouter:
             str | None, Header(alias=openrouter_key_header.model.name)
         ] = None,
         x_user_id: Annotated[str | None, Header(alias="X-User-ID")] = None,
-    ) -> ChatResponse | StreamingResponse:
+    ) -> ChatResponse | StreamingResponse | JSONResponse:
         """Chat with the community assistant.
 
         Supports multi-turn conversations with session persistence.
@@ -2654,6 +2695,8 @@ def create_community_router(community_id: str) -> APIRouter:
                 warnings=warnings,
             )
 
+        except UnansweredReply as unanswered:
+            return unanswered.response
         except ValueError as e:
             # Session limit errors
             raise HTTPException(status_code=400, detail=str(e)) from e

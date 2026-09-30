@@ -526,6 +526,9 @@ class TestTheRoutesDeclareTheirAnswers:
 
         assert "502" in responses
         assert responses["502"]["description"]
+        ref = responses["502"]["content"]["application/json"]["schema"]["$ref"]
+        properties = schema["components"]["schemas"][ref.rsplit("/", 1)[-1]]["properties"]
+        assert {"detail", "error_id", "request_id"} <= set(properties)
 
 
 @provider_param
@@ -760,6 +763,31 @@ class TestAnErrorEventCanBeTiedToItsRow:
 
         assert events[-1]["request_id"] == "req-cutoff" == _rows()[0]["request_id"]
         assert events[-1]["error_id"]
+
+    @pytest.mark.parametrize("route", ["ask", "chat"])
+    def test_the_502_of_a_request_that_is_not_streamed_does_too(
+        self,
+        provider: Provider,
+        client: TestClient,
+        monkeypatch,
+        caplog: pytest.LogCaptureFixture,
+        route: str,
+    ) -> None:
+        """A client that retries on a 502 can at least tie its attempts to the log and to
+        the metrics row. ``detail`` stays the text to show, as it is on every other error."""
+        caplog.set_level(logging.WARNING)
+        _serve(monkeypatch, provider, [scripted_reply(provider, "", cut_off=True)])
+
+        response = _post_ask(client) if route == "ask" else _post_chat(client)
+
+        assert response.status_code == 502
+        body = response.json()
+        assert body["detail"] == NO_ANSWER_MESSAGE
+        (row,) = _rows()
+        assert body["request_id"] == row["request_id"]
+        (record,) = [r for r in caplog.records if r.name == "src.api.turn_outcome"]
+        assert body["error_id"] == record.error_id
+        assert body["error_id"] in record.getMessage()
 
     async def test_each_error_has_an_id_of_its_own(self, provider: Provider) -> None:
         first, _ = await _chat(provider, [scripted_reply(provider, "", cut_off=True)])
