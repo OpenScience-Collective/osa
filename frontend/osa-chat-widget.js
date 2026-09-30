@@ -3848,7 +3848,7 @@
     return 'osa-code-' + (++codeBlockId);
   }
 
-  // Render inline markdown (bold, italic, links, plain URLs, citation markers)
+  // Render inline markdown (code, bold, italic, links, plain URLs, citation markers)
   // citationsByMarker: optional {"1": {source, title, cited_text}, ...} map.
   // When provided, a bare "[1]" (not followed by "(", so it never collides
   // with a real markdown link) whose number is a known marker renders as a
@@ -3856,13 +3856,32 @@
   function renderInlineMarkdown(text, citationsByMarker) {
     if (!text) return '';
 
+    // Code spans are lifted out before anything else is matched, so what is inside
+    // one is never read as markup and an italic, bold or link match that starts
+    // earlier in the run cannot swallow a later span: "Use *.set or `*.fdt` files"
+    // has one span and no emphasis. Each span stays in the run as a placeholder, is
+    // put back as <code> where the run's text is output, and as its own backticks
+    // where the run's text is an address. Code inside bold, italic or a link's
+    // text therefore renders too. The placeholder's brackets are private-use
+    // characters; any already in the text are replaced first, so text cannot
+    // forge a placeholder.
+    const codeSpans = [];
+    const spanOpen = String.fromCharCode(0xE000);
+    const spanClose = String.fromCharCode(0xE001);
+    const placeholder = new RegExp(spanOpen + '(\\d+)' + spanClose, 'g');
+    let remaining = String(text)
+      .split(spanOpen).join(String.fromCharCode(0xFFFD))
+      .split(spanClose).join(String.fromCharCode(0xFFFD))
+      .replace(/`([^`]+)`/g, (match, code) => {
+        codeSpans.push(code);
+        return spanOpen + (codeSpans.length - 1) + spanClose;
+      });
+    const withRawCode = (raw) => raw.replace(placeholder, (match, index) => '`' + codeSpans[index] + '`');
+    const escapeRun = (raw) => escapeHtml(raw).replace(placeholder, (match, index) => '<code>' + escapeHtml(codeSpans[index]) + '</code>');
+
     let result = '';
-    let remaining = text;
 
     while (remaining.length > 0) {
-      // Inline code is matched here (not only in markdownToHtml's paragraph
-      // path) so list items, headings and table cells render it too.
-      const codeMatch = remaining.match(/`([^`]+)`/);
       const boldMatch = remaining.match(/\*\*(.+?)\*\*/);
       const italicMatch = remaining.match(/(?<!\*)\*([^*]+)\*(?!\*)/);
       const linkMatch = remaining.match(/\[([^\]]+)\]\(([^)]+)\)/);
@@ -3882,49 +3901,45 @@
         }
       }
 
-      const codeIndex = codeMatch ? codeMatch.index : -1;
       const boldIndex = boldMatch ? remaining.indexOf(boldMatch[0]) : -1;
       const italicIndex = italicMatch ? remaining.indexOf(italicMatch[0]) : -1;
       const linkIndex = linkMatch ? remaining.indexOf(linkMatch[0]) : -1;
       const urlIndex = urlMatch ? remaining.indexOf(urlMatch[0]) : -1;
       const citationIndex = citationMatch ? citationMatch.index : -1;
 
-      const indices = [codeIndex, boldIndex, italicIndex, linkIndex, urlIndex, citationIndex].filter(i => i !== -1);
+      const indices = [boldIndex, italicIndex, linkIndex, urlIndex, citationIndex].filter(i => i !== -1);
       if (indices.length === 0) {
-        result += escapeHtml(remaining);
+        result += escapeRun(remaining);
         break;
       }
       const minIndex = Math.min(...indices);
 
-      if (minIndex === codeIndex && codeMatch) {
-        // Code content is escaped and never parsed for further markup.
-        if (codeIndex > 0) result += escapeHtml(remaining.substring(0, codeIndex));
-        result += '<code>' + escapeHtml(codeMatch[1]) + '</code>';
-        remaining = remaining.substring(codeIndex + codeMatch[0].length);
-      } else if (minIndex === boldIndex && boldMatch) {
-        if (boldIndex > 0) result += escapeHtml(remaining.substring(0, boldIndex));
-        result += '<strong>' + escapeHtml(boldMatch[1]) + '</strong>';
+      if (minIndex === boldIndex && boldMatch) {
+        if (boldIndex > 0) result += escapeRun(remaining.substring(0, boldIndex));
+        result += '<strong>' + escapeRun(boldMatch[1]) + '</strong>';
         remaining = remaining.substring(boldIndex + boldMatch[0].length);
       } else if (minIndex === italicIndex && italicMatch) {
-        if (italicIndex > 0) result += escapeHtml(remaining.substring(0, italicIndex));
-        result += '<em>' + escapeHtml(italicMatch[1]) + '</em>';
+        if (italicIndex > 0) result += escapeRun(remaining.substring(0, italicIndex));
+        result += '<em>' + escapeRun(italicMatch[1]) + '</em>';
         remaining = remaining.substring(italicIndex + italicMatch[0].length);
       } else if (minIndex === linkIndex && linkMatch) {
-        if (linkIndex > 0) result += escapeHtml(remaining.substring(0, linkIndex));
+        if (linkIndex > 0) result += escapeRun(remaining.substring(0, linkIndex));
         // Validate URL to prevent javascript: XSS
-        if (isSafeUrl(linkMatch[2])) {
-          result += '<a href="' + escapeHtml(linkMatch[2]) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(linkMatch[1]) + '</a>';
+        const linkUrl = withRawCode(linkMatch[2]);
+        if (isSafeUrl(linkUrl)) {
+          result += '<a href="' + escapeHtml(linkUrl) + '" target="_blank" rel="noopener noreferrer">' + escapeRun(linkMatch[1]) + '</a>';
         } else {
-          result += escapeHtml(linkMatch[1]); // Just show text, no link
+          result += escapeRun(linkMatch[1]); // Just show text, no link
         }
         remaining = remaining.substring(linkIndex + linkMatch[0].length);
       } else if (minIndex === urlIndex && urlMatch) {
-        if (urlIndex > 0) result += escapeHtml(remaining.substring(0, urlIndex));
+        if (urlIndex > 0) result += escapeRun(remaining.substring(0, urlIndex));
         // Plain URLs are already validated by regex to start with https?://
-        result += '<a href="' + escapeHtml(urlMatch[0]) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(urlMatch[0]) + '</a>';
+        const plainUrl = withRawCode(urlMatch[0]);
+        result += '<a href="' + escapeHtml(plainUrl) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(plainUrl) + '</a>';
         remaining = remaining.substring(urlIndex + urlMatch[0].length);
       } else if (minIndex === citationIndex && citationMatch) {
-        if (citationIndex > 0) result += escapeHtml(remaining.substring(0, citationIndex));
+        if (citationIndex > 0) result += escapeRun(remaining.substring(0, citationIndex));
         const citation = citationsByMarker[citationMatch[1]];
         const label = escapeHtml(citationMatch[1]);
         if (isSafeUrl(citation.source)) {
