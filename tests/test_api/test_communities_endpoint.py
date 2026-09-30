@@ -10,7 +10,15 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.api.routers.communities import router
+from src.api.routers.community import create_community_router
 from src.assistants import discover_assistants, registry
+from src.core.config.community import (
+    DEFAULT_LAUNCHER_OFFSET,
+    DEFAULT_LAUNCHER_OPEN_SIZE,
+    DEFAULT_LAUNCHER_SIZE,
+    LAUNCHER_GEOMETRY_FIELDS,
+    LAUNCHER_OPEN_RATIO,
+)
 
 # Discover assistants to populate registry
 discover_assistants()
@@ -120,6 +128,69 @@ class TestCommunitiesEndpoint:
             if cid != "nemar"
         }
         assert others and all(value == (None, None) for value in others.values()), others
+
+    def test_launcher_geometry_is_what_each_community_sets(self) -> None:
+        """A community's launcher position, sizes and offsets (#553) reach the widget
+        exactly as its config sets them, and a community that sets none sends none, so
+        its widget keeps the defaults. bottom-right is the default position and is never
+        sent."""
+        client = _create_test_client()
+        data = client.get("/communities").json()
+
+        by_id = {community["id"]: community["widget"] for community in data}
+        geometry = ("launcher_position", *LAUNCHER_GEOMETRY_FIELDS)
+        for info in registry.list_available():
+            if not info.community_config:
+                continue
+            widget = info.community_config.widget
+            sent = {key: by_id[info.id][key] for key in geometry if key in by_id[info.id]}
+            expected = (
+                {key: value for key, value in widget.resolve(info.name).items() if key in geometry}
+                if widget
+                else {}
+            )
+            assert sent == expected, info.id
+            assert sent.get("launcher_position") != "bottom-right", info.id
+
+    def test_the_per_community_route_carries_the_launcher_geometry(self) -> None:
+        """The widget reads GET /{community_id}, which builds its widget block through
+        WidgetConfigResponse (which ignores a field it does not declare), so a field
+        missing or misnamed there would be dropped without an error. The response equals
+        the community's own resolved geometry, whichever communities set any."""
+        geometry = ("launcher_position", *LAUNCHER_GEOMETRY_FIELDS)
+        checked_any = False
+        for info in registry.list_available():
+            if not info.community_config or not info.community_config.widget:
+                continue
+            app = FastAPI()
+            app.include_router(create_community_router(info.id))
+            response = TestClient(app).get(f"/{info.id}")
+            assert response.status_code == 200, info.id
+            widget = response.json()["widget"]
+            sent = {key: widget[key] for key in geometry if widget.get(key) is not None}
+            expected = {
+                key: value
+                for key, value in info.community_config.widget.resolve(info.name).items()
+                if key in geometry
+            }
+            assert sent == expected, info.id
+            checked_any = checked_any or bool(expected)
+        assert checked_any, "no community sets any launcher geometry: nothing was compared"
+
+    def test_nemar_names_the_launcher_geometry_it_already_has(self) -> None:
+        """NEMAR spells out the launcher's position, sizes and offsets as the worked
+        example of the fields (#553), at the values the capsule has always had, so naming
+        them changes nothing about how it is drawn."""
+        widget = registry.get("nemar").community_config.widget
+        assert widget.launcher == "capsule"
+        assert widget.launcher_position == "bottom-right"
+        assert widget.launcher_size == DEFAULT_LAUNCHER_SIZE["capsule"]
+        assert widget.launcher_open_size == DEFAULT_LAUNCHER_OPEN_SIZE["capsule"]
+        assert widget.launcher_offset_x == DEFAULT_LAUNCHER_OFFSET
+        assert widget.launcher_offset_y == DEFAULT_LAUNCHER_OFFSET
+        # ...and the widget derives 46 from a 58px launcher_size alone, so the open size
+        # NEMAR names is also what it would get by naming only the closed one.
+        assert round(widget.launcher_size * LAUNCHER_OPEN_RATIO) == widget.launcher_open_size
 
     def test_only_nemar_has_dataset_questions(self) -> None:
         """NEMAR is the only community with dataset-page questions (#477); the API omits

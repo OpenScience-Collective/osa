@@ -7,6 +7,7 @@ Tests cover:
 """
 
 import re
+import typing
 import warnings
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -21,6 +22,12 @@ from src.api.tool_results import (
     MAX_STDOUT_CHARS,
 )
 from src.core.config.community import (
+    DEFAULT_LAUNCHER_OPEN_SIZE,
+    DEFAULT_LAUNCHER_SIZE,
+    LAUNCHER_GEOMETRY_FIELDS,
+    LAUNCHER_OFFSET_MAX,
+    LAUNCHER_SIZE_MAX,
+    LAUNCHER_SIZE_MIN,
     MAX_CONFIGURED_CLIENT_TOOLS,
     MAX_IMPORT_BEFORE_SEAL,
     MAX_PRELUDE_CHARS,
@@ -778,6 +785,188 @@ class TestWidgetConfig:
         """resolve() should include launcher_label when specified."""
         result = WidgetConfig(launcher_label="Explore NEMAR").resolve("Test")
         assert result["launcher_label"] == "Explore NEMAR"
+
+    def test_launcher_geometry_defaults_send_nothing(self) -> None:
+        """A community that sets no launcher geometry sends none of it (#553), so its
+        widget renders exactly as it did before the fields existed."""
+        result = WidgetConfig().resolve("Test")
+        assert not [key for key in result if key.startswith("launcher_")]
+
+    def test_launcher_position_accepts_both_corners(self) -> None:
+        """bottom-right is the default and is never sent; bottom-left is sent."""
+        assert WidgetConfig().launcher_position == "bottom-right"
+        assert "launcher_position" not in WidgetConfig(launcher_position="bottom-right").resolve(
+            "Test"
+        )
+        left = WidgetConfig(launcher_position="bottom-left").resolve("Test")
+        assert left["launcher_position"] == "bottom-left"
+
+    @pytest.mark.parametrize("value", ["top-right", "left", "bottom", ""])
+    def test_launcher_position_rejects_other_values(self, value: str) -> None:
+        """Only the two bottom corners exist: the panel opens upward from the launcher."""
+        with pytest.raises(ValidationError):
+            WidgetConfig(launcher_position=value)
+
+    def test_launcher_geometry_is_sent_when_set(self) -> None:
+        """Every numeric launcher field reaches the widget, under its own name."""
+        values = {
+            "launcher_size": 72,
+            "launcher_open_size": 58,
+            "launcher_offset_x": 16,
+            "launcher_offset_y": 96,
+            "launcher_mobile_offset_x": 8,
+            "launcher_mobile_offset_y": 80,
+        }
+        result = WidgetConfig(**values).resolve("Test")
+        assert {key: result[key] for key in values} == values
+
+    def test_launcher_offset_zero_is_sent(self) -> None:
+        """An offset of 0 is a choice (flush against the edge), not an unset field."""
+        result = WidgetConfig(launcher_offset_x=0, launcher_mobile_offset_y=0).resolve("Test")
+        assert result["launcher_offset_x"] == 0
+        assert result["launcher_mobile_offset_y"] == 0
+
+    @pytest.mark.parametrize("field", ["launcher_size", "launcher_open_size"])
+    @pytest.mark.parametrize("size", [LAUNCHER_SIZE_MIN - 1, LAUNCHER_SIZE_MAX + 1, 0, -50])
+    def test_launcher_size_out_of_range_is_refused(self, field: str, size: int) -> None:
+        """A launcher smaller than the 44px touch-target floor, or absurdly large, fails
+        at load rather than drawing a broken button."""
+        with pytest.raises(ValidationError, match=field):
+            WidgetConfig(**{field: size})
+
+    @pytest.mark.parametrize("field", ["launcher_size", "launcher_open_size"])
+    def test_launcher_size_range_edges_are_accepted(self, field: str) -> None:
+        """Both ends of the range are valid."""
+        for size in (LAUNCHER_SIZE_MIN, LAUNCHER_SIZE_MAX):
+            kwargs = {field: size}
+            if field == "launcher_open_size":
+                kwargs["launcher_size"] = LAUNCHER_SIZE_MAX
+            assert getattr(WidgetConfig(**kwargs), field) == size
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "launcher_offset_x",
+            "launcher_offset_y",
+            "launcher_mobile_offset_x",
+            "launcher_mobile_offset_y",
+        ],
+    )
+    @pytest.mark.parametrize("offset", [-1, LAUNCHER_OFFSET_MAX + 1])
+    def test_launcher_offset_out_of_range_is_refused(self, field: str, offset: int) -> None:
+        """An offset is a distance from the edge: not negative, and not most of a screen."""
+        with pytest.raises(ValidationError, match=field):
+            WidgetConfig(**{field: offset})
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "launcher_size",
+            "launcher_open_size",
+            "launcher_offset_x",
+            "launcher_offset_y",
+            "launcher_mobile_offset_x",
+            "launcher_mobile_offset_y",
+        ],
+    )
+    @pytest.mark.parametrize("value", [60.5, 60.0, "60", "large", True, False, [60]])
+    def test_launcher_numbers_must_be_whole_numbers(self, field: str, value: object) -> None:
+        """Only an integer is a pixel count: a float, a numeric string, and above all a
+        boolean (a YAML `yes` or `off` loads as one, and would otherwise become a 1px or
+        0px offset) are refused rather than quietly turned into a number."""
+        with pytest.raises(ValidationError, match=field):
+            WidgetConfig(**{field: value})
+
+    @pytest.mark.parametrize("offset", [0, 1, LAUNCHER_OFFSET_MAX])
+    def test_launcher_offset_range_edges_are_accepted(self, offset: int) -> None:
+        """0 (flush against the edge) and the maximum are valid offsets."""
+        widget = WidgetConfig(launcher_offset_x=offset, launcher_mobile_offset_y=offset)
+        assert widget.launcher_offset_x == offset
+        assert widget.launcher_mobile_offset_y == offset
+
+    def test_launcher_defaults_cover_every_launcher_shape(self) -> None:
+        """A launcher shape with no default size would raise a KeyError from inside the
+        validator, so every shape the field accepts has one, and they cannot be edited."""
+        shapes = set(typing.get_args(WidgetConfig.model_fields["launcher"].annotation))
+        assert set(DEFAULT_LAUNCHER_SIZE) == shapes
+        assert set(DEFAULT_LAUNCHER_OPEN_SIZE) == shapes
+        for shape in shapes:
+            assert (
+                LAUNCHER_SIZE_MIN
+                <= DEFAULT_LAUNCHER_OPEN_SIZE[shape]
+                <= DEFAULT_LAUNCHER_SIZE[shape]
+            )
+        with pytest.raises(TypeError):
+            DEFAULT_LAUNCHER_SIZE["bubble"] = 99  # type: ignore[index]
+
+    def test_launcher_geometry_fields_are_the_models(self) -> None:
+        """LAUNCHER_GEOMETRY_FIELDS is what resolve() sends and the response declares; it
+        is a list kept by hand, so it is checked against the model's own fields (every
+        launcher_* field but the shape and the label, which resolve() sends by their own
+        rules)."""
+        model_fields = {
+            name
+            for name in WidgetConfig.model_fields
+            if name.startswith("launcher_") and name != "launcher_label"
+        }
+        assert model_fields == {"launcher_position", *LAUNCHER_GEOMETRY_FIELDS}
+
+    def test_the_widget_response_carries_every_launcher_field(self) -> None:
+        """WidgetConfigResponse ignores a field it does not declare, so a launcher field
+        it lacked would vanish without an error. Every field resolve() can send round-trips
+        through it, bottom-left and the phone offsets included, which no community sets
+        today."""
+        from src.api.routers.community import WidgetConfigResponse
+
+        every = {
+            "launcher_position": "bottom-left",
+            "launcher_size": 72,
+            "launcher_open_size": 58,
+            "launcher_offset_x": 16,
+            "launcher_offset_y": 96,
+            "launcher_mobile_offset_x": 8,
+            "launcher_mobile_offset_y": 80,
+        }
+        assert set(every) == {"launcher_position", *LAUNCHER_GEOMETRY_FIELDS}
+        sent = WidgetConfig(**every).resolve("T")
+        received = WidgetConfigResponse(**sent).model_dump()
+        assert {key: received[key] for key in every} == every
+        assert set(sent) <= set(WidgetConfigResponse.model_fields)
+
+    def test_the_widget_response_refuses_the_default_position(self) -> None:
+        """resolve() omits bottom-right, and the response is its own guard for a code path
+        that ever sent it."""
+        from src.api.routers.community import WidgetConfigResponse
+
+        light = WidgetConfig().resolve("T")
+        assert WidgetConfigResponse(**light).launcher_position is None
+        with pytest.raises(ValidationError):
+            WidgetConfigResponse(**{**light, "launcher_position": "bottom-right"})
+
+    def test_launcher_open_size_cannot_exceed_the_closed_size(self) -> None:
+        """The launcher shrinks when the panel opens; a larger open size is refused, and
+        the message names both numbers."""
+        with pytest.raises(
+            ValidationError, match=r"launcher_open_size \(70\).*\(64, from launcher_size\)"
+        ):
+            WidgetConfig(launcher_size=64, launcher_open_size=70)
+        assert WidgetConfig(launcher_size=64, launcher_open_size=64).launcher_open_size == 64
+
+    @pytest.mark.parametrize(("launcher", "default_size"), [("bubble", 56), ("capsule", 58)])
+    def test_launcher_open_size_alone_is_checked_against_the_default(
+        self, launcher: str, default_size: int
+    ) -> None:
+        """With no launcher_size, the closed size is today's for that launcher shape."""
+        assert DEFAULT_LAUNCHER_SIZE[launcher] == default_size
+        ok = WidgetConfig(launcher=launcher, launcher_open_size=default_size)
+        assert ok.launcher_open_size == default_size
+        with pytest.raises(ValidationError, match=f"the {launcher} default"):
+            WidgetConfig(launcher=launcher, launcher_open_size=default_size + 1)
+
+    def test_launcher_geometry_rejects_unknown_neighbors(self) -> None:
+        """A misspelled field fails at load (extra='forbid') instead of being ignored."""
+        with pytest.raises(ValidationError):
+            WidgetConfig(launcher_offset="20")
 
     def test_placeholder_max_length(self) -> None:
         """Should enforce placeholder max length."""

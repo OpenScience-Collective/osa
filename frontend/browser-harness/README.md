@@ -323,6 +323,24 @@ Measured 2026-09-24 in Chrome 153:
 - the capsule's resize (#490), 102 checks in all with it: each click sampled about 44 frames, 7 of them between 58px and 46px, with the chat circle's corner 20px from both edges in every one, and once open the panel 85px from the right edge (20px at 390px wide) and the indicator exactly behind the circle; hovering it sampled about 31 frames, to 60.9px, with the corner held;
   without the translate the resting circle's corner sits at 14px, a translate on another curve than the scale drifts it by up to 1.3px mid-way, no transition goes from one size to the other in a single frame, without the resting hover rule the hovered corner drifts 1.3px, and a capsule that clips its overflow leaves the press outside the 46px box on the page, not the button: each fails the check
 
+### The launcher's position, size and offsets
+
+```bash
+bun frontend/browser-harness/launcher-geometry-check.mjs
+```
+
+checks what a reader sees of `launcher_position`, `launcher_size`, `launcher_open_size` and the offsets (#553).
+It serves the real widget and a stub community API itself, so nothing else needs to run, and it gives up after four minutes.
+For each scenario (the bubble and the capsule, each corner, sizes, offsets, the phone offsets at 1440px and 390px wide, and the smallest windows and largest values the config accepts) a fresh tab samples the chat circle on every animation frame across a click:
+its width must go from the closed size to the open one and back, through at least three frames in between on the way open when the sizes differ, and its corner at the anchor must stay within 0.6px of the configured distance from the window's edges in every frame.
+It then hovers the resting circle with a real pointer, which must grow it 5% with the corner held, and checks the open panel's place and that it is inside the window, that the capsule's indicator is behind the chat circle (within 0.6px) and its other circles are the open size, that a capsule's circles are in the order they are seen in (which is the Tab order, also after a window is resized across 600px), and the collapsed label's 10px gap, vertical center and arrow.
+Any exception on the page, and any `[OSA] Ignoring` warning, fails the scenario it happened in.
+Two more checks follow: on each side, a real mouse drag of the panel's resize handle away from its anchor widens the panel, and the left side's details (the dark scheme's handle, the pill's origin, the panel's transition) and a size change made while the panel is open are checked.
+It is what CI runs, beside the first-paint check.
+
+The small-window and largest-value scenarios guard the panel's minimum width and height giving way to the offsets: without that, the panel of a launcher moved 30px in on a 320px-wide window, or of the largest values on a 390px-wide one, is cut off by the window's edge, and those scenarios fail.
+The left-anchored row guards the Tab order, which runs against what is seen unless the circles are reordered.
+
 ### The pop-out
 
 ```bash

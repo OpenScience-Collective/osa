@@ -24,6 +24,7 @@
 
 import { readFileSync } from 'node:fs';
 import { Window } from 'happy-dom';
+import { cssNumber, cssNumbers } from './test-support/css-px.js';
 
 let passed = 0;
 let failed = 0;
@@ -193,7 +194,10 @@ console.log('\na later load is drawn in the remembered look before the config ar
   assert(container.classList.contains('osa-capsule'), 'the capsule, already, with the config still in flight');
   const restingButton = window.getComputedStyle(q('.osa-launcher-capsule .osa-chat-button'));
   assertEqual(restingButton.width, '46px', 'laid out at the capsule\'s 46px, never the bubble\'s 56px first');
-  assertEqual([restingButton.scale, restingButton.translate], ['1.2609', '-6px -6px'], 'and drawn at its resting 58px from the first frame (#490)');
+  const [restingScale] = cssNumbers(restingButton.scale);
+  const restingShift = cssNumbers(restingButton.translate);
+  assert(Math.abs(46 * restingScale - 58) < 0.001 && restingShift.length === 2 && restingShift.every((v) => Math.abs(v + 6) < 0.001),
+    `and drawn at its resting 58px from the first frame (#490): scale ${restingScale}, translate ${restingButton.translate}`);
   assertEqual(container.style.getPropertyValue('--osa-primary'), '#5bbad5', 'in the remembered theme color');
   assertEqual(container.style.getPropertyValue('--osa-on-primary'), '#0b1f2a', 'and its text color');
   assertEqual(q('.osa-chat-title').firstChild.textContent.trim(), 'NEMAR Assistant', 'the remembered title');
@@ -442,6 +446,41 @@ console.log('\nan exception while the widget is built cannot leave the launcher 
   assert(container && container.classList.contains('osa-launcher-waiting'), 'the widget is in the page, waiting');
   await waitUntil(() => !container.classList.contains('osa-launcher-waiting'), 'the cap passes anyway');
   assert(true, 'the cap was scheduled before anything that could throw, so the launcher is shown');
+}
+
+console.log('\na remembered launcher place and size are drawn before the config arrives, and a fresh config that drops them undoes them (#553)');
+{
+  const remembered = {
+    ...NEMAR_WIDGET,
+    launcher_position: 'bottom-left',
+    launcher_size: 64,
+    launcher_open_size: 50,
+    launcher_offset_x: 30,
+    launcher_offset_y: 44,
+    launcher_mobile_offset_x: 12,
+    launcher_mobile_offset_y: 90,
+  };
+  const before = { [MEMORY_KEY]: JSON.stringify({ apiEndpoint: API, widget: remembered }) };
+  const { fetch, release } = configFetch(configResponse(NEMAR_WIDGET));
+  const { window, container, q } = start({ fetch, storage: before });
+  const geometry = ['--osa-size-closed', '--osa-size-open', '--osa-closed-scale', '--osa-edge-x', '--osa-edge-y', '--osa-edge-x-narrow', '--osa-edge-y-narrow'];
+  const set = () => geometry.filter((name) => container.style.getPropertyValue(name) !== '');
+
+  assert(container.classList.contains('osa-pos-left'), 'remembered: on the left from the first frame');
+  assertEqual([container.style.getPropertyValue('--osa-size-closed'), container.style.getPropertyValue('--osa-size-open')], ['64px', '50px'], 'and at its remembered sizes');
+  const capsule = window.getComputedStyle(q('.osa-launcher-capsule'));
+  assertEqual([cssNumber(capsule.left), cssNumber(capsule.bottom)], [30, 44], 'the capsule is at its remembered offsets, with the config still in flight');
+  assertEqual(cssNumber(window.getComputedStyle(q('.osa-launcher-capsule .osa-chat-button')).width), 50, 'laid out at its remembered open size');
+
+  release();
+  await waitUntil(() => !container.classList.contains('osa-pos-left'), 'the fresh config arrives');
+  assertEqual(set(), [], 'the fresh config leaves them out: nothing is left inline');
+  const now = window.getComputedStyle(q('.osa-launcher-capsule'));
+  assertEqual([cssNumber(now.right), cssNumber(now.bottom)], [20, 20], 'the capsule is back at the corner it has always been in');
+  assert(now.left === '' || now.left === 'auto', `with no left edge of its own (${JSON.stringify(now.left)})`);
+  assertEqual(cssNumber(window.getComputedStyle(q('.osa-launcher-capsule .osa-chat-button')).width), 46, 'at the capsule\'s own 46px');
+  const saved = JSON.parse(storageOf(window)[MEMORY_KEY]).widget;
+  assertEqual(Object.keys(saved).filter((key) => key.startsWith('launcher_') && key !== 'launcher' && key !== 'launcher_label'), [], 'and the next load remembers none of them');
 }
 
 console.log('\nthe tooltip waits for its button');
