@@ -2146,6 +2146,63 @@
       padding: 8px 16px;
       background: #fef2f2;
       border-top: 1px solid #fecaca;
+      user-select: text;
+    }
+
+    /* A failed request's banner: stays until dismissed, so it carries a dismiss button,
+       and, when the server gave one, the error's reference with a button to copy it. */
+    .osa-error.osa-error-persistent {
+      position: relative;
+      padding-right: 36px;
+    }
+
+    .osa-error-reference {
+      display: block;
+      margin-top: 4px;
+    }
+
+    .osa-error-id {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      user-select: all;
+    }
+
+    .osa-error-copy,
+    .osa-error-dismiss {
+      border: none;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      padding: 2px;
+      line-height: 0;
+      border-radius: 4px;
+    }
+
+    .osa-error-copy {
+      margin-left: 4px;
+      vertical-align: middle;
+    }
+
+    .osa-error-dismiss {
+      position: absolute;
+      top: 6px;
+      right: 10px;
+    }
+
+    .osa-error-copy svg,
+    .osa-error-dismiss svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    .osa-error-copy:hover,
+    .osa-error-dismiss:hover {
+      background: rgba(0, 0, 0, 0.08);
+    }
+
+    .osa-error-copy:focus-visible,
+    .osa-error-dismiss:focus-visible {
+      outline: 2px solid currentColor;
+      outline-offset: 1px;
     }
 
     .osa-warning {
@@ -2971,6 +3028,11 @@
 
     .osa-chat-widget.osa-dark .osa-error {
       border-top-color: rgba(248, 113, 113, 0.35);
+    }
+
+    .osa-chat-widget.osa-dark .osa-error-copy:hover,
+    .osa-chat-widget.osa-dark .osa-error-dismiss:hover {
+      background: rgba(255, 255, 255, 0.12);
     }
 
     .osa-chat-widget.osa-dark .osa-warning {
@@ -7768,14 +7830,105 @@
     }
   }
 
-  // Show error
-  function showError(container, message) {
+  // Show error. The banner for a failed request (`persist`) stays until the reader
+  // dismisses it or sends again: it is what says why their question went unanswered, and
+  // five seconds is too short to read it, let alone to select it or copy its reference.
+  // Any other message goes after five seconds, as it always has. The banner's one timer
+  // is the last message's: an earlier message's must not hide a later one.
+  const ERROR_VISIBLE_MS = 5000;
+  const errorTimers = new WeakMap();
+  function showError(container, message, { persist = false, errorId = null } = {}) {
     const errorEl = container.querySelector('.osa-error');
-    errorEl.textContent = message;
+    clearTimeout(errorTimers.get(errorEl));
+    errorTimers.delete(errorEl);
+    errorEl.classList.remove('osa-error-persistent');
+    if (persist) {
+      fillPersistentError(container, errorEl, message, errorId);
+    } else {
+      errorEl.textContent = message;
+      errorTimers.set(errorEl, setTimeout(() => {
+        errorEl.style.display = 'none';
+      }, ERROR_VISIBLE_MS));
+    }
     errorEl.style.display = 'block';
-    setTimeout(() => {
-      errorEl.style.display = 'none';
-    }, 5000);
+  }
+
+  // A reference the server gave for an error (its `error_id`), as text to show and copy:
+  // a bounded string, never markup. Null for anything else.
+  function errorReference(value) {
+    return typeof value === 'string' && value.trim() ? value.trim().slice(0, 100) : null;
+  }
+
+  // The banner's content for a failed request: the message, the error's reference with a
+  // button to copy it when the server gave one, and a dismiss button. Plain text nodes,
+  // selectable (.osa-error sets user-select: text, the reference selects whole on one click).
+  function fillPersistentError(container, errorEl, message, errorId) {
+    errorEl.textContent = '';
+    errorEl.classList.add('osa-error-persistent');
+    const text = document.createElement('span');
+    text.className = 'osa-error-text';
+    text.textContent = message;
+    errorEl.appendChild(text);
+
+    const reference = errorReference(errorId);
+    if (reference) {
+      const line = document.createElement('span');
+      line.className = 'osa-error-reference';
+      line.appendChild(document.createTextNode('Reference: '));
+      const id = document.createElement('code');
+      id.className = 'osa-error-id';
+      id.textContent = reference;
+      line.appendChild(id);
+      const copy = document.createElement('button');
+      copy.type = 'button';
+      copy.className = 'osa-error-copy';
+      copy.title = 'Copy the reference';
+      copy.setAttribute('aria-label', 'Copy the error reference');
+      copy.innerHTML = ICONS.copy;
+      copy.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        if (await writeClipboard(reference)) {
+          copy.classList.add('copied');
+          copy.innerHTML = ICONS.check;
+          setTimeout(() => {
+            copy.classList.remove('copied');
+            copy.innerHTML = ICONS.copy;
+          }, CODE_COPIED_MS);
+        } else if (typeof window.getSelection === 'function') {
+          // A page that cannot copy for the reader: the reference is selected, so the
+          // keyboard's copy does it.
+          const selection = window.getSelection();
+          const range = document.createRange();
+          range.selectNodeContents(id);
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+      });
+      line.appendChild(copy);
+      errorEl.appendChild(line);
+    }
+
+    const dismiss = document.createElement('button');
+    dismiss.type = 'button';
+    dismiss.className = 'osa-error-dismiss';
+    dismiss.title = 'Dismiss';
+    dismiss.setAttribute('aria-label', 'Dismiss this error');
+    dismiss.innerHTML = ICONS.close;
+    dismiss.addEventListener('click', (event) => {
+      event.stopPropagation();
+      dismissPersistentError(container);
+    });
+    errorEl.appendChild(dismiss);
+  }
+
+  // Take away a failed request's banner: the reader dismissed it, or sent again. A
+  // five-second message is left to its own timer.
+  function dismissPersistentError(container) {
+    const errorEl = container.querySelector('.osa-error');
+    if (!errorEl || !errorEl.classList.contains('osa-error-persistent')) return;
+    errorEl.classList.remove('osa-error-persistent');
+    errorEl.textContent = '';
+    errorEl.style.display = 'none';
   }
 
   // Warnings stack, one line each in the order they came. Several arrive back to back
@@ -8450,6 +8603,8 @@
             // (timeout, JSON) as a failure of the stream or the page.
             const reported = new Error(`Backend streaming error: ${errorMsg}`);
             reported.serverReported = true;
+            // The server's reference for this error, when it sends one (`error_id`).
+            reported.errorId = errorReference(event.error_id);
             throw reported;
           } else if (event.event) {
             // Unknown event type - log for debugging
@@ -8555,6 +8710,9 @@
     // Commit any open thumbs-down comment box before the conversation moves on.
     flushPendingResponseFeedback(container);
 
+    // The last failed request's banner has been read, or is about to be replaced.
+    dismissPersistentError(container);
+
     isLoading = true;
     isThinking = false;
     beginWait();
@@ -8575,6 +8733,9 @@
     if (currentDataset) userMessage.dataset = currentDataset.id;
     messages.push(userMessage);
     let assistantMessageCreated = false;
+    // Whether a failure took the question out of the conversation: then it goes back in
+    // the input, to be sent again, rather than being lost with the reply that never came.
+    let questionRemoved = false;
 
     renderMessages(container);
     renderSuggestions(container);
@@ -8719,7 +8880,9 @@
       }
 
       console.error('[OSA] Send message error:', error);
-      showError(container, userMessage);
+      // Until the reader dismisses it or sends again, with the server's reference for
+      // the error when it gave one.
+      showError(container, userMessage, { persist: true, errorId: error.errorId });
 
       // Clean up messages based on what was created
       // If streaming was attempted, handleStreamingResponse manages its own assistant message
@@ -8732,11 +8895,13 @@
         if (lastMessage && lastMessage.role === 'user' && messages.length === userMessageIndex + 1) {
           // No assistant message remains, remove user message
           messages.splice(userMessageIndex, 1);
+          questionRemoved = true;
         }
       } else {
         // No streaming attempted, no assistant message created, remove user message
         if (messages.length > userMessageIndex && messages[userMessageIndex].role === 'user') {
           messages.splice(userMessageIndex, 1);
+          questionRemoved = true;
         }
       }
 
@@ -8754,6 +8919,9 @@
       input.disabled = false;
       sendBtn.disabled = false;
       resetBtn.disabled = messages.length <= 1;
+      // The box was emptied when the question was sent and nothing has been typed since
+      // (it was disabled), so the question goes back as it was written.
+      if (questionRemoved && !input.value) input.value = question;
       input.focus();
       renderMessages(container);
       renderSuggestions(container);

@@ -1458,6 +1458,90 @@ for (const message of ['The tool arguments were not valid JSON', 'Stream closed 
   assertEqual(container.querySelector('.osa-error').textContent, message, `"${message}" is shown as sent`);
 }
 
+console.log('\nan error with no reply: the banner stays until dismissed, the question goes back in the box, the reference can be copied');
+{
+  const timers = heldTimers();
+  const QUESTION = 'Which event tag marks a button press?';
+  let calls = 0;
+  const { window, api } = loadWidget({
+    timers,
+    chat: () => (++calls === 1
+      ? sse([
+        { event: 'session', session_id: 's' },
+        { event: 'error', message: NO_ANSWER_MESSAGE, request_id: 'req-9', error_id: 'err-7f3a' },
+      ])
+      : sse([{ event: 'content', content: REPLY }, { event: 'done', content: REPLY }])),
+  });
+  timers.arm();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const written = [];
+  Object.defineProperty(window.navigator, 'clipboard', { value: { writeText: async (text) => { written.push(text); } }, configurable: true });
+  const before = api.getMessages().length;
+  const input = container.querySelector('.osa-chat-input input');
+  send(window, container, QUESTION);
+  await waitFor(() => settled(container), 'the first send settles');
+  const banner = container.querySelector('.osa-error');
+  assertEqual(banner.style.display, 'block', 'the error banner is up');
+  assert(banner.textContent.includes(NO_ANSWER_MESSAGE), 'with the server\'s message');
+  assert(banner.textContent.includes('err-7f3a'), 'and the error id');
+  assertEqual(input.value, QUESTION, 'the question is back in the box, to send again');
+  assertEqual(api.getMessages().length, before, 'and the failed turn left nothing in the conversation');
+  timers.fireAll();
+  assertEqual(banner.style.display, 'block', 'the banner is still up after its old five seconds and long after');
+  const style = window.getComputedStyle(banner);
+  assertEqual(style.userSelect || style.getPropertyValue('user-select'), 'text', 'its text can be selected');
+  const copy = banner.querySelector('.osa-error-copy');
+  assert(copy, 'the error id has a copy button');
+  copy.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await waitFor(() => written.length > 0, 'the id is written to the clipboard');
+  assertEqual(written, ['err-7f3a'], 'the clipboard holds the id alone');
+  // The next send starts clean.
+  send(window, container, input.value);
+  await waitFor(() => settled(container), 'the second send settles');
+  assertEqual(banner.style.display, 'none', 'the next send takes the old error away');
+  assertEqual(input.value, '', 'and, having worked, leaves the box empty');
+  assert(lastReplyText(container).startsWith(REPLY.slice(0, 40)), 'with the answer on the page');
+}
+
+console.log('\nan error banner can be dismissed, and one with no error id shows no reference');
+{
+  const { window, api } = loadWidget({
+    chat: () => sse([{ event: 'error', message: NO_ANSWER_MESSAGE }]),
+  });
+  const container = window.document.querySelector('.osa-chat-widget');
+  send(window, container, 'A question');
+  await waitFor(() => settled(container), 'the send settles');
+  const banner = container.querySelector('.osa-error');
+  assertEqual(banner.style.display, 'block', 'the error banner is up');
+  assert(banner.textContent.includes(NO_ANSWER_MESSAGE), 'with the message');
+  assert(!/Reference/.test(banner.textContent) && !banner.querySelector('.osa-error-copy'), 'and no reference or copy button, as there is no id');
+  banner.querySelector('.osa-error-dismiss').dispatchEvent(new window.Event('click', { bubbles: true }));
+  assertEqual(banner.style.display, 'none', 'the dismiss button takes it away');
+  assertEqual(api.getMessages().length, 1, 'the conversation holds only its greeting');
+}
+
+console.log('\na failed request that lost the question hands it back too; an error after a partial reply does not, since that question is still in the conversation');
+{
+  const QUESTION = 'What is the sampling rate?';
+  const { window } = loadWidget({ chat: () => json({ detail: 'The service is over capacity' }, { status: 503 }) });
+  const container = window.document.querySelector('.osa-chat-widget');
+  send(window, container, QUESTION);
+  await waitFor(() => settled(container), 'the send settles');
+  assertEqual(container.querySelector('.osa-chat-input input').value, QUESTION, 'an HTTP error: the question is back in the box');
+  assert(container.querySelector('.osa-error').textContent.includes('over capacity'), 'with the reason on screen');
+}
+{
+  const { window, api } = loadWidget({
+    chat: () => sse([{ event: 'content', content: REPLY }, { event: 'error', message: 'the model went away', error_id: 'err-55' }]),
+  });
+  const container = window.document.querySelector('.osa-chat-widget');
+  send(window, container, 'A question that got a partial reply');
+  await waitFor(() => settled(container), 'the send settles');
+  assertEqual(container.querySelector('.osa-chat-input input').value, '', 'a partial reply: the box is empty, the question is in the conversation');
+  assertEqual(api.getMessages().map((m) => m.role), ['assistant', 'user', 'assistant'], 'with the question and the partial reply kept');
+  assert(container.querySelector('.osa-error').textContent.includes('err-55'), 'and the error id is shown');
+}
+
 console.log('\nthe non-streamed fallback shows the warnings the response carries, as a stream does');
 {
   const warn = console.warn;
