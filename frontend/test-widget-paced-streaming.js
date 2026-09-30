@@ -1199,8 +1199,11 @@ function serverMessage(name) {
 
 const CUT_OFF_MESSAGE = serverMessage('CUT_OFF_MESSAGE');
 const NO_ANSWER_MESSAGE = serverMessage('NO_ANSWER_MESSAGE');
-assert(Boolean(CUT_OFF_MESSAGE && NO_ANSWER_MESSAGE), 'the server\'s cut-off and no-answer messages are found in src/api/turn_outcome.py');
-const LONG_MESSAGE = 'Conversation is getting long. Consider starting a new chat for best results.';
+const CONTEXT_FULL_CUT_OFF_MESSAGE = serverMessage('CONTEXT_FULL_CUT_OFF_MESSAGE');
+const CUT_OFF_LONG_MESSAGE = serverMessage('CUT_OFF_LONG_MESSAGE');
+const LONG_MESSAGE = serverMessage('LONG_CONVERSATION_MESSAGE');
+assert([CUT_OFF_MESSAGE, NO_ANSWER_MESSAGE, CONTEXT_FULL_CUT_OFF_MESSAGE, CUT_OFF_LONG_MESSAGE, LONG_MESSAGE].every(Boolean),
+  'the server\'s cut-off, no-answer, context-full, combined and long-conversation messages are found in src/api/turn_outcome.py');
 
 /**
  * Timers of four seconds or more are held until a test runs them (a banner's and a
@@ -1307,8 +1310,12 @@ console.log('\nthe same warning twice is one line, read for a full period from t
 const INCOMPLETE = /Response may be incomplete/;
 const CUT_OFF_CASES = [
   ['a cut_off code', { code: 'cut_off', message: 'The reply stopped short.' }, true],
-  ['the server\'s wording, from a server that sends no code', { message: CUT_OFF_MESSAGE }, true],
-  ['one notice that carries both the cut-off and the long conversation', { code: 'cut_off', message: `${CUT_OFF_MESSAGE} ${LONG_MESSAGE}` }, true],
+  ['the server\'s cut-off notice, with its code', { code: 'cut_off', message: CUT_OFF_MESSAGE }, true],
+  ['the combined notice the server sends when the conversation is long too', { code: 'cut_off', codes: ['cut_off', 'long_conversation'], message: CUT_OFF_LONG_MESSAGE }, true],
+  ['the notice for a conversation that filled the context window', { code: 'cut_off', message: CONTEXT_FULL_CUT_OFF_MESSAGE }, true],
+  ['the server\'s cut-off wording, from a server that sends no code', { message: CUT_OFF_MESSAGE }, true],
+  ['the combined wording, from a server that sends no code', { message: CUT_OFF_LONG_MESSAGE }, true],
+  ['the context-full wording, from a server that sends no code', { message: CONTEXT_FULL_CUT_OFF_MESSAGE }, true],
   ['the long-conversation notice with its code', { code: 'long_conversation', message: LONG_MESSAGE }, false],
   ['the long-conversation notice from a server that sends no code', { message: LONG_MESSAGE }, false],
 ];
@@ -1398,20 +1405,24 @@ console.log('\na cut-off reply with no text and no run record is kept, and says 
 {
   // A reply whose only run was a read of an earlier run's output (get_full_output) has
   // no record in `executions`: answerToolRequest writes one only for code it ran.
-  const { window, api } = loadWidget();
-  const container = window.document.querySelector('.osa-chat-widget');
-  const first = await api.handleStreamingResponse(sse([
-    { event: 'tool_request', call_id: 'c1', tool: 'get_full_output', args: { call_id: 'earlier' }, content: '' },
-  ]), container);
-  await api.handleStreamingResponse(sse([
-    { event: 'warning', code: 'cut_off', message: CUT_OFF_MESSAGE },
-    { event: 'done', content: '' },
-  ]), container, { messageIndex: first.messageIndex });
-  const message = api.getMessages()[first.messageIndex];
-  assert(message && message.cutOff === true, 'the reply is still there, marked');
-  assert(/length limit/.test(lastReplyText(container)), 'and what the reader sees is the reason, not a missing bubble');
-  assert(/ask (it|a narrower)/i.test(lastReplyText(container)), 'with what to do next');
-  assert(!INCOMPLETE.test(lastReplyText(container)), 'and, having no text at all, does not call nothing incomplete');
+  for (const [label, shown] of [['output limit', CUT_OFF_MESSAGE], ['context window', CONTEXT_FULL_CUT_OFF_MESSAGE]]) {
+    const { window, api } = loadWidget();
+    const container = window.document.querySelector('.osa-chat-widget');
+    const first = await api.handleStreamingResponse(sse([
+      { event: 'tool_request', call_id: 'c1', tool: 'get_full_output', args: { call_id: 'earlier' }, content: '' },
+    ]), container);
+    await api.handleStreamingResponse(sse([
+      { event: 'warning', code: 'cut_off', message: shown },
+      { event: 'done', content: '' },
+    ]), container, { messageIndex: first.messageIndex });
+    const message = api.getMessages()[first.messageIndex];
+    assert(message && message.cutOff === true, `${label}: the reply is still there, marked`);
+    assertEqual(lastReplyText(container), `[${shown}]`, `${label}: what the reader sees is the server's explanation, with what to do next, not a missing bubble`);
+    assert(!INCOMPLETE.test(lastReplyText(container)), `${label}: and, having no text at all, it does not call nothing incomplete`);
+    const saved = window.localStorage.getItem('osa-test-paced');
+    const again = loadWidget({ saved });
+    assertEqual(lastReplyText(again.window.document.querySelector('.osa-chat-widget')), `[${shown}]`, `${label}: a reload shows it again`);
+  }
 }
 
 console.log('\nan error event names itself as the server\'s: a word in it does not turn it into a stream timeout');
@@ -1565,6 +1576,25 @@ console.log('\nthe non-streamed fallback shows the warnings the response carries
     assertEqual([reply.content, reply.cutOff === true], ['A short answer.', true], 'and the reply is marked cut off');
     assert(INCOMPLETE.test(lastReplyText(container)), 'where the page shows it');
     assert((window.localStorage.getItem('osa-test-paced') || '').includes('"cutOff":true'), 'and the mark is saved');
+  } finally {
+    console.warn = warn;
+  }
+}
+{
+  // The response the server sends today: `warnings` is a list of the messages, no codes.
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    for (const [label, message] of [['output limit', CUT_OFF_MESSAGE], ['context window', CONTEXT_FULL_CUT_OFF_MESSAGE]]) {
+      const { window, api } = loadWidget({
+        chat: () => json({ message: { content: 'A short answer.' }, session_id: 's', warnings: [message] }),
+      });
+      const container = window.document.querySelector('.osa-chat-widget');
+      send(window, container, 'A question');
+      await waitFor(() => settled(container), 'the send settles');
+      assert(container.querySelector('.osa-warning').textContent.includes(message), `${label}: the banner has the server's message`);
+      assertEqual(api.getMessages().at(-1).cutOff === true, true, `${label}: and the reply is marked cut off`);
+    }
   } finally {
     console.warn = warn;
   }

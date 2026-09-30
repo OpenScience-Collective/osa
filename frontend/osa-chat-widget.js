@@ -4243,11 +4243,15 @@
       const { dataset, ...rest } = msg;
       return isValidDatasetId(dataset) ? { ...rest, dataset } : rest;
     }
-    // The cut-off mark is kept only as the boolean the widget writes.
-    const { cutOff, ...rest } = msg;
+    // The cut-off mark is kept only as the boolean the widget writes, and the server's
+    // words for it only as a bounded string.
+    const { cutOff, cutOffMessage, ...rest } = msg;
     return {
       ...rest,
       ...(cutOff === true ? { cutOff: true } : {}),
+      ...(cutOff === true && typeof cutOffMessage === 'string' && cutOffMessage
+        ? { cutOffMessage: cutOffMessage.slice(0, CUT_OFF_MESSAGE_LIMIT) }
+        : {}),
       citations: Array.isArray(msg.citations)
         ? msg.citations.filter((citation) => citation && typeof citation === 'object'
           && !Array.isArray(citation)
@@ -7931,11 +7935,13 @@
     errorEl.style.display = 'none';
   }
 
-  // Warnings stack, one line each in the order they came. Several arrive back to back
-  // (a cut-off reply and a long conversation do), and a banner that held only the last
-  // would take the first away before it could be read. Each line has a timer of its own,
-  // so each is up for the full period from when it arrived, and the banner goes with
-  // the last line. The same text again is the one line, its period started over.
+  // Warnings stack, one line each in the order they came. Several can arrive close
+  // together (the wait for the rate limit and a reply's own notice; a server before
+  // #568 sent the cut-off and long-conversation notices as two events), and a banner
+  // that held only the last would take the first away before it could be read. Each line
+  // has a timer of its own, so each is up for the full period from when it arrived, and
+  // the banner goes with the last line. The same text again is the one line, its period
+  // started over.
   const WARNING_VISIBLE_MS = 10000;
   const warningTimers = new WeakMap();
   function showWarning(container, message) {
@@ -7959,27 +7965,33 @@
   }
 
   // Whether a warning (a `warning` event, or an entry of a non-streamed response's
-  // `warnings`) says the reply was cut off at the model's length limit. A server that
-  // sends a machine-readable `code` is read by it, so its wording can change; one that
-  // sends none (the first to report a cut-off did not) is read by the wording it sent
-  // (CUT_OFF_MESSAGE in src/api/turn_outcome.py).
+  // `warnings`) says the reply was cut off: at the model's output limit, or because the
+  // conversation filled its context window. A warning with a machine-readable `code` is
+  // read by it, so its wording can change. One without (a stream's before #568, and a
+  // non-streamed response's `warnings`, which are strings) is read by the wording of
+  // the server's cut-off messages (src/api/turn_outcome.py), which a test holds this to.
   const CUT_OFF_CODE = 'cut_off';
-  const CUT_OFF_PHRASE = 'was cut off because';
+  const CUT_OFF_PHRASES = ['was cut off because', 'stopped short because'];
   function isCutOffWarning(warning) {
     if (!warning || typeof warning !== 'object') return false;
     if (typeof warning.code === 'string' && warning.code) return warning.code === CUT_OFF_CODE;
-    return typeof warning.message === 'string' && warning.message.includes(CUT_OFF_PHRASE);
+    return typeof warning.message === 'string' && CUT_OFF_PHRASES.some((phrase) => warning.message.includes(phrase));
   }
 
   // One warning about a reply, from wherever it came: the banner, and the reply's own
-  // mark when it says the reply was cut off. The stream's `warning` events and a
-  // non-streamed response's `warnings` both come through here, so the two cannot
-  // differ in what they show.
+  // mark when it says the reply was cut off, with the server's words for it (what to do
+  // about it differs by cause, and only the server knows the cause). The stream's
+  // `warning` events and a non-streamed response's `warnings` both come through here,
+  // so the two cannot differ in what they show.
+  const CUT_OFF_MESSAGE_LIMIT = 500;
   function noticeWarning(container, reply, warning) {
     const message = warning.message || 'Warning';
     console.warn('[OSA] Warning:', message);
     showWarning(container, message);
-    if (reply && isCutOffWarning(warning)) reply.cutOff = true;
+    if (reply && isCutOffWarning(warning)) {
+      reply.cutOff = true;
+      if (typeof warning.message === 'string') reply.cutOffMessage = warning.message.slice(0, CUT_OFF_MESSAGE_LIMIT);
+    }
   }
 
   // The warnings of a non-streamed response, as the objects noticeWarning reads. An
@@ -7995,17 +8007,20 @@
 
   // What a cut-off reply says about itself under its text: the bracketed italic note
   // the other replies that stopped short carry (see the stream handler), in the
-  // emphasis this renderer reads (*...*; it shows _..._ as typed). It is drawn from the
-  // `cutOff` mark rather than written into the text, so the canonical text in the done
-  // event cannot replace it, a copy of the reply does not carry it, and a reply that
-  // was saved and reloaded still has it. Not while the reply is still being revealed:
-  // the text is not all there yet.
+  // emphasis this renderer reads (*...*; it shows _..._ as typed). Under text it is short
+  // and true whatever the cause. With no text at all there would be nothing on the page
+  // but the note, so it is the server's own explanation (what to do differs: ask it to
+  // continue, or start a new conversation). It is drawn from the `cutOff` mark rather
+  // than written into the text, so the canonical text in the done event cannot replace
+  // it, a copy of the reply does not carry it, and a reply that was saved and reloaded
+  // still has it. Not while the reply is still being revealed: the text is not all there
+  // yet.
   function replyMarkdown(msg, msgIndex) {
     if (msg.cutOff !== true || msgIndex === revealingIndex) return msg.content;
     if (!hasVisibleText(msg.content)) {
-      return '*[The assistant reached its length limit before it wrote an answer. Ask it to continue, or ask a narrower question.]*';
+      return `*[${msg.cutOffMessage || 'The assistant stopped before it wrote an answer.'}]*`;
     }
-    return `${msg.content}\n\n*[Response may be incomplete - the assistant reached its length limit. Ask it to continue.]*`;
+    return `${msg.content}\n\n*[Response may be incomplete - the reply was cut off]*`;
   }
 
   // Parse SSE (Server-Sent Events) format
