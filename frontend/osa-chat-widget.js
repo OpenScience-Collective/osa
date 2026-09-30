@@ -4181,8 +4181,11 @@
       const { dataset, ...rest } = msg;
       return isValidDatasetId(dataset) ? { ...rest, dataset } : rest;
     }
+    // The cut-off mark is kept only as the boolean the widget writes.
+    const { cutOff, ...rest } = msg;
     return {
-      ...msg,
+      ...rest,
+      ...(cutOff === true ? { cutOff: true } : {}),
       citations: Array.isArray(msg.citations)
         ? msg.citations.filter((citation) => citation && typeof citation === 'object'
           && !Array.isArray(citation)
@@ -7403,7 +7406,7 @@
       });
 
       const content = msg.role === 'assistant'
-        ? markdownToHtml(msg.content, citationsByMarker)
+        ? markdownToHtml(replyMarkdown(msg, msgIndex), citationsByMarker)
         : escapeHtml(msg.content);
 
       // Compact numbered source list under the answer, when anything was cited. While
@@ -7800,6 +7803,34 @@
       if (!warningEl.firstElementChild) warningEl.style.display = 'none';
     }, WARNING_VISIBLE_MS));
     warningEl.style.display = 'block';
+  }
+
+  // Whether a warning (a `warning` event, or an entry of a non-streamed response's
+  // `warnings`) says the reply was cut off at the model's length limit. A server that
+  // sends a machine-readable `code` is read by it, so its wording can change; one that
+  // sends none (the first to report a cut-off did not) is read by the wording it sent
+  // (CUT_OFF_MESSAGE in src/api/turn_outcome.py).
+  const CUT_OFF_CODE = 'cut_off';
+  const CUT_OFF_PHRASE = 'was cut off because';
+  function isCutOffWarning(warning) {
+    if (!warning || typeof warning !== 'object') return false;
+    if (typeof warning.code === 'string' && warning.code) return warning.code === CUT_OFF_CODE;
+    return typeof warning.message === 'string' && warning.message.includes(CUT_OFF_PHRASE);
+  }
+
+  // What a cut-off reply says about itself under its text: the bracketed italic note
+  // the other replies that stopped short carry (see the stream handler), in the
+  // emphasis this renderer reads (*...*; it shows _..._ as typed). It is drawn from the
+  // `cutOff` mark rather than written into the text, so the canonical text in the done
+  // event cannot replace it, a copy of the reply does not carry it, and a reply that
+  // was saved and reloaded still has it. Not while the reply is still being revealed:
+  // the text is not all there yet.
+  function replyMarkdown(msg, msgIndex) {
+    if (msg.cutOff !== true || msgIndex === revealingIndex) return msg.content;
+    if (!hasVisibleText(msg.content)) {
+      return '*[The assistant reached its length limit before it wrote an answer. Ask it to continue, or ask a narrower question.]*';
+    }
+    return `${msg.content}\n\n*[Response may be incomplete - the assistant reached its length limit. Ask it to continue.]*`;
   }
 
   // Parse SSE (Server-Sent Events) format
@@ -8302,6 +8333,8 @@
             const warningMsg = event.message || 'Warning';
             console.warn('[OSA] Warning:', warningMsg);
             showWarning(container, warningMsg);
+            // The banner goes in seconds; a reply that stopped short is marked itself.
+            if (isCutOffWarning(event) && messages[messageIndex]) messages[messageIndex].cutOff = true;
           } else if (event.event === 'done') {
             // Finalize message and capture session ID
             receivedDoneEvent = true;

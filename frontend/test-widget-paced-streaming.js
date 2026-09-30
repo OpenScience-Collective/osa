@@ -1304,6 +1304,96 @@ console.log('\nthe same warning twice is one line, read for a full period from t
   assertEqual(banner.style.display, 'none', 'and it goes when that runs out');
 }
 
+const INCOMPLETE = /Response may be incomplete/;
+const CUT_OFF_CASES = [
+  ['a cut_off code', { code: 'cut_off', message: 'The reply stopped short.' }, true],
+  ['the server\'s wording, from a server that sends no code', { message: CUT_OFF_MESSAGE }, true],
+  ['one notice that carries both the cut-off and the long conversation', { code: 'cut_off', message: `${CUT_OFF_MESSAGE} ${LONG_MESSAGE}` }, true],
+  ['the long-conversation notice with its code', { code: 'long_conversation', message: LONG_MESSAGE }, false],
+  ['the long-conversation notice from a server that sends no code', { message: LONG_MESSAGE }, false],
+];
+
+console.log('\na reply a warning says was cut off is marked where it stands, and only that one');
+for (const [label, warning, marked] of CUT_OFF_CASES) {
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const started = api.getMessages().length;
+  await api.handleStreamingResponse(sse([
+    { event: 'content', content: REPLY },
+    { event: 'warning', ...warning },
+    { event: 'done', content: REPLY },
+  ]), container);
+  const message = api.getMessages()[started];
+  assertEqual(message.cutOff === true, marked, `${label}: ${marked ? 'marked' : 'not marked'}`);
+  assertEqual(INCOMPLETE.test(lastReplyText(container)), marked, `${label}: the page ${marked ? 'says so under the text' : 'says nothing under the text'}`);
+  assertEqual(message.content, REPLY, `${label}: the reply's own text is untouched`);
+  if (marked) {
+    const note = lastAssistant(container).querySelector('.osa-message-content em');
+    assert(note && INCOMPLETE.test(note.textContent) && !lastReplyText(container).includes('_['),
+      `${label}: the note is drawn in italics, with no markup showing as typed`);
+  }
+}
+{
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const started = api.getMessages().length;
+  await api.handleStreamingResponse(sse([
+    { event: 'content', content: REPLY },
+    { event: 'warning', code: 'cut_off', message: CUT_OFF_MESSAGE },
+    { event: 'done', content: REPLY },
+  ]), container);
+  await api.handleStreamingResponse(sse([
+    { event: 'content', content: REPLY },
+    { event: 'done', content: REPLY },
+  ]), container);
+  assertEqual([api.getMessages()[started].cutOff === true, api.getMessages()[started + 1].cutOff === true], [true, false],
+    'a later reply that ended on its own is not marked because an earlier one was cut off');
+}
+
+console.log('\na cut-off mark is kept in the saved conversation and shown again after a reload');
+{
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  await api.handleStreamingResponse(sse([
+    { event: 'content', content: REPLY },
+    { event: 'warning', code: 'cut_off', message: CUT_OFF_MESSAGE },
+    { event: 'done', content: REPLY },
+  ]), container);
+  const saved = window.localStorage.getItem('osa-test-paced');
+  assert(saved && saved.includes('"cutOff":true'), 'the mark is in what is saved');
+  const again = loadWidget({ saved });
+  const reloaded = again.window.document.querySelector('.osa-chat-widget');
+  assert(lastReplyText(reloaded).startsWith(REPLY.slice(0, 40)) && INCOMPLETE.test(lastReplyText(reloaded)),
+    'the reloaded reply shows its text and the note');
+  assert(again.api.getMessages().some((m) => m.cutOff === true), 'and the message still carries the mark');
+  const forged = JSON.stringify({ version: 99, messages: [{ role: 'assistant', content: 'Hi.', cutOff: 'yes' }], sessionId: null });
+  assertEqual(loadWidget({ saved: forged }).api.getMessages().map((m) => m.cutOff === true), [false],
+    'a stored value that is not true marks nothing');
+}
+
+console.log('\nthe note waits for the end of the reveal: a reply still being drawn is not called incomplete yet');
+{
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const started = api.getMessages().length;
+  const stream = api.handleStreamingResponse(sse([
+    { event: 'content', content: REPLY },
+    { event: 'warning', code: 'cut_off', message: CUT_OFF_MESSAGE },
+    { event: 'done', content: REPLY },
+  ], { gapMs: 5 }), container);
+  const texts = [];
+  let over = false;
+  stream.then(() => { over = true; }, () => { over = true; });
+  while (!over) {
+    texts.push(lastReplyText(container));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  await stream;
+  const early = texts.filter((t) => t.length > 0 && t.length < REPLY.length && INCOMPLETE.test(t));
+  assertEqual(early.length, 0, 'no partial text was shown with the note');
+  assert(INCOMPLETE.test(lastReplyText(container)) && api.getMessages()[started].cutOff === true, 'it is there once the reply is whole');
+}
+
 console.log('\n' + '='.repeat(60));
 console.log(`Total: ${passed + failed} checks, passed: ${passed}, failed: ${failed}`);
 process.exit(failed === 0 ? 0 : 1);
