@@ -2001,8 +2001,8 @@ def _check_unstreamed_reply(
 ) -> list[str]:
     """Report how a reply that was not streamed ended, before it is returned.
 
-    Logs once that the model stopped at its output limit, when it did (see
-    ``turn_outcome``).
+    Logs once that the request's cost row is incomplete, when it is, and once that the
+    model stopped at its output limit, when it did (see ``turn_outcome``).
 
     Returns:
         The warnings to put on the response: the answer was cut off, but there is one.
@@ -2012,6 +2012,9 @@ def _check_unstreamed_reply(
             answer, so a 200 would carry nothing. The metrics row says why.
     """
     request_id = getattr(http_request.state, "request_id", None)
+    agent_result.model_runs.warn_about_usage(
+        community_id=community_id, model=awm.model, endpoint=endpoint, request_id=request_id
+    )
     cut_off = cut_off_reply(
         agent_result.model_runs,
         reply_text=agent_result.response_content,
@@ -3361,6 +3364,12 @@ async def _stream_ask_response(
         # A reply the model stopped at its output limit raised nothing; say so (see
         # turn_outcome). With no text to show it is an error and no `done` follows.
         ask_endpoint = f"/{community_id}/ask"
+        model_runs.warn_about_usage(
+            community_id=community_id,
+            model=awm.model if awm else None,
+            endpoint=ask_endpoint,
+            request_id=request_id,
+        )
         cut_off = cut_off_reply(
             model_runs,
             reply_text=final_response,
@@ -3818,6 +3827,12 @@ async def _stream_chat_response(
                 runs_before=browser_runs_answered,
             ):
                 yield sse_line
+            model_runs.warn_about_usage(
+                community_id=community_id,
+                model=awm.model if awm else None,
+                endpoint=metrics_endpoint,
+                request_id=request_id,
+            )
             _log_streaming_metrics(
                 http_request=http_request,
                 community_id=community_id,
@@ -3840,6 +3855,12 @@ async def _stream_chat_response(
         # widget keeps a reply that ran code), it is an error and no `done` follows: a
         # `done` with empty content is dropped by the widget, and the reader would see
         # neither an answer nor a reason. Nothing is stored for it.
+        model_runs.warn_about_usage(
+            community_id=community_id,
+            model=awm.model if awm else None,
+            endpoint=metrics_endpoint,
+            request_id=request_id,
+        )
         cut_off = cut_off_reply(
             model_runs,
             reply_text=final_response,

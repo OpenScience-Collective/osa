@@ -1,24 +1,27 @@
-"""How a request's model runs ended.
+"""How a request's model runs ended, and what they reported about their cost.
 
 A reply can go wrong without raising. The model stops at its output limit and the
 stream ends normally with whatever fitted, which on a reasoning model can be nothing
-(ADR 0014 records the budget). That is not an exception, so it never reaches the error
-handlers: this module is where the router reads it off the model's own end-of-run
-message, says so in the log once per request, and decides what the reader is told.
+(ADR 0014 records the budget); or the provider never says how many tokens a run used,
+and the cost row is empty or an estimate. Neither is an exception, so neither reaches
+the error handlers: this module is where the router reads them off the model's own
+end-of-run message, says so in the log once per request, and, for a reply that was cut
+off, decides what the reader is told.
 
 ``ModelRuns`` is filled from each finished model run (an ``on_chat_model_end`` event's
-output when streaming, the messages of the final state when not). ``cut_off_reply`` is
-called once, when the request is finished.
+output when streaming, the messages of the final state when not).
+``cut_off_reply`` and ``ModelRuns.warn_about_usage`` are called once, when the request
+is finished.
 """
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
-from src.core.services.model_outcome import truncation_reason
+from src.core.services.model_outcome import USAGE_ESTIMATED_KEY, truncation_reason
 
 logger = logging.getLogger(__name__)
 
@@ -37,19 +40,31 @@ CUT_OFF_MESSAGE = (
 )
 
 
+def _reports_usage(message: Any) -> bool:
+    """Whether a finished model run says how many tokens it used."""
+    usage = getattr(message, "usage_metadata", None)
+    if not isinstance(usage, dict):
+        return False
+    return (usage.get("input_tokens") or 0) + (usage.get("output_tokens") or 0) > 0
+
+
 @dataclass
 class ModelRuns:
-    """What a request's model runs said about how they ended.
+    """What a request's model runs said about how they ended and what they used.
 
     A turn can run the model several times (every tool call is another run). The reader's
-    answer is the last run's, so ``truncated_by`` is the last run's.
+    answer is the last run's, so ``truncated_by`` is the last run's; the counts cover all.
 
     Attributes:
         runs: Model runs that finished.
+        without_usage: Runs that reported no tokens, so the cost row leaves them out.
+        estimated_usage: Runs whose usage is LiteLLM's estimate, not the provider's.
         truncated_by: The stop reason of the last run if it was cut off, else None.
     """
 
     runs: int = 0
+    without_usage: int = 0
+    estimated_usage: int = 0
     truncated_by: str | None = None
 
     def note(self, message: Any) -> None:
@@ -57,7 +72,12 @@ class ModelRuns:
         stream must not fail over it."""
         try:
             self.runs += 1
-            self.truncated_by = truncation_reason(getattr(message, "response_metadata", None))
+            metadata = getattr(message, "response_metadata", None)
+            self.truncated_by = truncation_reason(metadata)
+            if not _reports_usage(message):
+                self.without_usage += 1
+            elif isinstance(metadata, Mapping) and metadata.get(USAGE_ESTIMATED_KEY):
+                self.estimated_usage += 1
         except Exception:
             logger.warning("Could not read how a model run ended", exc_info=True)
 
@@ -77,6 +97,46 @@ class ModelRuns:
             if isinstance(message, AIMessage):
                 runs.note(message)
         return runs
+
+    def warn_about_usage(
+        self, *, community_id: str, model: str | None, endpoint: str, request_id: str | None
+    ) -> None:
+        """Say once, at the end of a request, that its cost row is incomplete.
+
+        A run with no reported tokens adds nothing to the row (all of them: a NULL cost),
+        and an estimated one prices without the cache and reasoning counts. Neither
+        raises, so without this nothing shows it.
+        """
+        if not (self.without_usage or self.estimated_usage):
+            return
+        if self.without_usage == self.runs:
+            consequence = "missing (NULL)"
+        elif self.without_usage:
+            consequence = "too low, since those runs are left out"
+        else:
+            consequence = "approximate, since the estimate has no cache or reasoning counts"
+        logger.warning(
+            "Token usage is incomplete for %s (community=%s, model=%s, request_id=%s): "
+            "%d of %d model runs reported none and %d used LiteLLM's estimate, so the "
+            "cost recorded for this request is %s",
+            endpoint,
+            community_id,
+            model,
+            request_id,
+            self.without_usage,
+            self.runs,
+            self.estimated_usage,
+            consequence,
+            extra={
+                "community_id": community_id,
+                "model": model,
+                "request_id": request_id,
+                "endpoint": endpoint,
+                "model_runs": self.runs,
+                "runs_without_usage": self.without_usage,
+                "runs_with_estimated_usage": self.estimated_usage,
+            },
+        )
 
 
 @dataclass(frozen=True)
