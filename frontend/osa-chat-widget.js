@@ -6248,7 +6248,9 @@
   // The model choice comes first in Settings. A custom model, and the reader's own API key
   // that pays for it, belong to "Custom", so those two fields appear only when Custom is
   // chosen. A key that is already filled in stays in view so the reader can see and
-  // remove it, whatever model is selected.
+  // remove it, whatever model is selected, and so does a key field that has keyboard
+  // focus: emptying it must not hide it, which would drop focus to the page. It is put
+  // away once focus leaves it (see watchApiKeyFocus).
   function syncCustomFields(container) {
     const modelSelect = container.querySelector('#osa-settings-model');
     const customModelField = container.querySelector('#osa-settings-custom-model-field');
@@ -6256,9 +6258,31 @@
     const apiKeyInput = container.querySelector('#osa-settings-api-key');
     const isCustom = !!modelSelect && modelSelect.value === 'custom';
     const hasKey = !!apiKeyInput && apiKeyInput.value.trim() !== '';
+    const hasFocus = !!apiKeyInput && apiKeyInput.ownerDocument.activeElement === apiKeyInput;
     if (customModelField) customModelField.style.display = isCustom ? 'block' : 'none';
-    if (apiKeyField) apiKeyField.style.display = (isCustom || hasKey) ? 'block' : 'none';
+    if (apiKeyField) apiKeyField.style.display = (isCustom || hasKey || hasFocus) ? 'block' : 'none';
     syncPlatformOnlyOptions(container);
+  }
+
+  // Puts an emptied key field away when focus leaves it. Not while a pointer press is
+  // in progress in the widget: the dialog is centred, so hiding a field moves the Save
+  // button, and a click that began on it would end somewhere else and be lost. Safari
+  // and Firefox on a Mac do not focus a button a press lands on, so the press itself is
+  // what is watched, not where focus went. The field settles after that click instead.
+  function watchApiKeyFocus(container) {
+    const apiKeyInput = container.querySelector('#osa-settings-api-key');
+    if (!apiKeyInput) return;
+    let pressed = false;
+    container.addEventListener('pointerdown', () => { pressed = true; }, true);
+    container.addEventListener('pointerup', () => { pressed = false; }, true);
+    container.addEventListener('pointercancel', () => { pressed = false; }, true);
+    apiKeyInput.addEventListener('blur', () => {
+      if (!pressed) {
+        syncCustomFields(container);
+        return;
+      }
+      container.addEventListener('click', () => syncCustomFields(container), { once: true });
+    });
   }
 
   // With the reader's own Anthropic key in the field, the models only the service's key
@@ -8926,6 +8950,7 @@
     // Show/hide the custom model and API key fields based on selection
     modelSelect?.addEventListener('change', () => syncCustomFields(container));
     container.querySelector('#osa-settings-api-key')?.addEventListener('input', () => syncCustomFields(container));
+    watchApiKeyFocus(container);
 
     // Check backend status
     checkBackendStatus();

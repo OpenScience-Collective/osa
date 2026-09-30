@@ -167,6 +167,44 @@ console.log('\na key the reader already saved stays in view, so it can be seen a
   assert(!shown(q, '#osa-settings-custom-model-field'), 'the model name stays hidden');
 }
 
+console.log('\nthe key field stays in view while it has focus, and is put away once focus leaves it');
+{
+  // In a browser, hiding the focused field drops focus to the page, so a reader who
+  // empties the field with the keyboard would have to tab in from the top again.
+  const { window, q } = await openSettingsDialog({ saved: { apiKey: ANTHROPIC_KEY, model: null } });
+  const input = q('#osa-settings-api-key');
+  input.focus();
+  assert(window.document.activeElement === input, 'the key field has focus');
+  input.value = ANTHROPIC_KEY.slice(0, -1);
+  input.dispatchEvent(new window.Event('input', { bubbles: true }));
+  input.value = '';
+  input.dispatchEvent(new window.Event('input', { bubbles: true }));
+  assert(shown(q, '#osa-settings-api-key-field'), 'emptied while focused with an offered model, it stays in view');
+  assert(window.document.activeElement === input, 'and keeps focus');
+  input.blur();
+  assert(!shown(q, '#osa-settings-api-key-field'), 'once focus leaves it, it is put away');
+}
+
+console.log('\nthe emptied key field waits out a click that began on Save, so the click lands');
+{
+  // The dialog is centred: hiding the field mid-press would move Save out from under
+  // the pointer. The press, not where focus went, is what is watched: Safari and
+  // Firefox on a Mac do not focus the button.
+  const { window, q, saved } = await openSettingsDialog({ saved: { apiKey: ANTHROPIC_KEY, model: null } });
+  const input = q('#osa-settings-api-key');
+  input.focus();
+  input.value = '';
+  input.dispatchEvent(new window.Event('input', { bubbles: true }));
+  const save = q('.osa-settings-btn-save');
+  save.dispatchEvent(new window.Event('pointerdown', { bubbles: true }));
+  input.blur();
+  assert(shown(q, '#osa-settings-api-key-field'), 'blurred by a press, the field has not moved anything yet');
+  save.dispatchEvent(new window.Event('pointerup', { bubbles: true }));
+  click(window, save);
+  assertEqual(saved(), { apiKey: null, model: null, keyProvider: null }, 'the click on Save saved the removal of the key');
+  assert(!shown(q, '#osa-settings-api-key-field'), 'and the field is put away after the click');
+}
+
 console.log('\na saved custom model comes back as Custom, with its key');
 {
   const { q } = await openSettingsDialog({ saved: { apiKey: OPENROUTER_KEY, model: 'openai/gpt-5' } });
