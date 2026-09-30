@@ -4221,7 +4221,9 @@
       result += '<pre data-code-id="' + blockId + '"><button class="osa-copy-btn" data-copy-target="' + blockId + '" title="Copy code">' + ICONS.copy + '</button><code>' + escapeHtml(codeContent) + '</code></pre>';
     }
 
-    return result || text;
+    // Nothing rendered (a reply that is only an opening fence): the text still goes into
+    // innerHTML, so it is escaped, never returned as markup.
+    return result || escapeHtml(text);
   }
 
   // Validate message structure for security
