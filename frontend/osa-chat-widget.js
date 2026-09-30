@@ -219,6 +219,15 @@
     return (offeredModels && offeredModels.length) ? offeredModels : DEFAULT_MODELS;
   }
 
+  // The offered models as the Settings menu's options. The community's own default is
+  // the menu's Default entry, so it is left out here.
+  function modelOptionsHtml() {
+    return getModelMenuOptions()
+      .filter(m => !isCommunityDefaultModel(m.value))
+      .map(m => `<option value="${escapeHtml(m.value)}">${escapeHtml(m.label)}</option>`)
+      .join('');
+  }
+
   function isPlatformOnly(modelId) {
     if (offeredModels && offeredModels.length) {
       const live = offeredModels.find(m => m.value === modelId);
@@ -6401,11 +6410,7 @@
     // config that loads after the widget's initial render is still
     // reflected the next time settings are opened.
     if (modelSelect) {
-      const options = getModelMenuOptions()
-        .filter(m => m.value !== communityDefaultModel)
-        .map(m => `<option value="${escapeHtml(m.value)}">${escapeHtml(m.label)}</option>`)
-        .join('');
-      modelSelect.innerHTML = `<option value="default">Default (Community Setting)</option>${options}<option value="custom">Custom</option>`;
+      modelSelect.innerHTML = `<option value="default">Default (Community Setting)</option>${modelOptionsHtml()}<option value="custom">Custom</option>`;
     }
 
     // Update default option label with community default model
@@ -6431,11 +6436,15 @@
       apiKeyInput.value = userSettings.apiKey || '';
     }
     if (modelSelect) {
-      // Check if current model is in the offered list (an alias is the model it stands for)
+      // The community's own default is the menu's Default entry, not one of its offered
+      // models (see modelOptionsHtml), so a saved model that is the default, or an alias of
+      // it, selects Default rather than an option that is not there.
       const saved = userSettings.model ? canonicalModelId(userSettings.model) : null;
-      const isDefaultModel = saved === null || getModelMenuOptions().some(m => m.value === saved);
-      if (isDefaultModel) {
-        modelSelect.value = saved || 'default';
+      if (!saved || isCommunityDefaultModel(saved)) {
+        modelSelect.value = 'default';
+        if (customModelInput) customModelInput.value = '';
+      } else if (getModelMenuOptions().some(m => m.value === saved)) {
+        modelSelect.value = saved;
         if (customModelInput) customModelInput.value = '';
       } else {
         // Custom model
@@ -6963,7 +6972,7 @@
               </label>
               <select id="osa-settings-model" class="osa-settings-select">
                 <option value="default">Default (Community Setting)</option>
-                ${getModelMenuOptions().filter(m => m.value !== communityDefaultModel).map(m => `<option value="${escapeHtml(m.value)}">${escapeHtml(m.label)}</option>`).join('')}
+                ${modelOptionsHtml()}
                 <option value="custom">Custom</option>
               </select>
               <span class="osa-settings-hint" id="osa-settings-model-hint">

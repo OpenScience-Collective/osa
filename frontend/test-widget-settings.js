@@ -451,8 +451,24 @@ for (const [label, saved, menu] of [
   // The default may itself be a slug the menu does not offer; a request naming it is the
   // default's own, so it needs no key.
   const slug = 'openai/gpt-oss-120b:nitro';
-  const { inMemory } = await openSettingsDialog({ config: { ...CONFIG, default_model: slug }, saved: { apiKey: null, model: slug } });
+  const { q, inMemory } = await openSettingsDialog({ config: { ...CONFIG, default_model: slug }, saved: { apiKey: null, model: slug } });
   assertEqual(inMemory().model, slug, 'a saved model that is the community\'s own non-offered default is kept without a key');
+  assertEqual(q('#osa-settings-model').value, 'default', 'and the menu is on Default');
+}
+
+console.log('\na saved model that is the community default selects Default, not a blank menu');
+for (const [label, config, model, defaultModel] of [
+  ['the default itself', CONFIG, 'claude-haiku-4-5', 'claude-haiku-4-5'],
+  ['a retired id the default replaced (NEMAR)', NEMAR_LIKE, 'claude-sonnet-5', 'claude-sonnet-5-5'],
+  ['an alias of the default', CONFIG, 'claude-haiku-4.5', 'claude-haiku-4-5'],
+  ['the default, itself given as an alias', { ...CONFIG, default_model: 'claude-sonnet-5' }, 'claude-sonnet-5-5', 'claude-sonnet-5-5'],
+]) {
+  const { window, q, saved } = await openSettingsDialog({ config, saved: { apiKey: null, model } });
+  assertEqual(q('#osa-settings-model').value, 'default', `${label}: the menu is on Default`);
+  const options = [...q('#osa-settings-model').options].map((o) => o.value);
+  assert(!options.includes(defaultModel), `${label}: the default is the Default entry, not a second option (${options.join(', ')})`);
+  click(window, q('.osa-settings-btn-save'));
+  assertEqual(saved(), { apiKey: null, model: null, keyProvider: null }, `${label}: saving from there keeps the default`);
 }
 
 // The ids the server's community config validator accepts and refuses (issue #552): one
