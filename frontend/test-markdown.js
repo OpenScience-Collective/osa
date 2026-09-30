@@ -211,5 +211,19 @@ assert(
   'an indented numbered item becomes a list item'
 );
 
+console.log('\nText that renders to nothing is escaped, not returned as markup\n');
+
+// A reply that is only an opening fence renders no block, and the raw text used to be
+// returned as HTML: an info string such as <img onerror=...> became a live element.
+const loneFence = markdownToHtml('```<img src=x onerror=alert(1)>');
+assert(!loneFence.includes('<img'), 'a lone opening fence with HTML in its info string is not returned as markup');
+assert(loneFence.includes('&lt;img src=x onerror=alert(1)&gt;'), 'the lone fence text is shown escaped');
+assert(markdownToHtml('```') === '```', 'a bare lone fence is shown as typed');
+assert(markdownToHtml('') === '', 'an empty reply renders as nothing');
+assert(
+  !markdownToHtml('Here is a tag: <img src=x onerror=alert(1)//').includes('<img'),
+  'a "<" in a paragraph is escaped, not passed through as the start of a tag'
+);
+
 console.log(`\n${testsPassed} passed, ${testsFailed} failed\n`);
 process.exit(testsFailed === 0 ? 0 : 1);
