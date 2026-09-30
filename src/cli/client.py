@@ -184,7 +184,7 @@ class OSAClient:
 
         Yields (event_type, data_dict) tuples.
         Event types: content, thinking, tool_call, tool_start, tool_end, citation,
-        done, error. The CLI reads the ones it shows and ignores the rest.
+        warning, done, error. The CLI reads the ones it shows and ignores the rest.
         """
         return self._stream_request(
             f"{self.api_url}/{community}/ask",
