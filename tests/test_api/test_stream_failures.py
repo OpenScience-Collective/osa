@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, Literal
 from unittest.mock import patch
 
 import httpx
@@ -81,14 +81,20 @@ def _rows() -> list[dict]:
         return conn.execute("SELECT * FROM request_log ORDER BY timestamp").fetchall()
 
 
-async def _run(path: str, llm: Any, model: str, tools: list[Any] | None = None) -> list[dict]:
+async def _run(
+    path: str,
+    llm: Any,
+    model: str,
+    tools: list[Any] | None = None,
+    key_source: Literal["byok", "community", "platform"] = "platform",
+) -> list[dict]:
     """Stream one turn of ``/ask`` or ``/chat`` over ``llm`` through the real graph."""
     from tests.helpers.provider_replies import collect
 
     assistant = CommunityAssistant(
         model=llm, config=community_config(), preload_docs=False, additional_tools=tools
     )
-    wrapped = AssistantWithMetrics(assistant=assistant, model=model, key_source="platform")
+    wrapped = AssistantWithMetrics(assistant=assistant, model=model, key_source=key_source)
     request = real_request("req-failure")
     with patch("src.api.routers.community.create_community_assistant", return_value=wrapped):
         if path == "ask":
@@ -277,6 +283,110 @@ class TestAnthropic:
         (record,) = _failure_records(caplog)
         assert record.levelno == logging.ERROR
         assert "(HTTP 400)" in record.getMessage()
+
+
+#: What a reader is told when the provider refused a key, whose key it was. A new
+#: conversation fixes neither, so neither says to start one.
+KEY_REFUSED_TEXT = (
+    "The provider refused your API key. Check that it is valid and can use this model."
+)
+SERVER_KEY_TEXT = (
+    "The assistant is unavailable because of a server problem, and trying again will not "
+    "help. Please contact support."
+)
+CANNOT_RETRY_TEXT = {
+    "ask": "The assistant could not process this request, and trying again will not help.",
+    "chat": (
+        "The assistant could not process this request, and trying again will not help. "
+        "Start a new conversation."
+    ),
+}
+
+
+class TestAKeyTheProviderRefused:
+    """The fix for a refused key depends on whose it is: the caller's own (BYOK) is theirs
+    to check, the platform's or a community's is the operator's. Neither is helped by a new
+    conversation, and ``/ask`` has no conversation to start."""
+
+    @paths
+    async def test_a_callers_own_key_is_theirs_to_check_and_is_not_an_error(
+        self, path: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.WARNING)
+        with served_by(refusal_with(401, "authentication_error", "invalid x-api-key")):
+            llm = create_anthropic_llm(
+                DEFAULT_MODEL, api_key="sk-ant-revoked", settings=Settings(_env_file=None)
+            )
+            events = await _run(path, llm, DEFAULT_MODEL, key_source="byok")
+
+        assert events[-1]["message"] == KEY_REFUSED_TEXT
+        assert events[-1]["retryable"] is False
+        assert events[-1]["error_id"] and events[-1]["request_id"] == "req-failure"
+        (record,) = _failure_records(caplog)
+        assert record.levelno == logging.WARNING, "the operator did nothing wrong"
+        assert not record.exc_info, "a revoked key of the caller's needs no traceback"
+        assert "(HTTP 401)" in record.getMessage() and record.key_source == "byok"
+        assert record.error_id == events[-1]["error_id"]
+
+    @paths
+    async def test_the_platforms_own_key_is_an_error_with_its_traceback(
+        self, path: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.WARNING)
+        with served_by(refusal_with(401, "authentication_error", "invalid x-api-key")):
+            llm = create_anthropic_llm(
+                DEFAULT_MODEL, api_key="sk-ant-platform", settings=Settings(_env_file=None)
+            )
+            events = await _run(path, llm, DEFAULT_MODEL, key_source="platform")
+
+        assert events[-1]["message"] == SERVER_KEY_TEXT
+        assert len(events[-1]["message"]) <= 120
+        assert events[-1]["retryable"] is False
+        (record,) = _failure_records(caplog)
+        assert record.levelno == logging.ERROR and record.exc_info
+        assert record.key_source == "platform"
+
+    @paths
+    async def test_a_community_key_is_the_operators_to_fix_too(
+        self, path: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.WARNING)
+        with served_by(refusal_with(403, "permission_error", "no access to this model")):
+            llm = create_anthropic_llm(
+                DEFAULT_MODEL, api_key="sk-ant-community", settings=Settings(_env_file=None)
+            )
+            events = await _run(path, llm, DEFAULT_MODEL, key_source="community")
+
+        assert events[-1]["message"] == SERVER_KEY_TEXT
+        (record,) = _failure_records(caplog)
+        assert record.levelno == logging.ERROR and record.exc_info
+
+    @paths
+    async def test_a_request_the_provider_refused_keeps_the_generic_text_with_a_callers_key(
+        self, path: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Only a refused credential is the key's fault: a 400 is still the request's."""
+        caplog.set_level(logging.WARNING)
+        with served_by(refusal_with(400, "invalid_request_error", "effort is not supported")):
+            llm = create_anthropic_llm(
+                DEFAULT_MODEL, api_key="sk-ant-test", settings=Settings(_env_file=None)
+            )
+            events = await _run(path, llm, DEFAULT_MODEL, key_source="byok")
+
+        assert events[-1]["message"] == CANNOT_RETRY_TEXT[path]
+        (record,) = _failure_records(caplog)
+        assert record.levelno == logging.ERROR and record.exc_info
+
+    async def test_ask_has_no_conversation_to_start_and_chat_does(self) -> None:
+        with served_by(refusal_with(400, "invalid_request_error", "effort is not supported")):
+            llm = create_anthropic_llm(
+                DEFAULT_MODEL, api_key="sk-ant-test", settings=Settings(_env_file=None)
+            )
+            ask = await _run("ask", llm, DEFAULT_MODEL)
+            chat = await _run("chat", llm, DEFAULT_MODEL)
+
+        assert "conversation" not in ask[-1]["message"]
+        assert "Start a new conversation" in chat[-1]["message"]
 
 
 class TestOpenRouter:
