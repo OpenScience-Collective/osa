@@ -4412,4 +4412,14 @@ async def _stream_chat_response(
     finally:
         # Released however this generator ends: normal return, error, or the client
         # dropping the connection, which closes the generator and runs this.
+        #
+        # A turn that ends on an error (or on an empty reply, which stores nothing) leaves
+        # the reader's message in the session with no reply after it, and that is left
+        # alone on purpose: the next message lands right behind it, two human messages in
+        # a row, and the model still sees what was asked. What each provider does with the
+        # pair is pinned in tests/test_api/test_unanswered_user_message.py. Bedrock merges
+        # them into one user message (langchain-aws runs `merge_message_runs`), and so does
+        # Anthropic (langchain-anthropic's own `_merge_messages`). The OpenRouter path merges
+        # nothing: LiteLLM sends two consecutive user messages, which the OpenAI-style chat
+        # format allows.
         session.end_turn()
