@@ -118,7 +118,7 @@ class Settings(BaseSettings):
     # Model Configuration
     # Phase 2 (issue #362) routes platform/community requests to the Claude
     # Platform on AWS by default: default_model/test_model are first-party
-    # Anthropic ids (src.core.services.anthropic_llm.OFFERED_MODELS), not
+    # Anthropic ids (src.core.services.anthropic_models.OFFERED_MODELS), not
     # OpenRouter's creator/model-name format. default_model_provider and
     # test_model_provider are OpenRouter-only routing hints (see
     # src.core.services.litellm_llm.create_openrouter_llm's `provider` arg):
@@ -280,7 +280,12 @@ RETIRED_ENV_VARS: dict[str, str] = {
 
 
 def _warn_retired_env_vars() -> None:
-    """Log a warning for each retired environment variable that is still set."""
+    """Log a warning for each retired environment variable that is still set.
+
+    Reads the process environment only. ``Settings`` also reads a ``.env`` file, and ignores
+    names it does not know, so a retired variable that appears only in ``.env`` is neither
+    used nor reported here; the deployment's environment file is where to look for it.
+    """
     present = {name.upper() for name in os.environ}
     for name, replacement in RETIRED_ENV_VARS.items():
         if name in present:

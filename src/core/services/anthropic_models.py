@@ -369,7 +369,7 @@ def resolve_reasoning_effort(
     at ``high``; one below everything is raised to its lowest (gpt-oss cannot go below
     ``low``); and one in a gap between two it accepts takes the higher of the levels
     below it. None comes back when nothing was requested, or when the model has no
-    levels (Haiku, Qwen3 Next, an id that is not offered): there is nothing to send.
+    levels (Qwen3 Next, or an id that is not offered): there is nothing to send.
 
     Args:
         model: Model identifier, in any form ``normalize_model`` accepts.

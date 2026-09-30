@@ -96,7 +96,9 @@ def create_openrouter_llm(
 
     Uses LiteLLM for native support of Anthropic's prompt caching feature.
     When caching is enabled, the system prompt and the last message carry
-    cache_control markers for 90% cost reduction on cache hits. Tool results
+    cache_control markers for 90% cost reduction on cache hits, for Anthropic's
+    models only (``litellm_chat.takes_cache_markers``); other models get plain
+    messages. Tool results
     that carry ``search_result`` blocks are shown to the model as tagged text
     and the tags it writes come back as citations (see
     ``src.core.services.tagged_citations``).
@@ -216,40 +218,3 @@ def create_openrouter_llm(
         # Requested by default; the model only sends markers to models that take them.
         prompt_caching=True if enable_caching is None else enable_caching,
     )
-
-
-# Reference list of known Anthropic Claude models supporting prompt caching
-# This is informational only - the is_cacheable_model() function uses a permissive
-# heuristic (any "anthropic/claude-*" model) rather than this restrictive list.
-# Caching is enabled by default for all models; OpenRouter/LiteLLM handle
-# unsupported models gracefully by ignoring cache_control parameters.
-CACHEABLE_MODELS = {
-    "claude-opus-4.6": "anthropic/claude-opus-4.6",
-    "claude-sonnet-4.6": "anthropic/claude-sonnet-4.6",
-    "claude-opus-4.5": "anthropic/claude-opus-4.5",
-    "claude-sonnet-4.5": "anthropic/claude-sonnet-4.5",
-    "claude-haiku-4.5": "anthropic/claude-haiku-4.5",
-}
-
-
-def is_cacheable_model(model: str) -> bool:
-    """Check if a model identifier suggests Anthropic prompt caching support.
-
-    Uses a heuristic check: returns True for model identifiers in the known
-    cacheable models list, or any identifier starting with "anthropic/claude-".
-
-    Note: This is optimistic and may return True for models that don't actually
-    support caching. The LiteLLM/OpenRouter layer handles unsupported models
-    gracefully by ignoring cache_control parameters.
-
-    Args:
-        model: Model identifier (e.g., "anthropic/claude-haiku-4.5")
-
-    Returns:
-        True if the model likely supports cache_control based on its identifier
-    """
-    # Check exact match in aliases
-    if model in CACHEABLE_MODELS:
-        return True
-    # Check if it's an Anthropic Claude model (permissive heuristic)
-    return model.startswith("anthropic/claude-")

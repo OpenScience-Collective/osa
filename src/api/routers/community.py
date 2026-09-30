@@ -1332,15 +1332,15 @@ def _select_model(
     default, is normalized against the offered models (see
     ``normalize_model``). An id that is not offered is rejected with 400
     regardless of key source, since the platform only ever runs the offered
-    models -- there is no cost-abuse risk in letting any request pick one,
+    models; there is no cost-abuse risk in letting any request pick one,
     because each is priced under the cost block threshold. The offered models
     include the Bedrock-served ones; ``_route_request`` moves a request that
     picked one of those onto the Bedrock provider. ``default_model_provider``
     is ignored here: it is OpenRouter-only routing.
 
     **OpenRouter** (reached via BYOK, or a community's own funded
-    OpenRouter key -- see ``_resolve_provider``): unchanged from before
-    Phase 2 -- a custom model requires BYOK, otherwise the community or
+    OpenRouter key, see ``_resolve_provider``): unchanged from before
+    Phase 2, so a custom model requires BYOK, otherwise the community or
     platform default (and its provider-routing hint) is used.
 
     Args:
