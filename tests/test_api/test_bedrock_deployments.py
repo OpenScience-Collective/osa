@@ -416,3 +416,34 @@ class TestTheStartupCheck:
 
         ids = [r.community_id for r in self._records(caplog)]
         assert ids == [info.id for info in _bedrock_communities()]
+
+    async def test_a_check_that_fails_does_not_stop_the_app_starting(
+        self, monkeypatch, caplog, tmp_path
+    ):
+        """The check is a diagnostic. Nothing real makes it raise today, so the failure is
+        injected where the app calls it: the rest of startup (the metrics database, the
+        scheduler) must still run, and the failure must be logged with its traceback."""
+        from src.api import main as app_main
+        from src.metrics.db import metrics_connection
+
+        def broken(_settings):
+            raise RuntimeError("the registry changed under the check")
+
+        set_platform_keys(monkeypatch, anthropic="a", openrouter=None, bedrock=None)
+        monkeypatch.setattr(get_settings(), "sync_enabled", False)
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setattr(app_main, "log_unserved_bedrock_defaults", broken)
+        caplog.set_level(logging.WARNING)
+
+        async with lifespan(create_app()):
+            with metrics_connection() as conn:
+                tables = {
+                    row[0]
+                    for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                }
+
+        assert "request_log" in tables, "startup went on to the metrics database"
+        (record,) = [r for r in caplog.records if "Bedrock" in r.getMessage()]
+        assert record.levelno == logging.ERROR
+        assert record.exc_info and record.exc_info[0] is RuntimeError
+        assert "startup" in record.getMessage()

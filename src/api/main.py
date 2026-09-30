@@ -73,7 +73,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # A community that defaults to a Bedrock model this deployment cannot serve would
     # quietly run a Claude model at several times the price; say so before the first request.
-    log_unserved_bedrock_defaults(settings)
+    # A diagnostic: whatever goes wrong inside it must never keep the app from starting.
+    try:
+        log_unserved_bedrock_defaults(settings)
+    except Exception:
+        logger.error(
+            "Could not check the communities' Bedrock defaults at startup. The app is starting "
+            "anyway, but a default this deployment cannot serve would go unreported.",
+            exc_info=True,
+        )
 
     # Initialize metrics database (non-critical; degrade gracefully if unavailable)
     try:
