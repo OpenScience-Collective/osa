@@ -412,3 +412,113 @@ class TestStreamingCitationContent:
         assert route.called
         assert session_id == "session-2"
         markdown.assert_called_once_with("runica.m.[1]")
+
+
+class TestAWarningReachesTheReader:
+    """A reply the model cut off at its output limit is shown with the server's warning.
+
+    The server sends it as a `warning` event on a stream and as `warnings` on a complete
+    response. The answer is still printed; the warning goes to stderr beside it.
+    """
+
+    WARNING = "This answer was cut off because the assistant reached its length limit."
+
+    def test_ask_stream_prints_the_warning_and_the_answer(self, capsys) -> None:
+        with (
+            respx.mock,
+            patch("src.cli.main.output.streaming_status", return_value=nullcontext()),
+        ):
+            respx.post("https://test.example/hed/ask").mock(
+                return_value=httpx.Response(
+                    200,
+                    headers={"content-type": "text/event-stream"},
+                    content=(
+                        b'data: {"event":"content","content":"HED is a sys"}\n\n'
+                        b'data: {"event":"warning","message":"' + self.WARNING.encode() + b'"}\n\n'
+                        b'data: {"event":"done","content":"HED is a sys"}\n\n'
+                    ),
+                )
+            )
+            _ask_streaming(OSAClient("https://test.example", user_id="test-user"), "hed", "How?")
+
+        captured = capsys.readouterr()
+        assert "HED is a sys" in captured.out
+        assert "Warning:" in captured.err and self.WARNING in captured.err
+
+    def test_chat_stream_prints_the_warning_and_the_answer(self, capsys) -> None:
+        with (
+            respx.mock,
+            patch("src.cli.main.output.streaming_status", return_value=nullcontext()),
+        ):
+            respx.post("https://test.example/hed/chat").mock(
+                return_value=httpx.Response(
+                    200,
+                    headers={"content-type": "text/event-stream"},
+                    content=(
+                        b'data: {"event":"warning","message":"' + self.WARNING.encode() + b'"}\n\n'
+                        b'data: {"event":"done","session_id":"s-1","content":"HED is a sys"}\n\n'
+                    ),
+                )
+            )
+            session_id = _chat_turn_streaming(
+                OSAClient("https://test.example", user_id="test-user"), "hed", "How?", None
+            )
+
+        captured = capsys.readouterr()
+        assert session_id == "s-1"
+        assert "HED is a sys" in captured.out
+        assert self.WARNING in captured.err
+
+    def test_a_warning_with_markup_characters_prints_as_written(self, capsys) -> None:
+        from src.cli import output
+
+        output.print_warning("Cut off [at the limit] [bold]now[/bold]")
+
+        assert "Cut off [at the limit] [bold]now[/bold]" in capsys.readouterr().err
+
+    def test_ask_without_streaming_prints_the_warning(self, tmp_path: Path) -> None:
+        from src.api.routers.community import AskResponse
+
+        body = AskResponse(answer="HED is a sys", model="m", warnings=[self.WARNING])
+
+        with (
+            patched_config_paths(tmp_path),
+            patch("src.cli.config.FIRST_RUN_FILE", tmp_path / ".first_run"),
+            patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-ant-cli-test-key"}, clear=True),
+            respx.mock,
+        ):
+            respx.post("https://api.osc.earth/osa/hed/ask").mock(
+                return_value=httpx.Response(200, json=body.model_dump(mode="json"))
+            )
+            result = runner.invoke(cli, ["ask", "How?", "-a", "hed", "--no-stream"])
+
+        assert result.exit_code == 0, result.output
+        assert "HED is a sys" in result.output
+        assert self.WARNING in result.output
+
+    def test_chat_without_streaming_prints_the_warning(self, tmp_path: Path) -> None:
+        from src.api.routers.community import ChatMessage, ChatResponse
+
+        body = ChatResponse(
+            session_id="s-1",
+            message=ChatMessage(role="assistant", content="HED is a sys"),
+            model="m",
+            warnings=[self.WARNING],
+        )
+
+        with (
+            patched_config_paths(tmp_path),
+            patch("src.cli.config.FIRST_RUN_FILE", tmp_path / ".first_run"),
+            patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-ant-cli-test-key"}, clear=True),
+            respx.mock,
+        ):
+            respx.post("https://api.osc.earth/osa/hed/chat").mock(
+                return_value=httpx.Response(200, json=body.model_dump(mode="json"))
+            )
+            result = runner.invoke(
+                cli, ["chat", "-a", "hed", "--no-stream"], input="question\nquit\n"
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "HED is a sys" in result.output
+        assert self.WARNING in result.output

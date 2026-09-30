@@ -18,6 +18,12 @@ the reply it needed to rewrite.) Three things are added, all at the model bounda
 - **Usage details.** LiteLLM reports prompt and completion totals only; cache
   reads and writes and reasoning tokens are in the raw usage and are carried onto
   ``usage_metadata`` where the metrics read them.
+
+Two more things ride the same way, because ``langchain-litellm`` drops both from a
+streamed reply: the ``finish_reason`` (``length`` is a reply cut off, see
+``model_outcome``) lands in ``response_metadata``, where a complete reply already has
+it, and a note that the usage is LiteLLM's own estimate, not the provider's, lands there
+too (``USAGE_ESTIMATED_KEY``).
 """
 
 import json
@@ -37,6 +43,7 @@ from langchain_core.messages import (
 from langchain_core.outputs import ChatGenerationChunk, ChatResult
 from langchain_litellm import ChatLiteLLM
 
+from src.core.services.model_outcome import USAGE_ESTIMATED_KEY
 from src.core.services.tagged_citations import (
     ChunkRetagger,
     prepare_messages,
@@ -49,6 +56,11 @@ logger = logging.getLogger(__name__)
 #: ``provider_specific_fields`` is the one field LiteLLM copies from a raw chunk onto
 #: the message chunk it builds.
 _USAGE_DETAILS_KEY = "osa_usage_details"
+#: The stream's ``finish_reason``, carried the same way to ``response_metadata``.
+_FINISH_REASON_KEY = "osa_finish_reason"
+#: Set when the usage is LiteLLM's estimate; carried to ``response_metadata`` too.
+_USAGE_ESTIMATED_KEY = "osa_usage_estimated"
+_CARRIED_KEYS = (_USAGE_DETAILS_KEY, _FINISH_REASON_KEY, _USAGE_ESTIMATED_KEY)
 
 _CACHE_MARKER = {"type": "ephemeral"}
 
@@ -257,11 +269,14 @@ class _ProviderUsage:
     Attributes:
         usage: The provider's usage, once seen.
         estimate: The wrapper's own usage, kept for a provider that reports none.
+        finish_reason: Why the provider said the reply stopped, from the first chunk
+            that says so (OpenRouter repeats it on the usage chunk).
     """
 
     def __init__(self) -> None:
         self.usage: dict[str, Any] | None = None
         self.estimate: dict[str, Any] | None = None
+        self.finish_reason: str | None = None
 
     def note(self, item: Any) -> None:
         usage = _field(item, "usage")
@@ -332,29 +347,47 @@ def _tap_provider_usage(response: Any) -> _ProviderUsage:
 
 def _carry_usage_details(raw: Any, tap: _ProviderUsage) -> Any:
     """Prepare one outgoing stream chunk: the wrapper's own usage is held back (see
-    ``_ProviderUsage``), and a chunk that carries usage carries its cache and reasoning
-    counts in a field LiteLLM passes through."""
+    ``_ProviderUsage``), and the reason the reply stopped is noted for the closing chunk,
+    since ``ChatLiteLLM`` reads neither from a streamed chunk's choice."""
     data = raw if isinstance(raw, dict) else raw.model_dump()
     usage = data.get("usage")
     if usage:
         tap.estimate = usage
         data["usage"] = None
+    choices = data.get("choices") or []
+    reason = _field(choices[0], "finish_reason") if choices else None
+    if reason and tap.finish_reason is None:
+        tap.finish_reason = str(reason)
     return data
 
 
-def _usage_chunk(usage: dict[str, Any]) -> dict[str, Any]:
-    """The final chunk of a stream: usage alone, with its cache and reasoning counts.
+def _closing_chunk(tap: _ProviderUsage) -> dict[str, Any] | None:
+    """The final chunk of a stream: what the stream learned that ``ChatLiteLLM`` would
+    drop, and nothing else. None when it learned nothing.
 
-    It needs one (empty) choice: ``ChatLiteLLM`` skips a chunk with no choices, and its
-    usage with it.
+    That is the usage with its cache and reasoning counts, the reason the reply stopped,
+    and whether the usage is LiteLLM's estimate because the provider sent none. It needs
+    one (empty) choice: ``ChatLiteLLM`` skips a chunk with no choices, and its usage with
+    it.
     """
+    usage = tap.final
+    if usage is None and tap.finish_reason is None:
+        return None
     chunk: dict[str, Any] = {
         "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}}],
-        "usage": usage,
     }
-    details = usage_details(usage)
-    if details:
-        chunk["provider_specific_fields"] = {_USAGE_DETAILS_KEY: details}
+    carried: dict[str, Any] = {}
+    if usage is not None:
+        chunk["usage"] = usage
+        details = usage_details(usage)
+        if details:
+            carried[_USAGE_DETAILS_KEY] = details
+        if tap.usage is None:
+            carried[_USAGE_ESTIMATED_KEY] = True
+    if tap.finish_reason is not None:
+        carried[_FINISH_REASON_KEY] = tap.finish_reason
+    if carried:
+        chunk["provider_specific_fields"] = carried
     return chunk
 
 
@@ -372,17 +405,25 @@ def _apply_usage_details(message: AIMessage | AIMessageChunk, details: dict[str,
         }
 
 
-def _take_usage_details(chunk: ChatGenerationChunk) -> None:
-    """Move usage details from ``provider_specific_fields`` to ``usage_metadata``."""
+def _take_carried_fields(chunk: ChatGenerationChunk) -> None:
+    """Move what the closing chunk carried out of ``provider_specific_fields``: the usage
+    details to ``usage_metadata``, the finish reason and the estimate note to
+    ``response_metadata``."""
     message = chunk.message
     fields = message.additional_kwargs.get("provider_specific_fields")
-    if not isinstance(fields, dict) or _USAGE_DETAILS_KEY not in fields:
+    if not isinstance(fields, dict) or not any(key in fields for key in _CARRIED_KEYS):
         return
-    details = fields.pop(_USAGE_DETAILS_KEY)
+    carried = {key: fields.pop(key) for key in _CARRIED_KEYS if key in fields}
     if not fields:
         del message.additional_kwargs["provider_specific_fields"]
-    if isinstance(message, AIMessageChunk):
-        _apply_usage_details(message, details)
+    if not isinstance(message, AIMessageChunk):
+        return
+    if _USAGE_DETAILS_KEY in carried:
+        _apply_usage_details(message, carried[_USAGE_DETAILS_KEY])
+    if _FINISH_REASON_KEY in carried:
+        message.response_metadata["finish_reason"] = carried[_FINISH_REASON_KEY]
+    if carried.get(_USAGE_ESTIMATED_KEY):
+        message.response_metadata[USAGE_ESTIMATED_KEY] = True
 
 
 def takes_cache_markers(model: str) -> bool:
@@ -460,8 +501,8 @@ class TaggedCitationChatLiteLLM(ChatLiteLLM):
         def carried() -> Iterator[Any]:
             for raw in response:
                 yield _carry_usage_details(raw, tap)
-            if tap.final is not None:
-                yield _usage_chunk(tap.final)
+            if (closing := _closing_chunk(tap)) is not None:
+                yield closing
 
         return carried()
 
@@ -476,8 +517,8 @@ class TaggedCitationChatLiteLLM(ChatLiteLLM):
         async def carried() -> AsyncIterator[Any]:
             async for raw in response:
                 yield _carry_usage_details(raw, tap)
-            if tap.final is not None:
-                yield _usage_chunk(tap.final)
+            if (closing := _closing_chunk(tap)) is not None:
+                yield closing
 
         return carried()
 
@@ -539,7 +580,7 @@ class TaggedCitationChatLiteLLM(ChatLiteLLM):
         # The parent reports each token to the run manager as it arrives, tags and
         # all; withheld here, and reported below with the tags already cut out.
         for chunk in super()._stream(prepared, stop, None, **kwargs):
-            _take_usage_details(chunk)
+            _take_carried_fields(chunk)
             retagged = retagger.feed(chunk)
             if run_manager:
                 run_manager.on_llm_new_token(retagged.message.text, chunk=retagged)
@@ -562,7 +603,7 @@ class TaggedCitationChatLiteLLM(ChatLiteLLM):
         retagger = ChunkRetagger(registry)
 
         async for chunk in super()._astream(prepared, stop, None, **kwargs):
-            _take_usage_details(chunk)
+            _take_carried_fields(chunk)
             retagged = retagger.feed(chunk)
             if run_manager:
                 await run_manager.on_llm_new_token(retagged.message.text, chunk=retagged)

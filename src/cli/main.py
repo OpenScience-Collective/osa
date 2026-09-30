@@ -251,6 +251,8 @@ def _ask_streaming(client: OSAClient, assistant: str, question: str) -> None:
             elif event_type == "tool_start":
                 tool_name = data.get("name", "").replace("_", " ").title()
                 status.update(f"[dim]Using tool: {tool_name}[/dim]")
+            elif event_type == "warning":
+                output.print_warning(data.get("message", "Unknown warning"))
             elif event_type == "error":
                 output.print_error(data.get("message", "Unknown error"))
                 raise typer.Exit(code=1)
@@ -273,6 +275,8 @@ def _ask_batch(client: OSAClient, assistant: str, question: str, fmt: str) -> No
     else:
         content = response.get("answer", "No response")
         output.print_markdown(content, title=assistant.upper())
+        for warning in response.get("warnings", []):
+            output.print_warning(warning)
 
 
 # ---------------------------------------------------------------------------
@@ -394,6 +398,8 @@ def _chat_turn_streaming(
                 final_content = data.get("content")
                 if isinstance(final_content, str):
                     full_content = final_content
+            elif event_type == "warning":
+                output.print_warning(data.get("message", "Unknown warning"))
             elif event_type == "error":
                 output.print_error(data.get("message", "Unknown error"))
                 return new_session_id
@@ -431,6 +437,8 @@ def _chat_turn_batch(
     output.console.print(f"[bold blue]{assistant}:[/bold blue]")
     output.console.print(Markdown(content))
     output.console.print()
+    for warning in response.get("warnings", []):
+        output.print_warning(warning)
 
     return new_session_id
 
