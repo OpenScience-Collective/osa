@@ -83,6 +83,7 @@ from src.core.services.anthropic_models import (
     BEDROCK_MODELS,
     DEFAULT_MODEL,
     is_bedrock_model,
+    openrouter_model_id,
 )
 from src.core.services.bedrock_llm import create_bedrock_llm
 from src.core.services.litellm_llm import DEFAULT_MODEL as OPENROUTER_DEFAULT_MODEL
@@ -1068,7 +1069,6 @@ class ProviderChoice:
                 )
         elif not self.api_key:
             raise ValueError("api_key must not be an empty string; use None for server mode")
-
         if self.provider == "bedrock" and (
             self.api_key is not None or self.key_source != "platform"
         ):
@@ -1081,6 +1081,7 @@ class ProviderChoice:
                 f"key_source='platform'; got api_key={'set' if self.api_key else None}, "
                 f"key_source={self.key_source!r}"
             )
+
     @property
     def takes_native_blocks(self) -> bool:
         """Whether this path has been shown to accept Anthropic's native content
@@ -1471,13 +1472,62 @@ def _claude_fallback(settings: Settings) -> str:
     return DEFAULT_MODEL if is_bedrock_model(candidate) else candidate
 
 
+def _offered_model_id(provider: str, model: str) -> str | None:
+    """The ``OFFERED_MODELS`` id a provider's model id stands for, or None if unknown.
+
+    The Anthropic and Bedrock providers are handed the offered id itself; OpenRouter is
+    handed a slug (``openai/gpt-6-luna``), which maps back to ``openai.gpt-6-luna``, or
+    to None when the slug is a caller's own choice.
+    """
+    return openrouter_model_id(model) if provider == "openrouter" else model
+
+
 @dataclass(frozen=True)
 class RequestRoute:
-    """Where one request goes: its provider, and the model it runs."""
+    """Where one request goes: its provider, the model it runs, and which offered model that is.
+
+    Attributes:
+        choice: The provider, key and key source.
+        model: The id handed to the provider: an offered model id on the Anthropic and
+            Bedrock providers, an OpenRouter slug on OpenRouter.
+        provider_hint: OpenRouter's upstream-host routing hint. Only OpenRouter has one.
+        offered_model_id: The ``OFFERED_MODELS`` id ``model`` stands for, which is what
+            per-model prompt notes and the community's ``model_instructions`` are keyed
+            by: ``model`` itself on the Anthropic and Bedrock providers, the model an
+            OpenRouter slug maps back to (``openai/gpt-6-luna`` is ``openai.gpt-6-luna``)
+            on OpenRouter, and None for a slug OSA does not know (a caller's own choice).
+    """
 
     choice: ProviderChoice
     model: str
     provider_hint: str | None
+    offered_model_id: str | None
+
+    def __post_init__(self) -> None:
+        """Refuse a route whose parts contradict each other.
+
+        ``_route_request`` builds every route from the same three decisions, so these
+        hold today; a construction that broke one would run a model on a provider that
+        cannot serve it (a Bedrock model on the Anthropic endpoint, a Claude slug on
+        Bedrock) or drop the notes of the model it runs.
+        """
+        provider = self.choice.provider
+        if self.provider_hint is not None and provider != "openrouter":
+            raise ValueError(
+                f"provider_hint={self.provider_hint!r} is OpenRouter's routing hint; "
+                f"the {provider!r} provider has none"
+            )
+        if is_bedrock_model(self.model) != (provider == "bedrock"):
+            raise ValueError(
+                f"model {self.model!r} and provider {provider!r} disagree: a Bedrock model "
+                "runs on the bedrock provider, and nothing else does"
+            )
+        expected = _offered_model_id(provider, self.model)
+        if self.offered_model_id != expected:
+            raise ValueError(
+                f"offered_model_id={self.offered_model_id!r} is not the offered model "
+                f"{self.model!r} stands for on {provider!r} ({expected!r})"
+            )
 
 
 def _route_request(
@@ -1529,7 +1579,13 @@ def _route_request(
                 extra={"community_id": community_id, "model": model, "fallback": fallback},
             )
             model = fallback
-    return RequestRoute(choice=choice, model=model, provider_hint=provider_hint)
+    # The offered model this is, found once here for everything keyed by offered id.
+    return RequestRoute(
+        choice=choice,
+        model=model,
+        provider_hint=provider_hint,
+        offered_model_id=_offered_model_id(choice.provider, model),
+    )
 
 
 def _check_model_cost(model: str, key_source: Literal["byok", "community", "platform"]) -> None:
@@ -1795,7 +1851,9 @@ def create_community_assistant(
         # per request, so this satisfies that constraint for free.
         citations=provider_choice.cites_sources,
         tagged_citations=provider_choice.tags_citations,
-        model_id=selected_model,
+        # The offered id, not the provider's: an OpenRouter slug would find neither the
+        # built-in note (BEDROCK_MODELS) nor the community's model_instructions.
+        model_id=route.offered_model_id,
         # The same gate, for the image block an MCP tool result (nemar_render_overview)
         # can carry. See src.tools.mcp_client._content_of.
         allow_mcp_images=provider_choice.takes_native_blocks,
