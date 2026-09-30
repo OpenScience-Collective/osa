@@ -147,6 +147,59 @@ MODEL_ALIASES: dict[str, str] = {
     "openai.gpt-oss-120b-1:0": "openai.gpt-oss-120b",
 }
 
+# OpenRouter slugs for the models OSA offers. OpenRouter serves the same
+# Claude models under creator/model-name slugs, so a request funded by an
+# OpenRouter key (BYOK, or a community's own funded key) still runs the
+# community's chosen model rather than switching to a different model family
+# just because of which key paid for it. Bare first-party ids such as
+# "claude-haiku-4-5" are not valid OpenRouter slugs, hence the mapping.
+# tests/test_core/test_litellm_llm.py asserts these keys stay in step with
+# OFFERED_MODELS so adding a model cannot silently skip this. The table lives here,
+# with no third-party imports, so community config validation can reach it on a CLI-only
+# install; ``litellm_llm`` re-exports it.
+OPENROUTER_MODEL_IDS: dict[str, str] = {
+    "claude-haiku-4-5": "anthropic/claude-haiku-4.5",
+    "claude-sonnet-5-5": "anthropic/claude-sonnet-5.5",
+    # The Bedrock-served models, for a caller who brings an OpenRouter key.
+    "openai.gpt-6-luna": "openai/gpt-6-luna",
+    "openai.gpt-oss-120b": "openai/gpt-oss-120b",
+    "qwen.qwen3-next-80b-a3b": "qwen/qwen3-next-80b-a3b-instruct",
+}
+
+
+# OpenRouter's routing variants ("Model variants" in its documentation): a suffix accepted
+# on any model that only changes how the request is routed (fastest providers, cheapest,
+# best at tool calls, and the deprecated ":online" web search), so the same model runs;
+# ":nitro" and ":floor" can also change the price tier. They can be stacked
+# ("openai/gpt-5.2:nitro:exacto"). The others (":free", ":batch", ":thinking",
+# ":extended") are catalog entries of their own, at most one to a slug, and are not
+# looked through: stripping ":free" would resolve to the paid entry.
+OPENROUTER_ROUTING_VARIANTS = ("nitro", "floor", "exacto", "online")
+
+
+def openrouter_model_id(slug: str | None) -> str | None:
+    """The offered model id an OpenRouter slug stands for, or None when OSA does not know it.
+
+    The reverse of ``OPENROUTER_MODEL_IDS``, looking through routing variants, in any
+    order (``openai/gpt-oss-120b:nitro`` is ``openai.gpt-oss-120b``, run through faster
+    providers). A catalog variant left over (``:free``) makes it a different entry, so
+    None. The ``anthropic/claude-*`` aliases ``normalize_model`` resolves are
+    deliberately not followed, with or without a variant: they name older models (Claude
+    Sonnet 4.5, say) that OpenRouter runs as themselves, so the offered model's reasoning
+    levels say nothing about them. A slug that is not an offered model's is a caller's own
+    choice, about which nothing is assumed, including whether it reasons.
+    """
+    if not slug:
+        return None
+    base, *variants = slug.split(":")
+    kept = [v for v in variants if v not in OPENROUTER_ROUTING_VARIANTS]
+    slug = ":".join([base, *kept])
+    for model_id, known_slug in OPENROUTER_MODEL_IDS.items():
+        if known_slug == slug:
+            return model_id
+    return None
+
+
 # Models that still accept sampling parameters. Claude 5-generation models
 # (claude-sonnet-5-5) reject `temperature` with a 400 because the only value
 # they accept is 1, the implicit default when the field is simply omitted.
