@@ -72,6 +72,7 @@ from src.core.services.anthropic_models import (
     SAMPLING_MODELS,
     ReasoningEffort,
     normalize_model,
+    openrouter_model_id,
     resolve_reasoning_effort,
 )
 
@@ -102,6 +103,33 @@ _MODEL_ID_MAX_LENGTH = 100
 #: Longest ``model_instructions`` entry, in characters. It rides in every system
 #: prompt for that model, so an essay here is paid for on every request.
 MODEL_INSTRUCTIONS_MAX_LENGTH = 4000
+
+
+def _offered_models_slug_warning(slug: str) -> str | None:
+    """The warning for a ``default_model`` that is an offered model's OpenRouter slug.
+
+    Args:
+        slug: A creator/model-name ``default_model``.
+
+    Returns:
+        The warning text when ``slug`` is an offered model's OpenRouter slug (or that
+        slug with a routing variant) that ``normalize_model`` does not also resolve as
+        an alias, so only the OpenRouter path can run it; None otherwise.
+    """
+    offered = openrouter_model_id(slug)
+    if offered is None:
+        return None
+    try:
+        normalize_model(slug)
+    except ValueError:
+        return (
+            f"default_model={slug!r} is the OpenRouter slug of the offered model "
+            f"{offered!r}. A request funded by an OpenRouter key runs it, but one funded "
+            "by the platform's Anthropic or Bedrock key does not recognize a slug and "
+            f"answers 400. Write default_model: {offered} instead: it runs on every path, "
+            "and is mapped to the slug on OpenRouter."
+        )
+    return None
 
 
 def _validate_model_id(v: str | None, field_label: str = "Model identifier") -> str | None:
@@ -2364,45 +2392,61 @@ class CommunityConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_default_model_resolvable(self) -> "CommunityConfig":
-        """Warn when a bare default_model id won't resolve on either path.
+        """Warn when ``default_model`` will not run as written on some path.
 
-        Format is already checked by ``validate_default_model`` above; this
-        checks resolvability. A bare id (no "/") that ``normalize_model``
-        rejects is neither an offered Anthropic model nor a recognized
-        legacy alias. The Anthropic path fails safe (``_select_model``
-        raises an HTTPException 400), but an OpenRouter-funded request for
-        the same community silently falls back to a hardcoded default model
-        (logged as an error in ``_select_model``, not surfaced at
-        config-load time).
+        Format is already checked by ``validate_default_model`` above; this checks
+        what the model resolves to. Three cases warn, none is an error:
 
-        A creator/model-name id (containing "/") is assumed to be a genuine
-        OpenRouter slug and is not checked here: ``normalize_model`` only
-        resolves first-party Anthropic ids and their legacy aliases, so it
-        is not the right tool to validate an OpenRouter slug.
+        - A bare id that ``normalize_model`` rejects is neither an offered model nor
+          a recognized alias. The Anthropic and Bedrock path fails safe
+          (``_select_model`` answers 400), but an OpenRouter-funded request for the
+          same community silently falls back to a hardcoded default model.
+        - A bare id that resolves to a Bedrock model. It runs from Bedrock only on a
+          deployment with both ``AWS_BEARER_TOKEN_BEDROCK`` and ``ANTHROPIC_API_KEY``;
+          the warning says what happens elsewhere.
+        - A creator/model-name slug that is an offered model's OpenRouter slug
+          (``openai/gpt-oss-120b``) but not an alias ``normalize_model`` resolves. The
+          OpenRouter path takes it as written, but a request funded by the platform's
+          Anthropic or Bedrock key cannot, and answers 400.
+
+        Any other creator/model-name id is assumed to be a genuine OpenRouter slug and
+        is not checked: ``normalize_model`` resolves only offered ids and their
+        aliases, so it is not the right tool to validate one.
         """
-        if not self.default_model or "/" in self.default_model:
+        if not self.default_model:
+            return self
+        if "/" in self.default_model:
+            message = _offered_models_slug_warning(self.default_model)
+            if message:
+                warnings.warn(message, UserWarning, stacklevel=2)
             return self
         try:
             resolved = normalize_model(self.default_model)
-            if resolved in BEDROCK_MODELS:
-                warnings.warn(
-                    f"default_model={self.default_model!r} is served from Amazon Bedrock. "
-                    "A caller who brings their own Anthropic key and names no model (the "
-                    "CLI, for one), and every request on a deployment with no "
-                    "AWS_BEARER_TOKEN_BEDROCK, will run the deployment's Claude default "
-                    "instead; the error is logged with this community's id.",
-                    UserWarning,
-                    stacklevel=2,
-                )
         except ValueError:
             warnings.warn(
-                f"default_model={self.default_model!r} is not an offered Anthropic "
-                "model or a recognized alias. A request funded by an Anthropic key "
+                f"default_model={self.default_model!r} is not an offered model "
+                "or a recognized alias. A request funded by an Anthropic key "
                 "will get a clear 400; a request funded by an OpenRouter key will "
                 "silently fall back to a hardcoded default model instead of the one "
                 "configured here. Use one of "
-                "src.core.services.anthropic_llm.OFFERED_MODELS, or an OpenRouter "
+                "src.core.services.anthropic_models.OFFERED_MODELS, or an OpenRouter "
                 "creator/model-name id if you intend to route there.",
+                UserWarning,
+                stacklevel=2,
+            )
+            return self
+        if resolved in BEDROCK_MODELS:
+            warnings.warn(
+                f"default_model={self.default_model!r} is served from Amazon Bedrock, which "
+                "needs both AWS_BEARER_TOKEN_BEDROCK and ANTHROPIC_API_KEY on the "
+                "deployment. A request that names no model runs the deployment's Claude "
+                "default instead when ANTHROPIC_API_KEY is set but the Bedrock key is not "
+                "(an error is logged with this community's id). With no ANTHROPIC_API_KEY "
+                "it goes to OpenRouter whatever the Bedrock key: the model runs there under "
+                "its OpenRouter slug on OPENROUTER_API_KEY, or the request fails with "
+                "HTTP 500 when that is missing too. A caller's own Anthropic key with no "
+                "model named (the CLI, for one) also runs the Claude default, and a "
+                "caller's own OpenRouter key gets the model's OpenRouter slug.",
                 UserWarning,
                 stacklevel=2,
             )
