@@ -70,7 +70,12 @@ function timerTracker() {
   };
 }
 
-function loadWidget({ matchMedia, timers = null } = {}) {
+/**
+ * The widget in its own window, initialized. `chat`, when given, answers /chat (what a
+ * test that presses Send needs); `saved` is what the page's storage already holds under
+ * the widget's key, as after a reload.
+ */
+function loadWidget({ matchMedia, timers = null, chat = null, saved = null } = {}) {
   const window = new Window({
     url: 'http://localhost/page',
     settings: { disableJavaScriptFileLoading: true, disableCSSFileLoading: true },
@@ -82,11 +87,13 @@ function loadWidget({ matchMedia, timers = null } = {}) {
   script.setAttribute('data-no-auto-init', '');
   Object.defineProperty(window.document, 'currentScript', { value: script, configurable: true });
   const config = { default_model: 'm', offered_models: [], widget: {}, client_tools: [], runtime: null };
-  const fetch = async (url) => {
+  const fetch = async (url, init) => {
     if (String(url).endsWith('/health')) return new Response(JSON.stringify({ status: 'healthy' }));
+    if (chat && String(url).endsWith('/chat')) return chat(init);
     return new Response(JSON.stringify(config), { headers: { 'content-type': 'application/json' } });
   };
   window.fetch = fetch;
+  if (saved !== null) window.localStorage.setItem('osa-test-paced', saved);
   // eslint-disable-next-line no-new-func
   const run = new Function(
     'window', 'document', 'localStorage', 'fetch', 'navigator', 'AbortSignal', 'URL',
@@ -1172,6 +1179,442 @@ console.log('\nleaving the page shows a reply that is still streaming, but does 
   control.close();
   await stream;
   assert((window.localStorage.getItem('osa-test-paced') || '').includes(text.slice(-40)), 'the done event is what saves it');
+}
+
+// -------------------------------------- what the end of a reply tells the reader
+//
+// A reply can end with a notice (a warning event: the model stopped at its length
+// limit, the conversation is long) or a failure (an error event, a stream that broke).
+// What the reader is left with: every notice read, a cut-off reply marked where it
+// stands, a failed question handed back with the reason still on screen.
+
+const TURN_OUTCOME = readFileSync(new URL('../src/api/turn_outcome.py', import.meta.url), 'utf8');
+
+/** A string constant of src/api/turn_outcome.py, so the widget is held to the server's wording. */
+function serverMessage(name) {
+  const block = TURN_OUTCOME.match(new RegExp(`^${name} = \\(([^)]*)\\)`, 'm'));
+  if (!block) return null;
+  return [...block[1].matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1]).join('');
+}
+
+const CUT_OFF_MESSAGE = serverMessage('CUT_OFF_MESSAGE');
+const NO_ANSWER_MESSAGE = serverMessage('NO_ANSWER_MESSAGE');
+const CONTEXT_FULL_CUT_OFF_MESSAGE = serverMessage('CONTEXT_FULL_CUT_OFF_MESSAGE');
+const CUT_OFF_LONG_MESSAGE = serverMessage('CUT_OFF_LONG_MESSAGE');
+const LONG_MESSAGE = serverMessage('LONG_CONVERSATION_MESSAGE');
+assert([CUT_OFF_MESSAGE, NO_ANSWER_MESSAGE, CONTEXT_FULL_CUT_OFF_MESSAGE, CUT_OFF_LONG_MESSAGE, LONG_MESSAGE].every(Boolean),
+  'the server\'s cut-off, no-answer, context-full, combined and long-conversation messages are found in src/api/turn_outcome.py');
+
+/**
+ * Timers of four seconds or more are held until a test runs them (a banner's and a
+ * notice's are five and ten seconds, and a test does not wait them out); shorter ones,
+ * the reveal's and the launcher tooltip's, run for real. Held timers are numbered below
+ * zero, so clearTimeout knows them. Nothing is held until `arm()`, so the widget's own
+ * start-up timers run as usual.
+ */
+function heldTimers() {
+  const held = new Map();
+  let next = 1;
+  let armed = false;
+  return {
+    arm() { armed = true; },
+    setTimeout: (fn, ms, ...rest) => {
+      if (!armed || ms < 4000) return setTimeout(fn, ms, ...rest);
+      const id = -(next++);
+      held.set(id, { fn, ms });
+      return id;
+    },
+    clearTimeout: (id) => {
+      if (typeof id === 'number' && id < 0) held.delete(id);
+      else clearTimeout(id);
+    },
+    delays: () => [...held.values()].map((timer) => timer.ms),
+    /** Run the oldest held timer, as if its delay had passed. */
+    fireOldest() {
+      const [id, timer] = [...held.entries()][0];
+      held.delete(id);
+      timer.fn();
+    },
+    fireAll() {
+      while (held.size) this.fireOldest();
+    },
+  };
+}
+
+const lastAssistant = (container) => [...container.querySelectorAll('.osa-message.assistant')].at(-1) || null;
+const lastReplyText = (container) => {
+  const reply = lastAssistant(container);
+  return reply ? reply.querySelector('.osa-message-content').textContent : '';
+};
+const countOf = (text, part) => text.split(part).length - 1;
+
+/** Press Send with `question` typed, as a reader does. */
+function send(window, container, question) {
+  container.querySelector('.osa-chat-input input').value = question;
+  container.querySelector('.osa-send-btn').dispatchEvent(new window.Event('click', { bubbles: true }));
+}
+const settled = (container) => !container.querySelector('.osa-send-btn').disabled;
+async function waitFor(predicate, label, timeoutMs = 5000) {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > timeoutMs) throw new Error(`timed out after ${timeoutMs} ms: ${label}`);
+    await new Promise((resolve) => setTimeout(resolve, 3));
+  }
+}
+const json = (body, init = {}) => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' }, ...init });
+
+console.log('\nwarnings that arrive together are all shown, each for its own full period');
+{
+  const timers = heldTimers();
+  const { window, api } = loadWidget({ timers });
+  timers.arm();
+  const container = window.document.querySelector('.osa-chat-widget');
+  await api.handleStreamingResponse(sse([
+    { event: 'content', content: REPLY },
+    { event: 'warning', message: CUT_OFF_MESSAGE },
+    { event: 'warning', message: LONG_MESSAGE },
+    { event: 'done', content: REPLY },
+  ]), container);
+  const banner = container.querySelector('.osa-warning');
+  assertEqual(banner.style.display, 'block', 'the warning banner is up');
+  assert(banner.textContent.includes(CUT_OFF_MESSAGE), 'the cut-off notice is on it');
+  assert(banner.textContent.includes(LONG_MESSAGE), 'and the long-conversation notice beside it, not in its place');
+  assert(timers.delays().length === 2 && timers.delays().every((ms) => ms >= 10_000),
+    'each has a timer of its own, no shorter than the ten seconds one notice had');
+  timers.fireOldest();
+  assert(!banner.textContent.includes(CUT_OFF_MESSAGE) && banner.textContent.includes(LONG_MESSAGE) && banner.style.display === 'block',
+    'when the first runs out only it goes; the second is still there to read');
+  timers.fireOldest();
+  assertEqual(banner.style.display, 'none', 'the banner goes when the last one does');
+}
+
+console.log('\nthe same warning twice is one line, read for a full period from the last time');
+{
+  const timers = heldTimers();
+  const { window, api } = loadWidget({ timers });
+  timers.arm();
+  const container = window.document.querySelector('.osa-chat-widget');
+  await api.handleStreamingResponse(sse([
+    { event: 'content', content: REPLY },
+    { event: 'warning', message: LONG_MESSAGE },
+    { event: 'warning', message: LONG_MESSAGE },
+    { event: 'done', content: REPLY },
+  ]), container);
+  const banner = container.querySelector('.osa-warning');
+  assertEqual(countOf(banner.textContent, LONG_MESSAGE), 1, 'it is shown once');
+  assertEqual(timers.delays().length, 1, 'with one timer, the earlier one replaced');
+  timers.fireAll();
+  assertEqual(banner.style.display, 'none', 'and it goes when that runs out');
+}
+
+const INCOMPLETE = /Response may be incomplete/;
+const CUT_OFF_CASES = [
+  ['a cut_off code', { code: 'cut_off', message: 'The reply stopped short.' }, true],
+  ['the server\'s cut-off notice, with its code', { code: 'cut_off', message: CUT_OFF_MESSAGE }, true],
+  ['the combined notice the server sends when the conversation is long too', { code: 'cut_off', codes: ['cut_off', 'long_conversation'], message: CUT_OFF_LONG_MESSAGE }, true],
+  ['the notice for a conversation that filled the context window', { code: 'cut_off', message: CONTEXT_FULL_CUT_OFF_MESSAGE }, true],
+  ['the server\'s cut-off wording, from a server that sends no code', { message: CUT_OFF_MESSAGE }, true],
+  ['the combined wording, from a server that sends no code', { message: CUT_OFF_LONG_MESSAGE }, true],
+  ['the context-full wording, from a server that sends no code', { message: CONTEXT_FULL_CUT_OFF_MESSAGE }, true],
+  ['the long-conversation notice with its code', { code: 'long_conversation', message: LONG_MESSAGE }, false],
+  ['the long-conversation notice from a server that sends no code', { message: LONG_MESSAGE }, false],
+];
+
+console.log('\na reply a warning says was cut off is marked where it stands, and only that one');
+for (const [label, warning, marked] of CUT_OFF_CASES) {
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const started = api.getMessages().length;
+  await api.handleStreamingResponse(sse([
+    { event: 'content', content: REPLY },
+    { event: 'warning', ...warning },
+    { event: 'done', content: REPLY },
+  ]), container);
+  const message = api.getMessages()[started];
+  assertEqual(message.cutOff === true, marked, `${label}: ${marked ? 'marked' : 'not marked'}`);
+  assertEqual(INCOMPLETE.test(lastReplyText(container)), marked, `${label}: the page ${marked ? 'says so under the text' : 'says nothing under the text'}`);
+  assertEqual(message.content, REPLY, `${label}: the reply's own text is untouched`);
+  if (marked) {
+    const note = lastAssistant(container).querySelector('.osa-message-content em');
+    assert(note && INCOMPLETE.test(note.textContent) && !lastReplyText(container).includes('_['),
+      `${label}: the note is drawn in italics, with no markup showing as typed`);
+  }
+}
+{
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const started = api.getMessages().length;
+  await api.handleStreamingResponse(sse([
+    { event: 'content', content: REPLY },
+    { event: 'warning', code: 'cut_off', message: CUT_OFF_MESSAGE },
+    { event: 'done', content: REPLY },
+  ]), container);
+  await api.handleStreamingResponse(sse([
+    { event: 'content', content: REPLY },
+    { event: 'done', content: REPLY },
+  ]), container);
+  assertEqual([api.getMessages()[started].cutOff === true, api.getMessages()[started + 1].cutOff === true], [true, false],
+    'a later reply that ended on its own is not marked because an earlier one was cut off');
+}
+
+console.log('\na cut-off mark is kept in the saved conversation and shown again after a reload');
+{
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  await api.handleStreamingResponse(sse([
+    { event: 'content', content: REPLY },
+    { event: 'warning', code: 'cut_off', message: CUT_OFF_MESSAGE },
+    { event: 'done', content: REPLY },
+  ]), container);
+  const saved = window.localStorage.getItem('osa-test-paced');
+  assert(saved && saved.includes('"cutOff":true'), 'the mark is in what is saved');
+  const again = loadWidget({ saved });
+  const reloaded = again.window.document.querySelector('.osa-chat-widget');
+  assert(lastReplyText(reloaded).startsWith(REPLY.slice(0, 40)) && INCOMPLETE.test(lastReplyText(reloaded)),
+    'the reloaded reply shows its text and the note');
+  assert(again.api.getMessages().some((m) => m.cutOff === true), 'and the message still carries the mark');
+  const forged = JSON.stringify({ version: 99, messages: [{ role: 'assistant', content: 'Hi.', cutOff: 'yes' }], sessionId: null });
+  assertEqual(loadWidget({ saved: forged }).api.getMessages().map((m) => m.cutOff === true), [false],
+    'a stored value that is not true marks nothing');
+}
+
+console.log('\nthe note waits for the end of the reveal: a reply still being drawn is not called incomplete yet');
+{
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const started = api.getMessages().length;
+  const stream = api.handleStreamingResponse(sse([
+    { event: 'content', content: REPLY },
+    { event: 'warning', code: 'cut_off', message: CUT_OFF_MESSAGE },
+    { event: 'done', content: REPLY },
+  ], { gapMs: 5 }), container);
+  const texts = [];
+  let over = false;
+  stream.then(() => { over = true; }, () => { over = true; });
+  while (!over) {
+    texts.push(lastReplyText(container));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  await stream;
+  const early = texts.filter((t) => t.length > 0 && t.length < REPLY.length && INCOMPLETE.test(t));
+  assertEqual(early.length, 0, 'no partial text was shown with the note');
+  assert(INCOMPLETE.test(lastReplyText(container)) && api.getMessages()[started].cutOff === true, 'it is there once the reply is whole');
+}
+
+console.log('\na cut-off reply with no text and no run record is kept, and says why');
+{
+  // A reply whose only run was a read of an earlier run's output (get_full_output) has
+  // no record in `executions`: answerToolRequest writes one only for code it ran.
+  for (const [label, shown] of [['output limit', CUT_OFF_MESSAGE], ['context window', CONTEXT_FULL_CUT_OFF_MESSAGE]]) {
+    const { window, api } = loadWidget();
+    const container = window.document.querySelector('.osa-chat-widget');
+    const first = await api.handleStreamingResponse(sse([
+      { event: 'tool_request', call_id: 'c1', tool: 'get_full_output', args: { call_id: 'earlier' }, content: '' },
+    ]), container);
+    await api.handleStreamingResponse(sse([
+      { event: 'warning', code: 'cut_off', message: shown },
+      { event: 'done', content: '' },
+    ]), container, { messageIndex: first.messageIndex });
+    const message = api.getMessages()[first.messageIndex];
+    assert(message && message.cutOff === true, `${label}: the reply is still there, marked`);
+    assertEqual(lastReplyText(container), `[${shown}]`, `${label}: what the reader sees is the server's explanation, with what to do next, not a missing bubble`);
+    assert(!INCOMPLETE.test(lastReplyText(container)), `${label}: and, having no text at all, it does not call nothing incomplete`);
+    const saved = window.localStorage.getItem('osa-test-paced');
+    const again = loadWidget({ saved });
+    assertEqual(lastReplyText(again.window.document.querySelector('.osa-chat-widget')), `[${shown}]`, `${label}: a reload shows it again`);
+  }
+}
+
+console.log('\nan error event names itself as the server\'s: a word in it does not turn it into a stream timeout');
+{
+  const message = 'The model request hit its timeout after 30 s';
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const started = api.getMessages().length;
+  let error = null;
+  await api.handleStreamingResponse(sse([
+    { event: 'content', content: REPLY },
+    { event: 'error', message },
+  ]), container).catch((err) => { error = err; });
+  assert(error && error.message.includes(message), 'the error raised is the server\'s');
+  const content = api.getMessages()[started].content;
+  assert(content.includes(message), 'the reply says what the server said');
+  assert(!/Stream timeout/.test(content), 'and does not claim the stream timed out');
+}
+
+console.log('\na failure of the stream itself that says timeout still reads as a stream timeout');
+{
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const started = api.getMessages().length;
+  const encoder = new TextEncoder();
+  const response = new Response(new ReadableStream({
+    async start(controller) {
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ event: 'content', content: REPLY })}\n\n`));
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      controller.error(new Error('network timeout'));
+    },
+  }), { headers: { 'content-type': 'text/event-stream' } });
+  await api.handleStreamingResponse(response, container).catch(() => {});
+  const content = api.getMessages()[started].content;
+  assert(content.startsWith(REPLY) && content.includes('_[Stream timeout]_'), 'the text that arrived, then the note that the stream timed out');
+}
+
+console.log('\nthe banner for a server error is the server\'s own words, whatever words they contain');
+for (const message of ['The tool arguments were not valid JSON', 'Stream closed by the upstream provider', 'Gateway timeout from the model host']) {
+  const { window } = loadWidget({ chat: () => sse([{ event: 'error', message }]) });
+  const container = window.document.querySelector('.osa-chat-widget');
+  send(window, container, 'A question');
+  await waitFor(() => settled(container), 'the send settles');
+  assertEqual(container.querySelector('.osa-error').textContent, message, `"${message}" is shown as sent`);
+}
+
+console.log('\nan error with no reply: the banner stays until dismissed, the question goes back in the box, the reference can be copied');
+{
+  const timers = heldTimers();
+  const QUESTION = 'Which event tag marks a button press?';
+  let calls = 0;
+  const { window, api } = loadWidget({
+    timers,
+    chat: () => (++calls === 1
+      ? sse([
+        { event: 'session', session_id: 's' },
+        { event: 'error', message: NO_ANSWER_MESSAGE, request_id: 'req-9', error_id: 'err-7f3a' },
+      ])
+      : sse([{ event: 'content', content: REPLY }, { event: 'done', content: REPLY }])),
+  });
+  timers.arm();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const written = [];
+  Object.defineProperty(window.navigator, 'clipboard', { value: { writeText: async (text) => { written.push(text); } }, configurable: true });
+  const before = api.getMessages().length;
+  const input = container.querySelector('.osa-chat-input input');
+  send(window, container, QUESTION);
+  await waitFor(() => settled(container), 'the first send settles');
+  const banner = container.querySelector('.osa-error');
+  assertEqual(banner.style.display, 'block', 'the error banner is up');
+  assert(banner.textContent.includes(NO_ANSWER_MESSAGE), 'with the server\'s message');
+  assert(banner.textContent.includes('err-7f3a'), 'and the error id');
+  assertEqual(input.value, QUESTION, 'the question is back in the box, to send again');
+  assertEqual(api.getMessages().length, before, 'and the failed turn left nothing in the conversation');
+  timers.fireAll();
+  assertEqual(banner.style.display, 'block', 'the banner is still up after its old five seconds and long after');
+  const style = window.getComputedStyle(banner);
+  assertEqual(style.userSelect || style.getPropertyValue('user-select'), 'text', 'its text can be selected');
+  const copy = banner.querySelector('.osa-error-copy');
+  assert(copy, 'the error id has a copy button');
+  copy.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await waitFor(() => written.length > 0, 'the id is written to the clipboard');
+  assertEqual(written, ['err-7f3a'], 'the clipboard holds the id alone');
+  // The next send starts clean.
+  send(window, container, input.value);
+  await waitFor(() => settled(container), 'the second send settles');
+  assertEqual(banner.style.display, 'none', 'the next send takes the old error away');
+  assertEqual(input.value, '', 'and, having worked, leaves the box empty');
+  assert(lastReplyText(container).startsWith(REPLY.slice(0, 40)), 'with the answer on the page');
+}
+
+console.log('\nan error banner can be dismissed, and one with no error id shows no reference');
+{
+  const { window, api } = loadWidget({
+    chat: () => sse([{ event: 'error', message: NO_ANSWER_MESSAGE }]),
+  });
+  const container = window.document.querySelector('.osa-chat-widget');
+  send(window, container, 'A question');
+  await waitFor(() => settled(container), 'the send settles');
+  const banner = container.querySelector('.osa-error');
+  assertEqual(banner.style.display, 'block', 'the error banner is up');
+  assert(banner.textContent.includes(NO_ANSWER_MESSAGE), 'with the message');
+  assert(!/Reference/.test(banner.textContent) && !banner.querySelector('.osa-error-copy'), 'and no reference or copy button, as there is no id');
+  banner.querySelector('.osa-error-dismiss').dispatchEvent(new window.Event('click', { bubbles: true }));
+  assertEqual(banner.style.display, 'none', 'the dismiss button takes it away');
+  assertEqual(api.getMessages().length, 1, 'the conversation holds only its greeting');
+}
+
+console.log('\na failed request that lost the question hands it back too; an error after a partial reply does not, since that question is still in the conversation');
+{
+  const QUESTION = 'What is the sampling rate?';
+  const { window } = loadWidget({ chat: () => json({ detail: 'The service is over capacity' }, { status: 503 }) });
+  const container = window.document.querySelector('.osa-chat-widget');
+  send(window, container, QUESTION);
+  await waitFor(() => settled(container), 'the send settles');
+  assertEqual(container.querySelector('.osa-chat-input input').value, QUESTION, 'an HTTP error: the question is back in the box');
+  assert(container.querySelector('.osa-error').textContent.includes('over capacity'), 'with the reason on screen');
+}
+{
+  const { window, api } = loadWidget({
+    chat: () => sse([{ event: 'content', content: REPLY }, { event: 'error', message: 'the model went away', error_id: 'err-55' }]),
+  });
+  const container = window.document.querySelector('.osa-chat-widget');
+  send(window, container, 'A question that got a partial reply');
+  await waitFor(() => settled(container), 'the send settles');
+  assertEqual(container.querySelector('.osa-chat-input input').value, '', 'a partial reply: the box is empty, the question is in the conversation');
+  assertEqual(api.getMessages().map((m) => m.role), ['assistant', 'user', 'assistant'], 'with the question and the partial reply kept');
+  assert(container.querySelector('.osa-error').textContent.includes('err-55'), 'and the error id is shown');
+}
+
+console.log('\nthe non-streamed fallback shows the warnings the response carries, as a stream does');
+{
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    const { window, api } = loadWidget({
+      chat: () => json({
+        message: { content: 'A short answer.' },
+        session_id: 's',
+        request_id: 'req-1',
+        warnings: [CUT_OFF_MESSAGE, { message: LONG_MESSAGE, code: 'long_conversation' }],
+      }),
+    });
+    const container = window.document.querySelector('.osa-chat-widget');
+    send(window, container, 'A question');
+    await waitFor(() => settled(container), 'the send settles');
+    const banner = container.querySelector('.osa-warning');
+    assertEqual(banner.style.display, 'block', 'the banner is up');
+    assert(banner.textContent.includes(CUT_OFF_MESSAGE) && banner.textContent.includes(LONG_MESSAGE), 'with both warnings on it');
+    const reply = api.getMessages().at(-1);
+    assertEqual([reply.content, reply.cutOff === true], ['A short answer.', true], 'and the reply is marked cut off');
+    assert(INCOMPLETE.test(lastReplyText(container)), 'where the page shows it');
+    assert((window.localStorage.getItem('osa-test-paced') || '').includes('"cutOff":true'), 'and the mark is saved');
+  } finally {
+    console.warn = warn;
+  }
+}
+{
+  // The response the server sends today: `warnings` is a list of the messages, no codes.
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    for (const [label, message] of [['output limit', CUT_OFF_MESSAGE], ['context window', CONTEXT_FULL_CUT_OFF_MESSAGE]]) {
+      const { window, api } = loadWidget({
+        chat: () => json({ message: { content: 'A short answer.' }, session_id: 's', warnings: [message] }),
+      });
+      const container = window.document.querySelector('.osa-chat-widget');
+      send(window, container, 'A question');
+      await waitFor(() => settled(container), 'the send settles');
+      assert(container.querySelector('.osa-warning').textContent.includes(message), `${label}: the banner has the server's message`);
+      assertEqual(api.getMessages().at(-1).cutOff === true, true, `${label}: and the reply is marked cut off`);
+    }
+  } finally {
+    console.warn = warn;
+  }
+}
+{
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    for (const [label, warnings] of [['none', undefined], ['not a list', 'cut off'], ['nothing usable in it', [null, 7, '', {}, { code: 'cut_off' }]]]) {
+      const { window, api } = loadWidget({ chat: () => json({ message: { content: 'Fine.' }, session_id: 's', warnings }) });
+      const container = window.document.querySelector('.osa-chat-widget');
+      send(window, container, 'A question');
+      await waitFor(() => settled(container), 'the send settles');
+      assertEqual([container.querySelector('.osa-warning').style.display, api.getMessages().at(-1).cutOff === true], ['none', false],
+        `${label}: no banner, no mark`);
+      assertEqual(lastReplyText(container), 'Fine.', `${label}: the answer is on the page`);
+    }
+  } finally {
+    console.warn = warn;
+  }
 }
 
 console.log('\n' + '='.repeat(60));

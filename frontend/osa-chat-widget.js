@@ -2146,6 +2146,63 @@
       padding: 8px 16px;
       background: #fef2f2;
       border-top: 1px solid #fecaca;
+      user-select: text;
+    }
+
+    /* A failed request's banner: stays until dismissed, so it carries a dismiss button,
+       and, when the server gave one, the error's reference with a button to copy it. */
+    .osa-error.osa-error-persistent {
+      position: relative;
+      padding-right: 36px;
+    }
+
+    .osa-error-reference {
+      display: block;
+      margin-top: 4px;
+    }
+
+    .osa-error-id {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      user-select: all;
+    }
+
+    .osa-error-copy,
+    .osa-error-dismiss {
+      border: none;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      padding: 2px;
+      line-height: 0;
+      border-radius: 4px;
+    }
+
+    .osa-error-copy {
+      margin-left: 4px;
+      vertical-align: middle;
+    }
+
+    .osa-error-dismiss {
+      position: absolute;
+      top: 6px;
+      right: 10px;
+    }
+
+    .osa-error-copy svg,
+    .osa-error-dismiss svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    .osa-error-copy:hover,
+    .osa-error-dismiss:hover {
+      background: rgba(0, 0, 0, 0.08);
+    }
+
+    .osa-error-copy:focus-visible,
+    .osa-error-dismiss:focus-visible {
+      outline: 2px solid currentColor;
+      outline-offset: 1px;
     }
 
     .osa-warning {
@@ -2154,6 +2211,11 @@
       padding: 8px 16px;
       background: #fffbeb;
       border-top: 1px solid #fde68a;
+      user-select: text;
+    }
+
+    .osa-warning-line + .osa-warning-line {
+      margin-top: 4px;
     }
 
     .osa-resize-handle {
@@ -2966,6 +3028,11 @@
 
     .osa-chat-widget.osa-dark .osa-error {
       border-top-color: rgba(248, 113, 113, 0.35);
+    }
+
+    .osa-chat-widget.osa-dark .osa-error-copy:hover,
+    .osa-chat-widget.osa-dark .osa-error-dismiss:hover {
+      background: rgba(255, 255, 255, 0.12);
     }
 
     .osa-chat-widget.osa-dark .osa-warning {
@@ -4176,8 +4243,15 @@
       const { dataset, ...rest } = msg;
       return isValidDatasetId(dataset) ? { ...rest, dataset } : rest;
     }
+    // The cut-off mark is kept only as the boolean the widget writes, and the server's
+    // words for it only as a bounded string.
+    const { cutOff, cutOffMessage, ...rest } = msg;
     return {
-      ...msg,
+      ...rest,
+      ...(cutOff === true ? { cutOff: true } : {}),
+      ...(cutOff === true && typeof cutOffMessage === 'string' && cutOffMessage
+        ? { cutOffMessage: cutOffMessage.slice(0, CUT_OFF_MESSAGE_LIMIT) }
+        : {}),
       citations: Array.isArray(msg.citations)
         ? msg.citations.filter((citation) => citation && typeof citation === 'object'
           && !Array.isArray(citation)
@@ -7398,7 +7472,7 @@
       });
 
       const content = msg.role === 'assistant'
-        ? markdownToHtml(msg.content, citationsByMarker)
+        ? markdownToHtml(replyMarkdown(msg, msgIndex), citationsByMarker)
         : escapeHtml(msg.content);
 
       // Compact numbered source list under the answer, when anything was cited. While
@@ -7760,24 +7834,193 @@
     }
   }
 
-  // Show error
-  function showError(container, message) {
+  // Show error. The banner for a failed request (`persist`) stays until the reader
+  // dismisses it or sends again: it is what says why their question went unanswered, and
+  // five seconds is too short to read it, let alone to select it or copy its reference.
+  // Any other message goes after five seconds, as it always has. The banner's one timer
+  // is the last message's: an earlier message's must not hide a later one.
+  const ERROR_VISIBLE_MS = 5000;
+  const errorTimers = new WeakMap();
+  function showError(container, message, { persist = false, errorId = null } = {}) {
     const errorEl = container.querySelector('.osa-error');
-    errorEl.textContent = message;
+    clearTimeout(errorTimers.get(errorEl));
+    errorTimers.delete(errorEl);
+    errorEl.classList.remove('osa-error-persistent');
+    if (persist) {
+      fillPersistentError(container, errorEl, message, errorId);
+    } else {
+      errorEl.textContent = message;
+      errorTimers.set(errorEl, setTimeout(() => {
+        errorEl.style.display = 'none';
+      }, ERROR_VISIBLE_MS));
+    }
     errorEl.style.display = 'block';
-    setTimeout(() => {
-      errorEl.style.display = 'none';
-    }, 5000);
   }
 
+  // A reference the server gave for an error (its `error_id`), as text to show and copy:
+  // a bounded string, never markup. Null for anything else.
+  function errorReference(value) {
+    return typeof value === 'string' && value.trim() ? value.trim().slice(0, 100) : null;
+  }
+
+  // The banner's content for a failed request: the message, the error's reference with a
+  // button to copy it when the server gave one, and a dismiss button. Plain text nodes,
+  // selectable (.osa-error sets user-select: text, the reference selects whole on one click).
+  function fillPersistentError(container, errorEl, message, errorId) {
+    errorEl.textContent = '';
+    errorEl.classList.add('osa-error-persistent');
+    const text = document.createElement('span');
+    text.className = 'osa-error-text';
+    text.textContent = message;
+    errorEl.appendChild(text);
+
+    const reference = errorReference(errorId);
+    if (reference) {
+      const line = document.createElement('span');
+      line.className = 'osa-error-reference';
+      line.appendChild(document.createTextNode('Reference: '));
+      const id = document.createElement('code');
+      id.className = 'osa-error-id';
+      id.textContent = reference;
+      line.appendChild(id);
+      const copy = document.createElement('button');
+      copy.type = 'button';
+      copy.className = 'osa-error-copy';
+      copy.title = 'Copy the reference';
+      copy.setAttribute('aria-label', 'Copy the error reference');
+      copy.innerHTML = ICONS.copy;
+      copy.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        if (await writeClipboard(reference)) {
+          copy.classList.add('copied');
+          copy.innerHTML = ICONS.check;
+          setTimeout(() => {
+            copy.classList.remove('copied');
+            copy.innerHTML = ICONS.copy;
+          }, CODE_COPIED_MS);
+        } else if (typeof window.getSelection === 'function') {
+          // A page that cannot copy for the reader: the reference is selected, so the
+          // keyboard's copy does it.
+          const selection = window.getSelection();
+          const range = document.createRange();
+          range.selectNodeContents(id);
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+      });
+      line.appendChild(copy);
+      errorEl.appendChild(line);
+    }
+
+    const dismiss = document.createElement('button');
+    dismiss.type = 'button';
+    dismiss.className = 'osa-error-dismiss';
+    dismiss.title = 'Dismiss';
+    dismiss.setAttribute('aria-label', 'Dismiss this error');
+    dismiss.innerHTML = ICONS.close;
+    dismiss.addEventListener('click', (event) => {
+      event.stopPropagation();
+      dismissPersistentError(container);
+    });
+    errorEl.appendChild(dismiss);
+  }
+
+  // Take away a failed request's banner: the reader dismissed it, or sent again. A
+  // five-second message is left to its own timer.
+  function dismissPersistentError(container) {
+    const errorEl = container.querySelector('.osa-error');
+    if (!errorEl || !errorEl.classList.contains('osa-error-persistent')) return;
+    errorEl.classList.remove('osa-error-persistent');
+    errorEl.textContent = '';
+    errorEl.style.display = 'none';
+  }
+
+  // Warnings stack, one line each in the order they came. Several can arrive close
+  // together (the wait for the rate limit and a reply's own notice; a server before
+  // #568 sent the cut-off and long-conversation notices as two events), and a banner
+  // that held only the last would take the first away before it could be read. Each line
+  // has a timer of its own, so each is up for the full period from when it arrived, and
+  // the banner goes with the last line. The same text again is the one line, its period
+  // started over.
+  const WARNING_VISIBLE_MS = 10000;
+  const warningTimers = new WeakMap();
   function showWarning(container, message) {
     const warningEl = container.querySelector('.osa-warning');
     if (!warningEl) return;
-    warningEl.textContent = message;
+    const text = String(message);
+    let line = [...warningEl.children].find((el) => el.textContent === text);
+    if (line) {
+      clearTimeout(warningTimers.get(line));
+    } else {
+      line = document.createElement('div');
+      line.className = 'osa-warning-line';
+      line.textContent = text;
+      warningEl.appendChild(line);
+    }
+    warningTimers.set(line, setTimeout(() => {
+      line.remove();
+      if (!warningEl.firstElementChild) warningEl.style.display = 'none';
+    }, WARNING_VISIBLE_MS));
     warningEl.style.display = 'block';
-    setTimeout(() => {
-      warningEl.style.display = 'none';
-    }, 10000);
+  }
+
+  // Whether a warning (a `warning` event, or an entry of a non-streamed response's
+  // `warnings`) says the reply was cut off: at the model's output limit, or because the
+  // conversation filled its context window. A warning with a machine-readable `code` is
+  // read by it, so its wording can change. One without (a stream's before #568, and a
+  // non-streamed response's `warnings`, which are strings) is read by the wording of
+  // the server's cut-off messages (src/api/turn_outcome.py), which a test holds this to.
+  const CUT_OFF_CODE = 'cut_off';
+  const CUT_OFF_PHRASES = ['was cut off because', 'stopped short because'];
+  function isCutOffWarning(warning) {
+    if (!warning || typeof warning !== 'object') return false;
+    if (typeof warning.code === 'string' && warning.code) return warning.code === CUT_OFF_CODE;
+    return typeof warning.message === 'string' && CUT_OFF_PHRASES.some((phrase) => warning.message.includes(phrase));
+  }
+
+  // One warning about a reply, from wherever it came: the banner, and the reply's own
+  // mark when it says the reply was cut off, with the server's words for it (what to do
+  // about it differs by cause, and only the server knows the cause). The stream's
+  // `warning` events and a non-streamed response's `warnings` both come through here,
+  // so the two cannot differ in what they show.
+  const CUT_OFF_MESSAGE_LIMIT = 500;
+  function noticeWarning(container, reply, warning) {
+    const message = warning.message || 'Warning';
+    console.warn('[OSA] Warning:', message);
+    showWarning(container, message);
+    if (reply && isCutOffWarning(warning)) {
+      reply.cutOff = true;
+      if (typeof warning.message === 'string') reply.cutOffMessage = warning.message.slice(0, CUT_OFF_MESSAGE_LIMIT);
+    }
+  }
+
+  // The warnings of a non-streamed response, as the objects noticeWarning reads. An
+  // entry is a string (what the first server to send them sent) or an object with a
+  // `message` and, when the server sends one, a `code`; anything else, or an entry with
+  // nothing to say, is not a warning to show. A response without the field has none.
+  function warningsOf(data) {
+    if (!data || !Array.isArray(data.warnings)) return [];
+    return data.warnings
+      .map((entry) => (typeof entry === 'string' ? { message: entry } : entry))
+      .filter((entry) => entry && typeof entry === 'object' && typeof entry.message === 'string' && entry.message.trim());
+  }
+
+  // What a cut-off reply says about itself under its text: the bracketed italic note
+  // the other replies that stopped short carry (see the stream handler), in the
+  // emphasis this renderer reads (*...*; it shows _..._ as typed). Under text it is short
+  // and true whatever the cause. With no text at all there would be nothing on the page
+  // but the note, so it is the server's own explanation (what to do differs: ask it to
+  // continue, or start a new conversation). It is drawn from the `cutOff` mark rather
+  // than written into the text, so the canonical text in the done event cannot replace
+  // it, a copy of the reply does not carry it, and a reply that was saved and reloaded
+  // still has it. Not while the reply is still being revealed: the text is not all there
+  // yet.
+  function replyMarkdown(msg, msgIndex) {
+    if (msg.cutOff !== true || msgIndex === revealingIndex) return msg.content;
+    if (!hasVisibleText(msg.content)) {
+      return `*[${msg.cutOffMessage || 'The assistant stopped before it wrote an answer.'}]*`;
+    }
+    return `${msg.content}\n\n*[Response may be incomplete - the reply was cut off]*`;
   }
 
   // Parse SSE (Server-Sent Events) format
@@ -7824,7 +8067,13 @@
     // A reply that ran code is kept even when it ends with no text: what ran,
     // and any figure it drew, is part of the answer the reader asked for.
     const ranCode = Array.isArray(message.executions) && message.executions.length > 0;
-    if (hasVisibleText(finalContent) || ranCode) {
+    // So is a reply the model was cut off in, which has a note saying so to show. It
+    // can have neither text nor a record of code: a reply whose only run read an
+    // earlier run's output (get_full_output) has none, since answerToolRequest records
+    // only code that ran, and the server counts that run as code (it sends a warning
+    // and this done, not an error). Dropping it would leave the warning banner, gone
+    // in seconds, as the only word of why nothing came back.
+    if (hasVisibleText(finalContent) || ranCode || message.cutOff === true) {
       messageList[messageIndex] = {
         ...message,
         content: finalContent,
@@ -8276,10 +8525,9 @@
               sessionId = event.session_id;
             }
           } else if (event.event === 'warning') {
-            // Display warning banner (e.g., conversation getting long)
-            const warningMsg = event.message || 'Warning';
-            console.warn('[OSA] Warning:', warningMsg);
-            showWarning(container, warningMsg);
+            // The banner (e.g., conversation getting long), and, for a reply that
+            // stopped short, the reply's own mark: the banner goes in seconds.
+            noticeWarning(container, messages[messageIndex], event);
           } else if (event.event === 'done') {
             // Finalize message and capture session ID
             receivedDoneEvent = true;
@@ -8366,7 +8614,13 @@
               console.error('[OSA] Failed to save history:', saveError);
             }
 
-            throw new Error(`Backend streaming error: ${errorMsg}`);
+            // Marked as the server's, so nothing downstream reads a word in its message
+            // (timeout, JSON) as a failure of the stream or the page.
+            const reported = new Error(`Backend streaming error: ${errorMsg}`);
+            reported.serverReported = true;
+            // The server's reference for this error, when it sends one (`error_id`).
+            reported.errorId = errorReference(event.error_id);
+            throw reported;
           } else if (event.event) {
             // Unknown event type - log for debugging
             console.warn('[OSA] Unknown SSE event type:', event.event, event);
@@ -8417,6 +8671,11 @@
       const shown = compose(accumulatedContent);
       const ran = messages[messageIndex] && messages[messageIndex].executions && messages[messageIndex].executions.length;
       if (hasVisibleText(shown) || ran) {
+        // An error event from the server was already written into the reply, in the
+        // server's words (see there): only a failure of the stream itself is described
+        // here, never a server message that happens to contain "timeout".
+        if (error.serverReported) throw error;
+
         const errorType = error.name || 'Error';
         let userMessage = 'Stream interrupted';
 
@@ -8424,9 +8683,6 @@
           userMessage = 'Connection timeout';
         } else if (error.message && error.message.includes('timeout')) {
           userMessage = 'Stream timeout';
-        } else if (error.message && error.message.includes('Backend streaming error')) {
-          // Backend error already handled above, don't modify message
-          throw error;
         }
 
         messages[messageIndex].content = (shown ? `${shown}\n\n` : '') + `_[${userMessage}]_`;
@@ -8469,6 +8725,9 @@
     // Commit any open thumbs-down comment box before the conversation moves on.
     flushPendingResponseFeedback(container);
 
+    // The last failed request's banner has been read, or is about to be replaced.
+    dismissPersistentError(container);
+
     isLoading = true;
     isThinking = false;
     beginWait();
@@ -8489,6 +8748,9 @@
     if (currentDataset) userMessage.dataset = currentDataset.id;
     messages.push(userMessage);
     let assistantMessageCreated = false;
+    // Whether a failure took the question out of the conversation: then it goes back in
+    // the input, to be sent again, rather than being lost with the reply that never came.
+    let questionRemoved = false;
 
     renderMessages(container);
     renderSuggestions(container);
@@ -8598,6 +8860,10 @@
         if (data && Array.isArray(data.citations)) {
           assistantMsg.citations = data.citations;
         }
+        // The warnings the response carries, as a stream's warning events are shown.
+        for (const warning of warningsOf(data)) {
+          noticeWarning(container, assistantMsg, warning);
+        }
         messages.push(assistantMsg);
         try {
           saveHistory();
@@ -8612,14 +8878,16 @@
       // Categorize error for better user messaging
       let userMessage = 'Failed to get response';
 
-      if (error.name === 'AbortError') {
+      if (error.serverReported) {
+        // The server's own words, as it sent them: checked first, so a word in them
+        // (JSON, Stream, fetch) is not taken for a failure of the page's own.
+        userMessage = error.message.replace('Backend streaming error: ', '');
+      } else if (error.name === 'AbortError') {
         userMessage = 'Request timed out. Please try again.';
       } else if (error.name === 'TypeError' && error.message.includes('fetch')) {
         userMessage = 'Network error. Please check your connection.';
       } else if (error.message && error.message.includes('JSON')) {
         userMessage = 'Invalid response from server. Please try again.';
-      } else if (error.message && error.message.includes('Backend streaming error')) {
-        userMessage = error.message.replace('Backend streaming error: ', '');
       } else if (error.message && error.message.includes('Stream')) {
         userMessage = 'Connection interrupted. Please try again.';
       } else if (error.message) {
@@ -8627,7 +8895,9 @@
       }
 
       console.error('[OSA] Send message error:', error);
-      showError(container, userMessage);
+      // Until the reader dismisses it or sends again, with the server's reference for
+      // the error when it gave one.
+      showError(container, userMessage, { persist: true, errorId: error.errorId });
 
       // Clean up messages based on what was created
       // If streaming was attempted, handleStreamingResponse manages its own assistant message
@@ -8640,11 +8910,13 @@
         if (lastMessage && lastMessage.role === 'user' && messages.length === userMessageIndex + 1) {
           // No assistant message remains, remove user message
           messages.splice(userMessageIndex, 1);
+          questionRemoved = true;
         }
       } else {
         // No streaming attempted, no assistant message created, remove user message
         if (messages.length > userMessageIndex && messages[userMessageIndex].role === 'user') {
           messages.splice(userMessageIndex, 1);
+          questionRemoved = true;
         }
       }
 
@@ -8662,6 +8934,9 @@
       input.disabled = false;
       sendBtn.disabled = false;
       resetBtn.disabled = messages.length <= 1;
+      // The box was emptied when the question was sent and nothing has been typed since
+      // (it was disabled), so the question goes back as it was written.
+      if (questionRemoved && !input.value) input.value = question;
       input.focus();
       renderMessages(container);
       renderSuggestions(container);

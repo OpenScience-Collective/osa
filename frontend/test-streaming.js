@@ -298,6 +298,22 @@ test('Done reducer keeps a reply that ran code even when it ends with no text', 
   assertEqual(empty.length, 0, 'An empty reply that ran nothing should still be removed');
 });
 
+test('Done reducer keeps a reply marked cut off even with no text and no run record', () => {
+  const applyDoneEvent = testWidgetWindow.OSAChatWidget.__applyDoneEvent;
+  // A reply whose only run read an earlier run's output (get_full_output) has no
+  // entry in `executions`, and its text can be empty when the model was cut off.
+  // Dropping it would leave the reader a banner that goes away in seconds and no
+  // message saying the reply was stopped.
+  const cutOff = [{ role: 'assistant', content: '', cutOff: true }];
+  applyDoneEvent(cutOff, 0, { event: 'done', content: '' }, '');
+  assertEqual(cutOff.length, 1, 'A cut-off reply should be kept');
+  assertEqual(cutOff[0].cutOff, true, 'And stay marked');
+
+  const plain = [{ role: 'assistant', content: '', cutOff: false }];
+  applyDoneEvent(plain, 0, { event: 'done', content: '' }, '');
+  assertEqual(plain.length, 0, 'A reply that is not marked and has nothing is still removed');
+});
+
 test('Legacy citation migration repairs cached mid-word markers', () => {
   const migrateLegacyCitationMarkers = testWidgetWindow.OSAChatWidget.__migrateLegacyCitationMarkers;
   assert(typeof migrateLegacyCitationMarkers === 'function', 'Legacy citation migration should be exposed in test mode');
