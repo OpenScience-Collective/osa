@@ -18,14 +18,22 @@ which raises differently:
   ``APITimeoutError`` / ``APIConnectionError``.
 - LiteLLM raises OpenAI-style exceptions (``status_code``, ``Timeout``).
 
-Anything else is ``unknown``: no claim is made about it.
+Anything else is ``unknown``: no claim is made about it. That includes the errors any
+code of ours raises, and this module is careful to leave them there. A tool that fetches
+a page fails with ``httpx`` errors and the built-in ``TimeoutError`` and
+``ConnectionError``, and langgraph's ``ToolNode`` re-raises what it does not handle, so such
+an error reaches the same handlers as a model call's. Reading it as the model's would put
+the wrong name on it, call it retryable (or, for a 404, not retryable), and leave its
+traceback out of the log. So an exception is the model call's only when its class comes
+from a model provider's library, or, for the one built-in exception a provider library
+raises on its own, when that library raised it.
 """
 
 import re
 from dataclasses import dataclass
+from types import TracebackType
 from typing import Literal
 
-import httpx
 from botocore.exceptions import (
     ClientError,
     ConnectTimeoutError,
@@ -65,9 +73,27 @@ _BEDROCK_PERMANENT: dict[str, FailureKind] = {
 #: ``ValueError("Received AWS exception <code>:\n\n<body>")``.
 _RECEIVED_AWS_EXCEPTION = re.compile(r"^Received AWS exception (\w+):")
 
+#: The packages a model call's own exception classes come from. ``httpx2`` is the copy of
+#: httpx the Anthropic SDK vendors, whose errors escape it raw when a stream dies part way;
+#: OSA's own code uses ``httpx`` (a different package), so the two never mix. LiteLLM's
+#: exceptions subclass the OpenAI SDK's.
+_PROVIDER_PACKAGES = frozenset(
+    {
+        "anthropic",
+        "openai",
+        "litellm",
+        "httpx2",
+        "langchain_aws",
+        "langchain_anthropic",
+        "langchain_litellm",
+    }
+)
+
 #: Exception class names (anywhere in the MRO) that mean the call timed out or the
 #: connection failed, for libraries whose base classes cannot be imported here: the
-#: Anthropic SDK carries its own copy of httpx, LiteLLM raises OpenAI-style classes.
+#: Anthropic SDK carries its own copy of httpx, LiteLLM raises OpenAI-style classes. Read
+#: only on a class from ``_PROVIDER_PACKAGES``, since ``Timeout`` and ``TransportError``
+#: are names other libraries use too.
 _TIMEOUT_NAMES = frozenset({"APITimeoutError", "TimeoutException", "Timeout"})
 _CONNECTION_NAMES = frozenset({"APIConnectionError", "TransportError"})
 
@@ -136,6 +162,23 @@ def _bedrock_code(code: str, name: str) -> ModelFailure | None:
     return None
 
 
+def _is_provider_class(error: BaseException) -> bool:
+    """Whether the exception's class comes from a model provider's library."""
+    return any(cls.__module__.split(".")[0] in _PROVIDER_PACKAGES for cls in type(error).__mro__)
+
+
+def _raised_in(error: BaseException, package: str) -> bool:
+    """Whether the innermost frame of the error's traceback is in ``package``, that is,
+    whether that library's own code raised it. False for an error that was never raised."""
+    frame: TracebackType | None = error.__traceback__
+    while frame is not None and frame.tb_next is not None:
+        frame = frame.tb_next
+    if frame is None:
+        return False
+    module = str(frame.tb_frame.f_globals.get("__name__", ""))
+    return module == package or module.startswith(f"{package}.")
+
+
 def _classify_one(error: BaseException) -> ModelFailure | None:
     name = type(error).__name__
     if isinstance(error, ClientError):
@@ -148,22 +191,9 @@ def _classify_one(error: BaseException) -> ModelFailure | None:
         if by_status is not None:
             return ModelFailure(by_status[0], by_status[1], f"{name} {code} (HTTP {status})")
         return ModelFailure("unavailable", None, f"{name} {code}")
-    if isinstance(
-        error, ReadTimeoutError | ConnectTimeoutError | httpx.TimeoutException | TimeoutError
-    ):
+    if isinstance(error, ReadTimeoutError | ConnectTimeoutError):
         return ModelFailure("timeout", True, name)
-    if isinstance(error, httpx.HTTPStatusError):
-        by_status = _by_status(error.response.status_code)
-        if by_status is not None:
-            return ModelFailure(
-                by_status[0], by_status[1], f"{name} (HTTP {error.response.status_code})"
-            )
-        return None
-    if isinstance(
-        error, HTTPClientError | BotocoreConnectionError | ConnectionError | httpx.TransportError
-    ):
-        # A connection that dropped, including a Bedrock stream that ended with no
-        # messageStop (``ConnectionError`` from langchain-aws).
+    if isinstance(error, HTTPClientError | BotocoreConnectionError):
         return ModelFailure("connection", True, name)
     if isinstance(error, ValueError):
         match = _RECEIVED_AWS_EXCEPTION.match(str(error))
@@ -171,6 +201,15 @@ def _classify_one(error: BaseException) -> ModelFailure | None:
             return _bedrock_code(match.group(1), name) or ModelFailure(
                 "unavailable", None, f"{name} {match.group(1)}"
             )
+        return None
+    if type(error) is ConnectionError and _raised_in(error, "langchain_aws"):
+        # A Bedrock stream that ended with no messageStop. Built-in, so it is the model
+        # call's only when langchain-aws raised it: any ConnectionError a tool of ours
+        # meets is the same class.
+        return ModelFailure("connection", True, name)
+    if not _is_provider_class(error):
+        # Includes httpx's errors, the built-in TimeoutError and every other
+        # ConnectionError: a tool of ours raises those too (see the module docstring).
         return None
     mro_names = {cls.__name__ for cls in type(error).__mro__}
     status = getattr(error, "status_code", None)

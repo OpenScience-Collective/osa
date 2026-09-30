@@ -21,14 +21,16 @@ each provider's real client stack instead, with only the network under it staged
 
 from __future__ import annotations
 
+import json
 import logging
 from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from langchain_core.messages import AIMessageChunk
+from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
+from src.agents.base import DEFAULT_MAX_CONVERSATION_TOKENS, count_conversation_tokens
 from src.api.routers.community import (
     AssistantWithMetrics,
     ChatSession,
@@ -37,10 +39,27 @@ from src.api.routers.community import (
     _stream_chat_response,
     create_community_router,
 )
-from src.api.turn_outcome import CUT_OFF_MESSAGE, NO_ANSWER_MESSAGE
+from src.api.tool_results import PendingClientCall
+from src.api.turn_outcome import (
+    CONTEXT_FULL_CUT_OFF_MESSAGE,
+    CONTEXT_FULL_NO_ANSWER_MESSAGE,
+    CUT_OFF_LONG_MESSAGE,
+    CUT_OFF_MESSAGE,
+    DECLINED_MESSAGE,
+    EMPTY_MESSAGE,
+    LONG_CONVERSATION_MESSAGE,
+    MALFORMED_MESSAGE,
+    NO_ANSWER_MESSAGE,
+)
 from src.assistants.community import CommunityAssistant
+from src.core.config.community import FULL_OUTPUT_TOOL_NAME
 from src.core.services.anthropic_models import BEDROCK_MODELS, DEFAULT_MODEL
 from src.core.services.litellm_llm import DEFAULT_MODEL as OPENROUTER_MODEL
+from src.core.services.model_outcome import (
+    CONTEXT_WINDOW_STOP_REASON,
+    DECLINED_STOP_REASONS,
+    MALFORMED_STOP_REASONS,
+)
 from src.metrics.db import init_metrics_db, metrics_connection
 from src.metrics.middleware import MetricsMiddleware
 from tests.helpers.provider_replies import (
@@ -77,13 +96,26 @@ def _rows() -> list[dict]:
         return conn.execute("SELECT * FROM request_log ORDER BY timestamp").fetchall()
 
 
+def _fill_past_the_budget(session: ChatSession) -> None:
+    """Earlier turns, enough that the conversation is over the agent's token budget, which
+    is past the point the long-conversation warning fires. Counted with the counter the
+    router uses, so it holds whatever the budget is set to."""
+    while count_conversation_tokens(session.messages) <= DEFAULT_MAX_CONVERSATION_TOKENS:
+        session.add_user_message("Tell me about the tags. " * 400)
+        session.add_assistant_message("Sensory-event marks a stimulus. " * 300)
+
+
 async def _chat(
     provider: Provider,
     script: list[list[AIMessageChunk]],
     *,
     browser_runs_answered: int = 0,
+    code_runs_answered: int = 0,
+    long_conversation: bool = False,
 ) -> tuple[list[dict], ChatSession]:
     session = ChatSession("sess-cutoff", COMMUNITY)
+    if long_conversation:
+        _fill_past_the_budget(session)
     session.add_user_message(QUESTION)
     with patch(
         "src.api.routers.community.create_community_assistant",
@@ -98,6 +130,7 @@ async def _chat(
                 None,
                 http_request=real_request("req-cutoff"),
                 browser_runs_answered=browser_runs_answered,
+                code_runs_answered=code_runs_answered,
             )
         )
     return events, session
@@ -233,12 +266,30 @@ class TestStreamedChat:
         """The widget keeps a reply that ran code even with no text, so a later run that
         is cut off before it writes anything is a warning on that reply, not an error."""
         events, _ = await _chat(
-            provider, [scripted_reply(provider, "", cut_off=True)], browser_runs_answered=1
+            provider,
+            [scripted_reply(provider, "", cut_off=True)],
+            browser_runs_answered=1,
+            code_runs_answered=1,
         )
 
         assert "error" not in _names(events)
         assert [e["message"] for e in events if e["event"] == "warning"] == [CUT_OFF_MESSAGE]
         assert _names(events)[-1] == "done"
+
+    async def test_a_browser_run_that_is_not_code_does_not_make_it_one(
+        self, provider: Provider
+    ) -> None:
+        """A run that only read output back leaves nothing on the reply the widget keeps
+        (see ``TestOnlyCodeTheWidgetKeepsCounts`` for the same through the endpoint)."""
+        events, _ = await _chat(
+            provider,
+            [scripted_reply(provider, "", cut_off=True)],
+            browser_runs_answered=1,
+            code_runs_answered=0,
+        )
+
+        assert _names(events)[-1] == "error" and "done" not in _names(events)
+        assert events[-1]["message"] == NO_ANSWER_MESSAGE
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +327,131 @@ class TestStreamedAsk:
         events = await _ask(provider, [scripted_reply(provider, ANSWER)])
 
         assert not {"error", "warning"} & set(_names(events))
+
+
+# ---------------------------------------------------------------------------
+# A reply with nothing in it, whatever the stop reason (release review, follow-up 3)
+# ---------------------------------------------------------------------------
+
+#: Each stop reason the registry of reasons names, with what the reader is told. Read from
+#: the registry, so a reason added there is covered here.
+EMPTY_STOPS = [
+    *((reason, DECLINED_MESSAGE) for reason in sorted(DECLINED_STOP_REASONS)),
+    *((reason, MALFORMED_MESSAGE) for reason in sorted(MALFORMED_STOP_REASONS)),
+]
+
+
+def _empty_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if "Model reply was empty" in r.getMessage()]
+
+
+@provider_param
+class TestAnEmptyReplyWhateverTheStopReason:
+    """A reply with no text, no code and no parked call used to end in an empty ``done``
+    unless it had hit the output limit: a refusal, a filter or a guardrail left the reader
+    with no answer and no word, because the widget drops the empty bubble."""
+
+    @pytest.mark.parametrize(("stop", "message"), EMPTY_STOPS)
+    async def test_chat_says_what_the_model_did(
+        self, provider: Provider, stop: str, message: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.WARNING)
+
+        events, session = await _chat(provider, [scripted_reply(provider, "", stop=stop)])
+
+        assert _names(events)[-1] == "error" and "done" not in _names(events)
+        assert events[-1]["message"] == message
+        (record,) = _empty_records(caplog)
+        assert record.levelno == logging.WARNING
+        text = record.getMessage()
+        for expected in (COMMUNITY, provider.model, "req-cutoff", stop):
+            assert expected in text, f"{expected!r} missing from {text!r}"
+        assert [type(m).__name__ for m in session.messages] == ["HumanMessage"]
+        (row,) = _rows()
+        assert row["status_code"] == 502 and stop in row["error_message"]
+        assert row["input_tokens"] == USAGE["input_tokens"]
+
+    @pytest.mark.parametrize(("stop", "message"), EMPTY_STOPS)
+    async def test_ask_says_what_the_model_did(
+        self, provider: Provider, stop: str, message: str
+    ) -> None:
+        events = await _ask(provider, [scripted_reply(provider, "", stop=stop)])
+
+        assert _names(events)[-1] == "error" and "done" not in _names(events)
+        assert events[-1]["message"] == message
+        assert _rows()[0]["status_code"] == 502
+
+    async def test_a_reply_that_simply_ended_with_nothing_is_an_error_too(
+        self, provider: Provider
+    ) -> None:
+        events, _ = await _chat(provider, [scripted_reply(provider, "")])
+
+        assert _names(events)[-1] == "error" and "done" not in _names(events)
+        assert events[-1]["message"] == EMPTY_MESSAGE
+        assert _rows()[0]["status_code"] == 502
+
+    async def test_text_of_only_whitespace_is_nothing(self, provider: Provider) -> None:
+        events, _ = await _chat(provider, [scripted_reply(provider, "\n\n ")])
+
+        assert _names(events)[-1] == "error"
+        assert events[-1]["message"] == EMPTY_MESSAGE
+
+    @pytest.mark.parametrize(("stop", "message"), EMPTY_STOPS)
+    async def test_text_before_a_refusal_is_left_alone(
+        self, provider: Provider, stop: str, message: str
+    ) -> None:
+        """There is something to show, so it is shown; this is about a reply of nothing."""
+        events, _ = await _chat(provider, [scripted_reply(provider, ANSWER, stop=stop)])
+
+        assert _names(events)[-1] == "done"
+        assert not {"error", "warning"} & set(_names(events))
+        assert message not in [e.get("message") for e in events]
+
+
+# ---------------------------------------------------------------------------
+# A conversation that filled the context window (release review, follow-up 4)
+# ---------------------------------------------------------------------------
+
+
+@provider_param
+class TestAFullContextWindow:
+    """Trying again, or asking it to continue, fails again when the context is full, so
+    the reader is sent to a new conversation."""
+
+    async def test_no_text_is_an_error_that_says_to_start_over(
+        self, provider: Provider, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.WARNING)
+
+        events, _ = await _chat(
+            provider, [scripted_reply(provider, "", stop=CONTEXT_WINDOW_STOP_REASON)]
+        )
+
+        assert _names(events)[-1] == "error"
+        assert events[-1]["message"] == CONTEXT_FULL_NO_ANSWER_MESSAGE
+        (record,) = [r for r in caplog.records if "context window" in r.getMessage()]
+        assert CONTEXT_WINDOW_STOP_REASON in record.getMessage()
+        (row,) = _rows()
+        assert row["status_code"] == 502 and "context window" in row["error_message"]
+
+    async def test_text_that_stopped_short_is_a_warning_that_says_to_start_over(
+        self, provider: Provider
+    ) -> None:
+        events, _ = await _chat(
+            provider, [scripted_reply(provider, ANSWER[:30], stop=CONTEXT_WINDOW_STOP_REASON)]
+        )
+
+        assert _names(events)[-1] == "done"
+        assert [e["message"] for e in events if e["event"] == "warning"] == [
+            CONTEXT_FULL_CUT_OFF_MESSAGE
+        ]
+
+    async def test_ask_says_the_same(self, provider: Provider) -> None:
+        events = await _ask(
+            provider, [scripted_reply(provider, "", stop=CONTEXT_WINDOW_STOP_REASON)]
+        )
+
+        assert events[-1]["message"] == CONTEXT_FULL_NO_ANSWER_MESSAGE
 
 
 # ---------------------------------------------------------------------------
@@ -326,6 +502,18 @@ def _post_chat(client: TestClient, session_id: str = "sess-plain-chat"):
     )
 
 
+class TestTheRoutesDeclareTheirAnswers:
+    @pytest.mark.parametrize("route", ["ask", "chat"])
+    def test_a_reply_with_no_answer_is_a_declared_502(self, client: TestClient, route: str) -> None:
+        """The 502 the two endpoints return is in the OpenAPI schema, not just the code."""
+        schema = client.app.openapi()
+
+        responses = schema["paths"][f"/{COMMUNITY}/{route}"]["post"]["responses"]
+
+        assert "502" in responses
+        assert responses["502"]["description"]
+
+
 @provider_param
 class TestAskWithoutStreaming:
     def test_a_reply_with_no_text_is_a_502_naming_why(
@@ -347,6 +535,27 @@ class TestAskWithoutStreaming:
         assert row["request_id"] in message
         assert "output limit" in row["error_message"]
         assert row["input_tokens"] == USAGE["input_tokens"]
+
+    @pytest.mark.parametrize(("stop", "message"), EMPTY_STOPS)
+    def test_a_reply_the_model_declined_is_a_502_naming_what_it_did(
+        self, provider: Provider, client: TestClient, monkeypatch, stop: str, message: str
+    ) -> None:
+        _serve(monkeypatch, provider, [scripted_reply(provider, "", stop=stop)])
+
+        response = _post_ask(client)
+
+        assert response.status_code == 502
+        assert response.json()["detail"] == message
+
+    def test_a_reply_that_ended_with_nothing_is_a_502(
+        self, provider: Provider, client: TestClient, monkeypatch
+    ) -> None:
+        _serve(monkeypatch, provider, [scripted_reply(provider, "")])
+
+        response = _post_ask(client)
+
+        assert response.status_code == 502
+        assert response.json()["detail"] == EMPTY_MESSAGE
 
     def test_a_reply_cut_off_in_a_sentence_carries_a_warning(
         self, provider: Provider, client: TestClient, monkeypatch
@@ -409,19 +618,328 @@ class TestChatWithoutStreaming:
         assert body["warnings"] == []
         assert body["message"]["content"] == ANSWER
 
-    def test_an_empty_reply_that_finished_is_not_stored_as_a_turn(
+    def test_the_cost_row_counts_only_this_requests_runs(
+        self, provider: Provider, client: TestClient, monkeypatch
+    ) -> None:
+        """A session that had a browser turn keeps the model's own messages, each with the
+        usage it reported (``replace_history`` adopts the graph's state whole). A later
+        request that is not streamed passes the whole history to the model, and the
+        messages that come back include it: summing every message's usage billed those
+        earlier runs again."""
+        session = ChatSession("sess-plain-chat", COMMUNITY)
+        session.add_user_message("Plot the alpha power.")
+        session.replace_history(
+            [
+                *session.messages,
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"name": "t", "args": {}, "id": "toolu_01earlier", "type": "tool_call"}
+                    ],
+                    usage_metadata=USAGE,
+                ),
+                ToolMessage(content="peak 10.2 Hz", tool_call_id="toolu_01earlier"),
+                AIMessage(content="The peak is at 10.2 Hz.", usage_metadata=USAGE),
+            ]
+        )
+        _get_session_store(COMMUNITY)[session.session_id] = session
+        _serve(monkeypatch, provider, [scripted_reply(provider, ANSWER)])
+
+        assert _post_chat(client).status_code == 200
+
+        (row,) = _rows()
+        assert row["input_tokens"] == USAGE["input_tokens"]
+        assert row["output_tokens"] == USAGE["output_tokens"]
+        assert row["total_tokens"] == USAGE["total_tokens"]
+
+    def test_an_empty_reply_that_finished_is_a_502_and_not_stored_as_a_turn(
         self, provider: Provider, client: TestClient, monkeypatch
     ) -> None:
         """Finding 4: the streamed path never stored an empty assistant message; this
         one did, and the next request replayed it (as "." to Bedrock, as an empty string
-        to OpenRouter)."""
+        to OpenRouter). Now it is an error whatever the stop reason, as it is streamed,
+        so a 200 never carries an answer of nothing."""
         _serve(monkeypatch, provider, [scripted_reply(provider, "")])
 
         response = _post_chat(client)
 
-        assert response.status_code == 200
+        assert response.status_code == 502
+        assert response.json()["detail"] == EMPTY_MESSAGE
         session = _get_session_store(COMMUNITY)["sess-plain-chat"]
         assert [type(m).__name__ for m in session.messages] == ["HumanMessage"]
+
+    @pytest.mark.parametrize(("stop", "message"), EMPTY_STOPS)
+    def test_a_reply_the_model_declined_is_a_502_naming_what_it_did(
+        self, provider: Provider, client: TestClient, monkeypatch, stop: str, message: str
+    ) -> None:
+        _serve(monkeypatch, provider, [scripted_reply(provider, "", stop=stop)])
+
+        response = _post_chat(client)
+
+        assert response.status_code == 502
+        assert response.json()["detail"] == message
+        (row,) = _rows()
+        assert row["status_code"] == 502 and stop in row["error_message"]
+
+    def test_a_full_context_window_says_to_start_over(
+        self, provider: Provider, client: TestClient, monkeypatch
+    ) -> None:
+        _serve(
+            monkeypatch,
+            provider,
+            [scripted_reply(provider, "", stop=CONTEXT_WINDOW_STOP_REASON)],
+        )
+
+        response = _post_chat(client)
+
+        assert response.status_code == 502
+        assert response.json()["detail"] == CONTEXT_FULL_NO_ANSWER_MESSAGE
+
+    def test_text_that_stopped_at_a_full_context_window_carries_that_warning(
+        self, provider: Provider, client: TestClient, monkeypatch
+    ) -> None:
+        _serve(
+            monkeypatch,
+            provider,
+            [scripted_reply(provider, ANSWER[:30], stop=CONTEXT_WINDOW_STOP_REASON)],
+        )
+
+        body = _post_chat(client).json()
+
+        assert body["warnings"] == [CONTEXT_FULL_CUT_OFF_MESSAGE]
+
+
+# ---------------------------------------------------------------------------
+# An error a reader can report (release review, follow-up 6)
+# ---------------------------------------------------------------------------
+
+
+@provider_param
+class TestAnErrorEventCanBeTiedToItsRow:
+    """The error for a reply that is empty used to carry a message and nothing else, so a
+    reader's report could not be tied to the 502 row in the metrics: no request id, and
+    no error id for the log line."""
+
+    @pytest.mark.parametrize(
+        "stop", [None, "refusal", CONTEXT_WINDOW_STOP_REASON], ids=["cut_off", "refusal", "context"]
+    )
+    async def test_chat_names_its_request_and_its_log_line(
+        self, provider: Provider, stop: str | None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.WARNING)
+
+        events, _ = await _chat(
+            provider, [scripted_reply(provider, "", cut_off=stop is None, stop=stop)]
+        )
+
+        error = events[-1]
+        assert error["event"] == "error"
+        assert error["request_id"] == "req-cutoff" == _rows()[0]["request_id"]
+        assert error["error_id"]
+        (record,) = [r for r in caplog.records if r.name == "src.api.turn_outcome"]
+        assert record.error_id == error["error_id"]
+        assert error["error_id"] in record.getMessage()
+        assert record.request_id == "req-cutoff"
+
+    async def test_ask_does_too(self, provider: Provider) -> None:
+        events = await _ask(provider, [scripted_reply(provider, "", cut_off=True)])
+
+        assert events[-1]["request_id"] == "req-cutoff" == _rows()[0]["request_id"]
+        assert events[-1]["error_id"]
+
+    async def test_each_error_has_an_id_of_its_own(self, provider: Provider) -> None:
+        first, _ = await _chat(provider, [scripted_reply(provider, "", cut_off=True)])
+        second, _ = await _chat(provider, [scripted_reply(provider, "", cut_off=True)])
+
+        assert first[-1]["error_id"] != second[-1]["error_id"]
+
+    async def test_a_warning_is_not_an_error_and_has_neither(self, provider: Provider) -> None:
+        events, _ = await _chat(provider, [scripted_reply(provider, ANSWER[:30], cut_off=True)])
+
+        (warning,) = _warnings(events)
+        assert "error_id" not in warning and "request_id" not in warning
+
+
+# ---------------------------------------------------------------------------
+# One warning per reply, with a machine-readable kind (release review, follow-up 1)
+# ---------------------------------------------------------------------------
+
+
+def _warnings(events: list[dict]) -> list[dict]:
+    return [e for e in events if e["event"] == "warning"]
+
+
+@provider_param
+class TestOneWarningPerReply:
+    """The widget keeps one warning element, so a second ``warning`` straight after the
+    first overwrote it before it could be read, and a reply is likeliest to be cut off in
+    a long conversation, which is also when the long-conversation warning fires."""
+
+    async def test_a_reply_cut_off_in_a_long_conversation_gets_one_combined_warning(
+        self, provider: Provider
+    ) -> None:
+        events, _ = await _chat(
+            provider,
+            [scripted_reply(provider, ANSWER[:30], cut_off=True)],
+            long_conversation=True,
+        )
+
+        assert _warnings(events) == [
+            {
+                "event": "warning",
+                "message": CUT_OFF_LONG_MESSAGE,
+                "code": "cut_off",
+                "codes": ["cut_off", "long_conversation"],
+            }
+        ]
+        assert _names(events).index("warning") < _names(events).index("done")
+        assert _names(events)[-1] == "done"
+
+    async def test_a_long_conversation_alone_is_a_warning_of_that_kind(
+        self, provider: Provider
+    ) -> None:
+        events, _ = await _chat(
+            provider, [scripted_reply(provider, ANSWER)], long_conversation=True
+        )
+
+        assert _warnings(events) == [
+            {
+                "event": "warning",
+                "message": LONG_CONVERSATION_MESSAGE,
+                "code": "long_conversation",
+            }
+        ]
+
+    async def test_a_cut_off_reply_alone_carries_its_kind(self, provider: Provider) -> None:
+        events, _ = await _chat(provider, [scripted_reply(provider, ANSWER[:30], cut_off=True)])
+
+        assert _warnings(events) == [
+            {"event": "warning", "message": CUT_OFF_MESSAGE, "code": "cut_off"}
+        ]
+
+    async def test_a_full_context_window_in_a_long_conversation_says_it_once(
+        self, provider: Provider
+    ) -> None:
+        """That message already sends the reader to a new conversation."""
+        events, _ = await _chat(
+            provider,
+            [scripted_reply(provider, ANSWER[:30], stop=CONTEXT_WINDOW_STOP_REASON)],
+            long_conversation=True,
+        )
+
+        (warning,) = _warnings(events)
+        assert warning["message"] == CONTEXT_FULL_CUT_OFF_MESSAGE
+        assert warning["codes"] == ["cut_off", "long_conversation"]
+
+    async def test_a_reply_that_finished_in_a_short_conversation_has_none(
+        self, provider: Provider
+    ) -> None:
+        events, _ = await _chat(provider, [scripted_reply(provider, ANSWER)])
+
+        assert _warnings(events) == []
+
+    async def test_ask_carries_the_kind_too(self, provider: Provider) -> None:
+        events = await _ask(provider, [scripted_reply(provider, ANSWER[:30], cut_off=True)])
+
+        assert _warnings(events) == [
+            {"event": "warning", "message": CUT_OFF_MESSAGE, "code": "cut_off"}
+        ]
+
+
+# ---------------------------------------------------------------------------
+# A reply that resumed after a browser run (release review, follow-up 2)
+# ---------------------------------------------------------------------------
+
+CALL_ID = "toolu_01resumecutoff"
+
+
+def _park(tool: str, *, runs_before: int = 0, code_runs_before: int = 0) -> str:
+    """A session mid-reply: the assistant asked the browser for ``tool`` and waits."""
+    session = ChatSession("sess-resume", COMMUNITY)
+    session.add_user_message(QUESTION)
+    session.messages.append(
+        AIMessage(
+            content="",
+            tool_calls=[{"name": tool, "args": {}, "id": CALL_ID, "type": "tool_call"}],
+        )
+    )
+    session.set_pending_call(
+        PendingClientCall.from_state(
+            {"call_id": CALL_ID, "tool": tool, "args": {}, "requires_permission": False},
+            runs_before=runs_before,
+            code_runs_before=code_runs_before,
+        )
+    )
+    _get_session_store(COMMUNITY)[session.session_id] = session
+    return session.session_id
+
+
+def _resume(client: TestClient, session_id: str) -> list[dict]:
+    response = client.post(
+        f"/{COMMUNITY}/chat/resume",
+        headers={"Origin": ORIGIN},
+        json={
+            "session_id": session_id,
+            "result": {"call_id": CALL_ID, "status": "ok", "summary": "done"},
+            "client_tools": [],
+        },
+    )
+    assert response.status_code == 200, response.text
+    return [
+        json.loads(line[len("data: ") :])
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+
+
+@provider_param
+class TestOnlyCodeTheWidgetKeepsCounts:
+    """The widget keeps a reply that ran code even with no text, and records a run only
+    when the tool was not the full-output tool (``FULL_OUTPUT_TOOL_NAME``). So a reply
+    whose only browser run read output back has nothing on screen but what the model
+    writes: a run 2 that hits the limit with no text would leave a banner and no answer."""
+
+    def test_a_run_that_only_read_output_back_is_not_an_answer(
+        self, provider: Provider, client: TestClient, monkeypatch
+    ) -> None:
+        _serve(monkeypatch, provider, [scripted_reply(provider, "", cut_off=True)])
+
+        events = _resume(client, _park(FULL_OUTPUT_TOOL_NAME))
+
+        assert _names(events)[-1] == "error" and "done" not in _names(events)
+        assert events[-1]["message"] == NO_ANSWER_MESSAGE
+        # The stream writes its own row last (the middleware's is written when the
+        # response starts, before the reply exists).
+        assert _rows()[-1]["status_code"] == 502
+
+    def test_a_run_of_code_the_widget_kept_is_one(
+        self, provider: Provider, client: TestClient, monkeypatch
+    ) -> None:
+        _serve(monkeypatch, provider, [scripted_reply(provider, "", cut_off=True)])
+
+        events = _resume(client, _park("execute_code"))
+
+        assert "error" not in _names(events) and _names(events)[-1] == "done"
+        assert [e["message"] for e in events if e["event"] == "warning"] == [CUT_OFF_MESSAGE]
+
+    def test_code_run_earlier_in_the_reply_still_counts(
+        self, provider: Provider, client: TestClient, monkeypatch
+    ) -> None:
+        """Run 1 ran code, run 2 read its output back, run 3 is cut off with no text."""
+        _serve(monkeypatch, provider, [scripted_reply(provider, "", cut_off=True)])
+
+        events = _resume(client, _park(FULL_OUTPUT_TOOL_NAME, runs_before=1, code_runs_before=1))
+
+        assert "error" not in _names(events) and _names(events)[-1] == "done"
+
+    def test_reading_output_back_twice_is_still_not_code(
+        self, provider: Provider, client: TestClient, monkeypatch
+    ) -> None:
+        _serve(monkeypatch, provider, [scripted_reply(provider, "", cut_off=True)])
+
+        events = _resume(client, _park(FULL_OUTPUT_TOOL_NAME, runs_before=1, code_runs_before=0))
+
+        assert _names(events)[-1] == "error"
 
 
 # ---------------------------------------------------------------------------

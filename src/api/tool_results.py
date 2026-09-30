@@ -40,6 +40,7 @@ from langchain_core.messages import BaseMessage, ToolMessage
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 from src.agents.content import CitationMark
+from src.core.config.community import FULL_OUTPUT_TOOL_NAME
 
 # The caps live in `src.core.limits`, which imports nothing but the standard library,
 # because `src.core.config.community` bounds `RuntimeLimits` by the same numbers and
@@ -417,6 +418,10 @@ class PendingClientCall:
     #: parked, so the run that answers it knows how much of
     #: `MAX_BROWSER_RUNS_PER_REPLY` is left.
     runs_before: int = 0
+    #: How many of those results were runs of code the widget keeps on the reply (see
+    #: `runs_code`). A reply with one is kept by the widget even when it ends with no text,
+    #: so this, not `runs_before`, says whether an empty ending leaves the reader anything.
+    code_runs_before: int = 0
 
     #: Keys the graph node must supply. Named here so a drift between the node and this
     #: reader is one error naming the missing key, rather than the two different silent
@@ -430,12 +435,13 @@ class PendingClientCall:
         *,
         carried_citations: Sequence[CitationMark] = (),
         runs_before: int = 0,
+        code_runs_before: int = 0,
     ) -> PendingClientCall:
         """Build from the `pending_client_call` the graph node put in its state.
 
-        `carried_citations` and `runs_before` are the reply's state so far, which the
-        graph does not hold; they are taken here so the parked call is complete when it
-        is built rather than patched afterwards.
+        `carried_citations`, `runs_before` and `code_runs_before` are the reply's state so
+        far, which the graph does not hold; they are taken here so the parked call is
+        complete when it is built rather than patched afterwards.
 
         Every key is required, and that strictness is the point. Reading `args` with a
         `.get(..., {})` default meant a renamed key parked a call with EMPTY arguments:
@@ -458,7 +464,30 @@ class PendingClientCall:
             created_at=datetime.now(UTC),
             carried_citations=tuple(carried_citations),
             runs_before=runs_before,
+            code_runs_before=code_runs_before,
         )
+
+    @property
+    def runs_code(self) -> bool:
+        """Whether the widget keeps a record of this call on the reply.
+
+        It keeps one for every tool but the full-output tool, which only reads back output
+        an earlier run kept locally (`answerToolRequest` in `frontend/osa-chat-widget.js`
+        records `message.executions` only when the tool is not `FULL_OUTPUT_TOOL_NAME`).
+        The widget drops a reply with no text and no such record, so the rule is one the
+        server has to match exactly.
+        """
+        return self.tool != FULL_OUTPUT_TOOL_NAME
+
+    @property
+    def runs_after_answer(self) -> int:
+        """How many browser results the reply has sent back once this call is answered."""
+        return self.runs_before + 1
+
+    @property
+    def code_runs_after_answer(self) -> int:
+        """How many of them are runs of code the widget keeps, once this call is answered."""
+        return self.code_runs_before + (1 if self.runs_code else 0)
 
     def is_expired(self, *, now: datetime | None = None) -> bool:
         moment = now or datetime.now(UTC)

@@ -19,12 +19,14 @@ from collections.abc import Iterator
 from typing import Any
 from unittest.mock import patch
 
+import httpx
 import pytest
 from botocore.exceptions import ReadTimeoutError
 from langchain_aws.chat_models.bedrock_converse import _parse_stream_event
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.messages import BaseMessage
 from langchain_core.outputs import ChatGenerationChunk
+from langchain_core.tools import tool
 
 from src.api.config import Settings
 from src.api.routers.community import (
@@ -79,11 +81,13 @@ def _rows() -> list[dict]:
         return conn.execute("SELECT * FROM request_log ORDER BY timestamp").fetchall()
 
 
-async def _run(path: str, llm: Any, model: str) -> list[dict]:
+async def _run(path: str, llm: Any, model: str, tools: list[Any] | None = None) -> list[dict]:
     """Stream one turn of ``/ask`` or ``/chat`` over ``llm`` through the real graph."""
     from tests.helpers.provider_replies import collect
 
-    assistant = CommunityAssistant(model=llm, config=community_config(), preload_docs=False)
+    assistant = CommunityAssistant(
+        model=llm, config=community_config(), preload_docs=False, additional_tools=tools
+    )
     wrapped = AssistantWithMetrics(assistant=assistant, model=model, key_source="platform")
     request = real_request("req-failure")
     with patch("src.api.routers.community.create_community_assistant", return_value=wrapped):
@@ -136,6 +140,7 @@ def _assert_retryable(
     assert events[-1]["message"] == RETRYABLE_TEXT[path]
     assert events[-1]["retryable"] is True
     assert events[-1]["error_id"]
+    assert events[-1]["request_id"] == "req-failure", "the reader's report finds its row"
     assert len(records) == 1, [r.getMessage() for r in records]
     record = records[0]
     assert record.levelno == logging.WARNING
@@ -153,7 +158,11 @@ def _assert_permanent(events: list[dict], records: list[logging.LogRecord], deta
     message = events[-1]["message"]
     assert "trying again will not help" in message
     assert "try again" not in message.lower().replace("trying again", "")
-    assert events[-1]["error_id"] in message
+    # The widget shows the message for a few seconds: short enough to read at a glance,
+    # and the id is a field of its own (and in the log), not part of the text.
+    assert len(message) <= 120, message
+    assert events[-1]["error_id"] and events[-1]["error_id"] not in message
+    assert events[-1]["request_id"] == "req-failure"
     assert events[-1]["retryable"] is False
     assert len(records) == 1, [r.getMessage() for r in records]
     record = records[0]
@@ -161,6 +170,7 @@ def _assert_permanent(events: list[dict], records: list[logging.LogRecord], deta
     text = record.getMessage()
     for expected in (COMMUNITY, BEDROCK_MODEL, "req-failure", detail, "retryable=no"):
         assert expected in text, f"{expected!r} missing from {text!r}"
+    assert events[-1]["error_id"] in text and record.error_id == events[-1]["error_id"]
     assert record.exc_info
     assert record.retryable is False
 
@@ -369,3 +379,92 @@ class TestWhatNoProviderCallRaises:
             assert events[-1]["retryable"] is False
         else:
             assert events[-1]["message"] == "Message too long (20000 chars)"
+
+
+def _flaky_tool(error: Exception):
+    """A real server tool whose call fails with ``error``, as a tool that fetches a page
+    fails. langgraph's ``ToolNode`` re-raises what it does not recognize, so the stream
+    sees this exactly as it would see any tool of ours failing."""
+
+    @tool
+    def flaky_lookup(query: str) -> str:  # noqa: ARG001
+        """Look something up over the network."""
+        raise error
+
+    return flaky_lookup
+
+
+def _calls_the_tool() -> StreamingScriptedChatModel:
+    from tests.test_api.test_tool_call_streaming import _anthropic_call
+
+    return StreamingScriptedChatModel(
+        chunk_script=[_anthropic_call("flaky_lookup", "toolu_01flaky", {"query": "x"})]
+    )
+
+
+def _http_status_error(status: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", "https://docs.example/page")
+    return httpx.HTTPStatusError(
+        f"HTTP {status}", request=request, response=httpx.Response(status, request=request)
+    )
+
+
+class TestAToolFailureIsNotAModelFailure:
+    """The errors a tool that goes to the network raises are the ones this module used to
+    read as the model's: ``httpx`` errors, the built-in ``TimeoutError`` and
+    ``ConnectionError``. A tool of ours failing is a bug in a tool, so it is logged as one
+    (ERROR, with the traceback) and the reader is told nothing about retrying."""
+
+    @paths
+    @pytest.mark.parametrize(
+        "error",
+        [
+            httpx.ConnectError("refused"),
+            httpx.ReadTimeout("slow"),
+            _http_status_error(404),
+            _http_status_error(503),
+            TimeoutError("fetch timed out"),
+            ConnectionResetError("reset by peer"),
+        ],
+        ids=lambda e: type(e).__name__,
+    )
+    async def test_it_keeps_its_traceback_and_is_not_called_a_model_call(
+        self, path: str, error: Exception, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.WARNING)
+
+        events = await _run(path, _calls_the_tool(), "some-model", [_flaky_tool(error)])
+
+        assert events[-1]["event"] == "error"
+        assert events[-1]["message"] == RETRYABLE_TEXT[path]
+        assert "retryable" not in events[-1], "nothing is claimed about a failure of ours"
+        (record,) = _failure_records(caplog)
+        assert record.levelno == logging.ERROR
+        assert record.exc_info, "a tool failure needs its traceback"
+        text = record.getMessage()
+        assert "Unexpected streaming error" in text and "Model call failed" not in text
+        assert "retryable=unknown" in text and type(error).__name__ in text
+        assert [r["status_code"] for r in _rows()] == [500]
+
+
+class TestWhatLangchainAwsRaisesItself:
+    """The one built-in exception that is the model call's: ``langchain-aws`` raises
+    ``ConnectionError`` when a stream ends without its ``messageStop`` event. It stays a
+    retryable model failure, recognized by where it was raised, through the real client."""
+
+    @paths
+    async def test_a_stream_that_ends_with_no_message_stop_is_retryable(
+        self, path: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.WARNING)
+        llm = _bedrock_llm()
+        body = frame("messageStart", {"role": "assistant"}) + frame(
+            "contentBlockDelta", {"contentBlockIndex": 0, "delta": {"text": "Sensory-event "}}
+        )
+        Wire(llm, body, EVENT_STREAM)
+
+        events = await _run(path, llm, BEDROCK_MODEL)
+
+        records = _failure_records(caplog)
+        _assert_retryable(events, records, path, "ConnectionError")
+        assert "Model call failed" in records[0].getMessage()

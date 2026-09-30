@@ -4,6 +4,7 @@ These tests use Typer's CliRunner to test CLI commands
 with real output verification.
 """
 
+import io
 from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
@@ -15,7 +16,13 @@ from typer.testing import CliRunner
 
 from src.cli.client import OSAClient
 from src.cli.config import CLIConfig, load_credentials, save_config
-from src.cli.main import _ask_streaming, _chat_turn_streaming, cli
+from src.cli.main import (
+    _ask_batch,
+    _ask_streaming,
+    _chat_turn_batch,
+    _chat_turn_streaming,
+    cli,
+)
 from tests.test_cli.test_config import patched_config_paths
 
 runner = CliRunner()
@@ -522,3 +529,196 @@ class TestAWarningReachesTheReader:
         assert result.exit_code == 0, result.output
         assert "HED is a sys" in result.output
         assert self.WARNING in result.output
+
+
+class TestTheWarningIsReadAfterTheAnswer:
+    """The warning is about the answer, so it goes under it on every path. The streaming
+    paths printed it while the stream was still open, which is above the answer; the
+    batch paths printed it below."""
+
+    WARNING = "This answer was cut off because the assistant reached its length limit."
+    ANSWER = "HED is a sys"
+
+    @staticmethod
+    def _one_sink(monkeypatch) -> io.StringIO:
+        """Both consoles write to one buffer, so the order they print in is visible (the
+        real ones are stdout and stderr, which a test cannot interleave)."""
+        from rich.console import Console
+
+        from src.cli import output
+
+        sink = io.StringIO()
+        monkeypatch.setattr(output, "console", Console(file=sink, width=100))
+        monkeypatch.setattr(output, "err_console", Console(file=sink, width=100))
+        return sink
+
+    def _assert_below(self, text: str) -> None:
+        assert self.ANSWER in text and self.WARNING in text, text
+        assert text.index(self.ANSWER) < text.index(self.WARNING), text
+
+    def test_ask_stream(self, monkeypatch) -> None:
+        sink = self._one_sink(monkeypatch)
+        with (
+            respx.mock,
+            patch("src.cli.main.output.streaming_status", return_value=nullcontext()),
+        ):
+            respx.post("https://test.example/hed/ask").mock(
+                return_value=httpx.Response(
+                    200,
+                    headers={"content-type": "text/event-stream"},
+                    content=(
+                        b'data: {"event":"content","content":"HED is a sys"}\n\n'
+                        b'data: {"event":"warning","message":"' + self.WARNING.encode() + b'"}\n\n'
+                        b'data: {"event":"done","content":"HED is a sys"}\n\n'
+                    ),
+                )
+            )
+            _ask_streaming(OSAClient("https://test.example", user_id="test-user"), "hed", "How?")
+
+        self._assert_below(unstyle(sink.getvalue()))
+
+    def test_chat_stream(self, monkeypatch) -> None:
+        sink = self._one_sink(monkeypatch)
+        with (
+            respx.mock,
+            patch("src.cli.main.output.streaming_status", return_value=nullcontext()),
+        ):
+            respx.post("https://test.example/hed/chat").mock(
+                return_value=httpx.Response(
+                    200,
+                    headers={"content-type": "text/event-stream"},
+                    content=(
+                        b'data: {"event":"warning","message":"' + self.WARNING.encode() + b'"}\n\n'
+                        b'data: {"event":"done","session_id":"s-1","content":"HED is a sys"}\n\n'
+                    ),
+                )
+            )
+            _chat_turn_streaming(
+                OSAClient("https://test.example", user_id="test-user"), "hed", "How?", None
+            )
+
+        self._assert_below(unstyle(sink.getvalue()))
+
+    def test_ask_batch(self, monkeypatch) -> None:
+        sink = self._one_sink(monkeypatch)
+        with respx.mock:
+            respx.post("https://test.example/hed/ask").mock(
+                return_value=httpx.Response(
+                    200, json={"answer": self.ANSWER, "model": "m", "warnings": [self.WARNING]}
+                )
+            )
+            _ask_batch(
+                OSAClient("https://test.example", user_id="test-user"), "hed", "How?", "text"
+            )
+
+        self._assert_below(unstyle(sink.getvalue()))
+
+    def test_chat_batch(self, monkeypatch) -> None:
+        sink = self._one_sink(monkeypatch)
+        with (
+            respx.mock,
+            patch("src.cli.main.output.streaming_status", return_value=nullcontext()),
+        ):
+            respx.post("https://test.example/hed/chat").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "session_id": "s-1",
+                        "message": {"role": "assistant", "content": self.ANSWER},
+                        "model": "m",
+                        "warnings": [self.WARNING],
+                    },
+                )
+            )
+            _chat_turn_batch(
+                OSAClient("https://test.example", user_id="test-user"), "hed", "How?", None
+            )
+
+        self._assert_below(unstyle(sink.getvalue()))
+
+    def test_several_warnings_all_print_below_in_order(self, monkeypatch) -> None:
+        sink = self._one_sink(monkeypatch)
+        with (
+            respx.mock,
+            patch("src.cli.main.output.streaming_status", return_value=nullcontext()),
+        ):
+            respx.post("https://test.example/hed/chat").mock(
+                return_value=httpx.Response(
+                    200,
+                    headers={"content-type": "text/event-stream"},
+                    content=(
+                        b'data: {"event":"warning","message":"first warning"}\n\n'
+                        b'data: {"event":"warning","message":"second warning"}\n\n'
+                        b'data: {"event":"done","session_id":"s-1","content":"HED is a sys"}\n\n'
+                    ),
+                )
+            )
+            _chat_turn_streaming(
+                OSAClient("https://test.example", user_id="test-user"), "hed", "How?", None
+            )
+
+        text = unstyle(sink.getvalue())
+        assert text.index(self.ANSWER) < text.index("first warning") < text.index("second warning")
+
+    def test_an_error_names_the_ids_to_quote_in_a_report(self, monkeypatch) -> None:
+        sink = self._one_sink(monkeypatch)
+        body = (
+            b'data: {"event":"error","message":"The assistant declined.",'
+            b'"error_id":"err-123","request_id":"req-456"}\n\n'
+        )
+        with (
+            respx.mock,
+            patch("src.cli.main.output.streaming_status", return_value=nullcontext()),
+        ):
+            respx.post("https://test.example/hed/chat").mock(
+                return_value=httpx.Response(
+                    200, headers={"content-type": "text/event-stream"}, content=body
+                )
+            )
+            _chat_turn_streaming(
+                OSAClient("https://test.example", user_id="test-user"), "hed", "How?", None
+            )
+
+        text = unstyle(sink.getvalue())
+        assert "The assistant declined." in text
+        assert "request ID req-456" in text and "error ID err-123" in text
+
+    def test_an_error_with_no_ids_has_no_hint(self, monkeypatch) -> None:
+        sink = self._one_sink(monkeypatch)
+        with (
+            respx.mock,
+            patch("src.cli.main.output.streaming_status", return_value=nullcontext()),
+        ):
+            respx.post("https://test.example/hed/chat").mock(
+                return_value=httpx.Response(
+                    200,
+                    headers={"content-type": "text/event-stream"},
+                    content=b'data: {"event":"error","message":"Something failed."}\n\n',
+                )
+            )
+            _chat_turn_streaming(
+                OSAClient("https://test.example", user_id="test-user"), "hed", "How?", None
+            )
+
+        text = unstyle(sink.getvalue())
+        assert "Something failed." in text and "reporting" not in text
+
+    def test_a_stream_with_no_answer_still_says_its_warning(self, monkeypatch) -> None:
+        sink = self._one_sink(monkeypatch)
+        with (
+            respx.mock,
+            patch("src.cli.main.output.streaming_status", return_value=nullcontext()),
+        ):
+            respx.post("https://test.example/hed/ask").mock(
+                return_value=httpx.Response(
+                    200,
+                    headers={"content-type": "text/event-stream"},
+                    content=(
+                        b'data: {"event":"warning","message":"a warning"}\n\n'
+                        b'data: {"event":"done","content":""}\n\n'
+                    ),
+                )
+            )
+            _ask_streaming(OSAClient("https://test.example", user_id="test-user"), "hed", "How?")
+
+        assert "a warning" in unstyle(sink.getvalue())

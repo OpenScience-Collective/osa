@@ -56,7 +56,13 @@ from src.api.tool_results import (
     build_unanswered_tool_message,
     scrub_stored_images,
 )
-from src.api.turn_outcome import ModelRuns, cut_off_reply
+from src.api.turn_outcome import (
+    ModelRuns,
+    current_turn,
+    error_event,
+    reply_problem,
+    warning_event,
+)
 from src.assistants import registry
 from src.assistants.community import CommunityAssistant
 from src.assistants.community import PageContext as AgentPageContext
@@ -286,8 +292,9 @@ class ChatResponse(BaseModel):
         default_factory=list,
         description=(
             "Things the caller should know about this reply. Today: the answer was cut "
-            "off because the model reached its output limit. The streamed endpoint "
-            "sends the same text as a `warning` event."
+            "off because the model reached its output limit or the conversation filled "
+            "its context window. The streamed endpoint sends the same text as a "
+            "`warning` event."
         ),
     )
 
@@ -319,8 +326,9 @@ class AskResponse(BaseModel):
         default_factory=list,
         description=(
             "Things the caller should know about this answer. Today: it was cut off "
-            "because the model reached its output limit. The streamed endpoint sends "
-            "the same text as a `warning` event."
+            "because the model reached its output limit or the conversation filled its "
+            "context window. The streamed endpoint sends the same text as a `warning` "
+            "event."
         ),
     )
 
@@ -2195,7 +2203,9 @@ def _extract_agent_result(result: dict) -> AgentResult:
         for tc in result.get("tool_calls", [])
     ]
 
-    usage = extract_token_usage(result)
+    # This request's messages only. The state holds the session's history too, whose model
+    # messages carry the usage they reported when they ran (a browser turn keeps them).
+    usage = extract_token_usage({"messages": current_turn(result.get("messages", []))})
     return AgentResult(
         response_content=response_content,
         tool_calls_info=tool_calls_info,
@@ -2246,20 +2256,20 @@ def _check_unstreamed_reply(
     """Report how a reply that was not streamed ended, before it is returned.
 
     Logs once that the request's cost row is incomplete, when it is, and once that the
-    model stopped at its output limit, when it did (see ``turn_outcome``).
+    reply was cut off or came back empty, when it did (see ``turn_outcome``).
 
     Returns:
         The warnings to put on the response: the answer was cut off, but there is one.
 
     Raises:
-        HTTPException(502): The model stopped at its output limit before it wrote any
-            answer, so a 200 would carry nothing. The metrics row says why.
+        HTTPException(502): The model wrote no answer (it stopped at a limit, declined, or
+            ended with nothing), so a 200 would carry nothing. The metrics row says why.
     """
     request_id = getattr(http_request.state, "request_id", None)
     agent_result.model_runs.warn_about_usage(
         community_id=community_id, model=awm.model, endpoint=endpoint, request_id=request_id
     )
-    cut_off = cut_off_reply(
+    problem = reply_problem(
         agent_result.model_runs,
         reply_text=agent_result.response_content,
         code_ran=False,
@@ -2268,12 +2278,12 @@ def _check_unstreamed_reply(
         endpoint=endpoint,
         request_id=request_id,
     )
-    if cut_off is None:
+    if problem is None:
         return []
-    if cut_off.event == "error":
-        http_request.state.metrics_agent_data["error_message"] = cut_off.summary
-        raise HTTPException(status_code=502, detail=cut_off.message)
-    return [cut_off.message]
+    if problem.event == "error":
+        http_request.state.metrics_agent_data["error_message"] = problem.summary
+        raise HTTPException(status_code=502, detail=problem.message)
+    return [problem.message]
 
 
 # ---------------------------------------------------------------------------
@@ -2424,6 +2434,7 @@ def create_community_router(community_id: str) -> APIRouter:
             200: {"description": "Successful response"},
             400: {"description": "Invalid request"},
             500: {"description": "Internal server error"},
+            502: {"description": "The model wrote no answer (cut off, declined, or empty)"},
         },
     )
     async def ask(
@@ -2528,6 +2539,7 @@ def create_community_router(community_id: str) -> APIRouter:
             200: {"description": "Successful response"},
             400: {"description": "Invalid request"},
             500: {"description": "Internal server error"},
+            502: {"description": "The model wrote no answer (cut off, declined, or empty)"},
         },
     )
     async def chat(
@@ -2777,7 +2789,8 @@ def create_community_router(community_id: str) -> APIRouter:
                 initial_messages=live_messages,
                 endpoint=f"/{community_id}/chat/resume",
                 carried_citations=pending.carried_citations,
-                browser_runs_answered=pending.runs_before + 1,
+                browser_runs_answered=pending.runs_after_answer,
+                code_runs_answered=pending.code_runs_after_answer,
             ),
             media_type="text/event-stream",
             headers={
@@ -3477,12 +3490,13 @@ def _log_streaming_metrics(
 
 #: Told to the reader when a model call failed in a way no retry can fix (see
 #: ``classify_model_error``): a request the provider refused, or a credential it does not
-#: accept. It carries the error id, which is what the operator finds the log line by. A
+#: accept. Short, since the widget shows an error for a few seconds; the error id that finds
+#: the log line is a field of the event (and in the log), not part of this text. A
 #: retryable or unrecognized failure keeps the stream's own text, which says nothing the
 #: log does not back up.
 _CANNOT_RETRY_MESSAGE = (
     "The assistant could not process this request, and trying again will not help. "
-    "Start a new conversation, or report it with error ID {error_id}."
+    "Start a new conversation."
 )
 
 #: What each stream tells the reader when a retry can succeed, or when nothing is known.
@@ -3504,10 +3518,11 @@ def _stream_failure_event(
 
     A throttle, a read timeout and a request the provider refuses as invalid used to be one
     log line and one message. Now the log says which it was (the exception class, the
-    provider's code or status, and whether a retry can succeed) at WARNING for a failure
-    that can clear by itself and ERROR, with the traceback, for one that cannot or is not
-    recognized. The reader is told to try again only when that is honest: a failure no
-    retry can fix says so.
+    provider's code or status, and whether a retry can succeed) at WARNING for a model
+    failure that can clear by itself and ERROR, with the traceback, for everything else:
+    one that cannot clear, and any exception that is not a recognized model-provider
+    error (a tool of ours failing is one, and its traceback is the only clue). The reader
+    is told to try again only when that is honest: a failure no retry can fix says so.
 
     Args:
         error: What the stream raised.
@@ -3520,7 +3535,9 @@ def _stream_failure_event(
         session_id: The chat session, for the log.
 
     Returns:
-        The event to send: ``message``, an ``error_id``, and ``retryable`` when known.
+        The event to send: ``message``, an ``error_id`` (the key of the log line) and the
+        ``request_id`` (the key of the metrics row), which are for a report and not part of
+        what the reader is shown, and ``retryable`` when known.
     """
     failure = classify_model_error(error)
     error_id = str(uuid.uuid4())
@@ -3528,8 +3545,9 @@ def _stream_failure_event(
         summary = "Model call failed while streaming"
     else:
         summary = "Unexpected streaming error"
+    clears_by_itself = failure.from_provider and bool(failure.retryable)
     logger.log(
-        logging.WARNING if failure.retryable else logging.ERROR,
+        logging.WARNING if clears_by_itself else logging.ERROR,
         "%s (ID: %s) for %s (community=%s, model=%s, request_id=%s, session=%s): "
         "%s [retryable=%s]: %s",
         summary,
@@ -3542,7 +3560,7 @@ def _stream_failure_event(
         failure.detail,
         failure.retryable_label,
         error,
-        exc_info=not failure.retryable,
+        exc_info=not clears_by_itself,
         extra={
             "error_id": error_id,
             "community_id": community_id,
@@ -3556,12 +3574,9 @@ def _stream_failure_event(
     )
     event: dict[str, Any] = {
         "event": "error",
-        "message": (
-            _CANNOT_RETRY_MESSAGE.format(error_id=error_id)
-            if failure.retryable is False
-            else retryable_message
-        ),
+        "message": _CANNOT_RETRY_MESSAGE if failure.retryable is False else retryable_message,
         "error_id": error_id,
+        "request_id": request_id,
     }
     if failure.retryable is not None:
         event["retryable"] = failure.retryable
@@ -3587,8 +3602,9 @@ async def _stream_ask_response(
         data: {"event": "tool_start", "name": "tool_name", "input": {...}}
         data: {"event": "tool_end", "name": "tool_name", "output": {...}}
         data: {"event": "citation", "marker": 1, "source": "...", "title": "...", "cited_text": "..."}
+        data: {"event": "warning", "message": "...", "code": "cut_off"}  (optional, before done)
         data: {"event": "done", "request_id": "...", "model": "...", "content": "final answer", "citations": [...]}
-        data: {"event": "error", "message": "error text"}
+        data: {"event": "error", "message": "error text", "error_id": "...", "request_id": "..."}
 
     The `thinking` event is a liveness signal only -- it never carries the
     model's reasoning text (see src/agents/content.py's module docstring);
@@ -3699,8 +3715,9 @@ async def _stream_ask_response(
 
         final_response = normalize_citation_markers(full_response, citation_assembler.marks)
 
-        # A reply the model stopped at its output limit raised nothing; say so (see
-        # turn_outcome). With no text to show it is an error and no `done` follows.
+        # A reply the model stopped at a limit, or that has no text whatever the stop
+        # reason, raised nothing; say so (see turn_outcome). With no text to show it is an
+        # error and no `done` follows.
         ask_endpoint = f"/{community_id}/ask"
         model_runs.warn_about_usage(
             community_id=community_id,
@@ -3708,7 +3725,7 @@ async def _stream_ask_response(
             endpoint=ask_endpoint,
             request_id=request_id,
         )
-        cut_off = cut_off_reply(
+        problem = reply_problem(
             model_runs,
             reply_text=final_response,
             code_ran=False,
@@ -3717,8 +3734,8 @@ async def _stream_ask_response(
             endpoint=ask_endpoint,
             request_id=request_id,
         )
-        if cut_off is not None and cut_off.event == "error":
-            yield f"data: {json.dumps({'event': 'error', 'message': cut_off.message})}\n\n"
+        if problem is not None and problem.event == "error":
+            yield f"data: {json.dumps(error_event(problem, request_id=request_id))}\n\n"
             _log_streaming_metrics(
                 http_request=http_request,
                 community_id=community_id,
@@ -3731,11 +3748,12 @@ async def _stream_ask_response(
                 output_tokens=total_output_tokens,
                 cache_read_tokens=total_cache_read_tokens,
                 cache_creation_tokens=total_cache_creation_tokens,
-                error_message=cut_off.summary,
+                error_message=problem.summary,
             )
             return
-        if cut_off is not None:
-            yield f"data: {json.dumps({'event': 'warning', 'message': cut_off.message})}\n\n"
+        warning = warning_event(problem, conversation_is_long=False)
+        if warning is not None:
+            yield f"data: {json.dumps(warning)}\n\n"
 
         sse_event = {
             "event": "done",
@@ -3863,6 +3881,7 @@ def _finish_with_tool_request(
     content: str = "",
     citations: Sequence[CitationMark] = (),
     runs_before: int = 0,
+    code_runs_before: int = 0,
 ) -> Iterator[str]:
     """End run 1 on a browser call: adopt the history, park the call, ask the client to run it.
 
@@ -3888,7 +3907,10 @@ def _finish_with_tool_request(
     # `content` is this run's text with its markers normalized, which the reader would
     # otherwise only ever have in its raw streamed form.
     pending = PendingClientCall.from_state(
-        pending_payload, carried_citations=citations, runs_before=runs_before
+        pending_payload,
+        carried_citations=citations,
+        runs_before=runs_before,
+        code_runs_before=code_runs_before,
     )
     session.replace_history(final_state.get("messages", []) if final_state else [])
     session.set_pending_call(pending)
@@ -3909,6 +3931,7 @@ async def _stream_chat_response(
     endpoint: str | None = None,
     carried_citations: Sequence[CitationMark] = (),
     browser_runs_answered: int = 0,
+    code_runs_answered: int = 0,
 ) -> AsyncGenerator[str, None]:
     """Stream assistant response as JSON-encoded Server-Sent Events.
 
@@ -3920,13 +3943,23 @@ async def _stream_chat_response(
         data: {"event": "tool_end", "name": "tool_name", "output": {...}}
         data: {"event": "session", "session_id": "..."}  (sent first)
         data: {"event": "citation", "marker": 1, "source": "...", "title": "...", "cited_text": "..."}
-        data: {"event": "warning", "message": "..."}  (optional, before done)
+        data: {"event": "warning", "message": "...", "code": "cut_off"}  (optional, before done)
         data: {"event": "done", "session_id": "...", "request_id": "...", "model": "...", "content": "final answer", "citations": [...]}
-        data: {"event": "error", "message": "error text"}
+        data: {"event": "error", "message": "error text", "error_id": "...", "request_id": "..."}
 
     The `thinking` event is a liveness signal only -- it never carries the
     model's reasoning text (see src/agents/content.py's module docstring);
     clients that do not recognize it are expected to ignore it.
+
+    A reply gets at most one `warning`, because the widget keeps one warning element
+    and a second event would overwrite the first unread. `code` names the kind
+    (`cut_off`, `long_conversation`); when a reply was cut off in a long conversation
+    the one event says both, with `code` `cut_off` and `codes` listing each. `message`
+    is the text to show, and a client that ignores `code` is unaffected.
+
+    An `error` for a failed model call or a reply with nothing in it carries `error_id`
+    (the key of its log line) and `request_id` (the key of the request's row in the
+    metrics) for a report to quote; `message` is all there is to show.
 
     `tool_call` fires once per call when the model starts writing it, before any
     `tool_start`, and for a browser call before its `tool_request` (see
@@ -3948,6 +3981,9 @@ async def _stream_chat_response(
 
     `browser_runs_answered` is how many browser results this reply has already sent
     back; the run may request at most `MAX_BROWSER_RUNS_PER_REPLY` in total.
+    `code_runs_answered` is how many of those were runs of code the widget keeps on the
+    reply (`PendingClientCall.runs_code`): a reply with one is shown even when it ends
+    with no text, so it is what decides whether an empty ending is an error.
     """
     start_time = time.monotonic()
     tools_called: list[str] = []
@@ -3958,11 +3994,11 @@ async def _stream_chat_response(
     total_cache_creation_tokens = 0
     model_runs = ModelRuns()
 
-    # The metrics middleware assigns a per-request UUID; expose it only on the
-    # final `done` event (below) so the widget attaches it only to a reply that
-    # completed normally. Error paths yield an `error` event instead and never
-    # reach `done`, so a partially-streamed or fully-errored reply carries no
-    # request_id. This also joins per-response feedback back to request_log.
+    # The metrics middleware assigns a per-request UUID. The widget attaches the one on the
+    # final `done` event to a reply for feedback, which joins it back to request_log, so it
+    # is only on a reply that completed normally. An `error` event carries it too, as a
+    # field to quote in a report (it is the key of the request's row, where a 502 is
+    # recorded); the widget reads request ids from `done` alone, so that attaches nothing.
     request_id = getattr(http_request.state, "request_id", None) if http_request else None
 
     # The label this turn is recorded under. `_stream_chat_response` is shared by run 1
@@ -4167,6 +4203,7 @@ async def _stream_chat_response(
                 content=normalize_citation_markers(full_response, citation_assembler.marks),
                 citations=citation_assembler.marks,
                 runs_before=browser_runs_answered,
+                code_runs_before=code_runs_answered,
             ):
                 yield sse_line
             model_runs.warn_about_usage(
@@ -4192,28 +4229,31 @@ async def _stream_chat_response(
 
         final_response = normalize_citation_markers(full_response, citation_assembler.marks)
 
-        # A reply the model stopped at its output limit raised nothing; say so (see
-        # turn_outcome). With no text to show, and no code run earlier in the reply (the
-        # widget keeps a reply that ran code), it is an error and no `done` follows: a
-        # `done` with empty content is dropped by the widget, and the reader would see
-        # neither an answer nor a reason. Nothing is stored for it.
+        # A reply the model stopped at a limit raised nothing, and neither did one that
+        # came back empty for any other stop reason; say so (see turn_outcome). With no
+        # text to show, and no code the widget keeps run earlier in the reply (it keeps a
+        # reply that ran code, not one that only read output back), it is an error and no
+        # `done` follows: a `done` with empty content is
+        # dropped by the widget, and the reader would see neither an answer nor a reason.
+        # Nothing is stored for it. (A parked browser call returned above, so what is left
+        # here is a reply that has ended.)
         model_runs.warn_about_usage(
             community_id=community_id,
             model=awm.model if awm else None,
             endpoint=metrics_endpoint,
             request_id=request_id,
         )
-        cut_off = cut_off_reply(
+        problem = reply_problem(
             model_runs,
             reply_text=final_response,
-            code_ran=browser_runs_answered > 0,
+            code_ran=code_runs_answered > 0,
             community_id=community_id,
             model=awm.model if awm else None,
             endpoint=metrics_endpoint,
             request_id=request_id,
         )
-        if cut_off is not None and cut_off.event == "error":
-            yield f"data: {json.dumps({'event': 'error', 'message': cut_off.message})}\n\n"
+        if problem is not None and problem.event == "error":
+            yield f"data: {json.dumps(error_event(problem, request_id=request_id))}\n\n"
             _log_streaming_metrics(
                 http_request=http_request,
                 community_id=community_id,
@@ -4226,7 +4266,7 @@ async def _stream_chat_response(
                 output_tokens=total_output_tokens,
                 cache_read_tokens=total_cache_read_tokens,
                 cache_creation_tokens=total_cache_creation_tokens,
-                error_message=cut_off.summary,
+                error_message=problem.summary,
             )
             return
 
@@ -4240,21 +4280,18 @@ async def _stream_chat_response(
                 yield f"data: {json.dumps(sse_event)}\n\n"
                 return
 
-        if cut_off is not None:
-            yield f"data: {json.dumps({'event': 'warning', 'message': cut_off.message})}\n\n"
-
         # Warn if conversation is approaching the token budget (87.5% of 80K).
         warning_threshold = int(DEFAULT_MAX_CONVERSATION_TOKENS * 0.875)
         # The same counter the agent budgets with, so the warning fires on the same
         # arithmetic the trimmer acts on. Two counters would mean warning at one
         # threshold and trimming at another.
         approx_tokens = count_conversation_tokens(session.messages)
-        if approx_tokens > warning_threshold:
-            sse_event = {
-                "event": "warning",
-                "message": "Conversation is getting long. Consider starting a new chat for best results.",
-            }
-            yield f"data: {json.dumps(sse_event)}\n\n"
+        # One event for everything there is to say: the widget keeps a single warning
+        # element, so a second event straight after the cut-off one would overwrite it
+        # unread, and a reply is likeliest to be cut off in a long conversation.
+        warning = warning_event(problem, conversation_is_long=approx_tokens > warning_threshold)
+        if warning is not None:
+            yield f"data: {json.dumps(warning)}\n\n"
 
         sse_event = {
             "event": "done",
@@ -4375,4 +4412,14 @@ async def _stream_chat_response(
     finally:
         # Released however this generator ends: normal return, error, or the client
         # dropping the connection, which closes the generator and runs this.
+        #
+        # A turn that ends on an error (or on an empty reply, which stores nothing) leaves
+        # the reader's message in the session with no reply after it, and that is left
+        # alone on purpose: the next message lands right behind it, two human messages in
+        # a row, and the model still sees what was asked. What each provider does with the
+        # pair is pinned in tests/test_api/test_unanswered_user_message.py. Bedrock merges
+        # them into one user message (langchain-aws runs `merge_message_runs`), and so does
+        # Anthropic (langchain-anthropic's own `_merge_messages`). The OpenRouter path merges
+        # nothing: LiteLLM sends two consecutive user messages, which the OpenAI-style chat
+        # format allows.
         session.end_turn()

@@ -20,6 +20,7 @@ from botocore.exceptions import (
 )
 from langchain_aws.chat_models.bedrock_converse import _handle_bedrock_error, _parse_stream_event
 
+from src.core.services.anthropic_models import BEDROCK_MODELS
 from src.core.services.model_errors import classify_model_error
 
 
@@ -76,14 +77,10 @@ RETRYABLE = [
         ConnectionClosedError(endpoint_url="https://bedrock-runtime.us-east-2.amazonaws.com"),
         "connection",
     ),
-    (TimeoutError(), "timeout"),
-    (httpx.ReadTimeout("slow"), "timeout"),
-    (httpx.ConnectError("refused"), "connection"),
-    # langchain-aws: a stream that ended with no messageStop event
-    (
-        ConnectionError("Incomplete Bedrock response stream: missing messageStop event."),
-        "connection",
-    ),
+    # Anthropic: its vendored httpx lets a stream's network errors out raw
+    (httpx2.ReadTimeout("slow"), "timeout"),
+    (httpx2.ConnectError("refused"), "connection"),
+    (httpx2.RemoteProtocolError("peer closed connection without a complete body"), "connection"),
     # Anthropic
     (
         anthropic.RateLimitError("slow", response=_anthropic_response(429), body=None),
@@ -286,11 +283,85 @@ class TestLiteLLMExceptions:
         assert classify_model_error(error).retryable is True
 
 
-def test_an_http_status_error_is_read_by_its_status() -> None:
-    request = httpx.Request("POST", "https://x.example")
+class TestOnlyAModelCallsErrorsAreTheModels:
+    """A tool of ours that fetches a page raises ``httpx`` errors and the built-in
+    ``TimeoutError`` and ``ConnectionError``, and langgraph's ``ToolNode`` re-raises
+    them. None of those says anything about a model call: no kind, no retry claim, and so
+    no "Model call failed" label and no swallowed traceback (release review, finding 3)."""
 
-    bad = httpx.HTTPStatusError("bad", request=request, response=httpx.Response(400))
-    busy = httpx.HTTPStatusError("busy", request=request, response=httpx.Response(503))
+    @pytest.mark.parametrize(
+        "error",
+        [
+            httpx.ReadTimeout("slow"),
+            httpx.ConnectError("refused"),
+            httpx.RemoteProtocolError("peer closed connection"),
+            httpx.HTTPStatusError(
+                "not found",
+                request=httpx.Request("GET", "https://x.example"),
+                response=httpx.Response(404),
+            ),
+            httpx.HTTPStatusError(
+                "busy",
+                request=httpx.Request("GET", "https://x.example"),
+                response=httpx.Response(503),
+            ),
+            TimeoutError("fetch timed out"),
+            ConnectionError("reset"),
+            ConnectionResetError("reset by peer"),
+            ConnectionError("Incomplete Bedrock response stream: missing messageStop event."),
+        ],
+        ids=lambda e: f"{type(e).__name__}-{str(e)[:12]}",
+    )
+    def test_the_errors_a_network_tool_raises_are_unknown(self, error: Exception) -> None:
+        failure = classify_model_error(error)
 
-    assert classify_model_error(bad).retryable is False
-    assert classify_model_error(busy).retryable is True
+        assert failure.kind == "unknown"
+        assert failure.retryable is None
+        assert not failure.from_provider
+
+    def test_a_class_named_like_a_providers_is_not_one(self) -> None:
+        class Timeout(Exception):
+            status_code = 504
+
+        assert classify_model_error(Timeout("a tool's own")).kind == "unknown"
+
+    def test_a_connection_error_is_the_models_only_when_langchain_aws_raised_it(self) -> None:
+        def ours() -> None:
+            raise ConnectionError("Incomplete Bedrock response stream: missing messageStop event.")
+
+        with pytest.raises(ConnectionError) as caught:
+            ours()
+
+        assert classify_model_error(caught.value).kind == "unknown"
+
+    def test_the_connection_error_langchain_aws_raises_is_a_retryable_model_failure(self) -> None:
+        """Through the real client: the stream ends after ``messageStart`` with no
+        ``messageStop``, and langchain-aws raises the built-in ``ConnectionError``."""
+        from src.api.config import Settings
+        from src.core.services.bedrock_llm import _bedrock_client, create_bedrock_llm
+        from tests.helpers.bedrock_wire import EVENT_STREAM, Wire, frame
+
+        _bedrock_client.cache_clear()
+        try:
+            llm = create_bedrock_llm(
+                sorted(BEDROCK_MODELS)[0],
+                settings=Settings(
+                    _env_file=None,
+                    bedrock_api_key="test-bedrock-key",
+                    bedrock_region="us-east-2",
+                    bedrock_max_output_tokens=16000,
+                ),
+            )
+            Wire(llm, frame("messageStart", {"role": "assistant"}), EVENT_STREAM)
+
+            with pytest.raises(ConnectionError, match="missing messageStop") as caught:
+                list(llm.stream("hello"))
+        finally:
+            _bedrock_client.cache_clear()
+
+        failure = classify_model_error(caught.value)
+        assert (failure.kind, failure.retryable, failure.from_provider) == (
+            "connection",
+            True,
+            True,
+        )
