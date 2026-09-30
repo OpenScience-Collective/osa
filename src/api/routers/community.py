@@ -1069,6 +1069,18 @@ class ProviderChoice:
         elif not self.api_key:
             raise ValueError("api_key must not be an empty string; use None for server mode")
 
+        if self.provider == "bedrock" and (
+            self.api_key is not None or self.key_source != "platform"
+        ):
+            # The Bedrock models are paid for by the platform's Bedrock key, which
+            # create_bedrock_llm reads itself. A caller's key cannot stand in for it, and
+            # a choice that said "byok" would spend that token while _check_model_cost
+            # skips the model: cost enforcement off for the platform's money.
+            raise ValueError(
+                "provider='bedrock' is always platform-funded: it needs api_key=None and "
+                f"key_source='platform'; got api_key={'set' if self.api_key else None}, "
+                f"key_source={self.key_source!r}"
+            )
     @property
     def takes_native_blocks(self) -> bool:
         """Whether this path has been shown to accept Anthropic's native content

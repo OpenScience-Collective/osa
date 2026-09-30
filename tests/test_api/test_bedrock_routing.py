@@ -69,6 +69,15 @@ class TestProviderChoiceForBedrock:
         with pytest.raises(ValueError, match="api_key=None is only valid"):
             ProviderChoice(provider="bedrock", api_key=None, key_source=key_source)
 
+    @pytest.mark.parametrize(
+        ("api_key", "key_source"),
+        [("sk-user", "byok"), ("sk-user", "community"), ("sk-user", "platform")],
+    )
+    def test_a_bedrock_choice_cannot_carry_a_key_or_another_funder(self, api_key, key_source):
+        """A `byok` Bedrock choice would spend the platform's token with cost checks off."""
+        with pytest.raises(ValueError, match="always platform-funded"):
+            ProviderChoice(provider="bedrock", api_key=api_key, key_source=key_source)
+
     def test_citations_come_from_tags_not_native_blocks(self):
         bedrock = ProviderChoice(provider="bedrock", api_key=None, key_source="platform")
         assert bedrock.tags_citations is True
