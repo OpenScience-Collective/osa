@@ -137,6 +137,25 @@ def reply_with(
     return answer
 
 
+def refusal_with(
+    status: int, kind: str, message: str
+) -> Callable[[httpx2.Request], httpx2.Response]:
+    """A handler that refuses every request the way the Messages API does.
+
+    ``x-should-retry: false`` (a header the API sends) keeps the SDK from retrying with its
+    own backoff, so a test sees the error at once.
+    """
+
+    def refuse(_request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            status,
+            headers={"x-should-retry": "false"},
+            json={"type": "error", "error": {"type": kind, "message": message}},
+        )
+
+    return refuse
+
+
 @contextmanager
 def served_by(handler: Callable[[httpx2.Request], httpx2.Response]) -> Iterator[None]:
     """Route every request an Anthropic model built inside this block makes to ``handler``."""

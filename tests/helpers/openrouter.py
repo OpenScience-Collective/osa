@@ -9,8 +9,20 @@ fixture in the tests that use it does).
 import gc
 import json
 import threading
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
+
+
+@dataclass
+class HttpError:
+    """A queued reply that refuses the request instead of answering it.
+
+    ``body`` is sent as the JSON error OpenRouter sends (``{"error": {...}}``).
+    """
+
+    status: int
+    body: dict[str, Any]
 
 
 def sse_chunk(delta: dict[str, Any], finish: str | None = None, usage: dict | None = None) -> dict:
@@ -127,7 +139,12 @@ class FakeOpenRouter:
                 with outer._lock:
                     outer._records.append((request, headers))
                     reply = outer._replies.pop(0)
-                if request.get("stream"):
+                status = 200
+                if isinstance(reply, HttpError):
+                    status = reply.status
+                    payload = json.dumps(reply.body)
+                    content_type = "application/json"
+                elif request.get("stream"):
                     payload = "".join(f"data: {json.dumps(e)}\n\n" for e in reply)
                     payload += "data: [DONE]\n\n"
                     content_type = "text/event-stream"
@@ -135,7 +152,7 @@ class FakeOpenRouter:
                     payload = json.dumps(reply)
                     content_type = "application/json"
                 data = payload.encode()
-                self.send_response(200)
+                self.send_response(status)
                 self.send_header("content-type", content_type)
                 self.send_header("content-length", str(len(data)))
                 self.end_headers()

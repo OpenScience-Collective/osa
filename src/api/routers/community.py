@@ -89,6 +89,7 @@ from src.core.services.bedrock_llm import create_bedrock_llm
 from src.core.services.litellm_llm import DEFAULT_MODEL as OPENROUTER_DEFAULT_MODEL
 from src.core.services.litellm_llm import DEFAULT_PROVIDER as OPENROUTER_DEFAULT_PROVIDER
 from src.core.services.litellm_llm import create_openrouter_llm, to_openrouter_model
+from src.core.services.model_errors import classify_model_error
 from src.knowledge.search import FAQResult, get_citation_stats, list_faq_entries
 from src.metrics.cost import COST_BLOCK_THRESHOLD, COST_WARN_THRESHOLD, MODEL_PRICING, estimate_cost
 from src.metrics.db import (
@@ -3229,6 +3230,98 @@ def _log_streaming_metrics(
 # Streaming Helpers
 # ---------------------------------------------------------------------------
 
+#: Told to the reader when a model call failed in a way no retry can fix (see
+#: ``classify_model_error``): a request the provider refused, or a credential it does not
+#: accept. It carries the error id, which is what the operator finds the log line by. A
+#: retryable or unrecognized failure keeps the stream's own text, which says nothing the
+#: log does not back up.
+_CANNOT_RETRY_MESSAGE = (
+    "The assistant could not process this request, and trying again will not help. "
+    "Start a new conversation, or report it with error ID {error_id}."
+)
+
+#: What each stream tells the reader when a retry can succeed, or when nothing is known.
+_ASK_FAILURE_MESSAGE = "An error occurred while generating the response. Please try again."
+_CHAT_FAILURE_MESSAGE = "An error occurred while processing your request."
+
+
+def _stream_failure_event(
+    error: Exception,
+    *,
+    community_id: str,
+    model: str | None,
+    endpoint: str,
+    request_id: str | None,
+    retryable_message: str,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    """Log a failure that ended a stream and build the ``error`` event the reader gets.
+
+    A throttle, a read timeout and a request the provider refuses as invalid used to be one
+    log line and one message. Now the log says which it was (the exception class, the
+    provider's code or status, and whether a retry can succeed) at WARNING for a failure
+    that can clear by itself and ERROR, with the traceback, for one that cannot or is not
+    recognized. The reader is told to try again only when that is honest: a failure no
+    retry can fix says so.
+
+    Args:
+        error: What the stream raised.
+        community_id: For the log.
+        model: The model the request ran, for the log.
+        endpoint: The endpoint, for the log.
+        request_id: The request's id, for the log.
+        retryable_message: What the reader is told when a retry can succeed or it is not
+            known; the stream's own wording.
+        session_id: The chat session, for the log.
+
+    Returns:
+        The event to send: ``message``, an ``error_id``, and ``retryable`` when known.
+    """
+    failure = classify_model_error(error)
+    error_id = str(uuid.uuid4())
+    if failure.from_provider:
+        summary = "Model call failed while streaming"
+    else:
+        summary = "Unexpected streaming error"
+    logger.log(
+        logging.WARNING if failure.retryable else logging.ERROR,
+        "%s (ID: %s) for %s (community=%s, model=%s, request_id=%s, session=%s): "
+        "%s [retryable=%s]: %s",
+        summary,
+        error_id,
+        endpoint,
+        community_id,
+        model,
+        request_id,
+        session_id,
+        failure.detail,
+        failure.retryable_label,
+        error,
+        exc_info=not failure.retryable,
+        extra={
+            "error_id": error_id,
+            "community_id": community_id,
+            "model": model,
+            "request_id": request_id,
+            "endpoint": endpoint,
+            "error_type": type(error).__name__,
+            "failure_kind": failure.kind,
+            "retryable": failure.retryable,
+        },
+    )
+    event: dict[str, Any] = {
+        "event": "error",
+        "message": (
+            _CANNOT_RETRY_MESSAGE.format(error_id=error_id)
+            if failure.retryable is False
+            else retryable_message
+        ),
+        "error_id": error_id,
+    }
+    if failure.retryable is not None:
+        event["retryable"] = failure.retryable
+    return event
+
 
 async def _stream_ask_response(
     community_id: str,
@@ -3456,13 +3549,28 @@ async def _stream_ask_response(
             cache_creation_tokens=total_cache_creation_tokens,
         )
     except ValueError as e:
-        # Input validation errors - user's fault
-        logger.warning("Invalid input in streaming for community %s: %s", community_id, e)
-        sse_event = {
-            "event": "error",
-            "message": f"Invalid request: {str(e)}",
-            "retryable": False,
-        }
+        if classify_model_error(e).from_provider:
+            # A provider failure that langchain-aws raised as a ValueError (a service
+            # exception event it could not make a ClientError, a permissions error about
+            # system tools) is the provider's, not the reader's.
+            sse_event = _stream_failure_event(
+                e,
+                community_id=community_id,
+                model=awm.model if awm else None,
+                endpoint=f"/{community_id}/ask",
+                request_id=request_id,
+                retryable_message=_ASK_FAILURE_MESSAGE,
+            )
+            status_code = 500
+        else:
+            # Input validation errors - user's fault
+            logger.warning("Invalid input in streaming for community %s: %s", community_id, e)
+            sse_event = {
+                "event": "error",
+                "message": f"Invalid request: {str(e)}",
+                "retryable": False,
+            }
+            status_code = 400
         yield f"data: {json.dumps(sse_event)}\n\n"
         _log_streaming_metrics(
             http_request=http_request,
@@ -3471,32 +3579,21 @@ async def _stream_ask_response(
             awm=awm,
             tools_called=tools_called,
             start_time=start_time,
-            status_code=400,
+            status_code=status_code,
             input_tokens=total_input_tokens,
             output_tokens=total_output_tokens,
             cache_read_tokens=total_cache_read_tokens,
             cache_creation_tokens=total_cache_creation_tokens,
         )
     except Exception as e:
-        # Unexpected errors - log with full context
-        error_id = str(uuid.uuid4())
-        logger.error(
-            "Unexpected streaming error (ID: %s) in ask endpoint for community %s: %s",
-            error_id,
-            community_id,
+        sse_event = _stream_failure_event(
             e,
-            exc_info=True,
-            extra={
-                "error_id": error_id,
-                "community_id": community_id,
-                "error_type": type(e).__name__,
-            },
+            community_id=community_id,
+            model=awm.model if awm else None,
+            endpoint=f"/{community_id}/ask",
+            request_id=request_id,
+            retryable_message=_ASK_FAILURE_MESSAGE,
         )
-        sse_event = {
-            "event": "error",
-            "message": "An error occurred while generating the response. Please try again.",
-            "error_id": error_id,
-        }
         yield f"data: {json.dumps(sse_event)}\n\n"
         _log_streaming_metrics(
             http_request=http_request,
@@ -3973,9 +4070,25 @@ async def _stream_chat_response(
             cache_creation_tokens=total_cache_creation_tokens,
         )
     except ValueError as e:
-        # Session limit errors
-        logger.error("Session limit error: %s", e)
-        sse_event = {"event": "error", "message": str(e)}
+        if classify_model_error(e).from_provider:
+            # A provider failure that langchain-aws raised as a ValueError (a service
+            # exception event it could not make a ClientError, a permissions error about
+            # system tools) is the provider's, not a session limit the reader hit.
+            sse_event = _stream_failure_event(
+                e,
+                community_id=community_id,
+                model=awm.model if awm else None,
+                endpoint=metrics_endpoint,
+                request_id=request_id,
+                retryable_message=_CHAT_FAILURE_MESSAGE,
+                session_id=session.session_id,
+            )
+            status_code = 500
+        else:
+            # Session limit errors
+            logger.error("Session limit error: %s", e)
+            sse_event = {"event": "error", "message": str(e)}
+            status_code = 400
         yield f"data: {json.dumps(sse_event)}\n\n"
         _log_streaming_metrics(
             http_request=http_request,
@@ -3984,32 +4097,22 @@ async def _stream_chat_response(
             awm=awm,
             tools_called=tools_called,
             start_time=start_time,
-            status_code=400,
+            status_code=status_code,
             input_tokens=total_input_tokens,
             output_tokens=total_output_tokens,
             cache_read_tokens=total_cache_read_tokens,
             cache_creation_tokens=total_cache_creation_tokens,
         )
     except Exception as e:
-        error_id = str(uuid.uuid4())
-        logger.error(
-            "Unexpected streaming error (ID: %s) in chat endpoint for session %s (community: %s): %s",
-            error_id,
-            session.session_id,
-            community_id,
+        sse_event = _stream_failure_event(
             e,
-            exc_info=True,
-            extra={
-                "error_id": error_id,
-                "community_id": community_id,
-                "error_type": type(e).__name__,
-            },
+            community_id=community_id,
+            model=awm.model if awm else None,
+            endpoint=metrics_endpoint,
+            request_id=request_id,
+            retryable_message=_CHAT_FAILURE_MESSAGE,
+            session_id=session.session_id,
         )
-        sse_event = {
-            "event": "error",
-            "message": "An error occurred while processing your request.",
-            "error_id": error_id,
-        }
         yield f"data: {json.dumps(sse_event)}\n\n"
         _log_streaming_metrics(
             http_request=http_request,
