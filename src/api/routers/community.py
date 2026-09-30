@@ -56,7 +56,7 @@ from src.api.tool_results import (
     build_unanswered_tool_message,
     scrub_stored_images,
 )
-from src.api.turn_outcome import ModelRuns, cut_off_reply
+from src.api.turn_outcome import ModelRuns, reply_problem
 from src.assistants import registry
 from src.assistants.community import CommunityAssistant
 from src.assistants.community import PageContext as AgentPageContext
@@ -286,8 +286,9 @@ class ChatResponse(BaseModel):
         default_factory=list,
         description=(
             "Things the caller should know about this reply. Today: the answer was cut "
-            "off because the model reached its output limit. The streamed endpoint "
-            "sends the same text as a `warning` event."
+            "off because the model reached its output limit or the conversation filled "
+            "its context window. The streamed endpoint sends the same text as a "
+            "`warning` event."
         ),
     )
 
@@ -319,8 +320,9 @@ class AskResponse(BaseModel):
         default_factory=list,
         description=(
             "Things the caller should know about this answer. Today: it was cut off "
-            "because the model reached its output limit. The streamed endpoint sends "
-            "the same text as a `warning` event."
+            "because the model reached its output limit or the conversation filled its "
+            "context window. The streamed endpoint sends the same text as a `warning` "
+            "event."
         ),
     )
 
@@ -2246,20 +2248,20 @@ def _check_unstreamed_reply(
     """Report how a reply that was not streamed ended, before it is returned.
 
     Logs once that the request's cost row is incomplete, when it is, and once that the
-    model stopped at its output limit, when it did (see ``turn_outcome``).
+    reply was cut off or came back empty, when it did (see ``turn_outcome``).
 
     Returns:
         The warnings to put on the response: the answer was cut off, but there is one.
 
     Raises:
-        HTTPException(502): The model stopped at its output limit before it wrote any
-            answer, so a 200 would carry nothing. The metrics row says why.
+        HTTPException(502): The model wrote no answer (it stopped at a limit, declined, or
+            ended with nothing), so a 200 would carry nothing. The metrics row says why.
     """
     request_id = getattr(http_request.state, "request_id", None)
     agent_result.model_runs.warn_about_usage(
         community_id=community_id, model=awm.model, endpoint=endpoint, request_id=request_id
     )
-    cut_off = cut_off_reply(
+    problem = reply_problem(
         agent_result.model_runs,
         reply_text=agent_result.response_content,
         code_ran=False,
@@ -2268,12 +2270,12 @@ def _check_unstreamed_reply(
         endpoint=endpoint,
         request_id=request_id,
     )
-    if cut_off is None:
+    if problem is None:
         return []
-    if cut_off.event == "error":
-        http_request.state.metrics_agent_data["error_message"] = cut_off.summary
-        raise HTTPException(status_code=502, detail=cut_off.message)
-    return [cut_off.message]
+    if problem.event == "error":
+        http_request.state.metrics_agent_data["error_message"] = problem.summary
+        raise HTTPException(status_code=502, detail=problem.message)
+    return [problem.message]
 
 
 # ---------------------------------------------------------------------------
@@ -3701,8 +3703,9 @@ async def _stream_ask_response(
 
         final_response = normalize_citation_markers(full_response, citation_assembler.marks)
 
-        # A reply the model stopped at its output limit raised nothing; say so (see
-        # turn_outcome). With no text to show it is an error and no `done` follows.
+        # A reply the model stopped at a limit, or that has no text whatever the stop
+        # reason, raised nothing; say so (see turn_outcome). With no text to show it is an
+        # error and no `done` follows.
         ask_endpoint = f"/{community_id}/ask"
         model_runs.warn_about_usage(
             community_id=community_id,
@@ -3710,7 +3713,7 @@ async def _stream_ask_response(
             endpoint=ask_endpoint,
             request_id=request_id,
         )
-        cut_off = cut_off_reply(
+        problem = reply_problem(
             model_runs,
             reply_text=final_response,
             code_ran=False,
@@ -3719,8 +3722,8 @@ async def _stream_ask_response(
             endpoint=ask_endpoint,
             request_id=request_id,
         )
-        if cut_off is not None and cut_off.event == "error":
-            yield f"data: {json.dumps({'event': 'error', 'message': cut_off.message})}\n\n"
+        if problem is not None and problem.event == "error":
+            yield f"data: {json.dumps({'event': 'error', 'message': problem.message})}\n\n"
             _log_streaming_metrics(
                 http_request=http_request,
                 community_id=community_id,
@@ -3733,11 +3736,11 @@ async def _stream_ask_response(
                 output_tokens=total_output_tokens,
                 cache_read_tokens=total_cache_read_tokens,
                 cache_creation_tokens=total_cache_creation_tokens,
-                error_message=cut_off.summary,
+                error_message=problem.summary,
             )
             return
-        if cut_off is not None:
-            yield f"data: {json.dumps({'event': 'warning', 'message': cut_off.message})}\n\n"
+        if problem is not None:
+            yield f"data: {json.dumps({'event': 'warning', 'message': problem.message})}\n\n"
 
         sse_event = {
             "event": "done",
@@ -4194,18 +4197,20 @@ async def _stream_chat_response(
 
         final_response = normalize_citation_markers(full_response, citation_assembler.marks)
 
-        # A reply the model stopped at its output limit raised nothing; say so (see
-        # turn_outcome). With no text to show, and no code run earlier in the reply (the
-        # widget keeps a reply that ran code), it is an error and no `done` follows: a
-        # `done` with empty content is dropped by the widget, and the reader would see
-        # neither an answer nor a reason. Nothing is stored for it.
+        # A reply the model stopped at a limit raised nothing, and neither did one that
+        # came back empty for any other stop reason; say so (see turn_outcome). With no
+        # text to show, and no code run earlier in the reply (the widget keeps a reply that
+        # ran code), it is an error and no `done` follows: a `done` with empty content is
+        # dropped by the widget, and the reader would see neither an answer nor a reason.
+        # Nothing is stored for it. (A parked browser call returned above, so what is left
+        # here is a reply that has ended.)
         model_runs.warn_about_usage(
             community_id=community_id,
             model=awm.model if awm else None,
             endpoint=metrics_endpoint,
             request_id=request_id,
         )
-        cut_off = cut_off_reply(
+        problem = reply_problem(
             model_runs,
             reply_text=final_response,
             code_ran=browser_runs_answered > 0,
@@ -4214,8 +4219,8 @@ async def _stream_chat_response(
             endpoint=metrics_endpoint,
             request_id=request_id,
         )
-        if cut_off is not None and cut_off.event == "error":
-            yield f"data: {json.dumps({'event': 'error', 'message': cut_off.message})}\n\n"
+        if problem is not None and problem.event == "error":
+            yield f"data: {json.dumps({'event': 'error', 'message': problem.message})}\n\n"
             _log_streaming_metrics(
                 http_request=http_request,
                 community_id=community_id,
@@ -4228,7 +4233,7 @@ async def _stream_chat_response(
                 output_tokens=total_output_tokens,
                 cache_read_tokens=total_cache_read_tokens,
                 cache_creation_tokens=total_cache_creation_tokens,
-                error_message=cut_off.summary,
+                error_message=problem.summary,
             )
             return
 
@@ -4242,8 +4247,8 @@ async def _stream_chat_response(
                 yield f"data: {json.dumps(sse_event)}\n\n"
                 return
 
-        if cut_off is not None:
-            yield f"data: {json.dumps({'event': 'warning', 'message': cut_off.message})}\n\n"
+        if problem is not None:
+            yield f"data: {json.dumps({'event': 'warning', 'message': problem.message})}\n\n"
 
         # Warn if conversation is approaching the token budget (87.5% of 80K).
         warning_threshold = int(DEFAULT_MAX_CONVERSATION_TOKENS * 0.875)

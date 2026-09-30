@@ -43,10 +43,12 @@ from src.core.config.community import FULL_OUTPUT_TOOL_NAME, CommunityConfig
 from src.tools.client_tools import CLIENT_TOOL_KILL_SWITCH_ENV
 from tests.helpers.chat_models import (
     ScriptedChatModel,
+    StreamingScriptedChatModel,
     multi_tool_call_response,
     tool_call_response,
 )
 from tests.helpers.images import bar_chart_png, tiny_png
+from tests.helpers.provider_replies import text_chunk
 
 CALL_ID = "toolu_01aaaaaaaaaaaaaaaaaaaaaa"
 SECOND_CALL_ID = "toolu_01bbbbbbbbbbbbbbbbbbbbbb"
@@ -106,14 +108,23 @@ def _config(**overrides: Any) -> CommunityConfig:
     return CommunityConfig(**fields)
 
 
+def _streamed(*runs: list) -> StreamingScriptedChatModel:
+    """A model whose runs stream, as a provider's do. The router reads a reply's text from
+    the stream's chunks, so a model that does not stream (`ScriptedChatModel`) writes
+    nothing a reader sees, and a turn that ends on such a reply is an empty one. Use this
+    where a test is about a turn that ends with text."""
+    return StreamingScriptedChatModel(chunk_script=list(runs))
+
+
 def _assistant(
     responses: list,
     *,
     declared: set[str] | None = None,
     server_tools: list | None = None,
     browser_runs_left: int | None = None,
+    model: ScriptedChatModel | None = None,
 ) -> tuple[CommunityAssistant, ScriptedChatModel]:
-    model = ScriptedChatModel(responses=responses)
+    model = model or ScriptedChatModel(responses=responses)
     assistant = CommunityAssistant(
         model=model,
         config=_config(),
@@ -199,7 +210,7 @@ class TestTheToolReachesTheModel:
         normally rather than ending on a call nothing can answer."""
         monkeypatch.setenv(CLIENT_TOOL_KILL_SWITCH_ENV, "1")
         session = _session()
-        assistant, _ = _assistant([AIMessage(content="I cannot run code right now.")])
+        assistant, _ = _assistant([], model=_streamed([text_chunk("I cannot run code right now.")]))
 
         events = await _run(session, assistant, declared_client_tools={"execute_code"})
 
@@ -316,7 +327,9 @@ class TestTheStateCaptureCannotFailQuietly:
     async def test_an_ordinary_turn_is_unaffected_by_the_same_drift(self) -> None:
         """The cross-check must not fire on a turn that never parked anything, or every
         conversation in every community would break on the same dependency bump."""
-        assistant, _ = _assistant([AIMessage(content="No code needed.")], declared=set())
+        assistant, _ = _assistant(
+            [], declared=set(), model=_streamed([text_chunk("No code needed.")])
+        )
 
         events = await _run(_session(), self._without_root_end(assistant))
 
@@ -498,7 +511,9 @@ class TestNothingHappensWithoutAClientTool:
         """Every community ships with client_tools unset, so this is the path that
         actually runs in production for this phase."""
         session = _session()
-        assistant, _ = _assistant([AIMessage(content="Alpha power is 10.2 Hz.")], declared=set())
+        assistant, _ = _assistant(
+            [], declared=set(), model=_streamed([text_chunk("Alpha power is 10.2 Hz.")])
+        )
 
         events = await _run(session, assistant)
 
@@ -759,11 +774,14 @@ class TestARefusedCallStillReplies:
     async def test_invalid_arguments_stream_a_reply_not_a_tool_request(self) -> None:
         """Missing `description` would have rendered a blank permission gate. Now
         the model is told, and its reply is what the person sees."""
+        from tests.test_api.test_tool_call_streaming import _anthropic_call
+
         assistant, model = _assistant(
-            [
-                tool_call_response("execute_code", {"code": "x"}, CALL_ID),
-                AIMessage(content="Let me describe the code before running it."),
-            ]
+            [],
+            model=_streamed(
+                _anthropic_call("execute_code", CALL_ID, {"code": "x"}),
+                [text_chunk("Let me describe the code before running it.")],
+            ),
         )
 
         events = await _run(_session(), assistant, declared_client_tools={"execute_code"})
@@ -773,11 +791,12 @@ class TestARefusedCallStillReplies:
         # which read "the client_tools node ran" as "a call was parked".
         assert "error" not in _names(events)
         assert "done" in _names(events)
-        # The model was asked AGAIN, with the refusal in front of it. The reply's
-        # text cannot be asserted here: the router streams content from chunks and
-        # the scripted model does not stream, which is true of every turn in this
-        # file, so the second call is the observable proof the run went back.
+        # The model was asked AGAIN, with the refusal in front of it, and its reply is
+        # what the person sees.
         assert model.calls == 2
+        assert next(e for e in events if e["event"] == "done")["content"] == (
+            "Let me describe the code before running it."
+        )
 
 
 class TestAReplyHasABudgetOfBrowserRuns:
@@ -791,11 +810,14 @@ class TestAReplyHasABudgetOfBrowserRuns:
 
     @pytest.mark.asyncio
     async def test_with_no_runs_left_the_call_is_refused_and_the_model_answers(self) -> None:
+        from tests.test_api.test_tool_call_streaming import _anthropic_call
+
         assistant, model = _assistant(
-            [
-                tool_call_response("execute_code", {"code": "x", "description": "d"}, CALL_ID),
-                AIMessage(content="Here is what the earlier runs showed."),
-            ],
+            [],
+            model=_streamed(
+                _anthropic_call("execute_code", CALL_ID, {"code": "x", "description": "d"}),
+                [text_chunk("Here is what the earlier runs showed.")],
+            ),
             browser_runs_left=0,
         )
         session = _session()

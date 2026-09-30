@@ -14,8 +14,12 @@ from src.api.config import Settings
 from src.core.services.anthropic_llm import create_anthropic_llm
 from src.core.services.bedrock_llm import _bedrock_client, create_bedrock_llm
 from src.core.services.model_outcome import (
+    CONTEXT_WINDOW_STOP_REASON,
+    DECLINED_STOP_REASONS,
+    MALFORMED_STOP_REASONS,
     STOP_REASON_KEYS,
     TRUNCATING_STOP_REASONS,
+    stop_reason,
     truncation_reason,
 )
 from tests.helpers.anthropic_wire import reply_with, served_by
@@ -67,6 +71,42 @@ class TestTheReader:
     @pytest.mark.parametrize("value", ["lengthy", "max_tokens_left", "length max_tokens", "len"])
     def test_a_reason_that_only_contains_one_is_not_truncated(self, value: str) -> None:
         assert truncation_reason({"finish_reason": value}) is None
+
+
+class TestTheStopReasonWhateverItSays:
+    @pytest.mark.parametrize("key", STOP_REASON_KEYS)
+    @pytest.mark.parametrize(
+        "reason",
+        sorted(
+            TRUNCATING_STOP_REASONS
+            | DECLINED_STOP_REASONS
+            | MALFORMED_STOP_REASONS
+            | {"end_turn", "tool_use", "stop", "something_new"}
+        ),
+    )
+    def test_it_is_read_under_any_providers_key(self, key: str, reason: str) -> None:
+        assert stop_reason({key: reason, "model_provider": "x"}) == reason
+
+    @pytest.mark.parametrize(
+        "reason", sorted(DECLINED_STOP_REASONS | MALFORMED_STOP_REASONS | TRUNCATING_STOP_REASONS)
+    )
+    def test_a_named_reason_written_twice_by_a_chunk_merge_reads_once(self, reason: str) -> None:
+        first = AIMessageChunk(content="", response_metadata={"stop_reason": reason})
+        second = AIMessageChunk(content="", response_metadata={"stop_reason": reason})
+
+        assert stop_reason((first + second).response_metadata) == reason
+
+    @pytest.mark.parametrize("metadata", [{}, {"stopReason": None}, {"stopReason": ""}, None, "x"])
+    def test_no_reason_is_none(self, metadata: object) -> None:
+        assert stop_reason(metadata) is None  # type: ignore[arg-type]
+
+    def test_the_context_window_is_a_truncating_reason_with_a_name_of_its_own(self) -> None:
+        assert CONTEXT_WINDOW_STOP_REASON in TRUNCATING_STOP_REASONS
+
+    def test_the_reasons_do_not_overlap(self) -> None:
+        assert not TRUNCATING_STOP_REASONS & DECLINED_STOP_REASONS
+        assert not TRUNCATING_STOP_REASONS & MALFORMED_STOP_REASONS
+        assert not DECLINED_STOP_REASONS & MALFORMED_STOP_REASONS
 
 
 # ---------------------------------------------------------------------------

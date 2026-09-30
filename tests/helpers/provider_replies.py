@@ -135,6 +135,7 @@ def scripted_reply(
     text: str,
     *,
     cut_off: bool = False,
+    stop: str | None = None,
     usage: bool = True,
     estimated: bool = False,
 ) -> list[AIMessageChunk]:
@@ -144,12 +145,14 @@ def scripted_reply(
         provider: Whose adapter the chunks imitate.
         text: What the model wrote, nine characters to a chunk.
         cut_off: End on the provider's output-limit stop reason, else on a normal one.
+        stop: End on this stop reason instead (``refusal``, ``guardrail_intervened``, ...),
+            written under the key this provider's adapter uses.
         usage: Include the usage the provider reports at the end of a run.
         estimated: Mark the usage as LiteLLM's estimate (the OpenRouter path only).
     """
     body = [text_chunk(piece) for piece in (text[i : i + 9] for i in range(0, len(text), 9))]
-    stop = provider.cut_off if cut_off else provider.finished
-    return [*body, *provider.end(stop, usage, estimated)]
+    reason = stop or (provider.cut_off if cut_off else provider.finished)
+    return [*body, *provider.end(reason, usage, estimated)]
 
 
 def assistant_for(provider: Provider, script: list[list[AIMessageChunk]]) -> AssistantWithMetrics:

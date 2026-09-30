@@ -2,9 +2,26 @@
 
 import logging
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from src.api.turn_outcome import ModelRuns, cut_off_reply
+from src.api.turn_outcome import (
+    CONTEXT_FULL_CUT_OFF_MESSAGE,
+    CONTEXT_FULL_NO_ANSWER_MESSAGE,
+    CUT_OFF_MESSAGE,
+    DECLINED_MESSAGE,
+    EMPTY_MESSAGE,
+    MALFORMED_MESSAGE,
+    NO_ANSWER_MESSAGE,
+    ModelRuns,
+    reply_problem,
+)
+from src.core.services.model_outcome import (
+    CONTEXT_WINDOW_STOP_REASON,
+    DECLINED_STOP_REASONS,
+    MALFORMED_STOP_REASONS,
+    TRUNCATING_STOP_REASONS,
+)
 
 
 class _Explodes:
@@ -64,16 +81,123 @@ def test_tool_messages_are_not_runs() -> None:
     assert runs.runs == 2 and runs.truncated_by == "length"
 
 
-def test_a_reply_that_finished_is_left_alone() -> None:
-    assert (
-        cut_off_reply(
-            ModelRuns(runs=1),
-            reply_text="",
-            code_ran=False,
-            community_id="c",
-            model="m",
-            endpoint="/c/chat",
-            request_id=None,
-        )
-        is None
+def _problem(runs: ModelRuns, reply_text: str = "", *, code_ran: bool = False):
+    return reply_problem(
+        runs,
+        reply_text=reply_text,
+        code_ran=code_ran,
+        community_id="c",
+        model="m",
+        endpoint="/c/chat",
+        request_id=None,
     )
+
+
+def _ended_on(reason: str | None) -> ModelRuns:
+    runs = ModelRuns()
+    runs.note(AIMessage(content="", response_metadata={"stopReason": reason} if reason else {}))
+    return runs
+
+
+def test_a_reply_that_finished_with_text_is_left_alone() -> None:
+    assert _problem(_ended_on("end_turn"), "An answer.") is None
+    assert _problem(_ended_on("refusal"), "I can help with part of that.") is None
+
+
+def test_a_reply_that_ran_code_is_left_alone_even_with_no_text() -> None:
+    assert _problem(_ended_on("end_turn"), code_ran=True) is None
+
+
+class TestAnEmptyReply:
+    """No text, no code, no parked call: an error whatever the stop reason says, since the
+    widget drops a reply with nothing in it and the reader would be told nothing."""
+
+    @pytest.mark.parametrize("reason", sorted(DECLINED_STOP_REASONS))
+    def test_one_the_model_declined_says_so(self, reason: str) -> None:
+        problem = _problem(_ended_on(reason))
+
+        assert problem.event == "error"
+        assert problem.message == DECLINED_MESSAGE
+        assert problem.reason == reason and reason in problem.summary
+
+    @pytest.mark.parametrize("reason", sorted(MALFORMED_STOP_REASONS))
+    def test_a_malformed_one_says_so(self, reason: str) -> None:
+        problem = _problem(_ended_on(reason))
+
+        assert (problem.event, problem.message) == ("error", MALFORMED_MESSAGE)
+
+    @pytest.mark.parametrize("reason", ["end_turn", "stop", "tool_use", "something_new", None])
+    def test_any_other_is_still_an_error(self, reason: str | None) -> None:
+        problem = _problem(_ended_on(reason))
+
+        assert (problem.event, problem.message) == ("error", EMPTY_MESSAGE)
+        assert problem.reason == reason
+        assert (reason or "none") in problem.summary
+
+    def test_no_model_run_at_all_is_one_too(self) -> None:
+        assert _problem(ModelRuns()).message == EMPTY_MESSAGE
+
+    def test_whitespace_is_nothing(self) -> None:
+        assert _problem(_ended_on("end_turn"), " \n\n").event == "error"
+
+    @pytest.mark.parametrize("reason", sorted(TRUNCATING_STOP_REASONS))
+    def test_one_that_hit_a_limit_keeps_its_own_message(self, reason: str) -> None:
+        runs = ModelRuns()
+        runs.note(AIMessage(content="", response_metadata={"finish_reason": reason}))
+
+        problem = _problem(runs)
+
+        expected = (
+            CONTEXT_FULL_NO_ANSWER_MESSAGE
+            if reason == CONTEXT_WINDOW_STOP_REASON
+            else NO_ANSWER_MESSAGE
+        )
+        assert (problem.event, problem.message) == ("error", expected)
+
+
+class TestACutOffReplyWithText:
+    @pytest.mark.parametrize("reason", sorted(TRUNCATING_STOP_REASONS))
+    def test_is_a_warning_worded_for_what_ran_out(self, reason: str) -> None:
+        runs = ModelRuns()
+        runs.note(AIMessage(content="", response_metadata={"finish_reason": reason}))
+
+        problem = _problem(runs, "An answer that stops sho")
+
+        expected = (
+            CONTEXT_FULL_CUT_OFF_MESSAGE
+            if reason == CONTEXT_WINDOW_STOP_REASON
+            else CUT_OFF_MESSAGE
+        )
+        assert (problem.event, problem.message) == ("warning", expected)
+
+
+class TestWhatAFullContextWindowSays:
+    """Asking again, or asking it to continue, adds to a conversation that is already too
+    long, so the copy sends the reader to a new conversation instead."""
+
+    @pytest.mark.parametrize(
+        "message", [CONTEXT_FULL_NO_ANSWER_MESSAGE, CONTEXT_FULL_CUT_OFF_MESSAGE]
+    )
+    def test_it_does_not_offer_what_fails_again(self, message: str) -> None:
+        lowered = message.lower()
+
+        assert "new conversation" in lowered
+        assert "try again" not in lowered
+        assert "ask it to continue" not in lowered
+        assert "narrower" not in lowered
+
+    def test_the_output_limit_copy_still_offers_a_retry(self) -> None:
+        assert "try again" in NO_ANSWER_MESSAGE.lower()
+        assert "continue" in CUT_OFF_MESSAGE.lower()
+
+
+def test_the_last_runs_stop_reason_is_kept_whatever_it_is() -> None:
+    runs = ModelRuns()
+    runs.note(AIMessage(content="", response_metadata={"stop_reason": "tool_use"}))
+    runs.note(AIMessage(content="", response_metadata={"stop_reason": "refusal"}))
+
+    assert runs.stop_reason == "refusal" and runs.truncated_by is None
+
+    runs.note(AIMessage(content="", response_metadata={}))
+
+    assert runs.stop_reason is None
