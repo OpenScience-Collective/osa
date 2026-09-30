@@ -7,6 +7,7 @@ Tests cover:
 """
 
 import re
+import typing
 import warnings
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -21,7 +22,9 @@ from src.api.tool_results import (
     MAX_STDOUT_CHARS,
 )
 from src.core.config.community import (
+    DEFAULT_LAUNCHER_OPEN_SIZE,
     DEFAULT_LAUNCHER_SIZE,
+    LAUNCHER_GEOMETRY_FIELDS,
     LAUNCHER_OFFSET_MAX,
     LAUNCHER_SIZE_MAX,
     LAUNCHER_SIZE_MIN,
@@ -855,12 +858,90 @@ class TestWidgetConfig:
         with pytest.raises(ValidationError, match=field):
             WidgetConfig(**{field: offset})
 
-    def test_launcher_size_must_be_a_whole_number(self) -> None:
-        """A fractional or non-numeric size fails rather than being rounded quietly."""
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "launcher_size",
+            "launcher_open_size",
+            "launcher_offset_x",
+            "launcher_offset_y",
+            "launcher_mobile_offset_x",
+            "launcher_mobile_offset_y",
+        ],
+    )
+    @pytest.mark.parametrize("value", [60.5, 60.0, "60", "large", True, False, [60]])
+    def test_launcher_numbers_must_be_whole_numbers(self, field: str, value: object) -> None:
+        """Only an integer is a pixel count: a float, a numeric string, and above all a
+        boolean (a YAML `yes` or `off` loads as one, and would otherwise become a 1px or
+        0px offset) are refused rather than quietly turned into a number."""
+        with pytest.raises(ValidationError, match=field):
+            WidgetConfig(**{field: value})
+
+    @pytest.mark.parametrize("offset", [0, 1, LAUNCHER_OFFSET_MAX])
+    def test_launcher_offset_range_edges_are_accepted(self, offset: int) -> None:
+        """0 (flush against the edge) and the maximum are valid offsets."""
+        widget = WidgetConfig(launcher_offset_x=offset, launcher_mobile_offset_y=offset)
+        assert widget.launcher_offset_x == offset
+        assert widget.launcher_mobile_offset_y == offset
+
+    def test_launcher_defaults_cover_every_launcher_shape(self) -> None:
+        """A launcher shape with no default size would raise a KeyError from inside the
+        validator, so every shape the field accepts has one, and they cannot be edited."""
+        shapes = set(typing.get_args(WidgetConfig.model_fields["launcher"].annotation))
+        assert set(DEFAULT_LAUNCHER_SIZE) == shapes
+        assert set(DEFAULT_LAUNCHER_OPEN_SIZE) == shapes
+        for shape in shapes:
+            assert (
+                LAUNCHER_SIZE_MIN
+                <= DEFAULT_LAUNCHER_OPEN_SIZE[shape]
+                <= DEFAULT_LAUNCHER_SIZE[shape]
+            )
+        with pytest.raises(TypeError):
+            DEFAULT_LAUNCHER_SIZE["bubble"] = 99  # type: ignore[index]
+
+    def test_launcher_geometry_fields_are_the_models(self) -> None:
+        """LAUNCHER_GEOMETRY_FIELDS is what resolve() sends and the response declares; it
+        is a list kept by hand, so it is checked against the model's own fields (every
+        launcher_* field but the shape and the label, which resolve() sends by their own
+        rules)."""
+        model_fields = {
+            name
+            for name in WidgetConfig.model_fields
+            if name.startswith("launcher_") and name != "launcher_label"
+        }
+        assert model_fields == {"launcher_position", *LAUNCHER_GEOMETRY_FIELDS}
+
+    def test_the_widget_response_carries_every_launcher_field(self) -> None:
+        """WidgetConfigResponse ignores a field it does not declare, so a launcher field
+        it lacked would vanish without an error. Every field resolve() can send round-trips
+        through it, bottom-left and the phone offsets included, which no community sets
+        today."""
+        from src.api.routers.community import WidgetConfigResponse
+
+        every = {
+            "launcher_position": "bottom-left",
+            "launcher_size": 72,
+            "launcher_open_size": 58,
+            "launcher_offset_x": 16,
+            "launcher_offset_y": 96,
+            "launcher_mobile_offset_x": 8,
+            "launcher_mobile_offset_y": 80,
+        }
+        assert set(every) == {"launcher_position", *LAUNCHER_GEOMETRY_FIELDS}
+        sent = WidgetConfig(**every).resolve("T")
+        received = WidgetConfigResponse(**sent).model_dump()
+        assert {key: received[key] for key in every} == every
+        assert set(sent) <= set(WidgetConfigResponse.model_fields)
+
+    def test_the_widget_response_refuses_the_default_position(self) -> None:
+        """resolve() omits bottom-right, and the response is its own guard for a code path
+        that ever sent it."""
+        from src.api.routers.community import WidgetConfigResponse
+
+        light = WidgetConfig().resolve("T")
+        assert WidgetConfigResponse(**light).launcher_position is None
         with pytest.raises(ValidationError):
-            WidgetConfig(launcher_size=60.5)
-        with pytest.raises(ValidationError):
-            WidgetConfig(launcher_size="large")
+            WidgetConfigResponse(**{**light, "launcher_position": "bottom-right"})
 
     def test_launcher_open_size_cannot_exceed_the_closed_size(self) -> None:
         """The launcher shrinks when the panel opens; a larger open size is refused, and

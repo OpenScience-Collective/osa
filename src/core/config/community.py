@@ -27,6 +27,7 @@ import logging
 import re
 import warnings
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal
 from urllib.parse import urlparse
 
@@ -1467,14 +1468,25 @@ class DatasetSuggestedQuestion(BaseModel):
         return v
 
 
-# The launcher's size limits and defaults, in pixels (#553). The widget carries the same
-# numbers (LAUNCHER_LIMITS in osa-chat-widget.js); tests/test_frontend/test_widget_drift.py
-# keeps the two from drifting. The floor is WCAG 2.2's enhanced target size (2.5.5), and
-# 56 and 58 are what the bubble and the capsule have always been.
+# The launcher's limits and defaults, in pixels (#553). The widget carries the same
+# numbers (LAUNCHER_LIMITS in osa-chat-widget.js, and the fallbacks in its stylesheet);
+# tests/test_frontend/test_widget_drift.py keeps them from drifting. The floor is WCAG
+# 2.2's enhanced target size (2.5.5). 56 and 58 are what the bubble and the capsule have
+# always been closed, 46 is what the capsule shrinks to (a bubble has never shrunk), and
+# 20 is how far the launcher has always been from the window's edges.
 LAUNCHER_SIZE_MIN = 44
 LAUNCHER_SIZE_MAX = 96
 LAUNCHER_OFFSET_MAX = 200
-DEFAULT_LAUNCHER_SIZE = {"bubble": 56, "capsule": 58}
+DEFAULT_LAUNCHER_SIZE = MappingProxyType({"bubble": 56, "capsule": 58})
+DEFAULT_LAUNCHER_OPEN_SIZE = MappingProxyType({"bubble": 56, "capsule": 46})
+DEFAULT_LAUNCHER_OFFSET = 20
+# The open size, as a fraction of the closed size, when a community sets only the closed
+# size. Only the widget derives it; it is here so that the numbers agree.
+LAUNCHER_OPEN_RATIO = 0.8
+# Strict: a YAML `yes` or `no` (which load as True and False), a quoted number or a float
+# is refused, not quietly turned into 1, 0 or a rounded number.
+LauncherSizePx = Annotated[int, Field(strict=True, ge=LAUNCHER_SIZE_MIN, le=LAUNCHER_SIZE_MAX)]
+LauncherOffsetPx = Annotated[int, Field(strict=True, ge=0, le=LAUNCHER_OFFSET_MAX)]
 # The numeric launcher fields, each sent to the widget only when a community sets it.
 LAUNCHER_GEOMETRY_FIELDS = (
     "launcher_size",
@@ -1628,48 +1640,48 @@ class WidgetConfig(BaseModel):
     sit in (#553).
 
     "bottom-right" (default) is where the launcher has always been. "bottom-left" moves
-    the launcher, its tooltips and the panel to the other side; the panel still opens
-    upward from the launcher, so there is no top position. A community that never sets
-    this renders exactly as it did before this field existed.
+    the launcher, its tooltips and the panel to the other side. The panel stays anchored
+    to the bottom edge and grows upward, so there is no top position. A community that
+    never sets this renders exactly as it did before this field existed.
     """
 
-    launcher_size: int | None = Field(default=None, ge=LAUNCHER_SIZE_MIN, le=LAUNCHER_SIZE_MAX)
+    launcher_size: LauncherSizePx | None = None
     """The launcher's diameter in pixels while the panel is closed (#553).
 
     Unset keeps today's size: 56 for a "bubble", 58 for a "capsule". The floor is 44,
     the size of WCAG 2.2's enhanced target-size criterion (2.5.5).
     """
 
-    launcher_open_size: int | None = Field(default=None, ge=LAUNCHER_SIZE_MIN, le=LAUNCHER_SIZE_MAX)
+    launcher_open_size: LauncherSizePx | None = None
     """The launcher's diameter in pixels while the panel is open (#553).
 
     The launcher shrinks to this size, with the animation a capsule has always had, when
     the panel opens and grows back when it closes. It can be no larger than the closed
-    size; equal sizes mean no change. Unset, the widget uses 80% of ``launcher_size``
-    when that is set, and today's size otherwise (46 for a "capsule", no change for a
-    "bubble").
+    size; equal sizes mean no change. Unset, the widget uses 80% of ``launcher_size``,
+    rounded to whole pixels and never below the 44px floor, when that is set, and today's
+    size otherwise (46 for a "capsule", no change for a "bubble").
     """
 
-    launcher_offset_x: int | None = Field(default=None, ge=0, le=LAUNCHER_OFFSET_MAX)
+    launcher_offset_x: LauncherOffsetPx | None = None
     """How far the launcher sits from the side edge of the window, in pixels (#553).
 
     The side is the one ``launcher_position`` names. Unset keeps today's 20.
     """
 
-    launcher_offset_y: int | None = Field(default=None, ge=0, le=LAUNCHER_OFFSET_MAX)
+    launcher_offset_y: LauncherOffsetPx | None = None
     """How far the launcher sits from the bottom edge of the window, in pixels (#553).
 
     Unset keeps today's 20. Raise it to clear something fixed at the bottom of the page,
     such as a cookie banner or a documentation site's version menu.
     """
 
-    launcher_mobile_offset_x: int | None = Field(default=None, ge=0, le=LAUNCHER_OFFSET_MAX)
+    launcher_mobile_offset_x: LauncherOffsetPx | None = None
     """``launcher_offset_x`` at 600px wide and narrower, in pixels (#553).
 
     Unset uses ``launcher_offset_x``.
     """
 
-    launcher_mobile_offset_y: int | None = Field(default=None, ge=0, le=LAUNCHER_OFFSET_MAX)
+    launcher_mobile_offset_y: LauncherOffsetPx | None = None
     """``launcher_offset_y`` at 600px wide and narrower, in pixels (#553).
 
     A phone's browser often has its own controls at the bottom of the screen; this
@@ -1679,12 +1691,21 @@ class WidgetConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_launcher_sizes(self) -> "WidgetConfig":
-        """The open size is never larger than the closed size it shrinks from."""
+        """Refuse an open size larger than the closed size (``launcher_size``, or the
+        default for the launcher's shape when that is unset)."""
         if self.launcher_open_size is None:
             return self
-        closed = self.launcher_size or DEFAULT_LAUNCHER_SIZE[self.launcher]
+        closed = (
+            self.launcher_size
+            if self.launcher_size is not None
+            else DEFAULT_LAUNCHER_SIZE[self.launcher]
+        )
         if self.launcher_open_size > closed:
-            source = "launcher_size" if self.launcher_size else f"the {self.launcher} default"
+            source = (
+                "launcher_size"
+                if self.launcher_size is not None
+                else f"the {self.launcher} default"
+            )
             msg = (
                 f"launcher_open_size ({self.launcher_open_size}) cannot be larger than "
                 f"the closed size ({closed}, from {source})"
@@ -1771,7 +1792,7 @@ class WidgetConfig(BaseModel):
             result["color_scheme"] = self.color_scheme
         if self.launcher_label:
             result["launcher_label"] = self.launcher_label
-        if self.launcher_position != "bottom-right":
+        if self.launcher_position != WidgetConfig.model_fields["launcher_position"].default:
             result["launcher_position"] = self.launcher_position
         for name in LAUNCHER_GEOMETRY_FIELDS:
             value = getattr(self, name)

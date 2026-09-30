@@ -20,9 +20,12 @@ from pathlib import Path
 
 from src.api import security
 from src.core.config.community import (
+    DEFAULT_LAUNCHER_OFFSET,
+    DEFAULT_LAUNCHER_OPEN_SIZE,
     DEFAULT_LAUNCHER_SIZE,
     LAUNCHER_GEOMETRY_FIELDS,
     LAUNCHER_OFFSET_MAX,
+    LAUNCHER_OPEN_RATIO,
     LAUNCHER_SIZE_MAX,
     LAUNCHER_SIZE_MIN,
     WidgetConfig,
@@ -187,9 +190,9 @@ class TestLauncherGeometryMatchesBackend:
 
     The server refuses a launcher size or offset outside its ranges when it loads a
     community; the widget checks the same values for a page's ``setConfig`` and for a
-    config remembered from an older server. If the ranges drifted apart, a value one
-    accepts would be silently dropped by the other, and the launcher would not be
-    where the community's config puts it.
+    config remembered from before the limits last changed. If the ranges drifted
+    apart, a value one accepts would be silently dropped by the other, and the
+    launcher would not be where the community's config puts it.
     """
 
     def test_limits_and_defaults_are_the_servers(self) -> None:
@@ -200,17 +203,48 @@ class TestLauncherGeometryMatchesBackend:
         assert limits["bubbleSize"] == DEFAULT_LAUNCHER_SIZE["bubble"]
         assert limits["capsuleSize"] == DEFAULT_LAUNCHER_SIZE["capsule"]
 
-    def test_stylesheet_defaults_are_the_default_sizes(self) -> None:
-        """The stylesheet's fallbacks are what an unconfigured launcher is drawn at."""
+    def test_open_ratio_is_the_servers(self) -> None:
+        """The widget alone derives an open size from a closed one; the ratio is the
+        number the docs and the server's docstring give."""
+        assert _extract_launcher_limits(_widget_source())["openRatio"] == LAUNCHER_OPEN_RATIO
+
+    def test_stylesheet_defaults_are_the_defaults(self) -> None:
+        """The stylesheet's fallbacks are what an unconfigured launcher is drawn at, and
+        the reason a community that sets nothing is drawn as it always was: the closed
+        and open sizes of the bubble and the capsule, the 58 / 46 scale, and the 20px
+        offsets, on a desktop and at 600px wide and narrower."""
         source = _widget_source()
-        bubble = re.search(r"--osa-closed: var\(--osa-size-closed, (\d+)px\);", source)
-        capsule = re.search(
-            r"\.osa-chat-widget\.osa-capsule \{\s*--osa-closed: var\(--osa-size-closed, (\d+)px\);",
-            source,
+
+        def sizes(pattern: str, where: str) -> tuple[int, int]:
+            match = re.search(pattern, source)
+            assert match, f"Could not find the {where} launcher sizes in the stylesheet"
+            return int(match.group(1)), int(match.group(2))
+
+        bubble = sizes(
+            r"--osa-closed: var\(--osa-size-closed, (\d+)px\);\s*"
+            r"--osa-open: var\(--osa-size-open, (\d+)px\);",
+            "bubble",
         )
-        assert bubble and capsule, "Could not find the launcher's default sizes in the stylesheet"
-        assert int(bubble.group(1)) == DEFAULT_LAUNCHER_SIZE["bubble"]
-        assert int(capsule.group(1)) == DEFAULT_LAUNCHER_SIZE["capsule"]
+        capsule = sizes(
+            r"\.osa-chat-widget\.osa-capsule \{\s*"
+            r"--osa-closed: var\(--osa-size-closed, (\d+)px\);\s*"
+            r"--osa-open: var\(--osa-size-open, (\d+)px\);",
+            "capsule",
+        )
+        assert bubble == (DEFAULT_LAUNCHER_SIZE["bubble"], DEFAULT_LAUNCHER_OPEN_SIZE["bubble"])
+        assert capsule == (DEFAULT_LAUNCHER_SIZE["capsule"], DEFAULT_LAUNCHER_OPEN_SIZE["capsule"])
+
+        scale = re.search(r"--osa-scale: var\(--osa-closed-scale, calc\((\d+) / (\d+)\)\);", source)
+        assert scale, "Could not find the capsule's default scale in the stylesheet"
+        assert (int(scale.group(1)), int(scale.group(2))) == capsule
+
+        offsets = re.findall(
+            r"var\(--osa-edge-[xy](?:-narrow)?, (?:var\(--osa-edge-[xy], )?(\d+)px", source
+        )
+        assert len(offsets) == 4, (
+            f"Expected four offset fallbacks in the stylesheet, found {offsets}"
+        )
+        assert {int(offset) for offset in offsets} == {DEFAULT_LAUNCHER_OFFSET}
 
     def test_widget_reads_every_field_the_server_sends(self) -> None:
         """Each launcher field the server can send is one the widget reads, under the
