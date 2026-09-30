@@ -8283,8 +8283,16 @@
               sessionId = event.session_id;
             }
             // Let the reveal finish what the reader is still reading before the
-            // backend's canonical text (below) replaces it.
-            await settleReveal();
+            // backend's canonical text (below) replaces it. A redraw that failed
+            // on the way (a page that was torn down, say) is the page's failure,
+            // not the reply's: the reply is complete, so its text and request id
+            // are applied and saved first, and the failure is raised after them.
+            let pageFailure = null;
+            try {
+              await settleReveal();
+            } catch (revealError) {
+              pageFailure = revealError;
+            }
             // The backend's done.content is canonical and replaces any raw
             // citation boundaries accumulated while streaming.
             const finalContent = applyDoneEvent(
@@ -8297,7 +8305,11 @@
               compose(accumulatedContent),
             );
             accumulatedContent = finalContent;
-            renderMessages(container, { follow: false });
+            try {
+              renderMessages(container, { follow: false });
+            } catch (renderError) {
+              pageFailure = pageFailure || renderError;
+            }
             try {
               saveHistory();
             } catch (saveError) {
@@ -8305,6 +8317,7 @@
               showError(container, 'Warning: Unable to save conversation');
             }
             updateStatusDisplay(true);
+            if (pageFailure) throw pageFailure;
             return null; // Successfully completed
           } else if (event.event === 'tool_request') {
             // The run ended on a call for this browser to answer. No `done`
@@ -8388,6 +8401,11 @@
       console.error('[OSA] Streaming error:', error);
       reveal.stop();
       clearActivity();
+
+      // The reply's done event was applied and saved (see there), and only the page's
+      // own redraw failed after it: the text is complete, so it gets no note saying
+      // the stream was cut.
+      if (receivedDoneEvent) throw error;
 
       // Keep partial content if we have any, including what earlier runs of
       // this reply wrote and any code they ran.
