@@ -2634,7 +2634,7 @@ def create_community_router(community_id: str) -> APIRouter:
             # turn: the streamed path never stored one. Stored, it would reach the next
             # request as a "." on Bedrock, an empty string through OpenRouter (which an
             # upstream provider may refuse), and nothing on Anthropic.
-            if ar.response_content:
+            if ar.response_content.strip():
                 try:
                     session.add_assistant_message(ar.response_content)
                 except ValueError as e:
@@ -4270,7 +4270,11 @@ async def _stream_chat_response(
             )
             return
 
-        if final_response:
+        # Text that is only whitespace is nothing to keep, however the reply was judged:
+        # one that ran code counts as answered with no text at all. Stored, it would be
+        # replayed on every later request, and Anthropic rejects a whitespace-only text
+        # block, so the session would fail from then on.
+        if final_response.strip():
             try:
                 session.add_assistant_message(final_response)
             except ValueError as e:

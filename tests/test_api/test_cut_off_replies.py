@@ -291,6 +291,20 @@ class TestStreamedChat:
         assert _names(events)[-1] == "error" and "done" not in _names(events)
         assert events[-1]["message"] == NO_ANSWER_MESSAGE
 
+    async def test_whitespace_after_code_is_not_stored_as_a_turn(self, provider: Provider) -> None:
+        """A reply that ran code is an answer with no text, and so is one whose text is only
+        whitespace. Neither is a turn to keep: a stored "\\n\\n" is replayed to the provider
+        on every later request of the session (see ``TestThroughTheRealClients``)."""
+        events, session = await _chat(
+            provider,
+            [scripted_reply(provider, "\n\n")],
+            browser_runs_answered=1,
+            code_runs_answered=1,
+        )
+
+        assert _names(events)[-1] == "done" and "error" not in _names(events)
+        assert [type(m).__name__ for m in session.messages] == ["HumanMessage"]
+
 
 # ---------------------------------------------------------------------------
 # The streamed ask endpoint
@@ -1028,6 +1042,79 @@ class TestThroughTheRealClients:
 
         assert [e["message"] for e in events if e["event"] == "warning"] == [CUT_OFF_MESSAGE]
         assert events[-1]["event"] == "done" and events[-1]["content"] == ANSWER[:30]
+
+    async def test_anthropic_is_never_sent_a_turn_of_only_whitespace(self) -> None:
+        """langchain-anthropic drops an empty assistant message but sends a whitespace-only
+        one as it is, and Anthropic rejects a text block with nothing but whitespace: one
+        stored turn of "\\n\\n" would make every later request of the session a 400."""
+        import httpx2
+
+        from src.api.config import Settings
+        from src.core.services.anthropic_llm import create_anthropic_llm
+        from tests.helpers.anthropic_wire import message_stream, served_by
+
+        sent: list[dict] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            sent.append(json.loads(request.content))
+            text = "\n\n" if len(sent) == 1 else ANSWER
+            return httpx2.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=message_stream([text]),
+            )
+
+        def texts_of(message: dict) -> list[str]:
+            content = message["content"]
+            if isinstance(content, str):
+                return [content]
+            return [block["text"] for block in content if block.get("type") == "text"]
+
+        with served_by(handler):
+            llm = create_anthropic_llm(
+                DEFAULT_MODEL, api_key="sk-ant-test", settings=Settings(_env_file=None)
+            )
+            assistant = CommunityAssistant(model=llm, config=community_config(), preload_docs=False)
+            wrapped = AssistantWithMetrics(
+                assistant=assistant, model=DEFAULT_MODEL, key_source="platform"
+            )
+            session = ChatSession("sess-whitespace", COMMUNITY)
+            session.add_user_message(QUESTION)
+            with patch(
+                "src.api.routers.community.create_community_assistant", return_value=wrapped
+            ):
+                first = await collect(
+                    _stream_chat_response(
+                        COMMUNITY,
+                        session,
+                        None,
+                        None,
+                        None,
+                        http_request=real_request("req-whitespace-1"),
+                        browser_runs_answered=1,
+                        code_runs_answered=1,
+                    )
+                )
+                session.add_user_message("And the next one?")
+                second = await collect(
+                    _stream_chat_response(
+                        COMMUNITY,
+                        session,
+                        None,
+                        None,
+                        None,
+                        http_request=real_request("req-whitespace-2"),
+                    )
+                )
+
+        assert first[-1]["event"] == "done" and second[-1]["event"] == "done"
+        assistant_texts = [
+            text
+            for message in sent[-1]["messages"]
+            if message["role"] == "assistant"
+            for text in texts_of(message)
+        ]
+        assert all(text.strip() for text in assistant_texts), assistant_texts
 
     @pytest.mark.parametrize(("texts", "event"), [((), "error"), ((ANSWER[:30],), "warning")])
     async def test_openrouter(self, monkeypatch, texts: tuple[str, ...], event: str) -> None:
