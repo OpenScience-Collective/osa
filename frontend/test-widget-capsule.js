@@ -17,7 +17,7 @@
 
 import { readFileSync } from 'node:fs';
 import { Window } from 'happy-dom';
-import { cssNumber, cssNumbers } from './test-support/css-px.js';
+import { cssNumber } from './test-support/css-px.js';
 
 let passed = 0;
 let failed = 0;

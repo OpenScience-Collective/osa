@@ -73,7 +73,7 @@ function fetchReturning(config) {
   };
 }
 
-function loadWidget({ fetch = noNetwork, innerWidth, innerHeight } = {}) {
+function loadWidget({ fetch = noNetwork, innerWidth, innerHeight, reducedMotion = false } = {}) {
   const window = new Window({
     url: 'http://localhost/page',
     ...(innerWidth !== undefined ? { innerWidth } : {}),
@@ -82,6 +82,7 @@ function loadWidget({ fetch = noNetwork, innerWidth, innerHeight } = {}) {
       disableJavaScriptFileLoading: true,
       disableCSSFileLoading: true,
       navigation: { disableChildFrameNavigation: true },
+      device: { prefersReducedMotion: reducedMotion ? 'reduce' : 'no-preference' },
     },
   });
   window.__OSA_TEST__ = true;
@@ -107,19 +108,24 @@ let storageCounter = 0;
  * wait, so what the stylesheet says is what is on the page. `page` is what an
  * embedding page sets with setConfig. Warnings are collected, not printed.
  */
-async function start(widget = {}, { page = {}, innerWidth, innerHeight = 800, beforeInit } = {}) {
-  const { window, widget: api } = loadWidget({ fetch: fetchReturning(configResponse(widget)), innerWidth, innerHeight });
+async function start(widget = {}, {
+  page = {}, innerWidth, innerHeight = 800, beforeInit, fetch, reducedMotion,
+} = {}) {
+  const { window, widget: api } = loadWidget({
+    fetch: fetch || fetchReturning(configResponse(widget)), innerWidth, innerHeight, reducedMotion,
+  });
   storageCounter += 1;
-  api.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: `osa-test-geometry-${storageCounter}`, ...page });
-  if (beforeInit) beforeInit(api);
+  // From before setConfig, which checks what a page passes and warns about a bad value.
   const warnings = [];
   const originalWarn = console.warn;
   console.warn = (...args) => warnings.push(args.map(String).join(' '));
   try {
+    api.setConfig({ apiEndpoint: 'http://localhost/api', communityId: 'test', storageKey: `osa-test-geometry-${storageCounter}`, ...page });
+    if (beforeInit) beforeInit(api);
     api.init();
     const container = window.document.querySelector('.osa-chat-widget');
     await waitUntil(() => !container.classList.contains('osa-launcher-waiting'), 'the config arrives');
-    if (widget.launcher === 'capsule') {
+    if (widget.launcher === 'capsule' && !page.fullscreen) {
       await waitUntil(() => container.querySelector('.osa-launcher-capsule'), 'the capsule is built');
     }
     return { window, api, container, warnings, q: (selector) => container.querySelector(selector) };
@@ -134,6 +140,11 @@ const GEOMETRY_PROPERTIES = [
   '--osa-size-closed', '--osa-size-open', '--osa-closed-scale',
   '--osa-edge-x', '--osa-edge-y', '--osa-edge-x-narrow', '--osa-edge-y-narrow',
 ];
+
+// The capsule's circles in DOM order, which is the Tab order.
+const capsuleOrder = (capsule) => [...capsule.children]
+  .map((el) => (el.classList.contains('osa-chat-button') ? 'chat' : el.classList.contains('osa-notebook-btn') ? 'notebook' : el.classList.contains('osa-hpc-btn') ? 'hpc' : null))
+  .filter(Boolean);
 
 console.log('='.repeat(60));
 console.log('Widget: launcher position, size and offsets (#553)');
@@ -187,7 +198,8 @@ console.log('\nlauncher_size: a bubble drawn at its closed size, shrinking to 80
   assertEqual([cssNumber(button.width), cssNumber(button.height)], [56, 56], 'its box is the open size, so nothing reflows as it changes');
   assert(Math.abs(cssNumber(button.scale) - 70 / 56) < 1e-9, 'and it is drawn at 70px while closed');
   const grow = 56 * (70 / 56 - 1) / 2;
-  assert(cssNumbers(button.translate).every((v) => Math.abs(v + grow) < 1e-9), `with its bottom-right corner held still (translate -${grow}px both ways)`);
+  const shift = cssNumbers(button.translate);
+  assert(shift.length === 2 && shift.every((v) => Math.abs(v + grow) < 1e-9), `with its bottom-right corner held still (translate -${grow}px both ways)`);
   const tooltip = window.getComputedStyle(q('.osa-chat-tooltip'));
   assertEqual([cssNumber(tooltip.right), cssNumber(tooltip.bottom)], [20 + 70 + 10, 20 + (70 - 40) / 2], 'the label sits beside the circle as it is drawn closed');
   assertEqual(cssNumber(window.getComputedStyle(q('.osa-chat-window')).bottom), 20 + 56 + 14, 'the panel sits above the open size');
@@ -251,6 +263,7 @@ console.log('\nthe capsule: sizes, the panel and the label follow, and 58/46 wri
   const a = measure(defaults);
   const b = measure(explicit);
   assertEqual(b.box, a.box, 'the box is the same');
+  assert(a.shift.length === 2 && b.shift.length === 2, 'both are drawn with a translate at rest');
   assert(Math.abs(b.scale - a.scale) < 1e-9 && b.shift.every((v, i) => Math.abs(v - a.shift[i]) < 1e-9), 'drawn the same at rest');
   assertEqual(b.panel, a.panel, 'the panel is in the same place');
   assertEqual(b.tooltip, a.tooltip, 'and so is the label');
@@ -279,14 +292,17 @@ console.log('\nthe capsule on the left: the pill and panel grow to the right, an
   const panel = window.getComputedStyle(q('.osa-chat-window'));
   assertEqual([cssNumber(panel.left), panel.right, cssNumber(panel.bottom)], [85, 'auto', 20], 'the panel opens to the capsule\'s right');
   const button = window.getComputedStyle(q('.osa-launcher-capsule .osa-chat-button'));
-  assert(cssNumbers(button.translate)[0] > 0 && cssNumbers(button.translate)[1] < 0, 'the resting circle grows up and to the right, so its bottom-left corner holds still');
+  const leftShift = cssNumbers(button.translate);
+  assert(leftShift.length === 2 && leftShift[0] > 0 && leftShift[1] < 0, 'the resting circle grows up and to the right, so its bottom-left corner holds still');
   const tooltip = window.getComputedStyle(q('.osa-icon-tooltip'));
+  // happy-dom cannot resolve a percentage, so this rule, which is relative to its own icon, is pinned by its spelling.
   assertEqual([tooltip.left, tooltip.right], ['calc(100% + 12px)', 'auto'], 'an icon\'s tooltip opens to its right');
 }
 {
   const narrow = await start({ launcher: 'capsule', launcher_position: 'bottom-left' }, { innerWidth: 390 });
   const capsule = narrow.window.getComputedStyle(narrow.q('.osa-launcher-capsule'));
-  assertEqual(capsule.flexDirection, 'row-reverse', 'on a phone the capsule is a row that grows to the right, chat first');
+  assertEqual(capsule.flexDirection, 'row', 'on a phone the capsule is a row');
+  assertEqual(capsuleOrder(narrow.q('.osa-launcher-capsule')), ['chat', 'notebook', 'hpc'], 'with the chat circle first, on the anchor, and the others growing to its right');
   const panel = narrow.window.getComputedStyle(narrow.q('.osa-chat-window'));
   assertEqual([cssNumber(panel.left), panel.right, cssNumber(panel.bottom)], [20, 'auto', 90], 'and the panel opens above it on the left edge');
 }
@@ -389,6 +405,165 @@ console.log('\nthe panel\'s resize handle drags away from its anchor');
   };
   assertEqual(await drag({}), '400px', 'anchored right, dragging the handle 40px right narrows the panel');
   assertEqual(await drag({ launcher_position: 'bottom-left' }), '480px', 'anchored left, the same drag widens it');
+}
+
+console.log('\na wrong or missing value from the page does not lock out the community\'s own');
+{
+  const community = { launcher_position: 'bottom-left', launcher_size: 70, launcher_offset_y: 96 };
+  const wrong = await start(community, {
+    page: { launcherSize: '70', launcherOffsetY: undefined, launcherPosition: undefined, launcherOffsetX: 12.5 },
+  });
+  assert(wrong.container.classList.contains('osa-pos-left'), 'launcherPosition: undefined is not a value: the community\'s bottom-left applies');
+  assertEqual(inline(wrong.container, '--osa-size-closed'), '70px', 'a wrong launcherSize (the string "70") is refused, so the community\'s 70 applies');
+  assertEqual(inline(wrong.container, '--osa-edge-y'), '96px', 'launcherOffsetY: undefined is not a value: the community\'s 96 applies');
+  assertEqual(inline(wrong.container, '--osa-edge-x'), '', 'and a wrong launcherOffsetX is refused, with no community value to fall back to: the default');
+  assertEqual(wrong.warnings.filter((w) => w.includes('setConfig')).length, 2, 'the two wrong values are warned about, in setConfig, and the undefined ones are not');
+  assert(wrong.warnings.every((w) => !w.includes('undefined')), 'no warning is about an undefined value');
+}
+{
+  const pinned = await start({ launcher_position: 'bottom-left', launcher_size: 70 }, { page: { launcherPosition: null, launcherSize: null } });
+  assert(!pinned.container.classList.contains('osa-pos-left'), 'null is a value: the page puts the position back to its default over the community');
+  assertEqual(inline(pinned.container, '--osa-size-closed'), '', 'and the size');
+  assertEqual(pinned.warnings.filter((w) => w.includes('launcherPosition')), [], 'a null position is unset, not invalid: no warning');
+}
+
+console.log('\nthe launcher is sized as what is drawn, not as what a later setConfig asks for');
+{
+  const { window, api, container, q } = await start({});
+  api.setConfig({ launcher: 'capsule', launcherSize: 70 });
+  assert(!container.classList.contains('osa-capsule'), 'sanity: setConfig({launcher}) after init() converts nothing, so it is still a bubble');
+  assertEqual([inline(container, '--osa-size-closed'), inline(container, '--osa-size-open')], ['70px', '56px'], 'its 70px is opened at 80% of the bubble\'s own 56px default, not the capsule\'s 58px');
+  assert(container.classList.contains('osa-launcher-resizes'), 'and it shrinks, as a bubble does');
+  assertEqual(px(window, q('.osa-chat-button'), 'width'), 56, 'from a 56px box');
+}
+
+console.log('\na bad value never stops the widget from starting, and its warning always says what it was');
+{
+  const { container, warnings } = await start({}, {
+    page: { launcherSize: 10n, launcherOffsetX: NaN, launcherOffsetY: Infinity, launcherMobileOffsetX: { nested: true } },
+  });
+  assert(!!container.querySelector('.osa-chat-button'), 'a BigInt and a NaN in the settings do not stop init()');
+  assert(warnings.some((w) => w.includes('launcherSize') && w.includes('10')), 'a BigInt is named as what it is, not thrown over');
+  assert(warnings.some((w) => w.includes('launcherOffsetX') && w.includes('NaN')), 'NaN is shown as NaN, not as null');
+  assert(warnings.some((w) => w.includes('launcherOffsetY') && w.includes('Infinity')), 'and Infinity as Infinity, with a warning of its own');
+}
+
+console.log('\na page\'s settings apply when the community config never arrives');
+{
+  const offline = async () => { throw new Error('offline'); };
+  const { window, container, q } = await start({}, {
+    fetch: offline,
+    page: { launcherPosition: 'bottom-left', launcherSize: 70, launcherOffsetY: 40 },
+  });
+  assert(container.classList.contains('osa-pos-left'), 'with the community config unreachable, the page\'s position still applies');
+  assertEqual(inline(container, '--osa-size-closed'), '70px', 'and its size');
+  assertEqual([px(window, q('.osa-chat-button'), 'left'), px(window, q('.osa-chat-button'), 'bottom')], [20, 40], 'the button is where the page put it');
+}
+
+console.log('\nthe pop-out has no launcher, so the position and sizes leave it alone');
+for (const launcher of ['bubble', 'capsule']) {
+  const { window, q } = await start({ launcher }, { page: { fullscreen: true, launcherPosition: 'bottom-left', launcherSize: 70, launcherOffsetX: 60, launcherOffsetY: 60 } });
+  const panel = window.getComputedStyle(q('.osa-chat-window'));
+  assertEqual([panel.left, panel.right, panel.top, panel.bottom, panel.width], ['0px', '0px', '0px', '0px', '100%'], `${launcher}: the pop-out's panel still fills its window`);
+  assertEqual(window.getComputedStyle(q('.osa-resize-handle')).display, 'none', `${launcher}: with no resize handle`);
+}
+
+console.log('\nunder reduced motion the launcher goes between its sizes at once');
+{
+  const { window, q } = await start({ launcher_size: 70 }, { reducedMotion: true });
+  assert(window.matchMedia('(prefers-reduced-motion: reduce)').matches, 'sanity: the device asks for reduced motion');
+  const style = window.getComputedStyle(q('.osa-chat-button'));
+  assertEqual([style.transitionDuration, style.transitionDelay], ['1ms', '0ms'], 'every transition on a bubble that shrinks, the resize included, is immediate');
+}
+
+console.log('\nthe open size is rounded, and the ends of every range are valid');
+{
+  const { container } = await start({ launcher_size: 72 });
+  assertEqual(inline(container, '--osa-size-open'), '58px', '80% of 72 is 57.6, rounded to 58, not cut to 57');
+  const capsule = await start({ launcher: 'capsule', launcher_size: 58 });
+  assertEqual([inline(capsule.container, '--osa-size-closed'), inline(capsule.container, '--osa-size-open')], ['58px', '46px'], 'a capsule\'s 58px alone opens at 46px, so naming it changes nothing');
+  const bubble = await start({ launcher_size: 56 });
+  assertEqual(inline(bubble.container, '--osa-size-open'), '45px', 'but a bubble\'s 56px alone opens at 45px: writing today\'s size makes it shrink');
+}
+{
+  const largest = await start({}, { page: { launcherSize: 96, launcherOffsetX: 200, launcherOffsetY: 200, launcherMobileOffsetX: 200, launcherMobileOffsetY: 200 } });
+  assertEqual([inline(largest.container, '--osa-size-closed'), inline(largest.container, '--osa-edge-x'), inline(largest.container, '--osa-edge-y-narrow')], ['96px', '200px', '200px'], '96px and 200px are valid');
+  assertEqual(largest.warnings.filter((w) => w.includes('launcher')), [], 'without a warning');
+  const smallest = await start({}, { page: { launcherSize: 44, launcherOpenSize: 44, launcherOffsetX: 0, launcherOffsetY: 0 } });
+  assertEqual([inline(smallest.container, '--osa-size-closed'), inline(smallest.container, '--osa-edge-x'), inline(smallest.container, '--osa-edge-y')], ['44px', '0px', '0px'], '44px and 0px are valid');
+  assertEqual(smallest.warnings.filter((w) => w.includes('launcher')), [], 'without a warning');
+}
+
+console.log('\nthe panel keeps inside the window however far the launcher is moved in');
+{
+  // happy-dom leaves min() and calc() alone, so this reads the numbers each minimum
+  // works out to; the Chrome check measures the panel itself.
+  const cases = [
+    { label: 'bubble, 100px in, on a 390px-wide window', widget: { launcher_offset_x: 100 }, width: 390, height: 800, minWidth: 290, minHeight: 350 },
+    { label: 'bubble, 200px up, on a 560px-tall window', widget: { launcher_offset_y: 200 }, width: 390, height: 560, minWidth: 300, minHeight: 560 - 200 - 56 - 14 },
+    { label: 'default, on a 320px-wide window', widget: {}, width: 320, height: 800, minWidth: 300, minHeight: 350 },
+    { label: 'default, on a 440px-tall window', widget: {}, width: 1024, height: 440, minWidth: 300, minHeight: 350 },
+    { label: 'capsule, 200px in, 96px wide, on a 601px-wide window', widget: { launcher: 'capsule', launcher_size: 96, launcher_open_size: 96, launcher_offset_x: 200 }, width: 601, height: 800, minWidth: 601 - 200 - 96 - 19, minHeight: 350 },
+  ];
+  for (const { label, widget, width, height, minWidth, minHeight } of cases) {
+    const { window, q } = await start(widget, { innerWidth: width, innerHeight: height });
+    const panel = window.getComputedStyle(q('.osa-chat-window'));
+    assertEqual([cssNumber(panel.minWidth), cssNumber(panel.minHeight)], [minWidth, minHeight], `${label}: the panel's minimums are ${minWidth} by ${minHeight}`);
+  }
+}
+
+console.log('\nthe capsule\'s circles are in the order they are seen in, so Tab follows the eye');
+{
+  const at = async (position, width) => {
+    const { window, q } = await start({ launcher: 'capsule', launcher_position: position }, { innerWidth: width });
+    return { window, capsule: q('.osa-launcher-capsule') };
+  };
+  assertEqual(capsuleOrder((await at('bottom-right', 1024)).capsule), ['hpc', 'notebook', 'chat'], 'a column on the right: top to bottom');
+  assertEqual(capsuleOrder((await at('bottom-left', 1024)).capsule), ['hpc', 'notebook', 'chat'], 'a column on the left: top to bottom, the chat circle at the bottom');
+  assertEqual(capsuleOrder((await at('bottom-right', 390)).capsule), ['hpc', 'notebook', 'chat'], 'a row on the right: left to right, ending at the chat circle on the anchor');
+  assertEqual(capsuleOrder((await at('bottom-left', 390)).capsule), ['chat', 'notebook', 'hpc'], 'a row on the left: left to right, starting at the chat circle on the anchor');
+  assertEqual(capsuleOrder((await at('bottom-left', 600)).capsule), ['chat', 'notebook', 'hpc'], '600px wide is still the row');
+  assertEqual(capsuleOrder((await at('bottom-left', 601)).capsule), ['hpc', 'notebook', 'chat'], '601px wide is the column');
+
+  // Crossing the breakpoint with the window open puts them in the other order.
+  const { window, q } = await start({ launcher: 'capsule', launcher_position: 'bottom-left' }, { innerWidth: 1024 });
+  const capsule = q('.osa-launcher-capsule');
+  const chat = q('.osa-launcher-capsule .osa-chat-button');
+  const listeners = [];
+  window.happyDOM.setViewport({ width: 390, height: 800 });
+  assertEqual(capsuleOrder(capsule), ['chat', 'notebook', 'hpc'], 'narrowing the window puts the chat circle first');
+  window.happyDOM.setViewport({ width: 1024, height: 800 });
+  assertEqual(capsuleOrder(capsule), ['hpc', 'notebook', 'chat'], 'and widening it puts it last again');
+  assert(capsule.contains(chat) && capsule.firstElementChild.classList.contains('osa-capsule-indicator') && listeners.length === 0, 'the indicator stays first, behind the circles, and nothing was rebuilt');
+}
+
+console.log('\nhovered at rest, the anchored corner holds still on the left and for the bubble');
+{
+  const hoverRule = (window, selector) => {
+    for (const sheet of window.document.styleSheets) {
+      for (const rule of sheet.cssRules) if (rule.selectorText === selector) return rule.style;
+    }
+    return null;
+  };
+  const cases = [
+    { label: 'a bubble on the right', widget: { launcher_size: 80 }, rule: '.osa-chat-widget.osa-launcher-resizes:not(.chat-open) > .osa-chat-button:hover', open: 64, closed: 80, side: -1 },
+    { label: 'a bubble on the left', widget: { launcher_size: 80, launcher_position: 'bottom-left' }, rule: '.osa-chat-widget.osa-launcher-resizes:not(.chat-open) > .osa-chat-button:hover', open: 64, closed: 80, side: 1 },
+    { label: 'a capsule on the left', widget: { launcher: 'capsule', launcher_position: 'bottom-left' }, rule: '.osa-chat-widget:not(.chat-open) .osa-launcher-capsule .osa-chat-button:hover', open: 46, closed: 58, side: 1 },
+  ];
+  for (const { label, widget, rule, open, closed, side } of cases) {
+    const { window, container } = await start(widget);
+    const hover = hoverRule(window, rule);
+    assert(!!hover, `${label}: there is a rule for the resting circle hovered`);
+    if (!hover) continue;
+    const widgetStyle = window.getComputedStyle(container);
+    const scale = cssNumber(withVars(hover.getPropertyValue('scale'), widgetStyle));
+    const shift = cssNumbers(withVars(hover.getPropertyValue('translate'), widgetStyle));
+    assertEqual(hover.getPropertyValue('transform'), 'none', `${label}: the shared scale(1.05) around the center gives way`);
+    assert(Math.abs(scale - (closed / open) * 1.05) < 1e-9, `${label}: it grows to 5% more of its resting size (${scale})`);
+    const growth = open * (scale - 1) / 2;
+    assert(shift.length === 2 && Math.abs(shift[0] - side * growth) < 1e-9 && Math.abs(shift[1] + growth) < 1e-9,
+      `${label}: with the translate that holds its corner still, ${side < 0 ? 'right' : 'left'} and bottom (${shift.join(' ')})`);
+  }
 }
 
 console.log('\nthe reduced-motion block covers the bubble\'s grow-and-shrink');

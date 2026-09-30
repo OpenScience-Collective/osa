@@ -605,7 +605,7 @@ console.log('\nthe circles are 46px in the capsule, and a bubble\'s chat button 
   const resting = window.getComputedStyle(chatButton);
   const restingScale = cssNumber(resting.scale);
   const restingShift = cssNumbers(resting.translate);
-  assert(Math.abs(46 * restingScale - 58) < 0.001 && restingShift.every((v) => Math.abs(v + 6) < 0.001),
+  assert(Math.abs(46 * restingScale - 58) < 0.001 && restingShift.length === 2 && restingShift.every((v) => Math.abs(v + 6) < 0.001),
     `closed: the chat circle is drawn at 58px, its corner held (scale ${restingScale}, translate ${resting.translate})`);
   assertEqual([resting.width, resting.height], ['46px', '46px'], 'closed: from the same 46px box, so nothing else in the capsule moves');
   assert(Math.abs(23 * (restingScale - 1) + restingShift[0]) < 0.001,

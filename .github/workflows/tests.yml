@@ -101,6 +101,7 @@ jobs:
       # opening and closing the panel. Serves the widget itself; needs no other server.
       - name: Check the widget's launcher geometry in headless Chrome
         if: matrix.python-version == '3.12'
+        timeout-minutes: 8
         run: bun frontend/browser-harness/launcher-geometry-check.mjs
 
       # The pop-out under the harness's copy of nemar.org's policy, with no

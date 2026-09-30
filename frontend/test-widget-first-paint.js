@@ -196,7 +196,7 @@ console.log('\na later load is drawn in the remembered look before the config ar
   assertEqual(restingButton.width, '46px', 'laid out at the capsule\'s 46px, never the bubble\'s 56px first');
   const [restingScale] = cssNumbers(restingButton.scale);
   const restingShift = cssNumbers(restingButton.translate);
-  assert(Math.abs(46 * restingScale - 58) < 0.001 && restingShift.every((v) => Math.abs(v + 6) < 0.001),
+  assert(Math.abs(46 * restingScale - 58) < 0.001 && restingShift.length === 2 && restingShift.every((v) => Math.abs(v + 6) < 0.001),
     `and drawn at its resting 58px from the first frame (#490): scale ${restingScale}, translate ${restingButton.translate}`);
   assertEqual(container.style.getPropertyValue('--osa-primary'), '#5bbad5', 'in the remembered theme color');
   assertEqual(container.style.getPropertyValue('--osa-on-primary'), '#0b1f2a', 'and its text color');
@@ -457,6 +457,7 @@ console.log('\na remembered launcher place and size are drawn before the config 
     launcher_open_size: 50,
     launcher_offset_x: 30,
     launcher_offset_y: 44,
+    launcher_mobile_offset_x: 12,
     launcher_mobile_offset_y: 90,
   };
   const before = { [MEMORY_KEY]: JSON.stringify({ apiEndpoint: API, widget: remembered }) };
