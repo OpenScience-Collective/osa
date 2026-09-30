@@ -54,6 +54,16 @@ widget:
   # "Ask me about NEMAR" (the greeting stays behind the click).
   launcher: capsule
   launcher_label: "Explore NEMAR"
+  # The launcher's place and size (#553), written out at the values it has always had:
+  # bottom right, 20px from the window's edges, 58px closed and 46px while the panel is open.
+  # They are here as the worked example of the fields; change a number here to move or
+  # resize it, and nothing else needs to follow (the panel, the label and the capsule's
+  # circles do). The floor is 44px, and the open size cannot exceed the closed one.
+  launcher_position: bottom-right
+  launcher_size: 58
+  launcher_open_size: 46
+  launcher_offset_x: 20
+  launcher_offset_y: 20
   # nemar.org has light and dark themes: the widget follows the device, and follows
   # the reader's own choice from nemar.org's theme button once the site passes it on
   # with setColorScheme (a website change, not yet made).

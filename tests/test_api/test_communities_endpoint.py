@@ -121,6 +121,38 @@ class TestCommunitiesEndpoint:
         }
         assert others and all(value == (None, None) for value in others.values()), others
 
+    def test_only_nemar_sets_launcher_geometry(self) -> None:
+        """NEMAR names its launcher's sizes and offsets (#553), at the values the capsule
+        has always had; every other community sets none, so the API sends none and their
+        widgets keep the defaults. bottom-right is the default position and never sent."""
+        client = _create_test_client()
+        data = client.get("/communities").json()
+
+        by_id = {community["id"]: community["widget"] for community in data}
+        geometry = (
+            "launcher_position",
+            "launcher_size",
+            "launcher_open_size",
+            "launcher_offset_x",
+            "launcher_offset_y",
+            "launcher_mobile_offset_x",
+            "launcher_mobile_offset_y",
+        )
+        nemar = {key: by_id["nemar"].get(key) for key in geometry}
+        assert nemar == {
+            "launcher_position": None,
+            "launcher_size": 58,
+            "launcher_open_size": 46,
+            "launcher_offset_x": 20,
+            "launcher_offset_y": 20,
+            "launcher_mobile_offset_x": None,
+            "launcher_mobile_offset_y": None,
+        }, nemar
+        others = {
+            cid: [key for key in geometry if key in w] for cid, w in by_id.items() if cid != "nemar"
+        }
+        assert others and all(sent == [] for sent in others.values()), others
+
     def test_only_nemar_has_dataset_questions(self) -> None:
         """NEMAR is the only community with dataset-page questions (#477); the API omits
         the field for every other community, so their widgets keep the general list."""
