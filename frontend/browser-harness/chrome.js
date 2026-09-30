@@ -23,7 +23,6 @@
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { startServer } from './serve.js';
 
 // A cold run downloads Pyodide, numpy and matplotlib, and SciPy for NEMAR's runtime, boots three runtimes and
 // waits out a 10-second deadline once; the control waits out its 45-second boot
@@ -341,6 +340,9 @@ async function main() {
     return 0;
   }
 
+  // Loaded here, not at the top: serve.js needs the `pyodide` package, which only the frontend
+  // job installs, and the tests of `launch` import this file without it.
+  const { startServer } = await import('./serve.js');
   const server = await startServer({ port: 0 });
   const profileDir = mkdtempSync(join(tmpdir(), 'osa-harness-chrome-'));
   let chrome = null;
