@@ -8446,7 +8446,11 @@
               console.error('[OSA] Failed to save history:', saveError);
             }
 
-            throw new Error(`Backend streaming error: ${errorMsg}`);
+            // Marked as the server's, so nothing downstream reads a word in its message
+            // (timeout, JSON) as a failure of the stream or the page.
+            const reported = new Error(`Backend streaming error: ${errorMsg}`);
+            reported.serverReported = true;
+            throw reported;
           } else if (event.event) {
             // Unknown event type - log for debugging
             console.warn('[OSA] Unknown SSE event type:', event.event, event);
@@ -8497,6 +8501,11 @@
       const shown = compose(accumulatedContent);
       const ran = messages[messageIndex] && messages[messageIndex].executions && messages[messageIndex].executions.length;
       if (hasVisibleText(shown) || ran) {
+        // An error event from the server was already written into the reply, in the
+        // server's words (see there): only a failure of the stream itself is described
+        // here, never a server message that happens to contain "timeout".
+        if (error.serverReported) throw error;
+
         const errorType = error.name || 'Error';
         let userMessage = 'Stream interrupted';
 
@@ -8504,9 +8513,6 @@
           userMessage = 'Connection timeout';
         } else if (error.message && error.message.includes('timeout')) {
           userMessage = 'Stream timeout';
-        } else if (error.message && error.message.includes('Backend streaming error')) {
-          // Backend error already handled above, don't modify message
-          throw error;
         }
 
         messages[messageIndex].content = (shown ? `${shown}\n\n` : '') + `_[${userMessage}]_`;
@@ -8696,14 +8702,16 @@
       // Categorize error for better user messaging
       let userMessage = 'Failed to get response';
 
-      if (error.name === 'AbortError') {
+      if (error.serverReported) {
+        // The server's own words, as it sent them: checked first, so a word in them
+        // (JSON, Stream, fetch) is not taken for a failure of the page's own.
+        userMessage = error.message.replace('Backend streaming error: ', '');
+      } else if (error.name === 'AbortError') {
         userMessage = 'Request timed out. Please try again.';
       } else if (error.name === 'TypeError' && error.message.includes('fetch')) {
         userMessage = 'Network error. Please check your connection.';
       } else if (error.message && error.message.includes('JSON')) {
         userMessage = 'Invalid response from server. Please try again.';
-      } else if (error.message && error.message.includes('Backend streaming error')) {
-        userMessage = error.message.replace('Backend streaming error: ', '');
       } else if (error.message && error.message.includes('Stream')) {
         userMessage = 'Connection interrupted. Please try again.';
       } else if (error.message) {

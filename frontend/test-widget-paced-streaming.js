@@ -1414,6 +1414,50 @@ console.log('\na cut-off reply with no text and no run record is kept, and says 
   assert(!INCOMPLETE.test(lastReplyText(container)), 'and, having no text at all, does not call nothing incomplete');
 }
 
+console.log('\nan error event names itself as the server\'s: a word in it does not turn it into a stream timeout');
+{
+  const message = 'The model request hit its timeout after 30 s';
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const started = api.getMessages().length;
+  let error = null;
+  await api.handleStreamingResponse(sse([
+    { event: 'content', content: REPLY },
+    { event: 'error', message },
+  ]), container).catch((err) => { error = err; });
+  assert(error && error.message.includes(message), 'the error raised is the server\'s');
+  const content = api.getMessages()[started].content;
+  assert(content.includes(message), 'the reply says what the server said');
+  assert(!/Stream timeout/.test(content), 'and does not claim the stream timed out');
+}
+
+console.log('\na failure of the stream itself that says timeout still reads as a stream timeout');
+{
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const started = api.getMessages().length;
+  const encoder = new TextEncoder();
+  const response = new Response(new ReadableStream({
+    async start(controller) {
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ event: 'content', content: REPLY })}\n\n`));
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      controller.error(new Error('network timeout'));
+    },
+  }), { headers: { 'content-type': 'text/event-stream' } });
+  await api.handleStreamingResponse(response, container).catch(() => {});
+  const content = api.getMessages()[started].content;
+  assert(content.startsWith(REPLY) && content.includes('_[Stream timeout]_'), 'the text that arrived, then the note that the stream timed out');
+}
+
+console.log('\nthe banner for a server error is the server\'s own words, whatever words they contain');
+for (const message of ['The tool arguments were not valid JSON', 'Stream closed by the upstream provider', 'Gateway timeout from the model host']) {
+  const { window } = loadWidget({ chat: () => sse([{ event: 'error', message }]) });
+  const container = window.document.querySelector('.osa-chat-widget');
+  send(window, container, 'A question');
+  await waitFor(() => settled(container), 'the send settles');
+  assertEqual(container.querySelector('.osa-error').textContent, message, `"${message}" is shown as sent`);
+}
+
 console.log('\nthe non-streamed fallback shows the warnings the response carries, as a stream does');
 {
   const warn = console.warn;
