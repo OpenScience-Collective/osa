@@ -1394,6 +1394,26 @@ console.log('\nthe note waits for the end of the reveal: a reply still being dra
   assert(INCOMPLETE.test(lastReplyText(container)) && api.getMessages()[started].cutOff === true, 'it is there once the reply is whole');
 }
 
+console.log('\na cut-off reply with no text and no run record is kept, and says why');
+{
+  // A reply whose only run was a read of an earlier run's output (get_full_output) has
+  // no record in `executions`: answerToolRequest writes one only for code it ran.
+  const { window, api } = loadWidget();
+  const container = window.document.querySelector('.osa-chat-widget');
+  const first = await api.handleStreamingResponse(sse([
+    { event: 'tool_request', call_id: 'c1', tool: 'get_full_output', args: { call_id: 'earlier' }, content: '' },
+  ]), container);
+  await api.handleStreamingResponse(sse([
+    { event: 'warning', code: 'cut_off', message: CUT_OFF_MESSAGE },
+    { event: 'done', content: '' },
+  ]), container, { messageIndex: first.messageIndex });
+  const message = api.getMessages()[first.messageIndex];
+  assert(message && message.cutOff === true, 'the reply is still there, marked');
+  assert(/length limit/.test(lastReplyText(container)), 'and what the reader sees is the reason, not a missing bubble');
+  assert(/ask (it|a narrower)/i.test(lastReplyText(container)), 'with what to do next');
+  assert(!INCOMPLETE.test(lastReplyText(container)), 'and, having no text at all, does not call nothing incomplete');
+}
+
 console.log('\n' + '='.repeat(60));
 console.log(`Total: ${passed + failed} checks, passed: ${passed}, failed: ${failed}`);
 process.exit(failed === 0 ? 0 : 1);

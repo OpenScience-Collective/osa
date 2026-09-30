@@ -7877,7 +7877,13 @@
     // A reply that ran code is kept even when it ends with no text: what ran,
     // and any figure it drew, is part of the answer the reader asked for.
     const ranCode = Array.isArray(message.executions) && message.executions.length > 0;
-    if (hasVisibleText(finalContent) || ranCode) {
+    // So is a reply the model was cut off in, which has a note saying so to show. It
+    // can have neither text nor a record of code: a reply whose only run read an
+    // earlier run's output (get_full_output) has none, since answerToolRequest records
+    // only code that ran, and the server counts that run as code (it sends a warning
+    // and this done, not an error). Dropping it would leave the warning banner, gone
+    // in seconds, as the only word of why nothing came back.
+    if (hasVisibleText(finalContent) || ranCode || message.cutOff === true) {
       messageList[messageIndex] = {
         ...message,
         content: finalContent,
