@@ -724,7 +724,17 @@ class TestCommunityConfigOfferedModels:
         for entry in data["offered_models"]:
             assert normalize_model(entry["id"]) == entry["id"]
 
-    def test_default_model_is_one_of_the_offered_models(self, client: TestClient) -> None:
+    def test_default_model_is_one_of_the_offered_models(
+        self, client: TestClient, monkeypatch
+    ) -> None:
+        """On a deployment that serves the Bedrock models: a community whose default is
+        one (HED runs GPT-6 Luna) is otherwise listed without it, and the request falls
+        back to the deployment's Claude default."""
+        from src.api.config import get_settings
+
+        monkeypatch.setattr(get_settings(), "bedrock_api_key", "a-bedrock-key")
+        monkeypatch.setattr(get_settings(), "anthropic_api_key", "a-platform-key")
+
         response = client.get("/hed/")
         data = response.json()
 
