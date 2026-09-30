@@ -24,6 +24,11 @@ from typing import Any, Literal, get_args
 # Default offered model.
 DEFAULT_MODEL = "claude-haiku-4-5"
 
+# The platforms a model can be reached on: the Claude Platform on AWS ("anthropic"),
+# Amazon Bedrock and OpenRouter. The one spelling every module uses, for a request's
+# provider and for the reasoning levels that differ between platforms.
+ProviderName = Literal["anthropic", "bedrock", "openrouter"]
+
 # What langchain-aws writes to ``response_metadata["model_provider"]`` on a message
 # a Bedrock model produced. A conversation can switch models between requests, and
 # a model has to be able to tell which turns in the history were written by another
@@ -205,7 +210,9 @@ def openrouter_model_id(slug: str | None) -> str | None:
 # they accept is 1, the implicit default when the field is simply omitted.
 # GPT-6 Luna rejects `temperature` and `topP` the same way (Bedrock: "This model
 # doesn't support the temperature field"); gpt-oss-120b and Qwen3 Next accept them.
-SAMPLING_MODELS = {"claude-haiku-4-5", "openai.gpt-oss-120b", "qwen.qwen3-next-80b-a3b"}
+SAMPLING_MODELS: frozenset[str] = frozenset(
+    {"claude-haiku-4-5", "openai.gpt-oss-120b", "qwen.qwen3-next-80b-a3b"}
+)
 
 # Reasoning effort (issue #545). One provider-neutral scale, lowest to highest, that a
 # community sets once (``reasoning_effort`` in its config.yaml) and that each provider
@@ -215,7 +222,7 @@ SAMPLING_MODELS = {"claude-haiku-4-5", "openai.gpt-oss-120b", "qwen.qwen3-next-8
 # The tuple is derived from the Literal, so a level added to one cannot be missing from the
 # other (the config would load a level that ``resolve_reasoning_effort`` then refuses).
 ReasoningEffort = Literal["none", "low", "medium", "high", "xhigh", "max"]
-REASONING_SCALE: tuple[str, ...] = get_args(ReasoningEffort)
+REASONING_SCALE: tuple[ReasoningEffort, ...] = get_args(ReasoningEffort)
 
 # The levels each model accepts, in scale order. A level a model does not accept is never
 # sent: ``resolve_reasoning_effort`` clamps to the nearest one it does. The levels are
@@ -228,7 +235,7 @@ REASONING_SCALE: tuple[str, ...] = get_args(ReasoningEffort)
 # its levels are the ones ``THINKING_BUDGET_TOKENS`` gives a budget (none is no thinking),
 # capped at ``high`` because a larger budget leaves too little of ``max_tokens`` for the
 # answer.
-REASONING_LEVELS: dict[str, tuple[str, ...]] = {
+REASONING_LEVELS: dict[str, tuple[ReasoningEffort, ...]] = {
     "claude-sonnet-5-5": ("none", "low", "medium", "high"),
     "claude-haiku-4-5": ("none", "low", "medium", "high"),
     "openai.gpt-6-luna": ("none", "low", "medium", "high", "xhigh", "max"),
@@ -250,10 +257,7 @@ THINKING_BUDGET_TOKENS: dict[str, dict[str, int]] = {
 # tool-using turn take 15 to 50 seconds before its first word, and at ``xhigh`` and ``max``
 # it answered with no documentation search in the median of three runs on one question, so
 # no citations. A model with no levels (Qwen3 Next) is sent nothing.
-DEFAULT_REASONING_EFFORT = "high"
-
-# The platforms a model can be reached on, for the levels that differ between them.
-ReasoningProvider = Literal["anthropic", "bedrock", "openrouter"]
+DEFAULT_REASONING_EFFORT: ReasoningEffort = "high"
 
 # Models whose reasoning OpenRouter does not let a request turn off (its model metadata
 # marks it mandatory and the docs say not to send ``effort: none``), so ``none`` is not
@@ -331,8 +335,8 @@ def normalize_model(model: str | None) -> str:
 
 
 def reasoning_levels(
-    model: str | None, provider: ReasoningProvider | None = None
-) -> tuple[str, ...]:
+    model: str | None, provider: ProviderName | None = None
+) -> tuple[ReasoningEffort, ...]:
     """The reasoning levels a model accepts, lowest to highest; empty when it has none.
 
     Args:
@@ -356,8 +360,8 @@ def reasoning_levels(
 
 
 def resolve_reasoning_effort(
-    model: str | None, requested: str | None, provider: ReasoningProvider | None = None
-) -> str | None:
+    model: str | None, requested: str | None, provider: ProviderName | None = None
+) -> ReasoningEffort | None:
     """The level a model will actually run at for a requested one, or None to send none.
 
     A level the model accepts is used as asked. One above everything it accepts is
@@ -395,8 +399,8 @@ def resolve_reasoning_effort(
 
 
 def effective_reasoning_effort(
-    model: str | None, requested: str | None, provider: ReasoningProvider
-) -> str | None:
+    model: str | None, requested: str | None, provider: ProviderName
+) -> ReasoningEffort | None:
     """The level to send a model on a platform: the community's, else ``high``.
 
     Args:

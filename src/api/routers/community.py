@@ -83,6 +83,7 @@ from src.core.services.anthropic_models import (
     BEDROCK_MODELS,
     DEFAULT_MODEL,
     OPENROUTER_MODEL_IDS,
+    ProviderName,
     is_bedrock_model,
     openrouter_model_id,
 )
@@ -1047,7 +1048,7 @@ class ProviderChoice:
         key_source: "byok", "community", or "platform".
     """
 
-    provider: Literal["anthropic", "openrouter", "bedrock"]
+    provider: ProviderName
     api_key: str | None
     key_source: Literal["byok", "community", "platform"]
 
@@ -1322,7 +1323,7 @@ def _to_openrouter_model_via_canonical(model: str) -> str | None:
 def _select_model(
     community_info: AssistantInfo,
     requested_model: str | None,
-    provider: Literal["anthropic", "openrouter", "bedrock"],
+    provider: ProviderName,
     has_byok: bool,
 ) -> tuple[str, str | None]:
     """Select the model (and, on OpenRouter, its provider-routing hint).
@@ -1604,7 +1605,7 @@ def log_unserved_bedrock_defaults(settings: Settings | None = None) -> list[str]
     return logged
 
 
-def _offered_model_id(provider: str, model: str) -> str | None:
+def _offered_model_id(provider: ProviderName, model: str) -> str | None:
     """The ``OFFERED_MODELS`` id a provider's model id stands for, or None if unknown.
 
     The Anthropic and Bedrock providers are handed the offered id itself; OpenRouter is
