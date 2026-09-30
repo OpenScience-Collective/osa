@@ -315,6 +315,19 @@ Then it opens and closes the panel at 1440px and again at 390px wide, where the 
 it must go from its resting 58px to 46px and back through frames in between, keep its bottom-right corner 20px from the window's edges in every frame, and leave the panel and the indicator where they were before the change.
 It is what CI runs, beside the light and dark check; pass a running server's base URL instead of `--serve` to check that one.
 
+### The launcher's position, size and offsets
+
+```bash
+bun frontend/browser-harness/launcher-geometry-check.mjs
+```
+
+checks what a reader sees of `launcher_position`, `launcher_size`, `launcher_open_size` and the offsets (#553).
+It serves the real widget and a stub community API itself, so nothing else needs to run.
+For each of twelve scenarios (the bubble and the capsule, each corner, sizes, offsets, and the phone offsets at 1440px and 390px wide) a fresh tab samples the chat circle on every animation frame across a click:
+its width must go from the closed size to the open one and back through frames in between, and its corner at the anchor must stay exactly the configured distance from the window's edges in every frame.
+It then checks the open panel's place, that the capsule's indicator is exactly behind the chat circle and its other circles are the open size, the collapsed label's 10px gap and vertical center, and, with a real mouse, that dragging the panel's resize handle away from its anchor widens the panel on either side.
+It is what CI runs, beside the first-paint check.
+
 Measured 2026-09-24 in Chrome 153:
 
 - before the fix, on test.nemar.org, sampled every 50 ms: the 56px default bubble in `#2563eb` for about 450 ms on every load, a reload included, then the capsule, fading to NEMAR's teal over another 250 ms

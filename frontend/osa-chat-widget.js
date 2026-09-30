@@ -64,6 +64,21 @@
     // Tooltip text beside the collapsed launcher. null keeps the hardcoded
     // "Ask me about <title>" every community has always had.
     launcherLabel: null,
+    // Where the launcher sits and how big it is (#553). 'bottom-right' is where it has
+    // always been; 'bottom-left' moves it, its tooltips and the panel to the other side.
+    // Sizes are pixel diameters, closed and open: the launcher shrinks to the open size
+    // while the panel is open, with the capsule's animation. Null keeps today's: 56 for a
+    // bubble that does not shrink, 58 for a capsule that shrinks to 46. Setting only the
+    // closed size opens at 80% of it. Offsets are pixel distances from the side and
+    // bottom edges (null keeps 20), and the mobile pair replaces them at 600px wide and
+    // narrower. See LAUNCHER_LIMITS for the ranges; a value outside one is ignored.
+    launcherPosition: 'bottom-right',
+    launcherSize: null,
+    launcherOpenSize: null,
+    launcherOffsetX: null,
+    launcherOffsetY: null,
+    launcherMobileOffsetX: null,
+    launcherMobileOffsetY: null,
     // The widget's appearance (#469): 'light' (every community's default), 'auto'
     // (follow the reader's device), or 'dark'. The community config offers 'light'
     // or 'auto'; a host page with its own theme switch passes the reader's choice
@@ -101,6 +116,28 @@
     // handed this as well.
     widgetScriptUrl: null
   };
+
+  // The launcher's limits and defaults, in pixels (#553): the same numbers as
+  // LAUNCHER_SIZE_MIN, LAUNCHER_SIZE_MAX, LAUNCHER_OFFSET_MAX and DEFAULT_LAUNCHER_SIZE in
+  // src/core/config/community.py, which the server checks a community's values against;
+  // tests/test_frontend/test_widget_drift.py keeps the two from drifting. The floor is
+  // WCAG 2.2's enhanced target size (2.5.5). openRatio is what the open size is of the
+  // closed one when a community sets only the closed size.
+  const LAUNCHER_LIMITS = {
+    sizeMin: 44, sizeMax: 96, offsetMax: 200, bubbleSize: 56, capsuleSize: 58, openRatio: 0.8
+  };
+  const LAUNCHER_POSITIONS = ['bottom-right', 'bottom-left'];
+  // The community config's field for each CONFIG key (the keys a page sets with
+  // setConfig, in camelCase).
+  const LAUNCHER_GEOMETRY_KEYS = [
+    ['launcher_position', 'launcherPosition'],
+    ['launcher_size', 'launcherSize'],
+    ['launcher_open_size', 'launcherOpenSize'],
+    ['launcher_offset_x', 'launcherOffsetX'],
+    ['launcher_offset_y', 'launcherOffsetY'],
+    ['launcher_mobile_offset_x', 'launcherMobileOffsetX'],
+    ['launcher_mobile_offset_y', 'launcherMobileOffsetY']
+  ];
 
   // Log environment for debugging
   if (isDev) {
@@ -226,7 +263,7 @@
   const DISPLAY_KEYS = ['title', 'initialMessage', 'placeholder', 'suggestedQuestions',
     'datasetSuggestedQuestions', 'themeColor',
     'userBubbleColor', 'themeTextColor', 'accentColor', 'userBubbleTextColor', 'logo', 'launcher',
-    'launcherLabel', 'colorScheme'];
+    'launcherLabel', 'colorScheme', ...LAUNCHER_GEOMETRY_KEYS.map(([, key]) => key)];
   // The header avatar as createWidget draws it, for a config that drops its logo.
   let defaultAvatarHtml = null;
   // Browser code execution (#431). browserToolsReady is assigned, to a pending
@@ -377,6 +414,30 @@
       --osa-user-text: #ffffff;
       --osa-assistant-bg: #f3f4f6;
       --osa-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+      /* The launcher's geometry (#553). applyLauncherGeometry sets --osa-size-closed,
+         --osa-size-open, --osa-closed-scale, --osa-edge-x and --osa-edge-y (and the
+         -narrow twins of the last two) inline, and only for what a community configures,
+         so each falls back here to what the launcher has always been: an unconfigured
+         widget is drawn exactly as it was before these existed.
+           --osa-closed / --osa-open  the drawn size with the panel closed / open. The
+                                      launcher's box is always the open size; closed, it
+                                      is drawn larger with scale and translate, so
+                                      nothing reflows while it grows and shrinks.
+           --osa-x / --osa-y          the distance from the side and bottom edges.
+           --osa-side                 -1 anchored right, 1 anchored left (osa-pos-left).
+           --osa-grow                 how far the drawn circle reaches past its box on
+                                      each side, which the translate takes back so the
+                                      corner at the anchor holds still.
+           --osa-panel-gap            room between the open launcher and the panel. */
+      --osa-closed: var(--osa-size-closed, 56px);
+      --osa-open: var(--osa-size-open, 56px);
+      --osa-scale: var(--osa-closed-scale, 1);
+      --osa-x: var(--osa-edge-x, 20px);
+      --osa-y: var(--osa-edge-y, 20px);
+      --osa-side: -1;
+      --osa-grow: calc(var(--osa-open) * (var(--osa-scale) - 1) / 2);
+      --osa-grow-hover: calc(var(--osa-open) * (var(--osa-scale) * 1.05 - 1) / 2);
+      --osa-panel-gap: 14px;
       /* The widget draws its own light (or, with .osa-dark, dark) surfaces, so the
          browser's own parts (scrollbars, native inputs, checkboxes) have to match
          them rather than a dark host page's color-scheme (#469). */
@@ -386,12 +447,38 @@
       line-height: 1.5;
     }
 
+    /* The capsule's chat circle is 58px closed and 46px open, and the panel sits 24px
+       above it (the bubble's is 56px throughout, 14px below the panel). 58 / 46 is a
+       plain number, so it reaches scale with no division of lengths. */
+    .osa-chat-widget.osa-capsule {
+      --osa-closed: var(--osa-size-closed, 58px);
+      --osa-open: var(--osa-size-open, 46px);
+      --osa-scale: var(--osa-closed-scale, calc(58 / 46));
+      --osa-panel-gap: 24px;
+    }
+
+    /* Anchored on the left, the launcher grows toward the right, so the translate that
+       holds its corner still points the other way. */
+    .osa-chat-widget.osa-pos-left {
+      --osa-side: 1;
+    }
+
+    /* A phone's own controls often sit at the bottom of the screen: the mobile offsets
+       (launcher_mobile_offset_x/y) apply at this width and narrower, each falling back
+       to the desktop one. The capsule's layout turns to a row at the same width. */
+    @media (max-width: 600px) {
+      .osa-chat-widget {
+        --osa-x: var(--osa-edge-x-narrow, var(--osa-edge-x, 20px));
+        --osa-y: var(--osa-edge-y-narrow, var(--osa-edge-y, 20px));
+      }
+    }
+
     .osa-chat-button {
       position: fixed;
-      bottom: 20px;
-      right: 20px;
-      width: 56px;
-      height: 56px;
+      bottom: var(--osa-y);
+      right: var(--osa-x);
+      width: var(--osa-open);
+      height: var(--osa-open);
       border-radius: 50%;
       background: var(--osa-primary);
       color: var(--osa-on-primary);
@@ -411,16 +498,39 @@
     }
 
     .osa-chat-button svg {
-      width: 24px;
-      height: 24px;
+      width: calc(var(--osa-open) * 24 / 56);
+      height: calc(var(--osa-open) * 24 / 56);
+    }
+
+    /* A bubble whose community sets a closed size larger than its open one
+       (applyLauncherGeometry adds osa-launcher-resizes) does what the capsule's chat
+       circle does (#490): closed, it is drawn larger than its box, with the corner at
+       the anchor held still; open, it settles to the box. Hovered, it grows 5% more
+       through the same scale and translate rather than the shared transform, which
+       would grow it around its center and push the corner out. */
+    .osa-chat-widget.osa-launcher-resizes > .osa-chat-button {
+      transition: transform 0.2s, background 0.2s, scale 280ms cubic-bezier(0.22, 1, 0.36, 1),
+        translate 280ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .osa-chat-widget.osa-launcher-resizes:not(.chat-open) > .osa-chat-button {
+      scale: var(--osa-scale);
+      translate: calc(var(--osa-side) * var(--osa-grow)) calc(-1 * var(--osa-grow));
+    }
+
+    .osa-chat-widget.osa-launcher-resizes:not(.chat-open) > .osa-chat-button:hover {
+      transform: none;
+      scale: calc(var(--osa-scale) * 1.05);
+      translate: calc(var(--osa-side) * var(--osa-grow-hover)) calc(-1 * var(--osa-grow-hover));
     }
 
     /* Tooltip that appears next to chat button on initial page load
-       Auto-hides after 8 seconds or when chat is opened */
+       Auto-hides after 8 seconds or when chat is opened. It sits 10px beyond the
+       launcher as drawn closed, centered on it (the tooltip is about 40px tall). */
     .osa-chat-tooltip {
       position: fixed;
-      bottom: 28px;
-      right: 86px;
+      bottom: calc(var(--osa-y) + (var(--osa-closed) - 40px) / 2);
+      right: calc(var(--osa-x) + var(--osa-closed) + 10px);
       background: var(--osa-bg);
       color: var(--osa-text);
       padding: 10px 14px;
@@ -457,6 +567,32 @@
       display: none;
     }
 
+    /* The launcher in the bottom-left corner (launcher_position, #553): the button and
+       its tooltip mirror to the left side, the tooltip's arrow and slide-in included.
+       Every rule is scoped under osa-pos-left, a class the widget adds only for
+       bottom-left, so a bottom-right widget never matches one. */
+    .osa-chat-widget.osa-pos-left > .osa-chat-button {
+      right: auto;
+      left: var(--osa-x);
+    }
+
+    .osa-chat-widget.osa-pos-left .osa-chat-tooltip {
+      right: auto;
+      left: calc(var(--osa-x) + var(--osa-closed) + 10px);
+      transform: translateX(-10px);
+    }
+
+    .osa-chat-widget.osa-pos-left .osa-chat-tooltip.visible {
+      transform: translateX(0);
+    }
+
+    .osa-chat-widget.osa-pos-left .osa-chat-tooltip::after {
+      right: auto;
+      left: -6px;
+      border-left: none;
+      border-right: 6px solid var(--osa-bg);
+    }
+
     /* The three-icon capsule launcher (#436). Every selector here is scoped under
        .osa-launcher-capsule, an element that exists ONLY when launcher: capsule
        converts the DOM (see applyLauncherMode): a bubble-mode widget never has one,
@@ -471,8 +607,8 @@
        and the last child (the chat button) never moves. */
     .osa-launcher-capsule {
       position: fixed;
-      bottom: 20px;
-      right: 20px;
+      bottom: var(--osa-y);
+      right: var(--osa-x);
       /* Higher than .osa-chat-window's 10000: two fixed elements with EQUAL
          z-index stack by DOM order, and .osa-chat-window follows the capsule in
          the markup, so a tie would paint the window over the icon tooltips
@@ -515,6 +651,25 @@
       transform: none;
     }
 
+    /* Anchored on the left (#553) the capsule grows toward the right: in the row
+       layout the chat button comes first, on the anchor, and the pill grows out of it
+       to the right. The column layout past 601px grows upward whichever side it is on,
+       so it needs nothing here. */
+    .osa-chat-widget.osa-pos-left .osa-launcher-capsule {
+      right: auto;
+      left: var(--osa-x);
+    }
+
+    @media (max-width: 600px) {
+      .osa-chat-widget.osa-pos-left .osa-launcher-capsule {
+        flex-direction: row-reverse;
+      }
+
+      .osa-chat-widget.osa-pos-left .osa-launcher-capsule::before {
+        transform-origin: 0% 50%;
+      }
+    }
+
     /* A first visit, waiting for the community config (#475): the launcher stays out
        of sight and nothing animates, so it appears already in the community's look.
        revealLauncher removes this once the config arrives, or after LAUNCHER_WAIT_MS. */
@@ -545,8 +700,8 @@
       position: absolute;
       left: 0;
       top: 0;
-      width: 46px;
-      height: 46px;
+      width: var(--osa-open);
+      height: var(--osa-open);
       border-radius: 50%;
       background: var(--osa-primary);
       box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
@@ -562,15 +717,15 @@
 
     /* Inside the capsule, the flex parent positions the chat button; its own
        fixed/bottom/right (still true for a bubble-mode widget) would fight that.
-       46px, as are the other circles: about 15% larger than the Send button. At
-       rest it is drawn larger; see the rule after the next. */
+       46px by default, as are the other circles: about 15% larger than the Send
+       button. At rest it is drawn larger; see the rule after the next. */
     .osa-launcher-capsule .osa-chat-button {
       position: relative;
       bottom: auto;
       right: auto;
       flex-shrink: 0;
-      width: 46px;
-      height: 46px;
+      width: var(--osa-open);
+      height: var(--osa-open);
       z-index: 1;
       pointer-events: auto;
       box-sizing: border-box;
@@ -580,8 +735,8 @@
     }
 
     .osa-launcher-capsule .osa-chat-button svg {
-      width: 21px;
-      height: 21px;
+      width: calc(var(--osa-open) * 21 / 46);
+      height: calc(var(--osa-open) * 21 / 46);
     }
 
     /* At rest, with the panel closed, the chat circle is drawn 25% larger (58px,
@@ -589,26 +744,28 @@
        the panel opens (#490). Drawn larger rather than laid out larger: its box
        stays 46px, so the indicator, the pill, the other circles and the panel's
        offset are the same open or closed, and nothing reflows while it shrinks.
-       The translate puts its bottom-right corner where the 46px box's is, 20px
+       The translate puts its corner at the anchor where the 46px box's is, 20px
        from the window's edges, as the bubble's; since the translate is the growth
        past the box on each side, 23px x (58/46 - 1) = 6px, that corner holds
        still through the whole transition, because scale and translate share one
        duration and curve. A browser without the scale and translate properties
-       draws today's 46px. */
+       draws today's 46px. The sizes, the offsets and the side are configurable
+       (#553): --osa-scale and --osa-grow follow them, and --osa-side flips the
+       translate for a launcher anchored on the left. */
     .osa-chat-widget:not(.chat-open) .osa-launcher-capsule .osa-chat-button {
-      scale: 1.2609;
-      translate: -6px -6px;
+      scale: var(--osa-scale);
+      translate: calc(var(--osa-side) * var(--osa-grow)) calc(-1 * var(--osa-grow));
     }
 
     /* Hovered at rest, it grows 5% more, as every launcher does, with its corner
        held in the same place: the scale and translate take the hover in place of
        the shared transform: scale(1.05), which would grow it around its center
-       and push the corner out, on a curve of its own. 1.2609 x 1.05 is 1.3239,
-       and 23px x 0.3239 is 7.45px. */
+       and push the corner out, on a curve of its own. At the default sizes,
+       1.2609 x 1.05 is 1.3239, and 23px x 0.3239 is 7.45px. */
     .osa-chat-widget:not(.chat-open) .osa-launcher-capsule .osa-chat-button:hover {
       transform: none;
-      scale: 1.3239;
-      translate: -7.45px -7.45px;
+      scale: calc(var(--osa-scale) * 1.05);
+      translate: calc(var(--osa-side) * var(--osa-grow-hover)) calc(-1 * var(--osa-grow-hover));
     }
 
     /* Open: the indicator is the chat circle's fill, so the button itself is clear. */
@@ -630,8 +787,8 @@
     .osa-launcher-icon {
       position: relative;
       z-index: 1;
-      width: 46px;
-      height: 46px;
+      width: var(--osa-open);
+      height: var(--osa-open);
       flex-shrink: 0;
       box-sizing: border-box;
       padding: 0;
@@ -667,8 +824,8 @@
     }
 
     .osa-launcher-icon svg {
-      width: 21px;
-      height: 21px;
+      width: calc(var(--osa-open) * 21 / 46);
+      height: calc(var(--osa-open) * 21 / 46);
     }
 
     /* Available (the notebook, once a Zarr copy exists): an outlined circle in the
@@ -698,8 +855,8 @@
       position: absolute;
       top: -1.5px;
       left: -1.5px;
-      width: 46px;
-      height: 46px;
+      width: var(--osa-open);
+      height: var(--osa-open);
       opacity: 0;
       pointer-events: none;
       transition: opacity 200ms ease;
@@ -790,12 +947,12 @@
       display: none;
     }
 
-    /* The collapsed label, beside the chat circle as it is drawn at rest (58px,
-       #490): the same 10px gap and vertical center the bubble's label has. It is
-       hidden while the panel is open, when the circle is 46px. */
-    .osa-chat-widget.osa-capsule .osa-chat-tooltip {
-      right: 88px;
-      bottom: 29px;
+    /* Anchored on the left (#553), each icon's tooltip opens to its right instead. It
+       is scoped one class shallower than the hover rule above, which must still win. */
+    .osa-pos-left .osa-icon-tooltip {
+      right: auto;
+      left: calc(100% + 12px);
+      transform: translate(-6px, -50%);
     }
 
     @media (min-width: 601px) {
@@ -812,18 +969,26 @@
          (bottom: 90px, right: 20px, max-height: calc(100vh - 120px)) is what a
          narrow viewport keeps. 20 + 46 + 7 + 12 are the capsule's own offset,
          diameter, the pill's reach beyond it, and a gap, so the window sits
-         beside the pill with no overlap. The transition is scoped to capsule
+         beside the pill with no overlap (the offset and the diameter are the
+         configured ones, #553; 7 + 12 is 19). The transition is scoped to capsule
          mode alone (this selector never matches a bubble-mode widget, which must
          render exactly as it always has): the community config can still be
          resolving when the reader opens the chat, and launcher: capsule arriving
          a moment later would otherwise snap an already-open panel to its new
-         position instead of easing into it. */
+         position instead of easing into it. Anchored on the left, it opens to the
+         capsule's RIGHT by the same distance; that rule has an extra class so it
+         wins whatever its place in the sheet. */
       .osa-chat-widget.osa-capsule .osa-chat-window {
-        right: calc(20px + 46px + 7px + 12px);
-        bottom: 20px;
-        max-width: calc(100vw - 20px - 46px - 7px - 12px - 20px);
-        max-height: calc(100vh - 50px);
-        transition: right 0.2s ease, bottom 0.2s ease, max-height 0.2s ease;
+        right: calc(var(--osa-x) + var(--osa-open) + 19px);
+        bottom: var(--osa-y);
+        max-width: calc(100vw - var(--osa-x) - var(--osa-open) - 19px - 20px);
+        max-height: calc(100vh - var(--osa-y) - 30px);
+        transition: right 0.2s ease, left 0.2s ease, bottom 0.2s ease, max-height 0.2s ease;
+      }
+
+      .osa-chat-widget.osa-pos-left.osa-capsule .osa-chat-window {
+        right: auto;
+        left: calc(var(--osa-x) + var(--osa-open) + 19px);
       }
     }
 
@@ -1076,14 +1241,15 @@
     }
 
     /* Reduced motion: every change is immediate except a short plain fade
-       between the views, and nothing turns or slides. The chat circle's resting
-       size (#490) is among them: it is 58px or 46px, never between. */
+       between the views, and nothing turns or slides. The launcher's closed and
+       open sizes (#490, #553) are among them: it is one or the other, never between. */
     @media (prefers-reduced-motion: reduce) {
       .osa-launcher-capsule::before,
       .osa-capsule-indicator,
       .osa-launcher-icon,
       .osa-chat-widget.chat-open .osa-launcher-icon,
       .osa-launcher-capsule .osa-chat-button,
+      .osa-chat-widget.osa-launcher-resizes > .osa-chat-button,
       .osa-capsule .osa-ttl,
       .osa-capsule .osa-ttl.osa-ttl-off,
       .osa-strip-tab {
@@ -1119,14 +1285,17 @@
       }
     }
 
+    /* Above the launcher, --osa-panel-gap clear of it, and 30px short of the window's
+       top edge: 20 + 56 + 14 = 90px up and 100vh - 120px tall by default. Anchored on
+       the left (#553) it sits on the left edge instead, by the same distance. */
     .osa-chat-window {
       position: fixed;
-      bottom: 90px;
-      right: 20px;
+      bottom: calc(var(--osa-y) + var(--osa-open) + var(--osa-panel-gap));
+      right: var(--osa-x);
       width: 440px;
-      max-width: calc(100vw - 40px);
+      max-width: calc(100vw - var(--osa-x) - 20px);
       height: 680px;
-      max-height: calc(100vh - 120px);
+      max-height: calc(100vh - var(--osa-y) - var(--osa-open) - var(--osa-panel-gap) - 30px);
       min-width: 300px;
       min-height: 350px;
       background: var(--osa-bg);
@@ -1143,6 +1312,11 @@
 
     .osa-chat-window.open {
       display: flex;
+    }
+
+    .osa-chat-widget.osa-pos-left .osa-chat-window {
+      right: auto;
+      left: var(--osa-x);
     }
 
     .osa-chat-header {
@@ -1902,6 +2076,21 @@
       height: 8px;
       border-left: 2px solid rgba(0,0,0,0.2);
       border-top: 2px solid rgba(0,0,0,0.2);
+    }
+
+    /* The panel is anchored on the left (#553): it grows toward the right, so its
+       handle is the top-right corner, and setupResize reads the drag the other way. */
+    .osa-chat-widget.osa-pos-left .osa-resize-handle {
+      left: auto;
+      right: 0;
+      cursor: nesw-resize;
+    }
+
+    .osa-chat-widget.osa-pos-left .osa-resize-handle::before {
+      left: auto;
+      right: 6px;
+      border-left: none;
+      border-right: 2px solid rgba(0,0,0,0.2);
     }
 
     .osa-ai-disclaimer {
@@ -2689,6 +2878,10 @@
     .osa-chat-widget.osa-dark .osa-resize-handle::before {
       border-left-color: rgba(255, 255, 255, 0.3);
       border-top-color: rgba(255, 255, 255, 0.3);
+    }
+
+    .osa-chat-widget.osa-dark.osa-pos-left .osa-resize-handle::before {
+      border-right-color: rgba(255, 255, 255, 0.3);
     }
 
     /* The configured disclaimer colors, like accent_color, were chosen for the
@@ -4327,6 +4520,12 @@
       CONFIG.launcherLabel = w.launcher_label;
       changed = true;
     }
+    for (const [field, key] of LAUNCHER_GEOMETRY_KEYS) {
+      if (w[field] != null && !_userSetKeys.has(key)) {
+        CONFIG[key] = w[field];
+        changed = true;
+      }
+    }
     if (w.color_scheme != null && !_userSetKeys.has('colorScheme')) {
       if (COMMUNITY_COLOR_SCHEMES.includes(w.color_scheme)) {
         CONFIG.colorScheme = w.color_scheme;
@@ -5681,6 +5880,91 @@
     console.warn(`[OSA] Ignoring invalid ${field} (not a recognized color): ${JSON.stringify(value)}`);
   }
 
+  // Once per field and value, as for colors: a remembered config is applied before the
+  // widget is drawn and again when the fresh one arrives.
+  const warnedInvalidLauncherValues = new Set();
+  function warnInvalidLauncherValue(field, value, expected) {
+    const key = `${field}:${JSON.stringify(value)}`;
+    if (warnedInvalidLauncherValues.has(key)) return;
+    warnedInvalidLauncherValues.add(key);
+    console.warn(`[OSA] Ignoring invalid ${field} (expected ${expected}): ${JSON.stringify(value)}`);
+  }
+
+  // The launcher's position, sizes and offsets from CONFIG (#553), checked. The server
+  // refuses a value outside these ranges when it loads a community, but a page's
+  // setConfig and a config remembered from an older server have no such check in front
+  // of them, so a bad value is ignored here, once, with a warning. No DOM.
+  //   position  'bottom-right' or 'bottom-left'
+  //   sizes     null when neither size is set (the stylesheet's own sizes apply), else
+  //             {closed, open} in whole pixels, open never above closed
+  //   offsetX, offsetY, mobileOffsetX, mobileOffsetY   whole pixels, or null when unset
+  function resolveLauncherGeometry(capsule) {
+    const { sizeMin, sizeMax, offsetMax, bubbleSize, capsuleSize, openRatio } = LAUNCHER_LIMITS;
+    const whole = (field, value, min, max) => {
+      if (value == null) return null;
+      if (Number.isInteger(value) && value >= min && value <= max) return value;
+      warnInvalidLauncherValue(field, value, `a whole number from ${min} to ${max}`);
+      return null;
+    };
+
+    let position = CONFIG.launcherPosition;
+    if (!LAUNCHER_POSITIONS.includes(position)) {
+      warnInvalidLauncherValue('launcherPosition', position, LAUNCHER_POSITIONS.join(' or '));
+      position = 'bottom-right';
+    }
+
+    let closed = whole('launcherSize', CONFIG.launcherSize, sizeMin, sizeMax);
+    let open = whole('launcherOpenSize', CONFIG.launcherOpenSize, sizeMin, sizeMax);
+    let sizes = null;
+    if (closed !== null || open !== null) {
+      if (closed === null) closed = capsule ? capsuleSize : bubbleSize;
+      if (open === null) open = Math.min(closed, Math.max(sizeMin, Math.round(closed * openRatio)));
+      if (open > closed) {
+        warnInvalidLauncherValue('launcherOpenSize', open, `at most the closed size, ${closed}`);
+        open = closed;
+      }
+      sizes = { closed, open };
+    }
+
+    return {
+      position,
+      sizes,
+      offsetX: whole('launcherOffsetX', CONFIG.launcherOffsetX, 0, offsetMax),
+      offsetY: whole('launcherOffsetY', CONFIG.launcherOffsetY, 0, offsetMax),
+      mobileOffsetX: whole('launcherMobileOffsetX', CONFIG.launcherMobileOffsetX, 0, offsetMax),
+      mobileOffsetY: whole('launcherMobileOffsetY', CONFIG.launcherMobileOffsetY, 0, offsetMax)
+    };
+  }
+
+  // Put the launcher's geometry on the widget (#553): the custom properties the
+  // stylesheet reads (each set only when configured, and removed when a fresh config
+  // drops it, so an unset one is the stylesheet's own value), the side class, and, for
+  // a bubble whose closed size is larger than its open one, the class that gives it the
+  // capsule's grow-and-shrink. Also run by createWidget before the widget joins the
+  // page, so a remembered look has the launcher in its place from the first frame.
+  function applyLauncherGeometry(container) {
+    const capsule = CONFIG.launcher === 'capsule';
+    const g = resolveLauncherGeometry(capsule);
+    const px = (n) => (n === null ? null : `${n}px`);
+    const set = (name, value) => {
+      if (value === null) container.style.removeProperty(name);
+      else container.style.setProperty(name, value);
+    };
+    set('--osa-size-closed', g.sizes && px(g.sizes.closed));
+    set('--osa-size-open', g.sizes && px(g.sizes.open));
+    set('--osa-closed-scale', g.sizes && String(g.sizes.closed / g.sizes.open));
+    set('--osa-edge-x', px(g.offsetX));
+    set('--osa-edge-y', px(g.offsetY));
+    set('--osa-edge-x-narrow', px(g.mobileOffsetX));
+    set('--osa-edge-y-narrow', px(g.mobileOffsetY));
+    container.classList.toggle('osa-pos-left', g.position === 'bottom-left');
+    container.classList.toggle('osa-launcher-resizes',
+      !capsule && g.sizes !== null && g.sizes.closed > g.sizes.open);
+    // The capsule's indicator sits where the layout puts its circles, which a new size
+    // or side moves.
+    positionIndicator(container);
+  }
+
   // Update DOM elements to reflect current CONFIG values (called after API config load)
   function applyWidgetConfig() {
     const container = document.querySelector('.osa-chat-widget');
@@ -5694,6 +5978,7 @@
     if (CONFIG.launcher !== 'capsule') revertLauncherMode(container);
     applyLauncherMode(container);
     renderLauncherIcons(container);
+    applyLauncherGeometry(container);
 
     applyThemeProperties(container);
 
@@ -6335,10 +6620,13 @@
     if (!resizeHandle) return;
 
     let isResizing = false;
+    let fromLeft = false;
     let startX, startY, startWidth, startHeight;
 
     resizeHandle.addEventListener('mousedown', (e) => {
       isResizing = true;
+      // A panel anchored on the left (#553) has its handle on the top-right corner.
+      fromLeft = !!chatWindow.closest('.osa-pos-left');
       startX = e.clientX;
       startY = e.clientY;
       startWidth = chatWindow.offsetWidth;
@@ -6351,8 +6639,10 @@
     document.addEventListener('mousemove', (e) => {
       if (!isResizing) return;
 
-      // Resize from top-left corner (since window is anchored bottom-right)
-      const newWidth = startWidth - (e.clientX - startX);
+      // Resize from the corner away from the anchor: the top-left when the window is
+      // anchored bottom-right, the top-right when it is anchored bottom-left.
+      const dx = e.clientX - startX;
+      const newWidth = fromLeft ? startWidth + dx : startWidth - dx;
       const newHeight = startHeight - (e.clientY - startY);
 
       // Set minimum and maximum sizes. The capsule holds a notebook too (#470), so
@@ -6573,6 +6863,7 @@
     // ordinary case, launcher arriving later from the community config, is applied
     // again from applyWidgetConfig().
     applyLauncherMode(container);
+    applyLauncherGeometry(container);
 
     // A host page that chose its scheme before init() gets it with no flash of the
     // light panel; a community's 'auto' is applied once its config arrives.
@@ -8620,6 +8911,11 @@
       }
       Object.assign(CONFIG, opts);
       if ('colorScheme' in opts) applyColorSchemeEverywhere();
+      // A page that moves or resizes the launcher after init() sees it at once.
+      if (LAUNCHER_GEOMETRY_KEYS.some(([, key]) => key in opts)) {
+        const container = document.querySelector('.osa-chat-widget');
+        if (container) applyLauncherGeometry(container);
+      }
     },
     // The reader's light or dark choice on the host page (#469): 'light', 'dark', or
     // 'auto' (follow the device). Outranks the community's color_scheme, may be

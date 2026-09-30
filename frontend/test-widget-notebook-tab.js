@@ -23,6 +23,7 @@
 
 import { readFileSync } from 'node:fs';
 import { Window } from 'happy-dom';
+import { cssNumber, cssNumbers, withVars } from './test-support/css-px.js';
 
 let passed = 0;
 let failed = 0;
@@ -602,10 +603,13 @@ console.log('\nthe circles are 46px in the capsule, and a bubble\'s chat button 
   // 1.2609 is 58px, and the translate keeps its bottom-right corner on the box's.
   const chatButton = q('.osa-launcher-capsule .osa-chat-button');
   const resting = window.getComputedStyle(chatButton);
-  assertEqual([resting.scale, resting.translate], ['1.2609', '-6px -6px'], 'closed: the chat circle is drawn at 58px');
+  const restingScale = cssNumber(resting.scale);
+  const restingShift = cssNumbers(resting.translate);
+  assert(Math.abs(46 * restingScale - 58) < 0.001 && restingShift.every((v) => Math.abs(v + 6) < 0.001),
+    `closed: the chat circle is drawn at 58px, its corner held (scale ${restingScale}, translate ${resting.translate})`);
   assertEqual([resting.width, resting.height], ['46px', '46px'], 'closed: from the same 46px box, so nothing else in the capsule moves');
-  assert(Math.round(46 * Number(resting.scale)) === 58 && Math.abs(23 * (Number(resting.scale) - 1) - 6) < 0.01,
-    'the scale is 58/46, and the 6px translate is exactly the growth past the box on each side');
+  assert(Math.abs(23 * (restingScale - 1) + restingShift[0]) < 0.001,
+    'the 6px translate is exactly the growth past the box on each side');
   const transition = resting.transition;
   const timing = (property) => (transition.match(new RegExp(`(?:^|,\\s*)${property} ([0-9.]+m?s(?: [a-z-]+(?:\\([^)]*\\))?)?)`)) || [])[1];
   assert(timing('scale') && timing('scale') === timing('translate'), `scale and translate share one duration and curve, so the corner holds still (${JSON.stringify(timing('scale'))}, ${JSON.stringify(timing('translate'))})`);
@@ -623,21 +627,22 @@ console.log('\nthe circles are 46px in the capsule, and a bubble\'s chat button 
   }
   assert(!!hover, 'there is a rule for the resting circle hovered');
   if (hover) {
-    const hoverScale = Number(hover.getPropertyValue('scale'));
-    const hoverShift = hover.getPropertyValue('translate').split(' ').map((v) => Number.parseFloat(v));
+    const widgetStyle = window.getComputedStyle(chatButton.closest('.osa-chat-widget'));
+    const hoverScale = cssNumber(withVars(hover.getPropertyValue('scale'), widgetStyle));
+    const hoverShift = cssNumbers(withVars(hover.getPropertyValue('translate'), widgetStyle));
     assertEqual(hover.getPropertyValue('transform'), 'none', 'hovered at rest, the shared scale(1.05) around the center gives way');
-    assert(Math.abs(hoverScale - Number(resting.scale) * 1.05) < 0.0002, `to 5% more of its own scale (${hoverScale})`);
+    assert(Math.abs(hoverScale - restingScale * 1.05) < 0.0002, `to 5% more of its own scale (${hoverScale})`);
     assert(hoverShift.length === 2 && hoverShift.every((v) => Math.abs(-v - 23 * (hoverScale - 1)) < 0.01),
-      `with the translate that holds the corner still (${hover.getPropertyValue('translate')})`);
+      `with the translate that holds the corner still (${hoverShift.join(' ')})`);
   }
 
   chatButton.dispatchEvent(new window.Event('click', { bubbles: true }));
   assert(q('.osa-chat-window').classList.contains('open'), 'sanity: the panel is open');
   const open = window.getComputedStyle(chatButton);
   assert(!open.scale && !open.translate, 'open: the chat circle is back to its 46px box, where the indicator is');
-  assertEqual(window.getComputedStyle(q('.osa-chat-window')).right, 'calc(20px + 46px + 7px + 12px)', 'open: the panel sits where it always has');
+  assertEqual(cssNumber(window.getComputedStyle(q('.osa-chat-window')).right), 85, 'open: the panel sits where it always has');
   chatButton.dispatchEvent(new window.Event('click', { bubbles: true }));
-  assertEqual(window.getComputedStyle(chatButton).scale, '1.2609', 'closed again: drawn at 58px again');
+  assert(Math.abs(46 * cssNumber(window.getComputedStyle(chatButton).scale) - 58) < 0.001, 'closed again: drawn at 58px again');
 
   const config = configResponse({ launcher: undefined });
   delete config.widget.launcher;
@@ -672,7 +677,7 @@ console.log('\nreduced motion: the chat circle goes between its resting and open
   const { window, q } = await startCapsule({ reducedMotion: true });
   assert(window.matchMedia('(prefers-reduced-motion: reduce)').matches, 'sanity: the device asks for reduced motion');
   const style = window.getComputedStyle(q('.osa-launcher-capsule .osa-chat-button'));
-  assertEqual(style.scale, '1.2609', 'at rest it is still drawn at 58px');
+  assert(Math.abs(46 * cssNumber(style.scale) - 58) < 0.001, 'at rest it is still drawn at 58px');
   assertEqual([style.transitionDuration, style.transitionDelay], ['1ms', '0ms'], 'but every transition on it, the resize included, is immediate');
 }
 

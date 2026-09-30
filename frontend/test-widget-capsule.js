@@ -17,6 +17,7 @@
 
 import { readFileSync } from 'node:fs';
 import { Window } from 'happy-dom';
+import { cssNumber, cssNumbers } from './test-support/css-px.js';
 
 let passed = 0;
 let failed = 0;
@@ -283,9 +284,9 @@ console.log('\nan already-open chat panel eases into its capsule position, rathe
   await waitUntil(() => container.classList.contains('osa-capsule'), 'the config resolves and converts to the capsule');
   assert(chatWindow.classList.contains('open'), 'the chat is STILL open after the conversion (the click was never undone)');
   const windowStyle = window.getComputedStyle(chatWindow);
-  assertEqual(windowStyle.right, 'calc(20px + 46px + 7px + 12px)', 'the now-capsule desktop position: right, beside the capsule');
-  assertEqual(windowStyle.bottom, '20px', 'the now-capsule desktop position: bottom');
-  assertEqual(windowStyle.maxHeight, 'calc(800px - 50px)', 'the now-capsule desktop position: the taller max-height');
+  assertEqual(cssNumber(windowStyle.right), 85, 'the now-capsule desktop position: right, beside the capsule (20 + 46 + 7 + 12)');
+  assertEqual(cssNumber(windowStyle.bottom), 20, 'the now-capsule desktop position: bottom');
+  assertEqual(cssNumber(windowStyle.maxHeight), 750, 'the now-capsule desktop position: the taller max-height');
   const transition = windowStyle.transition;
   assert(
     transition.includes('right') && transition.includes('bottom') && transition.includes('max-height'),
@@ -334,11 +335,11 @@ console.log('\nbubble mode\'s computed layout is exactly today\'s: outside sites
   assertEqual(buttonStyle.bottom, '20px', "the chat button's bottom is 20px");
   assertEqual(buttonStyle.right, '20px', "the chat button's right is 20px");
   assertEqual(buttonStyle.zIndex, '10000', "the chat button's z-index is 10000");
-  assertEqual(windowStyle.bottom, '90px', "the chat window's bottom is 90px");
+  assertEqual(cssNumber(windowStyle.bottom), 90, "the chat window's bottom is 90px");
   assertEqual(windowStyle.right, '20px', "the chat window's right is 20px");
-  assertEqual(windowStyle.maxHeight, 'calc(800px - 120px)', "the chat window's max-height is calc(100vh - 120px), today's formula");
+  assertEqual(cssNumber(windowStyle.maxHeight), 680, "the chat window's max-height is 100vh - 120px, today's formula");
   const tooltipStyle = window.getComputedStyle(container.querySelector('.osa-chat-tooltip'));
-  assertEqual([tooltipStyle.right, tooltipStyle.bottom], ['86px', '28px'], "the collapsed label's place beside the 56px bubble is today's");
+  assertEqual([cssNumber(tooltipStyle.right), cssNumber(tooltipStyle.bottom)], [86, 28], "the collapsed label's place beside the 56px bubble is today's");
 }
 
 console.log('\nthe capsule\'s collapsed label sits beside the chat circle as it is drawn at rest (#490)');
@@ -354,7 +355,7 @@ console.log('\nthe capsule\'s collapsed label sits beside the chat circle as it 
   const container = window.document.querySelector('.osa-chat-widget');
   await waitUntil(() => container.querySelector('.osa-launcher-capsule'), 'capsule exists');
   const tooltipStyle = window.getComputedStyle(container.querySelector('.osa-chat-tooltip'));
-  assertEqual([tooltipStyle.right, tooltipStyle.bottom], ['88px', '29px'], 'the label is 10px left of the resting circle, centered on it');
+  assertEqual([cssNumber(tooltipStyle.right), cssNumber(tooltipStyle.bottom)], [88, 29], 'the label is 10px left of the resting circle, centered on it');
 }
 
 console.log('\nthe capsule\'s layout switches at the 601px breakpoint, at explicit widths');
@@ -370,15 +371,15 @@ console.log('\nthe capsule\'s layout switches at the 601px breakpoint, at explic
       label: 'narrow (390px, at or under the 600px breakpoint)',
       width: 390,
       flexDirection: 'row',
-      windowRight: '20px',
-      windowBottom: '90px',
+      windowRight: 20,
+      windowBottom: 90,
     },
     {
       label: 'desktop (1024px, past the 601px breakpoint)',
       width: 1024,
       flexDirection: 'column',
-      windowRight: 'calc(20px + 46px + 7px + 12px)',
-      windowBottom: '20px',
+      windowRight: 85,
+      windowBottom: 20,
     },
   ];
   for (const { label, width, flexDirection, windowRight, windowBottom } of cases) {
@@ -391,8 +392,8 @@ console.log('\nthe capsule\'s layout switches at the 601px breakpoint, at explic
     const capsule = container.querySelector('.osa-launcher-capsule');
     const chatWindow = container.querySelector('.osa-chat-window');
     assertEqual(window.getComputedStyle(capsule).flexDirection, flexDirection, `${label}: capsule flex-direction`);
-    assertEqual(window.getComputedStyle(chatWindow).right, windowRight, `${label}: chat window right`);
-    assertEqual(window.getComputedStyle(chatWindow).bottom, windowBottom, `${label}: chat window bottom`);
+    assertEqual(cssNumber(window.getComputedStyle(chatWindow).right), windowRight, `${label}: chat window right`);
+    assertEqual(cssNumber(window.getComputedStyle(chatWindow).bottom), windowBottom, `${label}: chat window bottom`);
   }
 }
 

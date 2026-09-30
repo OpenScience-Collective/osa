@@ -102,6 +102,12 @@ jobs:
         if: matrix.python-version == '3.12'
         run: bun frontend/browser-harness/first-paint-check.mjs --serve
 
+      # The launcher's position, size and offsets (#553), sampled on every frame of
+      # opening and closing the panel. Serves the widget itself; needs no other server.
+      - name: Check the widget's launcher geometry in headless Chrome
+        if: matrix.python-version == '3.12'
+        run: bun frontend/browser-harness/launcher-geometry-check.mjs
+
       # The pop-out under the harness's copy of nemar.org's policy, with no
       # 'unsafe-inline' in script-src (#470): it renders from the capsule's chat and
       # notebook tabs, on the tab it came from, and carries the widget tag's
@@ -249,6 +255,9 @@ jobs:
 
       - name: Run the capsule launcher tests on a real DOM
         run: bun frontend/test-widget-capsule.js
+
+      - name: Run the launcher position, size and offset tests on a real DOM
+        run: bun frontend/test-widget-launcher-geometry.js
 
       - name: Run the light and dark appearance tests on a real DOM
         run: bun frontend/test-widget-color-scheme.js
