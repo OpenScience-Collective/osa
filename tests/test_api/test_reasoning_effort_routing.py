@@ -120,7 +120,7 @@ class TestTheShippedCommunities:
         monkeypatch.setattr(info.community_config, "openrouter_api_key_env_var", None)
         _without_mcp_servers(monkeypatch, info)
 
-    @pytest.mark.parametrize("community_id", ["nwb", "nemar"])
+    @pytest.mark.parametrize("community_id", ["nwb", "hed", "eeglab", "bids"])
     def test_a_luna_community_runs_luna_at_the_level_its_yaml_sets(self, monkeypatch, community_id):
         info = registry.get(community_id)
         assert info is not None
