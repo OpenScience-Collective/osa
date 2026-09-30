@@ -1208,6 +1208,44 @@ def _platform_choice(settings: Settings, community_id: str) -> ProviderChoice:
     )
 
 
+@dataclass(frozen=True)
+class CommunityKey:
+    """The key a community names to fund its own requests, and whether it is there.
+
+    Attributes:
+        provider: "anthropic" or "openrouter", by which env var the community names.
+        env_var: The name of the environment variable the key is read from.
+        key: The key, or None when that variable is unset or empty.
+    """
+
+    provider: Literal["anthropic", "openrouter"]
+    env_var: str
+    key: str | None
+
+
+def _community_key(config: CommunityConfig | None) -> CommunityKey | None:
+    """The key a community funds itself with, read as ``_resolve_provider`` reads it.
+
+    The Anthropic variable is checked before OpenRouter's, and naming one settles it: a
+    community that names an Anthropic variable which is unset goes to the platform's key,
+    never on to its OpenRouter variable. The one place that precedence lives, so the
+    request, the ``/config`` default and the startup log cannot read it differently.
+
+    Returns:
+        The variable the community names first, with its key (None if unset or empty), or
+        None when it names neither.
+    """
+    if config is None:
+        return None
+    if config.anthropic_api_key_env_var:
+        name = config.anthropic_api_key_env_var
+        return CommunityKey("anthropic", name, os.getenv(name) or None)
+    if config.openrouter_api_key_env_var:
+        name = config.openrouter_api_key_env_var
+        return CommunityKey("openrouter", name, os.getenv(name) or None)
+    return None
+
+
 def _resolve_provider(
     community_id: str,
     byok: ByokCredential | None,
@@ -1219,7 +1257,8 @@ def _resolve_provider(
     1. If BYOK provided → use it (always allowed), for whichever provider
        the caller's header selected (see ``resolve_byok``).
     2. If origin matches community CORS → allow fallback to a community key
-       (Anthropic env var checked before OpenRouter's), then the platform key.
+       (Anthropic env var checked before OpenRouter's, see ``_community_key``), then
+       the platform key.
     3. Otherwise → reject (CLI or unauthorized origin must provide BYOK).
 
     Args:
@@ -1260,81 +1299,41 @@ def _resolve_provider(
     # Origin is authorized - allow fallback to community/platform keys
     settings = get_settings()
     community_info = registry.get(community_id)
+    community = _community_key(community_info.community_config if community_info else None)
 
-    if community_info and community_info.community_config:
-        config = community_info.community_config
-
-        anthropic_env_var = config.anthropic_api_key_env_var
-        if anthropic_env_var:
-            community_key = os.getenv(anthropic_env_var)
-            if community_key:
-                logger.info(
-                    "Using community-specific Anthropic API key from %s for %s",
-                    anthropic_env_var,
-                    community_id,
-                    extra={
-                        "community_id": community_id,
-                        "key_source": "community",
-                        "provider": "anthropic",
-                        "env_var": anthropic_env_var,
-                    },
-                )
-                return ProviderChoice(
-                    provider="anthropic", api_key=community_key, key_source="community"
-                )
-            logger.error(
-                "Community %s configured to use %s but env var not set, falling back to "
-                "the platform key. This may incur unexpected costs. Set the environment "
-                "variable to fix this.",
+    if community is not None:
+        label = "Anthropic" if community.provider == "anthropic" else "OpenRouter"
+        if community.key:
+            logger.info(
+                "Using community-specific %s API key from %s for %s",
+                label,
+                community.env_var,
                 community_id,
-                anthropic_env_var,
                 extra={
                     "community_id": community_id,
-                    "key_source": "platform",
-                    "configured_env_var": anthropic_env_var,
-                    "env_var_missing": True,
-                    "fallback_to_platform": True,
-                    "origin": origin,
+                    "key_source": "community",
+                    "provider": community.provider,
+                    "env_var": community.env_var,
                 },
             )
-            return _platform_choice(settings, community_id)
-
-        # Anthropic env var not configured for this community; a community
-        # can still fund itself through OpenRouter instead.
-        openrouter_env_var = config.openrouter_api_key_env_var
-        if openrouter_env_var:
-            community_key = os.getenv(openrouter_env_var)
-            if community_key:
-                logger.info(
-                    "Using community-specific OpenRouter API key from %s for %s",
-                    openrouter_env_var,
-                    community_id,
-                    extra={
-                        "community_id": community_id,
-                        "key_source": "community",
-                        "provider": "openrouter",
-                        "env_var": openrouter_env_var,
-                    },
-                )
-                return ProviderChoice(
-                    provider="openrouter", api_key=community_key, key_source="community"
-                )
-            logger.error(
-                "Community %s configured to use %s but env var not set, falling back to "
-                "the platform key. This may incur unexpected costs. Set the environment "
-                "variable to fix this.",
-                community_id,
-                openrouter_env_var,
-                extra={
-                    "community_id": community_id,
-                    "key_source": "platform",
-                    "configured_env_var": openrouter_env_var,
-                    "env_var_missing": True,
-                    "fallback_to_platform": True,
-                    "origin": origin,
-                },
+            return ProviderChoice(
+                provider=community.provider, api_key=community.key, key_source="community"
             )
-            return _platform_choice(settings, community_id)
+        logger.error(
+            "Community %s configured to use %s but env var not set, falling back to "
+            "the platform key. This may incur unexpected costs. Set the environment "
+            "variable to fix this.",
+            community_id,
+            community.env_var,
+            extra={
+                "community_id": community_id,
+                "key_source": "platform",
+                "configured_env_var": community.env_var,
+                "env_var_missing": True,
+                "fallback_to_platform": True,
+                "origin": origin,
+            },
+        )
 
     return _platform_choice(settings, community_id)
 
@@ -1513,15 +1512,43 @@ def _bedrock_choice(choice: ProviderChoice, model: str, settings: Settings) -> P
     return ProviderChoice(provider="bedrock", api_key=None, key_source="platform")
 
 
-def _serves_bedrock_models(settings: Settings) -> bool:
-    """Whether this deployment can route a request to a Bedrock model.
+def _funded_provider(settings: Settings, config: CommunityConfig | None) -> ProviderName | None:
+    """The provider a request with no caller key of its own resolves to, without raising.
+
+    What ``_resolve_provider`` decides for an authorized origin: the community's own key
+    when it names one and that is set (``_community_key``), otherwise the platform's
+    (``_platform_choice``: Anthropic before OpenRouter). The startup log, the ``/config``
+    default and the model menu ask this instead of deciding from the platform's keys alone,
+    which is wrong for a community that funds itself.
+
+    Args:
+        settings: Server settings, for the platform's keys.
+        config: The community's config, or None for a community that has none.
+
+    Returns:
+        "anthropic" or "openrouter", or None when no key can serve the request (it fails
+        with HTTP 500).
+    """
+    community = _community_key(config)
+    if community is not None and community.key:
+        return community.provider
+    if settings.anthropic_api_key:
+        return "anthropic"
+    if settings.openrouter_api_key:
+        return "openrouter"
+    return None
+
+
+def _serves_bedrock_models(settings: Settings, config: CommunityConfig | None = None) -> bool:
+    """Whether this deployment can route a request for this community to a Bedrock model.
 
     Routing moves a request to Bedrock only from the Anthropic provider (see
-    ``_route_request``), and a platform-funded request resolves to Anthropic only
-    when the platform has an Anthropic key. A deployment with a Bedrock key and an
-    OpenRouter fallback would list models it then refuses.
+    ``_route_request``), and a request with no caller key resolves to Anthropic only when
+    the community's own Anthropic key or else the platform's is there
+    (``_funded_provider``). A deployment with a Bedrock key and an OpenRouter fallback
+    would list models it then refuses.
     """
-    return bool(settings.bedrock_api_key and settings.anthropic_api_key)
+    return bool(settings.bedrock_api_key) and _funded_provider(settings, config) == "anthropic"
 
 
 def _claude_fallback(settings: Settings) -> str:
@@ -1540,22 +1567,29 @@ def _claude_fallback(settings: Settings) -> str:
 BedrockDefaultOutcome = Literal["bedrock", "openrouter", "claude_fallback", "unavailable"]
 
 
-def _bedrock_default_outcome(settings: Settings) -> BedrockDefaultOutcome:
-    """What a platform-funded request that names no model does with a Bedrock default.
+def _bedrock_default_outcome(
+    settings: Settings, config: CommunityConfig | None = None
+) -> BedrockDefaultOutcome:
+    """What a request with no caller key and no model named does with a Bedrock default.
 
-    The same decisions ``_platform_choice`` and ``_route_request`` make, read off the
-    deployment's keys: "bedrock" when Bedrock serves it (``_serves_bedrock_models``);
-    "claude_fallback" when the platform has an Anthropic key but the request cannot have
-    Bedrock (no Bedrock key), so it runs ``_claude_fallback``; "openrouter" when there is
-    no Anthropic key, which sends platform requests to OpenRouter, where the model runs
-    under its slug whatever the Bedrock key; "unavailable" when no key can serve the
-    request at all (HTTP 500).
+    The same decisions ``_resolve_provider`` and ``_route_request`` make, read off the
+    keys the request would use (``_funded_provider``): the community's own when it names
+    one and that is set, else the platform's. "bedrock" when Bedrock serves it
+    (``_serves_bedrock_models``); "claude_fallback" when the key is an Anthropic one but
+    the request cannot have Bedrock (no Bedrock key), so it runs ``_claude_fallback``;
+    "openrouter" when the key is an OpenRouter one, where the model runs under its slug
+    whatever the Bedrock key; "unavailable" when no key can serve the request at all
+    (HTTP 500).
+
+    Args:
+        settings: Server settings, for the platform's keys.
+        config: The community's config, for a key of its own. None reads the platform's
+            keys alone, which is all a community that funds no requests itself has.
     """
-    if _serves_bedrock_models(settings):
-        return "bedrock"
-    if settings.anthropic_api_key:
-        return "claude_fallback"
-    if settings.openrouter_api_key:
+    provider = _funded_provider(settings, config)
+    if provider == "anthropic":
+        return "bedrock" if settings.bedrock_api_key else "claude_fallback"
+    if provider == "openrouter":
         return "openrouter"
     return "unavailable"
 
@@ -1582,10 +1616,9 @@ def _effective_default(info: AssistantInfo, settings: Settings) -> tuple[str | N
     server cannot run.
     """
     default_model, default_provider = _configured_default(info, settings)
-    if is_bedrock_model(default_model) and _bedrock_default_outcome(settings) in (
-        "claude_fallback",
-        "unavailable",
-    ):
+    if is_bedrock_model(default_model) and _bedrock_default_outcome(
+        settings, info.community_config
+    ) in ("claude_fallback", "unavailable"):
         return _claude_fallback(settings), None
     return default_model, default_provider
 
@@ -1597,8 +1630,11 @@ def log_unserved_bedrock_defaults(settings: Settings | None = None) -> list[str]
     price, and the only signal was a log line per request, after the bill had started.
     One record per community, at ERROR when requests run Claude or fail, and WARNING
     when they run the model through OpenRouter (which works, and is warned about on
-    every such request too). Every record names the two keys that serve the model
-    from Bedrock: ``AWS_BEARER_TOKEN_BEDROCK`` and ``ANTHROPIC_API_KEY``.
+    every such request too). Every record names the keys that serve the model from
+    Bedrock: ``AWS_BEARER_TOKEN_BEDROCK`` and ``ANTHROPIC_API_KEY``, or for a community
+    that funds itself with a key of its own (``anthropic_api_key_env_var`` or
+    ``openrouter_api_key_env_var``, set), the one it needs instead. Each community is
+    judged on the key its requests use, the same one ``_resolve_provider`` picks.
 
     Args:
         settings: The deployment's settings. Defaults to ``get_settings()``.
@@ -1607,27 +1643,43 @@ def log_unserved_bedrock_defaults(settings: Settings | None = None) -> list[str]
         The ids of the communities logged.
     """
     settings = settings or get_settings()
-    outcome = _bedrock_default_outcome(settings)
-    if outcome == "bedrock":
-        return []
-    needs = "It needs both AWS_BEARER_TOKEN_BEDROCK and ANTHROPIC_API_KEY."
     logged: list[str] = []
     for info in registry.list_all():
         default_model, _ = _configured_default(info, settings)
         if default_model is None or not is_bedrock_model(default_model):
             continue
+        outcome = _bedrock_default_outcome(settings, info.community_config)
+        if outcome == "bedrock":
+            continue
         model = normalize_model(default_model)
+        own = _community_key(info.community_config)
+        own = own if own is not None and own.key else None
+        if own is None:
+            subject = "every platform-funded request"
+            needs = "It needs both AWS_BEARER_TOKEN_BEDROCK and ANTHROPIC_API_KEY."
+        else:
+            subject = f"every request funded by its own key ({own.env_var})"
+            needs = (
+                "It needs AWS_BEARER_TOKEN_BEDROCK."
+                if own.provider == "anthropic"
+                else "It needs AWS_BEARER_TOKEN_BEDROCK, and to fund itself with an Anthropic "
+                "key (anthropic_api_key_env_var) instead of an OpenRouter one."
+            )
         if outcome == "claude_fallback":
             level = logging.ERROR
             consequence = (
-                f"every platform-funded request runs {_claude_fallback(settings)} instead, "
-                "at several times the price"
+                f"{subject} runs {_claude_fallback(settings)} instead, at several times the price"
             )
         elif outcome == "openrouter":
             level = logging.WARNING
+            because = (
+                "ANTHROPIC_API_KEY is unset, so platform-funded requests"
+                if own is None
+                else f"{own.env_var} is an OpenRouter key, so its requests"
+            )
             consequence = (
-                "ANTHROPIC_API_KEY is unset, so platform-funded requests go to OpenRouter "
-                f"and run it there as {OPENROUTER_MODEL_IDS.get(model, model)}"
+                f"{because} go to OpenRouter and run it there as "
+                f"{OPENROUTER_MODEL_IDS.get(model, model)}"
             )
         else:
             level = logging.ERROR
@@ -2943,8 +2995,9 @@ def create_community_router(community_id: str) -> APIRouter:
                 # A model the server cannot run would fail on first use, so it is
                 # not offered. The Bedrock ones need the deployment's Bedrock key, and
                 # are routed only from a request that resolves to the Anthropic
-                # provider, which on the platform's key needs its Anthropic key too.
-                if model_id not in BEDROCK_MODELS or _serves_bedrock_models(settings)
+                # provider: this community's own Anthropic key, or else the platform's.
+                if model_id not in BEDROCK_MODELS
+                or _serves_bedrock_models(settings, info.community_config)
             ],
             widget=WidgetConfigResponse(**widget_cfg.resolve(info.name, logo_url=conv_logo)),
             status=health_status,
