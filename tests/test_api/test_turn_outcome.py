@@ -8,13 +8,16 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from src.api.turn_outcome import (
     CONTEXT_FULL_CUT_OFF_MESSAGE,
     CONTEXT_FULL_NO_ANSWER_MESSAGE,
+    CUT_OFF_LONG_MESSAGE,
     CUT_OFF_MESSAGE,
     DECLINED_MESSAGE,
     EMPTY_MESSAGE,
+    LONG_CONVERSATION_MESSAGE,
     MALFORMED_MESSAGE,
     NO_ANSWER_MESSAGE,
     ModelRuns,
     reply_problem,
+    warning_event,
 )
 from src.core.services.model_outcome import (
     CONTEXT_WINDOW_STOP_REASON,
@@ -201,3 +204,77 @@ def test_the_last_runs_stop_reason_is_kept_whatever_it_is() -> None:
     runs.note(AIMessage(content="", response_metadata={}))
 
     assert runs.stop_reason is None
+
+
+class TestTheWarningEvent:
+    """One event for a finished reply, whatever it has to say (release review, follow-up 1)."""
+
+    @staticmethod
+    def _cut_off(reason: str = "max_tokens"):
+        runs = ModelRuns()
+        runs.note(AIMessage(content="", response_metadata={"stopReason": reason}))
+        return _problem(runs, "An answer that stops sho")
+
+    def test_nothing_to_say_is_no_event(self) -> None:
+        assert warning_event(None, conversation_is_long=False) is None
+
+    def test_an_error_is_not_a_warning(self) -> None:
+        error = _problem(_ended_on("refusal"))
+
+        assert warning_event(error, conversation_is_long=False) is None
+
+    def test_an_error_does_not_turn_a_long_conversation_into_a_cut_off_one(self) -> None:
+        error = _problem(_ended_on("refusal"))
+
+        event = warning_event(error, conversation_is_long=True)
+
+        assert event == {
+            "event": "warning",
+            "message": LONG_CONVERSATION_MESSAGE,
+            "code": "long_conversation",
+        }
+
+    def test_a_long_conversation_alone(self) -> None:
+        assert warning_event(None, conversation_is_long=True) == {
+            "event": "warning",
+            "message": LONG_CONVERSATION_MESSAGE,
+            "code": "long_conversation",
+        }
+
+    def test_a_cut_off_reply_alone(self) -> None:
+        assert warning_event(self._cut_off(), conversation_is_long=False) == {
+            "event": "warning",
+            "message": CUT_OFF_MESSAGE,
+            "code": "cut_off",
+        }
+
+    def test_both_are_one_event_that_says_both(self) -> None:
+        event = warning_event(self._cut_off(), conversation_is_long=True)
+
+        assert event == {
+            "event": "warning",
+            "message": CUT_OFF_LONG_MESSAGE,
+            "code": "cut_off",
+            "codes": ["cut_off", "long_conversation"],
+        }
+
+    def test_the_combined_message_holds_what_each_alone_would_have_said(self) -> None:
+        lowered = CUT_OFF_LONG_MESSAGE.lower()
+
+        assert "cut off" in lowered and "length limit" in lowered
+        assert "conversation is getting long" in lowered and "new chat" in lowered
+
+    def test_a_full_context_window_already_says_to_start_over(self) -> None:
+        event = warning_event(self._cut_off(CONTEXT_WINDOW_STOP_REASON), conversation_is_long=True)
+
+        assert event is not None
+        assert event["message"] == CONTEXT_FULL_CUT_OFF_MESSAGE
+        assert event["codes"] == ["cut_off", "long_conversation"]
+
+    def test_it_is_always_json(self) -> None:
+        import json
+
+        for problem in (None, self._cut_off()):
+            for long in (False, True):
+                event = warning_event(problem, conversation_is_long=long)
+                assert event is None or json.loads(json.dumps(event)) == event

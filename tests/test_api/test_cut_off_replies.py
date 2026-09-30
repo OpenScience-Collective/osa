@@ -30,6 +30,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, AIMessageChunk
 
+from src.agents.base import DEFAULT_MAX_CONVERSATION_TOKENS, count_conversation_tokens
 from src.api.routers.community import (
     AssistantWithMetrics,
     ChatSession,
@@ -42,9 +43,11 @@ from src.api.tool_results import PendingClientCall
 from src.api.turn_outcome import (
     CONTEXT_FULL_CUT_OFF_MESSAGE,
     CONTEXT_FULL_NO_ANSWER_MESSAGE,
+    CUT_OFF_LONG_MESSAGE,
     CUT_OFF_MESSAGE,
     DECLINED_MESSAGE,
     EMPTY_MESSAGE,
+    LONG_CONVERSATION_MESSAGE,
     MALFORMED_MESSAGE,
     NO_ANSWER_MESSAGE,
 )
@@ -93,14 +96,26 @@ def _rows() -> list[dict]:
         return conn.execute("SELECT * FROM request_log ORDER BY timestamp").fetchall()
 
 
+def _fill_past_the_budget(session: ChatSession) -> None:
+    """Earlier turns, enough that the conversation is over the agent's token budget, which
+    is past the point the long-conversation warning fires. Counted with the counter the
+    router uses, so it holds whatever the budget is set to."""
+    while count_conversation_tokens(session.messages) <= DEFAULT_MAX_CONVERSATION_TOKENS:
+        session.add_user_message("Tell me about the tags. " * 400)
+        session.add_assistant_message("Sensory-event marks a stimulus. " * 300)
+
+
 async def _chat(
     provider: Provider,
     script: list[list[AIMessageChunk]],
     *,
     browser_runs_answered: int = 0,
     code_runs_answered: int = 0,
+    long_conversation: bool = False,
 ) -> tuple[list[dict], ChatSession]:
     session = ChatSession("sess-cutoff", COMMUNITY)
+    if long_conversation:
+        _fill_past_the_budget(session)
     session.add_user_message(QUESTION)
     with patch(
         "src.api.routers.community.create_community_assistant",
@@ -646,6 +661,92 @@ class TestChatWithoutStreaming:
         body = _post_chat(client).json()
 
         assert body["warnings"] == [CONTEXT_FULL_CUT_OFF_MESSAGE]
+
+
+# ---------------------------------------------------------------------------
+# One warning per reply, with a machine-readable kind (release review, follow-up 1)
+# ---------------------------------------------------------------------------
+
+
+def _warnings(events: list[dict]) -> list[dict]:
+    return [e for e in events if e["event"] == "warning"]
+
+
+@provider_param
+class TestOneWarningPerReply:
+    """The widget keeps one warning element, so a second ``warning`` straight after the
+    first overwrote it before it could be read, and a reply is likeliest to be cut off in
+    a long conversation, which is also when the long-conversation warning fires."""
+
+    async def test_a_reply_cut_off_in_a_long_conversation_gets_one_combined_warning(
+        self, provider: Provider
+    ) -> None:
+        events, _ = await _chat(
+            provider,
+            [scripted_reply(provider, ANSWER[:30], cut_off=True)],
+            long_conversation=True,
+        )
+
+        assert _warnings(events) == [
+            {
+                "event": "warning",
+                "message": CUT_OFF_LONG_MESSAGE,
+                "code": "cut_off",
+                "codes": ["cut_off", "long_conversation"],
+            }
+        ]
+        assert _names(events).index("warning") < _names(events).index("done")
+        assert _names(events)[-1] == "done"
+
+    async def test_a_long_conversation_alone_is_a_warning_of_that_kind(
+        self, provider: Provider
+    ) -> None:
+        events, _ = await _chat(
+            provider, [scripted_reply(provider, ANSWER)], long_conversation=True
+        )
+
+        assert _warnings(events) == [
+            {
+                "event": "warning",
+                "message": LONG_CONVERSATION_MESSAGE,
+                "code": "long_conversation",
+            }
+        ]
+
+    async def test_a_cut_off_reply_alone_carries_its_kind(self, provider: Provider) -> None:
+        events, _ = await _chat(provider, [scripted_reply(provider, ANSWER[:30], cut_off=True)])
+
+        assert _warnings(events) == [
+            {"event": "warning", "message": CUT_OFF_MESSAGE, "code": "cut_off"}
+        ]
+
+    async def test_a_full_context_window_in_a_long_conversation_says_it_once(
+        self, provider: Provider
+    ) -> None:
+        """That message already sends the reader to a new conversation."""
+        events, _ = await _chat(
+            provider,
+            [scripted_reply(provider, ANSWER[:30], stop=CONTEXT_WINDOW_STOP_REASON)],
+            long_conversation=True,
+        )
+
+        (warning,) = _warnings(events)
+        assert warning["message"] == CONTEXT_FULL_CUT_OFF_MESSAGE
+        assert warning["codes"] == ["cut_off", "long_conversation"]
+
+    async def test_a_reply_that_finished_in_a_short_conversation_has_none(
+        self, provider: Provider
+    ) -> None:
+        events, _ = await _chat(provider, [scripted_reply(provider, ANSWER)])
+
+        assert _warnings(events) == []
+
+    async def test_ask_carries_the_kind_too(self, provider: Provider) -> None:
+        events = await _ask(provider, [scripted_reply(provider, ANSWER[:30], cut_off=True)])
+
+        assert _warnings(events) == [
+            {"event": "warning", "message": CUT_OFF_MESSAGE, "code": "cut_off"}
+        ]
 
 
 # ---------------------------------------------------------------------------

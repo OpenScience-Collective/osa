@@ -57,6 +57,26 @@ CONTEXT_FULL_CUT_OFF_MESSAGE = (
     "assistant can read at once. Start a new conversation to continue."
 )
 
+#: Told to the reader when the conversation is nearing the token budget the agent trims
+#: to. On its own it is a warning on a reply that is otherwise fine.
+LONG_CONVERSATION_MESSAGE = (
+    "Conversation is getting long. Consider starting a new chat for best results."
+)
+
+#: The one warning a reply gets when it was cut off at its output limit and the
+#: conversation is also getting long. The widget keeps a single warning element, so two
+#: warnings in a row would show only the second, and a cut-off answer is likeliest in
+#: exactly the conversations that are long.
+CUT_OFF_LONG_MESSAGE = (
+    "This answer was cut off because the assistant reached its length limit, and the "
+    "conversation is getting long. Start a new chat and ask a narrower question."
+)
+
+#: ``code`` of a ``warning`` event, so a client can act on the kind of warning without
+#: reading the text: mark a cut-off reply in place, say.
+WARNING_CUT_OFF = "cut_off"
+WARNING_LONG_CONVERSATION = "long_conversation"
+
 #: Told to the reader when the model wrote nothing for a reason that is not running out of
 #: room. Each is an error: no text and no code run, so there is no reply to show.
 DECLINED_MESSAGE = "The assistant declined to answer this request. Try rephrasing your question."
@@ -282,3 +302,48 @@ def reply_problem(
         },
     )
     return problem
+
+
+def warning_event(
+    problem: ReplyProblem | None, *, conversation_is_long: bool
+) -> dict[str, Any] | None:
+    """The one ``warning`` event a finished reply gets, or None when it needs none.
+
+    A reply can need two: it was cut off (``problem``, a warning-level one), and the
+    conversation is getting long. The widget keeps a single warning element, so a second
+    event overwrites the first before it can be read. One event carries both instead.
+
+    Args:
+        problem: What ``reply_problem`` found, or None. An error-level one is not a warning
+            and is ignored here: the caller ends the stream on it.
+        conversation_is_long: Whether the conversation is near the token budget.
+
+    Returns:
+        ``{"event": "warning", "message": ..., "code": ...}``. ``code`` names the kind
+        (``cut_off`` or ``long_conversation``); when both apply it is ``cut_off``, the one
+        about the reply itself, and ``codes`` lists both. ``message`` is what the reader is
+        told, as before; a client that ignores ``code`` and ``codes`` works unchanged.
+    """
+    cut_off = problem if problem is not None and problem.event == "warning" else None
+    if cut_off is not None and conversation_is_long:
+        return {
+            "event": "warning",
+            # A conversation that overflowed the context window already says to start a
+            # new one; the long-conversation note would repeat it.
+            "message": (
+                cut_off.message
+                if cut_off.reason == CONTEXT_WINDOW_STOP_REASON
+                else CUT_OFF_LONG_MESSAGE
+            ),
+            "code": WARNING_CUT_OFF,
+            "codes": [WARNING_CUT_OFF, WARNING_LONG_CONVERSATION],
+        }
+    if cut_off is not None:
+        return {"event": "warning", "message": cut_off.message, "code": WARNING_CUT_OFF}
+    if conversation_is_long:
+        return {
+            "event": "warning",
+            "message": LONG_CONVERSATION_MESSAGE,
+            "code": WARNING_LONG_CONVERSATION,
+        }
+    return None

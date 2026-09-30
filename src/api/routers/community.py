@@ -56,7 +56,7 @@ from src.api.tool_results import (
     build_unanswered_tool_message,
     scrub_stored_images,
 )
-from src.api.turn_outcome import ModelRuns, reply_problem
+from src.api.turn_outcome import ModelRuns, reply_problem, warning_event
 from src.assistants import registry
 from src.assistants.community import CommunityAssistant
 from src.assistants.community import PageContext as AgentPageContext
@@ -3592,6 +3592,7 @@ async def _stream_ask_response(
         data: {"event": "tool_start", "name": "tool_name", "input": {...}}
         data: {"event": "tool_end", "name": "tool_name", "output": {...}}
         data: {"event": "citation", "marker": 1, "source": "...", "title": "...", "cited_text": "..."}
+        data: {"event": "warning", "message": "...", "code": "cut_off"}  (optional, before done)
         data: {"event": "done", "request_id": "...", "model": "...", "content": "final answer", "citations": [...]}
         data: {"event": "error", "message": "error text"}
 
@@ -3740,8 +3741,9 @@ async def _stream_ask_response(
                 error_message=problem.summary,
             )
             return
-        if problem is not None:
-            yield f"data: {json.dumps({'event': 'warning', 'message': problem.message})}\n\n"
+        warning = warning_event(problem, conversation_is_long=False)
+        if warning is not None:
+            yield f"data: {json.dumps(warning)}\n\n"
 
         sse_event = {
             "event": "done",
@@ -3931,13 +3933,19 @@ async def _stream_chat_response(
         data: {"event": "tool_end", "name": "tool_name", "output": {...}}
         data: {"event": "session", "session_id": "..."}  (sent first)
         data: {"event": "citation", "marker": 1, "source": "...", "title": "...", "cited_text": "..."}
-        data: {"event": "warning", "message": "..."}  (optional, before done)
+        data: {"event": "warning", "message": "...", "code": "cut_off"}  (optional, before done)
         data: {"event": "done", "session_id": "...", "request_id": "...", "model": "...", "content": "final answer", "citations": [...]}
         data: {"event": "error", "message": "error text"}
 
     The `thinking` event is a liveness signal only -- it never carries the
     model's reasoning text (see src/agents/content.py's module docstring);
     clients that do not recognize it are expected to ignore it.
+
+    A reply gets at most one `warning`, because the widget keeps one warning element
+    and a second event would overwrite the first unread. `code` names the kind
+    (`cut_off`, `long_conversation`); when a reply was cut off in a long conversation
+    the one event says both, with `code` `cut_off` and `codes` listing each. `message`
+    is the text to show, and a client that ignores `code` is unaffected.
 
     `tool_call` fires once per call when the model starts writing it, before any
     `tool_start`, and for a browser call before its `tool_request` (see
@@ -4258,21 +4266,18 @@ async def _stream_chat_response(
                 yield f"data: {json.dumps(sse_event)}\n\n"
                 return
 
-        if problem is not None:
-            yield f"data: {json.dumps({'event': 'warning', 'message': problem.message})}\n\n"
-
         # Warn if conversation is approaching the token budget (87.5% of 80K).
         warning_threshold = int(DEFAULT_MAX_CONVERSATION_TOKENS * 0.875)
         # The same counter the agent budgets with, so the warning fires on the same
         # arithmetic the trimmer acts on. Two counters would mean warning at one
         # threshold and trimming at another.
         approx_tokens = count_conversation_tokens(session.messages)
-        if approx_tokens > warning_threshold:
-            sse_event = {
-                "event": "warning",
-                "message": "Conversation is getting long. Consider starting a new chat for best results.",
-            }
-            yield f"data: {json.dumps(sse_event)}\n\n"
+        # One event for everything there is to say: the widget keeps a single warning
+        # element, so a second event straight after the cut-off one would overwrite it
+        # unread, and a reply is likeliest to be cut off in a long conversation.
+        warning = warning_event(problem, conversation_is_long=approx_tokens > warning_threshold)
+        if warning is not None:
+            yield f"data: {json.dumps(warning)}\n\n"
 
         sse_event = {
             "event": "done",
