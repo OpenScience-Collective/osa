@@ -70,7 +70,12 @@ function timerTracker() {
   };
 }
 
-function loadWidget({ matchMedia, timers = null } = {}) {
+/**
+ * The widget in its own window, initialized. `chat`, when given, answers /chat (what a
+ * test that presses Send needs); `saved` is what the page's storage already holds under
+ * the widget's key, as after a reload.
+ */
+function loadWidget({ matchMedia, timers = null, chat = null, saved = null } = {}) {
   const window = new Window({
     url: 'http://localhost/page',
     settings: { disableJavaScriptFileLoading: true, disableCSSFileLoading: true },
@@ -82,11 +87,13 @@ function loadWidget({ matchMedia, timers = null } = {}) {
   script.setAttribute('data-no-auto-init', '');
   Object.defineProperty(window.document, 'currentScript', { value: script, configurable: true });
   const config = { default_model: 'm', offered_models: [], widget: {}, client_tools: [], runtime: null };
-  const fetch = async (url) => {
+  const fetch = async (url, init) => {
     if (String(url).endsWith('/health')) return new Response(JSON.stringify({ status: 'healthy' }));
+    if (chat && String(url).endsWith('/chat')) return chat(init);
     return new Response(JSON.stringify(config), { headers: { 'content-type': 'application/json' } });
   };
   window.fetch = fetch;
+  if (saved !== null) window.localStorage.setItem('osa-test-paced', saved);
   // eslint-disable-next-line no-new-func
   const run = new Function(
     'window', 'document', 'localStorage', 'fetch', 'navigator', 'AbortSignal', 'URL',
@@ -1172,6 +1179,129 @@ console.log('\nleaving the page shows a reply that is still streaming, but does 
   control.close();
   await stream;
   assert((window.localStorage.getItem('osa-test-paced') || '').includes(text.slice(-40)), 'the done event is what saves it');
+}
+
+// -------------------------------------- what the end of a reply tells the reader
+//
+// A reply can end with a notice (a warning event: the model stopped at its length
+// limit, the conversation is long) or a failure (an error event, a stream that broke).
+// What the reader is left with: every notice read, a cut-off reply marked where it
+// stands, a failed question handed back with the reason still on screen.
+
+const TURN_OUTCOME = readFileSync(new URL('../src/api/turn_outcome.py', import.meta.url), 'utf8');
+
+/** A string constant of src/api/turn_outcome.py, so the widget is held to the server's wording. */
+function serverMessage(name) {
+  const block = TURN_OUTCOME.match(new RegExp(`^${name} = \\(([^)]*)\\)`, 'm'));
+  if (!block) return null;
+  return [...block[1].matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1]).join('');
+}
+
+const CUT_OFF_MESSAGE = serverMessage('CUT_OFF_MESSAGE');
+const NO_ANSWER_MESSAGE = serverMessage('NO_ANSWER_MESSAGE');
+assert(Boolean(CUT_OFF_MESSAGE && NO_ANSWER_MESSAGE), 'the server\'s cut-off and no-answer messages are found in src/api/turn_outcome.py');
+const LONG_MESSAGE = 'Conversation is getting long. Consider starting a new chat for best results.';
+
+/**
+ * Timers of four seconds or more are held until a test runs them (a banner's and a
+ * notice's are five and ten seconds, and a test does not wait them out); shorter ones,
+ * the reveal's and the launcher tooltip's, run for real. Held timers are numbered below
+ * zero, so clearTimeout knows them. Nothing is held until `arm()`, so the widget's own
+ * start-up timers run as usual.
+ */
+function heldTimers() {
+  const held = new Map();
+  let next = 1;
+  let armed = false;
+  return {
+    arm() { armed = true; },
+    setTimeout: (fn, ms, ...rest) => {
+      if (!armed || ms < 4000) return setTimeout(fn, ms, ...rest);
+      const id = -(next++);
+      held.set(id, { fn, ms });
+      return id;
+    },
+    clearTimeout: (id) => {
+      if (typeof id === 'number' && id < 0) held.delete(id);
+      else clearTimeout(id);
+    },
+    delays: () => [...held.values()].map((timer) => timer.ms),
+    /** Run the oldest held timer, as if its delay had passed. */
+    fireOldest() {
+      const [id, timer] = [...held.entries()][0];
+      held.delete(id);
+      timer.fn();
+    },
+    fireAll() {
+      while (held.size) this.fireOldest();
+    },
+  };
+}
+
+const lastAssistant = (container) => [...container.querySelectorAll('.osa-message.assistant')].at(-1) || null;
+const lastReplyText = (container) => {
+  const reply = lastAssistant(container);
+  return reply ? reply.querySelector('.osa-message-content').textContent : '';
+};
+const countOf = (text, part) => text.split(part).length - 1;
+
+/** Press Send with `question` typed, as a reader does. */
+function send(window, container, question) {
+  container.querySelector('.osa-chat-input input').value = question;
+  container.querySelector('.osa-send-btn').dispatchEvent(new window.Event('click', { bubbles: true }));
+}
+const settled = (container) => !container.querySelector('.osa-send-btn').disabled;
+async function waitFor(predicate, label, timeoutMs = 5000) {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > timeoutMs) throw new Error(`timed out after ${timeoutMs} ms: ${label}`);
+    await new Promise((resolve) => setTimeout(resolve, 3));
+  }
+}
+const json = (body, init = {}) => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' }, ...init });
+
+console.log('\nwarnings that arrive together are all shown, each for its own full period');
+{
+  const timers = heldTimers();
+  const { window, api } = loadWidget({ timers });
+  timers.arm();
+  const container = window.document.querySelector('.osa-chat-widget');
+  await api.handleStreamingResponse(sse([
+    { event: 'content', content: REPLY },
+    { event: 'warning', message: CUT_OFF_MESSAGE },
+    { event: 'warning', message: LONG_MESSAGE },
+    { event: 'done', content: REPLY },
+  ]), container);
+  const banner = container.querySelector('.osa-warning');
+  assertEqual(banner.style.display, 'block', 'the warning banner is up');
+  assert(banner.textContent.includes(CUT_OFF_MESSAGE), 'the cut-off notice is on it');
+  assert(banner.textContent.includes(LONG_MESSAGE), 'and the long-conversation notice beside it, not in its place');
+  assert(timers.delays().length === 2 && timers.delays().every((ms) => ms >= 10_000),
+    'each has a timer of its own, no shorter than the ten seconds one notice had');
+  timers.fireOldest();
+  assert(!banner.textContent.includes(CUT_OFF_MESSAGE) && banner.textContent.includes(LONG_MESSAGE) && banner.style.display === 'block',
+    'when the first runs out only it goes; the second is still there to read');
+  timers.fireOldest();
+  assertEqual(banner.style.display, 'none', 'the banner goes when the last one does');
+}
+
+console.log('\nthe same warning twice is one line, read for a full period from the last time');
+{
+  const timers = heldTimers();
+  const { window, api } = loadWidget({ timers });
+  timers.arm();
+  const container = window.document.querySelector('.osa-chat-widget');
+  await api.handleStreamingResponse(sse([
+    { event: 'content', content: REPLY },
+    { event: 'warning', message: LONG_MESSAGE },
+    { event: 'warning', message: LONG_MESSAGE },
+    { event: 'done', content: REPLY },
+  ]), container);
+  const banner = container.querySelector('.osa-warning');
+  assertEqual(countOf(banner.textContent, LONG_MESSAGE), 1, 'it is shown once');
+  assertEqual(timers.delays().length, 1, 'with one timer, the earlier one replaced');
+  timers.fireAll();
+  assertEqual(banner.style.display, 'none', 'and it goes when that runs out');
 }
 
 console.log('\n' + '='.repeat(60));

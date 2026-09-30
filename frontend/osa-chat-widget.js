@@ -2154,6 +2154,11 @@
       padding: 8px 16px;
       background: #fffbeb;
       border-top: 1px solid #fde68a;
+      user-select: text;
+    }
+
+    .osa-warning-line + .osa-warning-line {
+      margin-top: 4px;
     }
 
     .osa-resize-handle {
@@ -7770,14 +7775,31 @@
     }, 5000);
   }
 
+  // Warnings stack, one line each in the order they came. Several arrive back to back
+  // (a cut-off reply and a long conversation do), and a banner that held only the last
+  // would take the first away before it could be read. Each line has a timer of its own,
+  // so each is up for the full period from when it arrived, and the banner goes with
+  // the last line. The same text again is the one line, its period started over.
+  const WARNING_VISIBLE_MS = 10000;
+  const warningTimers = new WeakMap();
   function showWarning(container, message) {
     const warningEl = container.querySelector('.osa-warning');
     if (!warningEl) return;
-    warningEl.textContent = message;
+    const text = String(message);
+    let line = [...warningEl.children].find((el) => el.textContent === text);
+    if (line) {
+      clearTimeout(warningTimers.get(line));
+    } else {
+      line = document.createElement('div');
+      line.className = 'osa-warning-line';
+      line.textContent = text;
+      warningEl.appendChild(line);
+    }
+    warningTimers.set(line, setTimeout(() => {
+      line.remove();
+      if (!warningEl.firstElementChild) warningEl.style.display = 'none';
+    }, WARNING_VISIBLE_MS));
     warningEl.style.display = 'block';
-    setTimeout(() => {
-      warningEl.style.display = 'none';
-    }, 10000);
   }
 
   // Parse SSE (Server-Sent Events) format
