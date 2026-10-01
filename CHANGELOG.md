@@ -13,6 +13,10 @@ the version being released and start a new `[Unreleased]` section above it.
 
 ## [Unreleased]
 
+### Changed
+
+- **NEMAR: a shorter notebook welcome**: the starter notebook now opens as a "Python playground" with a short welcome that says where the code runs, what is installed, that MNE does not install in this runtime, and that the Zarr copy is lossy.
+
 ## [0.8.16] - 2026-09-30
 
 ### Added
