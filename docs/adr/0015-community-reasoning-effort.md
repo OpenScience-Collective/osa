@@ -25,6 +25,8 @@ Measured against Amazon Bedrock on 2026-09-29:
 Through the agent graph of the Neurodata Without Borders (NWB) community on a documentation question (median of three runs each),
 Luna's time to first text was 2.5 s at `none`, 2.8 s at `low`, 5.2 s at `medium` and `high`, 10.6 s at `xhigh` and 48 s at `max`.
 At `xhigh` and `max` it also skipped the documentation search in the median run, so the answer had no citations.
+The times above are times to the first text of one question, a different measurement from the 15 to 50 seconds above (the range over tool-using turns before a first word at `max`)
+and from the 7 to 9 seconds at `high` against about 27 at `max` that #544 recorded as the time for NWB to answer real community questions; the figures do not conflict.
 
 The Claude Platform on AWS and OpenRouter have their own fields (`output_config.effort` beside adaptive thinking, and a unified `reasoning.effort` body field),
 documented by the providers and covered here by the request each client builds;

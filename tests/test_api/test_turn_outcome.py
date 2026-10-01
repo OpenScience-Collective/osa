@@ -190,6 +190,17 @@ class TestACutOffReplyWithText:
         )
         assert (problem.event, problem.message) == ("warning", expected)
 
+    @pytest.mark.parametrize("reason", sorted(TRUNCATING_STOP_REASONS))
+    def test_its_summary_does_not_say_there_was_no_answer(self, reason: str) -> None:
+        runs = ModelRuns()
+        runs.note(AIMessage(content="", response_metadata={"finish_reason": reason}))
+
+        with_text = _problem(runs, "An answer that stops sho")
+        without = _problem(runs, "")
+
+        assert "no answer" not in with_text.summary and "after an answer" in with_text.summary
+        assert "with no answer" in without.summary
+
 
 class TestWhatAFullContextWindowSays:
     """Asking again, or asking it to continue, adds to a conversation that is already too

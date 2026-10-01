@@ -5,9 +5,11 @@ id: eeglab
 name: EEGLAB
 description: EEG signal processing and analysis toolbox
 status: available
-# GPT-6 Luna, served from Amazon Bedrock on the platform's key (issue #559). A caller with their
-# own Anthropic key who names no model (the CLI) runs Claude Haiku 4.5 instead, and so does
-# every request on a deployment with no Bedrock key.
+# GPT-6 Luna, served from Amazon Bedrock on the platform's key (issue #559). With the Bedrock key
+# missing but ANTHROPIC_API_KEY set, a request that names no model runs the deployment's Claude
+# default (DEFAULT_MODEL, Claude Haiku 4.5 unless changed) and logs an error naming this community;
+# a caller's own Anthropic key (the CLI) runs it too, with a warning if that is the only cause.
+# With no ANTHROPIC_API_KEY it goes to OpenRouter's Luna slug, or fails with HTTP 500.
 default_model: openai.gpt-6-luna
 # The level every model this community runs is asked to reason at, on every provider
 # (issue #545, ADR 0015). Luna at max took 15 to 50 s to a first word, so this community runs high.

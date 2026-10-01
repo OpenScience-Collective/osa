@@ -619,6 +619,13 @@ MAX_MESSAGES_PER_SESSION = 300
 
 MAX_MESSAGE_LENGTH = 10000  # Max characters per message a PERSON sends
 
+#: Max characters of one model reply kept in a session. A person's 10,000 does not fit what
+#: a model writes: a reply cut off at Bedrock's 16,000-token output limit is about 64,000
+#: characters of ordinary text. Refusing to store such a reply threw away an answer that was
+#: already paid for, and in a text-bound cut-off lost the warning that explains it. This
+#: bounds memory; the model's own output limit is what bounds the reply.
+MAX_ASSISTANT_MESSAGE_LENGTH = 100000
+
 #: How long one turn may hold a session before a later turn assumes it was abandoned.
 #: Generous, because a turn spans a model response and any server tool calls it makes,
 #: and the cost of being wrong in the strict direction is refusing a legitimate turn.
@@ -662,7 +669,8 @@ class ChatSession:
 
     Enforces constraints:
     - Max messages per session: 300 (see MAX_MESSAGES_PER_SESSION)
-    - Max message length: 10,000 characters for human and assistant text
+    - Max message length: 10,000 characters for a person's text
+      (MAX_MESSAGE_LENGTH), 100,000 for a model's (MAX_ASSISTANT_MESSAGE_LENGTH)
     - Tool results are capped separately by MAX_TOOL_RESULT_LENGTH, because machine
       output is not something a person typed and the smaller cap forbids every real
       figure (issue #422)
@@ -704,8 +712,10 @@ class ChatSession:
         Raises:
             ValueError: If message exceeds length limit or session at max messages.
         """
-        if len(content) > MAX_MESSAGE_LENGTH:
-            raise ValueError(f"Message too long ({len(content)} chars). Max: {MAX_MESSAGE_LENGTH}")
+        if len(content) > MAX_ASSISTANT_MESSAGE_LENGTH:
+            raise ValueError(
+                f"Message too long ({len(content)} chars). Max: {MAX_ASSISTANT_MESSAGE_LENGTH}"
+            )
         if len(self.messages) >= MAX_MESSAGES_PER_SESSION:
             raise ValueError(
                 f"Session has reached max messages ({MAX_MESSAGES_PER_SESSION}). "
@@ -1097,8 +1107,8 @@ class ProviderChoice:
     def __post_init__(self) -> None:
         """Enforce the invariant every current construction site already
         follows (_platform_choice, _resolve_provider): api_key is None only
-        for Anthropic server mode, and every other combination carries a
-        non-empty key. Nothing today constructs an out-of-line instance,
+        for server mode on the Anthropic or Bedrock provider, and every other
+        combination carries a non-empty key. Nothing today constructs an out-of-line instance,
         but a future call site that got this wrong would otherwise run on
         the platform's own key with cost enforcement disabled
         (_check_model_cost skips it whenever key_source == "byok", and
@@ -1129,8 +1139,8 @@ class ProviderChoice:
     @property
     def takes_native_blocks(self) -> bool:
         """Whether this path has been shown to accept Anthropic's native content
-        blocks: search_result citations and image blocks alike. The one place that
-        answers it, so citations, MCP images and browser figures cannot disagree."""
+        blocks, as MCP images and browser figures are. The one place that answers it for
+        images; citations use ``cites_sources``, which also covers the tagged path."""
         return self.provider == "anthropic"
 
     @property
@@ -1353,10 +1363,10 @@ def _resolve_provider(
 def _to_openrouter_model_via_canonical(model: str) -> str | None:
     """Map a model id to its OpenRouter slug, canonicalizing aliases first.
 
-    ``to_openrouter_model`` only recognizes the two canonical first-party ids
-    in ``OPENROUTER_MODEL_IDS`` ("claude-haiku-4-5", "claude-sonnet-5-5"), not
-    the bare legacy aliases in ``MODEL_ALIASES`` (e.g. "claude-haiku-4.5",
-    "claude-sonnet-4.5"). Passing one of those straight to
+    ``to_openrouter_model`` only recognizes the canonical ids in
+    ``OPENROUTER_MODEL_IDS`` (the offered Claude and Bedrock-served models, for
+    example "claude-haiku-4-5"), not the bare legacy aliases in ``MODEL_ALIASES``
+    (e.g. "claude-haiku-4.5", "claude-sonnet-4.5"). Passing one of those straight to
     ``to_openrouter_model`` returns None and falls through to the emergency
     default -- the exact model-family substitution this migration set out to
     eliminate. Resolving through ``normalize_model`` first fixes that, since
@@ -1393,10 +1403,11 @@ def _select_model(
     picked one of those onto the Bedrock provider. ``default_model_provider``
     is ignored here: it is OpenRouter-only routing.
 
-    **OpenRouter** (reached via BYOK, or a community's own funded
-    OpenRouter key, see ``_resolve_provider``): unchanged from before
-    Phase 2, so a custom model requires BYOK, otherwise the community or
-    platform default (and its provider-routing hint) is used.
+    **OpenRouter** (reached via BYOK, a community's own funded OpenRouter key, or
+    the platform's when it has no ``ANTHROPIC_API_KEY``, see ``_resolve_provider``
+    and ``_platform_choice``): a custom model requires
+    BYOK, otherwise the community or platform default (and its
+    provider-routing hint) is used.
 
     Args:
         community_info: Community information from registry.
@@ -1452,10 +1463,9 @@ def _select_model(
         return (_to_openrouter_model_via_canonical(requested_model) or requested_model, None)
 
     if default_model and "/" not in default_model:
-        # Phase 2 (issue #362) made every community and platform
-        # default_model a bare first-party Anthropic id such as
-        # "claude-haiku-4-5" (or a legacy alias of one), which is not a valid
-        # OpenRouter slug. Map it to the same model's OpenRouter slug so a
+        # A community or platform default_model is a bare offered-model id such as
+        # "claude-haiku-4-5" or "openai.gpt-6-luna" (or a legacy alias of one), which is
+        # not a valid OpenRouter slug. Map it to the same model's OpenRouter slug so a
         # request funded by an OpenRouter key still answers with the model
         # the community chose. Switching to OpenRouter's own default here
         # instead would silently change model family based on which key paid
@@ -1472,8 +1482,8 @@ def _select_model(
         # the community is what makes it actionable.
         if log:
             logger.error(
-                "Community %s: default model %r is neither an offered Anthropic "
-                "model nor an OpenRouter slug; falling back to %s for this "
+                "Community %s: default model %r is neither an offered model "
+                "nor an OpenRouter slug; falling back to %s for this "
                 "OpenRouter-funded request",
                 community_info.id,
                 default_model,
@@ -2308,19 +2318,30 @@ def _set_metrics_on_request(
     awm: AssistantWithMetrics,
     agent_result: AgentResult,
 ) -> None:
-    """Store agent metrics on request.state for the metrics middleware to log."""
+    """Store agent metrics on request.state for the metrics middleware to log.
+
+    A request whose runs reported no usage is NULL in the row, not zero tokens at no cost,
+    as for a streamed one (``_log_streaming_metrics``): a zero would read as a free
+    request, and ``warn_about_usage`` says the cost is missing.
+    """
+    # The test _log_streaming_metrics and ModelRuns use: some token count, not the total field.
+    has_tokens = (agent_result.input_tokens + agent_result.output_tokens) > 0
     http_request.state.metrics_agent_data = {
         "model": awm.model,
         "key_source": awm.key_source,
-        "input_tokens": agent_result.input_tokens,
-        "output_tokens": agent_result.output_tokens,
-        "total_tokens": agent_result.total_tokens,
-        "estimated_cost": estimate_cost(
-            awm.model,
-            agent_result.input_tokens,
-            agent_result.output_tokens,
-            cache_read_tokens=agent_result.cache_read_tokens,
-            cache_creation_tokens=agent_result.cache_creation_tokens,
+        "input_tokens": agent_result.input_tokens if has_tokens else None,
+        "output_tokens": agent_result.output_tokens if has_tokens else None,
+        "total_tokens": agent_result.total_tokens if has_tokens else None,
+        "estimated_cost": (
+            estimate_cost(
+                awm.model,
+                agent_result.input_tokens,
+                agent_result.output_tokens,
+                cache_read_tokens=agent_result.cache_read_tokens,
+                cache_creation_tokens=agent_result.cache_creation_tokens,
+            )
+            if has_tokens
+            else None
         ),
         "tools_called": agent_result.tools_called,
         "tool_call_count": len(agent_result.tools_called),
@@ -2764,13 +2785,16 @@ def create_community_router(community_id: str) -> APIRouter:
 
         except UnansweredReply as unanswered:
             return unanswered.response
-        except ValueError as e:
-            # Session limit errors
-            raise HTTPException(status_code=400, detail=str(e)) from e
         except HTTPException:
             # Re-raise HTTP exceptions (including the ones we created above)
             raise
         except Exception as e:
+            if isinstance(e, ValueError) and not classify_model_error(e).from_provider:
+                # Session limit errors
+                raise HTTPException(status_code=400, detail=str(e)) from e
+            # A ValueError the model call raised (langchain-aws raises one for a service
+            # exception event) is the provider's failure, not a request the caller got
+            # wrong: it is logged and answered like any other model error, not echoed.
             logger.error(
                 "Error in chat endpoint for session %s (community: %s): %s",
                 session.session_id,
@@ -2821,9 +2845,9 @@ def create_community_router(community_id: str) -> APIRouter:
         byok = resolve_byok(x_anthropic_key, x_openrouter_key)
 
         # Whether run 2 may carry the result's images, decided the same way
-        # `create_community_assistant` decides citations. Not an authorization
-        # check: `_stream_chat_response` makes that one, on the same inputs, and its
-        # 403 is the one a caller sees. So a refusal here only means no images. It
+        # `create_community_assistant` decides MCP images (`takes_native_blocks`). Not an
+        # authorization check: `_stream_chat_response` makes that one, on the same inputs,
+        # and its 403 is the one a caller sees. So a refusal here only means no images. It
         # runs before the call is claimed, because anything raised after the claim
         # would leave the session unanswerable (see the note on the re-park below).
         try:
@@ -3770,9 +3794,11 @@ async def _stream_ask_response(
         data: {"event": "tool_start", "name": "tool_name", "input": {...}}
         data: {"event": "tool_end", "name": "tool_name", "output": {...}}
         data: {"event": "citation", "marker": 1, "source": "...", "title": "...", "cited_text": "..."}
-        data: {"event": "warning", "message": "...", "code": "cut_off"}  (optional, before done)
+        data: {"event": "warning", "message": "...", "code": "cut_off"}  (optional, before done;
+               `codes` lists every kind when more than one applies)
         data: {"event": "done", "request_id": "...", "model": "...", "content": "final answer", "citations": [...]}
-        data: {"event": "error", "message": "error text", "error_id": "...", "request_id": "..."}
+        data: {"event": "error", "message": "error text", "error_id": "...", "request_id": "...",
+               "retryable": true}  (ends the stream, no `done`; `retryable` only when known)
 
     The `thinking` event is a liveness signal only -- it never carries the
     model's reasoning text (see src/agents/content.py's module docstring);
@@ -3825,6 +3851,12 @@ async def _stream_ask_response(
 
         stream_config = awm.langfuse_config or {}
         full_response = ""
+        # Where the model run in progress began in `full_response`, and the text of the last
+        # run that ended: the reader's answer is the last run's (see ModelRuns), the rest
+        # is what the model wrote before a tool call. Text that arrived after the last
+        # run ended (or with no run end at all) is a run's too, so it comes first.
+        run_start = 0
+        last_run_text = ""
         async for event in graph.astream_events(state, version="v2", config=stream_config):
             kind = event.get("event")
 
@@ -3859,6 +3891,8 @@ async def _stream_ask_response(
                 total_cache_creation_tokens += cache_creation
                 model_runs.note(event.get("data", {}).get("output"))
                 citation_assembler.finish_model_run()
+                last_run_text = full_response[run_start:]
+                run_start = len(full_response)
 
             elif kind == "on_tool_start":
                 tool_input = event.get("data", {}).get("input", {})
@@ -3895,7 +3929,9 @@ async def _stream_ask_response(
         )
         problem = reply_problem(
             model_runs,
-            reply_text=final_response,
+            reply_text=normalize_citation_markers(
+                full_response[run_start:] or last_run_text, citation_assembler.marks
+            ),
             code_ran=False,
             community_id=community_id,
             model=awm.model if awm else None,
@@ -4118,16 +4154,19 @@ async def _stream_chat_response(
         data: {"event": "tool_end", "name": "tool_name", "output": {...}}
         data: {"event": "session", "session_id": "..."}  (sent first)
         data: {"event": "citation", "marker": 1, "source": "...", "title": "...", "cited_text": "..."}
-        data: {"event": "warning", "message": "...", "code": "cut_off"}  (optional, before done)
+        data: {"event": "warning", "message": "...", "code": "cut_off"}  (optional, before done;
+               `codes` lists every kind when more than one applies)
         data: {"event": "done", "session_id": "...", "request_id": "...", "model": "...", "content": "final answer", "citations": [...]}
-        data: {"event": "error", "message": "error text", "error_id": "...", "request_id": "..."}
+        data: {"event": "error", "message": "error text", "error_id": "...", "request_id": "...",
+               "retryable": true}  (ends the stream, no `done`; `retryable` only when known)
 
     The `thinking` event is a liveness signal only -- it never carries the
     model's reasoning text (see src/agents/content.py's module docstring);
     clients that do not recognize it are expected to ignore it.
 
-    A reply gets at most one `warning`, because the widget keeps one warning element
-    and a second event would overwrite the first unread. `code` names the kind
+    A reply gets at most one `warning`, because a widget that predates stacked warnings
+    (a pinned embed) keeps one warning element and a second event would overwrite the
+    first unread. `code` names the kind
     (`cut_off`, `long_conversation`); when a reply was cut off in a long conversation
     the one event says both, with `code` `cut_off` and `codes` listing each. `message`
     is the text to show, and a client that ignores `code` is unaffected.
@@ -4251,6 +4290,12 @@ async def _stream_chat_response(
 
         stream_config = awm.langfuse_config or {}
         full_response = ""
+        # Where the model run in progress began in `full_response`, and the text of the last
+        # run that ended: the reader's answer is the last run's (see ModelRuns), the rest
+        # is what the model wrote before a tool call. Text that arrived after the last
+        # run ended (or with no run end at all) is a run's too, so it comes first.
+        run_start = 0
+        last_run_text = ""
         announced_tool_calls: set[tuple[Any, ...]] = set()
         final_state: dict[str, Any] | None = None
         # Whether the run ENDED on the client_tools node, tracked as the last graph
@@ -4294,6 +4339,8 @@ async def _stream_chat_response(
                 total_cache_creation_tokens += cache_creation
                 model_runs.note(event.get("data", {}).get("output"))
                 citation_assembler.finish_model_run()
+                last_run_text = full_response[run_start:]
+                run_start = len(full_response)
 
             elif kind == "on_tool_start":
                 tool_input = event.get("data", {}).get("input", {})
@@ -4420,7 +4467,9 @@ async def _stream_chat_response(
         )
         problem = reply_problem(
             model_runs,
-            reply_text=final_response,
+            reply_text=normalize_citation_markers(
+                full_response[run_start:] or last_run_text, citation_assembler.marks
+            ),
             code_ran=code_runs_answered > 0,
             community_id=community_id,
             model=awm.model if awm else None,
@@ -4453,10 +4502,25 @@ async def _stream_chat_response(
             try:
                 session.add_assistant_message(final_response)
             except ValueError as e:
-                # Session limit exceeded
+                # Session limit exceeded. The reply was already paid for, so the request
+                # still gets its metrics row, as a failure.
                 logger.error("Session limit exceeded in streaming: %s", e)
-                sse_event = {"event": "error", "message": str(e)}
+                sse_event = {"event": "error", "message": str(e), "request_id": request_id}
                 yield f"data: {json.dumps(sse_event)}\n\n"
+                _log_streaming_metrics(
+                    http_request=http_request,
+                    community_id=community_id,
+                    endpoint=metrics_endpoint,
+                    awm=awm,
+                    tools_called=tools_called,
+                    start_time=start_time,
+                    status_code=500,
+                    input_tokens=total_input_tokens,
+                    output_tokens=total_output_tokens,
+                    cache_read_tokens=total_cache_read_tokens,
+                    cache_creation_tokens=total_cache_creation_tokens,
+                    error_message=f"session limit: {e}",
+                )
                 return
 
         # Warn if conversation is approaching the token budget (87.5% of 80K).
@@ -4465,9 +4529,10 @@ async def _stream_chat_response(
         # arithmetic the trimmer acts on. Two counters would mean warning at one
         # threshold and trimming at another.
         approx_tokens = count_conversation_tokens(session.messages)
-        # One event for everything there is to say: the widget keeps a single warning
-        # element, so a second event straight after the cut-off one would overwrite it
-        # unread, and a reply is likeliest to be cut off in a long conversation.
+        # One event for everything there is to say: a widget that predates stacked
+        # warnings (a pinned embed) keeps a single warning element, so a second event
+        # straight after the cut-off one would overwrite it unread, and a reply is
+        # likeliest to be cut off in a long conversation.
         warning = warning_event(problem, conversation_is_long=approx_tokens > warning_threshold)
         if warning is not None:
             yield f"data: {json.dumps(warning)}\n\n"

@@ -4233,7 +4233,7 @@
       typeof msg.role === 'string' &&
       (msg.role === 'user' || msg.role === 'assistant') &&
       typeof msg.content === 'string' &&
-      msg.content.length < 100000; // Prevent DoS
+      msg.content.length <= 100000; // Prevent DoS; the server keeps a reply up to this long
   }
 
   // Older history entries may not have citations, and corrupted storage can
@@ -5564,8 +5564,12 @@
   // Turn a failed response into an Error carrying the most useful message.
   async function responseError(response) {
     let errorMessage = `Request failed (${response.status})`;
+    let errorId = null;
     try {
       const error = await response.json();
+      // The reference a 502 for an empty or cut-off reply carries (`error_id`), the one
+      // the streamed `error` event carries too, so a reader can quote it either way.
+      errorId = errorReference(error && error.error_id);
       if (error && typeof error.detail === 'string') {
         errorMessage = error.detail.substring(0, 500);
       } else if (error && typeof error.error === 'string') {
@@ -5583,7 +5587,9 @@
         errorMessage = 'Access denied. Please complete the security verification.';
       }
     }
-    return new Error(errorMessage);
+    const failure = new Error(errorMessage);
+    failure.errorId = errorId;
+    return failure;
   }
 
   // Whether a 429 came from the worker's per-minute limit, the one worth
@@ -6436,7 +6442,7 @@
   }
 
   // Puts an emptied key field away when focus leaves it. Not while a pointer press is
-  // in progress in the widget: the dialog is centred, so hiding a field moves the Save
+  // in progress in the widget: the dialog is centered, so hiding a field moves the Save
   // button, and a click that began on it would end somewhere else and be lost. Safari
   // and Firefox on a Mac do not focus a button a press lands on, so the press itself is
   // what is watched, not where focus went. The field settles after that click instead.
@@ -8069,12 +8075,12 @@
     // A reply that ran code is kept even when it ends with no text: what ran,
     // and any figure it drew, is part of the answer the reader asked for.
     const ranCode = Array.isArray(message.executions) && message.executions.length > 0;
-    // So is a reply the model was cut off in, which has a note saying so to show. It
-    // can have neither text nor a record of code: a reply whose only run read an
-    // earlier run's output (get_full_output) has none, since answerToolRequest records
-    // only code that ran, and the server counts that run as code (it sends a warning
-    // and this done, not an error). Dropping it would leave the warning banner, gone
-    // in seconds, as the only word of why nothing came back.
+    // So is a reply the model was cut off in, which has a note saying so to show. This
+    // server sends that note only for a reply with text or code (one with neither, such
+    // as a run that only read an earlier run's output back with get_full_output, is an
+    // `error` event, and no `done` follows). Kept as a guard for a server that does not
+    // draw that line: dropping such a reply would leave the warning banner, gone in
+    // seconds, as the only word of why nothing came back.
     if (hasVisibleText(finalContent) || ranCode || message.cutOff === true) {
       messageList[messageIndex] = {
         ...message,
@@ -8334,10 +8340,15 @@
   //   data: {"event": "tool_start", "name": "tool_name", "input": {...}}
   //   data: {"event": "tool_end", "name": "tool_name", "output": "result"}
   //   data: {"event": "citation", "marker": 1, "source": "...", "title": "...", "cited_text": "..."}
+  //   data: {"event": "warning", "message": "...", "code": "cut_off"}  (optional, before
+  //          done; `codes` lists every kind when more than one applies)
   //   data: {"event": "done", "content": "final answer", "citations": [...]}
   //   data: {"event": "tool_request", "call_id": "...", "tool": "...", "args": {...},
   //          "content": "text so far", "citations": [...]}  (instead of done)
-  //   data: {"event": "error", "message": "error description"}
+  //   data: {"event": "error", "message": "error description", "error_id": "...",
+  //          "request_id": "...", "retryable": true}  (ends the stream, no done follows;
+  //          `retryable` only when the server knows)
+  //   (/chat sends {"event": "session", "session_id": "..."} first.)
   //
   // A browser-execution reply is several runs the reader sees as one message.
   // A run that ends on tool_request resolves with {toolRequest, messageIndex};
