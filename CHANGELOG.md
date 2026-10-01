@@ -16,6 +16,7 @@ the version being released and start a new `[Unreleased]` section above it.
 ### Changed
 
 - **NEMAR: a shorter notebook welcome**: the starter notebook now opens as a "Python playground" with a short welcome that says where the code runs, what is installed, that MNE does not install in this runtime, and that the Zarr copy is lossy.
+- **NEMAR: a curated first plot**: the chat's guidance for power spectra and ERP images now sets the plot range before drawing, sorts ERP image rows (by response time, or by response amplitude), and describes the structure a plot shows rather than calling the recording noise.
 
 ## [0.8.16] - 2026-09-30
 
