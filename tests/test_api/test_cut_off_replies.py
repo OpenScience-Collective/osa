@@ -32,6 +32,8 @@ from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
 from src.agents.base import DEFAULT_MAX_CONVERSATION_TOKENS, count_conversation_tokens
 from src.api.routers.community import (
+    MAX_ASSISTANT_MESSAGE_LENGTH,
+    MAX_MESSAGE_LENGTH,
     AssistantWithMetrics,
     ChatSession,
     _get_session_store,
@@ -75,6 +77,7 @@ from tests.helpers.provider_replies import (
     community_config,
     real_request,
     scripted_reply,
+    text_chunk,
 )
 from tests.test_api.test_tool_call_streaming import _anthropic_call
 
@@ -1193,3 +1196,155 @@ class TestThroughTheRealClients:
         else:
             assert _names(events)[-1] == "done"
             assert events[-1]["content"] == texts[0]
+
+
+# ---------------------------------------------------------------------------
+# Text written before a tool call is not the answer (final release review)
+# ---------------------------------------------------------------------------
+
+PREAMBLE = "Let me look that up. "
+
+
+def _preamble_then_tool(provider: Provider) -> list[AIMessageChunk]:
+    """A run that writes a sentence and then calls a server tool, as models do."""
+    lookup = _anthropic_call("lookup_scriptedreply_docs", "toolu_01preamble", {"query": "tags"})
+    return [text_chunk(PREAMBLE), *lookup, *provider.end(provider.finished, True, False)]
+
+
+def _streamed_text(events: list[dict]) -> str:
+    return "".join(e["content"] for e in events if e["event"] == "content")
+
+
+@provider_param
+class TestTextWrittenBeforeAToolCall:
+    """The answer is the last model run's (``ModelRuns``). A model that writes "Let me look
+    that up", calls a tool, and then ends with nothing has not answered, however much it
+    wrote first. Not streamed that was already a 502; streamed, the preamble made the reply
+    look answered and the reader got a ``done`` holding only the preamble."""
+
+    async def test_a_last_run_with_no_text_is_an_error_when_streamed(
+        self, provider: Provider
+    ) -> None:
+        events, session = await _chat(
+            provider, [_preamble_then_tool(provider), scripted_reply(provider, "")]
+        )
+
+        assert _names(events)[-1] == "error"
+        assert "done" not in _names(events)
+        assert events[-1]["message"] == EMPTY_MESSAGE
+        assert _streamed_text(events) == PREAMBLE, "the reader did see the preamble stream"
+        assert [type(m).__name__ for m in session.messages] == ["HumanMessage"], (
+            "nothing is stored for a reply that was not written"
+        )
+        (row,) = _rows()
+        assert row["status_code"] == 502
+
+    async def test_the_same_for_ask(self, provider: Provider) -> None:
+        events = await _ask(provider, [_preamble_then_tool(provider), scripted_reply(provider, "")])
+
+        assert _names(events)[-1] == "error"
+        assert "done" not in _names(events)
+        assert events[-1]["message"] == EMPTY_MESSAGE
+
+    async def test_a_last_run_cut_off_with_no_text_is_an_error_not_a_cut_off_answer(
+        self, provider: Provider
+    ) -> None:
+        """Out of room before it wrote anything: no answer, not "this answer was cut off"."""
+        script = [_preamble_then_tool(provider), scripted_reply(provider, "", cut_off=True)]
+
+        chat_events, _ = await _chat(provider, script)
+        ask_events = await _ask(provider, script)
+
+        for events in (chat_events, ask_events):
+            assert _names(events)[-1] == "error"
+            assert "warning" not in _names(events)
+            assert events[-1]["message"] == NO_ANSWER_MESSAGE
+
+    async def test_a_last_run_with_text_is_an_ordinary_reply(self, provider: Provider) -> None:
+        events, session = await _chat(
+            provider, [_preamble_then_tool(provider), scripted_reply(provider, ANSWER)]
+        )
+
+        assert _names(events)[-1] == "done"
+        assert not {"error", "warning"} & set(_names(events))
+        assert events[-1]["content"] == PREAMBLE + ANSWER
+        assert len(session.messages) == 2
+
+    def test_not_streamed_it_is_the_same_502(
+        self, provider: Provider, client: TestClient, monkeypatch
+    ) -> None:
+        """The two paths agree on what an answer is."""
+        script = [_preamble_then_tool(provider), scripted_reply(provider, "")]
+        _serve(monkeypatch, provider, script)
+
+        ask = _post_ask(client)
+        _serve(monkeypatch, provider, script)
+        chat = _post_chat(client)
+
+        for response in (ask, chat):
+            assert response.status_code == 502
+            assert response.json()["detail"] == EMPTY_MESSAGE
+
+
+# ---------------------------------------------------------------------------
+# A model's reply is not a person's message (final release review)
+# ---------------------------------------------------------------------------
+
+#: Longer than a person may send, shorter than a model's output limit allows.
+LONG_REPLY = "Sensory-event marks a stimulus presented to the participant. " * 200
+
+
+def test_the_long_reply_is_between_the_two_limits() -> None:
+    assert MAX_MESSAGE_LENGTH < len(LONG_REPLY) < MAX_ASSISTANT_MESSAGE_LENGTH
+
+
+class TestAModelsReplyIsNotAPersonsMessage:
+    """Text written by a model was held to the 10,000 characters a person may send. A reply
+    cut off at an output limit is far longer, so streamed it ended in an ``error`` event
+    with no ``done`` and no cut-off warning, and not streamed it was a 500: the reply was
+    paid for and thrown away."""
+
+    def test_a_session_keeps_a_reply_longer_than_a_person_may_send(self) -> None:
+        session = ChatSession("sess-long", COMMUNITY)
+
+        session.add_assistant_message(LONG_REPLY)
+
+        assert session.messages[-1].content == LONG_REPLY
+
+    def test_a_person_still_may_not_send_it(self) -> None:
+        with pytest.raises(ValueError, match="too long"):
+            ChatSession("sess-long", COMMUNITY).add_user_message(LONG_REPLY)
+
+    def test_a_model_has_a_limit_too(self) -> None:
+        with pytest.raises(ValueError, match="too long"):
+            ChatSession("sess-long", COMMUNITY).add_assistant_message(
+                "x" * (MAX_ASSISTANT_MESSAGE_LENGTH + 1)
+            )
+
+    @provider_param
+    async def test_a_long_reply_cut_off_at_the_output_limit_is_a_warning_then_done(
+        self, provider: Provider
+    ) -> None:
+        events, session = await _chat(
+            provider, [scripted_reply(provider, LONG_REPLY, cut_off=True)]
+        )
+
+        assert _names(events)[-2:] == ["warning", "done"]
+        assert events[-1]["content"] == LONG_REPLY
+        assert events[-2]["code"] == "cut_off"
+        assert session.messages[-1].content == LONG_REPLY
+        (row,) = _rows()
+        assert row["status_code"] == 200
+
+    @provider_param
+    def test_not_streamed_it_is_a_200_with_the_warning(
+        self, provider: Provider, client: TestClient, monkeypatch
+    ) -> None:
+        _serve(monkeypatch, provider, [scripted_reply(provider, LONG_REPLY, cut_off=True)])
+
+        response = _post_chat(client)
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["message"]["content"] == LONG_REPLY
+        assert body["warnings"] == [CUT_OFF_MESSAGE]

@@ -6,11 +6,12 @@ key present or absent, because pydantic-settings also reads a developer's .env.
 """
 
 import logging
+import os
 
 import pytest
 from fastapi import HTTPException
 
-from src.api.config import get_settings
+from src.api.config import RETIRED_ENV_VARS, get_settings
 from src.api.routers.community import (
     ProviderChoice,
     _bedrock_choice,
@@ -29,6 +30,19 @@ from tests.helpers.deployment import set_platform_keys
 @pytest.fixture(autouse=True, scope="module")
 def _load_communities():
     discover_assistants()
+
+
+@pytest.fixture(autouse=True)
+def _no_retired_env_vars(monkeypatch):
+    """Run without the retired variables a developer's or a server's shell may export.
+
+    ``get_settings`` logs a warning for each one that is set (``RETIRED_ENV_VARS``), and the
+    tests below assert exactly what a request logs, so one exported name would fail them
+    on that machine alone. The warning reads the environment case-insensitively, so every
+    spelling present is removed. A test about the warning sets the name itself.
+    """
+    for name in [name for name in os.environ if name.upper() in RETIRED_ENV_VARS]:
+        monkeypatch.delenv(name)
 
 
 @pytest.fixture(autouse=True)
@@ -368,7 +382,7 @@ class TestTheFallbackLog:
 
         assert [r for r in caplog.records if r.levelno >= logging.WARNING], "it does log"
         if situation == "bad_default":
-            assert any("neither an offered Anthropic" in r.getMessage() for r in caplog.records)
+            assert any("neither an offered model" in r.getMessage() for r in caplog.records)
         assert quiet == loud or (quiet.choice, quiet.model) == (loud.choice, loud.model)
 
     def test_a_community_key_in_use_is_noted_once_and_not_by_a_probe(self, monkeypatch, caplog):
@@ -506,3 +520,25 @@ class TestBedrockModelsPassTheCostGuard:
     @pytest.mark.parametrize("model_id", sorted(BEDROCK_MODELS))
     def test_every_bedrock_model_is_allowed_on_the_platform_key(self, model_id):
         _check_model_cost(model_id, "platform")
+
+
+class TestRetiredEnvironmentVariables:
+    """The warning the tests above are kept clear of: a retired variable still exported."""
+
+    @pytest.mark.parametrize("name", sorted(RETIRED_ENV_VARS))
+    def test_one_that_is_still_set_is_warned_about_by_name(self, monkeypatch, caplog, name):
+        monkeypatch.setenv(name, "2048")
+        caplog.set_level(logging.WARNING)
+
+        get_settings()
+
+        (record,) = [r for r in caplog.records if name in r.getMessage()]
+        assert record.levelno == logging.WARNING
+        assert RETIRED_ENV_VARS[name] in record.getMessage()
+
+    def test_none_set_means_no_warning(self, caplog):
+        caplog.set_level(logging.WARNING)
+
+        get_settings()
+
+        assert [r for r in caplog.records if "no longer used" in r.getMessage()] == []
