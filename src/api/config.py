@@ -98,8 +98,9 @@ class Settings(BaseSettings):
 
     bedrock_region: str = Field(
         default="us-east-2",
-        description="BEDROCK_REGION: AWS region the Bedrock models are called in (Ohio, "
-        "the same region as the Claude Platform on AWS endpoint)",
+        description="BEDROCK_REGION: AWS region the Bedrock models are called in (default "
+        "us-east-2, Ohio). A model that names a region of its own is called there instead "
+        "(Qwen3 Next is pinned to us-east-1)",
     )
     bedrock_max_output_tokens: int = Field(
         default=16000,
