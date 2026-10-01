@@ -1,9 +1,10 @@
 """Configuration management for the OSA API."""
 
 import logging
+import os
 from functools import lru_cache
 
-from pydantic import Field, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from src.version import __version__
@@ -19,6 +20,9 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+        # A rejected key must not be echoed back in the validation error, which ends up
+        # in startup logs and tracebacks.
+        hide_input_in_errors=True,
     )
 
     # API Settings
@@ -85,10 +89,23 @@ class Settings(BaseSettings):
         "server-mode requests. AWS Marketplace is only the billing channel; "
         "the workspace itself is an Anthropic-operated resource.",
     )
-    anthropic_thinking_budget_tokens: int = Field(
-        default=2048,
-        description="Default extended-thinking token budget for budget-style Anthropic "
-        "models (e.g. claude-haiku-4-5)",
+    bedrock_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("bedrock_api_key", "aws_bearer_token_bedrock"),
+        description="AWS_BEARER_TOKEN_BEDROCK: Amazon Bedrock API key that pays for the "
+        "non-Anthropic models (GPT-6 Luna, Qwen3 Next, gpt-oss-120b) on the platform",
+    )
+
+    bedrock_region: str = Field(
+        default="us-east-2",
+        description="BEDROCK_REGION: AWS region the Bedrock models are called in (default "
+        "us-east-2, Ohio). A model that names a region of its own is called there instead "
+        "(Qwen3 Next is pinned to us-east-1)",
+    )
+    bedrock_max_output_tokens: int = Field(
+        default=16000,
+        description="Default max_tokens for Bedrock model requests. Reasoning counts toward "
+        "it, and GPT-6 Luna at high effort can spend thousands of tokens thinking",
     )
     anthropic_max_output_tokens: int = Field(
         default=8000,
@@ -102,7 +119,7 @@ class Settings(BaseSettings):
     # Model Configuration
     # Phase 2 (issue #362) routes platform/community requests to the Claude
     # Platform on AWS by default: default_model/test_model are first-party
-    # Anthropic ids (src.core.services.anthropic_llm.OFFERED_MODELS), not
+    # Anthropic ids (src.core.services.anthropic_models.OFFERED_MODELS), not
     # OpenRouter's creator/model-name format. default_model_provider and
     # test_model_provider are OpenRouter-only routing hints (see
     # src.core.services.litellm_llm.create_openrouter_llm's `provider` arg):
@@ -173,6 +190,26 @@ class Settings(BaseSettings):
     # Empty databases are automatically seeded on startup when sync is enabled
     sync_enabled: bool = Field(default=True, description="Enable automated knowledge sync")
 
+    @field_validator("bedrock_api_key", mode="before")
+    @classmethod
+    def _clean_bedrock_api_key(cls, value: object) -> object:
+        """Trim the key, treat a blank one as unset, and refuse one with whitespace inside.
+
+        A trailing newline or carriage return (an env file with CRLF line endings, a
+        secret pasted with its line break) makes the HTTP client refuse the
+        Authorization header, and the client's error names the header value, key
+        included. A key with whitespace inside is not a key. The error says which
+        variable is wrong and never shows the value.
+        """
+        if not isinstance(value, str):
+            return value
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if any(char.isspace() or ord(char) < 32 for char in cleaned):
+            raise ValueError("AWS_BEARER_TOKEN_BEDROCK contains whitespace or control characters")
+        return cleaned
+
     @model_validator(mode="after")
     def validate_workspace_id_with_base_url(self) -> "Settings":
         """Fail fast if ANTHROPIC_BASE_URL is set without ANTHROPIC_WORKSPACE_ID.
@@ -230,7 +267,34 @@ class Settings(BaseSettings):
         return result
 
 
+# Environment variables that used to set something and are now ignored (Settings ignores
+# unknown ones), with what replaced each. A server that still exports one would otherwise
+# change behavior without a word: an operator who lowered the old Haiku thinking budget to
+# save cost now gets the default level's budget.
+RETIRED_ENV_VARS: dict[str, str] = {
+    "ANTHROPIC_THINKING_BUDGET_TOKENS": (
+        "reasoning_effort in the community's config.yaml sets Claude Haiku's thinking "
+        "budget now (low 1024, medium 2048, high 4096 tokens, none no thinking; high "
+        "when unset)"
+    ),
+}
+
+
+def _warn_retired_env_vars() -> None:
+    """Log a warning for each retired environment variable that is still set.
+
+    Reads the process environment only. ``Settings`` also reads a ``.env`` file, and ignores
+    names it does not know, so a retired variable that appears only in ``.env`` is neither
+    used nor reported here; the deployment's environment file is where to look for it.
+    """
+    present = {name.upper() for name in os.environ}
+    for name, replacement in RETIRED_ENV_VARS.items():
+        if name in present:
+            logger.warning("%s is set but no longer used: %s", name, replacement)
+
+
 @lru_cache
 def get_settings() -> Settings:
     """Get cached settings instance."""
+    _warn_retired_env_vars()
     return Settings()

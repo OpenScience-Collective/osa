@@ -102,6 +102,13 @@ jobs:
         if: matrix.python-version == '3.12'
         run: bun frontend/browser-harness/first-paint-check.mjs --serve
 
+      # The launcher's position, size and offsets (#553), sampled on every frame of
+      # opening and closing the panel. Serves the widget itself; needs no other server.
+      - name: Check the widget's launcher geometry in headless Chrome
+        if: matrix.python-version == '3.12'
+        timeout-minutes: 8
+        run: bun frontend/browser-harness/launcher-geometry-check.mjs
+
       # The pop-out under the harness's copy of nemar.org's policy, with no
       # 'unsafe-inline' in script-src (#470): it renders from the capsule's chat and
       # notebook tabs, on the tab it came from, and carries the widget tag's
@@ -135,6 +142,9 @@ jobs:
 
       - name: Run citation marker tests
         run: bun frontend/test-citation-markers.js
+
+      - name: Run markdown rendering tests
+        run: bun frontend/test-markdown.js
 
       - name: Run streaming tests
         run: bun frontend/test-streaming.js
@@ -247,6 +257,9 @@ jobs:
       - name: Run the capsule launcher tests on a real DOM
         run: bun frontend/test-widget-capsule.js
 
+      - name: Run the launcher position, size and offset tests on a real DOM
+        run: bun frontend/test-widget-launcher-geometry.js
+
       - name: Run the light and dark appearance tests on a real DOM
         run: bun frontend/test-widget-color-scheme.js
 
@@ -261,6 +274,29 @@ jobs:
 
       - name: Run the pop-out tests on a real DOM
         run: bun frontend/test-widget-popout.js
+
+      - name: Run the Settings dialog tests on a real DOM
+        run: bun frontend/test-widget-settings.js
+
+      - name: Run the paced streaming tests on a real DOM
+        run: bun frontend/test-widget-paced-streaming.js
+
+      - name: Run the activity status tests on a real DOM
+        run: bun frontend/test-widget-activity-status.js
+
+      # The same reveal in real Chrome, where timers, layout and prefers-reduced-motion
+      # are the browser's own: a burst shaped like a reasoning model's is shown at a
+      # reading pace, the code block whole, and at once with reduced motion emulated.
+      # Its own server, so no backend and no network; the runner ships Chrome.
+      - name: Check the paced reveal in headless Chrome
+        run: bun frontend/browser-harness/paced-reveal-check.mjs
+
+      # What a pending reply says it is doing (#538), in real Chrome on every painted
+      # frame: the labels in order, the wait's length after five real seconds, a
+      # status under text that never makes a bubble of its own, and nothing left
+      # ticking after. Its own server, so no backend and no network.
+      - name: Check the activity status in headless Chrome
+        run: bun frontend/browser-harness/activity-status-check.mjs
 
       # What only a browser can check: Pyodide under a real Content-Security-Policy,
       # the egress guard on a real worker global, and NEMAR's lock overlay loaded by

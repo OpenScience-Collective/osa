@@ -1,11 +1,19 @@
 # NEMAR Assistant Configuration
 # Helps researchers discover and explore BIDS-formatted EEG/MEG/iEEG datasets
+# default_model is Claude Sonnet 5.5 (issues #522, #530). GPT-6 Luna, which HED, EEGLAB, BIDS
+# and NWB run, cannot take image blocks, so it would not see the figures that
+# nemar_render_overview and browser-run code produce.
 
 id: nemar
 name: NEMAR (NeuroElectroMagnetic Archive)
 description: BIDS-formatted EEG, MEG, and iEEG datasets, deposited to NEMAR or imported from OpenNeuro
 status: available
-default_model: claude-haiku-4-5
+default_model: claude-sonnet-5-5
+# The level every model this community runs is asked to reason at, on every provider
+# (issue #545): none, low, medium, high, xhigh or max. A model clamps it to the levels it
+# accepts (Claude Sonnet never runs above high). high is also what a community that sets
+# none gets; it is written out here so the key is easy to find.
+reasoning_effort: high
 
 # External links for dashboard and discovery
 links:
@@ -43,6 +51,16 @@ widget:
   # "Ask me about NEMAR" (the greeting stays behind the click).
   launcher: capsule
   launcher_label: "Explore NEMAR"
+  # The launcher's place and size (#553), written out at the values it has always had:
+  # bottom right, 20px from the window's edges, 58px closed and 46px while the panel is open.
+  # They are here as the worked example of the fields; change a number here to move or
+  # resize it, and nothing else needs to follow (the panel, the label and the capsule's
+  # circles do). The floor is 44px, and the open size cannot exceed the closed one.
+  launcher_position: bottom-right
+  launcher_size: 58
+  launcher_open_size: 46
+  launcher_offset_x: 20
+  launcher_offset_y: 20
   # nemar.org has light and dark themes: the widget follows the device, and follows
   # the reader's own choice from nemar.org's theme button once the site passes it on
   # with setColorScheme (a website change, not yet made).

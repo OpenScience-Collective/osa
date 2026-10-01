@@ -102,6 +102,48 @@ class TestValidateCommand:
         assert "OPENROUTER_API_KEY_NONEXISTENT" in result.stdout
         assert "not set" in result.stdout
 
+    def test_a_reasoning_effort_the_default_model_clamps_is_listed_as_a_warning(
+        self, tmp_path: Path
+    ) -> None:
+        """The schema's load-time warnings land in the Warnings block, not on stderr."""
+        config = {
+            "id": "test",
+            "name": "Test",
+            "description": "Test",
+            "default_model": "claude-sonnet-5-5",
+            "reasoning_effort": "max",
+        }
+        config_path = tmp_path / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config, f)
+
+        result = runner.invoke(cli, ["validate", str(config_path)])
+
+        assert result.exit_code == 0
+        assert "Validation passed with warnings" in result.stdout
+        assert "reasoning_effort" in result.stdout
+        assert "will run at" in result.stdout
+
+    def test_a_reasoning_effort_the_default_model_honors_adds_no_warning(
+        self, tmp_path: Path
+    ) -> None:
+        config = {
+            "id": "test",
+            "name": "Test",
+            "description": "Test",
+            "default_model": "claude-sonnet-5-5",
+            "reasoning_effort": "high",
+        }
+        config_path = tmp_path / "config.yaml"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config, f)
+
+        result = runner.invoke(cli, ["validate", str(config_path)])
+
+        assert result.exit_code == 0
+        assert "Validation passed with warnings" not in result.stdout
+        assert "will run at" not in result.stdout
+
     def test_file_not_found(self) -> None:
         """Non-existent file should fail with clear error."""
         result = runner.invoke(cli, ["validate", "/nonexistent/config.yaml"])
@@ -720,4 +762,4 @@ class TestValidateWithoutServerDependencies:
         )
 
         assert result.returncode == 0, result.stderr
-        assert "claude-sonnet-5" in result.stdout
+        assert "claude-sonnet-5-5" in result.stdout

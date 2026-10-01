@@ -64,6 +64,23 @@
     // Tooltip text beside the collapsed launcher. null keeps the hardcoded
     // "Ask me about <title>" every community has always had.
     launcherLabel: null,
+    // Where the launcher sits and how big it is (#553). 'bottom-right' is where it has
+    // always been; 'bottom-left' moves it, its tooltips and the panel to the other side.
+    // Sizes are pixel diameters, closed and open: the launcher shrinks to the open size
+    // while the panel is open, with the capsule's animation. Null keeps today's: 56 for a
+    // bubble that does not shrink, 58 for a capsule that shrinks to 46. Setting only the
+    // closed size opens at 80% of it, rounded and no lower than the 44px floor. Offsets
+    // are pixel distances from the side and bottom edges (null keeps 20); at 600px wide
+    // and narrower each mobile offset replaces its own desktop offset, and null leaves the
+    // desktop one in place. See LAUNCHER_LIMITS for the ranges. A value outside one is
+    // ignored with a warning, and an open size above the closed size is lowered to it.
+    launcherPosition: 'bottom-right',
+    launcherSize: null,
+    launcherOpenSize: null,
+    launcherOffsetX: null,
+    launcherOffsetY: null,
+    launcherMobileOffsetX: null,
+    launcherMobileOffsetY: null,
     // The widget's appearance (#469): 'light' (every community's default), 'auto'
     // (follow the reader's device), or 'dark'. The community config offers 'light'
     // or 'auto'; a host page with its own theme switch passes the reader's choice
@@ -102,6 +119,45 @@
     widgetScriptUrl: null
   };
 
+  // The launcher's limits and defaults, in pixels (#553): the same numbers as
+  // LAUNCHER_SIZE_MIN, LAUNCHER_SIZE_MAX, LAUNCHER_OFFSET_MAX and DEFAULT_LAUNCHER_SIZE in
+  // src/core/config/community.py, which the server checks a community's values against;
+  // tests/test_frontend/test_widget_drift.py keeps the two from drifting. The floor is
+  // WCAG 2.2's enhanced target size (2.5.5). openRatio is the open size as a fraction of
+  // the closed one when only the closed size is set; only the widget uses it, and the
+  // drift test pins it to LAUNCHER_OPEN_RATIO there. The stylesheet's fallbacks (56px,
+  // 58px, 46px, 20px and 58 / 46) are these same numbers, pinned by the drift test too.
+  const LAUNCHER_LIMITS = {
+    sizeMin: 44, sizeMax: 96, offsetMax: 200, bubbleSize: 56, capsuleSize: 58, openRatio: 0.8
+  };
+  const LAUNCHER_POSITIONS = ['bottom-right', 'bottom-left'];
+  // The community config's field for each CONFIG key (the keys a page sets with
+  // setConfig, in camelCase).
+  const LAUNCHER_GEOMETRY_KEYS = [
+    ['launcher_position', 'launcherPosition'],
+    ['launcher_size', 'launcherSize'],
+    ['launcher_open_size', 'launcherOpenSize'],
+    ['launcher_offset_x', 'launcherOffsetX'],
+    ['launcher_offset_y', 'launcherOffsetY'],
+    ['launcher_mobile_offset_x', 'launcherMobileOffsetX'],
+    ['launcher_mobile_offset_y', 'launcherMobileOffsetY']
+  ];
+  // What each launcher setting accepts, and how a warning says it: one table, so a page's
+  // setConfig and the values applied to the widget are checked by the same rules.
+  const wholeBetween = (min, max) => ({
+    ok: (value) => Number.isInteger(value) && value >= min && value <= max,
+    expected: `a whole number from ${min} to ${max}`
+  });
+  const LAUNCHER_SETTING_RULES = {
+    launcherPosition: { ok: (value) => LAUNCHER_POSITIONS.includes(value), expected: LAUNCHER_POSITIONS.join(' or ') },
+    launcherSize: wholeBetween(LAUNCHER_LIMITS.sizeMin, LAUNCHER_LIMITS.sizeMax),
+    launcherOpenSize: wholeBetween(LAUNCHER_LIMITS.sizeMin, LAUNCHER_LIMITS.sizeMax),
+    launcherOffsetX: wholeBetween(0, LAUNCHER_LIMITS.offsetMax),
+    launcherOffsetY: wholeBetween(0, LAUNCHER_LIMITS.offsetMax),
+    launcherMobileOffsetX: wholeBetween(0, LAUNCHER_LIMITS.offsetMax),
+    launcherMobileOffsetY: wholeBetween(0, LAUNCHER_LIMITS.offsetMax)
+  };
+
   // Log environment for debugging
   if (isDev) {
     console.log('[OSA] Using DEV backend:', CONFIG.apiEndpoint);
@@ -113,8 +169,48 @@
   // of truth; see offeredModels below.
   const DEFAULT_MODELS = [
     { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
-    { value: 'claude-sonnet-5', label: 'Claude Sonnet 5' }
+    { value: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5' },
+    { value: 'openai.gpt-6-luna', label: 'OpenAI GPT-6 Luna' },
+    { value: 'qwen.qwen3-next-80b-a3b', label: 'Qwen3 Next 80B A3B' },
+    { value: 'openai.gpt-oss-120b', label: 'OpenAI gpt-oss-120b' }
   ];
+
+  // The offered models only the service's own key can run: a request carrying the
+  // reader's own Anthropic key is refused for them (an OpenRouter key runs the same
+  // model). Used until the live list arrives, whose entries say so themselves.
+  // tests/test_frontend/test_widget_drift.py keeps this in step with BEDROCK_MODELS.
+  const PLATFORM_ONLY_MODELS = [
+    'openai.gpt-6-luna',
+    'qwen.qwen3-next-80b-a3b',
+    'openai.gpt-oss-120b'
+  ];
+
+  // Every id the backend accepts for an offered model without offering it itself:
+  // MODEL_ALIASES in src/core/services/anthropic_models.py, which normalize_model
+  // applies to whatever a request names. A saved or typed setting naming one is moved
+  // to the offered model it stands for, so the settings dropdown shows a real choice
+  // instead of "Custom", and the rules for a key and a model (modelKeyProblem) are
+  // applied to the model the server will run. tests/test_frontend/test_widget_drift.py
+  // keeps this equal to the backend's table.
+  const RETIRED_MODEL_IDS = {
+    'anthropic/claude-haiku-4.5': 'claude-haiku-4-5',
+    'anthropic/claude-haiku-4-5': 'claude-haiku-4-5',
+    'claude-haiku-4.5': 'claude-haiku-4-5',
+    'claude-sonnet-5': 'claude-sonnet-5-5',
+    'claude-sonnet-5.5': 'claude-sonnet-5-5',
+    'anthropic/claude-sonnet-5.5': 'claude-sonnet-5-5',
+    'anthropic/claude-sonnet-5': 'claude-sonnet-5-5',
+    'anthropic/claude-sonnet-4.6': 'claude-sonnet-5-5',
+    'anthropic/claude-sonnet-4.5': 'claude-sonnet-5-5',
+    'claude-sonnet-4.5': 'claude-sonnet-5-5',
+    'us.openai.gpt-6-luna': 'openai.gpt-6-luna',
+    'openai.gpt-oss-120b-1:0': 'openai.gpt-oss-120b'
+  };
+
+  // The offered model an id stands for, or the id itself when it is no alias.
+  function canonicalModelId(model) {
+    return Object.prototype.hasOwnProperty.call(RETIRED_MODEL_IDS, model) ? RETIRED_MODEL_IDS[model] : model;
+  }
 
   // Models to show in the settings dropdown: the live offered_models list
   // from the community config endpoint, falling back to DEFAULT_MODELS
@@ -123,18 +219,38 @@
     return (offeredModels && offeredModels.length) ? offeredModels : DEFAULT_MODELS;
   }
 
+  // The offered models as the Settings menu's options. The community's own default is
+  // the menu's Default entry, so it is left out here.
+  function modelOptionsHtml() {
+    return getModelMenuOptions()
+      .filter(m => !isCommunityDefaultModel(m.value))
+      .map(m => `<option value="${escapeHtml(m.value)}">${escapeHtml(m.label)}</option>`)
+      .join('');
+  }
+
+  function isPlatformOnly(modelId) {
+    if (offeredModels && offeredModels.length) {
+      const live = offeredModels.find(m => m.value === modelId);
+      return !!(live && live.platformOnly);
+    }
+    return PLATFORM_ONLY_MODELS.includes(modelId);
+  }
+
   // Helper to get human-readable label for a model
   function getModelLabel(modelId) {
     const model = getModelMenuOptions().find(m => m.value === modelId);
     return model ? model.label : modelId;
   }
 
-  // A valid model id is either a bare first-party id (e.g. "claude-haiku-4-5")
-  // or an OpenRouter-style "provider/model" id (e.g. "openai/gpt-5"), which
-  // the custom-model field still accepts for BYOK callers.
+  // A valid model id is a bare first-party id ("claude-haiku-4-5") or an OpenRouter-style
+  // "provider/model" id ("openai/gpt-5"), either with ":variant" suffixes
+  // ("openai/gpt-oss-120b:nitro:exacto"). Mirrors _MODEL_ID_PATTERN in
+  // src/core/config/community.py; tests/fixtures/model_ids.json keeps the two in step.
+  const MODEL_ID_PATTERN = /^[a-zA-Z0-9_.-]+(\/[a-zA-Z0-9._-]+)?(:[a-zA-Z0-9._-]+)*$/;
+  const MODEL_ID_MAX_LENGTH = 100;
   function isValidModelId(model) {
-    if (typeof model !== 'string' || !model) return false;
-    return /^[a-zA-Z0-9._-]+$/.test(model) || /^[a-zA-Z0-9_-]+\/[a-zA-Z0-9._-]+$/.test(model);
+    if (typeof model !== 'string' || !model || model.length > MODEL_ID_MAX_LENGTH) return false;
+    return MODEL_ID_PATTERN.test(model);
   }
 
   // BYOK key formats, matching the server-side redaction patterns in
@@ -153,6 +269,41 @@
 
   function isValidApiKey(apiKey) {
     return ANTHROPIC_KEY_PATTERN.test(apiKey) || OPENROUTER_KEY_PATTERN.test(apiKey);
+  }
+
+  // Whether a model is the community's own default, aliases resolved: a request naming it
+  // is the same request as one naming nothing.
+  function isCommunityDefaultModel(model) {
+    return !!model && !!communityDefaultModel && canonicalModelId(model) === canonicalModelId(communityDefaultModel);
+  }
+
+  // Why the server would refuse a model sent with a key, in words for the reader, or null
+  // when it accepts the pair. One rule for what Settings saves and what it loads back, the
+  // server's (_select_model, _bedrock_choice and _route_request in
+  // src/api/routers/community.py), for a model the request NAMES:
+  //   - an OpenRouter key runs any valid model id;
+  //   - an Anthropic key runs the offered Claude models, and is refused for the ones only
+  //     the service's own key can run (403) and for any id that is not offered (400);
+  //   - with no key, only an offered model runs, or the community's own default.
+  // A request that names no model is never asked about its default: one the caller's key
+  // cannot run (Luna, on an Anthropic key) is swapped by the server for a Claude model.
+  // The "not offered" verdicts need the community's own offered list: until it has arrived
+  // the menu is only the widget's fallback, and a backend newer than the widget (a pinned
+  // embed) may offer more than that lists, so a model missing from it proves nothing yet.
+  function modelKeyProblem(model, apiKey) {
+    if (!model) return null;
+    const canonical = canonicalModelId(model);
+    const provider = inferKeyProvider(apiKey || '');
+    if (provider === 'openrouter') return null;
+    if (provider === 'anthropic' && (isPlatformOnly(canonical) || PLATFORM_ONLY_MODELS.includes(canonical))) {
+      return `${getModelLabel(canonical)} is provided by this service and cannot be used with your own Anthropic API key. Remove the key, or choose another model.`;
+    }
+    if (!(offeredModels && offeredModels.length)) return null;
+    if (getModelMenuOptions().some(m => m.value === canonical)) return null;
+    if (provider === 'anthropic') {
+      return `${model} is not one of the Claude models this service offers, which is all an Anthropic key can run. Choose an offered model, or use your own OpenRouter key (sk-or-v1-...) for other models.`;
+    }
+    return isCommunityDefaultModel(canonical) ? null : 'A custom model needs your own API key';
   }
 
   // Track which CONFIG keys were explicitly set by the embedder via setConfig,
@@ -195,7 +346,7 @@
   const DISPLAY_KEYS = ['title', 'initialMessage', 'placeholder', 'suggestedQuestions',
     'datasetSuggestedQuestions', 'themeColor',
     'userBubbleColor', 'themeTextColor', 'accentColor', 'userBubbleTextColor', 'logo', 'launcher',
-    'launcherLabel', 'colorScheme'];
+    'launcherLabel', 'colorScheme', ...LAUNCHER_GEOMETRY_KEYS.map(([, key]) => key)];
   // The header avatar as createWidget draws it, for a config that drops its logo.
   let defaultAvatarHtml = null;
   // Browser code execution (#431). browserToolsReady is assigned, to a pending
@@ -346,6 +497,35 @@
       --osa-user-text: #ffffff;
       --osa-assistant-bg: #f3f4f6;
       --osa-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+      /* The launcher's geometry (#553). applyLauncherGeometry sets --osa-size-closed,
+         --osa-size-open, --osa-closed-scale, --osa-edge-x and --osa-edge-y (and the
+         -narrow twins of the last two) inline, and only for what a community or a
+         page's setConfig configures, so each falls back here to what the launcher has
+         always been: an unconfigured widget is drawn exactly as it was before these
+         existed.
+           --osa-closed / --osa-open  the drawn size with the panel closed / open. The
+                                      launcher's box is always the open size; closed, it
+                                      is drawn larger with scale and translate, so
+                                      nothing reflows while it grows and shrinks.
+           --osa-scale                closed / open, as a plain number.
+           --osa-x / --osa-y          the distance from the side and bottom edges.
+           --osa-side                 -1 anchored right, 1 anchored left (osa-pos-left).
+           --osa-grow                 how far the drawn circle reaches past its box on
+                                      each side, which the translate takes back so the
+                                      corner at the anchor holds still.
+           --osa-grow-hover           the same, hovered, when it is drawn 5% larger.
+           --osa-panel-gap            the room from the open launcher up to the panel
+                                      above it. The capsule's panel sits beside it past
+                                      600px, and does not use this. */
+      --osa-closed: var(--osa-size-closed, 56px);
+      --osa-open: var(--osa-size-open, 56px);
+      --osa-scale: var(--osa-closed-scale, 1);
+      --osa-x: var(--osa-edge-x, 20px);
+      --osa-y: var(--osa-edge-y, 20px);
+      --osa-side: -1;
+      --osa-grow: calc(var(--osa-open) * (var(--osa-scale) - 1) / 2);
+      --osa-grow-hover: calc(var(--osa-open) * (var(--osa-scale) * 1.05 - 1) / 2);
+      --osa-panel-gap: 14px;
       /* The widget draws its own light (or, with .osa-dark, dark) surfaces, so the
          browser's own parts (scrollbars, native inputs, checkboxes) have to match
          them rather than a dark host page's color-scheme (#469). */
@@ -355,12 +535,39 @@
       line-height: 1.5;
     }
 
+    /* The capsule's chat circle is 58px closed and 46px open; at 600px and narrower the
+       panel sits 24px above its box. The bubble's is 56px throughout, with the panel 14px
+       above it. 58 / 46 is a plain number, so it reaches scale with no division of
+       lengths. */
+    .osa-chat-widget.osa-capsule {
+      --osa-closed: var(--osa-size-closed, 58px);
+      --osa-open: var(--osa-size-open, 46px);
+      --osa-scale: var(--osa-closed-scale, calc(58 / 46));
+      --osa-panel-gap: 24px;
+    }
+
+    /* Anchored on the left, the launcher grows toward the right, so the translate that
+       holds its corner still points the other way. */
+    .osa-chat-widget.osa-pos-left {
+      --osa-side: 1;
+    }
+
+    /* A phone's own controls often sit at the bottom of the screen: the mobile offsets
+       (launcher_mobile_offset_x/y) apply at this width and narrower, each falling back
+       to the desktop one. The capsule's layout turns to a row at the same width. */
+    @media (max-width: 600px) {
+      .osa-chat-widget {
+        --osa-x: var(--osa-edge-x-narrow, var(--osa-edge-x, 20px));
+        --osa-y: var(--osa-edge-y-narrow, var(--osa-edge-y, 20px));
+      }
+    }
+
     .osa-chat-button {
       position: fixed;
-      bottom: 20px;
-      right: 20px;
-      width: 56px;
-      height: 56px;
+      bottom: var(--osa-y);
+      right: var(--osa-x);
+      width: var(--osa-open);
+      height: var(--osa-open);
       border-radius: 50%;
       background: var(--osa-primary);
       color: var(--osa-on-primary);
@@ -380,16 +587,39 @@
     }
 
     .osa-chat-button svg {
-      width: 24px;
-      height: 24px;
+      width: calc(var(--osa-open) * 24 / 56);
+      height: calc(var(--osa-open) * 24 / 56);
+    }
+
+    /* A bubble whose community sets a closed size larger than its open one
+       (applyLauncherGeometry adds osa-launcher-resizes) does what the capsule's chat
+       circle does (#490): closed, it is drawn larger than its box, with the corner at
+       the anchor held still; open, it settles to the box. Hovered, it grows 5% more
+       through the same scale and translate rather than the shared transform, which
+       would grow it around its center and push the corner out. */
+    .osa-chat-widget.osa-launcher-resizes > .osa-chat-button {
+      transition: transform 0.2s, background 0.2s, scale 280ms cubic-bezier(0.22, 1, 0.36, 1),
+        translate 280ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .osa-chat-widget.osa-launcher-resizes:not(.chat-open) > .osa-chat-button {
+      scale: var(--osa-scale);
+      translate: calc(var(--osa-side) * var(--osa-grow)) calc(-1 * var(--osa-grow));
+    }
+
+    .osa-chat-widget.osa-launcher-resizes:not(.chat-open) > .osa-chat-button:hover {
+      transform: none;
+      scale: calc(var(--osa-scale) * 1.05);
+      translate: calc(var(--osa-side) * var(--osa-grow-hover)) calc(-1 * var(--osa-grow-hover));
     }
 
     /* Tooltip that appears next to chat button on initial page load
-       Auto-hides after 8 seconds or when chat is opened */
+       Auto-hides after 8 seconds or when chat is opened. It sits 10px beyond the
+       launcher as drawn closed, centered on it (the tooltip is about 40px tall). */
     .osa-chat-tooltip {
       position: fixed;
-      bottom: 28px;
-      right: 86px;
+      bottom: calc(var(--osa-y) + (var(--osa-closed) - 40px) / 2);
+      right: calc(var(--osa-x) + var(--osa-closed) + 10px);
       background: var(--osa-bg);
       color: var(--osa-text);
       padding: 10px 14px;
@@ -426,6 +656,32 @@
       display: none;
     }
 
+    /* The launcher in the bottom-left corner (launcher_position, #553): the button and
+       its tooltip mirror to the left side, the tooltip's arrow and slide-in included.
+       Every rule is scoped under osa-pos-left, a class the widget adds only for
+       bottom-left, so a bottom-right widget never matches one. */
+    .osa-chat-widget.osa-pos-left > .osa-chat-button {
+      right: auto;
+      left: var(--osa-x);
+    }
+
+    .osa-chat-widget.osa-pos-left .osa-chat-tooltip {
+      right: auto;
+      left: calc(var(--osa-x) + var(--osa-closed) + 10px);
+      transform: translateX(-10px);
+    }
+
+    .osa-chat-widget.osa-pos-left .osa-chat-tooltip.visible {
+      transform: translateX(0);
+    }
+
+    .osa-chat-widget.osa-pos-left .osa-chat-tooltip::after {
+      right: auto;
+      left: -6px;
+      border-left: none;
+      border-right: 6px solid var(--osa-bg);
+    }
+
     /* The three-icon capsule launcher (#436). Every selector here is scoped under
        .osa-launcher-capsule, an element that exists ONLY when launcher: capsule
        converts the DOM (see applyLauncherMode): a bubble-mode widget never has one,
@@ -435,13 +691,15 @@
        and .osa-chat-window keeps its unmodified rule above (opens above, as today).
        The @media override past 601px switches to the vertical stack, opening the
        chat window to the LEFT instead. Both directions rely on the same trick: the
-       fixed container sets only bottom+right (never top/left), so as hidden
+       fixed container sets only the bottom and one side (never the top), so as hidden
        icons reveal and the container grows, it grows away from the anchored corner
-       and the last child (the chat button) never moves. */
+       and the chat button, nearest it, never moves. Under .osa-pos-left (#553) all of
+       this is mirrored: the row and the window go to the right, and the sections
+       below say how. */
     .osa-launcher-capsule {
       position: fixed;
-      bottom: 20px;
-      right: 20px;
+      bottom: var(--osa-y);
+      right: var(--osa-x);
       /* Higher than .osa-chat-window's 10000: two fixed elements with EQUAL
          z-index stack by DOM order, and .osa-chat-window follows the capsule in
          the markup, so a tie would paint the window over the icon tooltips
@@ -463,8 +721,8 @@
     /* The pill: 7px beyond the icons on every side, drawn behind them, without
        padding on .osa-launcher-capsule itself (padding would shift the fixed
        bottom/right anchor and move the chat button). It grows out of the chat
-       button when the panel opens (#470): toward the left in the row layout,
-       upward in the column layout past 601px. */
+       button when the panel opens (#470): toward the left in the row layout (the
+       right, anchored on the left), upward in the column layout past 601px. */
     .osa-launcher-capsule::before {
       content: '';
       position: absolute;
@@ -482,6 +740,22 @@
     .osa-chat-widget.chat-open .osa-launcher-capsule::before {
       opacity: 1;
       transform: none;
+    }
+
+    /* Anchored on the left (#553) the capsule grows toward the right: in the row
+       layout the chat button comes first, on the anchor (arrangeCapsule puts it first
+       in the DOM as well, so Tab follows what is seen), and the pill grows out of it
+       to the right. The column layout past 601px grows upward whichever side it is on,
+       so it needs nothing here. */
+    .osa-chat-widget.osa-pos-left .osa-launcher-capsule {
+      right: auto;
+      left: var(--osa-x);
+    }
+
+    @media (max-width: 600px) {
+      .osa-chat-widget.osa-pos-left .osa-launcher-capsule::before {
+        transform-origin: 0% 50%;
+      }
     }
 
     /* A first visit, waiting for the community config (#475): the launcher stays out
@@ -514,8 +788,8 @@
       position: absolute;
       left: 0;
       top: 0;
-      width: 46px;
-      height: 46px;
+      width: var(--osa-open);
+      height: var(--osa-open);
       border-radius: 50%;
       background: var(--osa-primary);
       box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
@@ -531,15 +805,15 @@
 
     /* Inside the capsule, the flex parent positions the chat button; its own
        fixed/bottom/right (still true for a bubble-mode widget) would fight that.
-       46px, as are the other circles: about 15% larger than the Send button. At
-       rest it is drawn larger; see the rule after the next. */
+       46px by default, as are the other circles: about 15% larger than the Send
+       button. At rest it is drawn larger; see the rule after the next. */
     .osa-launcher-capsule .osa-chat-button {
       position: relative;
       bottom: auto;
       right: auto;
       flex-shrink: 0;
-      width: 46px;
-      height: 46px;
+      width: var(--osa-open);
+      height: var(--osa-open);
       z-index: 1;
       pointer-events: auto;
       box-sizing: border-box;
@@ -549,35 +823,37 @@
     }
 
     .osa-launcher-capsule .osa-chat-button svg {
-      width: 21px;
-      height: 21px;
+      width: calc(var(--osa-open) * 21 / 46);
+      height: calc(var(--osa-open) * 21 / 46);
     }
 
-    /* At rest, with the panel closed, the chat circle is drawn 25% larger (58px,
-       its icon about 26px), so the launcher is easy to see; it settles to 46px as
-       the panel opens (#490). Drawn larger rather than laid out larger: its box
-       stays 46px, so the indicator, the pill, the other circles and the panel's
-       offset are the same open or closed, and nothing reflows while it shrinks.
-       The translate puts its bottom-right corner where the 46px box's is, 20px
-       from the window's edges, as the bubble's; since the translate is the growth
-       past the box on each side, 23px x (58/46 - 1) = 6px, that corner holds
+    /* By default, at rest, with the panel closed, the chat circle is drawn about a
+       quarter larger (58px, its icon about 26px), so the launcher is easy to see; it
+       settles to 46px as the panel opens (#490). Drawn larger rather than laid out
+       larger: its box stays 46px, so the indicator, the pill, the other circles and
+       the panel's offset are the same open or closed, and nothing reflows while it
+       shrinks. The translate puts its corner at the anchor where the 46px box's is,
+       20px from the window's edges, as the bubble's; since the translate is the
+       growth past the box on each side, 23px x (58/46 - 1) = 6px, that corner holds
        still through the whole transition, because scale and translate share one
        duration and curve. A browser without the scale and translate properties
-       draws today's 46px. */
+       draws the open size. The sizes, the offsets and the side are configurable
+       (#553): --osa-scale and --osa-grow follow them, and --osa-side flips the
+       translate for a launcher anchored on the left. */
     .osa-chat-widget:not(.chat-open) .osa-launcher-capsule .osa-chat-button {
-      scale: 1.2609;
-      translate: -6px -6px;
+      scale: var(--osa-scale);
+      translate: calc(var(--osa-side) * var(--osa-grow)) calc(-1 * var(--osa-grow));
     }
 
     /* Hovered at rest, it grows 5% more, as every launcher does, with its corner
        held in the same place: the scale and translate take the hover in place of
        the shared transform: scale(1.05), which would grow it around its center
-       and push the corner out, on a curve of its own. 1.2609 x 1.05 is 1.3239,
-       and 23px x 0.3239 is 7.45px. */
+       and push the corner out, on a curve of its own. At the default sizes,
+       1.2609 x 1.05 is 1.3239, and 23px x 0.3239 is 7.45px. */
     .osa-chat-widget:not(.chat-open) .osa-launcher-capsule .osa-chat-button:hover {
       transform: none;
-      scale: 1.3239;
-      translate: -7.45px -7.45px;
+      scale: calc(var(--osa-scale) * 1.05);
+      translate: calc(var(--osa-side) * var(--osa-grow-hover)) calc(-1 * var(--osa-grow-hover));
     }
 
     /* Open: the indicator is the chat circle's fill, so the button itself is clear. */
@@ -599,8 +875,8 @@
     .osa-launcher-icon {
       position: relative;
       z-index: 1;
-      width: 46px;
-      height: 46px;
+      width: var(--osa-open);
+      height: var(--osa-open);
       flex-shrink: 0;
       box-sizing: border-box;
       padding: 0;
@@ -636,8 +912,8 @@
     }
 
     .osa-launcher-icon svg {
-      width: 21px;
-      height: 21px;
+      width: calc(var(--osa-open) * 21 / 46);
+      height: calc(var(--osa-open) * 21 / 46);
     }
 
     /* Available (the notebook, once a Zarr copy exists): an outlined circle in the
@@ -667,8 +943,8 @@
       position: absolute;
       top: -1.5px;
       left: -1.5px;
-      width: 46px;
-      height: 46px;
+      width: var(--osa-open);
+      height: var(--osa-open);
       opacity: 0;
       pointer-events: none;
       transition: opacity 200ms ease;
@@ -759,12 +1035,13 @@
       display: none;
     }
 
-    /* The collapsed label, beside the chat circle as it is drawn at rest (58px,
-       #490): the same 10px gap and vertical center the bubble's label has. It is
-       hidden while the panel is open, when the circle is 46px. */
-    .osa-chat-widget.osa-capsule .osa-chat-tooltip {
-      right: 88px;
-      bottom: 29px;
+    /* Anchored on the left (#553), each icon's tooltip opens to its right instead. Its
+       selector has lower specificity than the hover rules above, so their transform
+       still wins when one is shown. */
+    .osa-pos-left .osa-icon-tooltip {
+      right: auto;
+      left: calc(100% + 12px);
+      transform: translate(-6px, -50%);
     }
 
     @media (min-width: 601px) {
@@ -777,22 +1054,34 @@
         transform-origin: 50% 100%;
       }
 
-      /* Opens to the LEFT of the capsule instead of above it; today's rule below
-         (bottom: 90px, right: 20px, max-height: calc(100vh - 120px)) is what a
-         narrow viewport keeps. 20 + 46 + 7 + 12 are the capsule's own offset,
-         diameter, the pill's reach beyond it, and a gap, so the window sits
-         beside the pill with no overlap. The transition is scoped to capsule
-         mode alone (this selector never matches a bubble-mode widget, which must
-         render exactly as it always has): the community config can still be
-         resolving when the reader opens the chat, and launcher: capsule arriving
-         a moment later would otherwise snap an already-open panel to its new
-         position instead of easing into it. */
+      /* Opens beside the capsule (to its LEFT, or its RIGHT anchored on the left)
+         instead of above it; the plain .osa-chat-window rule below (above the
+         launcher: at the default offset and sizes 90px up, 20px in, and
+         100vh - 120px tall) is what a narrow viewport keeps. x + open + 7 + 12 are
+         the capsule's own offset, diameter, the pill's reach beyond it, and a gap,
+         so the window sits beside the pill with no overlap (20 + 46 + 7 + 12 = 85px
+         by default; the offset and the diameter are the configured ones, #553; 7 + 12
+         is 19). The minimums give way to the room left, as the plain rule's do. The
+         transition is scoped to capsule mode alone (this selector never matches a
+         bubble-mode widget, which must render exactly as it always has): the
+         community config can still be resolving when the reader opens the chat, and
+         launcher: capsule arriving a moment later would otherwise snap an
+         already-open panel to its new position instead of easing into it. Anchored on
+         the left, the panel is placed by the rule after this one, which has an extra
+         class so it wins whatever its place in the sheet. */
       .osa-chat-widget.osa-capsule .osa-chat-window {
-        right: calc(20px + 46px + 7px + 12px);
-        bottom: 20px;
-        max-width: calc(100vw - 20px - 46px - 7px - 12px - 20px);
-        max-height: calc(100vh - 50px);
-        transition: right 0.2s ease, bottom 0.2s ease, max-height 0.2s ease;
+        right: calc(var(--osa-x) + var(--osa-open) + 19px);
+        bottom: var(--osa-y);
+        max-width: calc(100vw - var(--osa-x) - var(--osa-open) - 19px - 20px);
+        max-height: calc(100vh - var(--osa-y) - 30px);
+        min-width: min(300px, calc(100vw - var(--osa-x) - var(--osa-open) - 19px));
+        min-height: min(350px, calc(100vh - var(--osa-y)));
+        transition: right 0.2s ease, left 0.2s ease, bottom 0.2s ease, max-height 0.2s ease;
+      }
+
+      .osa-chat-widget.osa-pos-left.osa-capsule .osa-chat-window {
+        right: auto;
+        left: calc(var(--osa-x) + var(--osa-open) + 19px);
       }
     }
 
@@ -1045,14 +1334,15 @@
     }
 
     /* Reduced motion: every change is immediate except a short plain fade
-       between the views, and nothing turns or slides. The chat circle's resting
-       size (#490) is among them: it is 58px or 46px, never between. */
+       between the views, and nothing turns or slides. The launcher's closed and
+       open sizes (#490, #553) are among them: it is one or the other, never between. */
     @media (prefers-reduced-motion: reduce) {
       .osa-launcher-capsule::before,
       .osa-capsule-indicator,
       .osa-launcher-icon,
       .osa-chat-widget.chat-open .osa-launcher-icon,
       .osa-launcher-capsule .osa-chat-button,
+      .osa-chat-widget.osa-launcher-resizes > .osa-chat-button,
       .osa-capsule .osa-ttl,
       .osa-capsule .osa-ttl.osa-ttl-off,
       .osa-strip-tab {
@@ -1079,18 +1369,32 @@
       .osa-strip-tab.osa-notebook-busy .osa-strip-cue {
         animation: none;
       }
+
+      /* A reply's status line (#538) holds still. Two classes, to outrank the pulse's
+         own rule, which comes later in this sheet. */
+      .osa-activity-status .osa-activity-pulse {
+        animation: none;
+        opacity: 0.6;
+      }
     }
 
+    /* Above the launcher, --osa-panel-gap clear of it, and 30px short of the window's
+       top edge: 20 + 56 + 14 = 90px up and 100vh - 120px tall by default. Anchored on
+       the left (#553) it sits on the left edge instead, by the same distance. */
     .osa-chat-window {
       position: fixed;
-      bottom: 90px;
-      right: 20px;
+      bottom: calc(var(--osa-y) + var(--osa-open) + var(--osa-panel-gap));
+      right: var(--osa-x);
       width: 440px;
-      max-width: calc(100vw - 40px);
+      max-width: calc(100vw - var(--osa-x) - 20px);
       height: 680px;
-      max-height: calc(100vh - 120px);
-      min-width: 300px;
-      min-height: 350px;
+      max-height: calc(100vh - var(--osa-y) - var(--osa-open) - var(--osa-panel-gap) - 30px);
+      /* The minimums give way to the room the offsets leave, so a launcher moved a long
+         way in never pushes the panel past the far edge of the window: min-width wins
+         over max-width, and would otherwise. With the default offsets there is always
+         room for them, down to a 320px-wide, 440px-tall window, as before. */
+      min-width: min(300px, calc(100vw - var(--osa-x)));
+      min-height: min(350px, calc(100vh - var(--osa-y) - var(--osa-open) - var(--osa-panel-gap)));
       background: var(--osa-bg);
       /* Text with no color of its own would otherwise inherit the host page's,
          unreadable on this panel when the page is dark (#469). */
@@ -1105,6 +1409,11 @@
 
     .osa-chat-window.open {
       display: flex;
+    }
+
+    .osa-chat-widget.osa-pos-left .osa-chat-window {
+      right: auto;
+      left: var(--osa-x);
     }
 
     .osa-chat-header {
@@ -1763,6 +2072,66 @@
       40% { transform: scale(1); }
     }
 
+    /* What a pending reply is doing (#538): the loading label, and after a wait long
+       enough to notice, how long it has been. A screen reader hears the label from the
+       status announcer below, never the time, so it is not read out every second. */
+    .osa-loading-status {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+    }
+
+    .osa-status-elapsed {
+      font-size: 11px;
+      color: var(--osa-text-light);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .osa-status-elapsed:empty {
+      display: none;
+    }
+
+    /* On no screen, for a screen reader only: the status announcer (#538). */
+    .osa-sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    /* A reply that already has text says what it is doing on a line of its own under
+       that text, in place of a second loading bubble (#538). */
+    .osa-activity-status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 6px;
+      font-size: 12px;
+      color: var(--osa-text-light);
+    }
+
+    /* Held still under prefers-reduced-motion, in the widget's one reduced-motion block. */
+    .osa-activity-pulse {
+      flex: none;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--osa-text-light);
+      animation: osa-activity-pulse 1.4s infinite ease-in-out;
+    }
+
+    /* Not osa-pulse: keyframes of one name replace each other, and that one is the header
+       status dot's. */
+    @keyframes osa-activity-pulse {
+      0%, 100% { opacity: 0.25; }
+      50% { opacity: 1; }
+    }
+
 
     .osa-turnstile-container {
       padding: 12px 16px;
@@ -1777,6 +2146,63 @@
       padding: 8px 16px;
       background: #fef2f2;
       border-top: 1px solid #fecaca;
+      user-select: text;
+    }
+
+    /* A failed request's banner: stays until dismissed, so it carries a dismiss button,
+       and, when the server gave one, the error's reference with a button to copy it. */
+    .osa-error.osa-error-persistent {
+      position: relative;
+      padding-right: 36px;
+    }
+
+    .osa-error-reference {
+      display: block;
+      margin-top: 4px;
+    }
+
+    .osa-error-id {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      user-select: all;
+    }
+
+    .osa-error-copy,
+    .osa-error-dismiss {
+      border: none;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      padding: 2px;
+      line-height: 0;
+      border-radius: 4px;
+    }
+
+    .osa-error-copy {
+      margin-left: 4px;
+      vertical-align: middle;
+    }
+
+    .osa-error-dismiss {
+      position: absolute;
+      top: 6px;
+      right: 10px;
+    }
+
+    .osa-error-copy svg,
+    .osa-error-dismiss svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    .osa-error-copy:hover,
+    .osa-error-dismiss:hover {
+      background: rgba(0, 0, 0, 0.08);
+    }
+
+    .osa-error-copy:focus-visible,
+    .osa-error-dismiss:focus-visible {
+      outline: 2px solid currentColor;
+      outline-offset: 1px;
     }
 
     .osa-warning {
@@ -1785,6 +2211,11 @@
       padding: 8px 16px;
       background: #fffbeb;
       border-top: 1px solid #fde68a;
+      user-select: text;
+    }
+
+    .osa-warning-line + .osa-warning-line {
+      margin-top: 4px;
     }
 
     .osa-resize-handle {
@@ -1806,6 +2237,21 @@
       height: 8px;
       border-left: 2px solid rgba(0,0,0,0.2);
       border-top: 2px solid rgba(0,0,0,0.2);
+    }
+
+    /* The panel is anchored on the left (#553): it grows toward the right, so its
+       handle is the top-right corner, and setupResize reads the drag the other way. */
+    .osa-chat-widget.osa-pos-left .osa-resize-handle {
+      left: auto;
+      right: 0;
+      cursor: nesw-resize;
+    }
+
+    .osa-chat-widget.osa-pos-left .osa-resize-handle::before {
+      left: auto;
+      right: 6px;
+      border-left: none;
+      border-right: 2px solid rgba(0,0,0,0.2);
     }
 
     .osa-ai-disclaimer {
@@ -2584,6 +3030,11 @@
       border-top-color: rgba(248, 113, 113, 0.35);
     }
 
+    .osa-chat-widget.osa-dark .osa-error-copy:hover,
+    .osa-chat-widget.osa-dark .osa-error-dismiss:hover {
+      background: rgba(255, 255, 255, 0.12);
+    }
+
     .osa-chat-widget.osa-dark .osa-warning {
       color: #fcd34d;
       background: rgba(245, 158, 11, 0.12);
@@ -2593,6 +3044,10 @@
     .osa-chat-widget.osa-dark .osa-resize-handle::before {
       border-left-color: rgba(255, 255, 255, 0.3);
       border-top-color: rgba(255, 255, 255, 0.3);
+    }
+
+    .osa-chat-widget.osa-dark.osa-pos-left .osa-resize-handle::before {
+      border-right-color: rgba(255, 255, 255, 0.3);
     }
 
     /* The configured disclaimer colors, like accent_color, were chosen for the
@@ -3222,7 +3677,12 @@
     renderLauncherIcons(container);
     positionIndicator(container);
     // The row and column layouts put the circles in different places.
-    if (!CONFIG.fullscreen) window.addEventListener('resize', () => positionIndicator(container));
+    if (!CONFIG.fullscreen) {
+      window.addEventListener('resize', () => {
+        arrangeCapsule(container);
+        positionIndicator(container);
+      });
+    }
     // The notebook tab's frame speaks through messages (#470). Only a capsule has
     // that frame, so only a capsule listens.
     window.addEventListener('message', handleNotebookMessage);
@@ -3244,15 +3704,17 @@
     notebookButton.insertAdjacentHTML('beforeend',
       '<svg class="osa-notebook-ring" viewBox="0 0 46 46" aria-hidden="true"><circle cx="23" cy="23" r="21.5"></circle></svg>');
     // DOM order is bottom-to-top / left-to-right: hpc, notebook, chat. A fixed
-    // container anchored on bottom+right only (never top/left) grows away from
-    // that corner as hidden siblings reveal, so the LAST child, the chat button,
-    // never moves regardless of how many icons appear before it.
-    // This is also the Tab order (Tab follows DOM order, not visual position),
-    // and it matches the visual order in both layouts: top-to-bottom on desktop
-    // (HPC above notebook above chat) and left-to-right at 600px and under
+    // container anchored on the bottom and one side (right, or left under
+    // osa-pos-left; never the top) grows away from that corner as hidden siblings
+    // reveal, so the chat button, the one nearest the anchor, never moves regardless
+    // of how many icons appear beside it.
+    // This is also the Tab order (Tab follows DOM order, not visual position), and
+    // it matches the visual order in the layouts anchored on the right: top-to-bottom
+    // on desktop (HPC above notebook above chat) and left-to-right at 600px and under
     // (HPC, then notebook, then chat, reading toward the bubble). Keep the
-    // appendChild calls in this order for that reason, not just habit. The
-    // indicator goes first and is drawn behind the three.
+    // appendChild calls in this order for that reason, not just habit. The one
+    // layout it does not match, a row anchored on the left, is reordered by
+    // arrangeCapsule. The indicator goes first and is drawn behind the three.
     capsule.appendChild(indicator);
     capsule.appendChild(hpcButton);
     capsule.appendChild(notebookButton);
@@ -3519,7 +3981,7 @@
     return 'osa-code-' + (++codeBlockId);
   }
 
-  // Render inline markdown (bold, italic, links, plain URLs, citation markers)
+  // Render inline markdown (code, bold, italic, links, plain URLs, citation markers)
   // citationsByMarker: optional {"1": {source, title, cited_text}, ...} map.
   // When provided, a bare "[1]" (not followed by "(", so it never collides
   // with a real markdown link) whose number is a known marker renders as a
@@ -3527,8 +3989,30 @@
   function renderInlineMarkdown(text, citationsByMarker) {
     if (!text) return '';
 
+    // Code spans are lifted out before anything else is matched, so what is inside
+    // one is never read as markup and an italic, bold or link match that starts
+    // earlier in the run cannot swallow a later span: "Use *.set or `*.fdt` files"
+    // has one span and no emphasis. Each span stays in the run as a placeholder, is
+    // put back as <code> where the run's text is output, and as its own backticks
+    // where the run's text is an address. Code inside bold, italic or a link's
+    // text therefore renders too. The placeholder's brackets are private-use
+    // characters; any already in the text are replaced first, so text cannot
+    // forge a placeholder.
+    const codeSpans = [];
+    const spanOpen = String.fromCharCode(0xE000);
+    const spanClose = String.fromCharCode(0xE001);
+    const placeholder = new RegExp(spanOpen + '(\\d+)' + spanClose, 'g');
+    let remaining = String(text)
+      .split(spanOpen).join(String.fromCharCode(0xFFFD))
+      .split(spanClose).join(String.fromCharCode(0xFFFD))
+      .replace(/`([^`]+)`/g, (match, code) => {
+        codeSpans.push(code);
+        return spanOpen + (codeSpans.length - 1) + spanClose;
+      });
+    const withRawCode = (raw) => raw.replace(placeholder, (match, index) => '`' + codeSpans[index] + '`');
+    const escapeRun = (raw) => escapeHtml(raw).replace(placeholder, (match, index) => '<code>' + escapeHtml(codeSpans[index]) + '</code>');
+
     let result = '';
-    let remaining = text;
 
     while (remaining.length > 0) {
       const boldMatch = remaining.match(/\*\*(.+?)\*\*/);
@@ -3558,35 +4042,37 @@
 
       const indices = [boldIndex, italicIndex, linkIndex, urlIndex, citationIndex].filter(i => i !== -1);
       if (indices.length === 0) {
-        result += escapeHtml(remaining);
+        result += escapeRun(remaining);
         break;
       }
       const minIndex = Math.min(...indices);
 
       if (minIndex === boldIndex && boldMatch) {
-        if (boldIndex > 0) result += escapeHtml(remaining.substring(0, boldIndex));
-        result += '<strong>' + escapeHtml(boldMatch[1]) + '</strong>';
+        if (boldIndex > 0) result += escapeRun(remaining.substring(0, boldIndex));
+        result += '<strong>' + escapeRun(boldMatch[1]) + '</strong>';
         remaining = remaining.substring(boldIndex + boldMatch[0].length);
       } else if (minIndex === italicIndex && italicMatch) {
-        if (italicIndex > 0) result += escapeHtml(remaining.substring(0, italicIndex));
-        result += '<em>' + escapeHtml(italicMatch[1]) + '</em>';
+        if (italicIndex > 0) result += escapeRun(remaining.substring(0, italicIndex));
+        result += '<em>' + escapeRun(italicMatch[1]) + '</em>';
         remaining = remaining.substring(italicIndex + italicMatch[0].length);
       } else if (minIndex === linkIndex && linkMatch) {
-        if (linkIndex > 0) result += escapeHtml(remaining.substring(0, linkIndex));
+        if (linkIndex > 0) result += escapeRun(remaining.substring(0, linkIndex));
         // Validate URL to prevent javascript: XSS
-        if (isSafeUrl(linkMatch[2])) {
-          result += '<a href="' + escapeHtml(linkMatch[2]) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(linkMatch[1]) + '</a>';
+        const linkUrl = withRawCode(linkMatch[2]);
+        if (isSafeUrl(linkUrl)) {
+          result += '<a href="' + escapeHtml(linkUrl) + '" target="_blank" rel="noopener noreferrer">' + escapeRun(linkMatch[1]) + '</a>';
         } else {
-          result += escapeHtml(linkMatch[1]); // Just show text, no link
+          result += escapeRun(linkMatch[1]); // Just show text, no link
         }
         remaining = remaining.substring(linkIndex + linkMatch[0].length);
       } else if (minIndex === urlIndex && urlMatch) {
-        if (urlIndex > 0) result += escapeHtml(remaining.substring(0, urlIndex));
+        if (urlIndex > 0) result += escapeRun(remaining.substring(0, urlIndex));
         // Plain URLs are already validated by regex to start with https?://
-        result += '<a href="' + escapeHtml(urlMatch[0]) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(urlMatch[0]) + '</a>';
+        const plainUrl = withRawCode(urlMatch[0]);
+        result += '<a href="' + escapeHtml(plainUrl) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(plainUrl) + '</a>';
         remaining = remaining.substring(urlIndex + urlMatch[0].length);
       } else if (minIndex === citationIndex && citationMatch) {
-        if (citationIndex > 0) result += escapeHtml(remaining.substring(0, citationIndex));
+        if (citationIndex > 0) result += escapeRun(remaining.substring(0, citationIndex));
         const citation = citationsByMarker[citationMatch[1]];
         const label = escapeHtml(citationMatch[1]);
         if (isSafeUrl(citation.source)) {
@@ -3699,8 +4185,10 @@
         continue;
       }
 
-      // Handle bullet points (* item or - item)
-      const bulletMatch = line.match(/^[\*\-]\s+(.+)$/);
+      // Handle bullet points (* item or - item). Indented items (nested
+      // lists) are flattened into the current list rather than falling
+      // through to a paragraph that shows a literal "*".
+      const bulletMatch = line.match(/^\s*[\*\-]\s+(.+)$/);
       if (bulletMatch) {
         if (currentListType !== 'ul') flushList();
         currentListType = 'ul';
@@ -3709,7 +4197,7 @@
       }
 
       // Handle numbered lists
-      const numberedMatch = line.match(/^\d+\.\s+(.+)$/);
+      const numberedMatch = line.match(/^\s*\d+\.\s+(.+)$/);
       if (numberedMatch) {
         if (currentListType !== 'ol') flushList();
         currentListType = 'ol';
@@ -3720,18 +4208,7 @@
       flushList();
 
       if (line.trim()) {
-        // Handle inline code first
-        let processedLine = line.replace(/`([^`]+)`/g, function(match, code) {
-          return '<code>' + escapeHtml(code) + '</code>';
-        });
-        // Process inline markdown for non-code parts
-        processedLine = processedLine.replace(/(<code[^>]*>.*?<\/code>)|([^<]+)/g, function(match, codeTag, text) {
-          if (codeTag) return codeTag;
-          if (text) return renderInlineMarkdown(text, citationsByMarker);
-          return match;
-        });
-
-        result += '<p>' + processedLine + '</p>';
+        result += '<p>' + renderInlineMarkdown(line, citationsByMarker) + '</p>';
       }
     }
 
@@ -3744,7 +4221,9 @@
       result += '<pre data-code-id="' + blockId + '"><button class="osa-copy-btn" data-copy-target="' + blockId + '" title="Copy code">' + ICONS.copy + '</button><code>' + escapeHtml(codeContent) + '</code></pre>';
     }
 
-    return result || text;
+    // Nothing rendered (a reply that is only an opening fence): the text still goes into
+    // innerHTML, so it is escaped, never returned as markup.
+    return result || escapeHtml(text);
   }
 
   // Validate message structure for security
@@ -3754,7 +4233,7 @@
       typeof msg.role === 'string' &&
       (msg.role === 'user' || msg.role === 'assistant') &&
       typeof msg.content === 'string' &&
-      msg.content.length < 100000; // Prevent DoS
+      msg.content.length <= 100000; // Prevent DoS; the server keeps a reply up to this long
   }
 
   // Older history entries may not have citations, and corrupted storage can
@@ -3766,8 +4245,15 @@
       const { dataset, ...rest } = msg;
       return isValidDatasetId(dataset) ? { ...rest, dataset } : rest;
     }
+    // The cut-off mark is kept only as the boolean the widget writes, and the server's
+    // words for it only as a bounded string.
+    const { cutOff, cutOffMessage, ...rest } = msg;
     return {
-      ...msg,
+      ...rest,
+      ...(cutOff === true ? { cutOff: true } : {}),
+      ...(cutOff === true && typeof cutOffMessage === 'string' && cutOffMessage
+        ? { cutOffMessage: cutOffMessage.slice(0, CUT_OFF_MESSAGE_LIMIT) }
+        : {}),
       citations: Array.isArray(msg.citations)
         ? msg.citations.filter((citation) => citation && typeof citation === 'object'
           && !Array.isArray(citation)
@@ -4103,10 +4589,22 @@
       }
 
       // Validate model format if present
-      if (parsed.model && typeof parsed.model === 'string') {
-        if (!isValidModelId(parsed.model)) {
-          console.error('[OSA] Saved model has invalid format, ignoring');
-          queuePendingNotice('Your saved model selection is invalid and was ignored.');
+      if (parsed.model && !isValidModelId(parsed.model)) {
+        console.error('[OSA] Saved model has invalid format, ignoring');
+        queuePendingNotice('Your saved model selection is invalid and was ignored.');
+        parsed.model = null;
+      }
+      // An alias moves to the offered model it stands for, and the rules Settings applies
+      // when it saves are applied to what it saved before: an older widget, or a server
+      // that changed since, may have left a pair the server now refuses. Only the rules
+      // the widget's own lists can settle run here; the rest wait for the community's
+      // offered list (see reconcileSavedModel).
+      if (parsed.model) {
+        parsed.model = canonicalModelId(parsed.model);
+        const problem = modelKeyProblem(parsed.model, parsed.apiKey);
+        if (problem) {
+          console.error('[OSA] Saved model cannot be used with the saved key, ignoring:', problem);
+          queuePendingNotice(`Your saved model ${parsed.model} was reset to the community default. ${problem}`);
           parsed.model = null;
         }
       }
@@ -4122,6 +4620,21 @@
       queuePendingNotice('Cannot access browser storage. Settings will not persist.');
       userSettings = { apiKey: null, model: null, keyProvider: null };
     }
+  }
+
+  // The saved model against the rules that need the community's own offered list, run
+  // when that list arrives (loadUserSettings could not: see modelKeyProblem). A pair the
+  // server would refuse on every send is reset to the community default for this session,
+  // with the reason; what is stored is left for the reader to replace in Settings.
+  function reconcileSavedModel() {
+    if (!userSettings.model) return;
+    const problem = modelKeyProblem(userSettings.model, userSettings.apiKey);
+    if (!problem) return;
+    console.error('[OSA] Saved model cannot be used with the saved key, using the community default:', problem);
+    queuePendingNotice(`Your saved model ${userSettings.model} was reset to the community default. ${problem}`);
+    userSettings.model = null;
+    const container = document.querySelector('.osa-chat-widget');
+    if (container && isOpen) flushPendingNotice(container);
   }
 
   // Save user settings to localStorage
@@ -4227,6 +4740,12 @@
     if (w.launcher_label != null && !_userSetKeys.has('launcherLabel')) {
       CONFIG.launcherLabel = w.launcher_label;
       changed = true;
+    }
+    for (const [field, key] of LAUNCHER_GEOMETRY_KEYS) {
+      if (w[field] != null && !_userSetKeys.has(key)) {
+        CONFIG[key] = w[field];
+        changed = true;
+      }
     }
     if (w.color_scheme != null && !_userSetKeys.has('colorScheme')) {
       if (COMMUNITY_COLOR_SCHEMES.includes(w.color_scheme)) {
@@ -4346,7 +4865,12 @@
       // Offered models drive the settings model menu; DEFAULT_MODELS remains
       // the fallback if this is missing (older backend) or empty.
       if (data && Array.isArray(data.offered_models) && data.offered_models.length > 0) {
-        offeredModels = data.offered_models.map(m => ({ value: m.id, label: m.label }));
+        offeredModels = data.offered_models.map(m => ({
+          value: m.id,
+          label: m.label,
+          platformOnly: m.platform_only === true
+        }));
+        reconcileSavedModel();
       } else {
         console.warn(
           '[OSA] Community config response has no offered_models; falling back to DEFAULT_MODELS. ' +
@@ -4972,6 +5496,11 @@
     if (message && runsCode) {
       message.executions = (message.executions || []).concat(executionRecord(request, result));
     }
+    // The result goes back to the model next, which reads it before anything else
+    // happens: said until the continuing stream shows what comes of it (#538). The run
+    // panel stood for the wait while the code ran; the wait for that stream begins.
+    activity = { kind: 'analyze', label: ACTIVITY_ANALYZING, messageIndex };
+    beginWait();
     renderMessages(container);
     return result;
   }
@@ -5035,8 +5564,12 @@
   // Turn a failed response into an Error carrying the most useful message.
   async function responseError(response) {
     let errorMessage = `Request failed (${response.status})`;
+    let errorId = null;
     try {
       const error = await response.json();
+      // The reference a 502 for an empty or cut-off reply carries (`error_id`), the one
+      // the streamed `error` event carries too, so a reader can quote it either way.
+      errorId = errorReference(error && error.error_id);
       if (error && typeof error.detail === 'string') {
         errorMessage = error.detail.substring(0, 500);
       } else if (error && typeof error.error === 'string') {
@@ -5054,7 +5587,9 @@
         errorMessage = 'Access denied. Please complete the security verification.';
       }
     }
-    return new Error(errorMessage);
+    const failure = new Error(errorMessage);
+    failure.errorId = errorId;
+    return failure;
   }
 
   // Whether a 429 came from the worker's per-minute limit, the one worth
@@ -5573,6 +6108,141 @@
     console.warn(`[OSA] Ignoring invalid ${field} (not a recognized color): ${JSON.stringify(value)}`);
   }
 
+  // A value as a warning shows it. A number that is not finite prints as null through
+  // JSON, and JSON refuses a BigInt or a cycle, so neither may be the one thing that stops
+  // the widget from starting over a cosmetic setting.
+  function describeLauncherValue(value) {
+    if (typeof value === 'number' && !Number.isFinite(value)) return String(value);
+    try {
+      const text = JSON.stringify(value);
+      return text === undefined ? String(value) : text;
+    } catch (e) {
+      try {
+        return String(value);
+      } catch (e2) {
+        return Object.prototype.toString.call(value);
+      }
+    }
+  }
+
+  // Once per source, field and value, as for colors: the widget's settings are applied
+  // before it is drawn and again when the fresh community config arrives, and one bad
+  // value needs one warning.
+  const warnedInvalidLauncherValues = new Set();
+  function warnInvalidLauncherValue(field, value, expected, source = 'the launcher settings') {
+    const shown = describeLauncherValue(value);
+    const key = `${source}:${field}:${typeof value}:${shown}`;
+    if (warnedInvalidLauncherValues.has(key)) return;
+    warnedInvalidLauncherValues.add(key);
+    console.warn(`[OSA] Ignoring invalid ${field} in ${source} (expected ${expected}): ${shown}`);
+  }
+
+  // The launcher's position, sizes and offsets from CONFIG (#553), checked. The server
+  // refuses a value outside these ranges when it loads a community, and setConfig refuses
+  // one from a page, but a config remembered from before the limits last changed has no
+  // such check in front of it, so a bad value is ignored here, once, with a warning. No DOM.
+  //   position  'bottom-right' or 'bottom-left'; null is unset, and is the default
+  //   sizes     null when neither size is set (the stylesheet's own sizes apply), else
+  //             {closed, open} in whole pixels, open never above closed
+  //   offsetX, offsetY, mobileOffsetX, mobileOffsetY   whole pixels, or null when unset
+  //             or refused
+  function resolveLauncherGeometry(capsule) {
+    const { sizeMin, bubbleSize, capsuleSize, openRatio } = LAUNCHER_LIMITS;
+    const setting = (key) => {
+      const value = CONFIG[key];
+      if (value == null) return null;
+      const rule = LAUNCHER_SETTING_RULES[key];
+      if (rule.ok(value)) return value;
+      warnInvalidLauncherValue(key, value, rule.expected);
+      return null;
+    };
+
+    const position = setting('launcherPosition') || 'bottom-right';
+
+    let closed = setting('launcherSize');
+    let open = setting('launcherOpenSize');
+    let sizes = null;
+    if (closed !== null || open !== null) {
+      if (closed === null) closed = capsule ? capsuleSize : bubbleSize;
+      if (open === null) open = Math.min(closed, Math.max(sizeMin, Math.round(closed * openRatio)));
+      if (open > closed) {
+        warnInvalidLauncherValue('launcherOpenSize', open, `at most the closed size, ${closed}`);
+        open = closed;
+      }
+      sizes = { closed, open };
+    }
+
+    return {
+      position,
+      sizes,
+      offsetX: setting('launcherOffsetX'),
+      offsetY: setting('launcherOffsetY'),
+      mobileOffsetX: setting('launcherMobileOffsetX'),
+      mobileOffsetY: setting('launcherMobileOffsetY')
+    };
+  }
+
+  // The capsule's circles in the order the reader sees them, which is also the Tab order
+  // (Tab follows DOM order, never position; WCAG 2.4.3). The fixed container grows away
+  // from its anchor, so the chat circle, which never moves, is the one nearest it: last in
+  // a column, and last in a row anchored on the right. In a row anchored on the left (600px
+  // wide and narrower, #553) it is first, with the others following it to the right. The
+  // indicator stays first in the DOM, drawn behind all three.
+  function arrangeCapsule(container) {
+    const capsule = container.querySelector('.osa-launcher-capsule');
+    if (!capsule) return;
+    const chat = capsule.querySelector('.osa-chat-button');
+    const notebook = capsule.querySelector('.osa-notebook-btn');
+    const hpc = capsule.querySelector('.osa-hpc-btn');
+    if (!chat || !notebook || !hpc) return;
+    const narrow = typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 600px)').matches;
+    const order = container.classList.contains('osa-pos-left') && narrow
+      ? [chat, notebook, hpc]
+      : [hpc, notebook, chat];
+    const inPlace = [...capsule.children].filter((child) => order.includes(child));
+    if (inPlace.every((child, i) => child === order[i])) return;
+    // Moving a node takes keyboard focus from it, and a resize across 600px is not the
+    // reader's doing: whichever circle had focus gets it back.
+    const focused = container.ownerDocument.activeElement;
+    for (const child of order) capsule.appendChild(child);
+    if (focused && order.some((child) => child.contains(focused)) && container.ownerDocument.activeElement !== focused) {
+      focused.focus({ preventScroll: true });
+    }
+  }
+
+  // Put the launcher's geometry on the widget (#553): the custom properties the
+  // stylesheet reads (each set only when configured, and removed when a fresh config
+  // drops it, so an unset one is the stylesheet's own value), the side class, and, for
+  // a bubble whose closed size is larger than its open one, the class that gives it the
+  // capsule's grow-and-shrink. Also run by createWidget right after it builds the widget,
+  // in the same task and so before the first paint, so a remembered look, or a page's
+  // setConfig with no community config at all, has the launcher in its place from the
+  // first frame. Whether it is a capsule is read from the widget itself, since that is
+  // what is drawn (a page's setConfig({launcher}) after init() converts nothing).
+  function applyLauncherGeometry(container) {
+    const capsule = container.classList.contains('osa-capsule');
+    const g = resolveLauncherGeometry(capsule);
+    const px = (n) => (n === null ? null : `${n}px`);
+    const set = (name, value) => {
+      if (value === null) container.style.removeProperty(name);
+      else container.style.setProperty(name, value);
+    };
+    set('--osa-size-closed', g.sizes && px(g.sizes.closed));
+    set('--osa-size-open', g.sizes && px(g.sizes.open));
+    set('--osa-closed-scale', g.sizes && String(g.sizes.closed / g.sizes.open));
+    set('--osa-edge-x', px(g.offsetX));
+    set('--osa-edge-y', px(g.offsetY));
+    set('--osa-edge-x-narrow', px(g.mobileOffsetX));
+    set('--osa-edge-y-narrow', px(g.mobileOffsetY));
+    container.classList.toggle('osa-pos-left', g.position === 'bottom-left');
+    container.classList.toggle('osa-launcher-resizes',
+      !capsule && g.sizes !== null && g.sizes.closed > g.sizes.open);
+    arrangeCapsule(container);
+    // The capsule's indicator sits where the layout puts its circles, which a new size,
+    // side or order moves.
+    positionIndicator(container);
+  }
+
   // Update DOM elements to reflect current CONFIG values (called after API config load)
   function applyWidgetConfig() {
     const container = document.querySelector('.osa-chat-widget');
@@ -5586,6 +6256,7 @@
     if (CONFIG.launcher !== 'capsule') revertLauncherMode(container);
     applyLauncherMode(container);
     renderLauncherIcons(container);
+    applyLauncherGeometry(container);
 
     applyThemeProperties(container);
 
@@ -5645,10 +6316,12 @@
       avatar.appendChild(img);
     }
 
-    // Update loading label if currently loading
+    // Update loading label if currently loading (the generic one reads the title)
     const loadingLabel = container.querySelector('.osa-loading-label');
-    if (loadingLabel) {
-      loadingLabel.textContent = isThinking ? 'Thinking...' : CONFIG.title;
+    const status = statusToShow();
+    if (loadingLabel && status && status.where === 'loading') {
+      announceStatus(container, status);
+      loadingLabel.textContent = status.label;
     }
   }
 
@@ -5749,6 +6422,67 @@
   }
 
   // Open settings modal
+  // The model choice comes first in Settings. A custom model, and the reader's own API key
+  // that pays for it, belong to "Custom", so those two fields appear only when Custom is
+  // chosen. A key that is already filled in stays in view so the reader can see and
+  // remove it, whatever model is selected, and so does a key field that has keyboard
+  // focus: emptying it must not hide it, which would drop focus to the page. It is put
+  // away once focus leaves it (see watchApiKeyFocus).
+  function syncCustomFields(container) {
+    const modelSelect = container.querySelector('#osa-settings-model');
+    const customModelField = container.querySelector('#osa-settings-custom-model-field');
+    const apiKeyField = container.querySelector('#osa-settings-api-key-field');
+    const apiKeyInput = container.querySelector('#osa-settings-api-key');
+    const isCustom = !!modelSelect && modelSelect.value === 'custom';
+    const hasKey = !!apiKeyInput && apiKeyInput.value.trim() !== '';
+    const hasFocus = !!apiKeyInput && apiKeyInput.ownerDocument.activeElement === apiKeyInput;
+    if (customModelField) customModelField.style.display = isCustom ? 'block' : 'none';
+    if (apiKeyField) apiKeyField.style.display = (isCustom || hasKey || hasFocus) ? 'block' : 'none';
+    syncPlatformOnlyOptions(container);
+  }
+
+  // Puts an emptied key field away when focus leaves it. Not while a pointer press is
+  // in progress in the widget: the dialog is centered, so hiding a field moves the Save
+  // button, and a click that began on it would end somewhere else and be lost. Safari
+  // and Firefox on a Mac do not focus a button a press lands on, so the press itself is
+  // what is watched, not where focus went. The field settles after that click instead.
+  function watchApiKeyFocus(container) {
+    const apiKeyInput = container.querySelector('#osa-settings-api-key');
+    if (!apiKeyInput) return;
+    let pressed = false;
+    container.addEventListener('pointerdown', () => { pressed = true; }, true);
+    container.addEventListener('pointerup', () => { pressed = false; }, true);
+    container.addEventListener('pointercancel', () => { pressed = false; }, true);
+    apiKeyInput.addEventListener('blur', () => {
+      if (!pressed) {
+        syncCustomFields(container);
+        return;
+      }
+      container.addEventListener('click', () => syncCustomFields(container), { once: true });
+    });
+  }
+
+  // With the reader's own Anthropic key in the field, the models only the service's key
+  // can run are shown as unavailable, instead of failing when the reader sends a message.
+  function ownAnthropicKeyIn(container) {
+    const apiKeyInput = container.querySelector('#osa-settings-api-key');
+    const apiKey = apiKeyInput ? apiKeyInput.value.trim() : '';
+    return !!apiKey && inferKeyProvider(apiKey) === 'anthropic';
+  }
+
+  function syncPlatformOnlyOptions(container) {
+    const modelSelect = container.querySelector('#osa-settings-model');
+    if (!modelSelect) return;
+    const blocked = ownAnthropicKeyIn(container);
+    for (const option of modelSelect.options) {
+      if (!isPlatformOnly(option.value)) continue;
+      option.disabled = blocked;
+      option.textContent = blocked
+        ? `${getModelLabel(option.value)} (not with your own Anthropic key)`
+        : getModelLabel(option.value);
+    }
+  }
+
   function openSettings(container) {
     // Don't open settings if chat window is closed
     if (!isOpen) return;
@@ -5756,7 +6490,6 @@
     const overlay = container.querySelector('.osa-settings-overlay');
     const apiKeyInput = container.querySelector('#osa-settings-api-key');
     const modelSelect = container.querySelector('#osa-settings-model');
-    const customModelField = container.querySelector('#osa-settings-custom-model-field');
     const customModelInput = container.querySelector('#osa-settings-custom-model');
     const modelHint = container.querySelector('#osa-settings-model-hint');
 
@@ -5765,11 +6498,7 @@
     // config that loads after the widget's initial render is still
     // reflected the next time settings are opened.
     if (modelSelect) {
-      const options = getModelMenuOptions()
-        .filter(m => m.value !== communityDefaultModel)
-        .map(m => `<option value="${escapeHtml(m.value)}">${escapeHtml(m.label)}</option>`)
-        .join('');
-      modelSelect.innerHTML = `<option value="default">Default (Community Setting)</option>${options}<option value="custom">Custom</option>`;
+      modelSelect.innerHTML = `<option value="default">Default (Community Setting)</option>${modelOptionsHtml()}<option value="custom">Custom</option>`;
     }
 
     // Update default option label with community default model
@@ -5795,18 +6524,23 @@
       apiKeyInput.value = userSettings.apiKey || '';
     }
     if (modelSelect) {
-      // Check if current model is in the offered list
-      const isDefaultModel = userSettings.model === null || getModelMenuOptions().some(m => m.value === userSettings.model);
-      if (isDefaultModel) {
-        modelSelect.value = userSettings.model || 'default';
-        if (customModelField) customModelField.style.display = 'none';
+      // The community's own default is the menu's Default entry, not one of its offered
+      // models (see modelOptionsHtml), so a saved model that is the default, or an alias of
+      // it, selects Default rather than an option that is not there.
+      const saved = userSettings.model ? canonicalModelId(userSettings.model) : null;
+      if (!saved || isCommunityDefaultModel(saved)) {
+        modelSelect.value = 'default';
+        if (customModelInput) customModelInput.value = '';
+      } else if (getModelMenuOptions().some(m => m.value === saved)) {
+        modelSelect.value = saved;
+        if (customModelInput) customModelInput.value = '';
       } else {
         // Custom model
         modelSelect.value = 'custom';
         if (customModelInput) customModelInput.value = userSettings.model;
-        if (customModelField) customModelField.style.display = 'block';
       }
     }
+    syncCustomFields(container);
 
     // Update hint with current default model
     if (modelHint) {
@@ -5839,11 +6573,13 @@
   // Save settings from modal
   function saveSettings(container) {
     const apiKeyInput = container.querySelector('#osa-settings-api-key');
+    const apiKeyField = container.querySelector('#osa-settings-api-key-field');
     const modelSelect = container.querySelector('#osa-settings-model');
     const customModelInput = container.querySelector('#osa-settings-custom-model');
 
-    // Get values
-    const apiKey = apiKeyInput ? apiKeyInput.value.trim() : '';
+    // Get values. A key the dialog is not showing is not part of what the reader chose.
+    const keyShown = !!apiKeyField && apiKeyField.style.display !== 'none';
+    const apiKey = keyShown && apiKeyInput ? apiKeyInput.value.trim() : '';
     const modelSelection = modelSelect ? modelSelect.value : 'default';
 
     // Validate API key format if provided: either an Anthropic or an
@@ -5862,11 +6598,25 @@
         return;
       }
       if (!isValidModelId(model)) {
-        showError(container, 'Invalid model format. Expected a Claude model id or provider/model-name');
+        showError(container, 'Invalid model format. Expected a Claude model id or provider/model-name, optionally with a :variant such as :nitro');
+        return;
+      }
+      if (!apiKey) {
+        showError(container, 'A custom model needs your own API key');
         return;
       }
     } else if (modelSelection !== 'default') {
       model = modelSelection;
+    }
+
+    // The server's own rules for a model and a key (see modelKeyProblem), for a custom
+    // model and an offered one alike. Default names no model, so there is none to refuse:
+    // a community default that the reader's own Anthropic key cannot run (Luna, which only
+    // the service's key can) is swapped for a Claude model by the server, not refused.
+    const problem = modelKeyProblem(model, apiKey);
+    if (problem) {
+      showError(container, problem);
+      return;
     }
 
     // Update settings. keyProvider is always re-derived from the key
@@ -6179,10 +6929,13 @@
     if (!resizeHandle) return;
 
     let isResizing = false;
+    let fromLeft = false;
     let startX, startY, startWidth, startHeight;
 
     resizeHandle.addEventListener('mousedown', (e) => {
       isResizing = true;
+      // A panel anchored on the left (#553) has its handle on the top-right corner.
+      fromLeft = !!chatWindow.closest('.osa-pos-left');
       startX = e.clientX;
       startY = e.clientY;
       startWidth = chatWindow.offsetWidth;
@@ -6195,8 +6948,10 @@
     document.addEventListener('mousemove', (e) => {
       if (!isResizing) return;
 
-      // Resize from top-left corner (since window is anchored bottom-right)
-      const newWidth = startWidth - (e.clientX - startX);
+      // Resize from the corner away from the anchor: the top-left when the window is
+      // anchored bottom-right, the top-right when it is anchored bottom-left.
+      const dx = e.clientX - startX;
+      const newWidth = fromLeft ? startWidth + dx : startWidth - dx;
       const newHeight = startHeight - (e.clientY - startY);
 
       // Set minimum and maximum sizes. The capsule holds a notebook too (#470), so
@@ -6263,6 +7018,7 @@
           </div>
         </div>
         <div class="osa-chat-messages"></div>
+        <div class="osa-status-announcer osa-sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
         <div class="osa-suggestions" style="display: none;">
           <span class="osa-suggestions-label">Try asking:</span>
           <div class="osa-suggestions-list"></div>
@@ -6299,8 +7055,33 @@
           </div>
           <div class="osa-settings-body">
             <div class="osa-settings-field">
+              <label class="osa-settings-label" for="osa-settings-model">
+                Model Selection
+              </label>
+              <select id="osa-settings-model" class="osa-settings-select">
+                <option value="default">Default (Community Setting)</option>
+                ${modelOptionsHtml()}
+                <option value="custom">Custom</option>
+              </select>
+              <span class="osa-settings-hint" id="osa-settings-model-hint">
+                Select a model or use the community default
+              </span>
+            </div>
+            <div class="osa-settings-field" id="osa-settings-custom-model-field" style="display: none;">
+              <label class="osa-settings-label" for="osa-settings-custom-model">
+                Model name, for example from <a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer" style="color: var(--osa-accent); text-decoration: underline;">OpenRouter</a>
+              </label>
+              <input
+                type="text"
+                id="osa-settings-custom-model"
+                class="osa-settings-input"
+                placeholder="provider/model-name"
+                autocomplete="off"
+              />
+            </div>
+            <div class="osa-settings-field" id="osa-settings-api-key-field" style="display: none;">
               <label class="osa-settings-label" for="osa-settings-api-key">
-                API Key (Optional)
+                Your API key
               </label>
               <input
                 type="password"
@@ -6310,33 +7091,8 @@
                 autocomplete="off"
               />
               <span class="osa-settings-hint">
-                Use your own Anthropic or OpenRouter API key for testing. Stored locally in your browser.
+                An Anthropic or OpenRouter key. Required for a custom model. Stored in this browser and sent with your requests.
               </span>
-            </div>
-            <div class="osa-settings-field">
-              <label class="osa-settings-label" for="osa-settings-model">
-                Model Selection
-              </label>
-              <select id="osa-settings-model" class="osa-settings-select">
-                <option value="default">Default (Community Setting)</option>
-                ${getModelMenuOptions().filter(m => m.value !== communityDefaultModel).map(m => `<option value="${escapeHtml(m.value)}">${escapeHtml(m.label)}</option>`).join('')}
-                <option value="custom">Custom</option>
-              </select>
-              <span class="osa-settings-hint" id="osa-settings-model-hint">
-                Select a model or use the community default
-              </span>
-            </div>
-            <div class="osa-settings-field" id="osa-settings-custom-model-field" style="display: none;">
-              <label class="osa-settings-label" for="osa-settings-custom-model">
-                Model name, requires your own <a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer" style="color: var(--osa-accent); text-decoration: underline;">OpenRouter</a> key
-              </label>
-              <input
-                type="text"
-                id="osa-settings-custom-model"
-                class="osa-settings-input"
-                placeholder="provider/model-name"
-                autocomplete="off"
-              />
             </div>
             <div class="osa-settings-field osa-workspace-field" style="display: none;">
               <label class="osa-settings-label">Workspace</label>
@@ -6416,6 +7172,7 @@
     // ordinary case, launcher arriving later from the community config, is applied
     // again from applyWidgetConfig().
     applyLauncherMode(container);
+    applyLauncherGeometry(container);
 
     // A host page that chose its scheme before init() gets it with no flash of the
     // light panel; a community's 'auto' is applied once its config arrives.
@@ -6424,10 +7181,278 @@
     return container;
   }
 
-  // Render messages
-  function renderMessages(container) {
+  // What a pending reply is doing (#538), said the way "Thinking..." says it: the tool
+  // it is searching with, the code it is writing, the results it is reading. While no
+  // reply text is on screen that is the loading bubble's label; once the reply has
+  // text, a later activity (text, then a tool call, then more text) is a status line
+  // under that text in the same message, so it never makes a second bubble. After
+  // STATUS_ELAPSED_AFTER_MS the wait's length follows the label. None of this is on a
+  // message, so none of it is saved.
+  //
+  // BEGIN activity-labels. Pure, and evaluated on its own by
+  // tests/test_frontend/test_widget_activity_labels.py, for every tool the registry
+  // builds: nothing between here and END may use the rest of the widget.
+  const ACTIVITY_VERBS = {
+    search: ['search', 'Searching'],
+    find: ['search', 'Searching'],
+    query: ['search', 'Querying'],
+    retrieve: ['search', 'Looking up'],
+    lookup: ['search', 'Looking up'],
+    get: ['search', 'Looking up'],
+    describe: ['search', 'Looking up'],
+    fetch: ['search', 'Fetching'],
+    list: ['search', 'Listing'],
+    read: ['search', 'Reading'],
+    validate: ['work', 'Validating'],
+    check: ['work', 'Checking'],
+    suggest: ['work', 'Suggesting'],
+    render: ['render', 'Rendering'],
+    // Running something is running code only if the name says it is code:
+    // nemar_run_query and execute_sql run a query, and read "Working...".
+    execute: ['run', ''],
+    exec: ['run', ''],
+    run: ['run', ''],
+  };
+  // What makes a name about code: with run or no verb at all, it is code.
+  const ACTIVITY_CODE_WORDS = ['code', 'python', 'script'];
+  // How a word of a tool's name reads in a label; null leaves it out.
+  const ACTIVITY_WORDS = {
+    docs: 'documentation',
+    doc: 'documentation',
+    faq: 'FAQ',
+    recent: 'recent activity',
+    live: null,
+    window: 'recording data',
+    api: 'API',
+    bep: 'BEP',
+    bids: 'BIDS',
+    eeg: 'EEG',
+    eeglab: 'EEGLAB',
+    hed: 'HED',
+    meg: 'MEG',
+    mne: 'MNE',
+    nwb: 'NWB',
+    url: 'URL',
+  };
+  const ACTIVITY_MAX_OBJECT_CHARS = 40;
+  const ACTIVITY_ANALYZING = 'Analyzing results...';
+
+  // What a tool call is doing, read from the tool's name alone, never its arguments
+  // (which can be long, or private): {kind, label}, kind being 'search', 'code',
+  // 'render', 'work' or 'other'. `phase` is 'writing' while the model writes the call
+  // and 'running' once it runs; only code reads differently in the two. The widget's
+  // own community id is left out, since in its widget every tool is about it:
+  // retrieve_nwb_docs reads "Looking up documentation...".
+  function classifyToolActivity(name, phase, communityId) {
+    const has = (table, key) => Object.prototype.hasOwnProperty.call(table, key);
+    const words = typeof name === 'string'
+      ? name.slice(0, 200).replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+      : [];
+    const own = typeof communityId === 'string' ? communityId.toLowerCase() : '';
+    let verb = null;
+    let at = -1;
+    for (let i = 0; i < words.length && verb === null; i++) {
+      if (words[i] === 'look' && words[i + 1] === 'up') {
+        verb = 'lookup';
+        at = i + 1;
+      } else if (has(ACTIVITY_VERBS, words[i])) {
+        verb = words[i];
+        at = i;
+      }
+    }
+    let kind = verb === null ? 'other' : ACTIVITY_VERBS[verb][0];
+    if (kind === 'run' || kind === 'other') {
+      kind = words.some((word) => ACTIVITY_CODE_WORDS.includes(word)) ? 'code' : 'other';
+    }
+    if (kind === 'code') return { kind, label: phase === 'writing' ? 'Writing code...' : 'Running code...' };
+    if (kind === 'render') return { kind, label: 'Rendering...' };
+    if (kind === 'other') return { kind, label: 'Working...' };
+    let object = '';
+    for (const word of words.slice(at + 1)) {
+      if (word === own) continue;
+      const shown = has(ACTIVITY_WORDS, word) ? ACTIVITY_WORDS[word] : word.slice(0, 20);
+      if (!shown) continue;
+      const longer = object ? `${object} ${shown}` : shown;
+      if (longer.length > ACTIVITY_MAX_OBJECT_CHARS) break;
+      object = longer;
+    }
+    const gerund = ACTIVITY_VERBS[verb][1];
+    return { kind, label: object ? `${gerund} ${object}...` : `${gerund}...` };
+  }
+  // END activity-labels
+
+  // The activity of the reply being written, or null: {kind, label, messageIndex}.
+  let activity = null;
+  // Tools started and not yet finished, so a batch reads as analyzed only once its
+  // last tool has ended.
+  let toolsRunning = 0;
+  // When the reader's current wait began (a statusClock time), or null. A wait is one
+  // stretch with nothing new to read. It begins as each stream is asked for: when a
+  // message is sent, and when code run in the page has finished and its result goes
+  // back for the continuing stream (the run panel stood for the wait before that).
+  // It begins again at each chunk of visible text. Nothing else starts it again: a
+  // new label is the same wait, and so is a slow response or a rate-limit pause
+  // before the stream arrives, which the reader waits through all the same.
+  let waitSince = null;
+  let statusTicker = null;
+  let statusContainer = null;
+  // Where the elapsed time is read from: a monotonic clock, so a wall clock set back or
+  // forward mid-wait does not show in it. A variable only so the test hooks can turn
+  // the clock by hand.
+  let statusClock = {
+    now: () => (typeof performance !== 'undefined' && typeof performance.now === 'function'
+      ? performance.now()
+      : Date.now()),
+    every: (fn, ms) => setInterval(fn, ms),
+    cancel: (id) => clearInterval(id),
+  };
+  const STATUS_ELAPSED_AFTER_MS = 5000;
+  const STATUS_TICK_MS = 1000;
+
+  function clearActivity() {
+    activity = null;
+    toolsRunning = 0;
+  }
+
+  // A new wait begins now (see waitSince).
+  function beginWait() {
+    waitSince = statusClock.now();
+  }
+
+  // The reply is now doing `next` ({kind, label} or null), and the page says so.
+  function setActivity(container, next, messageIndex) {
+    const changed = !activity !== !next
+      || (activity && next && (activity.label !== next.label || activity.messageIndex !== messageIndex));
+    activity = next ? { kind: next.kind, label: next.label, messageIndex } : null;
+    if (changed && container) paintStatus(container);
+  }
+
+  // The status the conversation shows, or null. While the reply has no text on screen
+  // (`isLoading`) it is the loading bubble's label: the activity, else "Thinking...",
+  // else the community's title, as before. Once it has text, only an activity is
+  // shown, on a line under that text, and never under a message with no text: a
+  // status must not make a bubble of its own. The tool panel speaks for itself.
+  function statusToShow() {
+    if (toolActivity) return null;
+    if (isLoading) {
+      // The title is the bubble's placeholder, not news: it is shown, and not announced.
+      const said = activity ? activity.label : (isThinking ? 'Thinking...' : null);
+      return { where: 'loading', label: said || CONFIG.title, spoken: Boolean(said) };
+    }
+    if (!activity) return null;
+    const message = messages[activity.messageIndex];
+    if (!message || message.role !== 'assistant' || !hasVisibleText(message.content)) return null;
+    return { where: 'inline', label: activity.label, messageIndex: activity.messageIndex, spoken: true };
+  }
+
+  // Say `status`, what the page shows now (null: no status), to a screen reader. The
+  // status announcer, one polite live region made with the widget and outside the
+  // conversation, so no redraw replaces it, says each new label once and is emptied
+  // when the status ends; the visible label is hidden from a screen reader, which
+  // would otherwise hear it twice.
+  function announceStatus(container, status) {
+    const announcer = container.querySelector('.osa-status-announcer');
+    const spoken = status && status.spoken ? status.label : '';
+    if (announcer && announcer.textContent !== spoken) announcer.textContent = spoken;
+  }
+
+  // The elapsed part: nothing for a wait too short to notice, then whole seconds.
+  function statusElapsedText() {
+    if (waitSince === null) return '';
+    const ms = statusClock.now() - waitSince;
+    return ms >= STATUS_ELAPSED_AFTER_MS ? `${Math.floor(ms / 1000)} s` : '';
+  }
+
+  // The label as shown; a screen reader hears it from the status announcer instead.
+  function statusPartsHtml(labelClass, label) {
+    return `<span class="${escapeHtml(labelClass)}" aria-hidden="true">${escapeHtml(label)}</span>`
+      + `<span class="osa-status-elapsed">${escapeHtml(statusElapsedText())}</span>`;
+  }
+
+  function statusLineHtml(status) {
+    return `<div class="osa-activity-status" data-msg-index="${escapeHtml(String(status.messageIndex))}">`
+      + '<span class="osa-activity-pulse" aria-hidden="true"></span>'
+      + `${statusPartsHtml('osa-activity-label', status.label)}</div>`;
+  }
+
+  function stopStatusTicker() {
+    if (statusTicker !== null) statusClock.cancel(statusTicker);
+    statusTicker = null;
+  }
+
+  // Once a second, the elapsed time is written into the status's own text node. Not a
+  // redraw, which rebuilds the whole conversation.
+  function tickStatus() {
+    const shown = statusContainer ? statusContainer.querySelectorAll('.osa-status-elapsed') : [];
+    if (shown.length === 0) {
+      stopStatusTicker();
+      return;
+    }
+    const text = statusElapsedText();
+    shown.forEach((el) => {
+      if (el.textContent !== text) el.textContent = text;
+    });
+  }
+
+  function syncStatusTicker(container, showing) {
+    if (!showing) {
+      stopStatusTicker();
+      return;
+    }
+    statusContainer = container;
+    if (statusTicker === null) statusTicker = statusClock.every(tickStatus, STATUS_TICK_MS);
+  }
+
+  // Whether the reader is typing in the conversation (a thumbs-down comment), whose
+  // caret a redraw would take away.
+  function readerIsTyping(container) {
+    const typing = document.activeElement;
     const messagesEl = container.querySelector('.osa-chat-messages');
+    return Boolean(typing && typing.matches && typing.matches('textarea, input')
+      && messagesEl && messagesEl.contains(typing));
+  }
+
+  // Show the status the state calls for: in place when its element is on screen, so
+  // nothing is rebuilt, else with a redraw. The announcer says it either way, even
+  // when the redraw waits for a reader who is typing.
+  function paintStatus(container) {
+    const messagesEl = container.querySelector('.osa-chat-messages');
+    if (!messagesEl) return;
+    const status = statusToShow();
+    announceStatus(container, status);
+    let labelEl = null;
+    if (status && status.where === 'loading') {
+      labelEl = messagesEl.querySelector('.osa-loading .osa-loading-label');
+    } else if (status && status.where === 'inline') {
+      const line = [...messagesEl.querySelectorAll('.osa-activity-status')]
+        .find((el) => el.getAttribute('data-msg-index') === String(status.messageIndex));
+      labelEl = line ? line.querySelector('.osa-activity-label') : null;
+    } else if (!messagesEl.querySelector('.osa-activity-status')) {
+      return; // nothing to show, and nothing shown
+    }
+    if (labelEl) {
+      if (labelEl.textContent !== status.label) labelEl.textContent = status.label;
+      const elapsed = labelEl.parentElement.querySelector('.osa-status-elapsed');
+      if (elapsed) elapsed.textContent = statusElapsedText();
+      syncStatusTicker(container, true);
+      return;
+    }
+    if (readerIsTyping(container)) return;
+    renderMessages(container, { follow: false });
+  }
+
+  // Render messages. `follow: false` (a redraw the reader did not ask for, as a stream
+  // makes many of) leaves a reader who has scrolled up where they are instead of
+  // pulling them back to the bottom.
+  const SCROLL_FOLLOW_SLACK_PX = 80;
+  function renderMessages(container, { follow = true } = {}) {
+    const messagesEl = container.querySelector('.osa-chat-messages');
+    const scrolledFrom = messagesEl.scrollTop;
+    const awayFromBottom = messagesEl.scrollHeight - messagesEl.clientHeight - scrolledFrom;
     messagesEl.innerHTML = '';
+    // The loading bubble's label, or a line under the reply's text (#538), never both.
+    const status = statusToShow();
+    announceStatus(container, status);
 
     messages.forEach((msg, msgIndex) => {
       // The streaming handler keeps an empty assistant entry so the final
@@ -6437,7 +7462,7 @@
       // A reply that has run code is shown even before it has text: the record
       // of what ran is already part of it.
       const ranCode = Array.isArray(msg.executions) && msg.executions.length > 0;
-      if (isLoading && msg.role === 'assistant' && !msg.content && !ranCode && msgIndex === messages.length - 1) {
+      if (isLoading && msg.role === 'assistant' && !hasVisibleText(msg.content) && !ranCode && msgIndex === messages.length - 1) {
         return;
       }
 
@@ -6447,7 +7472,7 @@
       const label = msg.role === 'user' ? 'You' : CONFIG.title;
 
       // Build a marker -> citation lookup for this message (empty for a
-      // message with no citations, e.g. every OpenRouter-answered reply).
+      // message with no citations, e.g. a reply that drew on no retrieved source).
       const citationsByMarker = {};
       const citations = Array.isArray(msg.citations) ? msg.citations : [];
       citations.forEach((c) => {
@@ -6455,13 +7480,17 @@
       });
 
       const content = msg.role === 'assistant'
-        ? markdownToHtml(msg.content, citationsByMarker)
+        ? markdownToHtml(replyMarkdown(msg, msgIndex), citationsByMarker)
         : escapeHtml(msg.content);
 
-      // Compact numbered source list under the answer, when anything was cited.
+      // Compact numbered source list under the answer, when anything was cited. While
+      // the reply is still being revealed, only the sources it has reached.
+      const listed = msgIndex === revealingIndex
+        ? citations.filter((c) => c && String(msg.content || '').includes(`[${c.marker}]`))
+        : citations;
       let sourcesRow = '';
-      if (msg.role === 'assistant' && citations.length) {
-        const items = citations.map((c) => {
+      if (msg.role === 'assistant' && listed.length) {
+        const items = listed.map((c) => {
           const sourceLabel = escapeHtml(String(c.title || c.source || ''));
           const inner = isSafeUrl(c.source)
             ? '<a href="' + escapeHtml(c.source) + '" target="_blank" rel="noopener noreferrer">' + sourceLabel + '</a>'
@@ -6513,6 +7542,7 @@
         </div>
         ${msg.role === 'assistant' ? executionsHtml(msg.executions, msgIndex) : ''}
         <div class="osa-message-content">${content}</div>
+        ${status && status.where === 'inline' && status.messageIndex === msgIndex ? statusLineHtml(status) : ''}
         ${sourcesRow}
         ${feedbackRow}
       `;
@@ -6723,9 +7753,8 @@
     } else if (isLoading) {
       const loadingEl = document.createElement('div');
       loadingEl.className = 'osa-loading';
-      const loadingLabelText = isThinking ? 'Thinking...' : CONFIG.title;
       loadingEl.innerHTML = `
-        <span class="osa-loading-label">${escapeHtml(loadingLabelText)}</span>
+        <div class="osa-loading-status">${statusPartsHtml('osa-loading-label', status.label)}</div>
         <div class="osa-loading-dots">
           <span class="osa-loading-dot"></span>
           <span class="osa-loading-dot"></span>
@@ -6735,7 +7764,10 @@
       messagesEl.appendChild(loadingEl);
     }
 
-    messagesEl.scrollTop = messagesEl.scrollHeight;
+    messagesEl.scrollTop = !follow && awayFromBottom > SCROLL_FOLLOW_SLACK_PX
+      ? scrolledFrom
+      : messagesEl.scrollHeight;
+    syncStatusTicker(container, status !== null);
   }
 
   // The dataset-page suggestions (#477) for the dataset on screen, in the community's
@@ -6810,24 +7842,193 @@
     }
   }
 
-  // Show error
-  function showError(container, message) {
+  // Show error. The banner for a failed request (`persist`) stays until the reader
+  // dismisses it or sends again: it is what says why their question went unanswered, and
+  // five seconds is too short to read it, let alone to select it or copy its reference.
+  // Any other message goes after five seconds, as it always has. The banner's one timer
+  // is the last message's: an earlier message's must not hide a later one.
+  const ERROR_VISIBLE_MS = 5000;
+  const errorTimers = new WeakMap();
+  function showError(container, message, { persist = false, errorId = null } = {}) {
     const errorEl = container.querySelector('.osa-error');
-    errorEl.textContent = message;
+    clearTimeout(errorTimers.get(errorEl));
+    errorTimers.delete(errorEl);
+    errorEl.classList.remove('osa-error-persistent');
+    if (persist) {
+      fillPersistentError(container, errorEl, message, errorId);
+    } else {
+      errorEl.textContent = message;
+      errorTimers.set(errorEl, setTimeout(() => {
+        errorEl.style.display = 'none';
+      }, ERROR_VISIBLE_MS));
+    }
     errorEl.style.display = 'block';
-    setTimeout(() => {
-      errorEl.style.display = 'none';
-    }, 5000);
   }
 
+  // A reference the server gave for an error (its `error_id`), as text to show and copy:
+  // a bounded string, never markup. Null for anything else.
+  function errorReference(value) {
+    return typeof value === 'string' && value.trim() ? value.trim().slice(0, 100) : null;
+  }
+
+  // The banner's content for a failed request: the message, the error's reference with a
+  // button to copy it when the server gave one, and a dismiss button. Plain text nodes,
+  // selectable (.osa-error sets user-select: text, the reference selects whole on one click).
+  function fillPersistentError(container, errorEl, message, errorId) {
+    errorEl.textContent = '';
+    errorEl.classList.add('osa-error-persistent');
+    const text = document.createElement('span');
+    text.className = 'osa-error-text';
+    text.textContent = message;
+    errorEl.appendChild(text);
+
+    const reference = errorReference(errorId);
+    if (reference) {
+      const line = document.createElement('span');
+      line.className = 'osa-error-reference';
+      line.appendChild(document.createTextNode('Reference: '));
+      const id = document.createElement('code');
+      id.className = 'osa-error-id';
+      id.textContent = reference;
+      line.appendChild(id);
+      const copy = document.createElement('button');
+      copy.type = 'button';
+      copy.className = 'osa-error-copy';
+      copy.title = 'Copy the reference';
+      copy.setAttribute('aria-label', 'Copy the error reference');
+      copy.innerHTML = ICONS.copy;
+      copy.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        if (await writeClipboard(reference)) {
+          copy.classList.add('copied');
+          copy.innerHTML = ICONS.check;
+          setTimeout(() => {
+            copy.classList.remove('copied');
+            copy.innerHTML = ICONS.copy;
+          }, CODE_COPIED_MS);
+        } else if (typeof window.getSelection === 'function') {
+          // A page that cannot copy for the reader: the reference is selected, so the
+          // keyboard's copy does it.
+          const selection = window.getSelection();
+          const range = document.createRange();
+          range.selectNodeContents(id);
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+      });
+      line.appendChild(copy);
+      errorEl.appendChild(line);
+    }
+
+    const dismiss = document.createElement('button');
+    dismiss.type = 'button';
+    dismiss.className = 'osa-error-dismiss';
+    dismiss.title = 'Dismiss';
+    dismiss.setAttribute('aria-label', 'Dismiss this error');
+    dismiss.innerHTML = ICONS.close;
+    dismiss.addEventListener('click', (event) => {
+      event.stopPropagation();
+      dismissPersistentError(container);
+    });
+    errorEl.appendChild(dismiss);
+  }
+
+  // Take away a failed request's banner: the reader dismissed it, or sent again. A
+  // five-second message is left to its own timer.
+  function dismissPersistentError(container) {
+    const errorEl = container.querySelector('.osa-error');
+    if (!errorEl || !errorEl.classList.contains('osa-error-persistent')) return;
+    errorEl.classList.remove('osa-error-persistent');
+    errorEl.textContent = '';
+    errorEl.style.display = 'none';
+  }
+
+  // Warnings stack, one line each in the order they came. Several can arrive close
+  // together (the wait for the rate limit and a reply's own notice; a server before
+  // #568 sent the cut-off and long-conversation notices as two events), and a banner
+  // that held only the last would take the first away before it could be read. Each line
+  // has a timer of its own, so each is up for the full period from when it arrived, and
+  // the banner goes with the last line. The same text again is the one line, its period
+  // started over.
+  const WARNING_VISIBLE_MS = 10000;
+  const warningTimers = new WeakMap();
   function showWarning(container, message) {
     const warningEl = container.querySelector('.osa-warning');
     if (!warningEl) return;
-    warningEl.textContent = message;
+    const text = String(message);
+    let line = [...warningEl.children].find((el) => el.textContent === text);
+    if (line) {
+      clearTimeout(warningTimers.get(line));
+    } else {
+      line = document.createElement('div');
+      line.className = 'osa-warning-line';
+      line.textContent = text;
+      warningEl.appendChild(line);
+    }
+    warningTimers.set(line, setTimeout(() => {
+      line.remove();
+      if (!warningEl.firstElementChild) warningEl.style.display = 'none';
+    }, WARNING_VISIBLE_MS));
     warningEl.style.display = 'block';
-    setTimeout(() => {
-      warningEl.style.display = 'none';
-    }, 10000);
+  }
+
+  // Whether a warning (a `warning` event, or an entry of a non-streamed response's
+  // `warnings`) says the reply was cut off: at the model's output limit, or because the
+  // conversation filled its context window. A warning with a machine-readable `code` is
+  // read by it, so its wording can change. One without (a stream's before #568, and a
+  // non-streamed response's `warnings`, which are strings) is read by the wording of
+  // the server's cut-off messages (src/api/turn_outcome.py), which a test holds this to.
+  const CUT_OFF_CODE = 'cut_off';
+  const CUT_OFF_PHRASES = ['was cut off because', 'stopped short because'];
+  function isCutOffWarning(warning) {
+    if (!warning || typeof warning !== 'object') return false;
+    if (typeof warning.code === 'string' && warning.code) return warning.code === CUT_OFF_CODE;
+    return typeof warning.message === 'string' && CUT_OFF_PHRASES.some((phrase) => warning.message.includes(phrase));
+  }
+
+  // One warning about a reply, from wherever it came: the banner, and the reply's own
+  // mark when it says the reply was cut off, with the server's words for it (what to do
+  // about it differs by cause, and only the server knows the cause). The stream's
+  // `warning` events and a non-streamed response's `warnings` both come through here,
+  // so the two cannot differ in what they show.
+  const CUT_OFF_MESSAGE_LIMIT = 500;
+  function noticeWarning(container, reply, warning) {
+    const message = warning.message || 'Warning';
+    console.warn('[OSA] Warning:', message);
+    showWarning(container, message);
+    if (reply && isCutOffWarning(warning)) {
+      reply.cutOff = true;
+      if (typeof warning.message === 'string') reply.cutOffMessage = warning.message.slice(0, CUT_OFF_MESSAGE_LIMIT);
+    }
+  }
+
+  // The warnings of a non-streamed response, as the objects noticeWarning reads. An
+  // entry is a string (what the first server to send them sent) or an object with a
+  // `message` and, when the server sends one, a `code`; anything else, or an entry with
+  // nothing to say, is not a warning to show. A response without the field has none.
+  function warningsOf(data) {
+    if (!data || !Array.isArray(data.warnings)) return [];
+    return data.warnings
+      .map((entry) => (typeof entry === 'string' ? { message: entry } : entry))
+      .filter((entry) => entry && typeof entry === 'object' && typeof entry.message === 'string' && entry.message.trim());
+  }
+
+  // What a cut-off reply says about itself under its text: the bracketed italic note
+  // the other replies that stopped short carry (see the stream handler), in the
+  // emphasis this renderer reads (*...*; it shows _..._ as typed). Under text it is short
+  // and true whatever the cause. With no text at all there would be nothing on the page
+  // but the note, so it is the server's own explanation (what to do differs: ask it to
+  // continue, or start a new conversation). It is drawn from the `cutOff` mark rather
+  // than written into the text, so the canonical text in the done event cannot replace
+  // it, a copy of the reply does not carry it, and a reply that was saved and reloaded
+  // still has it. Not while the reply is still being revealed: the text is not all there
+  // yet.
+  function replyMarkdown(msg, msgIndex) {
+    if (msg.cutOff !== true || msgIndex === revealingIndex) return msg.content;
+    if (!hasVisibleText(msg.content)) {
+      return `*[${msg.cutOffMessage || 'The assistant stopped before it wrote an answer.'}]*`;
+    }
+    return `${msg.content}\n\n*[Response may be incomplete - the reply was cut off]*`;
   }
 
   // Parse SSE (Server-Sent Events) format
@@ -6843,6 +8044,15 @@
       console.warn('[OSA] Failed to parse SSE line:', line, error);
       return null;
     }
+  }
+
+  // Whether `text` has anything a reader would see (#538). A reply whose text so far
+  // is only whitespace ("\n\n" is a common first chunk before a reasoning model's tool
+  // call) is an empty reply: it stays hidden behind the loading bubble, gets no status
+  // line, and is dropped if it ends that way. One test, used wherever a reply's text
+  // decides whether it is drawn, so no two places disagree about an empty bubble.
+  function hasVisibleText(text) {
+    return typeof text === 'string' && /\S/.test(text);
   }
 
   // Apply the authoritative completion payload to the active assistant
@@ -6865,7 +8075,13 @@
     // A reply that ran code is kept even when it ends with no text: what ran,
     // and any figure it drew, is part of the answer the reader asked for.
     const ranCode = Array.isArray(message.executions) && message.executions.length > 0;
-    if (finalContent || ranCode) {
+    // So is a reply the model was cut off in, which has a note saying so to show. This
+    // server sends that note only for a reply with text or code (one with neither, such
+    // as a run that only read an earlier run's output back with get_full_output, is an
+    // `error` event, and no `done` follows). Kept as a guard for a server that does not
+    // draw that line: dropping such a reply would leave the warning banner, gone in
+    // seconds, as the only word of why nothing came back.
+    if (hasVisibleText(finalContent) || ranCode || message.cutOff === true) {
       messageList[messageIndex] = {
         ...message,
         content: finalContent,
@@ -6881,17 +8097,258 @@
     return earlier && text ? `${earlier}\n\n${text}` : earlier || text;
   }
 
+  // Paced reveal of streamed text (#531, #538). The stream delivers text as the model emits
+  // it, and a reasoning model can think for tens of seconds and then emit its whole
+  // answer in under a second: the reader sees nothing, then everything at once. So a
+  // burst is spread over a short window, and no more: the reveal adds a bounded delay
+  // and never makes the reader wait on it. Text that arrives when nothing is pending is
+  // drawn at once (its first line or so; the rest follows within a tick), and every
+  // character is drawn no later than REVEAL_LAG_MS after it arrived: each chunk carries
+  // its own deadline, and each tick shows what those deadlines call for, so a burst is
+  // worked off by its deadline and one that lands late in an earlier burst's reveal is
+  // spread as well. A backlog under about a line (REVEAL_MIN_CPS a second) is drawn at
+  // once, so a model that streams slowly is drawn as it arrives, at most one tick late.
+  // Fenced code is the exception: a code block is shown whole as soon as the reveal
+  // reaches it, never typed out.
+  const REVEAL_LAG_MS = 500;        // no character is drawn later than this after it arrived
+  const REVEAL_MIN_CPS = 1000;      // a backlog this small (per second) is drawn at once
+  const REVEAL_TICK_MS = 80;        // how often the message is redrawn
+  const REVEAL_DRAIN_MAX_MS = 700;  // the most a finished reply waits for the reveal to catch up
+  const REVEAL_WORD_REACH = 24;     // a reveal ends on a word boundary within this many characters
+  const REVEAL_MARKER_REACH = 6;    // ...and never inside a [n] citation marker this long
+  // The message a reveal is drawing, or -1. While it is, its source list holds only the
+  // sources whose [n] marker has been shown, so a source does not appear ahead of the
+  // sentence that cites it.
+  let revealingIndex = -1;
+
+  // Where the fenced code blocks in `text` sit, as [start, end) offsets: a fence is a
+  // line that starts with ``` (what markdownToHtml reads as one), and a block that
+  // has not closed yet runs to the end of the text.
+  function fencedRanges(text) {
+    const ranges = [];
+    let open = -1;
+    let offset = 0;
+    while (offset < text.length) {
+      const newline = text.indexOf('\n', offset);
+      const next = newline === -1 ? text.length : newline + 1;
+      if (text.slice(offset, next).trim().startsWith('```')) {
+        if (open === -1) {
+          open = offset;
+        } else {
+          ranges.push([open, next]);
+          open = -1;
+        }
+      }
+      offset = next;
+    }
+    if (open !== -1) ranges.push([open, text.length]);
+    return ranges;
+  }
+
+  // How much of `text` to show next: `budget` more characters than `shown`, ending
+  // on a word boundary, and taking a code block whole (whatever of it has arrived)
+  // when the reveal reaches it or is already inside it.
+  function nextRevealEnd(text, shown, budget) {
+    if (shown >= text.length) return text.length;
+    let end = Math.min(text.length, shown + Math.max(1, Math.floor(budget)));
+    if (end < text.length && !/\s/.test(text[end - 1]) && !/\s/.test(text[end])) {
+      const reach = text.slice(end, end + REVEAL_WORD_REACH).search(/\s/);
+      if (reach !== -1) end += reach;
+    }
+    // Not inside a citation marker such as [12], and not between the halves of a
+    // surrogate pair, where a cut would show a raw "[1" or a replacement character.
+    const open = text.lastIndexOf('[', end - 1);
+    if (open !== -1 && /^\[\d*$/.test(text.slice(open, end))) {
+      const close = text.indexOf(']', end);
+      if (close !== -1 && close - end < REVEAL_MARKER_REACH && /^\d*$/.test(text.slice(end, close))) {
+        end = close + 1;
+      }
+    }
+    // A marker still arriving ("see [12" so far) is shown as far as it has got.
+    if (open !== -1 && /^\[\d*$/.test(text.slice(open, end)) && text.indexOf(']', end) === -1
+        && text.length - open <= REVEAL_MARKER_REACH) {
+      end = text.length;
+    }
+    if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1])) end += 1;
+    for (const [start, stop] of fencedRanges(text)) {
+      if (end > start && shown < stop) end = Math.max(end, stop);
+    }
+    return end;
+  }
+
+  // A clock that never goes backward, so a change of the system time cannot make a
+  // chunk look younger than it is.
+  const revealNow = () => (typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now());
+
+  // The reveal of one stream's text. `getText` reads everything the stream has
+  // delivered so far and `show` is handed the part to display. `kick` says there is
+  // more to show (it draws the first text at once, and schedules the rest), `drain`
+  // resolves once all of it is shown (at most REVEAL_DRAIN_MAX_MS later), `flush` shows
+  // all of it now, and `stop` abandons the pending redraw. With `paced` false (a reader
+  // who asked for reduced motion, or a page nobody is looking at) each tick shows
+  // everything that has arrived: chunks are still gathered into one redraw per tick,
+  // because a redraw rebuilds the whole conversation. `paced` may be a function, asked
+  // at each tick, since a page can be hidden mid-reply.
+  //
+  // `show` can throw (a redraw of a detached page, say). It runs from a timer, where
+  // a throw would go unseen and leave `drain` waiting for good, so the controller
+  // catches it, stops, releases anyone waiting, and hands it back through `check`,
+  // which the stream loop calls where the redraw used to run inline.
+  function createReveal({
+    getText, show, paced = true, now = revealNow, later = setTimeout, unlater = clearTimeout,
+  }) {
+    let shown = 0;
+    let last = 0;
+    let timer = null;
+    let waiting = [];
+    let failure = null;
+    // [text length, time] for each kick that grew the text: when the oldest character
+    // not yet drawn arrived, which is the deadline the pace is set against.
+    let arrivals = [];
+    let known = 0;
+    const isPaced = () => (typeof paced === 'function' ? paced() : paced);
+
+    const settle = () => {
+      const resolvers = waiting;
+      waiting = [];
+      resolvers.forEach((resolve) => resolve());
+    };
+    const caughtUp = () => shown >= getText().length;
+    const paint = (text) => {
+      try {
+        show(text);
+      } catch (error) {
+        failure = error;
+        if (timer !== null) unlater(timer);
+        timer = null;
+        settle();
+        return false;
+      }
+      return true;
+    };
+
+    // `forcedElapsed` is set for a draw made the moment text arrives on an idle reveal,
+    // which is one tick's worth of pace and not the (unbounded) time since the last one.
+    function step(forcedElapsed) {
+      timer = null;
+      const text = getText();
+      const at = now();
+      const elapsed = forcedElapsed !== undefined ? forcedElapsed : Math.max(0, at - last);
+      last = at;
+      if (isPaced()) {
+        while (arrivals.length && arrivals[0][0] <= shown) arrivals.shift();
+        // Each chunk's own deadline sets a pace; a chunk within a tick of its deadline
+        // must be drawn now, whatever the pace, so the bound does not rest on the
+        // timer firing exactly on time.
+        let pace = REVEAL_MIN_CPS;
+        let due = shown;
+        for (const [upTo, arrivedAt] of arrivals) {
+          const remaining = REVEAL_LAG_MS - Math.max(0, at - arrivedAt);
+          if (remaining <= REVEAL_TICK_MS) {
+            due = Math.max(due, upTo);
+          } else {
+            pace = Math.max(pace, ((upTo - shown) * 1000) / remaining);
+          }
+        }
+        const budget = Math.max((pace * elapsed) / 1000, due - shown);
+        shown = nextRevealEnd(text, Math.min(shown, text.length), budget);
+      } else {
+        shown = text.length;
+        arrivals = [];
+      }
+      if (!paint(text.slice(0, shown))) return;
+      if (shown < text.length) {
+        timer = later(step, REVEAL_TICK_MS);
+      } else {
+        settle();
+      }
+    }
+
+    function flush() {
+      if (timer !== null) unlater(timer);
+      timer = null;
+      const text = getText();
+      shown = text.length;
+      arrivals = [];
+      if (paint(text)) settle();
+    }
+
+    return {
+      kick() {
+        if (failure !== null) return;
+        const length = getText().length;
+        if (length > known) {
+          arrivals.push([length, now()]);
+          known = length;
+        }
+        if (timer !== null || caughtUp()) return;
+        const idle = now() - last;
+        if (shown === 0 || idle >= REVEAL_TICK_MS) {
+          // Nothing is pending: draw what has arrived now, not a tick from now.
+          step(REVEAL_TICK_MS);
+          return;
+        }
+        timer = later(step, REVEAL_TICK_MS - idle);
+      },
+      flush,
+      drain() {
+        if (failure !== null || caughtUp()) return Promise.resolve();
+        // An unpaced reveal has nothing to wait for (and on a hidden page its timers
+        // are throttled to about one a second): show it all now.
+        if (!isPaced()) {
+          flush();
+          return Promise.resolve();
+        }
+        return new Promise((resolve) => {
+          const guard = later(flush, REVEAL_DRAIN_MAX_MS);
+          waiting.push(() => {
+            unlater(guard);
+            resolve();
+          });
+        });
+      },
+      // Rethrow what `show` threw, if it did.
+      check() {
+        if (failure !== null) throw failure;
+      },
+      stop() {
+        if (timer !== null) unlater(timer);
+        timer = null;
+        settle();
+      },
+    };
+  }
+
+  // Whether the reader asked their system for less motion, which includes text that
+  // types itself out.
+  function prefersReducedMotion() {
+    try {
+      return Boolean(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    } catch (error) {
+      return false;
+    }
+  }
+
   // Handle streaming response from API
   // SSE Event formats:
   //   data: {"event": "content", "content": "text chunk"}
   //   data: {"event": "thinking"}
+  //   data: {"event": "tool_call", "name": "tool_name"}  (the model began writing a
+  //          call; before its tool_start, or its tool_request. Name only.)
   //   data: {"event": "tool_start", "name": "tool_name", "input": {...}}
   //   data: {"event": "tool_end", "name": "tool_name", "output": "result"}
   //   data: {"event": "citation", "marker": 1, "source": "...", "title": "...", "cited_text": "..."}
+  //   data: {"event": "warning", "message": "...", "code": "cut_off"}  (optional, before
+  //          done; `codes` lists every kind when more than one applies)
   //   data: {"event": "done", "content": "final answer", "citations": [...]}
   //   data: {"event": "tool_request", "call_id": "...", "tool": "...", "args": {...},
   //          "content": "text so far", "citations": [...]}  (instead of done)
-  //   data: {"event": "error", "message": "error description"}
+  //   data: {"event": "error", "message": "error description", "error_id": "...",
+  //          "request_id": "...", "retryable": true}  (ends the stream, no done follows;
+  //          `retryable` only when the server knows)
+  //   (/chat sends {"event": "session", "session_id": "..."} first.)
   //
   // A browser-execution reply is several runs the reader sees as one message.
   // A run that ends on tool_request resolves with {toolRequest, messageIndex};
@@ -6902,13 +8359,17 @@
     const decoder = new TextDecoder();
     let buffer = '';
     let accumulatedContent = '';
-    let lastUpdateTime = 0;
     let lastChunkTime = Date.now();
-    const UPDATE_THROTTLE_MS = 100; // Update UI every 100ms max
     const STREAM_TIMEOUT_MS = 60000; // 60 seconds with no data = timeout
     let receivedDoneEvent = false;
     let receivedFirstContent = false;
     let toolRequest = null;
+    // The calls this run's model has announced with tool_call (#538) and that have not
+    // started yet, by name; and whether the label on screen is the current batch of
+    // calls' own (set as they were announced, and not yet replaced by
+    // "Analyzing results..." or by text).
+    const announced = new Map();
+    let labelFromCalls = false;
 
     // Create placeholder assistant message (not rendered yet - loading dots stay
     // visible), or continue the one an earlier run of this reply wrote into.
@@ -6922,6 +8383,50 @@
     // What earlier runs of this reply already wrote. This run's text follows it.
     const earlier = continuation ? (messages[messageIndex].content || '') : '';
     const compose = (text) => composeReply(earlier, text);
+    // What of the delivered text the reader sees. The loading bubble stays until there
+    // is a first word to replace it with.
+    const reveal = createReveal({
+      getText: () => accumulatedContent,
+      // A hidden page is not being read, and its timers are throttled to about one a
+      // second: show it everything at each tick rather than pace it.
+      paced: () => !prefersReducedMotion() && !document.hidden,
+      show: (visible) => {
+        // Only text a reader can see replaces the loading bubble (#538).
+        if (!hasVisibleText(visible)) return;
+        isLoading = false;
+        isThinking = false;
+        revealingIndex = messageIndex;
+        messages[messageIndex].content = compose(visible);
+        // A reader typing in one of the messages (a thumbs-down comment) keeps their
+        // caret: the text is kept up to date, and the redraw waits for the next tick.
+        const typing = document.activeElement;
+        if (typing && typing.matches && typing.matches('textarea, input')
+            && container.querySelector('.osa-chat-messages').contains(typing)) {
+          return;
+        }
+        renderMessages(container, { follow: false });
+      },
+    });
+    // A reply that becomes hidden (a tab put away, a page being left) is not being read:
+    // show the rest now, so it is on the page when the reader comes back. Nothing is saved
+    // here. A reply whose done event has already arrived is held only by the wait for the
+    // reveal to catch up (settleReveal); showing the rest releases that wait, so the done
+    // handler saves it at once instead of after the drain's timer, which a page being left
+    // may not live to run. A reply still streaming is saved when its done arrives, and is
+    // lost with the page if the page goes first. (One that is already hidden is not paced
+    // at all: see `paced` above.)
+    const onLeave = (event) => {
+      if (event.type === 'visibilitychange' && !document.hidden) return;
+      reveal.flush();
+    };
+    window.addEventListener('pagehide', onLeave);
+    document.addEventListener('visibilitychange', onLeave);
+    // Finish the reveal, then surface anything the redraw threw, where it used to run inline.
+    const settleReveal = async () => {
+      await reveal.drain();
+      reveal.check();
+      revealingIndex = -1;
+    };
 
     try {
       while (true) {
@@ -6952,23 +8457,23 @@
           if (!event) continue;
 
           if (event.event === 'content' && event.content) {
-            // Hide loading dots on first content chunk
-            if (!receivedFirstContent) {
+            // Text again: whatever the reply was doing is over. The reveal's next
+            // redraw takes the status away with the text, so nothing flickers first.
+            // Only whitespace is not text (the reveal does not draw it either), and a
+            // model often sends some before its next call: the status stays, and so
+            // does the loading bubble's "Thinking...".
+            if (hasVisibleText(event.content)) {
+              // The loading dots give way to the first word the reveal shows.
               receivedFirstContent = true;
-              isLoading = false;
-              isThinking = false;
+              clearActivity();
+              labelFromCalls = false;
+              beginWait();
             }
 
-            // Accumulate content
+            // Accumulate content; the reveal decides when the reader sees it
             accumulatedContent += event.content;
-
-            // Throttle UI updates for performance
-            const now = Date.now();
-            if (now - lastUpdateTime >= UPDATE_THROTTLE_MS) {
-              messages[messageIndex].content = compose(accumulatedContent);
-              renderMessages(container);
-              lastUpdateTime = now;
-            }
+            reveal.check();
+            reveal.kick();
           } else if (event.event === 'thinking') {
             // Carries no reasoning text; only swaps the loading label to
             // "Thinking...". Scoped to before the first content chunk so a
@@ -6976,14 +8481,41 @@
             // make the label flicker under already-rendered content.
             if (!receivedFirstContent && !isThinking) {
               isThinking = true;
-              renderMessages(container);
+              paintStatus(container);
             }
+          } else if (event.event === 'tool_call') {
+            // The model has begun writing a call (#538), which for code can take
+            // many seconds before anything runs. Only the tool's name is read.
+            // The model writes calls only once the tools before them are over, so a
+            // tool_start whose tool_end never came does not keep this batch from
+            // reading as analyzed.
+            toolsRunning = 0;
+            announced.set(event.name, (announced.get(event.name) || 0) + 1);
+            setActivity(container, classifyToolActivity(event.name, 'writing', CONFIG.communityId), messageIndex);
+            labelFromCalls = true;
           } else if (event.event === 'tool_start') {
             // Log tool execution for debugging
             console.log('[OSA] Tool started:', event.name, event.input);
+            toolsRunning += 1;
+            const calls = announced.get(event.name) || 0;
+            if (calls > 0) announced.set(event.name, calls - 1);
+            const running = classifyToolActivity(event.name, 'running', CONFIG.communityId);
+            // A call that was announced while the label is still its batch's is not
+            // labeled again as it starts, unless running reads differently (code):
+            // parallel calls would otherwise flip the label back through each of them,
+            // and a screen reader would hear every flip. An old server sends no
+            // tool_call, so there each tool_start labels as before.
+            const saidByCall = calls > 0 && labelFromCalls
+              && classifyToolActivity(event.name, 'writing', CONFIG.communityId).label === running.label;
+            if (!saidByCall) setActivity(container, running, messageIndex);
           } else if (event.event === 'tool_end') {
             // Log tool completion
             console.log('[OSA] Tool completed:', event.name);
+            toolsRunning = Math.max(0, toolsRunning - 1);
+            if (toolsRunning === 0) {
+              setActivity(container, { kind: 'analyze', label: ACTIVITY_ANALYZING }, messageIndex);
+              labelFromCalls = false;
+            }
           } else if (event.event === 'citation') {
             // A source was cited for the first time. The backend announces
             // metadata before sending the marker as its own content chunk, so
@@ -7006,15 +8538,26 @@
               sessionId = event.session_id;
             }
           } else if (event.event === 'warning') {
-            // Display warning banner (e.g., conversation getting long)
-            const warningMsg = event.message || 'Warning';
-            console.warn('[OSA] Warning:', warningMsg);
-            showWarning(container, warningMsg);
+            // The banner (e.g., conversation getting long), and, for a reply that
+            // stopped short, the reply's own mark: the banner goes in seconds.
+            noticeWarning(container, messages[messageIndex], event);
           } else if (event.event === 'done') {
             // Finalize message and capture session ID
             receivedDoneEvent = true;
+            clearActivity();
             if (event.session_id && typeof event.session_id === 'string') {
               sessionId = event.session_id;
+            }
+            // Let the reveal finish what the reader is still reading before the
+            // backend's canonical text (below) replaces it. A redraw that failed
+            // on the way (a page that was torn down, say) is the page's failure,
+            // not the reply's: the reply is complete, so its text and request id
+            // are applied and saved first, and the failure is raised after them.
+            let pageFailure = null;
+            try {
+              await settleReveal();
+            } catch (revealError) {
+              pageFailure = revealError;
             }
             // The backend's done.content is canonical and replaces any raw
             // citation boundaries accumulated while streaming.
@@ -7028,7 +8571,11 @@
               compose(accumulatedContent),
             );
             accumulatedContent = finalContent;
-            renderMessages(container);
+            try {
+              renderMessages(container, { follow: false });
+            } catch (renderError) {
+              pageFailure = pageFailure || renderError;
+            }
             try {
               saveHistory();
             } catch (saveError) {
@@ -7036,16 +8583,24 @@
               showError(container, 'Warning: Unable to save conversation');
             }
             updateStatusDisplay(true);
+            if (pageFailure) throw pageFailure;
             return null; // Successfully completed
           } else if (event.event === 'tool_request') {
             // The run ended on a call for this browser to answer. No `done`
             // follows: the reply is not finished. content and citations are
             // this run's canonical text, as done would have carried them.
             toolRequest = event;
+            clearActivity();
             if (event.session_id && typeof event.session_id === 'string') {
               sessionId = event.session_id;
             }
-            const runText = typeof event.content === 'string' ? event.content : accumulatedContent;
+            await settleReveal();
+            const sent = typeof event.content === 'string' ? event.content : accumulatedContent;
+            // The canonical text, unless it has nothing to show: then what the stream
+            // showed, if anything, since the reply goes on and wiping text the reader
+            // has seen would leave an empty bubble. Only whitespace is nothing (#538).
+            const streamed = hasVisibleText(accumulatedContent) ? accumulatedContent : '';
+            const runText = hasVisibleText(sent) ? sent : streamed;
             messages[messageIndex].content = compose(runText);
             if (Array.isArray(event.citations)) {
               messages[messageIndex].citations = event.citations;
@@ -7055,6 +8610,8 @@
             // Backend sent an error event
             const errorMsg = event.message || 'An error occurred during response generation';
             console.error('[OSA] Backend error event:', errorMsg);
+            reveal.stop();
+            clearActivity();
 
             // Show partial content with error indicator
             const shown = compose(accumulatedContent);
@@ -7070,7 +8627,13 @@
               console.error('[OSA] Failed to save history:', saveError);
             }
 
-            throw new Error(`Backend streaming error: ${errorMsg}`);
+            // Marked as the server's, so nothing downstream reads a word in its message
+            // (timeout, JSON) as a failure of the stream or the page.
+            const reported = new Error(`Backend streaming error: ${errorMsg}`);
+            reported.serverReported = true;
+            // The server's reference for this error, when it sends one (`error_id`).
+            reported.errorId = errorReference(event.error_id);
+            throw reported;
           } else if (event.event) {
             // Unknown event type - log for debugging
             console.warn('[OSA] Unknown SSE event type:', event.event, event);
@@ -7079,16 +8642,18 @@
       }
 
       if (toolRequest) {
-        renderMessages(container);
+        renderMessages(container, { follow: false });
         return { toolRequest, messageIndex };
       }
 
       // Stream ended without receiving 'done' event - this is abnormal
       if (!receivedDoneEvent) {
         console.error('[OSA] Stream ended without done event');
+        reveal.stop();
+        clearActivity();
 
         const composed = compose(accumulatedContent);
-        if (composed) {
+        if (hasVisibleText(composed)) {
           messages[messageIndex].content = composed +
             '\n\n_[Response may be incomplete - connection ended unexpectedly]_';
           renderMessages(container);
@@ -7106,12 +8671,24 @@
 
     } catch (error) {
       console.error('[OSA] Streaming error:', error);
+      reveal.stop();
+      clearActivity();
+
+      // The reply's done event was applied and saved (see there), and only the page's
+      // own redraw failed after it: the text is complete, so it gets no note saying
+      // the stream was cut.
+      if (receivedDoneEvent) throw error;
 
       // Keep partial content if we have any, including what earlier runs of
       // this reply wrote and any code they ran.
       const shown = compose(accumulatedContent);
       const ran = messages[messageIndex] && messages[messageIndex].executions && messages[messageIndex].executions.length;
-      if (shown || ran) {
+      if (hasVisibleText(shown) || ran) {
+        // An error event from the server was already written into the reply, in the
+        // server's words (see there): only a failure of the stream itself is described
+        // here, never a server message that happens to contain "timeout".
+        if (error.serverReported) throw error;
+
         const errorType = error.name || 'Error';
         let userMessage = 'Stream interrupted';
 
@@ -7119,9 +8696,6 @@
           userMessage = 'Connection timeout';
         } else if (error.message && error.message.includes('timeout')) {
           userMessage = 'Stream timeout';
-        } else if (error.message && error.message.includes('Backend streaming error')) {
-          // Backend error already handled above, don't modify message
-          throw error;
         }
 
         messages[messageIndex].content = (shown ? `${shown}\n\n` : '') + `_[${userMessage}]_`;
@@ -7138,6 +8712,10 @@
 
       throw error; // Re-throw to be handled by sendMessage
     } finally {
+      reveal.stop();
+      revealingIndex = -1;
+      window.removeEventListener('pagehide', onLeave);
+      document.removeEventListener('visibilitychange', onLeave);
       // Always release the reader to free resources
       if (reader) {
         try {
@@ -7160,8 +8738,12 @@
     // Commit any open thumbs-down comment box before the conversation moves on.
     flushPendingResponseFeedback(container);
 
+    // The last failed request's banner has been read, or is about to be replaced.
+    dismissPersistentError(container);
+
     isLoading = true;
     isThinking = false;
+    beginWait();
 
     // Boot the browser runtime now if this community preloads on first message,
     // so the Python download overlaps this turn instead of waiting for a Run gate.
@@ -7179,6 +8761,9 @@
     if (currentDataset) userMessage.dataset = currentDataset.id;
     messages.push(userMessage);
     let assistantMessageCreated = false;
+    // Whether a failure took the question out of the conversation: then it goes back in
+    // the input, to be sent again, rather than being lost with the reply that never came.
+    let questionRemoved = false;
 
     renderMessages(container);
     renderSuggestions(container);
@@ -7288,6 +8873,10 @@
         if (data && Array.isArray(data.citations)) {
           assistantMsg.citations = data.citations;
         }
+        // The warnings the response carries, as a stream's warning events are shown.
+        for (const warning of warningsOf(data)) {
+          noticeWarning(container, assistantMsg, warning);
+        }
         messages.push(assistantMsg);
         try {
           saveHistory();
@@ -7302,14 +8891,16 @@
       // Categorize error for better user messaging
       let userMessage = 'Failed to get response';
 
-      if (error.name === 'AbortError') {
+      if (error.serverReported) {
+        // The server's own words, as it sent them: checked first, so a word in them
+        // (JSON, Stream, fetch) is not taken for a failure of the page's own.
+        userMessage = error.message.replace('Backend streaming error: ', '');
+      } else if (error.name === 'AbortError') {
         userMessage = 'Request timed out. Please try again.';
       } else if (error.name === 'TypeError' && error.message.includes('fetch')) {
         userMessage = 'Network error. Please check your connection.';
       } else if (error.message && error.message.includes('JSON')) {
         userMessage = 'Invalid response from server. Please try again.';
-      } else if (error.message && error.message.includes('Backend streaming error')) {
-        userMessage = error.message.replace('Backend streaming error: ', '');
       } else if (error.message && error.message.includes('Stream')) {
         userMessage = 'Connection interrupted. Please try again.';
       } else if (error.message) {
@@ -7317,7 +8908,9 @@
       }
 
       console.error('[OSA] Send message error:', error);
-      showError(container, userMessage);
+      // Until the reader dismisses it or sends again, with the server's reference for
+      // the error when it gave one.
+      showError(container, userMessage, { persist: true, errorId: error.errorId });
 
       // Clean up messages based on what was created
       // If streaming was attempted, handleStreamingResponse manages its own assistant message
@@ -7330,11 +8923,13 @@
         if (lastMessage && lastMessage.role === 'user' && messages.length === userMessageIndex + 1) {
           // No assistant message remains, remove user message
           messages.splice(userMessageIndex, 1);
+          questionRemoved = true;
         }
       } else {
         // No streaming attempted, no assistant message created, remove user message
         if (messages.length > userMessageIndex && messages[userMessageIndex].role === 'user') {
           messages.splice(userMessageIndex, 1);
+          questionRemoved = true;
         }
       }
 
@@ -7348,9 +8943,13 @@
     } finally {
       isLoading = false;
       isThinking = false;
+      clearActivity();
       input.disabled = false;
       sendBtn.disabled = false;
       resetBtn.disabled = messages.length <= 1;
+      // The box was emptied when the question was sent and nothing has been typed since
+      // (it was disabled), so the question goes back as it was written.
+      if (questionRemoved && !input.value) input.value = question;
       input.focus();
       renderMessages(container);
       renderSuggestions(container);
@@ -7688,7 +9287,6 @@
     const settingsCancelBtn = container.querySelector('.osa-settings-btn-cancel');
     const settingsSaveBtn = container.querySelector('.osa-settings-btn-save');
     const modelSelect = container.querySelector('#osa-settings-model');
-    const customModelField = container.querySelector('#osa-settings-custom-model-field');
 
     // Verify all required elements exist
     if (!chatButton || !closeBtn || !resetBtn || !input || !sendBtn || !suggestionsList) {
@@ -7762,12 +9360,10 @@
       }
     });
 
-    // Show/hide custom model input based on selection
-    modelSelect?.addEventListener('change', (e) => {
-      if (customModelField) {
-        customModelField.style.display = e.target.value === 'custom' ? 'block' : 'none';
-      }
-    });
+    // Show/hide the custom model and API key fields based on selection
+    modelSelect?.addEventListener('change', () => syncCustomFields(container));
+    container.querySelector('#osa-settings-api-key')?.addEventListener('input', () => syncCustomFields(container));
+    watchApiKeyFocus(container);
 
     // Check backend status
     checkBackendStatus();
@@ -7844,6 +9440,21 @@
         warnInvalidColorScheme('colorScheme', opts.colorScheme, COLOR_SCHEMES);
         delete opts.colorScheme;
       }
+      // A launcher setting a page gets wrong is refused here, so the community's own value
+      // still applies: a key the page sets outranks the community's, and a wrong one would
+      // otherwise lock it out. undefined is not a value (a wrapper passing along a setting
+      // it does not have); null is one, and puts the setting back to its default.
+      for (const [, key] of LAUNCHER_GEOMETRY_KEYS) {
+        if (!(key in opts)) continue;
+        const value = opts[key];
+        const rule = LAUNCHER_SETTING_RULES[key];
+        if (value === undefined) {
+          delete opts[key];
+        } else if (value !== null && !rule.ok(value)) {
+          warnInvalidLauncherValue(key, value, rule.expected, 'setConfig');
+          delete opts[key];
+        }
+      }
       // Track which keys the embedder explicitly set (before auto-derivation)
       for (const key of Object.keys(opts)) {
         _userSetKeys.add(key);
@@ -7854,6 +9465,11 @@
       }
       Object.assign(CONFIG, opts);
       if ('colorScheme' in opts) applyColorSchemeEverywhere();
+      // A page that moves or resizes the launcher after init() sees it at once.
+      if (LAUNCHER_GEOMETRY_KEYS.some(([, key]) => key in opts)) {
+        const container = document.querySelector('.osa-chat-widget');
+        if (container) applyLauncherGeometry(container);
+      }
     },
     // The reader's light or dark choice on the host page (#469): 'light', 'dark', or
     // 'auto' (follow the device). Outranks the community's color_scheme, may be
@@ -7906,6 +9522,17 @@
       waiting: () => launcherWaiting,
     };
     window.OSAChatWidget.__applyDoneEvent = applyDoneEvent;
+    // The settings in memory, as the next request would read them (a copy).
+    window.OSAChatWidget.__settings = { get: () => ({ ...userSettings }) };
+    window.OSAChatWidget.__reveal = {
+      fencedRanges,
+      nextRevealEnd,
+      createReveal,
+      REVEAL_LAG_MS,
+      REVEAL_MIN_CPS,
+      REVEAL_TICK_MS,
+      REVEAL_DRAIN_MAX_MS,
+    };
     window.OSAChatWidget.__migrateLegacyCitationMarkers = migrateLegacyCitationMarkers;
     window.OSAChatWidget.__isSameResponseMessage = isSameResponseMessage;
     window.OSAChatWidget.__notebook = {
@@ -7977,6 +9604,22 @@
       loadHistory,
       getSessionId: () => sessionId,
       setSessionId: (value) => { sessionId = value; },
+    };
+    // What a pending reply is doing (#538): the labels, and the clock the elapsed
+    // time is read from, which a test turns by hand.
+    window.OSAChatWidget.__activity = {
+      classifyToolActivity,
+      setClock: (clock) => {
+        stopStatusTicker();
+        statusClock = clock;
+      },
+      ticking: () => statusTicker !== null,
+      state: () => ({
+        activity: activity && { ...activity },
+        toolsRunning,
+        isLoading,
+        isThinking,
+      }),
     };
   }
 

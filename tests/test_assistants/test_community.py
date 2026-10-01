@@ -14,6 +14,8 @@ from src.core.config.community import (
     CommunityConfig,
     GitHubConfig,
 )
+from src.core.services.anthropic_models import BEDROCK_MODELS
+from src.core.services.tagged_citations import CITATION_INSTRUCTION
 
 
 class TestCommunityAssistant:
@@ -198,7 +200,11 @@ class TestSystemPromptTemplate:
 
 
 class TestCitationFallbackPrompt:
-    """The prompt rule that fills in for native citations on the OpenRouter/BYOK path."""
+    """The prompt rule that fills in when tools return plain strings (``citations=False``).
+
+    No provider path the API serves is left on it (Anthropic cites natively, Bedrock and
+    OpenRouter through tagged sources); it applies to assistants built directly.
+    """
 
     @pytest.fixture
     def config(self) -> CommunityConfig:
@@ -259,3 +265,99 @@ class TestCitationFallbackPrompt:
 
         assert "Source Links Required" in prompt
         assert "{additional_instructions}" not in prompt
+
+
+class TestBedrockModelPrompts:
+    """What the system prompt says on the Bedrock path: how to cite, and model notes.
+
+    Built on a real Bedrock chat model (constructed offline with a placeholder key),
+    since binding the assistant's tools to it is part of what is being exercised.
+    """
+
+    @pytest.fixture
+    def model(self):
+        from src.api.config import Settings
+        from src.core.services.bedrock_llm import create_bedrock_llm
+
+        settings = Settings(_env_file=None, bedrock_api_key="placeholder-key")
+        return create_bedrock_llm("openai.gpt-oss-120b", settings=settings)
+
+    def _config(self, **extra) -> CommunityConfig:
+        return CommunityConfig(
+            id="bedrock-prompt-test",
+            name="Bedrock Prompt Test",
+            description="A community for the Bedrock prompt tests",
+            **extra,
+        )
+
+    def test_tagged_citations_add_the_tag_instruction_and_not_the_link_fallback(self, model):
+        assistant = CommunityAssistant(
+            model=model, config=self._config(), citations=True, tagged_citations=True
+        )
+        prompt = assistant.get_system_prompt()
+
+        assert CITATION_INSTRUCTION in prompt
+        assert "Source Links Required" not in prompt
+
+    def test_no_tag_instruction_without_tagged_citations(self, model):
+        native = CommunityAssistant(model=model, config=self._config(), citations=True)
+        fallback = CommunityAssistant(model=model, config=self._config(), citations=False)
+
+        assert CITATION_INSTRUCTION not in native.get_system_prompt()
+        assert CITATION_INSTRUCTION not in fallback.get_system_prompt()
+
+    @pytest.mark.parametrize("model_id", ["openai.gpt-6-luna", "openai.gpt-oss-120b"])
+    def test_the_models_that_search_in_a_loop_are_told_to_stop(self, model, model_id):
+        assistant = CommunityAssistant(model=model, config=self._config(), model_id=model_id)
+
+        assert BEDROCK_MODELS[model_id].prompt_addendum in assistant.get_system_prompt()
+
+    def test_a_model_that_needs_no_note_gets_no_section(self, model):
+        qwen = CommunityAssistant(
+            model=model, config=self._config(), model_id="qwen.qwen3-next-80b-a3b"
+        )
+        unknown = CommunityAssistant(model=model, config=self._config())
+
+        assert "Working Notes For This Model" not in qwen.get_system_prompt()
+        assert "Working Notes For This Model" not in unknown.get_system_prompt()
+
+    def test_a_communitys_own_instructions_follow_the_built_in_note(self, model):
+        config = self._config(model_instructions={"openai.gpt-oss-120b": "Answer in French."})
+        assistant = CommunityAssistant(model=model, config=config, model_id="openai.gpt-oss-120b")
+        prompt = assistant.get_system_prompt()
+
+        builtin = BEDROCK_MODELS["openai.gpt-oss-120b"].prompt_addendum
+        assert prompt.index(builtin) < prompt.index("Answer in French.")
+
+    def test_instructions_for_one_model_stay_out_of_the_others(self, model):
+        config = self._config(model_instructions={"openai.gpt-oss-120b": "Answer in French."})
+
+        other = CommunityAssistant(model=model, config=config, model_id="openai.gpt-6-luna")
+        claude = CommunityAssistant(model=model, config=config, model_id="claude-haiku-4-5")
+
+        assert "Answer in French." not in other.get_system_prompt()
+        assert "Answer in French." not in claude.get_system_prompt()
+
+    def test_instructions_for_a_claude_model_are_added_too(self, model):
+        """The setting is not Bedrock-only; any offered model can be tuned."""
+        config = self._config(model_instructions={"claude-haiku-4-5": "Be brief."})
+        assistant = CommunityAssistant(model=model, config=config, model_id="claude-haiku-4-5")
+
+        assert "Be brief." in assistant.get_system_prompt()
+
+    def test_the_notes_reach_a_custom_system_prompt(self, model):
+        config = self._config(
+            system_prompt="You are custom.\n\n{additional_instructions}",
+            model_instructions={"openai.gpt-oss-120b": "Answer in French."},
+        )
+        assistant = CommunityAssistant(
+            model=model,
+            config=config,
+            citations=True,
+            tagged_citations=True,
+            model_id="openai.gpt-oss-120b",
+        )
+        prompt = assistant.get_system_prompt()
+
+        assert CITATION_INSTRUCTION in prompt
+        assert "Answer in French." in prompt

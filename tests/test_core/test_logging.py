@@ -258,6 +258,70 @@ class TestSecureFormatter:
             assert api_key not in log
 
 
+class TestBedrockKeyRedaction:
+    """Amazon Bedrock API keys, which botocore prints in a DEBUG request dump."""
+
+    LONG_TERM = "ABSK" + "QmVkcm9ja0FQSUtleS1hYmMxMjM0NTY3ODkwK/=" * 2
+    SHORT_TERM = "bedrock-api-key-" + "YmVkcm9jay5hbWF6b25hd3MuY29t" * 2
+
+    def _format(self, message: str) -> str:
+        record = logging.LogRecord("t", logging.DEBUG, "", 0, message, (), None)
+        return SecureFormatter("%(message)s").format(record)
+
+    def test_a_long_term_key_is_redacted(self) -> None:
+        out = self._format(f"token loaded: {self.LONG_TERM}")
+        assert "QmVkcm9j" not in out
+        assert "***[key-redacted]" in out
+
+    def test_a_short_term_key_is_redacted(self) -> None:
+        out = self._format(f"token loaded: {self.SHORT_TERM}")
+        assert "YmVkcm9j" not in out
+
+    def test_botocores_request_dump_does_not_show_the_key(self) -> None:
+        """The line botocore.endpoint logs at DEBUG for every request it sends."""
+        dump = (
+            "Sending http request: <AWSPreparedRequest stream_output=False, "
+            "method=POST, url=https://bedrock-runtime.us-east-2.amazonaws.com/model/"
+            "us.openai.gpt-6-luna/converse-stream, headers={'Content-Type': b'application/json', "
+            f"'Authorization': b'Bearer {'q7Xz-a9_K.3m~P/2+vT=' * 3}'}}>"
+        )
+        out = self._format(dump)
+        assert "q7Xz" not in out
+        assert "converse-stream" in out
+
+    def test_a_key_of_an_unlisted_format_is_still_caught_after_bearer(self) -> None:
+        assert "hunter2hunter2hunter2hunter2" not in self._format(
+            "Authorization: Bearer hunter2hunter2hunter2hunter2"
+        )
+
+    def test_ordinary_text_after_the_word_bearer_is_left_alone(self) -> None:
+        text = "The bearer token scheme sends Bearer and a short one"
+        assert self._format(text) == text
+
+
+class TestBotocoreLoggerIsQuiet:
+    def test_botocore_does_not_log_requests_even_when_the_root_is_at_debug(self) -> None:
+        botocore = logging.getLogger("botocore")
+        before = botocore.level
+        try:
+            configure_secure_logging(level=logging.DEBUG)
+            assert not botocore.isEnabledFor(logging.DEBUG)
+            assert botocore.isEnabledFor(logging.WARNING)
+        finally:
+            botocore.setLevel(before)
+            configure_secure_logging(level=logging.INFO)
+
+    def test_a_quieter_root_keeps_botocore_at_its_level(self) -> None:
+        botocore = logging.getLogger("botocore")
+        before = botocore.level
+        try:
+            configure_secure_logging(level=logging.ERROR)
+            assert botocore.level == logging.ERROR
+        finally:
+            botocore.setLevel(before)
+            configure_secure_logging(level=logging.INFO)
+
+
 class TestConfigureSecureLogging:
     """Tests for configure_secure_logging function."""
 

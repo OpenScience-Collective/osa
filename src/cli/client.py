@@ -183,7 +183,8 @@ class OSAClient:
         """Ask a single question with SSE streaming.
 
         Yields (event_type, data_dict) tuples.
-        Event types: content, tool_start, tool_end, done, error
+        Event types: content, thinking, tool_call, tool_start, tool_end, citation,
+        warning, done, error. The CLI reads the ones it shows and ignores the rest.
         """
         return self._stream_request(
             f"{self.api_url}/{community}/ask",
@@ -229,7 +230,8 @@ class OSAClient:
     ) -> Generator[tuple[str, dict[str, Any]], None, None]:
         """Send a chat message with SSE streaming.
 
-        Chat emits: session (with session_id), content, tool_start, done, error
+        Chat emits: session (with session_id), content, thinking, tool_call,
+        tool_start, tool_end, citation, warning, done, error.
         Yields (event_type, data_dict) tuples.
         """
         return self._stream_request(

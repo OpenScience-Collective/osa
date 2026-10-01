@@ -22,6 +22,8 @@ from langchain_core.tools import BaseTool, StructuredTool, tool
 
 from src.agents.base import ToolAgent
 from src.core.config.community import CommunityConfig
+from src.core.services.anthropic_models import BEDROCK_MODELS
+from src.core.services.tagged_citations import CITATION_INSTRUCTION
 from src.tools.base import DocRegistry
 from src.tools.citations import build_search_result, truncate
 from src.tools.client_tools import build_client_tools
@@ -222,13 +224,21 @@ class CommunityAssistant(ToolAgent):
         page_context: Optional context about the page where widget is embedded.
         additional_tools: Extra tools to include beyond auto-generated ones.
         additional_instructions: Extra text to add to the system prompt.
-        citations: Whether the model in use supports Anthropic's native
-            search_result citations. When True, every citable tool
-            returns search_result blocks instead of formatted strings, so
-            Claude can attach inline citations to claims it draws from
+        citations: Whether the model in use can cite from search_result blocks,
+            natively (Anthropic) or through tagged sources (Bedrock, OpenRouter). When True,
+            every citable tool returns search_result blocks instead of formatted
+            strings, so inline citations can be attached to claims drawn from
             them. Defaults to False so a caller who does not pass it gets
             today's plain-string tool behavior; the API layer resolves
-            this from the request's provider choice (Anthropic only).
+            this from the request's provider choice.
+        tagged_citations: Whether citations reach the reader through tagged sources
+            instead of native ones (the Bedrock and OpenRouter models): the model is asked to write
+            ``[src:N]`` after each claim, and the model layer turns those into the
+            citations the Anthropic path gets natively (see
+            ``src.core.services.tagged_citations``). Requires ``citations``.
+        model_id: The offered model id the request runs, used to add that model's
+            built-in notes and the community's ``model_instructions`` for it to the
+            system prompt.
         allow_mcp_images: Whether the model in use accepts the native Anthropic
             image content block (`src.api.tool_results.ToolResultImage.to_content_block`).
             When True, an MCP tool result carrying a PNG (`nemar_render_overview`)
@@ -251,6 +261,8 @@ class CommunityAssistant(ToolAgent):
         allow_mcp_images: bool = False,
         declared_client_tools: set[str] | None = None,
         browser_runs_left: int | None = None,
+        tagged_citations: bool = False,
+        model_id: str | None = None,
     ) -> None:
         """Initialize the community assistant.
 
@@ -269,6 +281,8 @@ class CommunityAssistant(ToolAgent):
         self._preload_docs = preload_docs
         self._page_context = page_context
         self._citations = citations
+        self._tagged_citations = tagged_citations
+        self._model_id = model_id
         self._preloaded_content: dict[str, str] = {}
 
         # Build doc registry from config
@@ -578,12 +592,32 @@ class CommunityAssistant(ToolAgent):
 
         return "\n\n".join(sections)
 
-    def _format_citation_fallback_section(self) -> str:
-        """Instruction added only when native citations are unavailable.
+    def _format_tagged_citation_section(self) -> str:
+        """The instruction for models that cite by writing ``[src:N]`` tags."""
+        return CITATION_INSTRUCTION if self._tagged_citations else ""
 
-        Native search_result citations (self._citations=True) require the
-        Anthropic path; on OpenRouter/BYOK, Claude attaches nothing
-        automatically, so this asks the model to do by convention what it
+    def _format_model_instructions_section(self) -> str:
+        """Notes for the model this request runs: built in, then the community's own."""
+        if not self._model_id:
+            return ""
+        notes: list[str] = []
+        builtin = BEDROCK_MODELS.get(self._model_id)
+        if builtin and builtin.prompt_addendum:
+            notes.append(builtin.prompt_addendum)
+        configured = self.config.model_instructions.get(self._model_id)
+        if configured:
+            notes.append(configured)
+        if not notes:
+            return ""
+        return "## Working Notes For This Model\n\n" + "\n\n".join(notes)
+
+    def _format_citation_fallback_section(self) -> str:
+        """Instruction added only when tools return plain strings (``citations=False``).
+
+        Every provider path the API serves has citations (search_result blocks,
+        native or tagged), so this applies to callers that build an assistant
+        directly and leave ``citations`` off. With nothing attached
+        automatically, it asks the model to do by convention what it
         would otherwise do for free: a markdown link to the source
         immediately after each claim drawn from a retrieved document,
         discussion, FAQ entry, forum post, or paper -- not a links dump at
@@ -637,7 +671,14 @@ class CommunityAssistant(ToolAgent):
         # default template and any config someone remembered to update.
         citation_fallback_section = self._format_citation_fallback_section()
         combined_additional_instructions = "\n\n".join(
-            section for section in (citation_fallback_section, additional_instructions) if section
+            section
+            for section in (
+                self._format_tagged_citation_section(),
+                citation_fallback_section,
+                self._format_model_instructions_section(),
+                additional_instructions,
+            )
+            if section
         )
 
         # Substitute placeholders
@@ -686,9 +727,10 @@ def create_community_assistant(
     Args:
         model: The language model to use.
         config: Community configuration from YAML.
-        citations: Whether the model in use supports Anthropic's native
-            search_result citations (see CommunityAssistant's `citations`
-            flag). The API layer passes True only on the Anthropic path.
+        citations: Whether tools return citable search_result blocks (see
+            CommunityAssistant's `citations` flag). The API layer passes True on
+            every path: native citations on Anthropic, tagged citations (see
+            `tagged_citations`) on Bedrock and OpenRouter.
         allow_mcp_images: Whether the model in use accepts the native Anthropic
             image content block (see CommunityAssistant's `allow_mcp_images`
             flag). The API layer passes True only on the Anthropic path.
@@ -697,6 +739,8 @@ def create_community_assistant(
             - page_context: PageContext for widget embedding
             - additional_tools: Extra tools to include
             - additional_instructions: Extra text for system prompt
+            - tagged_citations: Ask the model to cite with `[src:N]` tags (Bedrock, OpenRouter)
+            - model_id: The offered model id this request runs, for per-model notes
 
     Returns:
         Configured CommunityAssistant instance.

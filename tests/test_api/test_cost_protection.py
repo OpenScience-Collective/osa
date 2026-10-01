@@ -27,6 +27,13 @@ class TestCheckModelCost:
         _check_model_cost(cheap_models[0], "platform")
         _check_model_cost(cheap_models[0], "community")
 
+    def test_gpt_6_luna_allowed_on_community_key(self) -> None:
+        """A community funding itself through OpenRouter can default to GPT-6 Luna (issue #514).
+
+        Before Luna was priced, this raised 403 "not in the approved pricing list".
+        """
+        _check_model_cost("openai/gpt-6-luna", "community")
+
     def test_expensive_model_blocked_on_platform_key(self) -> None:
         """Models above block threshold should be rejected with 403 on platform keys."""
         expensive_models = _models_by_cost(min_rate=COST_BLOCK_THRESHOLD)

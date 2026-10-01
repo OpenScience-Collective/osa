@@ -18,6 +18,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
+from src.agents.content import extract_text
 from src.core.services.anthropic_models import accepts_temperature, normalize_model
 from src.knowledge.db import get_connection, update_summarization_status, upsert_faq_entry
 from src.metrics.cost import estimate_cost
@@ -29,7 +30,7 @@ console = Console()
 # Priced through src.metrics.cost, the same table the API path bills against,
 # so a rate change lands in one place.
 CHEAP_MODEL = "claude-haiku-4-5"
-QUALITY_MODEL = "claude-sonnet-5"
+QUALITY_MODEL = "claude-sonnet-5-5"
 
 # Fraction of scored threads expected to clear the quality threshold and be
 # summarized, for the "hybrid" strategy: score everything cheaply, summarize
@@ -111,7 +112,7 @@ Respond with ONLY a number between 0.0 and 1.0 (e.g., "0.75"):"""
 
     try:
         response = model.invoke([HumanMessage(content=prompt)])
-        score_text = response.content.strip()
+        score_text = extract_text(response.content).strip()
         # Extract first float found
         match = re.search(r"(\d+\.?\d*)", score_text)
         if match:
@@ -170,7 +171,7 @@ Format as JSON:
         )
 
         # Parse JSON response
-        content = response.content.strip()
+        content = extract_text(response.content).strip()
         # Remove markdown code blocks if present
         if content.startswith("```"):
             content = content.split("```")[1]
@@ -340,7 +341,7 @@ def _warn_if_temperature_ignored(
 ) -> None:
     """Log when a community's ``temperature`` will not reach the API.
 
-    ``claude-sonnet-5`` accepts only its default temperature, so
+    ``claude-sonnet-5-5`` accepts only its default temperature, so
     ``create_anthropic_llm`` drops the field rather than sending a value the
     API would reject. A community that lowered the temperature to make scoring
     deterministic should hear that it stopped applying. ``CommunityConfig``

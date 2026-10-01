@@ -8,10 +8,11 @@ Claude Platform) is covered by tests/test_integration/test_anthropic_platform.py
 """
 
 import inspect
+import json
 
 import pytest
 from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
 from pydantic import ValidationError
 
@@ -19,7 +20,6 @@ from src.api.config import Settings
 from src.core.services.anthropic_llm import (
     CACHE_TTLS,
     DEFAULT_MODEL,
-    DEFAULT_THINKING_BUDGET_TOKENS,
     MIN_THINKING_BUDGET_TOKENS,
     MODEL_ALIASES,
     OFFERED_MODELS,
@@ -29,6 +29,7 @@ from src.core.services.anthropic_llm import (
     default_thinking,
     normalize_model,
 )
+from src.core.services.anthropic_models import THINKING_BUDGET_TOKENS
 
 
 def _settings(**overrides: object) -> Settings:
@@ -42,7 +43,6 @@ def _settings(**overrides: object) -> Settings:
         "anthropic_api_key": "test-server-key",
         "anthropic_base_url": "https://aws-anthropic.example.test",
         "anthropic_workspace_id": "wrkspc_test123",
-        "anthropic_thinking_budget_tokens": 2048,
         "anthropic_max_output_tokens": 8000,
         "anthropic_cache_ttl": "5m",
     }
@@ -89,17 +89,12 @@ def test_chat_anthropic_still_calls_get_request_payload(method: str) -> None:
     assert "_get_request_payload" in inspect.getsource(getattr(ChatAnthropic, method))
 
 
-def test_default_thinking_budget_matches_settings_default() -> None:
-    """Lock the module constant and the Settings field default together.
-
-    ``DEFAULT_THINKING_BUDGET_TOKENS`` exists so this module does not have to
-    import ``Settings`` for a literal; if the two ever drift, a caller who
-    never touches Settings (e.g. constructs a plain Settings() with no env
-    vars) would silently get a different thinking budget than one that goes
-    through ``create_anthropic_llm``'s settings-based default.
-    """
-    settings_default = Settings.model_fields["anthropic_thinking_budget_tokens"].default
-    assert settings_default == DEFAULT_THINKING_BUDGET_TOKENS
+def test_the_default_thinking_budget_is_the_default_levels() -> None:
+    """`default_thinking` for Haiku is its budget at the default level (high), so a caller
+    who names nothing and a community that sets no level agree."""
+    high = THINKING_BUDGET_TOKENS["claude-haiku-4-5"]["high"]
+    assert default_thinking("claude-haiku-4-5") == {"type": "enabled", "budget_tokens": high}
+    assert high == 4096
 
 
 class TestNormalizeModel:
@@ -152,28 +147,49 @@ class TestOfferedModelsLabels:
 class TestDefaultThinking:
     """Tests for default_thinking()."""
 
-    def test_sonnet_5_is_adaptive(self) -> None:
-        assert default_thinking("claude-sonnet-5") == {"type": "adaptive"}
+    def test_sonnet_5_5_is_adaptive(self) -> None:
+        assert default_thinking("claude-sonnet-5-5") == {"type": "adaptive"}
 
-    def test_haiku_is_budget_shaped(self) -> None:
-        assert default_thinking("claude-haiku-4-5", budget=2048) == {
+    def test_haiku_is_budget_shaped_at_the_default_level(self) -> None:
+        assert default_thinking("claude-haiku-4-5") == {
             "type": "enabled",
-            "budget_tokens": 2048,
+            "budget_tokens": 4096,
         }
 
-    def test_zero_budget_disables(self) -> None:
-        assert default_thinking("claude-haiku-4-5", budget=0) is None
-
-    def test_negative_budget_disables(self) -> None:
-        assert default_thinking("claude-haiku-4-5", budget=-1) is None
+    def test_a_model_that_does_not_think_with_claude_thinking_is_refused(self) -> None:
+        """A Bedrock model has no Claude thinking configuration to default to."""
+        with pytest.raises(ValueError, match="extended thinking"):
+            default_thinking("openai.gpt-6-luna")
 
 
 class TestValidateThinking:
     """Tests for _validate_thinking()."""
 
-    def test_rejects_enabled_on_sonnet_5(self) -> None:
+    def test_rejects_enabled_on_sonnet_5_5(self) -> None:
         with pytest.raises(ValueError, match="adaptive"):
-            _validate_thinking({"type": "enabled", "budget_tokens": 2048}, "claude-sonnet-5", 8000)
+            _validate_thinking(
+                {"type": "enabled", "budget_tokens": 2048}, "claude-sonnet-5-5", 8000
+            )
+
+    def test_rejects_disabled_on_sonnet_5_5(self) -> None:
+        """The API answers {"type": "disabled"} with a 400 on Sonnet 5.5."""
+        with pytest.raises(ValueError, match="between_tools"):
+            _validate_thinking({"type": "disabled"}, "claude-sonnet-5-5", 8000)
+
+    def test_accepts_between_tools_on_sonnet_5_5(self) -> None:
+        _validate_thinking({"type": "between_tools"}, "claude-sonnet-5-5", 8000)
+
+    def test_rejects_fields_alongside_between_tools(self) -> None:
+        """The API rejects display, budget_tokens or block_binding next to it."""
+        with pytest.raises(ValueError, match="no other field"):
+            _validate_thinking(
+                {"type": "between_tools", "display": "summarized"}, "claude-sonnet-5-5", 8000
+            )
+
+    def test_rejects_between_tools_on_haiku(self) -> None:
+        """Sonnet 5.5 is the only model that accepts it."""
+        with pytest.raises(ValueError, match="no adaptive thinking mode"):
+            _validate_thinking({"type": "between_tools"}, "claude-haiku-4-5", 8000)
 
     def test_rejects_adaptive_on_haiku(self) -> None:
         with pytest.raises(ValueError, match="no adaptive thinking mode"):
@@ -190,9 +206,6 @@ class TestValidateThinking:
     def test_rejects_budget_at_or_above_max_tokens(self) -> None:
         with pytest.raises(ValueError, match="below max_tokens"):
             _validate_thinking({"type": "enabled", "budget_tokens": 8000}, "claude-haiku-4-5", 8000)
-
-    def test_accepts_disabled_on_sonnet_5(self) -> None:
-        _validate_thinking({"type": "disabled"}, "claude-sonnet-5", 8000)
 
     def test_accepts_disabled_on_haiku(self) -> None:
         _validate_thinking({"type": "disabled"}, "claude-haiku-4-5", 8000)
@@ -285,16 +298,16 @@ class TestCreateAnthropicLLMBehavior:
         )
         assert llm.temperature == 0.5
 
-    def test_temperature_always_absent_for_sonnet_5(self) -> None:
+    def test_temperature_always_absent_for_sonnet_5_5(self) -> None:
         settings = _settings()
         with_default_thinking = create_anthropic_llm(
-            model="claude-sonnet-5", temperature=0.7, settings=settings
+            model="claude-sonnet-5-5", temperature=0.7, settings=settings
         )
-        with_thinking_disabled = create_anthropic_llm(
-            model="claude-sonnet-5", temperature=0.7, thinking=None, settings=settings
+        with_thinking_off = create_anthropic_llm(
+            model="claude-sonnet-5-5", temperature=0.7, thinking=None, settings=settings
         )
         assert with_default_thinking.temperature is None
-        assert with_thinking_disabled.temperature is None
+        assert with_thinking_off.temperature is None
 
     def test_dropped_temperature_says_which_reason_applied(
         self, caplog: pytest.LogCaptureFixture
@@ -309,10 +322,10 @@ class TestCreateAnthropicLLMBehavior:
 
         with caplog.at_level("DEBUG", logger="src.core.services.anthropic_llm"):
             create_anthropic_llm(
-                model="claude-sonnet-5", temperature=0.7, thinking=None, settings=settings
+                model="claude-sonnet-5-5", temperature=0.7, thinking=None, settings=settings
             )
 
-        assert "Dropping temperature=0.7 for claude-sonnet-5" in caplog.text
+        assert "Dropping temperature=0.7 for claude-sonnet-5-5" in caplog.text
         assert "only accepts its default temperature" in caplog.text
 
     def test_temperature_dropped_for_thinking_says_so(
@@ -342,24 +355,23 @@ class TestCreateAnthropicLLMBehavior:
     def test_default_thinking_applied_per_model(self) -> None:
         settings = _settings()
         haiku = create_anthropic_llm(model="claude-haiku-4-5", settings=settings)
-        sonnet = create_anthropic_llm(model="claude-sonnet-5", settings=settings)
-        assert haiku.thinking == {"type": "enabled", "budget_tokens": 2048}
+        sonnet = create_anthropic_llm(model="claude-sonnet-5-5", settings=settings)
+        assert haiku.thinking == {"type": "enabled", "budget_tokens": 4096}
         assert sonnet.thinking == {"type": "adaptive"}
 
-    def test_thinking_budget_from_settings_is_used(self) -> None:
-        """A distinct (non-default-literal) value proves settings are plumbed through.
+    def test_the_retired_budget_setting_is_not_a_source(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ANTHROPIC_THINKING_BUDGET_TOKENS was the deployment's budget before reasoning
+        levels; a server that still exports it (the example file shipped 2048) must not
+        keep Haiku off the default level."""
+        monkeypatch.setenv("ANTHROPIC_THINKING_BUDGET_TOKENS", "1500")
+        llm = create_anthropic_llm(model="claude-haiku-4-5", settings=_settings())
+        assert llm.thinking == {"type": "enabled", "budget_tokens": 4096}
 
-        The default budget in Settings and in this module's own
-        DEFAULT_THINKING_BUDGET_TOKENS are both 2048, so a test using that
-        literal would still pass if the settings value were silently
-        ignored and the module fell back to its own constant instead.
-        """
-        settings = _settings(anthropic_thinking_budget_tokens=4096)
-        llm = create_anthropic_llm(model="claude-haiku-4-5", settings=settings)
-        assert llm.thinking["budget_tokens"] == 4096
-
-    def test_default_thinking_budget_conflicts_with_max_tokens(self) -> None:
-        """Exercise the budget-vs-max_tokens conflict through the public entry point."""
+    def test_a_max_tokens_that_leaves_no_valid_budget_is_refused(self) -> None:
+        """Exercise the budget-vs-max_tokens conflict through the public entry point: the
+        smallest budget the API takes is 1024, so a max_tokens of 1000 has none."""
         settings = _settings()
         with pytest.raises(ValueError, match="below max_tokens"):
             create_anthropic_llm(model="claude-haiku-4-5", max_tokens=1000, settings=settings)
@@ -369,25 +381,36 @@ class TestCreateAnthropicLLMBehavior:
         llm = create_anthropic_llm(model="claude-haiku-4-5", thinking=None, settings=settings)
         assert llm.thinking is None
 
-    def test_explicit_none_thinking_sends_disabled_type_on_sonnet_5(self) -> None:
-        """claude-sonnet-5 has no bare "off"; an omitted key means adaptive-on.
+    def test_explicit_none_thinking_sends_between_tools_on_sonnet_5_5(self) -> None:
+        """claude-sonnet-5-5 has no bare "off"; an omitted key means adaptive-on.
 
-        thinking=None must therefore produce an explicit {"type": "disabled"}
+        thinking=None must therefore produce an explicit {"type": "between_tools"}
         rather than omitting the key (the haiku case, covered above by
-        test_explicit_none_thinking_disables).
+        test_explicit_none_thinking_disables). {"type": "disabled"} is not the
+        answer: the API rejects it with a 400 on this model.
         """
         settings = _settings()
-        llm = create_anthropic_llm(model="claude-sonnet-5", thinking=None, settings=settings)
-        assert llm.thinking == {"type": "disabled"}
+        llm = create_anthropic_llm(model="claude-sonnet-5-5", thinking=None, settings=settings)
+        assert llm.thinking == {"type": "between_tools"}
+        assert llm.thinking != {"type": "disabled"}
 
     def test_invalid_thinking_for_model_raises(self) -> None:
         settings = _settings()
         with pytest.raises(ValueError, match="adaptive"):
             create_anthropic_llm(
-                model="claude-sonnet-5",
+                model="claude-sonnet-5-5",
                 thinking={"type": "enabled", "budget_tokens": 2048},
                 settings=settings,
             )
+
+    @pytest.mark.parametrize(
+        "model", ["openai.gpt-6-luna", "us.openai.gpt-6-luna", "qwen.qwen3-next-80b-a3b"]
+    )
+    def test_a_bedrock_model_is_refused_with_a_pointer_to_the_right_factory(
+        self, model: str
+    ) -> None:
+        with pytest.raises(ValueError, match="create_bedrock_llm"):
+            create_anthropic_llm(model=model, settings=_settings())
 
     def test_unsupported_cache_ttl_raises(self) -> None:
         settings = _settings()
@@ -421,6 +444,35 @@ class TestCreateAnthropicLLMBehavior:
             model="claude-haiku-4-5", thinking=None, max_tokens=1234, settings=settings
         )
         assert llm.max_tokens == 1234
+
+
+class TestThinkingOffPayload:
+    """What actually goes on the wire when a caller turns thinking off."""
+
+    def test_sonnet_5_5_sends_between_tools_and_nothing_it_rejects(self) -> None:
+        """Sonnet 5.5 400s on thinking "disabled", on any non-default sampling
+        parameter, and on a forced tool_choice, so none of them may appear."""
+        llm = create_anthropic_llm(
+            model="claude-sonnet-5-5", temperature=0.7, thinking=None, settings=_settings()
+        )
+        payload = llm._get_request_payload([HumanMessage(content="Hi")])
+
+        assert payload["thinking"] == {"type": "between_tools"}
+        for rejected in ("temperature", "top_p", "top_k", "tool_choice"):
+            assert rejected not in payload
+
+    def test_legacy_sonnet_id_sends_the_same_payload(self) -> None:
+        llm = create_anthropic_llm(model="claude-sonnet-5", thinking=None, settings=_settings())
+        payload = llm._get_request_payload([HumanMessage(content="Hi")])
+
+        assert payload["model"] == "claude-sonnet-5-5"
+        assert payload["thinking"] == {"type": "between_tools"}
+
+    def test_haiku_omits_the_thinking_key(self) -> None:
+        llm = create_anthropic_llm(model="claude-haiku-4-5", thinking=None, settings=_settings())
+        payload = llm._get_request_payload([HumanMessage(content="Hi")])
+
+        assert "thinking" not in payload
 
 
 class TestCachingChatAnthropicPayload:
@@ -625,3 +677,66 @@ class TestCachingChatAnthropicSystemListForm:
         assert "cache_control" not in system_message.content[-1]
         assert first_payload["system"][-1]["cache_control"] == {"type": "ephemeral"}
         assert second_payload["system"][-1]["cache_control"] == {"type": "ephemeral"}
+
+
+class TestReplayingABedrockTurn:
+    """A chat that switched from a Bedrock model to Claude sends the earlier turns back."""
+
+    def _bedrock_turn(self) -> AIMessage:
+        return AIMessage(
+            content=[
+                {"type": "reasoning_content", "reasoning_content": {"text": "hm"}, "index": 0},
+                {
+                    "type": "text",
+                    "text": "HED tags come from a schema.",
+                    "index": 1,
+                    "citations": [
+                        {
+                            "type": "search_result_location",
+                            "source": "https://hedtags.org/schema",
+                            "title": "Schema",
+                            "cited_text": "Tags come from a schema.",
+                            "search_result_index": 0,
+                            "start_block_index": 0,
+                            "end_block_index": 1,
+                        }
+                    ],
+                },
+            ],
+            response_metadata={"model_provider": "bedrock_converse"},
+        )
+
+    def _payload(self, messages: list) -> dict:
+        llm = create_anthropic_llm(model="claude-haiku-4-5", thinking=None, settings=_settings())
+        return llm._get_request_payload(messages)
+
+    def test_reasoning_and_tagged_citations_are_not_sent_to_claude(self) -> None:
+        payload = self._payload(
+            [
+                HumanMessage(content="What are HED tags?"),
+                self._bedrock_turn(),
+                HumanMessage(content="And validation?"),
+            ]
+        )
+        sent = json.dumps(payload["messages"])
+        assert "reasoning_content" not in sent
+        assert "search_result_location" not in sent
+        assert "HED tags come from a schema." in sent
+
+    def test_a_claude_turn_keeps_its_own_citations(self) -> None:
+        claude_turn = self._bedrock_turn().model_copy(
+            update={"response_metadata": {"model_provider": "anthropic"}}
+        )
+        claude_turn.content = [b for b in claude_turn.content if b["type"] == "text"]
+
+        payload = self._payload(
+            [HumanMessage(content="q"), claude_turn, HumanMessage(content="next")]
+        )
+
+        assert "search_result_location" in json.dumps(payload["messages"])
+
+    def test_the_callers_messages_are_left_alone(self) -> None:
+        turn = self._bedrock_turn()
+        self._payload([HumanMessage(content="q"), turn, HumanMessage(content="next")])
+        assert [b["type"] for b in turn.content] == ["reasoning_content", "text"]
+        assert "citations" in turn.content[1]

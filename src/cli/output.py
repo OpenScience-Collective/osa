@@ -12,6 +12,7 @@ from typing import Any
 
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.panel import Panel
 
 # stdout for results
@@ -25,6 +26,11 @@ def print_error(message: str, hint: str | None = None) -> None:
     err_console.print(f"[bold red]Error:[/] {message}")
     if hint:
         err_console.print(f"Hint: {hint}", style="dim", markup=False)
+
+
+def print_warning(message: str) -> None:
+    """Print a warning to stderr: the answer is shown, and the reader should know something."""
+    err_console.print(f"[bold yellow]Warning:[/] {escape(message)}", highlight=False)
 
 
 def print_success(message: str) -> None:

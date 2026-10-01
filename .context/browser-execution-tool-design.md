@@ -502,7 +502,7 @@ LangGraph's `ToolNode` built directly) with a text placeholder before `ChatSessi
 anything. `OSA_MCP_IMAGES_DISABLED` is the incident-control kill switch, checked fresh on every call rather
 than baked in at discovery time, so it takes effect without waiting out the tool-discovery cache or a restart.
 
-**The breakpoint should move past the system block.** `CachingLLMWrapper` marks system messages only. A
+**The breakpoint should move past the system block.** (Written against `CachingLLMWrapper`, which marked system messages only; `TaggedCitationChatLiteLLM` has since replaced it and also marks the last message, and `CachingChatAnthropic` is the Claude path's.) A
 request may carry up to FOUR cache breakpoints, so the pattern this design wants is one covering tools and
 system, and a second moving forward over the stable conversation prefix, leaving only the recent tail
 uncached.
@@ -534,16 +534,20 @@ resets every few turns and the feature looks expensive for no visible reason.
 **This work belongs with the Claude Platform on AWS migration (#360), not beside it.** That epic retires the
 OpenRouter platform route and serves communities directly, which removes the open question of whether
 `cache_control` survives LiteLLM and OpenRouter; its phase 1 already owns "prompt caching that survives tool
-binding", which is exactly the `CachingLLMWrapper` and `bind_tools` nesting problem. Building conversation
+binding", which was exactly the `CachingLLMWrapper` and `bind_tools` nesting problem (the wrapper is gone; see `litellm_chat.py`). Building conversation
 caching against the path being retired would be building it twice.
 
 Three consequences of that epic for this design:
 - Prompt caching at both the 5-minute and 1-hour time to live IS available on Claude Platform on AWS, so
   there is no availability constraint on any of the above.
-- The offered models narrow to `claude-haiku-4-5` (default, explicit 2048-token thinking budget) and
-  `claude-sonnet-5`. NEITHER supports mid-conversation system messages, which are an Opus 5, Opus 4.8,
-  Fable and Mythos feature. Operator instructions therefore stay in the top-level system block, and changing
-  one resets the cache. Do not design an operator channel that assumes otherwise.
+- The offered models narrow to `claude-haiku-4-5` (default; thinking budget set by the community's `reasoning_effort`, 4096 tokens at the default `high`) and
+  `claude-sonnet-5-5`.
+  Haiku does not support mid-conversation system messages.
+  Anthropic's documentation lists them for Opus 5, Opus 4.8, Fable, Mythos and Sonnet 5.5, and not for Haiku 4.5 or Sonnet 5
+  (its mid-conversation system messages page and its Sonnet 5.5 feature list, read 2026-09-30).
+  That documentation does not say whether the Claude Platform on AWS carries the feature, so treat it as unverified there.
+  Operator instructions therefore stay in the top-level system block, and changing one resets the cache.
+  Do not design an operator channel that assumes every offered model has one.
 - Cache diagnostics is a first-party API beta and is NOT on Claude Platform on AWS. Verification runs through
   `usage.cache_read_input_tokens` and the `usage.cache_creation` breakdown, which splits by time to live
   (`ephemeral_5m_input_tokens` and `ephemeral_1h_input_tokens`) and is the right instrument for the TTL
@@ -756,6 +760,9 @@ note and do not correspond to the global phases in `.context/plan.md`.
 - Image cost in the model context; whether to downscale further by default.
 - The SSE event vocabulary listed earlier in this note is incomplete: the live stream also emits `session`
   and `warning`, and the widget handles both. Anyone adding an event needs the true list.
+  As of #538 it is `session`, `content`, `thinking`, `tool_call`, `tool_start`, `tool_end`, `citation`, `warning`, `done`, `tool_request` and `error`.
+  `tool_call` carries only a tool's name, sent when the model starts writing a call to it, which for a browser call comes before its `tool_request`.
+  The docstrings of `_stream_ask_response` and `_stream_chat_response` in `src/api/routers/community.py`, and the comment above `handleStreamingResponse` in the widget, are where the list is kept.
 - Retention of anonymous checkpoints; the sweep interval and what "expired" means for a parked tool request.
   Moot if the two-run option above is chosen.
 - Whether MCP tool calls should also become client-executed later, so a widget can run entirely against

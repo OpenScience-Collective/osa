@@ -323,6 +323,24 @@ Measured 2026-09-24 in Chrome 153:
 - the capsule's resize (#490), 102 checks in all with it: each click sampled about 44 frames, 7 of them between 58px and 46px, with the chat circle's corner 20px from both edges in every one, and once open the panel 85px from the right edge (20px at 390px wide) and the indicator exactly behind the circle; hovering it sampled about 31 frames, to 60.9px, with the corner held;
   without the translate the resting circle's corner sits at 14px, a translate on another curve than the scale drifts it by up to 1.3px mid-way, no transition goes from one size to the other in a single frame, without the resting hover rule the hovered corner drifts 1.3px, and a capsule that clips its overflow leaves the press outside the 46px box on the page, not the button: each fails the check
 
+### The launcher's position, size and offsets
+
+```bash
+bun frontend/browser-harness/launcher-geometry-check.mjs
+```
+
+checks what a reader sees of `launcher_position`, `launcher_size`, `launcher_open_size` and the offsets (#553).
+It serves the real widget and a stub community API itself, so nothing else needs to run, and it gives up after four minutes.
+For each scenario (the bubble and the capsule, each corner, sizes, offsets, the phone offsets at 1440px and 390px wide, and the smallest windows and largest values the config accepts) a fresh tab samples the chat circle on every animation frame across a click:
+its width must go from the closed size to the open one and back, through at least three frames in between on the way open when the sizes differ, and its corner at the anchor must stay within 0.6px of the configured distance from the window's edges in every frame.
+It then hovers the resting circle with a real pointer, which must grow it 5% with the corner held, and checks the open panel's place and that it is inside the window, that the capsule's indicator is behind the chat circle (within 0.6px) and its other circles are the open size, that a capsule's circles are in the order they are seen in (which is the Tab order, also after a window is resized across 600px), and the collapsed label's 10px gap, vertical center and arrow.
+Any exception on the page, and any `[OSA] Ignoring` warning, fails the scenario it happened in.
+Two more checks follow: on each side, a real mouse drag of the panel's resize handle away from its anchor widens the panel, and the left side's details (the dark scheme's handle, the pill's origin, the panel's transition) and a size change made while the panel is open are checked.
+It is what CI runs, beside the first-paint check.
+
+The small-window and largest-value scenarios guard the panel's minimum width and height giving way to the offsets: without that, the panel of a launcher moved 30px in on a 320px-wide window, or of the largest values on a 390px-wide one, is cut off by the window's edge, and those scenarios fail.
+The left-anchored row guards the Tab order, which runs against what is seen unless the circles are reordered.
+
 ### The pop-out
 
 ```bash
@@ -358,3 +376,61 @@ The widget as it was before it loaded the pop-out's script by address times out 
 
 `notebook-bench.js` times any page's boot, cold and warm, reusing `chrome.js`'s own Chrome-driving primitives;
 see ADR 0010 (`docs/adr/0010-the-notebook-surface.md`) and `.context/notebook-surface-measurements.md` for what it was built to measure.
+
+## The paced reveal (#531)
+
+`paced-reveal-check.mjs` runs the widget's paced reveal of streamed text in headless Chrome,
+against its own local server (the widget, a community config and a `/chat` stream shaped like GPT-6 Luna's:
+1.5 s of silence, then about 900 characters with a code block in about 40 ms).
+It samples what the reader sees every 25 ms and compares it with when the stream's chunks arrived.
+It needs no backend and no network, and runs in the Frontend Tests job.
+
+```bash
+bun frontend/browser-harness/paced-reveal-check.mjs [screenshot-dir]
+```
+
+It carries its controls: the page must be visible (a hidden page's timers run once a second, and every number would mean nothing),
+the stream must really be a burst, the conversation must be fresh (a saved one shows an old reply and passes vacuously, which an earlier version of this check did),
+and with `prefers-reduced-motion: reduce` emulated by the browser the same burst must be shown at once.
+Measured 2026-09-29 in Chrome 154: the first words are drawn within about 20 ms of the first chunk
+(the 25 ms sampler is the resolution; a tick later would read 80 ms or more, and the check fails at 50),
+the reply grows through about 7 lengths and is fully on screen about 0.5 s after the last chunk
+(a reveal that took about 2 s before #538), and the code block is drawn once, whole.
+With the widget's pacing removed, or with the first text waiting for a tick, the check fails and exits 1.
+
+## The activity status (#538)
+
+`activity-status-check.mjs` runs what a pending reply says it is doing in headless Chrome,
+against its own local server (the widget, a community config and two `/chat` streams:
+a plain answer, then a reply that searches for about 6 s, reads the results, writes some text, looks up documentation and finishes).
+It samples every animation frame in the page, and every change to the conversation (a MutationObserver):
+the loading bubble's label, the status line under the reply, the elapsed time beside either,
+what the status announcer (the one live region a screen reader hears) says,
+and whether any sample breaks an invariant (a status that makes a message of its own, an assistant message with no text,
+the loading bubble beside a status line, a status that is a live region of its own).
+Midway through the search it rates the earlier answer, which redraws the whole conversation while the reply is still an empty placeholder.
+A second page then runs replies with whitespace-only chunks (whitespace before a search, before the answer, after thinking,
+between a tool's result and a thinking event, before a done whose text is whitespace or empty,
+and before code run in the page through the real runtime bundle and controller over the `executing.js` test worker).
+It needs no backend and no network, and runs in the Frontend Tests job.
+
+```bash
+bun frontend/browser-harness/activity-status-check.mjs [screenshot-dir]
+```
+
+It carries its controls: the page must be visible, the conversation fresh,
+the stream's events must arrive in the order sent, "Searching datasets..." must be on screen before any reply text is,
+the mid-search redraw must really happen, and on the whitespace page the runtime bundle must load and the code must really run.
+Measured 2026-09-29 in Chrome 154, 63 checks, three runs: about 780 frames per run;
+the loading label reads the title, "Thinking...", "Searching datasets..." (within 20 ms of its `tool_call`) and "Analyzing results...";
+the elapsed time counts the reader's whole wait from the send, so "5 s" first shows about 5.0 s after it, and "Analyzing results..." goes on from "7 s";
+the reply's text begins a new wait, so the short mid-reply lines show no time;
+the announcer says each label once, in order, and nothing once a status ends, never a number, through every redraw;
+no frame or change breaks an invariant, and the once-a-second timer has stopped by the frame the reply settles on.
+Each of these, put into the widget, fails the check: drawing the empty placeholder while loading, a mid-reply status as a new message,
+the loading bubble beside a status line, a timer a redraw does not stop, `tool_call` not read, the time shown from 3 s,
+the reduced-motion rule for the pulse losing to the pulse's own rule, text that does not end the status,
+whitespace drawn as the reply, whitespace kept as a finished reply, whitespace ending a status,
+an announcer rewritten on every redraw, a visible label that is a live region, a new label restarting the time,
+and text that does not begin a new wait.
+A whitespace placeholder is reachable only by writing one into a message directly, which the Bun suite does.

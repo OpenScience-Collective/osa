@@ -28,15 +28,29 @@ Usage:
     ])
 """
 
-import json
 import logging
 import os
-from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import BaseMessage
-from langchain_core.runnables import Runnable
+
+from src.core.services.anthropic_models import (
+    OPENROUTER_MODEL_IDS,
+    OPENROUTER_ROUTING_VARIANTS,
+    THINKING_BUDGET_TOKENS,
+    effective_reasoning_effort,
+    openrouter_model_id,
+)
+
+__all__ = [
+    "DEFAULT_MODEL",
+    "DEFAULT_PROVIDER",
+    "OPENROUTER_MODEL_IDS",
+    "OPENROUTER_ROUTING_VARIANTS",
+    "create_openrouter_llm",
+    "openrouter_model_id",
+    "to_openrouter_model",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -46,19 +60,6 @@ logger = logging.getLogger(__name__)
 # OpenRouter key resolves it through OPENROUTER_MODEL_IDS below.
 DEFAULT_MODEL = "openai/gpt-oss-120b"
 DEFAULT_PROVIDER = "Cerebras"
-
-# OpenRouter slugs for the models OSA offers. OpenRouter serves the same
-# Claude models under creator/model-name slugs, so a request funded by an
-# OpenRouter key (BYOK, or a community's own funded key) still runs the
-# community's chosen model rather than switching to a different model family
-# just because of which key paid for it. Bare first-party ids such as
-# "claude-haiku-4-5" are not valid OpenRouter slugs, hence the mapping.
-# tests/test_core/test_litellm_llm.py asserts these keys stay in step with
-# anthropic_llm.OFFERED_MODELS so adding a model cannot silently skip this.
-OPENROUTER_MODEL_IDS: dict[str, str] = {
-    "claude-haiku-4-5": "anthropic/claude-haiku-4.5",
-    "claude-sonnet-5": "anthropic/claude-sonnet-5",
-}
 
 
 def to_openrouter_model(model: str | None) -> str | None:
@@ -84,17 +85,23 @@ def to_openrouter_model(model: str | None) -> str | None:
 def create_openrouter_llm(
     model: str = DEFAULT_MODEL,
     api_key: str | None = None,
-    temperature: float = 0.1,
+    temperature: float | None = 0.1,
     max_tokens: int | None = None,
     provider: str | None = DEFAULT_PROVIDER,
     user_id: str | None = None,
     enable_caching: bool | None = None,
+    reasoning_effort: str | None = None,
 ) -> BaseChatModel:
-    """Create an OpenRouter LLM instance with optional prompt caching.
+    """Create an OpenRouter LLM instance with prompt caching and tagged citations.
 
     Uses LiteLLM for native support of Anthropic's prompt caching feature.
-    When caching is enabled, system messages are automatically transformed
-    to include cache_control markers for 90% cost reduction on cache hits.
+    When caching is enabled, the system prompt and the last message carry
+    cache_control markers for 90% cost reduction on cache hits, for Anthropic's
+    models only (``litellm_chat.takes_cache_markers``); other models get plain
+    messages. Tool results
+    that carry ``search_result`` blocks are shown to the model as tagged text
+    and the tags it writes come back as citations (see
+    ``src.core.services.tagged_citations``).
 
     Provider Selection:
         - Anthropic models (anthropic/*) automatically use provider="Anthropic"
@@ -109,15 +116,23 @@ def create_openrouter_llm(
         provider: Specific provider to use (e.g., "Cerebras", "DeepInfra/FP8").
                  Ignored for Anthropic models, which always use "Anthropic" provider.
         user_id: User identifier for cache optimization (sticky routing)
-        enable_caching: Enable prompt caching. If None (default), caching is requested
-            for all models. Models that do not support caching will ignore the
-            cache_control markers without error.
+        enable_caching: Enable prompt caching. If None (default), it is enabled. Only
+            Anthropic's models are sent the ``cache_control`` markers; other models
+            get plain messages (see ``litellm_chat.takes_cache_markers``).
+        reasoning_effort: The community's level from the neutral scale, or None for
+            ``DEFAULT_REASONING_EFFORT`` (high). Sent as OpenRouter's ``reasoning: {"effort": level}``
+            body field, only for an offered model that has levels, at a level it
+            accepts on OpenRouter (Claude Sonnet is never above ``high``, and has no
+            ``none`` there, where its reasoning is mandatory), including a routing
+            variant of one (``:nitro``). Claude Haiku thinks with
+            a budget, so it is sent ``reasoning: {"max_tokens": <the level's budget>}``
+            (and no temperature) or, for ``none``, no reasoning field; a slug OSA knows nothing
+            about, including the older Claude slugs that ``normalize_model`` aliases, is
+            sent nothing (and a debug line says so).
 
     Returns:
-        LLM instance configured for OpenRouter
+        A ``TaggedCitationChatLiteLLM`` configured for OpenRouter
     """
-    from langchain_litellm import ChatLiteLLM
-
     # LiteLLM uses openrouter/ prefix for OpenRouter models
     litellm_model = f"openrouter/{model}"
 
@@ -131,8 +146,10 @@ def create_openrouter_llm(
     }
 
     # Auto-select Anthropic provider for Anthropic models (better performance)
-    # Override any default provider if this is an Anthropic model
-    if model.startswith("anthropic/"):
+    # Override any default provider if this is an Anthropic model. Not when the slug
+    # carries a variant (":floor", ":nitro"): the caller chose how it is routed, and
+    # pinning a provider first would override that.
+    if model.startswith("anthropic/") and ":" not in model:
         effective_provider = "Anthropic"
         logger.debug("Auto-selected Anthropic provider for model %s (better performance)", model)
     else:
@@ -147,6 +164,34 @@ def create_openrouter_llm(
     if user_id:
         model_kwargs["user"] = user_id
 
+    # The reasoning level (issue #545). OpenRouter's unified body field, which LiteLLM
+    # passes through untouched like `provider` above. LiteLLM's own `reasoning_effort`
+    # parameter is not used: it is the top-level OpenAI name (no "max"), and LiteLLM
+    # refuses it outright for a model its map does not list as reasoning, which would
+    # fail every request for a slug it does not know.
+    model_id = openrouter_model_id(model)
+    reasoning_level = effective_reasoning_effort(model_id, reasoning_effort, "openrouter")
+    budgets = THINKING_BUDGET_TOKENS.get(model_id or "")
+    if reasoning_level is None:
+        if reasoning_effort is not None:
+            logger.debug(
+                "reasoning_effort=%r not sent to OpenRouter model %r: it is not an offered "
+                "model with reasoning levels",
+                reasoning_effort,
+                model,
+            )
+    elif budgets is None:
+        model_kwargs["reasoning"] = {"effort": reasoning_level}
+    elif reasoning_level in budgets:
+        # A model that thinks with a token budget (Haiku): OpenRouter would turn an
+        # effort into a share of max_tokens, which is not OSA's budget and is unset here,
+        # so the budget is sent itself (`reasoning.max_tokens` is used as given, 1024 at
+        # least), the same one the Claude Platform path uses. Anthropic does not allow a
+        # temperature with thinking, so it is not sent, as on that path.
+        model_kwargs["reasoning"] = {"max_tokens": budgets[reasoning_level]}
+        temperature = None
+    # `none` on such a model sends no reasoning field: without one it does not think.
+
     # Falls back to the env var (documented above) rather than requiring
     # every caller to read it themselves, but a request with neither fails
     # loud here instead of constructing successfully and only surfacing an
@@ -158,589 +203,18 @@ def create_openrouter_llm(
             "No OpenRouter API key available: pass api_key explicitly or set OPENROUTER_API_KEY"
         )
 
-    # Create base LLM with streaming enabled for proper event handling
-    llm = ChatLiteLLM(
+    # Streaming is required for on_chat_model_stream events in LangGraph. Imported here
+    # because langchain_litellm takes about a second to import and only OpenRouter
+    # requests need it.
+    from src.core.services.litellm_chat import TaggedCitationChatLiteLLM
+
+    return TaggedCitationChatLiteLLM(
         model=litellm_model,
         api_key=resolved_api_key,
         temperature=temperature,
         max_tokens=max_tokens,
         model_kwargs=model_kwargs,
-        streaming=True,  # Required for on_chat_model_stream events in LangGraph
+        streaming=True,
+        # Requested by default; the model only sends markers to models that take them.
+        prompt_caching=True if enable_caching is None else enable_caching,
     )
-
-    # Determine if caching should be enabled
-    if enable_caching is None:
-        # Enable caching by default for all models
-        # OpenRouter/LiteLLM handles gracefully if model doesn't support it
-        enable_caching = True
-
-    if enable_caching:
-        return CachingLLMWrapper(llm=llm)
-
-    return llm
-
-
-class CachingLLMWrapper(BaseChatModel):
-    """Wrapper that adds cache_control to system messages for Anthropic caching.
-
-    This wrapper intercepts messages before they're sent to the LLM and
-    transforms system messages to use the multipart format with cache_control.
-
-    The cache_control parameter tells Anthropic to cache the content, reducing
-    costs by 90% on cache hits (after initial 25% cache write premium).
-
-    Supports wrapping both direct LLMs (BaseChatModel) and tool-bound models
-    (RunnableBinding) to preserve caching through tool binding. When bind_tools()
-    is called, it returns a new CachingLLMWrapper around the RunnableBinding,
-    creating a chain: CachingLLMWrapper -> RunnableBinding -> BaseChatModel.
-
-    This nested structure ensures cache_control markers are applied to all
-    invocations, including tool calls, preventing the 10x cost increase that
-    would occur if caching were bypassed.
-
-    Minimum cacheable prompt: 1024 tokens for Claude Sonnet/Opus, 2048 for Haiku 4.5
-    Cache TTL: 5 minutes (refreshed on each hit)
-    """
-
-    llm: BaseChatModel | Runnable
-    """The underlying LLM or Runnable to wrap."""
-
-    model_config = {"arbitrary_types_allowed": True}
-
-    def __init__(self, llm: BaseChatModel | Runnable, **kwargs):
-        """Initialize the caching wrapper.
-
-        Args:
-            llm: The underlying LLM or Runnable to wrap
-            **kwargs: Additional arguments for BaseChatModel
-
-        Raises:
-            ValueError: If llm is already a CachingLLMWrapper (prevents double-wrapping)
-            TypeError: If llm lacks required methods
-        """
-        # Prevent wrapping a CachingLLMWrapper (infinite recursion risk)
-        if isinstance(llm, CachingLLMWrapper):
-            raise ValueError(
-                "Cannot wrap a CachingLLMWrapper with another CachingLLMWrapper. "
-                "This would create infinite recursion. If you need to bind tools, "
-                "call bind_tools() on the existing wrapper instead."
-            )
-
-        # Validate llm has required methods
-        if not hasattr(llm, "invoke"):
-            raise TypeError(
-                f"Cannot wrap {type(llm).__name__}: missing required 'invoke' method. "
-                "The LLM must implement at least the 'invoke' method."
-            )
-
-        logger.debug("Initialized CachingLLMWrapper wrapping %s", type(llm).__name__)
-        super().__init__(llm=llm, **kwargs)
-
-    @property
-    def _llm_type(self) -> str:
-        return "caching_llm_wrapper"
-
-    def bind_tools(self, tools: list, **kwargs) -> "CachingLLMWrapper":
-        """Bind tools while preserving caching functionality.
-
-        This method performs a two-step process:
-        1. Delegates tool binding to the underlying LLM (returns RunnableBinding)
-        2. Wraps the result in a new CachingLLMWrapper to preserve caching
-
-        This ensures cache_control markers are applied to all invocations of the
-        tool-bound model, preventing the 10x cost increase that would occur if
-        caching were bypassed during tool calls.
-
-        Args:
-            tools: List of tools to bind
-            **kwargs: Additional arguments for tool binding
-
-        Returns:
-            New CachingLLMWrapper instance wrapping the tool-bound RunnableBinding
-
-        Raises:
-            ValueError: If tools list is empty
-            NotImplementedError: If underlying LLM doesn't support tool binding
-            TypeError: If tool binding fails due to type issues
-        """
-        # Validate tools list
-        if not tools:
-            logger.error("Cannot bind empty tools list")
-            raise ValueError("Cannot bind empty tools list. Provide at least one tool to bind.")
-
-        # Check if underlying LLM supports bind_tools
-        if not hasattr(self.llm, "bind_tools"):
-            logger.error("Underlying LLM %s does not support bind_tools", type(self.llm).__name__)
-            raise NotImplementedError(
-                f"Underlying LLM {type(self.llm).__name__} does not support tool binding. "
-                "Use a different LLM that implements bind_tools()."
-            )
-
-        try:
-            # Bind tools to underlying LLM
-            logger.debug("Binding %d tools to %s", len(tools), type(self.llm).__name__)
-            bound_llm = self.llm.bind_tools(tools, **kwargs)
-
-            # Wrap in CachingLLMWrapper to preserve caching
-            wrapped_llm = CachingLLMWrapper(llm=bound_llm)
-            logger.debug("Successfully bound tools and wrapped in CachingLLMWrapper")
-            return wrapped_llm
-
-        except NotImplementedError as e:
-            logger.error(
-                "Tool binding not implemented for %s: %s",
-                type(self.llm).__name__,
-                str(e),
-            )
-            raise NotImplementedError(
-                f"Tool binding failed: {type(self.llm).__name__} does not implement bind_tools(). "
-                f"Original error: {str(e)}"
-            ) from e
-        except TypeError as e:
-            logger.error(
-                "Type error during tool binding for %s: %s",
-                type(self.llm).__name__,
-                str(e),
-            )
-            raise TypeError(
-                f"Tool binding failed due to type mismatch: {str(e)}. "
-                "Check that tools are properly formatted LangChain tool objects."
-            ) from e
-        except ValueError as e:
-            logger.error(
-                "Value error during tool binding for %s: %s",
-                type(self.llm).__name__,
-                str(e),
-            )
-            raise
-
-    def _add_cache_control(self, messages: list[BaseMessage]) -> list[dict]:
-        """Transform messages to add cache_control to system messages.
-
-        Applies cache_control markers to SystemMessage instances. Transforms
-        AIMessage tool_calls and ToolMessage into OpenAI dict format for
-        LiteLLM compatibility. HumanMessage instances get role assignment only.
-
-        Validation is strict with fail-fast behavior:
-        - Messages must have a 'content' attribute (ValueError if missing)
-        - Message content must not be None (ValueError if None)
-        - Messages list must be a list, not None (ValueError/TypeError)
-
-        Args:
-            messages: List of LangChain messages
-
-        Returns:
-            List of message dicts with cache_control on system messages
-
-        Raises:
-            ValueError: If messages is None, contains messages without content,
-                       or contains messages with None content
-            TypeError: If messages is not a list
-        """
-        from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-
-        # Validate input
-        if messages is None:
-            logger.error("Cannot transform None messages list")
-            raise ValueError("Messages list cannot be None")
-
-        if not isinstance(messages, list):
-            logger.error("Expected list of messages, got %s", type(messages).__name__)
-            raise TypeError(f"Expected list of messages, got {type(messages).__name__}")
-
-        result = []
-        for i, msg in enumerate(messages):
-            try:
-                # Validate message has content attribute
-                if not hasattr(msg, "content"):
-                    logger.error("Message at index %d missing content attribute", i)
-                    raise ValueError(
-                        f"Invalid message at index {i}: missing 'content' attribute. "
-                        f"Message type: {type(msg).__name__}. All messages must have a 'content' attribute."
-                    )
-
-                if isinstance(msg, SystemMessage):
-                    # Validate content is not None
-                    if msg.content is None:
-                        logger.error("SystemMessage at index %d has None content", i)
-                        raise ValueError(
-                            f"SystemMessage at index {i} has None content. "
-                            "All system messages must have non-None content."
-                        )
-                    content = str(msg.content)
-
-                    # Transform system message to multipart format with cache_control
-                    result.append(
-                        {
-                            "role": "system",
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": content,
-                                    "cache_control": {"type": "ephemeral"},
-                                }
-                            ],
-                        }
-                    )
-                    logger.debug("Added cache_control to SystemMessage at index %d", i)
-
-                elif isinstance(msg, HumanMessage):
-                    if msg.content is None:
-                        logger.error("HumanMessage at index %d has None content", i)
-                        raise ValueError(
-                            f"HumanMessage at index {i} has None content. "
-                            "All messages must have non-None content."
-                        )
-                    result.append({"role": "user", "content": str(msg.content)})
-
-                elif isinstance(msg, AIMessage):
-                    if msg.content is None and not msg.tool_calls:
-                        logger.error("AIMessage at index %d has None content", i)
-                        raise ValueError(
-                            f"AIMessage at index {i} has None content. "
-                            "All messages must have non-None content."
-                        )
-                    ai_dict: dict[str, Any] = {
-                        "role": "assistant",
-                        "content": str(msg.content) if msg.content else "",
-                    }
-                    # Convert LangChain tool_calls to OpenAI dict format since we're
-                    # serializing to raw dicts. LiteLLM translates to Anthropic format.
-                    if msg.tool_calls:
-                        ai_dict["tool_calls"] = []
-                        for j, tc in enumerate(msg.tool_calls):
-                            if "name" not in tc or "args" not in tc:
-                                raise ValueError(
-                                    f"Malformed tool_call at index {j} in AIMessage "
-                                    f"at index {i}: missing 'name' or 'args'. "
-                                    f"Got keys: {list(tc.keys())}"
-                                )
-                            ai_dict["tool_calls"].append(
-                                {
-                                    "id": tc.get("id", tc.get("name", "")),
-                                    "type": "function",
-                                    "function": {
-                                        "name": tc["name"],
-                                        "arguments": (
-                                            json.dumps(tc["args"])
-                                            if isinstance(tc["args"], dict)
-                                            else str(tc["args"])
-                                        ),
-                                    },
-                                }
-                            )
-                    result.append(ai_dict)
-
-                elif isinstance(msg, ToolMessage):
-                    if msg.content is None:
-                        logger.error("ToolMessage at index %d has None content", i)
-                        raise ValueError(
-                            f"ToolMessage at index {i} has None content. "
-                            "All tool messages must have non-None content."
-                        )
-                    if not msg.tool_call_id:
-                        logger.error("ToolMessage at index %d has no tool_call_id", i)
-                        raise ValueError(
-                            f"ToolMessage at index {i} has no tool_call_id. "
-                            "ToolMessages must reference a tool call."
-                        )
-                    result.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": msg.tool_call_id,
-                            "content": str(msg.content),
-                        }
-                    )
-
-                else:
-                    # Fallback for other message types
-                    logger.debug(
-                        "Unknown message type %s at index %d, treating as user message",
-                        type(msg).__name__,
-                        i,
-                    )
-                    if msg.content is None:
-                        logger.error("Message at index %d has None content", i)
-                        raise ValueError(
-                            f"Message at index {i} has None content. "
-                            "All messages must have non-None content."
-                        )
-                    result.append({"role": "user", "content": str(msg.content)})
-
-            except (ValueError, AttributeError, UnicodeError) as e:
-                logger.error(
-                    "Error processing message at index %d: %s (%s)",
-                    i,
-                    str(e),
-                    type(e).__name__,
-                )
-                raise
-            except Exception as e:
-                logger.error(
-                    "Unexpected error processing message at index %d: %s (%s)",
-                    i,
-                    str(e),
-                    type(e).__name__,
-                    exc_info=True,
-                )
-                raise
-
-        logger.debug(
-            "Transformed %d messages, added cache_control to %d system messages",
-            len(messages),
-            sum(1 for msg in messages if isinstance(msg, SystemMessage)),
-        )
-
-        # Add trailing cache breakpoint for conversation prefix caching
-        self._add_trailing_cache_control(result)
-
-        return result
-
-    def _add_trailing_cache_control(self, messages: list[dict]) -> None:
-        """Add cache_control to the last message for conversation prefix caching.
-
-        Creates a second cache breakpoint at the end of the conversation so the
-        entire prefix (system + conversation history) is cached between agentic
-        tool-call iterations. Without this, only the system prompt is cached and
-        the growing conversation is re-processed at full price every iteration.
-
-        Anthropic allows up to 4 cache_control markers per request. The system
-        prompt already uses one; this adds a second on the trailing message.
-        """
-        if len(messages) < 2:
-            return
-
-        # Walk backward to find a message with string content to mark.
-        # Skip assistant messages that have only tool_calls (no text to attach to).
-        for idx in range(len(messages) - 1, 0, -1):
-            msg = messages[idx]
-
-            # Skip if already has cache_control
-            if isinstance(msg.get("content"), list):
-                has_cache = any(
-                    isinstance(block, dict) and "cache_control" in block for block in msg["content"]
-                )
-                if has_cache:
-                    return
-
-            content = msg.get("content")
-            role = msg.get("role")
-
-            if isinstance(content, str) and content:
-                # Convert string content to multipart format with cache_control
-                msg["content"] = [
-                    {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
-                ]
-                return
-
-            # Assistant with only tool_calls, no text -- keep searching backward
-            if role == "assistant" and not content and msg.get("tool_calls"):
-                continue
-
-            # Any other message type without string content -- stop searching
-            break
-
-        logger.debug("No suitable message found for trailing cache breakpoint")
-
-    def _generate(self, messages: list[BaseMessage], **kwargs) -> Any:
-        """Generate response with cache_control on system messages."""
-        logger.debug("Generating response for %d messages", len(messages))
-        try:
-            cached_messages = self._add_cache_control(messages)
-            return self.llm._generate(cached_messages, **kwargs)
-        except Exception as e:
-            logger.error(
-                "Error in _generate for %s: %s",
-                type(self.llm).__name__,
-                str(e),
-                exc_info=True,
-            )
-            raise
-
-    async def _agenerate(self, messages: list[BaseMessage], **kwargs) -> Any:
-        """Async generate response with cache_control on system messages."""
-        logger.debug("Async generating response for %d messages", len(messages))
-        try:
-            cached_messages = self._add_cache_control(messages)
-            return await self.llm._agenerate(cached_messages, **kwargs)
-        except Exception as e:
-            logger.error(
-                "Error in _agenerate for %s: %s",
-                type(self.llm).__name__,
-                str(e),
-                exc_info=True,
-            )
-            raise
-
-    def invoke(self, messages: list[BaseMessage], **kwargs) -> Any:
-        """Invoke LLM with cache_control on system messages."""
-        logger.debug("Invoking %s with %d messages", type(self.llm).__name__, len(messages))
-        try:
-            cached_messages = self._add_cache_control(messages)
-            return self.llm.invoke(cached_messages, **kwargs)
-        except Exception as e:
-            logger.error(
-                "Error invoking %s: %s",
-                type(self.llm).__name__,
-                str(e),
-                exc_info=True,
-            )
-            raise
-
-    async def ainvoke(self, messages: list[BaseMessage], **kwargs) -> Any:
-        """Async invoke LLM with cache_control on system messages."""
-        logger.debug("Async invoking %s with %d messages", type(self.llm).__name__, len(messages))
-        try:
-            cached_messages = self._add_cache_control(messages)
-            return await self.llm.ainvoke(cached_messages, **kwargs)
-        except Exception as e:
-            logger.error(
-                "Error async invoking %s: %s",
-                type(self.llm).__name__,
-                str(e),
-                exc_info=True,
-            )
-            raise
-
-    def stream(self, input: list[BaseMessage] | Any, config: Any = None, **kwargs) -> Iterator[Any]:
-        """Stream with cache_control applied to system messages.
-
-        Applies cache_control transformation only if input is a list of messages.
-        Non-list inputs are passed through unchanged to the underlying LLM's stream method.
-
-        Args:
-            input: Messages to stream (can be list of BaseMessage or other formats)
-            config: Optional runtime configuration
-            **kwargs: Additional arguments for streaming
-
-        Yields:
-            Stream chunks from the underlying LLM
-
-        Raises:
-            ValueError: If input is None or invalid
-            NotImplementedError: If underlying LLM doesn't support streaming
-            Exception: Any exception raised by the underlying LLM's stream() method
-        """
-        # Validate input
-        if input is None:
-            logger.error("Cannot stream with None input")
-            raise ValueError("Input cannot be None for streaming")
-
-        # Check if underlying LLM supports streaming
-        if not (hasattr(self.llm, "stream") and callable(self.llm.stream)):
-            logger.error(
-                "Underlying LLM %s does not support streaming",
-                type(self.llm).__name__,
-            )
-            raise NotImplementedError(
-                f"Underlying LLM {type(self.llm).__name__} does not support streaming. "
-                "To use streaming, either: (1) use a different LLM model that supports streaming, "
-                "or (2) use invoke() instead of stream() for non-streaming responses."
-            )
-
-        # Apply caching if input is a message list
-        if isinstance(input, list):
-            logger.debug("Applying cache_control to %d messages for streaming", len(input))
-            input = self._add_cache_control(input)
-        else:
-            logger.warning(
-                "Input is not a message list (got %s), caching disabled for this stream. "
-                "This may result in higher API costs.",
-                type(input).__name__,
-            )
-
-        logger.debug("Starting stream from %s", type(self.llm).__name__)
-        return self.llm.stream(input, config=config, **kwargs)
-
-    async def astream(
-        self, input: list[BaseMessage] | Any, config: Any = None, **kwargs
-    ) -> AsyncIterator[Any]:
-        """Async stream with cache_control applied to system messages.
-
-        Applies cache_control transformation only if input is a list of messages.
-        Non-list inputs are passed through unchanged to the underlying LLM's astream method.
-
-        Args:
-            input: Messages to stream (can be list of BaseMessage or other formats)
-            config: Optional runtime configuration
-            **kwargs: Additional arguments for streaming
-
-        Yields:
-            Stream chunks from the underlying LLM
-
-        Raises:
-            ValueError: If input is None or invalid
-            NotImplementedError: If underlying LLM doesn't support async streaming
-            Exception: Any exception raised by the underlying LLM's astream() method
-        """
-        # Validate input
-        if input is None:
-            logger.error("Cannot async stream with None input")
-            raise ValueError("Input cannot be None for streaming")
-
-        # Check if underlying LLM supports async streaming
-        if not (hasattr(self.llm, "astream") and callable(self.llm.astream)):
-            logger.error(
-                "Underlying LLM %s does not support async streaming",
-                type(self.llm).__name__,
-            )
-            raise NotImplementedError(
-                f"Underlying LLM {type(self.llm).__name__} does not support async streaming. "
-                "To use streaming, either: (1) use a different LLM model that supports streaming, "
-                "or (2) use ainvoke() instead of astream() for non-streaming responses."
-            )
-
-        # Apply caching if input is a message list
-        if isinstance(input, list):
-            logger.debug(
-                "Applying cache_control to %d messages for async stream",
-                len(input),
-            )
-            input = self._add_cache_control(input)
-        else:
-            logger.warning(
-                "Input is not a message list (got %s), caching disabled for this stream. "
-                "This may result in higher API costs.",
-                type(input).__name__,
-            )
-
-        logger.debug("Starting async stream from %s", type(self.llm).__name__)
-        async for chunk in self.llm.astream(input, config=config, **kwargs):
-            yield chunk
-
-
-# Reference list of known Anthropic Claude models supporting prompt caching
-# This is informational only - the is_cacheable_model() function uses a permissive
-# heuristic (any "anthropic/claude-*" model) rather than this restrictive list.
-# Caching is enabled by default for all models; OpenRouter/LiteLLM handle
-# unsupported models gracefully by ignoring cache_control parameters.
-CACHEABLE_MODELS = {
-    "claude-opus-4.6": "anthropic/claude-opus-4.6",
-    "claude-sonnet-4.6": "anthropic/claude-sonnet-4.6",
-    "claude-opus-4.5": "anthropic/claude-opus-4.5",
-    "claude-sonnet-4.5": "anthropic/claude-sonnet-4.5",
-    "claude-haiku-4.5": "anthropic/claude-haiku-4.5",
-}
-
-
-def is_cacheable_model(model: str) -> bool:
-    """Check if a model identifier suggests Anthropic prompt caching support.
-
-    Uses a heuristic check: returns True for model identifiers in the known
-    cacheable models list, or any identifier starting with "anthropic/claude-".
-
-    Note: This is optimistic and may return True for models that don't actually
-    support caching. The LiteLLM/OpenRouter layer handles unsupported models
-    gracefully by ignoring cache_control parameters.
-
-    Args:
-        model: Model identifier (e.g., "anthropic/claude-haiku-4.5")
-
-    Returns:
-        True if the model likely supports cache_control based on its identifier
-    """
-    # Check exact match in aliases
-    if model in CACHEABLE_MODELS:
-        return True
-    # Check if it's an Anthropic Claude model (permissive heuristic)
-    return model.startswith("anthropic/claude-")

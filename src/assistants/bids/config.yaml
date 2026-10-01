@@ -42,15 +42,33 @@ widget:
   title: BIDS Assistant
   initial_message: "Hi! I'm the BIDS Assistant. I can help with Brain Imaging Data Structure (BIDS), data organization, validation, and related tools."
   placeholder: Ask about BIDS...
+  # The launcher on bids-specification.readthedocs.io (issue #553, from
+  # bids-standard/bids-specification#2541: too small, and covering the page's own buttons).
+  # 67px is 20% larger than the 56px default (opening at 54, 80% of it). It sits 104px up
+  # because Read the Docs fixes its version bar to the bottom right of every page, from 89
+  # to 93px up depending on the window's width, and the footer's social icons are below
+  # that, so at 20px the launcher covered the bar and, at the foot of the page, the last
+  # icon. 104px clears both, at 1280px, 1920px and phone widths, and leaves an opened
+  # version menu's links and search box uncovered. It stays at the bottom right, where
+  # the left side would cover the navigation's labels.
+  launcher_size: 67
+  launcher_offset_y: 104
   suggested_questions:
     - What is BIDS and why should I use it?
     - How do I organize my EEG data in BIDS?
     - What are the BIDS Common Principles?
     - How do I validate my BIDS dataset?
 
-# Default model for this community (first-party Claude Platform on AWS id;
-# see src.core.services.anthropic_llm.OFFERED_MODELS)
-default_model: "claude-haiku-4-5"
+# Default model for this community; see src.core.services.anthropic_models.OFFERED_MODELS for the ids.
+# GPT-6 Luna, served from Amazon Bedrock on the platform's key (issue #559). With the Bedrock key
+# missing but ANTHROPIC_API_KEY set, a request that names no model runs the deployment's Claude
+# default (DEFAULT_MODEL, Claude Haiku 4.5 unless changed) and logs an error naming this community;
+# a caller's own Anthropic key (the CLI) runs it too, with a warning if that is the only cause.
+# With no ANTHROPIC_API_KEY it goes to OpenRouter's Luna slug, or fails with HTTP 500.
+default_model: "openai.gpt-6-luna"
+# The level every model this community runs is asked to reason at, on every provider
+# (issue #545, ADR 0015). Luna at max took 15 to 50 s to a first word, so this community runs high.
+reasoning_effort: high
 
 # System prompt template
 system_prompt: |

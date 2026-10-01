@@ -32,6 +32,7 @@ from typing import Any
 
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage
 from pydantic import ConfigDict, field_validator
 
 from src.api.config import Settings, get_settings
@@ -42,10 +43,16 @@ from src.core.services.anthropic_endpoints import FIRST_PARTY_BASE_URL
 # MODEL_ALIASES and OFFERED_MODELS are re-exported here because server-side
 # callers have imported them from this module all along.
 from src.core.services.anthropic_models import (
+    BEDROCK_MODEL_PROVIDER,
+    BEDROCK_MODELS,  # noqa: F401
     DEFAULT_MODEL,  # noqa: F401
+    DEFAULT_REASONING_EFFORT,
     MODEL_ALIASES,  # noqa: F401
     OFFERED_MODELS,  # noqa: F401
     SAMPLING_MODELS,
+    THINKING_BUDGET_TOKENS,
+    effective_reasoning_effort,
+    is_bedrock_model,
     normalize_model,
 )
 
@@ -54,19 +61,38 @@ logger = logging.getLogger(__name__)
 # Thinking policy. The two offered model generations accept different, mutually
 # exclusive `thinking` shapes and the API is strict about it (a mismatch is a
 # 400 at request time, not a graceful fallback):
-#   - claude-sonnet-5 has no budget-style thinking; it only accepts
-#     {"type": "adaptive"} or {"type": "disabled"}.
+#   - claude-sonnet-5-5 has no budget-style thinking, and no "disabled" either
+#     (a 400: "Use thinking.type.between_tools for the lowest thinking
+#     setting"). It accepts {"type": "adaptive"}, or {"type": "between_tools"}
+#     to turn extended thinking off.
 #   - claude-haiku-4-5 has no adaptive mode; it needs an explicit
 #     {"type": "enabled", "budget_tokens": N} to think at all.
-_ADAPTIVE_THINKING_MODELS = {"claude-sonnet-5"}
+_ADAPTIVE_THINKING_MODELS = {"claude-sonnet-5-5"}
+
+# The "thinking off" setting of the adaptive-thinking models. Sonnet 5.5 does
+# no extended thinking under it, though the short progress notes it writes
+# between tool calls still arrive as `thinking` blocks. The API allows it only
+# at effort "high" or below and with no other field inside `thinking`. OSA always
+# sends an effort with it (the community's level, else "high"; its `none` sends "low").
+_THINKING_OFF: dict[str, Any] = {"type": "between_tools"}
 
 # Smallest thinking budget the API accepts on budget-style (Haiku) models.
 MIN_THINKING_BUDGET_TOKENS = 1024
 
-# Fallback default budget when neither a caller nor settings supplies one.
-# Mirrors Settings.anthropic_thinking_budget_tokens's own default so the two
-# stay in sync without importing Settings just for a literal.
-DEFAULT_THINKING_BUDGET_TOKENS = 2048
+
+def _fit_thinking_budget(budget: int, max_tokens: int) -> int:
+    """Lower a budget OSA chose so it fits under ``max_tokens``, never below the API's minimum.
+
+    Thinking tokens come out of ``max_tokens``, and the API refuses a budget that is not
+    below it, so a deployment whose max output is smaller than a level's budget gets less
+    thinking instead of a failed request: the budget leaves the API's minimum budget's
+    worth of tokens for the answer where ``max_tokens`` allows it (at least twice that),
+    and is the minimum itself between one and two times that. A ``max_tokens`` that does
+    not exceed the minimum budget leaves no valid budget, and ``_validate_thinking``
+    refuses it as it always has.
+    """
+    return max(MIN_THINKING_BUDGET_TOKENS, min(budget, max_tokens - MIN_THINKING_BUDGET_TOKENS))
+
 
 # Prompt-cache lifetimes. A 5-minute entry costs 1.25x the input price to
 # write, a 1-hour entry 2x; both read back at 0.1x. Back-to-back requests
@@ -77,45 +103,39 @@ CACHE_TTLS = ("5m", "1h")
 DEFAULT_CACHE_TTL = "5m"
 
 
-def default_thinking(model: str | None = None, budget: int | None = None) -> dict[str, Any] | None:
-    """Return the default thinking configuration for a model.
+def default_thinking(model: str | None = None) -> dict[str, Any]:
+    """Return the default thinking configuration for a model: its default reasoning level.
 
     Args:
         model: Model identifier (normalized internally); the default model
             when None.
-        budget: Thinking budget in tokens for budget-style (Haiku) models.
-            Falls back to ``DEFAULT_THINKING_BUDGET_TOKENS`` when None. A
-            budget of 0 or negative disables thinking for any model by
-            returning None, which omits the ``thinking`` key from the
-            request. Note that omission is only "off" for budget-style
-            models: on adaptive-default models (claude-sonnet-5) an omitted
-            key means the API's own default, which is adaptive thinking
-            turned on. To actually disable thinking on those models, pass
-            ``thinking=None`` to :func:`create_anthropic_llm` instead, which
-            sends ``{"type": "disabled"}`` explicitly.
 
     Returns:
-        A thinking configuration dict for the resolved model, or None when
-        thinking should be disabled.
+        Adaptive thinking for the adaptive-default models (claude-sonnet-5-5),
+        and for budget-style models (claude-haiku-4-5) an ``enabled`` budget: the one
+        ``THINKING_BUDGET_TOKENS`` gives the default level, ``high``. To turn
+        thinking off, pass ``thinking=None`` to :func:`create_anthropic_llm`, which
+        sends ``{"type": "between_tools"}`` on adaptive-default models (an omitted
+        key means adaptive thinking there) and omits the key on budget-style ones.
     """
     resolved_model = normalize_model(model)
-    resolved_budget = DEFAULT_THINKING_BUDGET_TOKENS if budget is None else budget
-    if resolved_budget <= 0:
-        return None
     if resolved_model in _ADAPTIVE_THINKING_MODELS:
         # Adaptive is the only "on" mode on this generation; the model
         # decides how much to think, so the budget value does not apply.
         return {"type": "adaptive"}
-    return {"type": "enabled", "budget_tokens": resolved_budget}
+    budgets = THINKING_BUDGET_TOKENS.get(resolved_model)
+    if budgets is None:
+        raise ValueError(f"{resolved_model} is not a Claude model with extended thinking")
+    return {"type": "enabled", "budget_tokens": budgets[DEFAULT_REASONING_EFFORT]}
 
 
 def _validate_thinking(thinking: dict[str, Any], model: str, max_tokens: int) -> None:
     """Check a thinking configuration against what the model accepts.
 
     The API enforces different shapes per model generation, and a mismatch
-    is a 400 at request time: claude-sonnet-5 rejects thinking.type
-    "enabled" ("Use thinking.type adaptive"), while claude-haiku-4-5 has no
-    adaptive mode and needs an explicit token budget.
+    is a 400 at request time: claude-sonnet-5-5 rejects thinking.type
+    "enabled" and "disabled" (it takes "adaptive" or "between_tools"), while
+    claude-haiku-4-5 has no adaptive mode and needs an explicit token budget.
 
     Args:
         thinking: Thinking configuration to check.
@@ -128,16 +148,23 @@ def _validate_thinking(thinking: dict[str, Any], model: str, max_tokens: int) ->
     kind = thinking.get("type")
 
     if model in _ADAPTIVE_THINKING_MODELS:
-        if kind not in ("adaptive", "disabled"):
+        if kind not in ("adaptive", "between_tools"):
             raise ValueError(
-                f"{model} accepts thinking type 'adaptive' or 'disabled', not {kind!r}; "
-                "budget_tokens was removed on this model generation"
+                f"{model} accepts thinking type 'adaptive' or 'between_tools', not {kind!r}; "
+                "budget_tokens was removed on this model generation, and 'disabled' "
+                "is rejected (pass thinking=None to create_anthropic_llm to turn "
+                "thinking off)"
+            )
+        if kind == "between_tools" and set(thinking) != {"type"}:
+            raise ValueError(
+                "thinking type 'between_tools' takes no other field, got "
+                f"{sorted(set(thinking) - {'type'})}"
             )
         return
 
     if kind == "disabled":
         # Accepted and redundant on this model, but it lets a caller express
-        # "off" the same way for every model instead of special-casing.
+        # "off" without special-casing the model.
         return
 
     if kind != "enabled":
@@ -158,6 +185,36 @@ def _validate_thinking(thinking: dict[str, Any], model: str, max_tokens: int) ->
             f"budget_tokens ({budget}) must be below max_tokens ({max_tokens}); "
             "thinking tokens are drawn from the same budget as the response"
         )
+
+
+def strip_bedrock_turns(messages: list[BaseMessage]) -> list[BaseMessage]:
+    """Make the assistant turns a Bedrock model wrote acceptable to Claude.
+
+    A chat can switch models between requests, and the history holds whatever the
+    earlier model produced. Sent to Anthropic as it is, a Bedrock turn's
+    ``reasoning_content`` block is an unknown block type (a 400), and its
+    ``citations`` are indexed against tagged sources rather than Anthropic's own
+    search results. Only the text and the tool calls are kept; the citations'
+    markers were already turned into ``[n]`` in the visible answer.
+
+    The caller's messages are not changed.
+    """
+    cleaned: list[BaseMessage] = []
+    for message in messages:
+        if (
+            isinstance(message, AIMessage)
+            and isinstance(message.content, list)
+            and message.response_metadata.get("model_provider") == BEDROCK_MODEL_PROVIDER
+        ):
+            kept: list[Any] = []
+            for block in message.content:
+                if not isinstance(block, dict) or block.get("type") == "tool_use":
+                    kept.append(block)
+                elif block.get("type") == "text":
+                    kept.append({k: v for k, v in block.items() if k != "citations"})
+            message = message.model_copy(update={"content": kept})
+        cleaned.append(message)
+    return cleaned
 
 
 class _Default:
@@ -187,6 +244,7 @@ def create_anthropic_llm(
     cache_ttl: str | None = None,
     timeout: float = 60.0,
     settings: Settings | None = None,
+    reasoning_effort: str | None = None,
 ) -> BaseChatModel:
     """Create a Claude LLM instance for the Claude Platform on AWS.
 
@@ -203,10 +261,11 @@ def create_anthropic_llm(
         max_tokens: Maximum tokens to generate. Defaults to
             ``settings.anthropic_max_output_tokens``.
         thinking: Explicit extended-thinking configuration. Leave unset to
-            get the per-model default from :func:`default_thinking` (on
-            adaptive-default models such as claude-sonnet-5, that default is
-            adaptive thinking turned on); pass ``None`` explicitly to
-            disable thinking entirely, which sends ``{"type": "disabled"}``
+            get the per-model default from :func:`default_thinking` (adaptive
+            thinking on adaptive-default models such as claude-sonnet-5-5, and
+            the ``high`` budget on claude-haiku-4-5, or the community's level
+            for it); pass ``None`` explicitly to
+            turn thinking off, which sends ``{"type": "between_tools"}``
             on adaptive-default models and omits the ``thinking`` key on
             budget-style models (e.g. claude-haiku-4-5), where an omitted
             key already means no thinking; pass a dict to fully control it.
@@ -219,20 +278,38 @@ def create_anthropic_llm(
         timeout: Per-request timeout in seconds.
         settings: Settings instance to read server-mode credentials and
             defaults from. Defaults to ``get_settings()``.
+        reasoning_effort: The community's level from the neutral scale, or None for
+            ``DEFAULT_REASONING_EFFORT`` (high). Only models with levels are affected.
+            claude-haiku-4-5 has no effort field and thinks with a token budget: the
+            level sets it (``THINKING_BUDGET_TOKENS``; ``none`` is no thinking; xhigh and
+            max are ``high``).
+            claude-sonnet-5-5 is sent a level it accepts, never above ``high``: ``low``, ``medium`` and ``high``
+            set ``output_config.effort`` to that level, and ``none`` (no level is
+            lower than ``low``) sets it to ``low`` and turns up-front thinking off
+            (``{"type": "between_tools"}``). An explicit ``thinking`` argument still
+            wins over the thinking this implies.
 
     Returns:
         A :class:`CachingChatAnthropic` (default) or plain ``ChatAnthropic``
         instance configured for the Claude Messages API.
 
     Raises:
-        ValueError: If the model is not offered, the cache TTL is not
-            supported, or the thinking configuration is not valid for the
-            model.
+        ValueError: If the model is not offered, is served from Amazon Bedrock
+            rather than by Anthropic (see ``create_bedrock_llm``), the cache
+            TTL is not supported, or the thinking configuration is not valid
+            for the model.
         RuntimeError: If server mode is used without ANTHROPIC_API_KEY set,
             or if ANTHROPIC_BASE_URL is set without ANTHROPIC_WORKSPACE_ID.
     """
     resolved_settings = settings or get_settings()
     resolved_model = normalize_model(model)
+    if is_bedrock_model(resolved_model):
+        # Sending "openai.gpt-6-luna" to the Messages API would fail as an opaque
+        # unknown-model error, far from the caller that picked the wrong factory.
+        raise ValueError(
+            f"{resolved_model} is served from Amazon Bedrock, not by Anthropic; "
+            "build it with create_bedrock_llm"
+        )
 
     resolved_max_tokens = (
         max_tokens if max_tokens is not None else resolved_settings.anthropic_max_output_tokens
@@ -245,25 +322,79 @@ def create_anthropic_llm(
         )
 
     if isinstance(thinking, _Default):
-        resolved_thinking = default_thinking(
-            resolved_model, resolved_settings.anthropic_thinking_budget_tokens
-        )
+        resolved_thinking = default_thinking(resolved_model)
     elif thinking is None:
         # An omitted `thinking` key is not "off" on adaptive-default models:
         # the API's own default there is adaptive thinking turned on. Send
-        # an explicit disable so a caller's `None` actually means no
-        # thinking. Budget-style models already treat an omitted key as
-        # off, so leave the key omitted there instead of adding it.
+        # the model's lowest setting so a caller's `None` actually means no
+        # extended thinking. Budget-style models already treat an omitted key
+        # as off, so leave the key omitted there instead of adding it.
         resolved_thinking = (
-            {"type": "disabled"} if resolved_model in _ADAPTIVE_THINKING_MODELS else None
+            dict(_THINKING_OFF) if resolved_model in _ADAPTIVE_THINKING_MODELS else None
         )
     else:
         resolved_thinking = thinking
 
+    # The reasoning level (issues #545 and #548), for the models that have levels. Sonnet
+    # takes it in the typed `output_config` field, not the adapter's `reasoning_effort`,
+    # which can force adaptive thinking on with display settings. Its thinking stays what
+    # the caller or the default made it (adaptive, which is also what an omitted key means
+    # there), except for `none`: there is no level below `low`, so it is no up-front
+    # thinking (`between_tools`) at the lowest effort, unless the caller chose the
+    # thinking. Haiku has no effort field, so its level is the thinking budget (below).
+    effort_level = effective_reasoning_effort(resolved_model, reasoning_effort, "anthropic")
+    output_config: dict[str, Any] | None = None
+    if (
+        reasoning_effort is not None
+        and effort_level is not None
+        and resolved_model in THINKING_BUDGET_TOKENS
+        and isinstance(thinking, _Default)
+    ):
+        # A budget model (Haiku) has no effort field: a community's level is a thinking
+        # budget, and `none` is no thinking. Unset, `default_thinking` already gave the
+        # budget of the default level.
+        budget = THINKING_BUDGET_TOKENS[resolved_model].get(effort_level)
+        resolved_thinking = None if budget is None else {"type": "enabled", "budget_tokens": budget}
+    if (
+        isinstance(thinking, _Default)
+        and resolved_thinking is not None
+        and resolved_thinking.get("type") == "enabled"
+    ):
+        # The budget OSA chose must fit under this request's max_tokens.
+        resolved_thinking = {
+            **resolved_thinking,
+            "budget_tokens": _fit_thinking_budget(
+                resolved_thinking["budget_tokens"], resolved_max_tokens
+            ),
+        }
+    if effort_level is not None and resolved_model in _ADAPTIVE_THINKING_MODELS:
+        if effort_level == "none":
+            output_config = {"effort": "low"}
+            if isinstance(thinking, _Default):
+                resolved_thinking = dict(_THINKING_OFF)
+        else:
+            output_config = {"effort": effort_level}
+
     if resolved_thinking is not None:
         _validate_thinking(resolved_thinking, resolved_model, resolved_max_tokens)
+        if (
+            output_config is not None
+            and resolved_thinking.get("type") == "between_tools"
+            and output_config["effort"] in ("xhigh", "max")
+        ):
+            # The API refuses this pairing (a 400: "not supported when thinking is
+            # disabled"). The level table caps Sonnet at `high`, so it cannot arise
+            # today; this fails at construction, not at the endpoint, if the table is
+            # ever widened.
+            raise ValueError(
+                f"thinking type 'between_tools' is accepted only at effort 'high' or "
+                f"below, got {output_config['effort']!r}"
+            )
 
-    thinking_on = resolved_thinking is not None and resolved_thinking.get("type") != "disabled"
+    thinking_on = resolved_thinking is not None and resolved_thinking.get("type") not in (
+        "disabled",
+        "between_tools",
+    )
 
     kwargs: dict[str, Any] = {}
     if api_key:
@@ -296,7 +427,7 @@ def create_anthropic_llm(
                 "anthropic-workspace-id": resolved_settings.anthropic_workspace_id
             }
 
-    # claude-sonnet-5 rejects any non-default temperature/top_p/top_k with a
+    # claude-sonnet-5-5 rejects any non-default temperature/top_p/top_k with a
     # 400 unconditionally, whether or not thinking is on, which is why it is
     # not in SAMPLING_MODELS. claude-haiku-4-5 does accept temperature, but
     # not while extended thinking is on, so it is only forwarded for models
@@ -307,7 +438,7 @@ def create_anthropic_llm(
         else:
             # Debug rather than warning: this fires per request, and the two
             # cases it covers are both known ahead of time. A community that
-            # pairs a temperature with claude-sonnet-5 in config.yaml is warned
+            # pairs a temperature with claude-sonnet-5-5 in config.yaml is warned
             # once at config load (FAQGenerationConfig.validate_agent_roles),
             # and thinking-plus-temperature is a documented API constraint.
             logger.debug(
@@ -321,6 +452,8 @@ def create_anthropic_llm(
 
     if resolved_thinking is not None:
         kwargs["thinking"] = resolved_thinking
+    if output_config is not None:
+        kwargs["output_config"] = output_config
 
     common_kwargs: dict[str, Any] = {
         "model": resolved_model,
@@ -341,10 +474,10 @@ def create_anthropic_llm(
 class CachingChatAnthropic(ChatAnthropic):
     """``ChatAnthropic`` subclass that applies prompt-cache breakpoints.
 
-    Why a subclass and not a wrapper: a ``BaseChatModel`` wrapper (the shape
-    the old LiteLLM integration used, see ``litellm_llm.CachingLLMWrapper``)
-    has to reimplement ``invoke``/``ainvoke``/``stream``/``astream``/
-    ``_generate``/``_agenerate``/``bind_tools`` to forward to the wrapped
+    Why a subclass and not a wrapper: a ``BaseChatModel`` wrapper (the shape the
+    old LiteLLM integration used, since replaced by a subclass in ``litellm_chat``
+    for the same reasons) has to reimplement ``invoke``/``ainvoke``/``stream``/
+    ``astream``/``_generate``/``_agenerate``/``bind_tools`` to forward to the wrapped
     model, and that ``_generate`` breaks once ``bind_tools`` returns a
     ``RunnableBinding`` around the wrapped model instead of another wrapper
     instance (the wrapper's own ``_generate`` would need to special-case a
@@ -425,6 +558,7 @@ class CachingChatAnthropic(ChatAnthropic):
         """
         cache_marker = self._cache_control_marker()
         kwargs.setdefault("cache_control", cache_marker)
+        input_ = strip_bedrock_turns(self._convert_input(input_).to_messages())
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
 
         if not self._conversation_cache_control_landed(payload):

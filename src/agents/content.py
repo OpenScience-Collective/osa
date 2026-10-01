@@ -38,12 +38,19 @@ logger = logging.getLogger(__name__)
 # `redacted_thinking` is Anthropic's encrypted-reasoning variant (returned
 # when a thinking block is flagged, e.g. by safety systems); it carries no
 # usable text either way, so it is classified the same as `thinking`.
-_THINKING_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking"})
+# `reasoning_content` is what langchain-aws returns for the reasoning of the
+# Bedrock models (GPT-6 Luna, gpt-oss-120b), and `reasoning` is the OpenAI-style
+# name for the same thing.
+_THINKING_BLOCK_TYPES = frozenset(
+    {"thinking", "redacted_thinking", "reasoning_content", "reasoning"}
+)
 
 # Non-text block types with their own dedicated handling elsewhere (tool-call
 # metadata streamed via separate events), so silently contributing nothing
-# here is expected, not a sign of a problem.
-_KNOWN_NON_TEXT_BLOCK_TYPES = frozenset({"tool_use"})
+# here is expected, not a sign of a problem: a tool call (`tool_use`) and the pieces its
+# JSON arguments arrive in when Anthropic streams it (`input_json_delta`, one per chunk,
+# so hundreds for a long code call: a warning for each filled the production log).
+_KNOWN_NON_TEXT_BLOCK_TYPES = frozenset({"tool_use", "input_json_delta"})
 
 BlockKind = Literal["text", "thinking"]
 

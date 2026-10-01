@@ -28,13 +28,29 @@ MODEL_PRICING: dict[str, ModelRate] = {
     # anthropic_llm.py). Kept alongside the OpenRouter-format keys below, which
     # BYOK requests through OpenRouter still need.
     "claude-haiku-4-5": ModelRate(1.00, 5.00),
+    "claude-sonnet-5-5": ModelRate(2.00, 10.00),
+    # claude-sonnet-5 is no longer offered (it resolves to claude-sonnet-5-5 at
+    # the same price), but request logs written before the switch still name
+    # it and the dashboard prices them by this table.
     "claude-sonnet-5": ModelRate(2.00, 10.00),
+    # Amazon Bedrock model ids (BEDROCK_MODELS in src/core/services/anthropic_models.py).
+    # Standard-tier rates from the Bedrock model cards and price list, verified
+    # 2026-09-28: GPT-6 Luna at US geographic cross-Region inference, 272K input
+    # tokens or fewer (the long-context rate, double, is far above what a
+    # conversation here reaches); gpt-oss-120b and Qwen3 Next in-Region. All three
+    # cost no more than claude-haiku-4-5, which test_cost.py enforces. Luna's cache
+    # writes ($0.1375) and reads ($0.011) are 1.25x and 0.1x its input rate, the
+    # same multipliers CACHE_WRITE_MULTIPLIER and CACHE_READ_MULTIPLIER apply.
+    "openai.gpt-6-luna": ModelRate(0.11, 0.55),
+    "openai.gpt-oss-120b": ModelRate(0.15, 0.60),
+    "qwen.qwen3-next-80b-a3b": ModelRate(0.14, 1.20),
     # Anthropic models
-    # anthropic/claude-sonnet-5: the OpenRouter-slug form of claude-sonnet-5
+    # anthropic/claude-sonnet-5.5: the OpenRouter-slug form of claude-sonnet-5-5
     # above (see OPENROUTER_MODEL_IDS in src/core/services/litellm_llm.py).
     # A community whose default resolves to this slug over OpenRouter would
     # otherwise 403 as "not in the approved pricing list" even though the
     # first-party id is priced. Same rate as the first-party entry.
+    "anthropic/claude-sonnet-5.5": ModelRate(2.00, 10.00),
     "anthropic/claude-sonnet-5": ModelRate(2.00, 10.00),
     "anthropic/claude-opus-4.6": ModelRate(5.00, 25.00),
     "anthropic/claude-opus-4.5": ModelRate(5.00, 25.00),
@@ -48,6 +64,11 @@ MODEL_PRICING: dict[str, ModelRate] = {
     "anthropic/claude-3.5-sonnet": ModelRate(6.00, 30.00),
     "anthropic/claude-3.5-haiku": ModelRate(0.80, 4.00),
     # OpenAI models
+    # openai/gpt-6-luna: verified 2026-09 against https://openrouter.ai/api/v1/models
+    # (the same rate as Bedrock's global inference profile; the registry id
+    # openai.gpt-6-luna above is served through the us. profile instead, at $0.11 / $0.55,
+    # a 10% premium: docs/adr/0014-bedrock-models-alongside-claude.md).
+    "openai/gpt-6-luna": ModelRate(0.10, 0.50),
     "openai/gpt-5.2": ModelRate(1.75, 14.00),
     "openai/gpt-5.2-chat": ModelRate(1.75, 14.00),
     "openai/gpt-5.1": ModelRate(1.25, 10.00),
@@ -83,6 +104,7 @@ MODEL_PRICING: dict[str, ModelRate] = {
     "deepseek/deepseek-r1-0528": ModelRate(0.45, 2.15),
     # Qwen models
     "qwen/qwen3.5-397b-a17b": ModelRate(0.39, 2.34),
+    "qwen/qwen3-next-80b-a3b-instruct": ModelRate(0.10, 1.10),
     "qwen/qwen3-235b-a22b-2507": ModelRate(0.07, 0.10),
     "qwen/qwen3-235b-a22b": ModelRate(0.45, 1.82),
     "qwen/qwen3-30b-a3b-2507": ModelRate(0.09, 0.30),

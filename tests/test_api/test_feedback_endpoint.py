@@ -1,6 +1,8 @@
 """Tests for the feedback API: POST /feedback and GET /metrics/feedback."""
 
 import os
+import sys
+import types
 
 import pytest
 from fastapi.testclient import TestClient
@@ -346,3 +348,111 @@ class TestReadFeedback:
     def test_requires_auth(self, client):
         resp = client.get("/metrics/feedback")
         assert resp.status_code == 401
+
+
+@pytest.fixture
+def langfuse_env():
+    """LangFuse keys configured in settings (values are never sent anywhere)."""
+    from src.api.config import get_settings
+
+    os.environ["LANGFUSE_PUBLIC_KEY"] = "pk-lf-test"
+    os.environ["LANGFUSE_SECRET_KEY"] = "sk-lf-test"
+    get_settings.cache_clear()
+    yield
+    del os.environ["LANGFUSE_PUBLIC_KEY"]
+    del os.environ["LANGFUSE_SECRET_KEY"]
+    get_settings.cache_clear()
+
+
+@pytest.fixture
+def fake_langfuse(monkeypatch):
+    """Stand-in for the optional langfuse package that records create_score calls."""
+    scores: list[dict] = []
+
+    class FakeLangfuse:
+        fail = False
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def create_score(self, **kwargs):
+            if FakeLangfuse.fail:
+                raise RuntimeError("LangFuse is down")
+            scores.append(kwargs)
+
+    module = types.ModuleType("langfuse")
+    module.Langfuse = FakeLangfuse
+    monkeypatch.setitem(sys.modules, "langfuse", module)
+    return types.SimpleNamespace(scores=scores, cls=FakeLangfuse)
+
+
+def _log_traced_request(db_path, request_id: str, trace_id: str | None) -> None:
+    conn = get_metrics_connection(db_path)
+    conn.execute(
+        "INSERT INTO request_log (request_id, timestamp, community_id, endpoint, method, "
+        "langfuse_trace_id) VALUES (?, '2026-09-25T00:00:00Z', 'hed', '/hed/ask', 'POST', ?)",
+        (request_id, trace_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _rate(client, request_id: str | None, sentiment: str = "down", comment: str | None = None):
+    return client.post(
+        "/feedback",
+        json={
+            "community_id": "hed",
+            "feedback_type": "response",
+            "sentiment": sentiment,
+            "request_id": request_id,
+            "comment": comment,
+        },
+    )
+
+
+@pytest.mark.usefixtures("langfuse_env")
+class TestFeedbackToLangfuse:
+    """Feedback is attached to the rated answer's LangFuse trace (issue #515)."""
+
+    TRACE_ID = "0123456789abcdef0123456789abcdef"
+
+    def test_score_sent_to_the_answers_trace(self, feedback_db, client, fake_langfuse):
+        _log_traced_request(feedback_db, "req-traced", self.TRACE_ID)
+
+        resp = _rate(client, "req-traced", "down", "wrong class name")
+
+        assert resp.status_code == 200
+        assert fake_langfuse.scores == [
+            {
+                "trace_id": self.TRACE_ID,
+                "name": "user_feedback",
+                "value": "down",
+                "data_type": "CATEGORICAL",
+                "comment": "wrong class name",
+            }
+        ]
+
+    def test_no_score_when_request_was_not_traced(self, feedback_db, client, fake_langfuse):
+        _log_traced_request(feedback_db, "req-untraced", None)
+
+        assert _rate(client, "req-untraced").status_code == 200
+        assert _rate(client, "req-unknown").status_code == 200
+        assert fake_langfuse.scores == []
+
+    def test_langfuse_error_does_not_fail_the_request(self, feedback_db, client, fake_langfuse):
+        _log_traced_request(feedback_db, "req-traced", self.TRACE_ID)
+        fake_langfuse.cls.fail = True
+
+        resp = _rate(client, "req-traced")
+
+        assert resp.status_code == 200
+        assert fake_langfuse.scores == []
+
+
+@pytest.mark.usefixtures("feedback_db")
+def test_no_score_when_langfuse_not_configured(feedback_db, client, fake_langfuse):
+    """Without LangFuse keys, feedback is stored locally only."""
+    _log_traced_request(feedback_db, "req-traced", TestFeedbackToLangfuse.TRACE_ID)
+
+    assert _rate(client, "req-traced").status_code == 200
+    assert fake_langfuse.scores == []

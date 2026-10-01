@@ -27,6 +27,7 @@ from src.api.tool_results import (
     png_dimensions,
     scrub_stored_images,
 )
+from src.core.config.community import FULL_OUTPUT_TOOL_NAME
 from tests.helpers.images import bar_chart_png, tiny_png
 
 CALL_ID = "toolu_01aaaaaaaaaaaaaaaaaaaaaa"
@@ -285,6 +286,31 @@ class TestPendingClientCall:
         from src.agents.state import PendingClientCallPayload
 
         assert set(PendingClientCall.REQUIRED_KEYS) == set(PendingClientCallPayload.__annotations__)
+
+    def test_it_carries_how_many_runs_and_how_many_of_them_were_code(self) -> None:
+        call = PendingClientCall.from_state(_payload(), runs_before=3, code_runs_before=2)
+
+        assert (call.runs_before, call.code_runs_before) == (3, 2)
+        assert PendingClientCall.from_state(_payload()).code_runs_before == 0
+
+    def test_the_widget_keeps_a_record_of_every_tool_but_the_full_output_one(self) -> None:
+        """The widget records ``message.executions`` only when the tool is not
+        ``FULL_OUTPUT_TOOL_NAME`` (``answerToolRequest``); a reply it has no record for and
+        no text for is dropped, so the server must count exactly the runs it records."""
+        code = PendingClientCall.from_state(_payload())
+        read_back = PendingClientCall.from_state({**_payload(), "tool": FULL_OUTPUT_TOOL_NAME})
+
+        assert code.runs_code is True
+        assert read_back.runs_code is False
+
+    def test_answering_a_call_counts_the_run_and_counts_code_only_when_it_was_code(self) -> None:
+        code = PendingClientCall.from_state(_payload(), runs_before=1, code_runs_before=1)
+        read_back = PendingClientCall.from_state(
+            {**_payload(), "tool": FULL_OUTPUT_TOOL_NAME}, runs_before=1, code_runs_before=1
+        )
+
+        assert (code.runs_after_answer, code.code_runs_after_answer) == (2, 2)
+        assert (read_back.runs_after_answer, read_back.code_runs_after_answer) == (2, 1)
 
 
 class TestPngDimensions:

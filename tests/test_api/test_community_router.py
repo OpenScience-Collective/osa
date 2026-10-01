@@ -343,10 +343,10 @@ class TestCreateCommunityAssistant:
         assert awm.key_source == "byok"
 
     def test_openrouter_byok_constructs_litellm_model(self) -> None:
-        """A BYOK OpenRouter credential builds the LiteLLM caching wrapper."""
+        """A BYOK OpenRouter credential builds the LiteLLM chat model."""
         from src.api.routers.community import create_community_assistant
         from src.api.security import ByokCredential
-        from src.core.services.litellm_llm import CachingLLMWrapper
+        from src.core.services.litellm_chat import TaggedCitationChatLiteLLM
 
         awm = create_community_assistant(
             "hed",
@@ -354,8 +354,64 @@ class TestCreateCommunityAssistant:
             preload_docs=False,
         )
 
-        assert isinstance(awm.assistant.model, CachingLLMWrapper)
+        assert isinstance(awm.assistant.model, TaggedCitationChatLiteLLM)
         assert awm.key_source == "byok"
+
+
+class TestLangfuseTracing:
+    """Trace ids and trace metadata passed to LangFuse (issue #515)."""
+
+    def test_trace_metadata_tags_community(self) -> None:
+        from src.api.routers.community import _langfuse_trace_metadata
+
+        assert _langfuse_trace_metadata("hed", None, None) == {"langfuse_tags": ["hed"]}
+
+    def test_trace_metadata_includes_user_and_session(self) -> None:
+        from src.api.routers.community import _langfuse_trace_metadata
+
+        assert _langfuse_trace_metadata("hed", "user-1", "sess-1") == {
+            "langfuse_tags": ["hed"],
+            "langfuse_user_id": "user-1",
+            "langfuse_session_id": "sess-1",
+        }
+
+    def test_trace_id_is_32_hex_and_metadata_attached(self, monkeypatch) -> None:
+        """LangFuse rejects trace ids that are not 32 lowercase hex characters.
+
+        The old "<community>-<12 hex>" form was rejected, which split every
+        conversation into one trace per LLM/tool call. The tracing service is
+        faked here so the test doesn't need the optional langfuse package.
+        """
+        import re
+
+        from src.api.routers.community import create_community_assistant
+        from src.api.security import ByokCredential
+        from src.core.services import llm
+
+        requested_ids: list[str | None] = []
+
+        class FakeLLMService:
+            def get_config_with_tracing(self, trace_id=None):
+                requested_ids.append(trace_id)
+                return {"callbacks": [object()]}
+
+        monkeypatch.setattr(llm, "get_llm_service", lambda _settings=None: FakeLLMService())
+
+        awm = create_community_assistant(
+            "hed",
+            byok=ByokCredential(key="sk-or-fake-test-key", provider="openrouter"),
+            user_id="user-1",
+            session_id="sess-1",
+            preload_docs=False,
+        )
+
+        assert re.fullmatch(r"[0-9a-f]{32}", awm.langfuse_trace_id)
+        assert requested_ids == [awm.langfuse_trace_id]
+        assert awm.langfuse_config["metadata"] == {
+            "langfuse_tags": ["hed"],
+            "langfuse_user_id": "user-1",
+            "langfuse_session_id": "sess-1",
+        }
 
 
 class TestSessionEndpointBehavior:
@@ -592,8 +648,14 @@ class TestCommunityConfigOfferedModels:
 
         return TestClient(app)
 
-    def test_offered_models_matches_backend_offer_list(self, client: TestClient) -> None:
+    def test_offered_models_matches_backend_offer_list(
+        self, client: TestClient, monkeypatch
+    ) -> None:
+        from src.api.config import get_settings
         from src.core.services.anthropic_llm import OFFERED_MODELS
+
+        monkeypatch.setattr(get_settings(), "bedrock_api_key", "a-bedrock-key")
+        monkeypatch.setattr(get_settings(), "anthropic_api_key", "a-platform-key")
 
         response = client.get("/hed/")
         assert response.status_code == 200
@@ -604,18 +666,84 @@ class TestCommunityConfigOfferedModels:
         returned = {entry["id"]: entry["label"] for entry in data["offered_models"]}
         assert returned == OFFERED_MODELS
 
-    def test_every_offered_model_id_is_accepted_by_normalize_model(
-        self, client: TestClient
+    def test_the_models_only_the_service_can_run_are_flagged(
+        self, client: TestClient, monkeypatch
     ) -> None:
-        from src.core.services.anthropic_llm import normalize_model
+        """A menu next to a caller's own Anthropic key must not offer what that key is
+        refused for (a Bedrock model is paid for by the service's key)."""
+        from src.api.config import get_settings
+        from src.core.services.anthropic_llm import BEDROCK_MODELS
+
+        monkeypatch.setattr(get_settings(), "bedrock_api_key", "a-bedrock-key")
+        monkeypatch.setattr(get_settings(), "anthropic_api_key", "a-platform-key")
+
+        flags = {e["id"]: e["platform_only"] for e in client.get("/hed/").json()["offered_models"]}
+
+        assert {model for model, only in flags.items() if only} == set(BEDROCK_MODELS)
+        assert not all(flags.values()), "the Claude models are not platform-only"
+
+    def test_bedrock_models_are_not_offered_without_the_platforms_anthropic_key(
+        self, client: TestClient, monkeypatch
+    ) -> None:
+        """Routing reaches Bedrock only from the Anthropic provider; a deployment with a
+        Bedrock key and only an OpenRouter fallback would list models it then refuses."""
+        from src.api.config import get_settings
+        from src.core.services.anthropic_llm import BEDROCK_MODELS
+
+        monkeypatch.setattr(get_settings(), "bedrock_api_key", "a-bedrock-key")
+        monkeypatch.setattr(get_settings(), "anthropic_api_key", None)
+
+        offered = {e["id"] for e in client.get("/hed/").json()["offered_models"]}
+
+        assert offered
+        assert not offered & set(BEDROCK_MODELS)
+
+    def test_bedrock_models_are_not_offered_where_the_server_cannot_run_them(
+        self, client: TestClient, monkeypatch
+    ) -> None:
+        """A menu entry that fails on first use is worse than no entry."""
+        from src.api.config import get_settings
+        from src.core.services.anthropic_llm import BEDROCK_MODELS, OFFERED_MODELS
+
+        monkeypatch.setattr(get_settings(), "bedrock_api_key", None)
+
+        data = client.get("/hed/").json()
+
+        returned = {entry["id"]: entry["label"] for entry in data["offered_models"]}
+        assert returned == {k: v for k, v in OFFERED_MODELS.items() if k not in BEDROCK_MODELS}
+        assert returned  # the Claude models remain
+
+    def test_every_offered_model_id_is_accepted_by_normalize_model(
+        self, client: TestClient, monkeypatch
+    ) -> None:
+        """With the keys set: without them the menu leaves the Bedrock ids out, and they
+        would be skipped here without a word."""
+        from src.api.config import get_settings
+        from src.core.services.anthropic_llm import BEDROCK_MODELS, OFFERED_MODELS, normalize_model
+
+        monkeypatch.setattr(get_settings(), "bedrock_api_key", "a-bedrock-key")
+        monkeypatch.setattr(get_settings(), "anthropic_api_key", "a-platform-key")
 
         response = client.get("/hed/")
         data = response.json()
 
-        for entry in data["offered_models"]:
-            assert normalize_model(entry["id"]) == entry["id"]
+        ids = [entry["id"] for entry in data["offered_models"]]
+        assert set(ids) == set(OFFERED_MODELS)
+        assert set(BEDROCK_MODELS) <= set(ids), "the Bedrock ids were not checked"
+        for model_id in ids:
+            assert normalize_model(model_id) == model_id
 
-    def test_default_model_is_one_of_the_offered_models(self, client: TestClient) -> None:
+    def test_default_model_is_one_of_the_offered_models(
+        self, client: TestClient, monkeypatch
+    ) -> None:
+        """On a deployment that serves the Bedrock models: a community whose default is
+        one (HED runs GPT-6 Luna) is otherwise listed without it, and the request falls
+        back to the deployment's Claude default."""
+        from src.api.config import get_settings
+
+        monkeypatch.setattr(get_settings(), "bedrock_api_key", "a-bedrock-key")
+        monkeypatch.setattr(get_settings(), "anthropic_api_key", "a-platform-key")
+
         response = client.get("/hed/")
         data = response.json()
 

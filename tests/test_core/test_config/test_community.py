@@ -7,6 +7,7 @@ Tests cover:
 """
 
 import re
+import typing
 import warnings
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -21,9 +22,16 @@ from src.api.tool_results import (
     MAX_STDOUT_CHARS,
 )
 from src.core.config.community import (
+    DEFAULT_LAUNCHER_OPEN_SIZE,
+    DEFAULT_LAUNCHER_SIZE,
+    LAUNCHER_GEOMETRY_FIELDS,
+    LAUNCHER_OFFSET_MAX,
+    LAUNCHER_SIZE_MAX,
+    LAUNCHER_SIZE_MIN,
     MAX_CONFIGURED_CLIENT_TOOLS,
     MAX_IMPORT_BEFORE_SEAL,
     MAX_PRELUDE_CHARS,
+    MODEL_INSTRUCTIONS_MAX_LENGTH,
     SEALED_IMPORT_ROOTS,
     BudgetConfig,
     CitationConfig,
@@ -43,6 +51,11 @@ from src.core.config.community import (
     WidgetConfig,
 )
 from src.core.config.notebook_lock import NOTEBOOK_SITE_PYODIDE_VERSION
+from src.core.services.anthropic_models import (
+    OPENROUTER_MODEL_IDS,
+    OPENROUTER_ROUTING_VARIANTS,
+    normalize_model,
+)
 
 
 class TestDocSource:
@@ -777,6 +790,188 @@ class TestWidgetConfig:
         """resolve() should include launcher_label when specified."""
         result = WidgetConfig(launcher_label="Explore NEMAR").resolve("Test")
         assert result["launcher_label"] == "Explore NEMAR"
+
+    def test_launcher_geometry_defaults_send_nothing(self) -> None:
+        """A community that sets no launcher geometry sends none of it (#553), so its
+        widget renders exactly as it did before the fields existed."""
+        result = WidgetConfig().resolve("Test")
+        assert not [key for key in result if key.startswith("launcher_")]
+
+    def test_launcher_position_accepts_both_corners(self) -> None:
+        """bottom-right is the default and is never sent; bottom-left is sent."""
+        assert WidgetConfig().launcher_position == "bottom-right"
+        assert "launcher_position" not in WidgetConfig(launcher_position="bottom-right").resolve(
+            "Test"
+        )
+        left = WidgetConfig(launcher_position="bottom-left").resolve("Test")
+        assert left["launcher_position"] == "bottom-left"
+
+    @pytest.mark.parametrize("value", ["top-right", "left", "bottom", ""])
+    def test_launcher_position_rejects_other_values(self, value: str) -> None:
+        """Only the two bottom corners exist: the panel opens upward from the launcher."""
+        with pytest.raises(ValidationError):
+            WidgetConfig(launcher_position=value)
+
+    def test_launcher_geometry_is_sent_when_set(self) -> None:
+        """Every numeric launcher field reaches the widget, under its own name."""
+        values = {
+            "launcher_size": 72,
+            "launcher_open_size": 58,
+            "launcher_offset_x": 16,
+            "launcher_offset_y": 96,
+            "launcher_mobile_offset_x": 8,
+            "launcher_mobile_offset_y": 80,
+        }
+        result = WidgetConfig(**values).resolve("Test")
+        assert {key: result[key] for key in values} == values
+
+    def test_launcher_offset_zero_is_sent(self) -> None:
+        """An offset of 0 is a choice (flush against the edge), not an unset field."""
+        result = WidgetConfig(launcher_offset_x=0, launcher_mobile_offset_y=0).resolve("Test")
+        assert result["launcher_offset_x"] == 0
+        assert result["launcher_mobile_offset_y"] == 0
+
+    @pytest.mark.parametrize("field", ["launcher_size", "launcher_open_size"])
+    @pytest.mark.parametrize("size", [LAUNCHER_SIZE_MIN - 1, LAUNCHER_SIZE_MAX + 1, 0, -50])
+    def test_launcher_size_out_of_range_is_refused(self, field: str, size: int) -> None:
+        """A launcher smaller than the 44px touch-target floor, or absurdly large, fails
+        at load rather than drawing a broken button."""
+        with pytest.raises(ValidationError, match=field):
+            WidgetConfig(**{field: size})
+
+    @pytest.mark.parametrize("field", ["launcher_size", "launcher_open_size"])
+    def test_launcher_size_range_edges_are_accepted(self, field: str) -> None:
+        """Both ends of the range are valid."""
+        for size in (LAUNCHER_SIZE_MIN, LAUNCHER_SIZE_MAX):
+            kwargs = {field: size}
+            if field == "launcher_open_size":
+                kwargs["launcher_size"] = LAUNCHER_SIZE_MAX
+            assert getattr(WidgetConfig(**kwargs), field) == size
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "launcher_offset_x",
+            "launcher_offset_y",
+            "launcher_mobile_offset_x",
+            "launcher_mobile_offset_y",
+        ],
+    )
+    @pytest.mark.parametrize("offset", [-1, LAUNCHER_OFFSET_MAX + 1])
+    def test_launcher_offset_out_of_range_is_refused(self, field: str, offset: int) -> None:
+        """An offset is a distance from the edge: not negative, and not most of a screen."""
+        with pytest.raises(ValidationError, match=field):
+            WidgetConfig(**{field: offset})
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "launcher_size",
+            "launcher_open_size",
+            "launcher_offset_x",
+            "launcher_offset_y",
+            "launcher_mobile_offset_x",
+            "launcher_mobile_offset_y",
+        ],
+    )
+    @pytest.mark.parametrize("value", [60.5, 60.0, "60", "large", True, False, [60]])
+    def test_launcher_numbers_must_be_whole_numbers(self, field: str, value: object) -> None:
+        """Only an integer is a pixel count: a float, a numeric string, and above all a
+        boolean (a YAML `yes` or `off` loads as one, and would otherwise become a 1px or
+        0px offset) are refused rather than quietly turned into a number."""
+        with pytest.raises(ValidationError, match=field):
+            WidgetConfig(**{field: value})
+
+    @pytest.mark.parametrize("offset", [0, 1, LAUNCHER_OFFSET_MAX])
+    def test_launcher_offset_range_edges_are_accepted(self, offset: int) -> None:
+        """0 (flush against the edge) and the maximum are valid offsets."""
+        widget = WidgetConfig(launcher_offset_x=offset, launcher_mobile_offset_y=offset)
+        assert widget.launcher_offset_x == offset
+        assert widget.launcher_mobile_offset_y == offset
+
+    def test_launcher_defaults_cover_every_launcher_shape(self) -> None:
+        """A launcher shape with no default size would raise a KeyError from inside the
+        validator, so every shape the field accepts has one, and they cannot be edited."""
+        shapes = set(typing.get_args(WidgetConfig.model_fields["launcher"].annotation))
+        assert set(DEFAULT_LAUNCHER_SIZE) == shapes
+        assert set(DEFAULT_LAUNCHER_OPEN_SIZE) == shapes
+        for shape in shapes:
+            assert (
+                LAUNCHER_SIZE_MIN
+                <= DEFAULT_LAUNCHER_OPEN_SIZE[shape]
+                <= DEFAULT_LAUNCHER_SIZE[shape]
+            )
+        with pytest.raises(TypeError):
+            DEFAULT_LAUNCHER_SIZE["bubble"] = 99  # type: ignore[index]
+
+    def test_launcher_geometry_fields_are_the_models(self) -> None:
+        """LAUNCHER_GEOMETRY_FIELDS is what resolve() sends and the response declares; it
+        is a list kept by hand, so it is checked against the model's own fields (every
+        launcher_* field but the shape and the label, which resolve() sends by their own
+        rules)."""
+        model_fields = {
+            name
+            for name in WidgetConfig.model_fields
+            if name.startswith("launcher_") and name != "launcher_label"
+        }
+        assert model_fields == {"launcher_position", *LAUNCHER_GEOMETRY_FIELDS}
+
+    def test_the_widget_response_carries_every_launcher_field(self) -> None:
+        """WidgetConfigResponse ignores a field it does not declare, so a launcher field
+        it lacked would vanish without an error. Every field resolve() can send round-trips
+        through it, bottom-left and the phone offsets included, which no community sets
+        today."""
+        from src.api.routers.community import WidgetConfigResponse
+
+        every = {
+            "launcher_position": "bottom-left",
+            "launcher_size": 72,
+            "launcher_open_size": 58,
+            "launcher_offset_x": 16,
+            "launcher_offset_y": 96,
+            "launcher_mobile_offset_x": 8,
+            "launcher_mobile_offset_y": 80,
+        }
+        assert set(every) == {"launcher_position", *LAUNCHER_GEOMETRY_FIELDS}
+        sent = WidgetConfig(**every).resolve("T")
+        received = WidgetConfigResponse(**sent).model_dump()
+        assert {key: received[key] for key in every} == every
+        assert set(sent) <= set(WidgetConfigResponse.model_fields)
+
+    def test_the_widget_response_refuses_the_default_position(self) -> None:
+        """resolve() omits bottom-right, and the response is its own guard for a code path
+        that ever sent it."""
+        from src.api.routers.community import WidgetConfigResponse
+
+        light = WidgetConfig().resolve("T")
+        assert WidgetConfigResponse(**light).launcher_position is None
+        with pytest.raises(ValidationError):
+            WidgetConfigResponse(**{**light, "launcher_position": "bottom-right"})
+
+    def test_launcher_open_size_cannot_exceed_the_closed_size(self) -> None:
+        """The launcher shrinks when the panel opens; a larger open size is refused, and
+        the message names both numbers."""
+        with pytest.raises(
+            ValidationError, match=r"launcher_open_size \(70\).*\(64, from launcher_size\)"
+        ):
+            WidgetConfig(launcher_size=64, launcher_open_size=70)
+        assert WidgetConfig(launcher_size=64, launcher_open_size=64).launcher_open_size == 64
+
+    @pytest.mark.parametrize(("launcher", "default_size"), [("bubble", 56), ("capsule", 58)])
+    def test_launcher_open_size_alone_is_checked_against_the_default(
+        self, launcher: str, default_size: int
+    ) -> None:
+        """With no launcher_size, the closed size is today's for that launcher shape."""
+        assert DEFAULT_LAUNCHER_SIZE[launcher] == default_size
+        ok = WidgetConfig(launcher=launcher, launcher_open_size=default_size)
+        assert ok.launcher_open_size == default_size
+        with pytest.raises(ValidationError, match=f"the {launcher} default"):
+            WidgetConfig(launcher=launcher, launcher_open_size=default_size + 1)
+
+    def test_launcher_geometry_rejects_unknown_neighbors(self) -> None:
+        """A misspelled field fails at load (extra='forbid') instead of being ignored."""
+        with pytest.raises(ValidationError):
+            WidgetConfig(launcher_offset="20")
 
     def test_placeholder_max_length(self) -> None:
         """Should enforce placeholder max length."""
@@ -1858,7 +2053,7 @@ class TestModelNameValidation:
     def test_valid_bare_first_party_ids(self) -> None:
         """Should accept a bare first-party id with no provider prefix, and
         not warn: these are real, resolvable Anthropic ids/aliases."""
-        valid_bare_ids = ["claude-haiku-4-5", "claude-sonnet-5"]
+        valid_bare_ids = ["claude-haiku-4-5", "claude-sonnet-5-5"]
         for model in valid_bare_ids:
             with warnings.catch_warnings():
                 warnings.simplefilter("error")
@@ -1875,7 +2070,7 @@ class TestModelNameValidation:
         Anthropic model or alias, so it silently falls back on the
         OpenRouter path (see validate_default_model_resolvable). The config
         still parses -- this is a warning, not an error."""
-        with pytest.warns(UserWarning, match="not an offered Anthropic model"):
+        with pytest.warns(UserWarning, match="not an offered model"):
             config = CommunityConfig(
                 id="test",
                 name="Test",
@@ -2059,8 +2254,8 @@ class TestFAQAgentRoleWarning:
     def test_expensive_evaluation_agent_is_warned_about(self) -> None:
         from src.core.config.community import FAQGenerationConfig
 
-        with pytest.warns(UserWarning, match="evaluation_agent uses claude-sonnet-5"):
-            FAQGenerationConfig(**self._faq_config("claude-sonnet-5", "claude-sonnet-5"))
+        with pytest.warns(UserWarning, match="evaluation_agent uses claude-sonnet-5-5"):
+            FAQGenerationConfig(**self._faq_config("claude-sonnet-5-5", "claude-sonnet-5-5"))
 
     def test_expensive_summary_agent_alone_is_fine(self) -> None:
         """Paying more for the few hundred surviving threads is the intended shape."""
@@ -2068,7 +2263,19 @@ class TestFAQAgentRoleWarning:
 
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
-            FAQGenerationConfig(**self._faq_config("claude-haiku-4-5", "claude-sonnet-5"))
+            FAQGenerationConfig(**self._faq_config("claude-haiku-4-5", "claude-sonnet-5-5"))
+
+    @pytest.mark.parametrize("role", ["evaluation_agent", "summary_agent"])
+    def test_a_bedrock_model_is_warned_about_because_faq_runs_on_claude_only(
+        self, role: str
+    ) -> None:
+        from src.core.config.community import FAQGenerationConfig
+
+        config = self._faq_config("claude-haiku-4-5", "claude-haiku-4-5")
+        config[role] = {"model": "openai.gpt-oss-120b"}
+
+        with pytest.warns(UserWarning, match=rf"{role}\.model is openai\.gpt-oss-120b"):
+            FAQGenerationConfig(**config)
 
     def test_provider_field_still_loads_for_backward_compatibility(self) -> None:
         """An existing config.yaml carrying a stale provider hint must not fail
@@ -2085,7 +2292,7 @@ class TestFAQAgentRoleWarning:
         """The check is about what gets billed, not about how it is spelled.
 
         A config that predates the migration and still says
-        "anthropic/claude-sonnet-4.5" resolves to claude-sonnet-5 and scores
+        "anthropic/claude-sonnet-4.5" resolves to claude-sonnet-5-5 and scores
         every thread at the higher rate, which is exactly the shape this
         warning exists for.
         """
@@ -2093,13 +2300,13 @@ class TestFAQAgentRoleWarning:
 
         with pytest.warns(UserWarning, match="evaluation_agent uses") as caught:
             FAQGenerationConfig(
-                **self._faq_config("anthropic/claude-sonnet-4.5", "claude-sonnet-5")
+                **self._faq_config("anthropic/claude-sonnet-4.5", "claude-sonnet-5-5")
             )
 
         # Both ids, so a maintainer can find the config line and knows what it bills.
         message = str(caught[0].message)
         assert "anthropic/claude-sonnet-4.5" in message
-        assert "claude-sonnet-5" in message
+        assert "claude-sonnet-5-5" in message
 
     def test_legacy_id_for_the_cheap_model_is_not_warned_about(self) -> None:
         """The mirror case: a legacy Haiku id is the recommended setup."""
@@ -2107,7 +2314,9 @@ class TestFAQAgentRoleWarning:
 
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
-            FAQGenerationConfig(**self._faq_config("anthropic/claude-haiku-4.5", "claude-sonnet-5"))
+            FAQGenerationConfig(
+                **self._faq_config("anthropic/claude-haiku-4.5", "claude-sonnet-5-5")
+            )
 
     def test_unresolvable_model_is_warned_about(self) -> None:
         """A model the platform will not serve should surface at config load.
@@ -2129,7 +2338,7 @@ class TestFAQAgentRoleWarning:
 class TestFAQTemperatureWarning:
     """A temperature the API never sees should not pass in silence.
 
-    ``claude-sonnet-5`` accepts only its default temperature, so
+    ``claude-sonnet-5-5`` accepts only its default temperature, so
     ``create_anthropic_llm`` drops the field instead of sending a value that
     would 400. A community that set 0.0 for deterministic scoring is entitled
     to hear that it stopped applying.
@@ -2141,7 +2350,7 @@ class TestFAQTemperatureWarning:
         with pytest.warns(UserWarning, match="summary_agent.temperature=0.4 is ignored"):
             FAQGenerationConfig(
                 evaluation_agent={"model": "claude-haiku-4-5"},
-                summary_agent={"model": "claude-sonnet-5", "temperature": 0.4},
+                summary_agent={"model": "claude-sonnet-5-5", "temperature": 0.4},
             )
 
     def test_temperature_behind_a_legacy_id_is_warned_about(self) -> None:
@@ -2182,7 +2391,7 @@ class TestFAQTemperatureWarning:
     def test_the_fields_own_default_is_not_warned_about(self) -> None:
         """Only a temperature the community actually wrote is worth a warning.
 
-        AgentConfig.temperature defaults to 0.1, which claude-sonnet-5 also
+        AgentConfig.temperature defaults to 0.1, which claude-sonnet-5-5 also
         ignores. Warning about it would fire on every config that names the
         model and sets nothing, which is the recommended summary_agent.
         """
@@ -2192,7 +2401,7 @@ class TestFAQTemperatureWarning:
             warnings.simplefilter("error", UserWarning)
             config = FAQGenerationConfig(
                 evaluation_agent={"model": "claude-haiku-4-5"},
-                summary_agent={"model": "claude-sonnet-5"},
+                summary_agent={"model": "claude-sonnet-5-5"},
             )
 
         assert config.summary_agent.temperature == 0.1
@@ -2960,3 +3169,153 @@ class TestCommunityConfigCapsule:
             id="test", name="Test", description="Test", widget=WidgetConfig(launcher="bubble")
         )
         assert config.notebook is None
+
+
+def _slug_only_models() -> list[str]:
+    """Offered models' OpenRouter slugs that `normalize_model` does not resolve as aliases."""
+    slugs = []
+    for slug in OPENROUTER_MODEL_IDS.values():
+        try:
+            normalize_model(slug)
+        except ValueError:
+            slugs.append(slug)
+    return slugs
+
+
+class TestDefaultModelThatIsAnOpenRouterSlug:
+    """An offered model's slug loads, but only the OpenRouter path can run it."""
+
+    def test_there_are_slugs_to_check(self) -> None:
+        assert _slug_only_models(), "every offered model's slug is an alias: nothing to warn about"
+
+    @pytest.mark.parametrize("slug", _slug_only_models())
+    def test_an_offered_models_slug_warns_and_names_the_id_to_use(self, slug: str) -> None:
+        offered = next(m for m, s in OPENROUTER_MODEL_IDS.items() if s == slug)
+        with pytest.warns(UserWarning, match="OpenRouter slug of the offered model") as caught:
+            config = CommunityConfig(id="d", name="D", description="x", default_model=slug)
+        assert config.default_model == slug  # still loads: a warning, not an error
+        assert f"default_model: {offered}" in str(caught[0].message)
+
+    @pytest.mark.parametrize("variant", OPENROUTER_ROUTING_VARIANTS)
+    def test_a_routing_variant_of_such_a_slug_warns_too(self, variant: str) -> None:
+        slug = _slug_only_models()[0]
+        with pytest.warns(UserWarning, match="OpenRouter slug of the offered model"):
+            CommunityConfig(id="d", name="D", description="x", default_model=f"{slug}:{variant}")
+
+    def test_a_catalog_variant_is_a_different_model_and_does_not_warn(self) -> None:
+        slug = _slug_only_models()[0]
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            CommunityConfig(id="d", name="D", description="x", default_model=f"{slug}:free")
+
+    def test_a_slug_that_is_also_an_alias_does_not_warn(self) -> None:
+        """`anthropic/claude-haiku-4.5` resolves on every path."""
+        aliased = [s for s in OPENROUTER_MODEL_IDS.values() if s not in _slug_only_models()]
+        assert aliased
+        for slug in aliased:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", UserWarning)
+                CommunityConfig(id="d", name="D", description="x", default_model=slug)
+
+    def test_any_other_slug_is_left_alone(self) -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            CommunityConfig(
+                id="d", name="D", description="x", default_model="some-lab/their-own-model"
+            )
+
+
+class TestModelInstructions:
+    """``model_instructions``: extra system-prompt text for particular models."""
+
+    def _config(self, **instructions: str) -> CommunityConfig:
+        return CommunityConfig(
+            id="instr-test", name="Instructions", description="x", model_instructions=instructions
+        )
+
+    def test_defaults_to_none(self) -> None:
+        assert self._config().model_instructions == {}
+
+    def test_keys_are_stored_under_the_id_they_resolve_to(self) -> None:
+        config = self._config(**{"us.openai.gpt-6-luna": "  Be brief.  "})
+        assert config.model_instructions == {"openai.gpt-6-luna": "Be brief."}
+
+    def test_a_claude_model_can_be_tuned_too(self) -> None:
+        config = self._config(**{"claude-sonnet-5": "Be thorough."})
+        assert config.model_instructions == {"claude-sonnet-5-5": "Be thorough."}
+
+    def test_an_unknown_model_is_an_error_not_a_silent_no_op(self) -> None:
+        with pytest.raises(ValidationError, match="not an offered model"):
+            self._config(**{"openai.gpt-oss-120": "A typo in the id."})
+
+    def test_two_names_for_one_model_are_an_error(self) -> None:
+        with pytest.raises(ValidationError, match="twice"):
+            self._config(**{"openai.gpt-6-luna": "One.", "us.openai.gpt-6-luna": "Two."})
+
+    def test_empty_text_is_an_error(self) -> None:
+        with pytest.raises(ValidationError, match="empty"):
+            self._config(**{"openai.gpt-6-luna": "   "})
+
+    @pytest.mark.parametrize("key", ["", "   ", "\t"])
+    def test_a_blank_key_is_an_error_not_the_default_model(self, key: str) -> None:
+        """normalize_model reads "" as the default (Haiku): it would be filed there silently."""
+        with pytest.raises(ValidationError, match="empty; name an offered model"):
+            self._config(**{key: "Be brief."})
+
+    def test_text_beyond_the_limit_is_an_error(self) -> None:
+        with pytest.raises(ValidationError, match="too long"):
+            self._config(**{"openai.gpt-6-luna": "x" * (MODEL_INSTRUCTIONS_MAX_LENGTH + 1)})
+
+    def test_text_at_the_limit_is_accepted(self) -> None:
+        config = self._config(**{"openai.gpt-6-luna": "x" * MODEL_INSTRUCTIONS_MAX_LENGTH})
+        assert len(config.model_instructions["openai.gpt-6-luna"]) == MODEL_INSTRUCTIONS_MAX_LENGTH
+
+    def test_a_bedrock_model_is_a_valid_default_model_that_warns_of_its_fallback(self) -> None:
+        with pytest.warns(UserWarning, match="served from Amazon Bedrock") as caught:
+            config = CommunityConfig(
+                id="d", name="D", description="x", default_model="openai.gpt-6-luna"
+            )
+        assert config.default_model == "openai.gpt-6-luna"
+        assert "Claude default" in str(caught[0].message)
+
+    def test_the_bedrock_warning_names_the_keys_and_each_outcome(self) -> None:
+        """What it says happens is what routing does: see test_bedrock_routing.py."""
+        with pytest.warns(UserWarning, match="served from Amazon Bedrock") as caught:
+            CommunityConfig(id="d", name="D", description="x", default_model="openai.gpt-6-luna")
+        text = str(caught[0].message)
+        for needle in (
+            "AWS_BEARER_TOKEN_BEDROCK",
+            "ANTHROPIC_API_KEY",
+            "OPENROUTER_API_KEY",
+            "Claude default",
+            "HTTP 500",
+            "OpenRouter slug",
+        ):
+            assert needle in text, needle
+
+    def test_a_claude_default_does_not_warn(self) -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            CommunityConfig(id="d", name="D", description="x", default_model="claude-haiku-4-5")
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "openai.gpt-oss-120b-1:0",
+            "openai/gpt-oss-120b:free",
+            "qwen/qwen3-next-80b-a3b:nitro",
+            "openai/gpt-5.2:nitro:exacto",
+            "poolside/laguna-s-2.1:free:nitro",
+        ],
+    )
+    def test_a_model_id_may_end_in_a_variant(self, model: str) -> None:
+        """Bedrock's invoke id for gpt-oss-120b is an alias of an offered model."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            config = CommunityConfig(id="d", name="D", description="x", default_model=model)
+        assert config.default_model == model
+
+    @pytest.mark.parametrize("model", ["model:", ":free", "a::b", "bad model", "a/b/c:d"])
+    def test_other_shapes_are_still_rejected(self, model: str) -> None:
+        with pytest.raises(ValidationError, match="Invalid model name"):
+            CommunityConfig(id="d", name="D", description="x", default_model=model)

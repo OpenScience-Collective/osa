@@ -426,6 +426,10 @@ def extract_token_usage(result: dict) -> TokenUsage:
     the prompt-cache breakdown reported under ``input_token_details`` (only
     present for providers that support prompt caching, e.g. Anthropic).
 
+    It sums what it is given, so a request that runs over a session's history must pass
+    only its own messages (``src.api.turn_outcome.current_turn``): the model's messages
+    in that history carry the usage they reported when they ran.
+
     Args:
         result: Agent result dict containing "messages" list.
 

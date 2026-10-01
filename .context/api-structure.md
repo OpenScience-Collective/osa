@@ -2,6 +2,11 @@
 
 This document describes how the OSA API is structured around communities, how routes are dynamically created, and implementation details for maintaining the API.
 
+> **Provider routing and models:** the examples below are from the OpenRouter era (OpenRouter model ids, `X-OpenRouter-Key`).
+> What a request goes through today, on the Claude Platform on AWS and Amazon Bedrock, is in [Provider Routing and the Bedrock Models](#provider-routing-and-the-bedrock-models) at the end of this file,
+> and the reasons are in `docs/adr/0004-anthropic-claude-platform-migration.md` and `docs/adr/0014-bedrock-models-alongside-claude.md`.
+> The response examples also predate the `warnings` list and the 502 an unanswered reply gets (see the 0.8.16 entries in `CHANGELOG.md`).
+
 ## Core Principle: Community-Based Routing
 
 **Each community gets its own namespace at the root level:**
@@ -385,3 +390,39 @@ The API routes are automatically created at startup. No code changes needed.
 - Don't hardcode model fallbacks in frontend or backend
 - Always test with the actual OpenRouter API to verify provider formats
 - Keep configuration in YAML, not code
+
+## Provider Routing and the Bedrock Models
+
+The section above predates the move to the Claude Platform on AWS (ADR 0004) and the Bedrock models
+(ADR 0014); the code is the reference. What a request goes through today, in
+`src/api/routers/community.py` (`_route_request`):
+
+1. `_resolve_provider` picks the provider by whose key pays: a caller's own key (BYOK) for the
+   provider its header names, else (on an authorized origin) the community's key, else the platform's
+   Anthropic key.
+2. `_select_model` picks the model. On the Anthropic path the requested or default id must be an
+   offered model (`OFFERED_MODELS` in `src/core/services/anthropic_models.py`), else 400.
+3. If that model is one of the Bedrock-served ones (`BEDROCK_MODELS`), `_bedrock_choice` moves the
+   request onto the Bedrock provider on the **platform's** Bedrock key: a BYOK Anthropic caller is
+   refused (403), and a deployment with no Bedrock key answers 400 and does not list the models in
+   `offered_models` (which also needs the platform's Anthropic key, since routing starts from the
+   Anthropic provider). A community's Anthropic key (`anthropic_api_key_env_var`) does not pay for
+   Bedrock either: the platform does. When the model came from a community's `default_model`
+   rather than the request, and the caller cannot have it, the request runs the deployment's Claude
+   default instead (`_claude_fallback`: `DEFAULT_MODEL`, Haiku 4.5 unless the deployment changes it)
+   and logs an error naming the community (`_log_bedrock_fallback`), or a warning when the only cause
+   is the caller's own Anthropic key (the CLI); naming the model gets the 403 or 400. With no
+   `ANTHROPIC_API_KEY` a platform-funded request is not on the Anthropic provider at all: it goes to
+   OpenRouter's slug for the model, or fails with HTTP 500 when there is no OpenRouter key either.
+4. On Bedrock, `create_bedrock_llm` (`src/core/services/bedrock_llm.py`) builds the chat model. Tools return
+   `search_result` blocks as on the Anthropic path; the model layer turns them into `[src:N]` tags
+   and the model's tags back into citations (`src/core/services/tagged_citations.py`).
+5. On OpenRouter (a caller's or a community's own key), `create_openrouter_llm`
+   (`src/core/services/litellm_llm.py`) builds a `TaggedCitationChatLiteLLM` (`litellm_chat.py`):
+   the same tagged citations as Bedrock, cache breakpoints on the system prompt and the last
+   message (Anthropic slugs only), and the provider's own cache and reasoning counts on
+   `usage_metadata`. Each call carries its own key and writes none to LiteLLM's module, which every
+   request in the process shares.
+
+Per-model prompt notes come from `BedrockModel.prompt_addendum` and a community's
+`model_instructions:` config section.

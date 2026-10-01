@@ -19,8 +19,20 @@ import typing
 from pathlib import Path
 
 from src.api import security
+from src.core.config.community import (
+    DEFAULT_LAUNCHER_OFFSET,
+    DEFAULT_LAUNCHER_OPEN_SIZE,
+    DEFAULT_LAUNCHER_SIZE,
+    LAUNCHER_GEOMETRY_FIELDS,
+    LAUNCHER_OFFSET_MAX,
+    LAUNCHER_OPEN_RATIO,
+    LAUNCHER_SIZE_MAX,
+    LAUNCHER_SIZE_MIN,
+    WidgetConfig,
+)
 from src.core.logging import SecureFormatter
-from src.core.services.anthropic_llm import OFFERED_MODELS
+from src.core.services.anthropic_llm import MODEL_ALIASES, OFFERED_MODELS
+from src.core.services.anthropic_models import BEDROCK_MODELS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WIDGET_PATH = REPO_ROOT / "frontend" / "osa-chat-widget.js"
@@ -98,6 +110,165 @@ class TestDefaultModelsMatchesOfferedModels:
     def test_default_models_matches_offered_models(self) -> None:
         widget_models = _extract_default_models(_widget_source())
         assert widget_models == OFFERED_MODELS
+
+
+def _extract_platform_only_models(widget_source: str) -> set[str]:
+    """Parse the widget's ``PLATFORM_ONLY_MODELS`` array into a set of ids."""
+    match = re.search(r"const PLATFORM_ONLY_MODELS = \[(.*?)\];", widget_source, re.DOTALL)
+    assert match, "Could not find PLATFORM_ONLY_MODELS in osa-chat-widget.js"
+    entries = re.findall(r"'([^']+)'", match.group(1))
+    assert entries, "PLATFORM_ONLY_MODELS parsed to zero entries"
+    return set(entries)
+
+
+class TestPlatformOnlyModelsMatchBackend:
+    """The widget's fallback for "which models refuse the reader's own Anthropic key"
+    must be the backend's Bedrock-served models, or the fallback menu offers pairings
+    the server answers with a 403."""
+
+    def test_platform_only_models_are_the_bedrock_models(self) -> None:
+        assert _extract_platform_only_models(_widget_source()) == set(BEDROCK_MODELS)
+
+
+def _extract_retired_model_ids(widget_source: str) -> dict[str, str]:
+    """Parse the widget's ``RETIRED_MODEL_IDS`` map into an old-id -> new-id dict."""
+    match = re.search(r"const RETIRED_MODEL_IDS = \{(.*?)\};", widget_source, re.DOTALL)
+    assert match, "Could not find RETIRED_MODEL_IDS in osa-chat-widget.js"
+    entries = re.findall(r"'([^']+)'\s*:\s*'([^']+)'", match.group(1))
+    assert entries, "RETIRED_MODEL_IDS parsed to zero entries"
+    return dict(entries)
+
+
+class TestRetiredModelIdsMatchBackendAliases:
+    """A saved widget setting naming a retired model is moved to its replacement.
+
+    The backend keeps resolving a retired id through MODEL_ALIASES, but the
+    settings dropdown lists only offered models, so a stale saved id would
+    show as "Custom". RETIRED_MODEL_IDS is the widget's own copy of those
+    aliases, and a wrong target would move users to a model the backend does
+    not resolve the same way.
+    """
+
+    def test_every_retired_id_maps_where_the_backend_resolves_it(self) -> None:
+        for retired, replacement in _extract_retired_model_ids(_widget_source()).items():
+            assert MODEL_ALIASES[retired] == replacement
+
+    def test_the_widget_knows_every_alias_the_backend_does(self) -> None:
+        """An alias the widget lacks shows as "Custom" and cannot be saved without a key.
+
+        The server accepts every alias in ``MODEL_ALIASES``, with the reader's own
+        Anthropic key too, so the widget's table is that table, not a subset of it.
+        """
+        assert _extract_retired_model_ids(_widget_source()) == MODEL_ALIASES
+
+    def test_every_replacement_is_offered(self) -> None:
+        for replacement in _extract_retired_model_ids(_widget_source()).values():
+            assert replacement in OFFERED_MODELS
+
+    def test_no_retired_id_is_still_offered(self) -> None:
+        for retired in _extract_retired_model_ids(_widget_source()):
+            assert retired not in OFFERED_MODELS
+
+
+def _extract_launcher_limits(widget_source: str) -> dict[str, float]:
+    """Parse the widget's ``LAUNCHER_LIMITS`` object into a name -> number dict."""
+    match = re.search(r"const LAUNCHER_LIMITS = \{(.*?)\};", widget_source, re.DOTALL)
+    assert match, "Could not find LAUNCHER_LIMITS in osa-chat-widget.js"
+    entries = re.findall(r"(\w+):\s*([0-9.]+)", match.group(1))
+    assert entries, "LAUNCHER_LIMITS parsed to zero entries"
+    return {name: float(value) for name, value in entries}
+
+
+def _extract_launcher_geometry_keys(widget_source: str) -> list[tuple[str, str]]:
+    """Parse the widget's ``LAUNCHER_GEOMETRY_KEYS`` pairs (community field, CONFIG key)."""
+    match = re.search(r"const LAUNCHER_GEOMETRY_KEYS = \[(.*?)\];", widget_source, re.DOTALL)
+    assert match, "Could not find LAUNCHER_GEOMETRY_KEYS in osa-chat-widget.js"
+    pairs = re.findall(r"\['(\w+)',\s*'(\w+)'\]", match.group(1))
+    assert pairs, "LAUNCHER_GEOMETRY_KEYS parsed to zero entries"
+    return pairs
+
+
+def _camel(snake: str) -> str:
+    head, *rest = snake.split("_")
+    return head + "".join(word.title() for word in rest)
+
+
+class TestLauncherGeometryMatchesBackend:
+    """The widget's launcher limits must be the server's (#553).
+
+    The server refuses a launcher size or offset outside its ranges when it loads a
+    community; the widget checks the same values for a page's ``setConfig`` and for a
+    config remembered from before the limits last changed. If the ranges drifted
+    apart, a value one accepts would be silently dropped by the other, and the
+    launcher would not be where the community's config puts it.
+    """
+
+    def test_limits_and_defaults_are_the_servers(self) -> None:
+        limits = _extract_launcher_limits(_widget_source())
+        assert limits["sizeMin"] == LAUNCHER_SIZE_MIN
+        assert limits["sizeMax"] == LAUNCHER_SIZE_MAX
+        assert limits["offsetMax"] == LAUNCHER_OFFSET_MAX
+        assert limits["bubbleSize"] == DEFAULT_LAUNCHER_SIZE["bubble"]
+        assert limits["capsuleSize"] == DEFAULT_LAUNCHER_SIZE["capsule"]
+
+    def test_open_ratio_is_the_servers(self) -> None:
+        """The widget alone derives an open size from a closed one; the ratio is the
+        number the docs and the server's docstring give."""
+        assert _extract_launcher_limits(_widget_source())["openRatio"] == LAUNCHER_OPEN_RATIO
+
+    def test_stylesheet_defaults_are_the_defaults(self) -> None:
+        """The stylesheet's fallbacks are what an unconfigured launcher is drawn at, and
+        the reason a community that sets nothing is drawn as it always was: the closed
+        and open sizes of the bubble and the capsule, the 58 / 46 scale, and the 20px
+        offsets, on a desktop and at 600px wide and narrower."""
+        source = _widget_source()
+
+        def sizes(pattern: str, where: str) -> tuple[int, int]:
+            match = re.search(pattern, source)
+            assert match, f"Could not find the {where} launcher sizes in the stylesheet"
+            return int(match.group(1)), int(match.group(2))
+
+        bubble = sizes(
+            r"--osa-closed: var\(--osa-size-closed, (\d+)px\);\s*"
+            r"--osa-open: var\(--osa-size-open, (\d+)px\);",
+            "bubble",
+        )
+        capsule = sizes(
+            r"\.osa-chat-widget\.osa-capsule \{\s*"
+            r"--osa-closed: var\(--osa-size-closed, (\d+)px\);\s*"
+            r"--osa-open: var\(--osa-size-open, (\d+)px\);",
+            "capsule",
+        )
+        assert bubble == (DEFAULT_LAUNCHER_SIZE["bubble"], DEFAULT_LAUNCHER_OPEN_SIZE["bubble"])
+        assert capsule == (DEFAULT_LAUNCHER_SIZE["capsule"], DEFAULT_LAUNCHER_OPEN_SIZE["capsule"])
+
+        scale = re.search(r"--osa-scale: var\(--osa-closed-scale, calc\((\d+) / (\d+)\)\);", source)
+        assert scale, "Could not find the capsule's default scale in the stylesheet"
+        assert (int(scale.group(1)), int(scale.group(2))) == capsule
+
+        offsets = re.findall(
+            r"var\(--osa-edge-[xy](?:-narrow)?, (?:var\(--osa-edge-[xy], )?(\d+)px", source
+        )
+        assert len(offsets) == 4, (
+            f"Expected four offset fallbacks in the stylesheet, found {offsets}"
+        )
+        assert {int(offset) for offset in offsets} == {DEFAULT_LAUNCHER_OFFSET}
+
+    def test_widget_reads_every_field_the_server_sends(self) -> None:
+        """Each launcher field the server can send is one the widget reads, under the
+        camelCase name a page passes to setConfig."""
+        pairs = _extract_launcher_geometry_keys(_widget_source())
+        server_fields = {"launcher_position", *LAUNCHER_GEOMETRY_FIELDS}
+        assert {field for field, _ in pairs} == server_fields
+        assert all(key == _camel(field) for field, key in pairs)
+
+    def test_widget_positions_are_the_servers(self) -> None:
+        match = re.search(r"const LAUNCHER_POSITIONS = \[(.*?)\];", _widget_source())
+        assert match, "Could not find LAUNCHER_POSITIONS in osa-chat-widget.js"
+        widget_positions = set(re.findall(r"'([^']+)'", match.group(1)))
+        assert widget_positions == set(
+            typing.get_args(WidgetConfig.model_fields["launcher_position"].annotation)
+        )
 
 
 class TestKeyPatternsMatchBackendRedaction:

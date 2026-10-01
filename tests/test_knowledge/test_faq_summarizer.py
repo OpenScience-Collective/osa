@@ -603,7 +603,7 @@ class TestFAQGenerationRunsOnTheClaudePlatform:
         assert caplog.text == ""
 
     def test_ignored_temperature_is_reported(self, caplog: pytest.LogCaptureFixture) -> None:
-        """A temperature claude-sonnet-5 discards should be said out loud.
+        """A temperature claude-sonnet-5-5 discards should be said out loud.
 
         The community config warns at load time; this is the same fact in the
         log an operator watches while a sync runs.
@@ -611,11 +611,11 @@ class TestFAQGenerationRunsOnTheClaudePlatform:
         from src.knowledge.faq_summarizer import _warn_if_temperature_ignored
 
         with caplog.at_level("WARNING"):
-            _warn_if_temperature_ignored(0.0, "claude-sonnet-5", "evaluation_agent", "eeglab")
+            _warn_if_temperature_ignored(0.0, "claude-sonnet-5-5", "evaluation_agent", "eeglab")
 
         assert "temperature=0.0 is ignored" in caplog.text
         assert "evaluation_agent" in caplog.text
-        assert "claude-sonnet-5" in caplog.text
+        assert "claude-sonnet-5-5" in caplog.text
 
     def test_ignored_temperature_behind_a_legacy_id_is_reported(
         self, caplog: pytest.LogCaptureFixture
@@ -675,10 +675,17 @@ class TestCostAccounting:
         priced but unusable. The fallback path in ``summarize_threads`` builds
         both agents on CHEAP_MODEL, so it has to be the default model too.
         """
-        from src.core.services.anthropic_models import DEFAULT_MODEL, OFFERED_MODELS
+        from src.core.services.anthropic_models import (
+            BEDROCK_MODELS,
+            DEFAULT_MODEL,
+            OFFERED_MODELS,
+        )
         from src.knowledge.faq_summarizer import CHEAP_MODEL, QUALITY_MODEL
 
-        assert {CHEAP_MODEL, QUALITY_MODEL} == set(OFFERED_MODELS)
+        # FAQ generation builds its agents with create_anthropic_llm, so the
+        # comparison is between the offered Claude models; the Bedrock-served
+        # ones are refused there (see FAQGenerationConfig.validate_agent_roles).
+        assert {CHEAP_MODEL, QUALITY_MODEL} == set(OFFERED_MODELS) - set(BEDROCK_MODELS)
         assert CHEAP_MODEL == DEFAULT_MODEL
 
     def test_strategy_estimate_prices_both_models_from_the_table(self) -> None:

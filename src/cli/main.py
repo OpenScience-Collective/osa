@@ -237,9 +237,25 @@ def ask(
         raise typer.Exit(code=1)
 
 
+def _report_hint(event: dict) -> str | None:
+    """What to quote when reporting an error event: the request id (the key of its row in
+    the metrics) and the error id (the key of its log line), when the server sent them."""
+    ids = [
+        f"{label} {event[key]}"
+        for key, label in (("request_id", "request ID"), ("error_id", "error ID"))
+        if isinstance(event.get(key), str) and event[key]
+    ]
+    return f"When reporting this, quote {' and '.join(ids)}." if ids else None
+
+
 def _ask_streaming(client: OSAClient, assistant: str, question: str) -> None:
-    """Handle streaming ask response, preferring the final canonical content."""
+    """Handle streaming ask response, preferring the final canonical content.
+
+    A warning is about the answer, so it is held until the answer is printed and goes
+    under it, as it does on the batch path.
+    """
     full_content = ""
+    warnings: list[str] = []
     with output.streaming_status(f"Asking {assistant} assistant...") as status:
         for event_type, data in client.ask_stream(assistant, question):
             if event_type == "content":
@@ -251,14 +267,18 @@ def _ask_streaming(client: OSAClient, assistant: str, question: str) -> None:
             elif event_type == "tool_start":
                 tool_name = data.get("name", "").replace("_", " ").title()
                 status.update(f"[dim]Using tool: {tool_name}[/dim]")
+            elif event_type == "warning":
+                warnings.append(data.get("message", "Unknown warning"))
             elif event_type == "error":
-                output.print_error(data.get("message", "Unknown error"))
+                output.print_error(data.get("message", "Unknown error"), hint=_report_hint(data))
                 raise typer.Exit(code=1)
 
     if full_content:
         output.print_markdown(full_content, title=assistant.upper())
     else:
         output.print_info("No response received.")
+    for warning in warnings:
+        output.print_warning(warning)
 
 
 def _ask_batch(client: OSAClient, assistant: str, question: str, fmt: str) -> None:
@@ -273,6 +293,8 @@ def _ask_batch(client: OSAClient, assistant: str, question: str, fmt: str) -> No
     else:
         content = response.get("answer", "No response")
         output.print_markdown(content, title=assistant.upper())
+        for warning in response.get("warnings", []):
+            output.print_warning(warning)
 
 
 # ---------------------------------------------------------------------------
@@ -376,8 +398,13 @@ def _chat_turn_streaming(
     message: str,
     session_id: str | None,
 ) -> str | None:
-    """Handle one streaming chat turn and its canonical final content."""
+    """Handle one streaming chat turn and its canonical final content.
+
+    A warning is about the answer, so it is held until the answer is printed and goes
+    under it, as it does on the batch path.
+    """
     full_content = ""
+    warnings: list[str] = []
     new_session_id = session_id
 
     with output.streaming_status("Thinking...") as status:
@@ -394,8 +421,10 @@ def _chat_turn_streaming(
                 final_content = data.get("content")
                 if isinstance(final_content, str):
                     full_content = final_content
+            elif event_type == "warning":
+                warnings.append(data.get("message", "Unknown warning"))
             elif event_type == "error":
-                output.print_error(data.get("message", "Unknown error"))
+                output.print_error(data.get("message", "Unknown error"), hint=_report_hint(data))
                 return new_session_id
 
     if full_content:
@@ -403,6 +432,8 @@ def _chat_turn_streaming(
         output.console.print(f"[bold blue]{assistant}:[/bold blue]")
         output.console.print(Markdown(full_content))
         output.console.print()
+    for warning in warnings:
+        output.print_warning(warning)
 
     return new_session_id
 
@@ -431,6 +462,8 @@ def _chat_turn_batch(
     output.console.print(f"[bold blue]{assistant}:[/bold blue]")
     output.console.print(Markdown(content))
     output.console.print()
+    for warning in response.get("warnings", []):
+        output.print_warning(warning)
 
     return new_session_id
 

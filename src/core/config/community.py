@@ -27,6 +27,7 @@ import logging
 import re
 import warnings
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal
 from urllib.parse import urlparse
 
@@ -65,7 +66,15 @@ from src.core.limits import (
 # CLI-only install (see src/core/services/anthropic_models.py). Importing
 # anthropic_llm instead would break `osa validate` for anyone without the
 # server extra.
-from src.core.services.anthropic_models import SAMPLING_MODELS, normalize_model
+from src.core.services.anthropic_models import (
+    BEDROCK_MODELS,
+    REASONING_SCALE,
+    SAMPLING_MODELS,
+    ReasoningEffort,
+    normalize_model,
+    openrouter_model_id,
+    resolve_reasoning_effort,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,10 +91,45 @@ class SSRFViolationError(ValueError):
 # Shared regex for model identifiers. Accepts both the OpenRouter
 # creator/model-name form (e.g. "anthropic/claude-3.5-sonnet") and a bare
 # first-party id with no provider prefix (e.g. "claude-haiku-4-5", one of
-# src.core.services.anthropic_llm.OFFERED_MODELS) -- the Claude Platform on
-# AWS path has no separate "creator" segment.
-_MODEL_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]+(/[a-zA-Z0-9._-]+)?$")
+# src.core.services.anthropic_models.OFFERED_MODELS), since the Claude Platform on
+# AWS path has no separate "creator" segment. Any number of ":variant" suffixes may
+# end either form: Bedrock's own invoke id for gpt-oss-120b, "openai.gpt-oss-120b-1:0",
+# is an alias of an offered model, and OpenRouter slugs carry ":free", ":nitro" and the
+# like, which it lets be stacked ("openai/gpt-5.2:nitro:exacto").
+_MODEL_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]+(/[a-zA-Z0-9._-]+)?(:[a-zA-Z0-9._-]+)*$")
 _MODEL_ID_MAX_LENGTH = 100
+
+
+#: Longest ``model_instructions`` entry, in characters. It rides in every system
+#: prompt for that model, so an essay here is paid for on every request.
+MODEL_INSTRUCTIONS_MAX_LENGTH = 4000
+
+
+def _offered_models_slug_warning(slug: str) -> str | None:
+    """The warning for a ``default_model`` that is an offered model's OpenRouter slug.
+
+    Args:
+        slug: A creator/model-name ``default_model``.
+
+    Returns:
+        The warning text when ``slug`` is an offered model's OpenRouter slug (or that
+        slug with a routing variant) that ``normalize_model`` does not also resolve as
+        an alias, so only the OpenRouter path can run it; None otherwise.
+    """
+    offered = openrouter_model_id(slug)
+    if offered is None:
+        return None
+    try:
+        normalize_model(slug)
+    except ValueError:
+        return (
+            f"default_model={slug!r} is the OpenRouter slug of the offered model "
+            f"{offered!r}. A request funded by an OpenRouter key runs it, but one funded "
+            "by the platform's Anthropic or Bedrock key does not recognize a slug and "
+            f"answers 400. Write default_model: {offered} instead: it runs on every path, "
+            "and is mapped to the slug on OpenRouter."
+        )
+    return None
 
 
 def _validate_model_id(v: str | None, field_label: str = "Model identifier") -> str | None:
@@ -1126,7 +1170,7 @@ class AgentConfig(BaseModel):
 
     FAQ generation runs on the Claude Platform on AWS, so this must resolve
     through ``MODEL_ALIASES`` to an entry in ``OFFERED_MODELS``
-    (``claude-haiku-4-5`` or ``claude-sonnet-5``). Legacy OpenRouter-style ids
+    (``claude-haiku-4-5`` or ``claude-sonnet-5-5``). Legacy OpenRouter-style ids
     such as "anthropic/claude-haiku-4.5" still resolve; anything else raises
     at run time when the agent is built.
     """
@@ -1146,7 +1190,7 @@ class AgentConfig(BaseModel):
     """Sampling temperature for model responses.
 
     Only honored on models that still accept sampling parameters
-    (``claude-haiku-4-5``). ``claude-sonnet-5`` rejects ``temperature``, so it
+    (``claude-haiku-4-5``). ``claude-sonnet-5-5`` rejects ``temperature``, so it
     is not forwarded there; see ``SAMPLING_MODELS`` in
     src/core/services/anthropic_models.py. Setting one anyway is a warning at
     config load, not an error, so a community can switch models without its
@@ -1277,14 +1321,17 @@ class FAQGenerationConfig(BaseModel):
         Every check runs against the model id ``normalize_model`` resolves, not
         the literal string, so a config still carrying a legacy OpenRouter-style
         id ("anthropic/claude-sonnet-4.5") is judged as the model it will
-        actually bill (``claude-sonnet-5``).
+        actually bill (``claude-sonnet-5-5``).
 
-        Three things are worth saying at config load, all as warnings rather
+        Four things are worth saying at config load, all as warnings rather
         than errors so that a config keeps parsing (this schema backs the whole
         community, not just FAQ generation):
 
         - An unresolvable model, which would otherwise fail at the first
           FAQ run rather than at ``osa validate`` time.
+        - A model served from Amazon Bedrock. FAQ generation builds its agents on
+          Claude models only, so it would fail at the first FAQ run for the same
+          reason; the warning names the two Claude models to use instead.
         - The expensive model on the evaluation agent. The two-agent split
           exists so the thousands of scoring calls run on something cheap and
           only the few hundred surviving threads pay for quality. With two
@@ -1295,7 +1342,7 @@ class FAQGenerationConfig(BaseModel):
         - A ``temperature`` on a model that ignores it, which is otherwise
           dropped silently at request time.
         """
-        expensive = "claude-sonnet-5"
+        expensive = "claude-sonnet-5-5"
 
         for role, agent in (
             ("evaluation_agent", self.evaluation_agent),
@@ -1315,6 +1362,17 @@ class FAQGenerationConfig(BaseModel):
             # Name both ids when they differ, so a maintainer who wrote an
             # alias recognizes the config line the warning is about.
             as_written = agent.model if agent.model == resolved else f"{agent.model} ({resolved})"
+
+            if resolved in BEDROCK_MODELS:
+                warnings.warn(
+                    f"{role}.model is {as_written}, which is served from Amazon Bedrock. "
+                    "FAQ generation runs on Claude models only, so it will fail for this "
+                    "community until the model is changed to claude-haiku-4-5 or "
+                    "claude-sonnet-5-5.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                continue
 
             if role == "evaluation_agent" and resolved == expensive:
                 warnings.warn(
@@ -1439,6 +1497,36 @@ class DatasetSuggestedQuestion(BaseModel):
             msg = f"a dataset question must name its dataset with {{dataset_id}}: {v!r}"
             raise ValueError(msg)
         return v
+
+
+# The launcher's limits and defaults, in pixels (#553). The widget carries the same
+# numbers (LAUNCHER_LIMITS in osa-chat-widget.js, and the fallbacks in its stylesheet);
+# tests/test_frontend/test_widget_drift.py keeps them from drifting. The floor is WCAG
+# 2.2's enhanced target size (2.5.5). 56 and 58 are what the bubble and the capsule have
+# always been closed, 46 is what the capsule shrinks to (a bubble has never shrunk), and
+# 20 is how far the launcher has always been from the window's edges.
+LAUNCHER_SIZE_MIN = 44
+LAUNCHER_SIZE_MAX = 96
+LAUNCHER_OFFSET_MAX = 200
+DEFAULT_LAUNCHER_SIZE = MappingProxyType({"bubble": 56, "capsule": 58})
+DEFAULT_LAUNCHER_OPEN_SIZE = MappingProxyType({"bubble": 56, "capsule": 46})
+DEFAULT_LAUNCHER_OFFSET = 20
+# The open size, as a fraction of the closed size, when a community sets only the closed
+# size. Only the widget derives it; it is here so that the numbers agree.
+LAUNCHER_OPEN_RATIO = 0.8
+# Strict: a YAML `yes` or `no` (which load as True and False), a quoted number or a float
+# is refused, not quietly turned into 1, 0 or a rounded number.
+LauncherSizePx = Annotated[int, Field(strict=True, ge=LAUNCHER_SIZE_MIN, le=LAUNCHER_SIZE_MAX)]
+LauncherOffsetPx = Annotated[int, Field(strict=True, ge=0, le=LAUNCHER_OFFSET_MAX)]
+# The numeric launcher fields, each sent to the widget only when a community sets it.
+LAUNCHER_GEOMETRY_FIELDS = (
+    "launcher_size",
+    "launcher_open_size",
+    "launcher_offset_x",
+    "launcher_offset_y",
+    "launcher_mobile_offset_x",
+    "launcher_mobile_offset_y",
+)
 
 
 class WidgetConfig(BaseModel):
@@ -1578,6 +1666,84 @@ class WidgetConfig(BaseModel):
             raise ValueError(msg)
         return v
 
+    launcher_position: Literal["bottom-right", "bottom-left"] = "bottom-right"
+    """Which bottom corner of the window the launcher, and the panel that opens from it,
+    sit in (#553).
+
+    "bottom-right" (default) is where the launcher has always been. "bottom-left" moves
+    the launcher, its tooltips and the panel to the other side. The panel stays anchored
+    to the bottom edge and grows upward, so there is no top position. A community that
+    never sets this renders exactly as it did before this field existed.
+    """
+
+    launcher_size: LauncherSizePx | None = None
+    """The launcher's diameter in pixels while the panel is closed (#553).
+
+    Unset keeps today's size: 56 for a "bubble", 58 for a "capsule". The floor is 44,
+    the size of WCAG 2.2's enhanced target-size criterion (2.5.5).
+    """
+
+    launcher_open_size: LauncherSizePx | None = None
+    """The launcher's diameter in pixels while the panel is open (#553).
+
+    The launcher shrinks to this size, with the animation a capsule has always had, when
+    the panel opens and grows back when it closes. It can be no larger than the closed
+    size; equal sizes mean no change. Unset, the widget uses 80% of ``launcher_size``,
+    rounded to whole pixels and never below the 44px floor, when that is set, and today's
+    size otherwise (46 for a "capsule", no change for a "bubble").
+    """
+
+    launcher_offset_x: LauncherOffsetPx | None = None
+    """How far the launcher sits from the side edge of the window, in pixels (#553).
+
+    The side is the one ``launcher_position`` names. Unset keeps today's 20.
+    """
+
+    launcher_offset_y: LauncherOffsetPx | None = None
+    """How far the launcher sits from the bottom edge of the window, in pixels (#553).
+
+    Unset keeps today's 20. Raise it to clear something fixed at the bottom of the page,
+    such as a cookie banner or a documentation site's version menu.
+    """
+
+    launcher_mobile_offset_x: LauncherOffsetPx | None = None
+    """``launcher_offset_x`` at 600px wide and narrower, in pixels (#553).
+
+    Unset uses ``launcher_offset_x``.
+    """
+
+    launcher_mobile_offset_y: LauncherOffsetPx | None = None
+    """``launcher_offset_y`` at 600px wide and narrower, in pixels (#553).
+
+    A phone's browser often has its own controls at the bottom of the screen; this
+    lifts the launcher clear of them without moving it on a desktop. Unset uses
+    ``launcher_offset_y``.
+    """
+
+    @model_validator(mode="after")
+    def validate_launcher_sizes(self) -> "WidgetConfig":
+        """Refuse an open size larger than the closed size (``launcher_size``, or the
+        default for the launcher's shape when that is unset)."""
+        if self.launcher_open_size is None:
+            return self
+        closed = (
+            self.launcher_size
+            if self.launcher_size is not None
+            else DEFAULT_LAUNCHER_SIZE[self.launcher]
+        )
+        if self.launcher_open_size > closed:
+            source = (
+                "launcher_size"
+                if self.launcher_size is not None
+                else f"the {self.launcher} default"
+            )
+            msg = (
+                f"launcher_open_size ({self.launcher_open_size}) cannot be larger than "
+                f"the closed size ({closed}, from {source})"
+            )
+            raise ValueError(msg)
+        return self
+
     @field_validator("logo_url", mode="before")
     @classmethod
     def validate_logo_url(cls, v: str | None) -> str | None:
@@ -1657,6 +1823,12 @@ class WidgetConfig(BaseModel):
             result["color_scheme"] = self.color_scheme
         if self.launcher_label:
             result["launcher_label"] = self.launcher_label
+        if self.launcher_position != WidgetConfig.model_fields["launcher_position"].default:
+            result["launcher_position"] = self.launcher_position
+        for name in LAUNCHER_GEOMETRY_FIELDS:
+            value = getattr(self, name)
+            if value is not None:
+                result[name] = value
         return result
 
 
@@ -1929,17 +2101,60 @@ class CommunityConfig(BaseModel):
     """
 
     default_model: str | None = None
-    """Default LLM model for this community: one of the offered Claude models.
+    """Default LLM model for this community: one of the offered models.
 
     If specified, overrides the platform-level default_model for this community.
     Must resolve through ``MODEL_ALIASES`` to an entry in ``OFFERED_MODELS``
-    (``claude-haiku-4-5`` or ``claude-sonnet-5``); legacy OpenRouter-style ids
-    such as "anthropic/claude-haiku-4.5" still resolve.
+    (a Claude model such as ``claude-haiku-4-5`` or ``claude-sonnet-5-5``, or one
+    of the Bedrock-served models: ``openai.gpt-6-luna``, ``qwen.qwen3-next-80b-a3b``,
+    ``openai.gpt-oss-120b``); legacy OpenRouter-style ids such as
+    "anthropic/claude-haiku-4.5" still resolve.
 
     Example:
         default_model: "claude-haiku-4-5"
 
     If not specified, uses the platform-level default from Settings.
+    """
+
+    reasoning_effort: ReasoningEffort | None = None
+    """How much this community's assistant thinks: one level of a provider-neutral scale.
+
+    ``none``, ``low``, ``medium``, ``high``, ``xhigh`` or ``max``, lowest to highest.
+    The same key works on every platform OSA calls (the Claude Platform on AWS, Amazon
+    Bedrock and OpenRouter): each turns it into its own request field, for every model
+    that has reasoning levels, and respects the levels that model accepts. A level the
+    model does not accept is not sent: it runs at the nearest one it does, lowered to
+    the model's highest or raised to its lowest. Claude Sonnet 5.5 never runs above
+    ``high``, so ``xhigh`` and ``max`` give ``high`` there. Claude Haiku 4.5 has no
+    effort field and thinks with a token budget, so its level is a budget (``low`` 1024,
+    ``medium`` 2048, ``high`` 4096 tokens, ``none`` no thinking; ``xhigh`` and ``max``
+    give ``high``). A model with no levels (Qwen3 Next) ignores it.
+
+    It applies to whichever model a request runs, not only ``default_model``: a reader
+    who picks another model in the widget gets that model's nearest level.
+
+    Example:
+        reasoning_effort: high
+
+    If not specified, every model runs at ``high``.
+    """
+
+    model_instructions: dict[str, str] = Field(default_factory=dict)
+    """Extra system-prompt text for particular models, keyed by offered model id.
+
+    Models differ in what they need to be told: GPT-6 Luna and gpt-oss-120b, for
+    example, keep searching unless they are asked to stop after a couple of
+    searches, which the platform already adds for them. Text here is appended
+    after any such built-in note, only on requests that run that model, so a
+    community can tune one model without touching the others.
+
+    Keys are model ids or aliases from ``OFFERED_MODELS`` and are stored under the
+    id they resolve to; an unknown key is an error, not a silent no-op.
+
+    Example:
+        model_instructions:
+          openai.gpt-oss-120b: |
+            Answer in the same language the question was asked in.
     """
 
     default_model_provider: str | None = None
@@ -2142,37 +2357,133 @@ class CommunityConfig(BaseModel):
         """Validate model name format (provider/model-name)."""
         return _validate_model_id(v, field_label="Model name")
 
+    @field_validator("model_instructions")
+    @classmethod
+    def validate_model_instructions(cls, v: dict[str, str]) -> dict[str, str]:
+        """Resolve each key to an offered model id and check the text.
+
+        A misspelled key would otherwise leave the instructions unused with no
+        signal, on the one model the community meant to tune.
+        """
+        resolved: dict[str, str] = {}
+        for key, text in v.items():
+            if not key or not key.strip():
+                # normalize_model reads an empty id as "the default model", so the text
+                # would be filed under Haiku with no word: a blank key is a mistake, not
+                # a way of naming the default.
+                raise ValueError(f"model_instructions key {key!r} is empty; name an offered model")
+            try:
+                model_id = normalize_model(key)
+            except ValueError as e:
+                raise ValueError(
+                    f"model_instructions key {key!r} is not an offered model: {e}"
+                ) from e
+            if model_id in resolved:
+                raise ValueError(
+                    f"model_instructions names {model_id!r} twice (as {key!r} and by another alias)"
+                )
+            stripped = text.strip()
+            if not stripped:
+                raise ValueError(f"model_instructions for {key!r} is empty")
+            if len(stripped) > MODEL_INSTRUCTIONS_MAX_LENGTH:
+                raise ValueError(
+                    f"model_instructions for {key!r} is too long "
+                    f"({len(stripped)} chars; max {MODEL_INSTRUCTIONS_MAX_LENGTH})"
+                )
+            resolved[model_id] = stripped
+        return resolved
+
     @model_validator(mode="after")
     def validate_default_model_resolvable(self) -> "CommunityConfig":
-        """Warn when a bare default_model id won't resolve on either path.
+        """Warn when ``default_model`` will not run as written on some path.
 
-        Format is already checked by ``validate_default_model`` above; this
-        checks resolvability. A bare id (no "/") that ``normalize_model``
-        rejects is neither an offered Anthropic model nor a recognized
-        legacy alias. The Anthropic path fails safe (``_select_model``
-        raises an HTTPException 400), but an OpenRouter-funded request for
-        the same community silently falls back to a hardcoded default model
-        (logged as an error in ``_select_model``, not surfaced at
-        config-load time).
+        Format is already checked by ``validate_default_model`` above; this checks
+        what the model resolves to. Three cases warn, none is an error:
 
-        A creator/model-name id (containing "/") is assumed to be a genuine
-        OpenRouter slug and is not checked here: ``normalize_model`` only
-        resolves first-party Anthropic ids and their legacy aliases, so it
-        is not the right tool to validate an OpenRouter slug.
+        - A bare id that ``normalize_model`` rejects is neither an offered model nor
+          a recognized alias. The Anthropic and Bedrock path fails safe
+          (``_select_model`` answers 400), but an OpenRouter-funded request for the
+          same community silently falls back to a hardcoded default model.
+        - A bare id that resolves to a Bedrock model. It runs from Bedrock only on a
+          deployment with both ``AWS_BEARER_TOKEN_BEDROCK`` and ``ANTHROPIC_API_KEY``;
+          the warning says what happens elsewhere.
+        - A creator/model-name slug that is an offered model's OpenRouter slug
+          (``openai/gpt-oss-120b``) but not an alias ``normalize_model`` resolves. The
+          OpenRouter path takes it as written, but a request funded by the platform's
+          Anthropic or Bedrock key cannot, and answers 400.
+
+        Any other creator/model-name id is assumed to be a genuine OpenRouter slug and
+        is not checked: ``normalize_model`` resolves only offered ids and their
+        aliases, so it is not the right tool to validate one.
         """
-        if not self.default_model or "/" in self.default_model:
+        if not self.default_model:
+            return self
+        if "/" in self.default_model:
+            message = _offered_models_slug_warning(self.default_model)
+            if message:
+                warnings.warn(message, UserWarning, stacklevel=2)
             return self
         try:
-            normalize_model(self.default_model)
+            resolved = normalize_model(self.default_model)
         except ValueError:
             warnings.warn(
-                f"default_model={self.default_model!r} is not an offered Anthropic "
-                "model or a recognized alias. A request funded by an Anthropic key "
+                f"default_model={self.default_model!r} is not an offered model "
+                "or a recognized alias. A request funded by an Anthropic key "
                 "will get a clear 400; a request funded by an OpenRouter key will "
                 "silently fall back to a hardcoded default model instead of the one "
                 "configured here. Use one of "
-                "src.core.services.anthropic_llm.OFFERED_MODELS, or an OpenRouter "
+                "src.core.services.anthropic_models.OFFERED_MODELS, or an OpenRouter "
                 "creator/model-name id if you intend to route there.",
+                UserWarning,
+                stacklevel=2,
+            )
+            return self
+        if resolved in BEDROCK_MODELS:
+            warnings.warn(
+                f"default_model={self.default_model!r} is served from Amazon Bedrock, which "
+                "needs both AWS_BEARER_TOKEN_BEDROCK and ANTHROPIC_API_KEY on the "
+                "deployment. A request that names no model runs the deployment's Claude "
+                "default instead when ANTHROPIC_API_KEY is set but the Bedrock key is not "
+                "(an error is logged with this community's id). With no ANTHROPIC_API_KEY "
+                "it goes to OpenRouter whatever the Bedrock key: the model runs there under "
+                "its OpenRouter slug on OPENROUTER_API_KEY, or the request fails with "
+                "HTTP 500 when that is missing too. A caller's own Anthropic key with no "
+                "model named (the CLI, for one) also runs the Claude default, and a "
+                "caller's own OpenRouter key gets the model's OpenRouter slug.",
+                UserWarning,
+                stacklevel=2,
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_reasoning_effort_is_honored(self) -> "CommunityConfig":
+        """Warn when this community's own default model cannot run at the level asked.
+
+        Not an error: the level applies to every model a request can run, and each
+        clamps it to what it accepts. But a community that asks for ``max`` on a Claude
+        Sonnet, or sets any level on a model with none, should hear that it will not
+        get what it wrote, at load time rather than as a puzzle later.
+        """
+        if self.reasoning_effort is None or not self.default_model:
+            return self
+        try:
+            model = normalize_model(self.default_model)
+        except ValueError:
+            return self  # not an offered model: warned about above, and no levels to check
+        effective = resolve_reasoning_effort(model, self.reasoning_effort)
+        if effective is None:
+            warnings.warn(
+                f"reasoning_effort={self.reasoning_effort!r} is ignored for "
+                f"default_model={self.default_model!r}, which has no reasoning levels. "
+                "It still applies to any other model a request runs.",
+                UserWarning,
+                stacklevel=2,
+            )
+        elif effective != self.reasoning_effort:
+            warnings.warn(
+                f"reasoning_effort={self.reasoning_effort!r} is not a level "
+                f"default_model={self.default_model!r} accepts here: it will run at "
+                f"{effective!r} (the scale is {', '.join(REASONING_SCALE)}).",
                 UserWarning,
                 stacklevel=2,
             )
@@ -2212,10 +2523,10 @@ class CommunityConfig(BaseModel):
 
         Communities using expensive models should provide their own API key
         to avoid unexpected platform costs. This guard only concerns
-        OpenRouter-format ids: the Anthropic offering
-        (src.core.services.anthropic_llm.OFFERED_MODELS) is deliberately
-        limited to two cost-capped models, so there is no ultra-expensive
-        Anthropic id a community's default_model could resolve to.
+        OpenRouter-format ids: the offered models
+        (src.core.services.anthropic_models.OFFERED_MODELS: two Claude models
+        and three Bedrock-served ones) are deliberately all cost-capped, so
+        there is no ultra-expensive id a bare default_model could resolve to.
         """
         if (
             not self.default_model
@@ -2249,7 +2560,7 @@ class CommunityConfig(BaseModel):
                 f"Add 'openrouter_api_key_env_var: OPENROUTER_API_KEY_<YOUR_COMMUNITY>' to your "
                 f"config.yaml and set that environment variable to your OpenRouter API key -- "
                 f"or, to use the Anthropic offering instead, set 'default_model' to one of the "
-                f"models in src.core.services.anthropic_llm.OFFERED_MODELS (e.g. "
+                f"models in src.core.services.anthropic_models.OFFERED_MODELS (e.g. "
                 f"'claude-haiku-4-5'), which are cost-capped and never require BYOK. "
                 f"Ultra-expensive models (>$15/1M tokens) cannot use the platform API key."
             )

@@ -14,6 +14,8 @@ import json
 import logging
 from pathlib import Path
 
+import pytest
+
 from src.agents.content import (
     CitationAssembler,
     CitationMark,
@@ -176,6 +178,55 @@ class TestClassifyContentBlocks:
         content = [{"type": "text"}, {"type": "text", "text": "ok"}]
         assert classify_content_blocks(content) == [("text", "ok", [])]
         assert "unrecognized content block type" not in caplog.text
+
+    @pytest.mark.parametrize("reasoning_type", ["reasoning_content", "reasoning"])
+    def test_bedrock_reasoning_is_a_content_free_thinking_signal(self, caplog, reasoning_type):
+        """GPT-6 Luna and gpt-oss-120b return reasoning as reasoning_content blocks.
+
+        They are classified like Claude's thinking: the client learns the model is
+        working, never what it reasoned, and the log is not filled with a warning
+        for every model call.
+        """
+        content = [
+            {"type": reasoning_type, reasoning_type: {"text": "private reasoning"}},
+            {"type": "text", "text": "ok"},
+        ]
+        with caplog.at_level("WARNING"):
+            result = classify_content_blocks(content)
+
+        assert result == [("thinking", "", []), ("text", "ok", [])]
+        assert "unrecognized content block type" not in caplog.text
+
+    def test_a_streamed_tool_call_logs_nothing_and_surfaces_nothing(self, caplog):
+        """Anthropic streams a tool call's arguments as input_json_delta blocks.
+
+        A long code call is hundreds of chunks, so a warning per chunk filled the
+        production log (26,389 of them in four days). The blocks carry JSON arguments,
+        never answer text, so they are known and dropped quietly like tool_use itself.
+        """
+        chunks = [
+            [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "execute_code",
+                    "input": {},
+                    "index": 1,
+                }
+            ],
+            [{"type": "input_json_delta", "partial_json": '{"code": "import ', "index": 1}],
+            [{"type": "input_json_delta", "partial_json": 'numpy"}', "index": 1}],
+            [
+                {"type": "text", "text": "Running it now.", "index": 0},
+                {"type": "input_json_delta", "partial_json": "", "index": 1},
+            ],
+        ]
+        with caplog.at_level("WARNING"):
+            results = [classify_content_blocks(chunk) for chunk in chunks]
+
+        assert results == [[], [], [], [("text", "Running it now.", [])]]
+        assert "unrecognized content block type" not in caplog.text
+        assert "input_json_delta" not in caplog.text
 
     def test_unrecognized_block_type_warns(self, caplog):
         """An unrecognized block type logs a warning naming the type.

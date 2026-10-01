@@ -105,10 +105,10 @@ class TestHaikuDefaultThinking:
 
 
 class TestSonnetAdaptiveThinking:
-    """claude-sonnet-5 with its default (adaptive) thinking configuration."""
+    """claude-sonnet-5-5 with its default (adaptive) thinking configuration."""
 
     def test_answers_short_question(self) -> None:
-        llm = create_anthropic_llm(model="claude-sonnet-5")
+        llm = create_anthropic_llm(model="claude-sonnet-5-5")
         response = llm.invoke([HumanMessage(content="Reply with exactly: OK")])
 
         text = _extract_text(response.content)
@@ -116,6 +116,19 @@ class TestSonnetAdaptiveThinking:
         assert response.usage_metadata is not None
         assert response.usage_metadata["input_tokens"] > 0
         assert response.usage_metadata["output_tokens"] > 0
+
+    def test_thinking_off_is_accepted(self) -> None:
+        """thinking=None must reach the endpoint as a shape Sonnet 5.5 accepts.
+
+        The endpoint answers {"type": "disabled"} with a 400 on this model,
+        which is what the FAQ summarizer's thinking=None would have sent
+        before the switch to {"type": "between_tools"}. No unit test can prove
+        the endpoint takes the new shape, only that the payload carries it.
+        """
+        llm = create_anthropic_llm(model="claude-sonnet-5-5", max_tokens=32, thinking=None)
+        response = llm.invoke([HumanMessage(content="Reply with exactly: OK")])
+
+        assert _extract_text(response.content).strip() != ""
 
 
 class TestPromptCaching:
