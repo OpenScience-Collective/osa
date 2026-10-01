@@ -73,6 +73,11 @@ _BEDROCK_PERMANENT: dict[str, FailureKind] = {
 #: ``ValueError("Received AWS exception <code>:\n\n<body>")``.
 _RECEIVED_AWS_EXCEPTION = re.compile(r"^Received AWS exception (\w+):")
 
+#: ``langchain-aws`` raises ``ValueError("Received unsupported stream event:\n\n<event>")``
+#: for a stream event it has no parser for, which is the service's doing, not a request OSA
+#: built wrong.
+_UNSUPPORTED_STREAM_EVENT = re.compile(r"^Received unsupported stream event")
+
 #: The packages a model call's own exception classes come from. ``httpx2`` is the copy of
 #: httpx the Anthropic SDK vendors, whose errors escape it raw when a stream dies part way;
 #: OSA's own code uses ``httpx`` (a different package), so the two never mix. LiteLLM's
@@ -143,6 +148,23 @@ def _by_status(status: int) -> tuple[FailureKind, bool] | None:
     return None
 
 
+#: What the Anthropic API's own error types say (``APIStatusError.type``, read from the
+#: error body). Used when the status says nothing: a stream that fails part way has already
+#: answered ``200``, so the SDK raises ``APIStatusError`` with ``status_code`` 200 and the
+#: kind only in the body (``overloaded_error`` is the usual one).
+_ANTHROPIC_ERROR_TYPES: dict[str, tuple[FailureKind, bool]] = {
+    "overloaded_error": ("unavailable", True),
+    "api_error": ("unavailable", True),
+    "rate_limit_error": ("throttled", True),
+    "timeout_error": ("timeout", True),
+    "invalid_request_error": ("rejected", False),
+    "not_found_error": ("rejected", False),
+    "billing_error": ("rejected", False),
+    "authentication_error": ("unauthorized", False),
+    "permission_error": ("unauthorized", False),
+}
+
+
 def _upper_first(code: str) -> str:
     return code[:1].upper() + code[1:]
 
@@ -201,6 +223,8 @@ def _classify_one(error: BaseException) -> ModelFailure | None:
             return _bedrock_code(match.group(1), name) or ModelFailure(
                 "unavailable", None, f"{name} {match.group(1)}"
             )
+        if _UNSUPPORTED_STREAM_EVENT.match(str(error)):
+            return ModelFailure("unavailable", None, f"{name} unsupported stream event")
         return None
     if type(error) is ConnectionError and _raised_in(error, "langchain_aws"):
         # A Bedrock stream that ended with no messageStop. Built-in, so it is the model
@@ -215,6 +239,9 @@ def _classify_one(error: BaseException) -> ModelFailure | None:
     status = getattr(error, "status_code", None)
     if isinstance(status, int) and (by_status := _by_status(status)) is not None:
         return ModelFailure(by_status[0], by_status[1], f"{name} (HTTP {status})")
+    api_type = getattr(error, "type", None)
+    if isinstance(api_type, str) and (by_type := _ANTHROPIC_ERROR_TYPES.get(api_type)):
+        return ModelFailure(by_type[0], by_type[1], f"{name} {api_type}")
     if mro_names & _TIMEOUT_NAMES:
         return ModelFailure("timeout", True, name)
     if mro_names & _CONNECTION_NAMES:
